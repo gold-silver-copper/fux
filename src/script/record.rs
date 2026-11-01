@@ -341,11 +341,13 @@ macro_rules! record {
 pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
     let b = &mut Builder;
     let run = s.run;
-    let workspaces = b.list(&s.workspaces, |b,w| record! { b;
-        "id" => id(AnyRef::Workspace(w.id), run),
-        "parent" => w.parent.map(|p| id(AnyRef::Workspace(p), run)).unwrap_or_else(null),
-        "name" => b.optional(w.name.as_deref())?,
-        "label" => b.text(&w.label)?, "children" => b.list(&w.children, |_,c| Ok(id(*c, run)))?
+    let workspaces = b.list(&s.workspaces, |b, w| {
+        record! { b;
+            "id" => id(AnyRef::Workspace(w.id), run),
+            "parent" => w.parent.map(|p| id(AnyRef::Workspace(p), run)).unwrap_or_else(null),
+            "name" => b.optional(w.name.as_deref())?,
+            "label" => b.text(&w.label)?, "children" => b.list(&w.children, |_,c| Ok(id(*c, run)))?
+        }
     })?;
     let tabs = b.list(&s.tabs, |b,t| {
         let nodes = b.list(&t.nodes, |b,n| match n {

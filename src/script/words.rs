@@ -1849,9 +1849,11 @@ impl Host<'_> {
                 })
             }
             Act::Move => {
-                let target = match next()? {
-                    Value::App(Fux::Workspace(w, _)) => AnyRef::Workspace(w),
-                    value => AnyRef::Pane(pane(&value)?),
+                let subject = next()?;
+                let target = if let Value::App(Fux::Workspace(w, _)) = subject {
+                    AnyRef::Workspace(w)
+                } else {
+                    AnyRef::Pane(pane(&subject)?)
                 };
                 let to = match next()? {
                     Value::App(Fux::All) => MoveTo::Top,

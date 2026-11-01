@@ -44,12 +44,13 @@ A pane runs your shell (the `shell` setting: `fux help set`), or the program
 it was given (`new-tab`, `split`). A shell's pane closes when its shell exits,
 showing its viewers the exit status; a program's pane stays, its exit told,
 until `kill` closes it or `respawn` starts it again. A tab closes with its
-last pane, a workspace with its last tab.
+last pane, a workspace with its last tab or workspace.
 A pane's lines re-wrap when its width changes, history included.
 
 By default the panes have every row, and the bar takes none. While the
 prefix (or any screen of fux's) is in use, the bar draws over the bottom
-row: the workspace and its tabs on the left; on the right the focused
+row: the workspace's path (`proj › agent1`) and its tabs and workspaces on
+the left; on the right the focused
 pane's id and label (its given name, else its OSC 0/2 title, launch
 program or id), or what the keys do. When it ends, the row shows the pane
 again. A notice takes only the bottom-right corner, until your next key;
@@ -190,7 +191,9 @@ percent, and `str horizontal` or `str vertical`. Mouse events are positional:
 `new-tab` starts a shell, or the program given (`program`, then each `arg`; a
 shell's line is `str sh program str -c arg str LINE arg`), whose pane stays
 once it exits, in the workspace `in` names: one not there is made, and
-`str new-workspace in` makes an unnamed one. Asked from a key or prompt, it
+`str new-workspace in` makes an unnamed one. A workspace holds tabs and
+workspaces: `in` again names one in the one before, so `opts str proj in str
+agent1 in` makes `proj › agent1`, each from the first not there. Asked from a key or prompt, it
 moves its client to the new tab; from the command line, no client. Their tab is laid out on `COLS ROWS size`, else on the
 caller's own screen (a client's keys), else on the caller's tab (`fux`
 run in a pane): never on the screen of a client that does not show the
@@ -200,10 +203,13 @@ up.
 A handle names everything under it, and `all` the whole session: `info`,
 `dump`, `events`, `panes`, `tabs` and `kill` take any of them (a pane holds
 no tabs, and `PANE info` or `PANE dump` has its tab hold that pane alone);
-`ls` is the library word `all info`.
+`ls` is the library word `all info`. A workspace's subtree is the workspaces
+in it too, so `fux str proj workspace kill` closes a whole project. `dump`
+writes a script that makes it again, its workspaces in the workspace its
+first argument names (`./proj.fux home`), else at the top.
 
 The server shows each client one workspace at a time, a workspace one of
-its tabs, and a tab focuses one of its panes: each client its own at every
+its tabs and workspaces, and a tab focuses one of its panes: each client its own at every
 level, each remembering the one it showed there before. `CLIENT HANDLE
 show` shows a client a pane, tab or workspace, and each that holds it.
 `CLIENT HANDLE WAY step` shows it a sibling of the handle: `str next` or
@@ -218,8 +224,10 @@ versions. `PANE version` reads the current version; `ANSWER version` and
 the binary's release and protocol (`fux RELEASE (protocol N)`), and `status
 json` gives `release`, `server_release` and both protocols.
 Capture `rows` and `cols` use half-open `start..end` ranges, like `slice`.
-`resize` takes a tab scope or headless client. `move` takes a tab,
-workspace, `str new-tab`, `str new-workspace`, or a direction; `swap-with`
+`resize` takes a tab scope or headless client. `move` takes a pane and a tab,
+workspace, `str new-tab`, `str new-workspace`, or a direction; or a
+workspace and the workspace it goes in, last, or `all` for the top, never
+itself or one in it; `swap-with`
 takes a pane or direction. Directions are `str left`, `str right`, `str up`
 and `str down`.
 

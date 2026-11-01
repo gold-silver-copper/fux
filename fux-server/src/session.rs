@@ -429,7 +429,10 @@ impl Session {
     }
     /// The workspace a tab is in.
     pub fn tab_workspace(&self, tab: TabId) -> Result<WsId, Error> {
-        self.parts.tab(tab).map(|(ws, _)| ws).ok_or(Error::NoTab(tab))
+        self.parts
+            .tab(tab)
+            .map(|(ws, _)| ws)
+            .ok_or(Error::NoTab(tab))
     }
     /// The workspace that holds `target` (a workspace, itself), if it is
     /// there.
@@ -1054,7 +1057,10 @@ impl Session {
         let made = (made.into_iter())
             .map(|name| Ok((ids.workspace()?, name)))
             .collect::<Result<Vec<_>, Error>>()?;
-        let ws = made.last().map(|(id, _)| *id).ok_or(Error::NoWorkspaceGiven)?;
+        let ws = made
+            .last()
+            .map(|(id, _)| *id)
+            .ok_or(Error::NoWorkspaceGiven)?;
         let tab = ids.tab()?;
         let pane = self.new_pane(&mut ids, new, now)?;
         let place = Place {
@@ -1110,7 +1116,9 @@ impl Session {
                 }
                 (None, WsRef::Name(name)) => {
                     if tab == Some(name) || made.contains(&Some(name.clone())) {
-                        let why = format!("a workspace and its tab or another workspace made with it cannot both be named {name:?}");
+                        let why = format!(
+                            "a workspace and its tab or another workspace made with it cannot both be named {name:?}"
+                        );
                         return Err(fail(Raise::NameTaken, why));
                     }
                     made.push(Some(name.clone()));
@@ -2893,7 +2901,9 @@ impl Session {
                 return Ok(());
             }
             AnyRef::Tab(t) => self.parts.reorder(target, toward).ok_or(Error::NoTab(t))?,
-            AnyRef::Workspace(w) => (self.parts.reorder(target, toward)).ok_or(Error::NoWorkspace(w))?,
+            AnyRef::Workspace(w) => {
+                (self.parts.reorder(target, toward)).ok_or(Error::NoWorkspace(w))?
+            }
         };
         moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
     }
@@ -2911,7 +2921,9 @@ impl Session {
             }
         };
         let siblings: Vec<AnyRef> = match (from, within) {
-            (AnyRef::Pane(_), _) => (self.panes_of(within)?.into_iter().map(AnyRef::Pane)).collect(),
+            (AnyRef::Pane(_), _) => {
+                (self.panes_of(within)?.into_iter().map(AnyRef::Pane)).collect()
+            }
             (_, Some(AnyRef::Workspace(w))) => (self.workspace(w).into_iter())
                 .flat_map(|w| w.stack().children().iter().map(crate::workspace::Child::id))
                 .collect(),
@@ -4079,6 +4091,49 @@ mod tests {
         let e = s.attach(10, 40, None)?;
         assert_eq!(shown(&s, e), at(3, None));
         invariants(&s)?;
+        Ok(())
+    }
+
+    /// D-115: a workspace is never in itself or in one in it, and one its
+    /// last child leaves closes, and so does each that holds it that it
+    /// leaves empty, each journaled closed in the one it was in.
+    #[test]
+    fn workspaces_nest_without_cycles_and_close_as_they_empty() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "opts +1 in str a in str b in 80 24 size new-tab drop",
+        )?;
+        let path = |s: &Session, ws| s.parts.path(WsId::of(ws));
+        assert_eq!(path(&s, 3), [1, 2, 3].map(WsId::of));
+        for (ws, into) in [(1, 1), (1, 2), (1, 3), (2, 3)] {
+            let code = format!("+{ws} +{into} move");
+            let refused = output(&mut s, &code).err().ok_or(code.clone())?;
+            assert!(refused.starts_with("bad_value:"), "{code}: {refused}");
+        }
+        // Out of a, b leaves it empty: a closes.
+        run(&mut s, "+3 all move")?;
+        assert_eq!((path(&s, 3), path(&s, 2)), (vec![WsId::of(3)], Vec::new()));
+        run(
+            &mut s,
+            "opts +3 in str c in str d in 80 24 size new-tab drop",
+        )?;
+        let closed = told(&mut s, |s| {
+            let _ = run(s, "%3 kill");
+        });
+        assert_eq!(
+            closed,
+            [
+                r#"{"event":"closed","pane":"%3","tab":"@3","workspace":"+5"}"#,
+                r#"{"event":"closed","tab":"@3","workspace":"+5"}"#,
+                r#"{"event":"closed","workspace":"+5","parent":"+4"}"#,
+                r#"{"event":"closed","workspace":"+4","parent":"+3"}"#,
+                "",
+            ]
+            .join("\n")
+        );
+        // b keeps its own tab.
+        assert_eq!(path(&s, 3), [WsId::of(3)]);
         Ok(())
     }
 

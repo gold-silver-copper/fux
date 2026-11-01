@@ -51,9 +51,10 @@ impl Session {
                 let tabs = self.parts.tab(tab).into_iter().collect();
                 (self.workspace(ws).into_iter().collect(), tabs)
             }
-            (None, Some(AnyRef::Workspace(ws))) => {
-                (self.parts.workspaces_in(Some(ws)), self.parts.tabs_in(Some(ws)))
-            }
+            (None, Some(AnyRef::Workspace(ws))) => (
+                self.parts.workspaces_in(Some(ws)),
+                self.parts.tabs_in(Some(ws)),
+            ),
             (None, _) => (self.parts.every_workspace(), self.parts.tabs_in(None)),
         };
         for (ws, tab) in tabs {

@@ -786,7 +786,10 @@ impl Parts {
             .map(|s| s.map(AnyRef::Workspace));
         let mut seats: Vec<_> = seat(None, root).into_iter().collect();
         for ws in self.every_workspace() {
-            seats.extend(seat(Some(AnyRef::Workspace(ws.id)), ws.children.shown(client)));
+            seats.extend(seat(
+                Some(AnyRef::Workspace(ws.id)),
+                ws.children.shown(client),
+            ));
             for tab in ws.tabs() {
                 let focus = tab.seat(client).map(|s| s.focus.map(AnyRef::Pane));
                 seats.extend(seat(Some(AnyRef::Tab(tab.id)), focus));
@@ -918,19 +921,19 @@ impl Parts {
         if let Some(AnyRef::Workspace(top)) = path.first() {
             self.workspaces.show(client, *top);
         }
-        for pair in path.windows(2) {
-            match *pair {
-                [AnyRef::Workspace(ws), child] => {
+        for (&node, &child) in path.iter().zip(path.iter().skip(1)) {
+            match (node, child) {
+                (AnyRef::Workspace(ws), child) => {
                     if let Some(w) = ws_mut(&mut self.workspaces, ws) {
                         w.children.show(client, child);
                     }
                 }
-                [AnyRef::Tab(tab), AnyRef::Pane(pane)] => {
+                (AnyRef::Tab(tab), AnyRef::Pane(pane)) => {
                     if let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) {
                         t.set_focus(&mut self.journal, ws, client, pane);
                     }
                 }
-                _ => {}
+                (AnyRef::Tab(_), AnyRef::Tab(_) | AnyRef::Workspace(_)) | (AnyRef::Pane(_), _) => {}
             }
         }
     }
@@ -942,14 +945,18 @@ impl Parts {
         let (event, changed) = match target {
             AnyRef::Tab(tab) => {
                 let (ws, _) = self.tab(tab)?;
-                let changed = ws_mut(&mut self.workspaces, ws)?.children.reorder(target, toward)?;
+                let changed = ws_mut(&mut self.workspaces, ws)?
+                    .children
+                    .reorder(target, toward)?;
                 (Event::Tab((ws, tab), Change::Reordered), changed)
             }
             AnyRef::Workspace(ws) => {
                 let parent = self.parent(ws)?;
                 let changed = match parent {
                     None => self.workspaces.reorder(ws, toward),
-                    Some(parent) => ws_mut(&mut self.workspaces, parent)?.children.reorder(target, toward),
+                    Some(parent) => ws_mut(&mut self.workspaces, parent)?
+                        .children
+                        .reorder(target, toward),
                 }?;
                 (Event::Workspace((parent, ws), Change::Reordered), changed)
             }
@@ -1098,7 +1105,10 @@ impl Parts {
             return Err(pane);
         };
         let at = (*at, first.0);
-        if self.push_workspaces(parent, made, first, pane.id()).is_none() {
+        if self
+            .push_workspaces(parent, made, first, pane.id())
+            .is_none()
+        {
             return Err(pane);
         }
         self.placed(at, pane);
@@ -1130,7 +1140,9 @@ impl Parts {
             .push(Event::Tab((last, tab), Change::Created(tab_name.clone())));
         let clients: Vec<ClientId> = self.workspaces.shown.keys().copied().collect();
         let stack = |child: Node| Stack {
-            shown: (clients.iter()).map(|c| (*c, Shown::on(child.id()))).collect(),
+            shown: (clients.iter())
+                .map(|c| (*c, Shown::on(child.id())))
+                .collect(),
             children: vec![child],
         };
         let mut node = Node::Tab(Tab::new(tab, tab_name, fit, clients.iter().copied(), pane));
@@ -1151,7 +1163,9 @@ impl Parts {
         }
         match parent {
             None => self.workspaces.children.push(ws),
-            Some(parent) => (ws_mut(&mut self.workspaces, parent)?.children.children).push(Node::Workspace(ws)),
+            Some(parent) => {
+                (ws_mut(&mut self.workspaces, parent)?.children.children).push(Node::Workspace(ws))
+            }
         }
         Some(())
     }
@@ -1223,7 +1237,9 @@ impl Parts {
     pub(crate) fn split(&mut self, pane: Pane, split: Split) -> Result<(), Pane> {
         let Split { tab, was, root } = split;
         let planned = root.contains(pane.id()) && !was.contains(pane.id());
-        let Some((ws, t)) = tab_mut(&mut self.workspaces, tab).filter(|(_, t)| planned && t.root == was) else {
+        let Some((ws, t)) =
+            tab_mut(&mut self.workspaces, tab).filter(|(_, t)| planned && t.root == was)
+        else {
             return Err(pane);
         };
         t.edit(&mut self.journal, ws, |r| *r = root);
@@ -1300,11 +1316,11 @@ impl Parts {
                 return;
             };
             self.take_workspace(ws);
-            self.journal.push(Event::Workspace((parent, ws), Change::Closed));
+            self.journal
+                .push(Event::Workspace((parent, ws), Change::Closed));
             self.journal.nest(ws, None);
-            emptied = parent.filter(|p| {
-                (self.workspace(*p)).is_some_and(|w| w.children.children.is_empty())
-            });
+            emptied = parent
+                .filter(|p| (self.workspace(*p)).is_some_and(|w| w.children.children.is_empty()));
         }
     }
 
@@ -1313,7 +1329,10 @@ impl Parts {
     fn take_workspace(&mut self, ws: WsId) -> Option<Workspace> {
         match self.parent(ws)? {
             None => self.workspaces.remove(ws),
-            Some(parent) => match ws_mut(&mut self.workspaces, parent)?.children.remove(AnyRef::Workspace(ws))? {
+            Some(parent) => match ws_mut(&mut self.workspaces, parent)?
+                .children
+                .remove(AnyRef::Workspace(ws))?
+            {
                 Node::Workspace(ws) => Some(ws),
                 Node::Tab(_) => None,
             },
@@ -1334,7 +1353,8 @@ impl Parts {
             let moving = parts.take_workspace(ws)?;
             match to {
                 None => parts.workspaces.children.push(moving),
-                Some(to) => (ws_mut(&mut parts.workspaces, to)?.children.children).push(Node::Workspace(moving)),
+                Some(to) => (ws_mut(&mut parts.workspaces, to)?.children.children)
+                    .push(Node::Workspace(moving)),
             }
             parts.journal.nest(ws, to);
             (parts.journal).push(Event::Workspace((to, ws), Change::Moved(from)));

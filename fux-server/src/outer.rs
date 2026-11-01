@@ -422,8 +422,8 @@ impl Session {
         .map(|c| (c, self.shows(c, tab)))
         .collect();
         let panes = self.parts.panes();
-        let rang = (self.tab(tab))
-            .map_or_else(String::new, |t| format!("bell in {}", t.label(panes)));
+        let rang =
+            (self.tab(tab)).map_or_else(String::new, |t| format!("bell in {}", t.label(panes)));
         let notice = (notified.zip(panes.get(&id))).map(|(said, p)| {
             format!(
                 "{}: {}",

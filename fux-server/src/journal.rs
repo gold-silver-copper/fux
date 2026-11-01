@@ -87,7 +87,9 @@ impl Journal {
             | Event::Zoomed(..)
             | Event::View { .. } => None,
         };
-        let from = from.into_iter().flat_map(|f| std::iter::once(f).chain(up(f)));
+        let from = from
+            .into_iter()
+            .flat_map(|f| std::iter::once(f).chain(up(f)));
         ws.into_iter().flat_map(up).chain(from).collect()
     }
     /// Request scopes restore the previous actor before returning; deferred
@@ -397,7 +399,10 @@ pub fn every_kind(
         events.push(Event::Tab(at.0, change.clone()));
         events.push(Event::Workspace((Some(at.0.0), at.0.0), change));
     }
-    events.push(Event::Workspace((None, at.0.0), Change::Moved(Some(at.0.0))));
+    events.push(Event::Workspace(
+        (None, at.0.0),
+        Change::Moved(Some(at.0.0)),
+    ));
     let [title, notification] = said;
     let ended = |ended| Told::Exited(End { ended, left });
     for told in [
