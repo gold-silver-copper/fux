@@ -658,20 +658,20 @@ fn words_may_call_each_other_through_an_xt() -> Result<(), Error> {
     assert_eq!(machine.stack(), [Value::Bool(false)]);
     let descent = "0 let expr-xt\n\
         define factor\n\
-          let i let s\n\
-          s i at 40 eq if s i 1 add expr-xt execute 1 add else s i at 48 sub i 1 add then\n\
+          let p let s\n\
+          s p at 40 eq if s p 1 add expr-xt execute 1 add else s p at 48 sub p 1 add then\n\
         end\n\
         define term\n\
-          let i let s s i factor let i let v\n\
-          begin i s len lt if s i at 42 eq else false then\n\
-            if s i 1 add factor let i v mul let v false else true then until\n\
-          v i\n\
+          let p let s s p factor let p let v\n\
+          begin p s len lt if s p at 42 eq else false then\n\
+            if s p 1 add factor let p v mul let v false else true then until\n\
+          v p\n\
         end\n\
         define expr\n\
-          let i let s s i term let i let v\n\
-          begin i s len lt if s i at 43 eq else false then\n\
-            if s i 1 add term let i v add let v false else true then until\n\
-          v i\n\
+          let p let s s p term let p let v\n\
+          begin p s len lt if s p at 43 eq else false then\n\
+            if s p 1 add term let p v add let v false else true then until\n\
+          v p\n\
         end\n\
         tick expr to expr-xt\n";
     assert_eq!(
@@ -1054,6 +1054,11 @@ fn every_core_word_documents_its_effect_and_meaning() {
                         | Builtin::Immediate
                         | Builtin::StartCompiling
                         | Builtin::Evaluate
+                        | Builtin::ToReturn
+                        | Builtin::Leave
+                        | Builtin::DigitsBegin
+                        | Builtin::Hold
+                        | Builtin::Holds
                 ),
             "{}",
             builtin.name()
@@ -1086,7 +1091,7 @@ fn sequence_mutation_preserves_shared_values() -> Result<(), Error> {
     let both = vec![list(ints(&[1, 2])), list(ints(&[9, 2]))];
     assert_eq!(run("list 1 2 end dup 0 9 put")?, both);
     assert_eq!(
-        run("str x 1000 copies 0 let i begin 0 str y put i 1 add let i i 17000 eq until len")?,
+        run("str x 1000 copies 0 let k begin 0 str y put k 1 add let k k 17000 eq until len")?,
         ints(&[1000])
     );
     assert_eq!(
@@ -1339,7 +1344,63 @@ fn leave_definition_returns_leaving_its_loops() -> Result<(), Error> {
         define pick-big list 3 12 4 end first-big end
         list 1 2 end each drop pick-big end";
     assert_eq!(run(big)?, ints(&[12, 12]));
+    // A do loop too: the caller's loop's index is its own again.
+    let counted = "define f 10 0 do i 3 eq if leave-definition then loop end 2 0 do f i loop";
+    assert_eq!(run(counted)?, ints(&[0, 1]));
     Ok(())
+}
+
+#[test]
+fn leave_ends_its_loop_and_what_began_in_it() -> Result<(), Error> {
+    // The each begun in the loop ends with it: the outer each goes on.
+    let walks = "list 1 2 end each 3 0 do list 7 8 end each drop leave end loop end";
+    assert_eq!(run(walks)?, ints(&[1, 2]));
+    // So does a try: a failure after the loop is caught by none.
+    let tried =
+        "define f 5 0 do str all try i 2 eq if leave then catch drop end loop 1 0 div end f";
+    assert_eq!(code(run(tried)), Some("div_by_zero"));
+    assert_eq!(
+        run("10 0 do i i 2 eq if leave then loop")?,
+        ints(&[0, 1, 2])
+    );
+    Ok(())
+}
+
+#[test]
+fn a_caught_failure_undoes_the_loops_and_return_stack_its_body_began() -> Result<(), Error> {
+    let loops = "3 0 do str all try 5 0 do 1 0 div loop catch drop end i loop";
+    assert_eq!(run(loops)?, ints(&[0, 1, 2]));
+    let returns = "7 to-return str all try 1 to-return 1 0 div catch drop end from-return";
+    assert_eq!(run(returns)?, ints(&[7]));
+    Ok(())
+}
+
+#[test]
+fn loops_and_cases_are_checked_as_they_are_read() {
+    let said = |text: &str| run(text).err().map(|e| e.to_string()).unwrap_or_default();
+    for (text, why) in [
+        (
+            "define f 1 while end",
+            "while: the open block is define … end",
+        ),
+        ("1 while", "no begin is open"),
+        (
+            "define f begin 1 while 2 until end",
+            "the open block is begin … while … end",
+        ),
+        ("loop", "no do is open"),
+        (
+            "define f 1 of end end",
+            "of: the open block is define … end",
+        ),
+        (
+            "define f true if 1 again end",
+            "the open block is if … then",
+        ),
+        ("define f 3 0 do end", "the open block is do … loop"),
+    ] {
+        assert!(said(text).contains(why), "{text}: {}", said(text));
+    }
 }
 
 #[test]
