@@ -1,95 +1,117 @@
 # Driving programs with fux
 
-Use your assigned private `FUX_SOCKET`. Beside a human, use a private
-socket, `XDG_RUNTIME_DIR` (mode 0700) and `XDG_CONFIG_HOME`; a workspace
-alone is not isolation. `fux start` starts an empty server.
+fux runs programs in terminals (panes) on a server, and tells you what
+they show and how they end, as facts: never whether one is ready or done.
+`fux help cookbook` has a tested recipe for each task below; `fux help
+WORD` says one word, `fux help json` every field.
 
-Words run left to right. `str WORD` pushes text; %2 is a pane, @2 a tab,
-+1 a workspace. Options precede the action. Remaining values print, a
-value a line (a list an item a line, a list in it as JSON).
-Outside fux, give new tabs a workspace and a size: `opts str agent in
-80 24 size`. `in` again nests: `opts str proj in str agent1 in 80 24 size`.
+**A server of your own.** Every `fux` command talks to the server
+`FUX_SOCKET` names; a fux pane sets it to its own server's. Beside a
+person, use your own (`export FUX_SOCKET="$XDG_RUNTIME_DIR/fux/a.sock"`),
+so your panes and theirs stay apart, and start it if none answers:
 
-**Launch and wait for a prompt.** Run with `timeout 30 fux -` and this
-program on stdin; a banner alone is not the prompt:
-
-```fux
-opts str agent in 80 24 size str python3 program str -q arg new-tab
-str '>>>' 5 shows let seen
-seen string print seen version print
+```sh
+fux status > /dev/null 2>&1 || fux start
 ```
 
-**Run a command, read its output and actual exit status.**
-Run with `timeout 30 fux -` and this program on stdin:
+**Words.** A command line is a fuxth program, its words run left to right
+on a stack: `str WORD` pushes text, `%2` `@2` `+1` are a pane, tab and
+workspace, `str NAME pane` a pane by name. What is left prints, a line each.
 
-```fux
-opts str agent in 80 24 size str sh program str -c arg
-str 'echo result=42; exit 7' arg new-tab
-10 until-ended let seen
-seen string print seen str program get str exited get print
+**A tab of your own.** From outside fux a new tab needs a workspace and
+a size (from a fux pane, it takes that pane's tab's). `in` names the
+workspace, made if it isn't there; `in` again nests one in it (`str proj
+in str agent1 in`). `new-tab` answers its pane's version
+(`%3:0.0.0.0.0:RUN`); here `rename` names the pane instead:
+
+```sh
+fux opts str agent in 80 24 size str sh program new-tab str sh1 rename
 ```
 
-**Guard input against the screen you read.** Save this as `reply.fux` and
-run `timeout 30 fux --file reply.fux "$V"`, using the prompt version above:
+**Drive it, and wait.** An action (`line`, `send-keys`, `signal`) answers
+at once, before the program has read anything. A wait answers once the
+pane changes: `shows` waits for a text (one only the output holds: the
+line typed shows `$((6*7))`, never `42`), `quiet` for N seconds of no
+change (a fact of the screen, not proof of an end), `until-ended` for
+the program's exit; each leaves what it saw. Their seconds bound each
+change, not the whole: `timeout 600 fux …` bounds a command (exit 124).
 
-```fux
-args first expect str '6*7' text str Enter key send-keys
-str 42 5 shows let seen
-seen string print seen version print
+```sh
+fux str sh1 pane str 'sleep 1; echo "built: $((6*7))"' line
+fux str sh1 pane str 'built: 42' 60 shows
+fux str sh1 pane 2 quiet
+fux opts str agent in 80 24 size str sh program str -c arg str 'exit 3' arg new-tab 60 until-ended str program get str exited get
 ```
 
-**Cleanup:** `fux str agent workspace kill` closes only that workspace,
-and the workspaces in it, on your private socket. Stop any subscriber or server you start by its PID.
+Keys: `str C-c key send-keys` (`fux key-names` lists them); a file's text
+as one paste: `fux str sh1 pane input paste send-keys < FILE`. To act only
+on the screen you read, give its version: `fux str "$V" expect str y text
+send-keys` sends nothing and fails `stale` if the pane changed since.
 
-`shows` checks text presence; old text and input echo can match. Use a
-reply-only result (42 is absent from 6*7), shell end marks, or a TUI-specific
-predicate. `quiet` returns its last capture after an explicit unchanged
-interval, which does not prove computation finished. `until-ended` checks
-ENDED before waiting, including an already-ended result, and follows the
-pane if respawned. Each wait timeout is **per change**; use shell `timeout`
-for a whole loop. A capture keeps screen, version and metadata together;
-`get` and `version` on it read locally. `observed` retains a pane capture
-or samples a pane/single answer; these helpers reject client captures.
+**Read it in one observation.** `capture` gives the screen as text,
+`100 history capture` with history, `last-output capture` the last shell
+command's output (`fux help shells`). `capture json` is the pane's whole
+observation at one version: `lines`, `version`, `cursor`, `program` (`pid`,
+`state`, `exited`, `signal`, `foreground_group`), `last_status` and more.
 
-An action answers its version BEFORE acting; `changed ... wait` reports
-changes, never readiness. `counts` reads RESPAWNS SCREEN BELLS DONE ENDED.
-`grows` accepts a pane (sampled first), version text, answer or pane capture,
-count index 1..4, nonnegative growth and seconds; it fails across respawn.
-Exit status and signal are distinct; unknown status stays unknown.
-A failed run prints nothing more on stdout: stderr says `fux: CODE:
-MESSAGE`, then what was left. A transport failure may leave input queued.
+```sh
+fux str sh1 pane capture json | jq -c '{version, program, last_status}'
+```
+
+**Follow what changes.** A capture's `cursor` is the journal's place at
+that screen. `events` from it prints each later event of the pane (or of
+`all`), one JSON object a line with its `next`, until the scope is gone;
+`head`, `jq` or `timeout` ends it, `>> FILE` keeps it. An entry lost
+before it was read fails it (`missed`): capture again. A screen's change
+is no event: it shows as a new version.
+
+```sh
+C=$(fux str sh1 pane capture str cursor get)
+fux str sh1 pane str 'echo after' line
+fux str sh1 pane str "$C" events | head -n 1
+```
+
+**Leave the OS's work to the OS.** fux has no words for these:
+
+| For | Use |
+| --- | --- |
+| a program's environment | `env(1)`: `str env program str PORT=8080 arg str ./app arg new-tab` |
+| a time limit | `timeout(1)`, on fux or in a pane: `str timeout program str 60 arg …` |
+| a file's text | `< FILE`, read by `input` |
+| what a pane runs, and where | its `program`'s `foreground_group` G: `ps -o comm=,args= -p G`, `readlink /proc/G/cwd`, `pgrep -a -g G` |
+| a server's stop | `kill "$(fux status str server_pid get)"`; macOS: `lsof -t "$FUX_SOCKET"` |
+| a log of what a program wrote | `script(1)` in its pane (`fux help servers`) |
+
+**Stop.** `fux str agent workspace kill` closes your workspace and all in
+it (a server stops with its last pane); kill your `events` readers by PID.
 
 | fux exits | when |
 | --- | --- |
 | 0 | done, or what `N exit` gave |
-| 1 | refused: any other failure |
-| 2 | a mistake in the program: `usage`, `unknown_word`, `open_quote`, `missing_token`, `unmatched`, `unclosed`, `not_top_level`, `bad_codes`, `require`, `type`, `stack_underflow` |
+| 1 | refused: any other failure, `fux: CODE: MESSAGE` on stderr |
+| 2 | a mistake in the program: `usage`, `unknown_word`, `type`, … |
 | 4 | `closed`: the pane waited on closed |
 | 124 | `timeout`: unchanged, or the shell's `timeout` |
-| 141 | stdout's reader went (`\| head -1`), as `cat`; nothing said |
+| 141 | stdout's reader went (`\| head -n 1`), as for `cat`; nothing said |
 
-For several programs, save an `ls` cursor BEFORE launch and replay journal
-exits; stop on `missed`. This gives first recorded exit, never OS chronology
-or group-wait order. `fux help recipes` gives the complete recipe ("First
-recorded exit across jobs").
-
-More: `fux help recipes`, `typing`, `read`, `shells`, `programs`, `servers`;
-`fux help guide` gives all topics, `fux help json` the full schema,
-`fux help WORD` a word's contract; `fux help cookbook` recipes to copy.
+More: `fux help TOPIC` for `recipes`, `typing`, `read`, `shells`,
+`programs` and `servers`; `fux help guide` all of them; `fux help cookbook`.
 
 ## recipes: Waiting for what you need
 
-Each is a fuxth program: a file `fux --file FILE` runs, or `fux - <<'EOF'` in a
-script. `A wait` waits from the version answer A holds, so a change between
-two steps is never missed, and leaves the next answer; `A 600 timeout wait`
+Each is a fuxth program: a file `fux --file FILE` runs, or `fux -` reads
+from stdin. A loop of waits, a guard on a version, a fallback: what must
+happen inside one program. The shell's recipes are `fux help cookbook`'s.
+
+`A wait` waits from the version answer A holds, so a change between two
+steps is never missed, and leaves the next answer; `A 600 timeout wait`
 fails with 124 (`timeout`) if nothing changed in 600 s. A pane part way
-through reading a frame (synchronized output) that has ended, the rest of
-which fux already holds, keeps the answer past that time until the frame
-is read, and then answers its change: a wait never says unchanged of a
-pane that changed. A loop of waits ends when its check holds; to bound the
-whole of it, run it under the shell's `timeout 600 fux --file FILE` (124
-too). `counts` gives five integers from a live pane or the version held by
-an answer, pane capture or canonical text. `A counts 3 at` is its `DONE`.
+through a frame (synchronized output) whose rest fux already holds keeps
+the answer until the frame is read, then answers its change: a wait never
+says unchanged of a pane that changed. To bound a whole loop of waits,
+run it under `timeout 600 fux --file FILE` (124 too). `counts` gives five
+integers, RESPAWNS SCREEN BELLS DONE ENDED, from a live pane or the
+version an answer, capture or text holds: `A counts 3 at` is its `DONE`.
 
 A wait's text answer is its version, then what changed (`screen`, `bell`,
 `done`, `respawned`), then `exited N`, `killed by SIGNAME` (or `killed by
@@ -97,6 +119,41 @@ signal N` for an unnamed signal), or `ended, its status lost` if the program
 ended. A closed pane answers `%2 closed`. A tab/workspace wait freezes its
 panes as it begins and answers changes in watch order, not exit chronology.
 
+`shows` checks text presence; old text and input echo can match. Use a
+reply-only result (42 is absent from 6*7), shell end marks, or a
+TUI-specific predicate. `until-ended` checks ENDED before waiting, so an
+already-ended program succeeds at once, and follows the pane if respawned.
+A capture keeps screen, version and metadata together; `get` and `version`
+on it read locally. `observed` retains a pane capture or samples a pane or
+single answer. Exit status and signal are distinct; an unknown status
+stays unknown.
+
+- **Launch and wait for a prompt.** Run with `timeout 30 fux -` and this
+  program on stdin; a banner alone is not the prompt:
+
+  ```fux
+  opts str agent in 80 24 size str python3 program str -q arg new-tab
+  str '>>>' 5 shows let seen
+  seen string print seen version print
+  ```
+- **Run a command, read its output and actual exit status.**
+  Run with `timeout 30 fux -` and this program on stdin:
+
+  ```fux
+  opts str agent in 80 24 size str sh program str -c arg
+  str 'echo result=42; exit 7' arg new-tab
+  10 until-ended let seen
+  seen string print seen str program get str exited get print
+  ```
+- **Guard input against the screen you read.** Save this as `reply.fux`
+  and run `timeout 30 fux --file reply.fux "$V"`, with the prompt's
+  version above:
+
+  ```fux
+  args first expect str '6*7' text str Enter key send-keys
+  str 42 5 shows let seen
+  seen string print seen version print
+  ```
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
   `quiet` waits until nothing changes for N seconds (from a pane, an
   answer, or pane capture). A spinner or clock on the screen is a
@@ -180,30 +237,13 @@ panes as it begins and answers changes in watch order, not exit chronology.
   while changed 5 timeout wait end
   let seen seen string print seen version print
   ```
-- **What changes anywhere:** `SCOPE str CURSOR events` prints the scope's
-  events after CURSOR, one JSON object a line, each with its `seq` and
-  `next`, until the scope is gone or the server stops (its `stopped`
-  entry the last line), as `journalctl -f` does; an empty
-  cursor starts now. Bound it with `head -n`, `timeout` or `jq`, keep it
-  with `>> FILE` or `tee`, and restart from the last line's `next`.
-  Take the cursor before launching jobs to observe their first recorded
-  exit; group waits do not give exit chronology. Lost entries (`missed`)
-  fail it on stderr: resnapshot. Events invalidate state, and do not
-  replicate live OS facts. `all str CURSOR SECONDS next-events` returns one
-  batch: its events, the oldest entry still held (`first`), exact
-  `next`, `missed` and status (`json`); left at
-  the end, it prints its events alone, and fails on `missed`.
-
-  ```sh
-  C=$(fux all str '' 0 next-events str next get)
-  # Launch jobs here, then replay from C, including exits already recorded.
-  fux all str "$C" events | jq -nc 'first(inputs | select(.event == "exited"))'
-  ```
-
-  For hooks, use an ordinary program over this stream, filtering the
-  triggering event and state as well as known origin. Origins identify
-  supplied client/pane/program context; an external CLI is `outside`.
-  No exactly-once effects are promised.
+- **What changes anywhere:** the page's `events`, and the cookbook's
+  "Follow events from a cursor" and "Keep a journal file". A hook is an
+  ordinary program over that stream, filtering the triggering event and
+  state as well as its origin (an outside command line is `outside`); no
+  exactly-once effects are promised. `all str CURSOR SECONDS next-events`
+  returns one batch instead: its `events`, the oldest entry still held
+  (`first`), exact `next`, `missed` and `status`.
 - **First recorded exit across jobs:** save this as `first-exit.py` and
   run `python3 -I first-exit.py` on the private socket. Take the cursor before
   launching, even if jobs might finish before subscription. Replay order
@@ -258,13 +298,6 @@ panes as it begins and answers changes in watch order, not exit chronology.
   ```
   A command's output alone where the shell marks commands, else the screen:
   `str no_marks try %3 last-output capture catch drop %3 capture end`.
-- **A shell to type into:** `opts str agent in new-tab` makes a tab with
-  one in workspace `agent`, on the size of the tab `fux` runs in; from
-  outside fux, give it a size: `opts str agent in 80 24 size new-tab`. Wait for its prompt
-  (a text it shows) before you type: its startup may drop what comes
-  sooner. A command that must run is surer started as the program: `opts str agent in
-  80 24 size str sh program str -c arg str 'make test; exec
-  "${SHELL:-sh}"' arg new-tab` (fux gives no `SHELL` of its own).
 - **An agent's whole answer:** on the alternate screen a TUI redraws its
   whole screen each frame and nothing scrolls off, so fux keeps no
   history of it. Run it inline (`codex --no-alt-screen`, `claude
@@ -273,13 +306,6 @@ panes as it begins and answers changes in watch order, not exit chronology.
 - **Whether a program waits for keys:** fux does not say; no system
   reports it as a fact. Wait for what the program shows when it asks (a
   prompt's text), or for quiet.
-- **What a pane runs, and where:** fux gives its program's `pid` and
-  `foreground_group` (G: `%3 str program get str foreground_group get`);
-  the OS says the rest. Linux:
-  `ps -o comm=,args= -p G`, `/proc/G/cmdline` (exact arguments),
-  `readlink /proc/G/cwd`, `pgrep -a -g G` (the whole group, also once its
-  leader exited); macOS: `ps -o comm=,args= -p G`, `lsof -a -p G -d cwd
-  -Fn`, `pgrep -lf -g G`.
 
 ## typing: Keys, the mouse and stopping
 
@@ -374,7 +400,8 @@ screen's size), `alt_screen` whether a program holds the
 alternate screen, `history_lines` the history kept, `above` the history
 rows kept above the first row read, `wrapped_rows` which rows go on in
 the next, `links` the hyperlinks (OSC 8) as `row`, `col`, `len` and `uri`,
-`last_output` where `last-output` reads (`fux help json`). Rows and columns are half-open
+`last_output` where `last-output` reads, `cursor` the journal's place
+read with it (`events` from it). `fux help json` says every field. Rows and columns are half-open
 `start..end` ranges from 0, like `slice`; equal endpoints select nothing.
 A joined row range includes each whole logical line it touches; `wrapped`
 selects physical rows only.
@@ -428,11 +455,11 @@ str make arg new-tab`.
 
 ## programs: A program
 
-Use `require profiles/agent.fux` to explicitly load shared definitions or
-policy before the whole program is checked. Paths are literal, relative to
-the requiring file or the invocation cwd for command-line/stdin roots.
-Canonical paths load once; cycles fail. No user config is imported implicitly
-by a CLI program. Only regular files are admitted.
+`require profiles/agent.fux` reads a file's words where it stands, once
+per file, relative to the requiring file (or the cwd, for the command
+line and stdin); `include` reads one each time. A source is any file that
+reads, a FIFO or `<(…)` among them; a cycle fails. No config is loaded
+by a command line unless it requires it.
 
 A file of fuxth runs with `fux --file FILE ARGS…` (or `fux -` from stdin;
 a script may start `#!/usr/bin/env -S fux --file`), and keeps its names
@@ -537,6 +564,9 @@ read-file`. `X warn` prints on stderr:
   A command line against a server of another
   fux protocol runs again with that server's own binary, saying so in one
   line on stderr; where that cannot be, it fails with `mismatch`, saying why.
+  A command whose reply was lost has an unknown outcome: the server may
+  have made a process or queued its input, so running it again is no way
+  to learn whether it ran.
 - Nothing is saved on its own: a server that stops, or crashes, takes its
   session with it. `fux all dump > FILE` saves its layout and launches when you
   choose; `fux start && fux --file FILE` makes them again on a fresh server,

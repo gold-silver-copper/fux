@@ -301,6 +301,14 @@ mod tests {
         }
     }
 
+    /// The agent page, `fux help agents`, is the page an agent reads
+    /// first: at most 100 lines, the rest in its topics and the cookbook.
+    #[test]
+    fn the_agent_page_fits_in_100_lines() {
+        let page = explain("agents").unwrap_or_default();
+        assert!(page.lines().count() <= 100, "{}", page.lines().count());
+    }
+
     /// Every word, and every word of the library, has its help; examples
     /// compile.
     #[test]
