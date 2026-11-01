@@ -186,6 +186,7 @@ pub enum Heard {
         number: u8,
         bel: bool,
     },
+    CommandStarted,
     CommandEnded(Option<i32>),
     Csi {
         params: Vec<Vec<u16>>,

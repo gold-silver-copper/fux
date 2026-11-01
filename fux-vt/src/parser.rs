@@ -781,6 +781,9 @@ pub enum Event<'a> {
         /// Whether the query ended with BEL rather than ST.
         bel: bool,
     },
+    /// A shell command began (OSC 133 `C` with none running; a `C` while
+    /// one runs moves its start and begins none).
+    CommandStarted,
     /// A shell command ended (OSC 133 `D`, or `N`, ending one that ran),
     /// with the status the shell gave, if any.
     CommandEnded(Option<i32>),
@@ -1879,11 +1882,16 @@ impl Parser {
         let (command, rest) = crate::split_semicolon(payload).unwrap_or((payload, &[]));
         match command {
             b"133" if self.options.has(Feature::PromptMarks) => {
-                let finished = self.screen.commands().finished;
+                let before = self.screen.commands();
                 self.screen.prompt_osc(rest);
                 let commands = self.screen.commands();
-                if commands.finished != finished && self.options.has(Feature::Events) {
-                    sink.event(Event::CommandEnded(commands.last_status));
+                if self.options.has(Feature::Events) {
+                    if commands.started != before.started {
+                        sink.event(Event::CommandStarted);
+                    }
+                    if commands.finished != before.finished {
+                        sink.event(Event::CommandEnded(commands.last_status));
+                    }
                 }
                 return;
             }
