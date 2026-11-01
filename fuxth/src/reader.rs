@@ -54,6 +54,12 @@ pub(crate) enum Construct {
     If,
     Else,
     Begin,
+    While,
+    Do,
+    Case,
+    Of,
+    Endof,
+    Ahead,
     List,
     Each,
     Try,
@@ -68,6 +74,11 @@ impl Construct {
             Construct::If => "if … then",
             Construct::Else => "else … then",
             Construct::Begin => "begin … until",
+            Construct::While => "begin … while … end",
+            Construct::Do => "do … loop",
+            Construct::Case | Construct::Endof => "case … end",
+            Construct::Of => "of … end",
+            Construct::Ahead => "ahead … then",
             Construct::List => "list … end",
             Construct::Each => "each … end",
             Construct::Try => "try … catch",
@@ -353,10 +364,16 @@ impl<A: AppValue> Machine<A> {
             Construct::If => vec![Op::JumpUnless(0)],
             Construct::List => vec![Op::ListStart],
             Construct::Each => vec![Op::EachStart, Op::EachNext(0)],
+            Construct::Do => vec![Op::Do(0)],
+            Construct::Ahead => vec![Op::Jump(0)],
             Construct::Begin
+            | Construct::Case
             | Construct::Define
             | Construct::Code
             | Construct::Else
+            | Construct::While
+            | Construct::Of
+            | Construct::Endof
             | Construct::Try
             | Construct::Catch => Vec::new(),
         };
@@ -382,6 +399,19 @@ impl<A: AppValue> Machine<A> {
     /// The mark on top, taken: one of `constructs`, of the code being
     /// compiled; with none open, `none` says what is missing.
     fn close(&mut self, constructs: &[Construct], none: &str) -> Result<Rc<Mark>, Error> {
+        let mark = self.top(constructs, none)?;
+        self.stack.pop();
+        if let Some(building) = self.building.last_mut() {
+            building.open = building.open.saturating_sub(1);
+            // Where it closes is where a jump lands, as where it opens is.
+            building.literal = false;
+        }
+        Ok(mark)
+    }
+
+    /// The mark on top, left there: one of `constructs`, of the code being
+    /// compiled; with none open, `none` says what is missing.
+    fn top(&self, constructs: &[Construct], none: &str) -> Result<Rc<Mark>, Error> {
         let id = self.building.last().map(|b| b.id);
         let mark = match self.stack.last() {
             Some(Value::Mark(mark)) => Rc::clone(mark),
@@ -396,12 +426,6 @@ impl<A: AppValue> Machine<A> {
                 (mark.token.as_ref()).map_or(String::new(), |t| format!(", from {}", t.place));
             let why = format!("the open block is {}{from}", mark.construct.name());
             return Err(self.fail(Code::Unmatched, why));
-        }
-        self.stack.pop();
-        if let Some(building) = self.building.last_mut() {
-            building.open = building.open.saturating_sub(1);
-            // Where it closes is where a jump lands, as where it opens is.
-            building.literal = false;
         }
         Ok(mark)
     }
@@ -442,7 +466,8 @@ impl<A: AppValue> Machine<A> {
 
     /// `then`.
     pub(crate) fn then(&mut self) -> Result<(), Error> {
-        let mark = self.close(&[Construct::If, Construct::Else], "no if is open")?;
+        use Construct::{Ahead, Else, If};
+        let mark = self.close(&[If, Else, Ahead], "no if or ahead is open")?;
         let here = self.len();
         self.patch(mark.at, here);
         self.closed()
@@ -453,6 +478,46 @@ impl<A: AppValue> Machine<A> {
         let mark = self.close(&[Construct::Begin], "no begin is open")?;
         self.compile(Op::JumpUnless(mark.at));
         self.closed()
+    }
+
+    /// `while`: its test compiled, its mark over its `begin`'s.
+    pub(crate) fn test_loop(&mut self) -> Result<(), Error> {
+        self.top(&[Construct::Begin], "no begin is open")?;
+        let at = self.len();
+        self.compile(Op::JumpUnless(0));
+        let token = self.reading();
+        self.mark(Construct::While, at, token);
+        Ok(())
+    }
+
+    /// `again`.
+    pub(crate) fn again(&mut self) -> Result<(), Error> {
+        let mark = self.close(&[Construct::Begin], "no begin is open")?;
+        self.compile(Op::Jump(mark.at));
+        self.closed()
+    }
+
+    /// `loop` and `loop-by`, `step` the step that ends each time round,
+    /// given where the body begins.
+    pub(crate) fn close_loop(&mut self, step: fn(usize) -> Op<A>) -> Result<(), Error> {
+        let mark = self.close(&[Construct::Do], "no do is open")?;
+        self.compile(step(mark.at.saturating_add(1)));
+        let out = self.len();
+        self.patch(mark.at, out);
+        self.closed()
+    }
+
+    /// `of`: a test of the value under it, compiled.
+    pub(crate) fn of(&mut self) -> Result<(), Error> {
+        self.top(&[Construct::Case, Construct::Endof], "no case is open")?;
+        self.compile(Op::PickN(1));
+        self.compile(Op::Builtin(Builtin::Eq));
+        let at = self.len();
+        self.compile(Op::JumpUnless(0));
+        self.compile(Op::Builtin(Builtin::Drop));
+        let token = self.reading();
+        self.mark(Construct::Of, at, token);
+        Ok(())
     }
 
     /// `try`, its codes the string written just before it: compiled
@@ -506,11 +571,38 @@ impl<A: AppValue> Machine<A> {
 
     /// `end`.
     pub(crate) fn end(&mut self) -> Result<(), Error> {
-        use Construct::{Catch, Code as Coded, Define, Each, List};
+        use Construct::{Case, Catch, Code as Coded, Define, Each, Endof, List, Of, While};
         let none = "no block that end closes is open";
-        let mark = self.close(&[Define, Coded, List, Each, Catch], none)?;
+        let mark = self.close(
+            &[Define, Coded, List, Each, Catch, While, Of, Case, Endof],
+            none,
+        )?;
         match mark.construct {
             List => self.compile(Op::Gather),
+            While => {
+                let begin = self.close(&[Construct::Begin], "no begin is open")?;
+                self.compile(Op::Jump(begin.at));
+                let out = self.len();
+                self.patch(mark.at, out);
+            }
+            // The case goes on: a jump past its end, which the case's
+            // `end` points.
+            Of => {
+                let jump = self.len();
+                self.compile(Op::Jump(0));
+                self.patch(mark.at, jump.saturating_add(1));
+                self.mark(Endof, jump, mark.token.clone());
+                return Ok(());
+            }
+            Case | Endof => {
+                self.compile(Op::Builtin(Builtin::Drop));
+                let out = self.len();
+                let mut mark = mark;
+                while mark.construct == Endof {
+                    self.patch(mark.at, out);
+                    mark = self.close(&[Endof, Case], "no case is open")?;
+                }
+            }
             Each => {
                 self.compile(Op::Jump(mark.at));
                 let out = self.len();
@@ -524,7 +616,12 @@ impl<A: AppValue> Machine<A> {
                 self.finished();
                 return Ok(());
             }
-            Construct::If | Construct::Else | Construct::Begin | Construct::Try => {}
+            Construct::If
+            | Construct::Else
+            | Construct::Begin
+            | Construct::Do
+            | Construct::Ahead
+            | Construct::Try => {}
         }
         self.closed()
     }

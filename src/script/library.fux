@@ -44,12 +44,10 @@ end
 # pane-or-observation text secs -- capture : check first, then plain shown screens after changes; old text and input echo can match; timeout is per change
 define shows
   let secs let needle observed
-  begin
-    dup string needle contains if true else
-      dup counts 4 at 1 eq if str 'program ended before the text showed' fail then
-      changed secs timeout wait capture false
-    then
-  until
+  begin dup string needle contains not while
+    dup counts 4 at 1 eq if str 'program ended before the text showed' fail then
+    changed secs timeout wait capture
+  end
 end
 # pane-or-observation secs -- capture : last sample after secs with no version change; only timeout is caught; metadata belongs to that saved sample, not the end of the interval
 define quiet
@@ -63,9 +61,7 @@ end
 # pane-or-observation secs -- capture : checks ended first, even with unknown status; follows the pane across respawns; timeout is per change
 define until-ended
   let secs observed
-  begin
-    dup counts 4 at 1 eq if true else changed secs timeout wait capture false then
-  until
+  begin dup counts 4 at 1 eq not while changed secs timeout wait capture end
 end
 # pane-or-seen index amount secs -- observation : growth within one program generation, failing across respawn; index 1..4, nonnegative amount; a bare pane is sampled first; timeout is per change
 define grows
@@ -80,10 +76,8 @@ define grows
   begin
     dup counts let now
     now 0 at generation ne if str 'program respawned during count wait' fail then
-    now index at goal ge if true else
-      changed secs timeout wait false
-    then
-  until
+    now index at goal lt
+  while changed secs timeout wait end
 end
 # client -- : its focused pane's history in this client's $EDITOR (else vi), opened at its last line (+LINE, which vi, vim, nvim, nano and emacs take), in a split titled history and closed when the editor exits; after a failure, Enter closes it. env(1) gives the program the pane's id and the editor, and "${FUX:-fux}" is the server's fux
 define edit-history
@@ -149,34 +143,26 @@ define listing
   list
     s str workspaces get each let w w str id get let wid
       whole if w chooser-row last then
-      begin
-        ti tabs len lt if
-          tabs ti at let t
-          t str workspace get wid eq if
-            t str id get let tid
-            one not if list whole if str '  ' then t chooser-row last end glue then
-            begin
-              pi panes len lt if
-                panes pi at let p
-                p str tab get tid eq if
-                  list indent p chooser-row last str ' '
-                    p str cols get string str x p str rows get string
-                    p str pid get kind str null ne if str ' pid ' p str pid get string else
-                      facts if p str state get let st
-                        st str exited get kind str null ne if str ' exited ' st str exited get string else
-                        st str signal get kind str null ne if str ' signal ' st str signal get string else
-                        str ' ended, its status lost' then then
-                      then
-                    then
-                  end glue
-                  pi 1 add let pi false
-                else true then
-              else true then
-            until
-            ti 1 add let ti false
-          else true then
-        else true then
-      until
+      begin ti tabs len lt if tabs ti at str workspace get wid eq else false then while
+        tabs ti at let t
+        t str id get let tid
+        one not if list whole if str '  ' then t chooser-row last end glue then
+        begin pi panes len lt if panes pi at str tab get tid eq else false then while
+          panes pi at let p
+          list indent p chooser-row last str ' '
+            p str cols get string str x p str rows get string
+            p str pid get kind str null ne if str ' pid ' p str pid get string else
+              facts if p str state get let st
+                st str exited get kind str null ne if str ' exited ' st str exited get string else
+                st str signal get kind str null ne if str ' signal ' st str signal get string else
+                str ' ended, its status lost' then then
+              then
+            then
+          end glue
+          pi 1 add let pi
+        end
+        ti 1 add let ti
+      end
     end
     clients if
       s str clients get each let c
@@ -201,7 +187,7 @@ end
 # nodes index -- pane : the first leaf of a flat subtree, without recursive calls
 define dump-first
   swap let nodes
-  begin nodes swap at dup is-list if 3 at false else true then until
+  begin nodes swap at dup is-list while 3 at end
 end
 # launch -- path : shells prefer observed cwd; programs always keep launch cwd
 define dump-cwd
@@ -293,7 +279,7 @@ define dump-recipe
           first-pane dump-id str ' tab' cat tab str name get dump-name
           tab str fit get str clients eq if first-pane dump-id str ' tab resize-auto' 10 char then
           list 0 end let pending
-          begin pending len 0 gt if
+          begin pending len 0 gt while
             pending pop let index let pending
             nodes index at dup is-list if
               let node nodes node 3 at dump-first let before
@@ -304,8 +290,7 @@ define dump-recipe
               str split dump-create
               pending node 4 at push node 3 at push let pending
             else drop then
-            false
-          else true then until
+          end
         then
       end
     end
@@ -406,7 +391,7 @@ end
 # rows id -- index : the current marker, independently optional
 define chooser-index
   string let wanted let rows
-  list 0 rows len range each let n rows n at first string wanted eq if n then end end
+  list rows len 0 do rows i at first string wanted eq if i then loop end
 end
 # rows current -- selected : the library chooses an initial row
 define chooser-selected

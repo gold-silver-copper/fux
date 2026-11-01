@@ -19,18 +19,24 @@ define nip 1 roll drop end
 define 2dup 1 pick 1 pick end
 # a b -- : the top two dropped
 define 2drop drop drop end
+# a b -- b a b : a copy of the top, under the value under it
+define tuck swap over end
+# x -- x x | x : a copy of x, unless it is false or 0
+define dup-nonzero dup if dup then end
+# a b c d -- c d a b : the top two pairs swapped
+define 2swap 3 roll 3 roll end
+# a b c d -- a b c d a b : copies of the pair under the top two
+define 2over 3 pick 3 pick end
 
-# ---- Booleans
+# ---- Booleans (and, or and xor are the core's)
 # -- true : the boolean true
 define true 0 0 eq end
 # -- false : the boolean false
 define false 0 1 eq end
 # flag -- flag : the other boolean
 define not if false else true then end
-# a b -- flag : whether both are true (both are worked out first)
-define and if not not else not drop false then end
-# a b -- flag : whether either is true (both are worked out first)
-define or if not drop true else not not then end
+# x -- x : the other boolean; of an integer, every bit flipped
+define invert dup kind str integer eq if -1 else true then xor end
 
 # ---- Comparing (lt compares two integers, two strings or two lists)
 # a b -- flag : whether a comes after b
@@ -55,6 +61,10 @@ define negate 0 swap sub end
 define abs dup 0 lt if negate then end
 # n -- flag : whether n is even
 define even 2 mod 0 eq end
+# n m -- r q : the remainder and the quotient of n div m
+define div-mod 2dup mod -rot div end
+# n k d -- q : n times k divided by d, the product kept exact
+define mul-div mul-div-mod nip end
 
 # ---- Kinds (kind gives integer, boolean, string, list, or the host's kind)
 # x -- flag : whether x is an integer
@@ -91,27 +101,28 @@ define shift
 end
 # seq i -- seq : element i taken out
 define remove
-  let i let s
-  s i at drop
-  s 0 i slice s i 1 add s len slice cat
+  let k let s
+  s k at drop
+  s 0 k slice s k 1 add s len slice cat
 end
 # from to -- list : from, from+1, …, to-1 (empty when to is at most from)
 define range
   let limit
-  empty swap begin dup limit lt if swap over push swap 1 add false else true then until drop
+  let from
+  list from limit lt if limit from do i loop then end
 end
 # n e -- n^e : n to the power e, e at least 0
 define pow
   let e let n
   e 0 lt if str 'the exponent is below 0' fail then
-  1 0 e range each drop n mul end
+  1 e 0 do n mul loop
 end
 # seq -- seq : the elements in the opposite order
 define reverse
-  let s s len let i s is-string let text
+  let s s len let n s is-string let text
   list
     text if str '' then
-    begin i 0 gt if i 1 sub let i s i at text if char then false else true then until
+    n 0 do s n i sub 1 sub at text if char then loop
   end
   text if concat then
 end
@@ -119,16 +130,10 @@ end
 define index-of
   let x let s
   s is-string if x len else 1 then let k
-  s len k sub 1 add let n
-  -1 let found 0 let i
-  begin
-    i n lt found -1 eq and if
-      s is-string if s i i k add slice else s i at then
-      x eq if i let found then
-      i 1 add let i false
-    else true then
-  until
-  found
+  -1 s len k sub 1 add 0 max 0 do
+    s is-string if s i i k add slice else s i at then
+    x eq if drop i leave then
+  loop
 end
 # seq x -- flag : whether x is in it (in a string, x may be a longer string)
 define contains index-of -1 ne end
@@ -142,17 +147,12 @@ define largest dup first swap each max end end
 define smallest dup first swap each min end end
 # a b -- list : two sorted lists merged, a's first on ties
 define merge
-  let b let a 0 let i 0 let j
+  let b let a 0 let p 0 let q
   list
-    a len b len add 0 gt if
-      begin
-        i a len eq if b j at j 1 add let j
-        else j b len eq if a i at i 1 add let i
-        else b j at a i at lt if b j at j 1 add let j
-        else a i at i 1 add let i then then then
-        i a len eq j b len eq and
-      until
-    then
+    begin p a len lt q b len lt or while
+      p a len lt if q b len eq if true else b q at a p at lt not then else false then
+      if a p at p 1 add to p else b q at q 1 add to q then
+    end
   end
 end
 # list -- list : sorted with lt, smallest first; equal ones keep their order
@@ -169,7 +169,7 @@ define sort dup is-string if let s list list s unpack end sort-list each char en
 define pack
   let n
   n 0 lt if str 'the count is below 0' fail then
-  empty 0 n range each drop swap push end reverse
+  empty n 0 do swap push loop reverse
 end
 
 # ---- Text
@@ -194,6 +194,12 @@ define number
     10 mul negative if d sub else d add then
   end
 end
+# n -- n : n's last decimal digit put before the text digits-end gives, and n div 10
+define digit dup 10 mod abs 48 add hold 10 div end
+# n -- 0 : n's decimal digits put before the text digits-end gives, one at least
+define digits begin digit dup 0 eq until end
+# n -- : a minus put before the text digits-end gives, if n is below 0
+define sign 0 lt if 45 hold then end
 # list sep -- s : the elements' text, with sep between
 define join
   let sep let l
@@ -206,9 +212,9 @@ define split-on
   sep len 1 ne if str 'the separator must be one character' fail then
   sep first let c
   list
-    0 let from 0 let i
-    s each c eq if s from i slice i 1 add let from then i 1 add let i end
-    s from i slice
+    0 let from
+    s len 0 do s i at c eq if s from i slice i 1 add to from then loop
+    s from s len slice
   end
 end
 # c -- flag : whether a character is a space, tab or line end
@@ -217,9 +223,9 @@ define is-space let c c 32 eq c 9 eq or c 10 eq or c 13 eq or end
 define fields
   let s
   list
-    0 let from 0 let i
-    s each is-space if from i lt if s from i slice then i 1 add let from then i 1 add let i end
-    from i lt if s from i slice then
+    0 let from
+    s len 0 do s i at is-space if from i lt if s from i slice then i 1 add to from then loop
+    from s len lt if s from s len slice then
   end
 end
 # s -- list : the lines of s
@@ -227,8 +233,8 @@ define lines 10 char split-on end
 # s -- s : spaces, tabs and line ends taken off both ends
 define trim
   let s 0 let a s len let b
-  begin a b lt if s a at is-space else false then dup if a 1 add let a then not until
-  begin a b lt if s b 1 sub at is-space else false then dup if b 1 sub let b then not until
+  begin a b lt if s a at is-space else false then while a 1 add to a end
+  begin a b lt if s b 1 sub at is-space else false then while b 1 sub to b end
   s a b slice
 end
 # s p -- flag : whether s starts with p
@@ -246,10 +252,7 @@ define upper let s list s each let c c is-lower if c 32 sub else c then char end
 # s -- s : A-Z made a-z
 define lower let s list s each let c c is-upper if c 32 add else c then char end end glue end
 # s n -- s : s n times over
-define copies
-  let n let s
-  str '' n begin dup 0 gt if swap s push swap 1 sub false else true then until drop
-end
+define copies let n let s str '' n 0 max 0 do s push loop end
 # x width fill -- s : x's text, with fill (a non-empty string) put before it, cut to fit, until it is width long
 define pad
   let fill let width string let s

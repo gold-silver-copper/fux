@@ -344,3 +344,235 @@ fn exception_unlinks_the_sources_read() -> Result<(), fuxth::Error> {
     assert_eq!(left, [V::Int(6), V::Int(7), undefined, V::Int(3)]);
     Ok(())
 }
+
+/// TUCK ?DUP 2SWAP 2OVER DEPTH >R R> R@, as `tuck dup-nonzero 2swap 2over
+/// depth to-return from-return copy-return`. Deviation: `dup-nonzero`
+/// takes a boolean too, false counting as 0.
+#[test]
+fn core_stack_and_return_stack() {
+    for (program, left) in [
+        // T{ 1 2 TUCK -> 2 1 2 }T
+        ("1 2 tuck", &[2, 1, 2][..]),
+        // T{ -1 ?DUP -> -1 -1 }T  T{ 0 ?DUP -> 0 }T  T{ 1 ?DUP -> 1 1 }T
+        (
+            "-1 dup-nonzero 0 dup-nonzero 1 dup-nonzero",
+            &[-1, -1, 0, 1, 1],
+        ),
+        // T{ 1 2 3 4 2SWAP -> 3 4 1 2 }T  T{ 1 2 3 4 2OVER -> 1 2 3 4 1 2 }T
+        ("1 2 3 4 2swap", &[3, 4, 1, 2]),
+        ("1 2 3 4 2over", &[1, 2, 3, 4, 1, 2]),
+        // T{ 0 1 DEPTH -> 0 1 2 }T  T{ 0 DEPTH -> 0 1 }T  T{ DEPTH -> 0 }T
+        ("0 1 depth", &[0, 1, 2]),
+        ("depth", &[0]),
+        // T{ 123 GR1 -> 123 }T  T{ 123 GR2 -> 123 }T
+        ("define gr1 to-return from-return end 123 gr1", &[123]),
+        (
+            "define gr2 to-return copy-return from-return drop end 123 gr2",
+            &[123],
+        ),
+    ] {
+        assert_eq!(fuxth(program, u64::MAX), ints(left), "{program}");
+    }
+    assert_eq!(fuxth("false dup-nonzero", u64::MAX), bools(&[false]));
+    // Inside list … end, the stack starts empty, for depth too.
+    let in_list = fuxth("1 2 list 3 depth end", u64::MAX);
+    let list = V::List(vec![V::Int(3), V::Int(1)]);
+    assert_eq!(in_list, mixed(&[V::Int(1), V::Int(2), list]));
+    assert!(ends("stack_underflow")(&fuxth("from-return", u64::MAX)));
+}
+
+/// /MOD */ */MOD WITHIN AND OR XOR INVERT LSHIFT RSHIFT, as `div-mod
+/// mul-div mul-div-mod within and or xor invert shift-left shift-right`.
+/// Deviations: division truncates toward zero, as `div` does (SM/REM);
+/// `and`, `or`, `xor` and `invert` are logical on booleans.
+#[test]
+fn core_arithmetic_and_bits() {
+    for (program, left) in [
+        // T{ 7 2 /MOD -> 1 3 }T, symmetric: the remainder takes the sign of
+        // the dividend.
+        ("7 2 div-mod -7 2 div-mod", &[1, 3, -1, -3][..]),
+        // T{ MAX-INT 2 MAX-INT */ -> 2 }T: the product past 64 bits is kept.
+        ("9223372036854775807 2 9223372036854775807 mul-div", &[2]),
+        (
+            "9223372036854775807 3 6 mul-div-mod",
+            &[3, 4611686018427387903],
+        ),
+        ("-7 1 2 mul-div-mod", &[-1, -3]),
+        // T{ 0 0 AND -> 0 }T  T{ 0 1 AND -> 0 }T  T{ 1 1 AND -> 1 }T  …
+        ("0 1 and 1 1 and 0 1 or 0 0 or", &[0, 1, 1, 0]),
+        ("12 10 and 12 10 or 12 10 xor", &[8, 14, 6]),
+        // T{ 0S INVERT -> 1S }T  T{ 1S 1S XOR -> 0S }T
+        ("0 invert -1 -1 xor", &[-1, 0]),
+        // T{ 1 0 LSHIFT -> 1 }T  T{ 1 1 LSHIFT -> 2 }T  T{ 1 2 LSHIFT -> 4 }T
+        // T{ 1S 1 LSHIFT 1 XOR -> 1S }T  T{ MSB 1 LSHIFT -> 0 }T
+        ("1 0 shift-left 1 1 shift-left 1 2 shift-left", &[1, 2, 4]),
+        ("-1 1 shift-left 1 xor", &[-1]),
+        ("-9223372036854775808 1 shift-left", &[0]),
+        // T{ 1 0 RSHIFT -> 1 }T  T{ 1 1 RSHIFT -> 0 }T  T{ 4 2 RSHIFT -> 1 }T
+        // T{ MSB 1 RSHIFT MSB AND -> 0 }T: zeros come in at the top.
+        (
+            "1 0 shift-right 1 1 shift-right 4 2 shift-right",
+            &[1, 0, 1],
+        ),
+        ("-9223372036854775808 1 shift-right", &[1 << 62]),
+        ("1 64 shift-left 1 64 shift-right", &[0, 0]),
+    ] {
+        assert_eq!(fuxth(program, u64::MAX), ints(left), "{program}");
+    }
+    for (program, left) in [
+        (
+            "true false and true false or true false xor",
+            &[false, true, true][..],
+        ),
+        ("true invert false invert", &[false, true]),
+        // T{ 0 0 0 WITHIN -> <FALSE> }T  T{ 1 0 2 WITHIN -> <TRUE> }T …
+        (
+            "0 0 0 within 1 0 2 within 2 0 2 within -1 0 2 within",
+            &[false, true, false, false],
+        ),
+        // With hi below lo, it goes round the end of the integers.
+        ("1 10 2 within 5 10 2 within", &[true, false]),
+        (
+            "9223372036854775807 9223372036854775806 -9223372036854775808 within",
+            &[true],
+        ),
+    ] {
+        assert_eq!(fuxth(program, u64::MAX), bools(left), "{program}");
+    }
+    assert!(ends("type")(&fuxth("1 true and", u64::MAX)));
+    assert!(ends("div_by_zero")(&fuxth("1 2 0 mul-div", u64::MAX)));
+    assert!(ends("range")(&fuxth("1 -1 shift-left", u64::MAX)));
+}
+
+/// BEGIN WHILE REPEAT, AGAIN, DO ?DO LOOP +LOOP I J LEAVE UNLOOP, as
+/// `begin … while … end`, `begin … again`, `do … loop`, `loop-by`, `i`,
+/// `j`, `leave` and `leave-definition`. Deviations: `do` skips its body
+/// when the limit equals the start, as `?do` does; `end` closes one
+/// `while`, so GI5's two need an `if`; `unloop` has no job, since
+/// `leave-definition` leaves the definition's loops.
+#[test]
+fn core_loops() {
+    let gd = "define gd1 do i loop end define gd2 do i -1 loop-by end
+        define gd3 do 1 0 do j loop loop end define gd4 do 1 0 do j loop -1 loop-by end
+        define gd5 123 swap 0 do i 4 gt if drop 234 leave then loop end
+        define gd6 0 swap 0 do i 1 add 0 do i j add 3 eq if i j leave-definition then 1 add loop loop end
+        define gi3 begin dup 5 lt while dup 1 add end end
+        define ag0 701 begin dup 7 mod 0 eq if leave-definition then 1 add again end ";
+    for (program, left) in [
+        // T{ 0 GI3 -> 0 1 2 3 4 5 }T  T{ 4 GI3 -> 4 5 }T  T{ 6 GI3 -> 6 }T
+        ("0 gi3", &[0, 1, 2, 3, 4, 5][..]),
+        ("4 gi3", &[4, 5]),
+        ("6 gi3", &[6]),
+        // T{ AG0 -> 707 }T
+        ("ag0", &[707]),
+        // T{ 4 1 GD1 -> 1 2 3 }T  T{ 2 -1 GD1 -> -1 0 1 }T
+        ("4 1 gd1", &[1, 2, 3]),
+        ("2 -1 gd1", &[-1, 0, 1]),
+        // T{ MID-UINT+1 MID-UINT GD1 -> MID-UINT }T
+        ("-9223372036854775808 9223372036854775807 gd1", &[i64::MAX]),
+        // ?DO: none, the limit equal to the start.
+        ("3 3 gd1", &[]),
+        // T{ 1 4 GD2 -> 4 3 2 1 }T  T{ -1 2 GD2 -> 2 1 0 -1 }T
+        ("1 4 gd2", &[4, 3, 2, 1]),
+        ("-1 2 gd2", &[2, 1, 0, -1]),
+        // T{ MID-UINT MID-UINT+1 GD2 -> MID-UINT+1 MID-UINT }T
+        (
+            "9223372036854775807 -9223372036854775808 gd2",
+            &[i64::MIN, i64::MAX],
+        ),
+        // T{ 4 1 GD3 -> 1 2 3 }T  T{ 1 4 GD4 -> 4 3 2 1 }T
+        ("4 1 gd3", &[1, 2, 3]),
+        ("1 4 gd4", &[4, 3, 2, 1]),
+        // T{ 1 GD5 -> 123 }T  T{ 5 GD5 -> 123 }T  T{ 6 GD5 -> 234 }T
+        ("1 gd5 5 gd5 6 gd5", &[123, 123, 234]),
+        // T{ 1 GD6 -> 1 }T  T{ 2 GD6 -> 3 }T  T{ 3 GD6 -> 4 1 2 }T
+        ("1 gd6", &[1]),
+        ("2 gd6", &[3]),
+        ("3 gd6", &[4, 1, 2]),
+        // +LOOP by more than one ends as it crosses the limit, either way.
+        ("10 0 do i 3 loop-by", &[0, 3, 6, 9]),
+        ("0 10 do i -3 loop-by", &[10, 7, 4, 1]),
+    ] {
+        let program = format!("{gd}{program}");
+        assert_eq!(fuxth(&program, u64::MAX), ints(left), "{program}");
+    }
+    // I outside a loop, or in a word a loop calls, is no loop's index.
+    assert!(ends("not_top_level")(&fuxth("i", u64::MAX)));
+    let called = "define f i 1 add end 3 0 do f loop";
+    assert!(ends("not_top_level")(&fuxth(called, u64::MAX)));
+    assert!(ends("not_top_level")(&fuxth("3 0 do j loop", u64::MAX)));
+}
+
+/// CASE OF ENDOF ENDCASE (Core extensions), as `case … of … end … end`.
+#[test]
+fn core_case() {
+    let cs =
+        "define cs1 case 1 of 111 end 2 of 222 end 3 of 333 end to-return 999 from-return end end
+        define cs2 to-return case
+          -1 of case copy-return 1 of 100 end 2 of 200 end to-return -300 from-return end end
+          -2 of case copy-return 1 of -99 end to-return -199 from-return end end
+          to-return 299 from-return
+        end from-return drop end ";
+    for (program, left) in [
+        // T{ 1 CS1 -> 111 }T … T{ 4 CS1 -> 999 }T
+        ("1 cs1 2 cs1 3 cs1 4 cs1", &[111, 222, 333, 999][..]),
+        // T{ -1 1 CS2 -> 100 }T … T{ 0 2 CS2 -> 299 }T
+        ("-1 1 cs2 -1 2 cs2 -1 3 cs2", &[100, 200, -300]),
+        ("-2 1 cs2 -2 2 cs2 0 2 cs2", &[-99, -199, 299]),
+        // A case with no of, and one at the top level: the last end drops
+        // the top value, x unless the part before it moved it.
+        ("5 case 7 swap end", &[7]),
+        ("2 case 1 of 10 end 2 of 20 end 30 end", &[20]),
+    ] {
+        let program = format!("{cs}{program}");
+        assert_eq!(fuxth(&program, u64::MAX), ints(left), "{program}");
+    }
+}
+
+/// AHEAD (Programming-Tools), and CS-ROLL, which is `swap` on the marks
+/// of the constructs open: T{ : PT1 AHEAD 1111 2222 THEN 3333 ; -> }T
+/// T{ PT1 -> 3333 }T.
+#[test]
+fn tools_ahead() {
+    let pt = "define pt1 ahead 1111 2222 then 3333 end
+        define my-else postpone ahead swap postpone then end immediate
+        define pt2 if 1 my-else 2 then end ";
+    for (program, left) in [("pt1", &[3333][..]), ("true pt2 false pt2", &[1, 2])] {
+        let program = format!("{pt}{program}");
+        assert_eq!(fuxth(&program, u64::MAX), ints(left), "{program}");
+    }
+}
+
+/// <# # #S #> HOLD HOLDS SIGN, as `digits-begin digit digits digits-end
+/// hold holds sign`. Deviations: the number is one integer, not a double;
+/// `digit` takes a negative one's digits from its magnitude, so `sign`
+/// needs no `abs` first; `digits-end` gives one string.
+#[test]
+fn core_number_text() {
+    let text = |s: &str| V::Str(s.to_owned());
+    for (program, left) in [
+        // T{ GP1 -> <TRUE> }T: <# 41 HOLD 42 HOLD 0 0 #> S" BA" S=
+        ("digits-begin 65 hold 66 hold 0 digits-end", text("BA")),
+        // T{ GP2 -> <TRUE> }T: <# -1 SIGN 0 SIGN -1 SIGN 0 0 #> S" --" S=
+        (
+            "digits-begin -1 sign 0 sign -1 sign 0 digits-end",
+            text("--"),
+        ),
+        // T{ GP3 -> <TRUE> }T: <# 1 0 # # #> S" 01" S=
+        ("digits-begin 1 digit digit digits-end", text("01")),
+        // T{ GP4 -> <TRUE> }T: <# 1 0 #S #> S" 1" S=
+        ("digits-begin 1 digits digits-end", text("1")),
+        // HOLDS: <# S" Test" HOLDS #>
+        ("digits-begin str Test holds 0 digits-end", text("Test")),
+        (
+            "-123 dup digits-begin digits swap sign digits-end",
+            text("-123"),
+        ),
+        (
+            "-9223372036854775808 dup digits-begin digits swap sign digits-end",
+            text("-9223372036854775808"),
+        ),
+    ] {
+        assert_eq!(fuxth(program, u64::MAX), mixed(&[left]), "{program}");
+    }
+}
