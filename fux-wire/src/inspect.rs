@@ -116,104 +116,61 @@ wire! {
     pub enum Path { Utf8(text: String), Bytes(bytes: Vec<u8>), }
 }
 
-/// The facts a pane's terminal says, each named once, in order: what a
-/// pane's `Facts::terminal` holds, each read by the server's
-/// `capture::terminal`. A name is none of the pane's own fields.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Terminal {
-    AltScreen,
-    MouseMode,
-    MouseEncoding,
-    BracketedPaste,
-    FocusEvents,
-    AppCursor,
-    AppKeypad,
-    KeyboardFlags,
-    Pictures,
-    Lost,
-    Cell,
-    CursorVisible,
-    HistoryBytes,
-    ProgramClipboard,
-    Reflow,
-    AlternateScrollLines,
-    PictureBytes,
-    HistoryLines,
-    CommandRunning,
-    LastStatus,
-    LastOutput,
-    Bells,
-    Notification,
-    Truncated,
-    InputQueued,
-}
-
-impl Terminal {
-    pub const ALL: [Terminal; 25] = {
-        use Terminal::*;
-        [
-            AltScreen,
-            MouseMode,
-            MouseEncoding,
-            BracketedPaste,
-            FocusEvents,
-            AppCursor,
-            AppKeypad,
-            KeyboardFlags,
-            Pictures,
-            Lost,
-            Cell,
-            CursorVisible,
-            HistoryBytes,
-            ProgramClipboard,
-            Reflow,
-            AlternateScrollLines,
-            PictureBytes,
-            HistoryLines,
-            CommandRunning,
-            LastStatus,
-            LastOutput,
-            Bells,
-            Notification,
-            Truncated,
-            InputQueued,
-        ]
-    };
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Terminal::AltScreen => "alt_screen",
-            Terminal::MouseMode => "mouse_mode",
-            Terminal::MouseEncoding => "mouse_encoding",
-            Terminal::BracketedPaste => "bracketed_paste",
-            Terminal::FocusEvents => "focus_events",
-            Terminal::AppCursor => "app_cursor",
-            Terminal::AppKeypad => "app_keypad",
-            Terminal::KeyboardFlags => "keyboard_flags",
-            Terminal::Pictures => "pictures",
-            Terminal::Lost => "lost",
-            Terminal::Cell => "cell",
-            Terminal::CursorVisible => "cursor_visible",
-            Terminal::HistoryBytes => "history_bytes",
-            Terminal::ProgramClipboard => "program_clipboard",
-            Terminal::Reflow => "reflow",
-            Terminal::AlternateScrollLines => "alternate_scroll_lines",
-            Terminal::PictureBytes => "picture_bytes",
-            Terminal::HistoryLines => "history_lines",
-            Terminal::CommandRunning => "command_running",
-            Terminal::LastStatus => "last_status",
-            Terminal::LastOutput => "last_output",
-            Terminal::Bells => "bells",
-            Terminal::Notification => "notification",
-            Terminal::Truncated => "truncated",
-            Terminal::InputQueued => "input_queued",
+/// `named!(Ty { Variant "name", … })`: a closed set of named values, an
+/// enum, with `Ty::ALL` in order, each one's `name` and the one `named`.
+macro_rules! named {
+    ($(#[$doc:meta])* $ty:ident { $($var:ident $name:literal),+ $(,)? }) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum $ty {
+            $($var),+
         }
-    }
-
-    pub fn named(name: &str) -> Option<Terminal> {
-        Self::ALL.into_iter().find(|t| t.name() == name)
-    }
+        impl $ty {
+            pub const ALL: &[$ty] = &[$($ty::$var),+];
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($ty::$var => $name),+
+                }
+            }
+            pub fn named(name: &str) -> Option<$ty> {
+                Self::ALL.iter().copied().find(|t| t.name() == name)
+            }
+        }
+    };
 }
+
+named!(
+    /// The facts a pane's terminal says, each named once, in order: what a
+    /// pane's `Facts::terminal` holds, each read by the server's
+    /// `capture::terminal`. A name is none of the pane's own fields.
+    Terminal {
+        AltScreen "alt_screen",
+        MouseMode "mouse_mode",
+        MouseEncoding "mouse_encoding",
+        BracketedPaste "bracketed_paste",
+        FocusEvents "focus_events",
+        AppCursor "app_cursor",
+        AppKeypad "app_keypad",
+        KeyboardFlags "keyboard_flags",
+        Pictures "pictures",
+        Lost "lost",
+        Cell "cell",
+        CursorVisible "cursor_visible",
+        HistoryBytes "history_bytes",
+        ProgramClipboard "program_clipboard",
+        Reflow "reflow",
+        AlternateScrollLines "alternate_scroll_lines",
+        PictureBytes "picture_bytes",
+        HistoryLines "history_lines",
+        CommandRunning "command_running",
+        LastStatus "last_status",
+        LastOutput "last_output",
+        Bells "bells",
+        Notification "notification",
+        Truncated "truncated",
+        InputQueued "input_queued",
+    }
+);
 
 crate::wire::closed_wire!(Terminal, "terminal fact");
 
@@ -597,7 +554,7 @@ mod tests {
                     shell: true,
                     cwd: Path::Utf8("/".into()),
                 },
-                terminal: Terminal::ALL.map(|t| (t, Json::Null)).into(),
+                terminal: Terminal::ALL.iter().map(|t| (*t, Json::Null)).collect(),
             }),
             cwd: Some(Directory::Unknown),
         };

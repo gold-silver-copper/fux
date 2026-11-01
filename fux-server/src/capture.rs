@@ -855,7 +855,7 @@ mod tests {
         history: Option<usize>,
         view: CaptureView,
     ) -> Result<fux_wire::answer::Captured, fux_wire::code::Error> {
-        let terminal = fux_wire::inspect::Terminal::ALL.into_iter();
+        let terminal = fux_wire::inspect::Terminal::ALL.iter().copied();
         let facts = fux_wire::inspect::Facts {
             program: super::program(pane)?,
             launch: super::launch(pane),

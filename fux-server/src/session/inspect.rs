@@ -26,7 +26,7 @@ impl Session {
         let facts = if *projection == Projection::Topology {
             None
         } else {
-            let terminal = inspect::Terminal::ALL.into_iter();
+            let terminal = inspect::Terminal::ALL.iter().copied();
             Some(inspect::Facts {
                 program: crate::capture::program(pane)?,
                 launch: crate::capture::launch(pane),
