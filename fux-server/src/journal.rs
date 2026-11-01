@@ -85,7 +85,8 @@ impl Journal {
             | Event::Workspace(..)
             | Event::Layout(_)
             | Event::Zoomed(..)
-            | Event::View { .. } => None,
+            | Event::View { .. }
+            | Event::Stopped(_) => None,
         };
         let from = from
             .into_iter()
@@ -103,7 +104,7 @@ impl Journal {
     pub(crate) fn push(&mut self, event: Event) {
         self.push_from(event, self.actor);
     }
-    fn push_from(&mut self, event: Event, actor: Actor) {
+    pub(crate) fn push_from(&mut self, event: Event, actor: Actor) {
         let Some(next) = self.next.0.checked_add(1) else {
             self.exhausted = true;
             return;
@@ -135,8 +136,12 @@ impl Journal {
             run,
         }
     }
+    /// The oldest entry it still holds, or its end when it holds none.
+    fn first(&self) -> Seq {
+        self.entries.front().map_or(self.next, |entry| entry.seq)
+    }
     fn from(&self, from: Seq) -> (u64, impl Iterator<Item = &Entry>) {
-        let first = self.entries.front().map_or(self.next, |entry| entry.seq);
+        let first = self.first();
         let skip = self.entries.partition_point(|entry| entry.seq < from);
         (
             first.0.saturating_sub(from.0),
@@ -195,6 +200,9 @@ pub enum Event {
         at: Option<PaneAt>,
         change: ViewChange,
     },
+    /// The server stopped, saying why: the run's last entry, which every
+    /// reader reads.
+    Stopped(String),
 }
 
 /// What happens to a tab or a workspace.
@@ -329,6 +337,7 @@ impl Event {
             Event::View { at, .. } => at.map_or((None, None, None), |((ws, tab), pane)| {
                 (Some(pane), Some(tab), Some(ws))
             }),
+            Event::Stopped(_) => (None, None, None),
         }
     }
 
@@ -343,7 +352,8 @@ impl Event {
             | Event::Workspace(..)
             | Event::Layout(..)
             | Event::Zoomed(..)
-            | Event::View { .. } => None,
+            | Event::View { .. }
+            | Event::Stopped(_) => None,
         }
     }
 
@@ -358,6 +368,7 @@ impl Event {
             ),
             Event::View { change, .. } => (change.name(), Vec::new()),
             Event::Tab(_, change) | Event::Workspace(_, change) => change.said(),
+            Event::Stopped(reason) => ("stopped", vec![("reason", Json::str(reason))]),
         };
         Json::object(
             std::iter::once(("event", Json::str(name)))
@@ -436,6 +447,8 @@ pub fn every_kind(
             change,
         });
     }
+    // Last, as it ends every read.
+    events.push(Event::Stopped(name.to_owned()));
     events
 }
 
@@ -506,6 +519,7 @@ impl Reader {
             None
         };
         match self.scope {
+            _ if matches!(event, Event::Stopped(_)) => true,
             Scope::All => true,
             Scope::Target(AnyRef::Pane(p)) => pane == Some(p),
             Scope::Target(AnyRef::Tab(t)) => tab == Some(t) || from.is_some_and(|(_, f)| f == t),
@@ -518,6 +532,7 @@ impl Reader {
     }
     fn ends(&self, event: &Event) -> bool {
         match self.scope {
+            _ if matches!(event, Event::Stopped(_)) => true,
             Scope::All => false,
             Scope::Target(t) => event.closed() == Some(t),
             Scope::Client(c) => {
@@ -526,7 +541,7 @@ impl Reader {
         }
     }
     /// Every event it wants from its cursor to the journal's end, or to
-    /// the event that ends what it reads.
+    /// the event that ends what it reads: its scope's close, or the stop.
     pub fn batch(&mut self, journal: &Journal, exists: bool) -> Result<Batch, String> {
         if journal.exhausted {
             return Err("journal cursor IDs exhausted".into());
@@ -534,7 +549,7 @@ impl Reader {
         let (mut missed, entries) = journal.from(self.next.seq);
         self.next.seq = Seq(self.next.seq.0.saturating_add(missed));
         let mut events = Vec::new();
-        let mut gone = false;
+        let mut end = None;
         let mut entries = entries;
         loop {
             let Some(entry) = entries.next() else {
@@ -557,7 +572,8 @@ impl Reader {
                     | Event::Tab(..)
                     | Event::Workspace(..)
                     | Event::Layout(_)
-                    | Event::Zoomed(..) => None,
+                    | Event::Zoomed(..)
+                    | Event::Stopped(_) => None,
                 };
                 let moved_from = if let Event::Pane(_, PaneEvent::Moved(from)) = entry.event {
                     Some(from)
@@ -570,7 +586,8 @@ impl Reader {
                     | Event::Tab(..)
                     | Event::Layout(_)
                     | Event::Zoomed(..)
-                    | Event::View { .. } => None,
+                    | Event::View { .. }
+                    | Event::Stopped(_) => None,
                 };
                 let item = Item {
                     data: entry.event.json(),
@@ -588,20 +605,26 @@ impl Reader {
             self.next.seq = Seq(entry.seq.0.saturating_add(1));
             events.extend(value);
             if self.ends(&entry.event) {
-                gone = true;
+                end = Some(&entry.event);
                 break;
             }
         }
         let caught_up = self.next == journal.end(self.next.run);
+        let status = match end {
+            Some(Event::Stopped(reason)) => Status::Stopped(reason.clone()),
+            Some(_) => Status::Gone,
+            None if caught_up && !exists => Status::Gone,
+            None => Status::Continuing,
+        };
         Ok(Batch {
             events,
+            first: Cursor {
+                seq: journal.first(),
+                run: self.next.run,
+            },
             next: self.next,
             missed,
-            status: if gone || caught_up && !exists {
-                Status::Gone
-            } else {
-                Status::Continuing
-            },
+            status,
         })
     }
     #[cfg(test)]
@@ -618,19 +641,11 @@ impl Reader {
             Ok(batch) => batch,
             Err(why) => return (why, false),
         };
-        let mut lines = String::new();
-        let json = batch.json();
-        let Some(Json::Array(events)) = json.get("events") else {
-            return ("event array".into(), false);
-        };
-        for mut event in events.clone() {
-            if let Json::Object(fields) = &mut event {
-                fields.retain(|(k, _)| k != "origin" && k != "next");
-            }
-            lines.push_str(&event.render());
-            lines.push('\n');
+        let gone = batch.status == Status::Gone;
+        match fux::script::testing::event_lines(batch, &["origin", "seq", "next"]) {
+            Ok(lines) => (lines, gone),
+            Err(why) => (why.message, false),
         }
-        (lines, batch.status == Status::Gone)
     }
 }
 
@@ -689,21 +704,6 @@ impl Read {
         }
         Some(reply(Ok(batch)))
     }
-    pub(crate) fn stopped(
-        &self,
-        session: &crate::session::Session,
-        reason: &str,
-    ) -> fux_wire::protocol::Reply {
-        let mut reader = self.reader;
-        reply(
-            reader
-                .batch(session.parts.journal(), true)
-                .map(|mut batch| {
-                    batch.status = Status::Stopped(reason.to_owned());
-                    batch
-                }),
-        )
-    }
 }
 
 #[cfg(test)]
@@ -760,7 +760,8 @@ mod tests {
                 | Event::Workspace(..)
                 | Event::Layout(_)
                 | Event::Zoomed(..)
-                | Event::View { .. } => None,
+                | Event::View { .. }
+                | Event::Stopped(_) => None,
             });
         let title = texts.next().ok_or("title event")?;
         let notification = texts.next().ok_or("notification event")?;
@@ -821,7 +822,8 @@ mod tests {
                     ..
                 }
                 | Event::Layout(_)
-                | Event::Zoomed(..) => {}
+                | Event::Zoomed(..)
+                | Event::Stopped(_) => {}
             }
             let json = event.json();
             let Some(Json::String(name)) = json.get("event") else {
@@ -882,7 +884,8 @@ mod tests {
             }
         }
         let capacity = journal.entries.capacity();
-        assert_eq!(oldest.batch(&journal, true)?.missed, 0);
+        let full = oldest.batch(&journal, true)?;
+        assert_eq!((full.missed, full.first.seq), (0, Seq(0)));
         let mut lost = Reader::new(
             Scope::All,
             &journal,
@@ -895,7 +898,9 @@ mod tests {
         journal.push(maximum.clone());
         assert_eq!(journal.entries.capacity(), capacity);
         assert_eq!(journal.entries.len(), KEPT);
-        assert_eq!(lost.batch(&journal, true)?.missed, 1);
+        // Its first is the oldest it holds, as many as a reader from 0 missed.
+        let wrapped = lost.batch(&journal, true)?;
+        assert_eq!((wrapped.missed, wrapped.first.seq), (1, Seq(1)));
         assert_eq!(lost.batch(&journal, true)?.missed, 0);
         if cfg!(target_pointer_width = "64") {
             assert_eq!(std::mem::size_of::<Entry>(), 80);
@@ -1040,11 +1045,13 @@ mod tests {
         Ok(())
     }
 
+    /// A read of one pane waits, then times out; the server's stop is the
+    /// journal's last entry, which ends it.
     #[test]
     fn empty_reads_wait_once_then_return_timeout_or_stopped() -> TestResult {
         let mut session = started()?;
         let now = Instant::now();
-        let scope = Scope::All;
+        let scope = Scope::Target(AnyRef::Pane(PaneId::of(1)));
         let request = Request::NextEvents {
             scope,
             from: None,
@@ -1068,14 +1075,21 @@ mod tests {
         };
         assert_eq!(batch.status, Status::Timeout);
         assert_eq!(batch.next, session.parts.journal().end(session.run));
-        let crate::wait::Waiting::Events(read) = &*waiting else {
-            return Err("event read".into());
-        };
-        let Response::Returned(Body::Events(stopped)) = read.stopped(&session, "test").response
-        else {
+        let journal = session.parts.journal_mut();
+        journal.push_from(Event::Stopped("test".into()), Actor::Outside);
+        journal.push(bell(1));
+        let answer = waiting.answer(&session, now).ok_or("stopped")?;
+        let Response::Returned(Body::Events(stopped)) = answer.response else {
             return Err("stopped batch".into());
         };
         assert_eq!(stopped.status, Status::Stopped("test".into()));
+        let [item] = stopped.events.as_slice() else {
+            return Err("one stopped entry".into());
+        };
+        assert_eq!(item.data.get("reason"), Some(&Json::str("test")));
+        assert_eq!(item.origin, Actor::Outside);
+        assert_eq!(Seq(item.next.seq.0.saturating_sub(1)), batch.next.seq);
+        assert_eq!(stopped.next, item.next);
         // Dropping the connection's wait owns all cancellation; no journal
         // cursor or subscription remains registered in the session.
         drop(waiting);

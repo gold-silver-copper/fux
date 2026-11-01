@@ -531,8 +531,8 @@ VT220-class terminal.
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
 `pane capture json`, `client capture json`, an action's or a
 wait's answer (`… wait json`), `status json`; `X str CURSOR events`
-streams NDJSON events, each with its `next`. `SCOPE str CURSOR SECONDS next-events`
-returns one record with `events`, exact `next`, `missed` and `status`. These shapes are part of fux's interface; `fux
+streams NDJSON events, each with its `seq` and `next`. `SCOPE str CURSOR SECONDS next-events`
+returns one record with `events`, `first`, exact `next`, `missed` and `status`. These shapes are part of fux's interface; `fux
 help json` lists every one ([docs/json.md](docs/json.md)).
 
 ## Configuration

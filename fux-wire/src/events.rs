@@ -97,68 +97,11 @@ wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Batch {
         pub events: Vec<Item>,
+        /// The oldest entry the journal still holds, or `next` when it
+        /// holds none.
+        pub first: Cursor,
         pub next: Cursor,
         pub missed: u64,
         pub status: Status,
-    }
-}
-
-#[cfg(any(test, feature = "testing"))]
-impl Batch {
-    pub fn json(&self) -> Json {
-        let events = self
-            .events
-            .iter()
-            .map(|item| {
-                let mut fields = Vec::new();
-                if let Some(event) = item.data.get("event") {
-                    fields.push(("event".into(), event.clone()));
-                }
-                for (key, value) in [
-                    ("pane", item.pane.map(|id| id.to_string())),
-                    ("tab", item.tab.map(|id| id.to_string())),
-                    ("workspace", item.workspace.map(|id| id.to_string())),
-                    ("client", item.client.map(|id| id.to_string())),
-                    ("from_tab", item.moved_from.map(|(_, tab)| tab.to_string())),
-                    (
-                        "from_workspace",
-                        item.moved_from.map(|(ws, _)| ws.to_string()),
-                    ),
-                ] {
-                    if let Some(value) = value {
-                        fields.push((key.into(), Json::str(value)));
-                    }
-                }
-                if item.tab.is_none() && item.workspace.is_some() {
-                    let parent = item.parent.map(|id| Json::str(id.to_string()));
-                    fields.push(("parent".into(), parent.unwrap_or(Json::Null)));
-                }
-                if let Json::Object(data) = &item.data {
-                    fields.extend(data.iter().filter(|(k, _)| k != "event").cloned());
-                }
-                let mut origin = vec![("kind", Json::str(item.origin.kind()))];
-                match item.origin {
-                    Actor::Client(c) => origin.push(("client", Json::str(c.to_string()))),
-                    Actor::Pane(p, generation) | Actor::Program(p, generation) => {
-                        origin.push(("pane", Json::str(p.to_string())));
-                        origin.push(("generation", Json::uint(generation)));
-                    }
-                    Actor::Outside | Actor::Server => {}
-                }
-                fields.push(("origin".into(), Json::object(origin)));
-                fields.push(("next".into(), Json::str(item.next.to_string())));
-                Json::Object(fields)
-            })
-            .collect();
-        let mut fields = vec![
-            ("events", Json::Array(events)),
-            ("next", Json::str(self.next.to_string())),
-            ("missed", Json::uint(self.missed)),
-            ("status", Json::str(self.status.name())),
-        ];
-        if let Status::Stopped(reason) = &self.status {
-            fields.push(("reason", Json::str(reason)));
-        }
-        Json::object(fields)
     }
 }

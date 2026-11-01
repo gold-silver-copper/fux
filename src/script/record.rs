@@ -268,6 +268,8 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
             ])?,
             Actor::Server | Actor::Outside => b.record([("kind", kind)])?,
         };
+        // An entry is the one before the cursor after it.
+        let seq = number(item.next.seq.0.saturating_sub(1))?;
         let next = b.text(&item.next.to_string())?;
         let at = |r: Option<AnyRef>| r.map(|r| id(r, run));
         let (from_workspace, from_tab) = item.moved_from.unzip();
@@ -294,7 +296,7 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
         let count = data
             .len()
             .saturating_add(ids.iter().filter(|(_, v)| v.is_some()).count())
-            .saturating_add(2);
+            .saturating_add(3);
         let mut out = Vec::with_capacity(count);
         // The producer puts the event name first; IDs remain typed throughout.
         for (key, value) in data.iter().take(1) {
@@ -309,14 +311,17 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
             out.push((key.to_owned(), b.json(value, 0)?));
         }
         out.push(("origin".to_owned(), origin));
+        out.push(("seq".to_owned(), seq));
         out.push(("next".to_owned(), next));
         b.finish(out, None)
     })?;
+    let first = b.text(&batch.first.to_string())?;
     let next = b.text(&batch.next.to_string())?;
     let status = b.text(batch.status.name())?;
     let reason = b.optional(reason)?;
     let fields = [
         ("events", events),
+        ("first", first),
         ("next", next),
         ("missed", number(batch.missed)?),
         ("status", status),
@@ -630,6 +635,7 @@ mod tests {
             Actor::Program(PaneId::of(4), 5),
         ] {
             let batch = Batch {
+                first: next,
                 next,
                 missed: 0,
                 status: Status::Continuing,
@@ -677,9 +683,11 @@ mod tests {
                     "from_workspace",
                     "name",
                     "origin",
+                    "seq",
                     "next"
                 ]
             );
+            assert_eq!(event.get("seq")?, Value::Int(0));
             assert_eq!(
                 event.get("pane")?,
                 id(AnyRef::Pane(PaneId::of(1)), next.run)

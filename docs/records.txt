@@ -18,38 +18,39 @@ events.events[].origin[outside]: kind
 events.events[].origin[pane]: kind pane generation
 events.events[].origin[program]: kind pane generation
 events.events[].origin[server]: kind
-events.events[][attached]: event pane tab workspace client origin next
-events.events[][bell]: event pane tab workspace origin next
-events.events[][closed]: event pane tab workspace origin next
-events.events[][closed]: event tab workspace origin next
-events.events[][closed]: event workspace parent origin next
-events.events[][created]: event pane tab workspace origin next
-events.events[][created]: event tab workspace name origin next
-events.events[][created]: event workspace parent name origin next
-events.events[][detached]: event pane tab workspace client origin next
-events.events[][done]: event pane tab workspace status origin next
-events.events[][exited]: event pane tab workspace exited input_unread origin next
-events.events[][exited]: event pane tab workspace signal input_unread origin next
-events.events[][history_budget]: event pane tab workspace history_bytes origin next
-events.events[][history_cleared]: event pane tab workspace origin next
-events.events[][laid_out]: event tab workspace origin next
-events.events[][moved]: event pane tab workspace from_tab from_workspace origin next
-events.events[][moved]: event workspace parent origin next
-events.events[][notification]: event pane tab workspace text truncated origin next
-events.events[][renamed]: event pane tab workspace name origin next
-events.events[][renamed]: event tab workspace name origin next
-events.events[][renamed]: event workspace parent name origin next
-events.events[][reordered]: event tab workspace origin next
-events.events[][reordered]: event workspace parent origin next
-events.events[][resized]: event pane tab workspace cols rows origin next
-events.events[][respawned]: event pane tab workspace input_unread origin next
-events.events[][screen]: event pane tab workspace client origin next
-events.events[][shown]: event pane tab workspace client origin next
-events.events[][title]: event pane tab workspace title truncated origin next
-events.events[][view_resized]: event pane tab workspace client origin next
-events.events[][zoomed]: event pane tab workspace origin next
-events.events[][zoomed]: event tab workspace pane origin next
-events: events next missed status reason
+events.events[][attached]: event pane tab workspace client origin seq next
+events.events[][bell]: event pane tab workspace origin seq next
+events.events[][closed]: event pane tab workspace origin seq next
+events.events[][closed]: event tab workspace origin seq next
+events.events[][closed]: event workspace parent origin seq next
+events.events[][created]: event pane tab workspace origin seq next
+events.events[][created]: event tab workspace name origin seq next
+events.events[][created]: event workspace parent name origin seq next
+events.events[][detached]: event pane tab workspace client origin seq next
+events.events[][done]: event pane tab workspace status origin seq next
+events.events[][exited]: event pane tab workspace exited input_unread origin seq next
+events.events[][exited]: event pane tab workspace signal input_unread origin seq next
+events.events[][history_budget]: event pane tab workspace history_bytes origin seq next
+events.events[][history_cleared]: event pane tab workspace origin seq next
+events.events[][laid_out]: event tab workspace origin seq next
+events.events[][moved]: event pane tab workspace from_tab from_workspace origin seq next
+events.events[][moved]: event workspace parent origin seq next
+events.events[][notification]: event pane tab workspace text truncated origin seq next
+events.events[][renamed]: event pane tab workspace name origin seq next
+events.events[][renamed]: event tab workspace name origin seq next
+events.events[][renamed]: event workspace parent name origin seq next
+events.events[][reordered]: event tab workspace origin seq next
+events.events[][reordered]: event workspace parent origin seq next
+events.events[][resized]: event pane tab workspace cols rows origin seq next
+events.events[][respawned]: event pane tab workspace input_unread origin seq next
+events.events[][screen]: event pane tab workspace client origin seq next
+events.events[][shown]: event pane tab workspace client origin seq next
+events.events[][stopped]: event reason origin seq next
+events.events[][title]: event pane tab workspace title truncated origin seq next
+events.events[][view_resized]: event pane tab workspace client origin seq next
+events.events[][zoomed]: event pane tab workspace origin seq next
+events.events[][zoomed]: event tab workspace pane origin seq next
+events: events first next missed status reason
 snapshot.facts.clients[].output: graphics underline_styles clipboard kitty_flags_requested
 snapshot.facts.clients[].seats[]: in current last
 snapshot.facts.clients[].terminal.cell_reported: width height
