@@ -262,9 +262,13 @@ impl<A: AppValue> Machine<A> {
     /// one step, its count known).
     #[inline(never)]
     pub(crate) fn compile_word(&mut self, xt: &Rc<Steps<A>>) -> Result<(), Error> {
-        let Some(building) = self.building.last_mut().filter(|_| self.compiling) else {
+        if !self.compiling || self.building.is_empty() {
             let why = format!("{} is compiled: it goes in a definition", xt.name);
             return Err(self.fail(Code::NotTopLevel, why));
+        }
+        let call = xt.leaf().is_none().then(|| self.index_of(xt));
+        let Some(building) = self.building.last_mut() else {
+            return Ok(());
         };
         let op = match xt.leaf() {
             Some(Op::Builtin(b @ (Builtin::Pick | Builtin::Roll))) => {
@@ -286,7 +290,7 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             Some(op) => op.clone(),
-            None => Op::Call(Rc::clone(xt)),
+            None => Op::Call(call.unwrap_or(xt.index)),
         };
         self.compile(op);
         Ok(())
@@ -391,7 +395,8 @@ impl<A: AppValue> Machine<A> {
             (self.building.last()).is_some_and(|b| matches!(b.kind, Kind::Temp) && b.open == 0);
         if done && let Some(building) = self.building.pop() {
             self.compiling = building.was_compiling;
-            self.enter(Rc::new(building.code));
+            let code = self.version(building.code);
+            self.enter(code);
         }
     }
 
@@ -515,7 +520,7 @@ impl<A: AppValue> Machine<A> {
         self.compiling = building.was_compiling;
         let mut code = building.code;
         code.locals = building.locals.len();
-        let code = Rc::new(code);
+        let code = self.version(code);
         let Kind::Define(name) = building.kind else {
             return self.given(Value::Xt(Xt(code)), false);
         };
@@ -610,7 +615,7 @@ impl<A: AppValue> Machine<A> {
             None => {
                 let slot = self.globals.len();
                 self.globals.push(None);
-                let xt = Steps::one(&name.text, Op::GetGlobal(slot));
+                let xt = self.one(&name.text, Op::GetGlobal(slot));
                 let entry = Entry {
                     xt,
                     immediate: false,

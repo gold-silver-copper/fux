@@ -55,13 +55,15 @@ pub trait Host {
 
 /// Code: steps, each with the token it came from (none for a word of the
 /// core's or the host's own), how many `let` names of its own it keeps,
-/// and the name it was defined with.
+/// the name it was defined with, and, a version of a machine's, where the
+/// machine keeps it (`Machine::version`).
 #[derive(Clone, Debug)]
 pub(crate) struct Steps<A> {
     pub(crate) ops: Vec<Op<A>>,
     pub(crate) tokens: Vec<Option<Token>>,
     pub(crate) locals: usize,
     pub(crate) name: Rc<str>,
+    pub(crate) index: usize,
 }
 
 impl<A> Steps<A> {
@@ -71,17 +73,8 @@ impl<A> Steps<A> {
             tokens: Vec::new(),
             locals: 0,
             name,
+            index: 0,
         }
-    }
-
-    /// A word that is one step, of the core's or the host's.
-    pub(crate) fn one(name: &str, op: Op<A>) -> Rc<Self> {
-        Rc::new(Self {
-            ops: vec![op],
-            tokens: vec![None],
-            locals: 0,
-            name: Rc::from(name),
-        })
     }
 
     pub(crate) fn push(&mut self, op: Op<A>, token: Option<Token>) {
@@ -130,13 +123,13 @@ impl<A> Steps<A> {
     }
 }
 
-/// The code it calls is let go one after another, not as a recursion, so a
-/// chain of definitions however long never overflows the stack.
+/// The code it holds is let go one after another, not as a recursion, so
+/// code values nested however deep never overflow the stack.
 impl<A> Drop for Steps<A> {
     fn drop(&mut self) {
         let mut ops = std::mem::take(&mut self.ops);
         while let Some(op) = ops.pop() {
-            if let Op::Call(code) | Op::Compile(code) | Op::Push(Value::Xt(Xt(code))) = op
+            if let Op::Compile(code) | Op::Push(Value::Xt(Xt(code))) = op
                 && let Ok(mut code) = Rc::try_unwrap(code)
             {
                 ops.append(&mut code.ops);
@@ -155,8 +148,8 @@ pub(crate) enum Op<A> {
     /// `roll` with its count written just before it.
     RollN(usize),
     App(usize),
-    /// A definition, the version it was compiled against.
-    Call(Rc<Steps<A>>),
+    /// A definition, the version it was compiled against, by its index.
+    Call(usize),
     /// The code the frame runs, called again (`recurse`).
     Recurse,
     /// Returns from the frame, leaving its loops (`leave-definition`).
@@ -256,15 +249,15 @@ pub enum Outcome<R> {
 
 /// Something under way: a call, or a source being read.
 #[derive(Clone, Debug)]
-pub(crate) enum Frame<A> {
+pub(crate) enum Frame {
     /// Code being run: its next step, where its `let` names start, and,
     /// for a call in last place, which took its caller's frame, the call
     /// that began the chain of such calls, as a code and the step after
     /// it. Only the first is kept, so a loop written as recursion keeps one.
     Code {
-        code: Rc<Steps<A>>,
+        code: usize,
         step: usize,
-        via: Option<(Rc<Steps<A>>, usize)>,
+        via: Option<(usize, usize)>,
         locals: usize,
     },
     /// Boxed, so a call's frame, the one the step loop reads, is no
@@ -309,6 +302,15 @@ pub(crate) struct Entry<A> {
 #[derive(Clone)]
 pub struct Machine<A> {
     pub(crate) vocabulary: Rc<Vocabulary>,
+    /// Every version of code the machine made, by index: frames and calls
+    /// name code by it, so a call counts no references. Shared while a
+    /// run reads it, and grown by `merge` from what was made since.
+    versions: Rc<Vec<Rc<Steps<A>>>>,
+    /// The versions made since the last `merge`, after `versions`.
+    fresh: Vec<Rc<Steps<A>>>,
+    /// Where code another machine made (an xt it gave) is kept here, by
+    /// its address: kept, it is never freed for the address to be reused.
+    foreign: HashMap<usize, usize>,
     /// Each name's word, the latest version: code compiled before keeps
     /// the version it was compiled against.
     pub(crate) names: HashMap<Rc<str>, Entry<A>>,
@@ -330,7 +332,7 @@ pub struct Machine<A> {
     /// Whether it must end with an empty stack, as a callback.
     empty: bool,
     pub(crate) stack: Vec<Value<A>>,
-    pub(crate) frames: Vec<Frame<A>>,
+    pub(crate) frames: Vec<Frame>,
     /// Every frame's `let` names, each frame's from its `locals`.
     locals: Vec<Option<Value<A>>>,
     /// Where each open `list` or `try` body began on the stack, and which:
@@ -349,38 +351,20 @@ pub struct Machine<A> {
     /// The names of the codes caught so far: a closed set, so made once a
     /// run, holding nothing, as a literal does.
     codes: Vec<(Code, Value<A>)>,
-    /// The step taken last: how many frames there were, its code (as an
-    /// address, only to compare), and its place in it.
+    /// The step taken last: how many frames there were, its code, and its
+    /// place in it.
     last: Option<(usize, usize, usize)>,
 }
 
 impl<A: AppValue> Machine<A> {
     /// A machine whose dictionary has the core's words and `vocabulary`'s.
     pub fn new(vocabulary: Vocabulary) -> Self {
-        let mut names = HashMap::new();
-        for builtin in Builtin::ALL {
-            if builtin.hosted() && !vocabulary.evaluates() {
-                continue;
-            }
-            let entry = Entry {
-                xt: Steps::one(builtin.name(), Op::Builtin(builtin)),
-                immediate: builtin.immediate(),
-            };
-            names.insert(Rc::from(builtin.name()), entry);
-        }
-        for (id, name) in vocabulary.names().enumerate() {
-            let xt = Steps::one(name, Op::App(id));
-            names.insert(
-                Rc::from(name),
-                Entry {
-                    xt,
-                    immediate: false,
-                },
-            );
-        }
-        Self {
+        let mut machine = Self {
             vocabulary: Rc::new(vocabulary),
-            names,
+            versions: Rc::new(Vec::new()),
+            fresh: Vec::new(),
+            foreign: HashMap::new(),
+            names: HashMap::new(),
             latest: None,
             globals: Vec::new(),
             building: Vec::new(),
@@ -400,8 +384,78 @@ impl<A: AppValue> Machine<A> {
             chars: Vec::new(),
             codes: Vec::new(),
             last: None,
+        };
+        let vocabulary = Rc::clone(&machine.vocabulary);
+        for builtin in Builtin::ALL {
+            if builtin.hosted() && !vocabulary.evaluates() {
+                continue;
+            }
+            let xt = machine.one(builtin.name(), Op::Builtin(builtin));
+            let entry = Entry {
+                xt,
+                immediate: builtin.immediate(),
+            };
+            machine.names.insert(Rc::from(builtin.name()), entry);
+        }
+        for (id, name) in vocabulary.names().enumerate() {
+            let xt = machine.one(name, Op::App(id));
+            let entry = Entry {
+                xt,
+                immediate: false,
+            };
+            machine.names.insert(Rc::from(name), entry);
+        }
+        machine.merge();
+        machine
+    }
+
+    /// `steps` made a version of the machine's, where it is kept.
+    pub(crate) fn version(&mut self, mut steps: Steps<A>) -> Rc<Steps<A>> {
+        steps.index = self.versions.len().saturating_add(self.fresh.len());
+        let steps = Rc::new(steps);
+        self.fresh.push(Rc::clone(&steps));
+        steps
+    }
+
+    /// A word that is one step, of the core's, the host's or a `let`.
+    pub(crate) fn one(&mut self, name: &str, op: Op<A>) -> Rc<Steps<A>> {
+        let mut steps = Steps::new(Rc::from(name));
+        steps.push(op, None);
+        self.version(steps)
+    }
+
+    /// The version at `index`.
+    pub(crate) fn version_at(&self, index: usize) -> Option<&Rc<Steps<A>>> {
+        match index.checked_sub(self.versions.len()) {
+            None => self.versions.get(index),
+            Some(fresh) => self.fresh.get(fresh),
         }
     }
+
+    /// Where `xt` is kept here: where it was made, or, made by another
+    /// machine, where it is kept from now on.
+    pub(crate) fn index_of(&mut self, xt: &Rc<Steps<A>>) -> usize {
+        if self.version_at(xt.index).is_some_and(|code| Rc::ptr_eq(code, xt)) {
+            return xt.index;
+        }
+        let address = Rc::as_ptr(xt) as usize;
+        if let Some(index) = self.foreign.get(&address) {
+            return *index;
+        }
+        let index = self.versions.len().saturating_add(self.fresh.len());
+        self.fresh.push(Rc::clone(xt));
+        self.foreign.insert(address, index);
+        index
+    }
+
+    /// The versions made since, kept with the rest: copied first only if a
+    /// run still reads the old ones.
+    fn merge(&mut self) {
+        if !self.fresh.is_empty() {
+            Rc::make_mut(&mut self.versions).append(&mut self.fresh);
+        }
+    }
+
 
     /// The stack, deepest first.
     pub fn stack(&self) -> &[Value<A>] {
@@ -520,8 +574,8 @@ impl<A: AppValue> Machine<A> {
                 Frame::Code {
                     code, step, via, ..
                 } => {
-                    let via = via.as_ref().and_then(|(code, step)| before(code, *step));
-                    let before = before(code, *step);
+                    let via = via.and_then(|(code, step)| self.before(code, step));
+                    let before = self.before(*code, *step);
                     // The innermost: the step it really took last, a jump's too.
                     let at = match i == innermost {
                         true => last.clone().or(before),
@@ -541,8 +595,14 @@ impl<A: AppValue> Machine<A> {
         let Some(Frame::Code { code: frame, .. }) = self.frames.last() else {
             return None;
         };
-        let ours = depth == self.frames.len() && Rc::as_ptr(frame) as usize == code;
-        ours.then(|| frame.token(step))?
+        let ours = depth == self.frames.len() && *frame == code;
+        ours.then(|| self.version_at(code)?.token(step))?
+    }
+
+    /// The token of the step before `step` of the code at `code`: none at
+    /// its first.
+    fn before(&self, code: usize, step: usize) -> Option<Token> {
+        self.version_at(code)?.token(step.checked_sub(1)?)
     }
 
     /// The token the step just taken came from: where an error is, and
@@ -559,9 +619,9 @@ impl<A: AppValue> Machine<A> {
             Frame::Read(read) => read.last(),
             Frame::Code {
                 code, step, via, ..
-            } => before(code, *step)
-                .or_else(|| via.as_ref().and_then(|(code, step)| before(code, *step)))
-                .or_else(|| code.token(*step)),
+            } => (self.before(*code, *step))
+                .or_else(|| via.and_then(|(code, step)| self.before(code, step)))
+                .or_else(|| self.version_at(*code)?.token(*step)),
         })
     }
 
@@ -587,10 +647,11 @@ impl<A: AppValue> Machine<A> {
 
     /// Runs `code` in a frame of its own.
     pub(crate) fn enter(&mut self, code: Rc<Steps<A>>) {
+        let index = self.index_of(&code);
         let base = self.locals.len();
         self.locals.resize(base.saturating_add(code.locals), None);
         self.frames.push(Frame::Code {
-            code,
+            code: index,
             step: 0,
             via: None,
             locals: base,
@@ -620,9 +681,13 @@ impl<A: AppValue> Machine<A> {
         host: &mut H,
         until: u64,
     ) -> Result<Outcome<H::Request>, Error> {
+        // The versions as the run began: a call names its code by index,
+        // and the run reads it here, counting no references; code made
+        // since is merged in as the run first enters it.
+        let mut versions = Some(Rc::clone(&self.versions));
         'frames: loop {
             let depth = self.frames.len();
-            let code = match self.frames.last() {
+            let index = match self.frames.last() {
                 None => {
                     self.ended()?;
                     return Ok(Outcome::Finished);
@@ -637,9 +702,18 @@ impl<A: AppValue> Machine<A> {
                     }
                     continue 'frames;
                 }
-                Some(Frame::Code { code, .. }) => Rc::clone(code),
+                Some(Frame::Code { code, .. }) => *code,
             };
-            let address = Rc::as_ptr(&code) as usize;
+            if versions.as_ref().is_none_or(|v| index >= v.len()) {
+                // Let go first, so the merge copies nothing.
+                drop(versions.take());
+                self.merge();
+                versions = Some(Rc::clone(&self.versions));
+            }
+            let Some(code) = versions.as_ref().and_then(|v| v.get(index)) else {
+                self.leave();
+                continue 'frames;
+            };
             loop {
                 if self.steps >= until {
                     return Ok(Outcome::Paused);
@@ -655,7 +729,7 @@ impl<A: AppValue> Machine<A> {
                     }
                     continue 'frames;
                 };
-                self.last = Some((depth, address, *step));
+                self.last = Some((depth, index, *step));
                 *step = step.saturating_add(1);
                 let after = *step;
                 match op {
@@ -663,7 +737,7 @@ impl<A: AppValue> Machine<A> {
                     // value is written to a temporary in parts and read back
                     // whole, which the CPU can't forward (counting to a
                     // million: +7% cycles on fewer instructions).
-                    Op::Push(value) => self.stack.push(value.clone()),
+                    Op::Push(value) => self.stack.extend_from_slice(std::slice::from_ref(value)),
                     Op::Builtin(builtin) => {
                         self.builtin(*builtin, host)?;
                         if self.frames.len() != depth {
@@ -679,13 +753,8 @@ impl<A: AppValue> Machine<A> {
                     }
                     Op::Call(_) | Op::Recurse => {
                         // The code called, or the frame's own (`recurse`).
-                        let called = if let Op::Call(called) = op {
-                            called
-                        } else {
-                            &code
-                        };
-                        let called = Rc::clone(called);
-                        self.call(called, &code, after);
+                        let called = if let Op::Call(called) = op { *called } else { index };
+                        self.call(called, code, index, after);
                         continue 'frames;
                     }
                     Op::Leave => {
@@ -776,18 +845,19 @@ impl<A: AppValue> Machine<A> {
     /// Calls `called` from `code`, whose next step is `step`. A call that
     /// is its caller's last step replaces it: the caller has nothing left
     /// to do, so a loop written as recursion runs in one frame.
-    fn call(&mut self, called: Rc<Steps<A>>, code: &Rc<Steps<A>>, step: usize) {
+    fn call(&mut self, called: usize, code: &Steps<A>, index: usize, step: usize) {
         let mut via = None;
         if returns_from(&code.ops, step)
             && let Some(Frame::Code {
                 via: was, locals, ..
             }) = self.frames.pop()
         {
-            via = was.or_else(|| Some((Rc::clone(code), step)));
+            via = was.or(Some((index, step)));
             self.locals.truncate(locals);
         }
+        let slots = self.version_at(called).map_or(0, |code| code.locals);
         let base = self.locals.len();
-        self.locals.resize(base.saturating_add(called.locals), None);
+        self.locals.resize(base.saturating_add(slots), None);
         self.frames.push(Frame::Code {
             code: called,
             step: 0,
@@ -1119,11 +1189,6 @@ impl<A: AppValue> Machine<A> {
     fn written<H: Host<Value = A>>(&self, host: &mut H, text: &str) -> Result<(), Error> {
         host.write(text).map_err(|f| self.fail(f.code, f.message))
     }
-}
-
-/// The token of the step before `step` in `code`: none at its first.
-fn before<A>(code: &Steps<A>, step: usize) -> Option<Token> {
-    code.token(step.checked_sub(1)?)
 }
 
 /// The element of `seq` at `at` (a byte in a string, an index in a list),
