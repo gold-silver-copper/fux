@@ -29,7 +29,6 @@ pub struct ClientView {
     pub cols: u16,
     pub workspace: Option<String>,
     pub tab: Option<String>,
-    pub pane: Option<String>,
 }
 
 pub struct World {
@@ -108,7 +107,6 @@ impl World {
                 cols: size(c, "cols")?,
                 workspace: word("workspace"),
                 tab: word("tab"),
-                pane: word("pane"),
             });
         }
         Ok(World {

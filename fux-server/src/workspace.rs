@@ -295,10 +295,10 @@ impl Tab {
         self.zoomed
     }
 
-    /// Zooms `pane`, or none, if it is one of the tab's, journaled if
-    /// that changes it.
+    /// Zooms `pane`, one of the tab's, or none, journaled if that changes
+    /// it.
     fn zoom(&mut self, journal: &mut Journal, ws: WsId, pane: Option<PaneId>) {
-        if self.zoomed != pane && pane.is_none_or(|p| self.holds(p)) {
+        if self.zoomed != pane {
             self.zoomed = pane;
             self.changed = true;
             journal.push(Event::Zoomed((ws, self.id), pane));
@@ -314,7 +314,7 @@ impl Tab {
         client: ClientId,
         pane: PaneId,
     ) {
-        if !self.holds(pane) || !self.seats.contains_key(&client) {
+        if !self.holds(pane) {
             return;
         }
         if self.zoomed.is_some_and(|z| z != pane) {

@@ -1440,8 +1440,7 @@ fn right_side(
         let mut parts = vec![(unseen.to_owned(), base)];
         if session
             .shown_tab(view.id)
-            .and_then(crate::workspace::Tab::zoomed)
-            .is_some()
+            .is_some_and(|t| t.zoomed().is_some())
         {
             parts.push(("[zoom] ".to_owned(), base));
         }
