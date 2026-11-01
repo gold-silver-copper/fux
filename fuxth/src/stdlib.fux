@@ -108,12 +108,12 @@ define pow
 end
 # seq -- seq : the elements in the opposite order
 define reverse
-  let s s len let i
+  let s s len let i s is-string let text
   list
-    s is-string if str '' then
-    begin i 0 gt if i 1 sub let i s i at s is-string if char then false else true then until
+    text if str '' then
+    begin i 0 gt if i 1 sub let i s i at text if char then false else true then until
   end
-  s is-string if concat then
+  text if concat then
 end
 # seq x -- i : where x first is (in a string, x may be a longer string), or -1
 define index-of

@@ -191,6 +191,12 @@ impl<A: AppValue> Machine<A> {
             return Ok(None);
         }
         if let Some(Entry { xt, immediate }) = self.names.get(text) {
+            // A word of the core's that shapes the program runs here, in
+            // no frame of its own.
+            if let (true, Some(Op::Builtin(word))) = (*immediate, xt.leaf()) {
+                let word = *word;
+                return self.builtin(word, host).map(|()| None);
+            }
             let xt = Rc::clone(xt);
             if self.compiling && !immediate {
                 self.compile_word(&xt)?;
@@ -290,7 +296,7 @@ impl<A: AppValue> Machine<A> {
                 }
             }
             Some(op) => op.clone(),
-            None => Op::Call(call.unwrap_or(xt.index)),
+            None => Op::Call(call.unwrap_or(xt.index), xt.locals),
         };
         self.compile(op);
         Ok(())

@@ -148,8 +148,9 @@ pub(crate) enum Op<A> {
     /// `roll` with its count written just before it.
     RollN(usize),
     App(usize),
-    /// A definition, the version it was compiled against, by its index.
-    Call(usize),
+    /// A definition, the version it was compiled against, by its index,
+    /// and how many `let` names of its own it keeps.
+    Call(usize, usize),
     /// The code the frame runs, called again (`recurse`).
     Recurse,
     /// Returns from the frame, leaving its loops (`leave-definition`).
@@ -359,12 +360,13 @@ pub struct Machine<A> {
 impl<A: AppValue> Machine<A> {
     /// A machine whose dictionary has the core's words and `vocabulary`'s.
     pub fn new(vocabulary: Vocabulary) -> Self {
+        let words = vocabulary.names().count();
         let mut machine = Self {
             vocabulary: Rc::new(vocabulary),
             versions: Rc::new(Vec::new()),
             fresh: Vec::new(),
             foreign: HashMap::new(),
-            names: HashMap::new(),
+            names: HashMap::with_capacity(Builtin::ALL.len().saturating_add(words)),
             latest: None,
             globals: Vec::new(),
             building: Vec::new(),
@@ -435,7 +437,10 @@ impl<A: AppValue> Machine<A> {
     /// Where `xt` is kept here: where it was made, or, made by another
     /// machine, where it is kept from now on.
     pub(crate) fn index_of(&mut self, xt: &Rc<Steps<A>>) -> usize {
-        if self.version_at(xt.index).is_some_and(|code| Rc::ptr_eq(code, xt)) {
+        if self
+            .version_at(xt.index)
+            .is_some_and(|code| Rc::ptr_eq(code, xt))
+        {
             return xt.index;
         }
         let address = Rc::as_ptr(xt) as usize;
@@ -455,7 +460,6 @@ impl<A: AppValue> Machine<A> {
             Rc::make_mut(&mut self.versions).append(&mut self.fresh);
         }
     }
-
 
     /// The stack, deepest first.
     pub fn stack(&self) -> &[Value<A>] {
@@ -751,9 +755,13 @@ impl<A: AppValue> Machine<A> {
                             return Ok(Outcome::Suspended(request));
                         }
                     }
-                    Op::Call(_) | Op::Recurse => {
+                    Op::Call(..) | Op::Recurse => {
                         // The code called, or the frame's own (`recurse`).
-                        let called = if let Op::Call(called) = op { *called } else { index };
+                        let called = if let Op::Call(called, slots) = op {
+                            (*called, *slots)
+                        } else {
+                            (index, code.locals)
+                        };
                         self.call(called, code, index, after);
                         continue 'frames;
                     }
@@ -845,7 +853,13 @@ impl<A: AppValue> Machine<A> {
     /// Calls `called` from `code`, whose next step is `step`. A call that
     /// is its caller's last step replaces it: the caller has nothing left
     /// to do, so a loop written as recursion runs in one frame.
-    fn call(&mut self, called: usize, code: &Steps<A>, index: usize, step: usize) {
+    fn call(
+        &mut self,
+        (called, slots): (usize, usize),
+        code: &Steps<A>,
+        index: usize,
+        step: usize,
+    ) {
         let mut via = None;
         if returns_from(&code.ops, step)
             && let Some(Frame::Code {
@@ -855,9 +869,10 @@ impl<A: AppValue> Machine<A> {
             via = was.or(Some((index, step)));
             self.locals.truncate(locals);
         }
-        let slots = self.version_at(called).map_or(0, |code| code.locals);
         let base = self.locals.len();
-        self.locals.resize(base.saturating_add(slots), None);
+        if slots > 0 {
+            self.locals.resize(base.saturating_add(slots), None);
+        }
         self.frames.push(Frame::Code {
             code: called,
             step: 0,
