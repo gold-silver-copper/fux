@@ -272,17 +272,31 @@ fn a_command_follows_once() -> Outcome {
     Ok(())
 }
 
-/// A program file that may not read the same again (a pipe) is refused as
-/// a source before anything runs, so nothing is followed to run it empty.
+/// A program file that may not read the same again (a pipe) is read as
+/// any source is, and never followed: the server's binary would run it
+/// again from a pipe already read.
 fn a_program_file_that_is_a_pipe_is_not_followed() -> Outcome {
     let ran = against_another_protocol("pipe", &["--file", "/dev/stdin"], "ls\n", &[], 0)?;
     check(
         ran.status == Some(1)
             && ran.stdout.is_empty()
-            && ran.stderr.starts_with("fux: read: ")
+            && ran.stderr.starts_with("fux: ")
             && !ran.stderr.contains("running the server's own binary"),
         &ran,
-    )
+    )?;
+    // Nor one that reads a pipe with `require` or `include`: the server
+    // that answers in another protocol is told of, not followed.
+    for word in ["require", "include"] {
+        let ran = against_another_protocol("pipe-read", &[word, "/dev/stdin"], "ls\n", &[], 1)?;
+        check(
+            ran.status == Some(1)
+                && ran.stdout.is_empty()
+                && ran.stderr.starts_with("fux: mismatch: ")
+                && !ran.stderr.contains("running the server's own binary"),
+            &ran,
+        )?;
+    }
+    Ok(())
 }
 
 fn check(holds: bool, ran: &Ran) -> Outcome {

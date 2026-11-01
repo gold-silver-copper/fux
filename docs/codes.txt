@@ -40,13 +40,13 @@ output 1 try
 nested 1 try
 not_a_key 1 try
 cancelled 1 uncaught
-require 2 uncaught
-open_quote 2 uncaught
+require 2 try
+open_quote 2 try
 unknown_word 2 try
-missing_token 2 uncaught
+missing_token 2 try
 bad_name 1 try
-not_top_level 2 uncaught
-unmatched 2 uncaught
+not_top_level 2 try
+unmatched 2 try
 unclosed 2 uncaught
 stack_underflow 2 try
 type 2 try
@@ -56,6 +56,6 @@ unset 1 try
 unused 1 try
 range 1 try
 fail 1 try
-bad_codes 2 uncaught
+bad_codes 2 try
 too_long 1 try
 contract 1 uncaught

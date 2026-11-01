@@ -2,5 +2,5 @@
 # expect: Level Racecar Noon
 # s -- flag
 define palindrome lower dup reverse eq end
-list str 'Level Rotor-ish Racecar Python Noon' words each dup palindrome if else drop then end end
+list str 'Level Rotor-ish Racecar Python Noon' fields each dup palindrome if else drop then end end
 str ' ' join

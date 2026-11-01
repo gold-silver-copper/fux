@@ -1,6 +1,7 @@
-//! How fast fuxth compiles and runs: a few programs, each timed over several runs.
+//! How fast fuxth reads its library and runs: a few programs, each timed
+//! over several runs.
 //! `cargo run --release -p fuxth --example bench`
-use fuxth::{AppValue, Compiler, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary};
+use fuxth::{AppValue, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary};
 use std::time::Instant;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -12,7 +13,7 @@ impl AppValue for Nothing {
     }
 }
 
-/// One word, `tick` (-- 1), answered at once.
+/// One word, `beat` (-- 1), answered at once.
 struct Ticks;
 
 impl Host for Ticks {
@@ -28,7 +29,7 @@ impl Host for Ticks {
         Ok(Done::Now)
     }
 
-    fn print(&mut self, _line: &str) -> Result<(), Failure> {
+    fn write(&mut self, _text: &str) -> Result<(), Failure> {
         Ok(())
     }
 }
@@ -37,16 +38,16 @@ const PROGRAMS: [(&str, &str); 8] = [
     ("count to a million", "0 begin 1 add dup 1000000 eq until"),
     (
         "recursive fib 25",
-        "define fib dup 2 lt if else dup 1 sub fib swap 2 sub fib add then end 25 fib",
+        "define fib dup 2 lt if else dup 1 sub recurse swap 2 sub recurse add then end 25 fib",
     ),
     (
         "9000 calls deep, 200 times",
-        "define deep dup 0 eq if else 1 sub deep 1 add then end
+        "define deep dup 0 eq if else 1 sub recurse 1 add then end
          0 begin 9000 deep drop 1 add dup 200 eq until",
     ),
     (
         "a million host words",
-        "0 begin tick add dup 1000000 eq until",
+        "0 begin beat add dup 1000000 eq until",
     ),
     (
         "sort 20000 numbers",
@@ -54,7 +55,7 @@ const PROGRAMS: [(&str, &str); 8] = [
     ),
     (
         "words of a 100k text",
-        "str 'the quick brown fox ' 5000 copies words len",
+        "str 'the quick brown fox ' 5000 copies fields len",
     ),
     (
         "upper and reverse 100k",
@@ -63,7 +64,7 @@ const PROGRAMS: [(&str, &str); 8] = [
     ("sum a list of 100k", "list 0 100000 range unpack end sum"),
 ];
 
-/// Each run's own times, a line each (`program<TAB>run<TAB>compile µs<TAB>run µs`),
+/// Each run's own times, a line each (`program<TAB>run<TAB>library µs<TAB>run µs`),
 /// so a comparison takes its own statistic; `FUXTH_BENCH_RUNS` runs (5).
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runs: u32 = (std::env::var("FUXTH_BENCH_RUNS").ok())
@@ -73,11 +74,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for run in 0..runs {
             let compiling = Instant::now();
             let mut words = Vocabulary::default();
-            words.add("tick", "-- integer")?;
-            let mut compiler = Compiler::new(words);
-            compiler.add(&fuxth::token::source("stdlib.fux", STDLIB)?)?;
-            compiler.add(&fuxth::token::source("bench", text)?)?;
-            let mut machine = Machine::new(compiler.finish()?);
+            words.add("beat", "-- integer")?;
+            let mut machine = Machine::new(words);
+            machine.library("stdlib.fux", STDLIB, &mut Ticks)?;
+            machine.read(fuxth::token::source("bench", text)?, None);
             let compiled = compiling.elapsed();
             let started = Instant::now();
             while machine.run(&mut Ticks, u64::MAX)? != Outcome::Finished {}

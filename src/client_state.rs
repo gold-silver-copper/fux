@@ -302,7 +302,13 @@ mod tests {
             assert!(draft.set(name, &value).is_err(), "{name}: {value:?}");
         }
         let tokens = fuxth::token::source("test", "false show-column")?;
-        assert!(crate::script::compile(&tokens).is_err());
+        let mut machine = crate::script::compile(&tokens)?;
+        let mut out = Vec::new();
+        let mut host = crate::script::Host::new(Default::default(), None, &mut out);
+        assert!(
+            machine.run(&mut host, u64::MAX).is_err(),
+            "a setting is no word"
+        );
         Ok(())
     }
 }

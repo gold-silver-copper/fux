@@ -1076,7 +1076,7 @@ fn run_job(
             return Ok(Vec::new());
         }
         let mut machine = job.machine(config.as_ref())?;
-        let mut host = script::Host::new(context.clone(), Some(&mut changed), &mut out);
+        let mut host = script::Host::job(context.clone(), &mut changed, &mut out);
         script::run(&mut machine, &mut host, &mut asks, Some(stop))
     })();
     if result.is_ok()

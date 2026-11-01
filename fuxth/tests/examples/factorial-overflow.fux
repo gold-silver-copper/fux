@@ -1,4 +1,5 @@
-# 21! is past what an integer holds: the multiplication says so.
-# fails: overflow
-define fact dup 1 gt if dup 1 sub fact mul else drop 1 then end
+# 21! is past what an integer holds: the multiplication wraps around, as
+# Forth's does, past 64 bits.
+# expect: -4249290049419214848
+define fact dup 1 gt if dup 1 sub recurse mul else drop 1 then end
 21 fact

@@ -2,8 +2,8 @@
 //! as a host runs it.
 #![allow(dead_code, reason = "each test file uses its own part")]
 use fuxth::{
-    AppValue, Args, Compiler, Done, Error, Failure, Host, Machine, Outcome, Place, STDLIB, Value,
-    Vocabulary, token,
+    AppValue, Args, Done, Error, Failure, Host, Machine, Outcome, Place, STDLIB, Value, Vocabulary,
+    token,
 };
 
 /// Steps a run takes before it counts as endless.
@@ -80,8 +80,8 @@ impl Host for Toy {
         }
     }
 
-    fn print(&mut self, line: &str) -> Result<(), Failure> {
-        self.printed.push(line.to_owned());
+    fn write(&mut self, text: &str) -> Result<(), Failure> {
+        self.printed.push(text.to_owned());
         Ok(())
     }
 }
@@ -122,7 +122,7 @@ pub enum Ended {
     /// It failed as it ran: the code, and the line of the program it was
     /// at (0 when not in the program: in the library).
     Failed(String, u32),
-    /// fuxth refused it before it ran: a mistake compiling.
+    /// Its text could not be split into words: a quote left open.
     Refused(String, u32),
     /// It ran past the steps allowed.
     Endless,
@@ -141,36 +141,45 @@ fn value(v: &Value<Nothing>) -> V {
         Value::Bool(b) => V::Bool(*b),
         Value::Str(s) => V::Str(s.to_string()),
         Value::List(l) => V::List(l.items().iter().map(value).collect()),
-        Value::App(_) => V::Str("nothing".to_owned()),
+        Value::App(_) | Value::Xt(_) | Value::Mark(_) => {
+            V::Str(v.text().unwrap_or_else(|f| f.message))
+        }
     }
 }
 
-/// Compiles `text` after the standard library.
-pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
-    let mut compiler = READY.with(Clone::clone)?;
-    compiler.add(&token::source("program", text)?)?;
-    compiler.finish()
+/// A machine with `text` to read, after the standard library.
+pub fn compile(text: &str) -> Result<Machine<Nothing>, Error> {
+    let mut machine = READY.with(Clone::clone)?;
+    machine.read(token::source("program", text)?, None);
+    Ok(machine)
 }
 
 thread_local! {
-    /// The standard library, compiled once a thread.
-    static READY: Result<Compiler<Nothing>, Error> = library();
+    /// The standard library, read once a thread.
+    static READY: Result<Machine<Nothing>, Error> = library();
 }
 
-fn library() -> Result<Compiler<Nothing>, Error> {
-    let mut compiler = Compiler::new(vocabulary());
-    compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
-    compiler.add(&token::source("maybe.fux", MAYBE)?)?;
-    Ok(compiler)
+fn library() -> Result<Machine<Nothing>, Error> {
+    let mut machine = Machine::new(vocabulary());
+    machine.library("stdlib.fux", STDLIB, &mut Toy::default())?;
+    let mut maybe = machine.clone();
+    maybe.read(token::source("maybe.fux", MAYBE)?, None);
+    match maybe.run(&mut Toy::default(), u64::MAX)? {
+        Outcome::Finished => Ok(maybe),
+        Outcome::Paused | Outcome::Suspended(_) => Err(Error::new(
+            fuxth::Code::Contract,
+            "maybe.fux stopped short",
+            None,
+        )),
+    }
 }
 
 /// Runs `text` in fuxth, `budget` steps at a time, answering each `ask`.
 pub fn fuxth(text: &str, budget: u64) -> Ended {
-    let program = match compile(text) {
-        Ok(program) => program,
+    let mut machine = match compile(text) {
+        Ok(machine) => machine,
         Err(e) => return Ended::Refused(e.code.name().to_owned(), line(e.place.as_ref())),
     };
-    let mut machine = Machine::new(program);
     let mut host = Toy::default();
     let budget = budget.min(STEPS);
     let mut taken = 0u64;
@@ -245,7 +254,7 @@ const TRY_CODES: [&str; 7] = [
 
 const CORE_WORDS: [&str; 18] = [
     "drop", "add", "sub", "mul", "div", "lt", "eq", "len", "at", "slice", "concat", "push", "put",
-    "code", "char", "kind", "string", "print",
+    "emit", "char", "kind", "string", "print",
 ];
 
 impl<'a> Gen<'a> {
@@ -276,25 +285,23 @@ impl<'a> Gen<'a> {
         for (n, name) in names.iter().enumerate() {
             let name = name.clone();
             self.put(&["define", &name]);
-            if names.len() > 1 && self.rng.chance(20) {
-                // Words calling each other, counting down: n -- …, the next
-                // one called, written after it or the first.
-                let next = n.saturating_add(1).checked_rem(names.len()).unwrap_or(0);
-                let next = names.get(next).cloned().unwrap_or_default();
+            if n > 0 && self.rng.chance(20) {
+                // A word calling the one before it, counting down: n -- …
+                let next = names.get(n.saturating_sub(1)).cloned().unwrap_or_default();
                 self.put(&["dup", "0", "gt", "if", "1", "sub"]);
                 self.seq(3, 1);
                 self.put(&[&next, "then"]);
             } else if self.rng.chance(10) {
                 // Recursion that may never return: at 0 it calls itself
                 // again, at once; else it uses what the rest of it takes.
-                self.put(&["dup", "0", "eq", "if", "drop", "0", &name, "else"]);
+                self.put(&["dup", "0", "eq", "if", "drop", "0", "recurse", "else"]);
                 self.seq(4, 1);
                 self.put(&["then"]);
             } else if self.rng.chance(30) {
                 // Recursion that counts down: n -- …
                 self.put(&["dup", "0", "gt", "if", "1", "sub"]);
                 self.seq(3, 1);
-                self.put(&[&name, "then"]);
+                self.put(&["recurse", "then"]);
             } else if self.rng.chance(30) {
                 // A name of its own.
                 self.put(&["let", "a"]);
@@ -528,7 +535,7 @@ impl<'a> Gen<'a> {
                         0 => ("len", 'i'),
                         1 => ("upper", 's'),
                         2 => ("reverse", 's'),
-                        3 => ("words", 'l'),
+                        3 => ("fields", 'l'),
                         _ => ("sort", 's'),
                     };
                     stack.pop();

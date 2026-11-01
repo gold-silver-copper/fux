@@ -5,7 +5,7 @@
 define steps
   dup 1 eq if drop else
   dup 2 mod 0 eq if 2 div else 3 mul 1 add then
-  swap 1 add swap steps then
+  swap 1 add swap recurse then
 end
 # n -- steps
 define collatz 0 swap steps end

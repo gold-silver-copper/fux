@@ -144,17 +144,19 @@ fux %3 str q text send-keys                       # press q: its version from be
   whatever it holds; `fux --file FILE ARGS…` runs a file, so a script can
   start with `#!/usr/bin/env -S fux --file`; and `fux -` runs what stdin
   says. `#` starts a comment.
-- The language's core is small on purpose: a few words and parsing words
-  (`str`, `define`, `let`, `if`, `begin`, `list`, `each`, `try`), listed by
-  `fux help` and at length in [fuxth/README.md](fuxth/README.md).
+- The language's core is small on purpose: a few words, and the immediate
+  words that shape a program (`str`, `define`, `let`, `if`, `begin`,
+  `list`, `each`, `try`, `code`), listed by `fux help` and at length in
+  [fuxth/README.md](fuxth/README.md). Words run as they are read; a
+  definition is found from its `end` on, and calls itself with `recurse`.
   The rest of the language, its standard library, is written in fuxth;
   fux's own words (`ls`, `new-tab`, `send-keys` …) are fux's, not the
   language's.
 - Each word checks its values as it runs: a word given too few, or one of a
   kind it doesn't take (`str a 1 add`, `1 if`), fails there, after the words
   before it have acted; keys or options left that no word acts on
-  (`%3 str x text`) fail the program's end. An unknown word or an unclosed
-  block is found before anything runs.
+  (`%3 str x text`) fail the program's end. An unknown word fails as it is
+  read, and a block left open at the end, after the words before acted.
 - No word is a character a shell treats specially, so a program needs no
   quoting beyond the text you give `str`.
 
@@ -491,16 +493,17 @@ help json` lists every one ([docs/json.md](docs/json.md)).
 
 ## Configuration
 
-`require PATH` loads a literal file while compiling, once per canonical
+`require PATH` reads a file's words where it stands, once per canonical
 path, relative to the requiring file (or the CLI's cwd for arguments and
-stdin). For example, `require shared/keys.fux` in a config shares definitions
+stdin); `include PATH` reads one each time. For example, `require shared/keys.fux` in a config shares definitions
 and key bindings. Quotes handle paths with spaces. There is no search path
-or automatic CLI config import. Required files are frozen with the client;
-reattach to read edits. Keys and prompts use the saved definitions and cannot
-load new files with `require`.
+or automatic CLI config import. Required files are kept with the client as
+they were read; reattach to read edits. Keys and prompts use the config's
+definitions and cannot read new files with `require`.
 
-The entire import graph is read and compiled before any of it runs. Cycles fail with
-the source chain, file and line. Sources must be regular files, opened nonblocking; explicit stdin remains available with `-`.
+A required file runs as it is read, after the words before it. Cycles fail
+with the source chain, file and line. A source is any file that reads, a
+FIFO or `<(…)` among them; stdin is `-`.
 
 The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
 `~/.config/fux/config.fux`: fuxth, which a typing terminal runs as it attaches.

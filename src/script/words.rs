@@ -388,18 +388,17 @@ pub fn usage(word: &str) -> Option<String> {
     let docs = super::docs();
     let library = || Some(&*docs.iter().find(|doc| doc.name == word)?.effect);
     let core = || fuxth::Builtin::named(word).map(fuxth::Builtin::effect);
-    // Fux's, the prelude's or library's, or the core's; else the
-    // language's own syntax, said as it is written.
+    // Fux's, the prelude's or library's, or the core's.
     let fuxs = Word::named(word);
-    let effect = match fuxs {
-        Some(w) => w.row().effect,
-        None => match library().or_else(core) {
-            Some(effect) => effect,
-            None => {
-                let (shape, _) = fuxth::Parsing::named(word)?.syntax();
-                return Some(format!("use: {shape}"));
-            }
-        },
+    // A word that shapes a program, said as it is written.
+    let shape = fuxth::Builtin::named(word).filter(|b| b.immediate() && !b.hosted());
+    let shape = shape
+        .and_then(|b| b.about().split_once(": "))
+        .map(|(shape, _)| shape);
+    let effect = match (fuxs, shape) {
+        (Some(w), _) => w.row().effect,
+        (None, Some(shape)) if library().is_none() => return Some(format!("use: {shape}")),
+        (None, _) => library().or_else(core)?,
     };
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
     // What an option's word goes on: the pane, opts, or either, as the
@@ -507,7 +506,7 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
         Value::Str(_) => string(value),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
-        other @ (Value::List(_) | Value::App(_)) => {
+        other @ (Value::List(_) | Value::App(_) | Value::Xt(_) | Value::Mark(_)) => {
             Err(wrong("a string, a number or a boolean", other))
         }
     }
@@ -551,6 +550,10 @@ pub(super) fn write_json_value(
                 Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
                 Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
             }?,
+            Value::Xt(_) | Value::Mark(_) => {
+                let text = value.text().map_err(|_| std::fmt::Error)?;
+                fux_wire::json::write_str(out, &text)?
+            }
         }
         // The next item of the innermost list under way.
         value = loop {
@@ -691,7 +694,9 @@ fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)) => target(value).map(Some),
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)) => target(value).map(Some),
     }
 }
 
@@ -757,7 +762,13 @@ fn held(value: &Value<Fux>) -> Option<fux_wire::command::Version> {
             // A capture's is for `expect` and `changed` alone (`version`).
             super::Answer::Panes(_) | super::Answer::Capture(_) => None,
         },
-        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
+        Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_) => None,
     }
 }
 
@@ -774,7 +785,12 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
             return answer.version().ok_or_else(|| wrong(wanted, value));
         }
         Value::Str(text) => text,
-        other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::List(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)) => {
             return Err(wrong(wanted, other));
         }
     };
@@ -797,7 +813,9 @@ fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)) => {
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)) => {
             let on = on(&other)
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
             std::rc::Rc::new(Opts {
@@ -965,7 +983,9 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)) => Opts {
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)) => Opts {
             on: Some(on(&other)?),
             ..Opts::default()
         },
@@ -1009,7 +1029,9 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)) => Err(wrong(
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)) => Err(wrong(
             &format!("options (from opts), as {word} takes"),
             &other,
         )),
@@ -1120,7 +1142,12 @@ fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Do
     let extent = match next()? {
         Value::App(Fux::Extent(e)) => e,
         v @ Value::Int(_) => Extent::Cells(within(&v, CELL)?),
-        other @ (Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
+        other @ (Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)) => {
             return Err(wrong("cells or a percent", &other));
         }
     };
@@ -1159,9 +1186,12 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
             }
             resolve(text.to_owned(), kind)
         }
-        other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
-            Err(wrong("a name, or a pane, tab or workspace", &other))
-        }
+        other @ (Value::Int(_)
+        | Value::Bool(_)
+        | Value::List(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)) => Err(wrong("a name, or a pane, tab or workspace", &other)),
     }
 }
 
@@ -1213,8 +1243,23 @@ impl fuxth::Host for Host<'_> {
     type Value = Fux;
     type Request = Ask;
 
-    fn print(&mut self, line: &str) -> Result<(), Failure> {
-        writeln!(self.out, "{line}").map_err(|e| fail(Raise::Output, e.to_string()))
+    /// Written and flushed: `write` and `emit` deliver without a line end.
+    fn write(&mut self, text: &str) -> Result<(), Failure> {
+        (self.out.write_all(text.as_bytes()))
+            .and_then(|()| self.out.flush())
+            .map_err(|e| fail(Raise::Output, e.to_string()))
+    }
+
+    fn resolve(
+        &mut self,
+        path: &str,
+        from: Option<&std::path::Path>,
+    ) -> Result<std::path::PathBuf, String> {
+        self.files.resolve(path, from)
+    }
+
+    fn read(&mut self, path: &std::path::Path) -> Result<String, String> {
+        self.files.read(path)
     }
 
     fn call(
@@ -1268,8 +1313,13 @@ impl fuxth::Host for Host<'_> {
                 ) => {
                     *run = super::same_run(*run, of)?;
                 }
-                Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => {
-                }
+                Value::Int(_)
+                | Value::Bool(_)
+                | Value::Str(_)
+                | Value::List(_)
+                | Value::App(_)
+                | Value::Xt(_)
+                | Value::Mark(_) => {}
             }
         }
         match result {
@@ -1560,7 +1610,9 @@ impl Host<'_> {
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)) => Some(target(value)?),
+                    | Value::App(_)
+                    | Value::Xt(_)
+                    | Value::Mark(_)) => Some(target(value)?),
                 };
                 let field = string(&next()?)?;
                 if let Some(target) = live {
@@ -1578,7 +1630,9 @@ impl Host<'_> {
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)) => Err(wrong("a handle or held observation", &other)),
+                    | Value::App(_)
+                    | Value::Xt(_)
+                    | Value::Mark(_)) => Err(wrong("a handle or held observation", &other)),
                 }
             }
             Act::Json => match next()? {
@@ -1592,7 +1646,9 @@ impl Host<'_> {
                 | Value::Bool(_)
                 | Value::Str(_)
                 | Value::List(_)
-                | Value::App(_)) => now(out, json_text(&other)),
+                | Value::App(_)
+                | Value::Xt(_)
+                | Value::Mark(_)) => now(out, json_text(&other)),
             },
             Act::NextEvents => {
                 let scope = observation_scope(&next()?)?;
@@ -1632,7 +1688,9 @@ impl Host<'_> {
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)) => Ok(target(&value)?),
+                    | Value::App(_)
+                    | Value::Xt(_)
+                    | Value::Mark(_)) => Ok(target(&value)?),
                 };
                 let size = laid_out(&next()?, &next()?)?;
                 let resized = match sized {
@@ -1746,7 +1804,12 @@ impl Host<'_> {
                             fail(Raise::BadValue, why)
                         })?)
                     }
-                    value @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
+                    value @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::List(_)
+                    | Value::App(_)
+                    | Value::Xt(_)
+                    | Value::Mark(_)) => {
                         return Err(wrong(
                             "a tab, workspace, new-tab, new-workspace or direction",
                             &value,
@@ -1760,9 +1823,12 @@ impl Host<'_> {
                 let value = next()?;
                 let with = match value {
                     Value::Str(_) => SwapWith::Toward(direction(&value)?),
-                    value @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
-                        SwapWith::Pane(pane(&value)?)
-                    }
+                    value @ (Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::List(_)
+                    | Value::App(_)
+                    | Value::Xt(_)
+                    | Value::Mark(_)) => SwapWith::Pane(pane(&value)?),
                 };
                 tell(Command::SwapPane { target, with })
             }
@@ -1922,23 +1988,14 @@ impl Host<'_> {
     }
 }
 
-/// `job` compiled as its keys or screen will run it, with the config's
-/// definitions: its mistake said as `what`'s, of `code`.
-fn checked(
-    state: &crate::client_state::Draft,
-    job: &crate::screens::Job,
-    code: Raise,
-    what: &str,
-) -> Result<(), Failure> {
-    let mistake = |e: fuxth::Error| {
+/// `job`'s words, split as its keys or screen will read them: a quote left
+/// open said as `what`'s, of `code`. Its words are found as they run.
+fn checked(job: &crate::screens::Job, code: Raise, what: &str) -> Result<(), Failure> {
+    job.tokens().map(drop).map_err(|e| {
         let mut failed = fail(code, format!("{}, in {what}", e.message));
         failed.word = e.word;
         failed
-    };
-    let tokens = job.tokens().map_err(mistake)?;
-    super::compiled(state.config.as_ref(), &tokens)
-        .map(drop)
-        .map_err(mistake)
+    })
 }
 
 /// The binding just made, `bound`, which `label` and `group` change.
@@ -1988,7 +2045,11 @@ impl Host<'_> {
                             "title is text or [text,subject handle]",
                         )),
                     })?,
-                    Value::Int(_) | Value::Bool(_) | Value::App(_) => {
+                    Value::Int(_)
+                    | Value::Bool(_)
+                    | Value::App(_)
+                    | Value::Xt(_)
+                    | Value::Mark(_) => {
                         return Err(wrong("a title or [text,subject handle]", &heading));
                     }
                 };
@@ -2096,7 +2157,7 @@ impl Host<'_> {
                     "a callback is source text or [captured arguments,source text]",
                 )),
             })?,
-            Value::Int(_) | Value::Bool(_) | Value::App(_) => {
+            Value::Int(_) | Value::Bool(_) | Value::App(_) | Value::Xt(_) | Value::Mark(_) => {
                 return Err(wrong("a callback", value));
             }
         };
@@ -2129,10 +2190,10 @@ impl Host<'_> {
             Keys::Bind | Keys::BindRoot => {
                 let keys_text = string(&next()?)?;
                 let code = string(&next()?)?;
-                // Checked now, rather than each time its keys are typed.
+                // Split now, rather than each time its keys are typed.
                 let job = code.as_str().into();
                 let what = format!("the binding for {keys_text}");
-                checked(state, &job, Raise::BadBinding, &what)?;
+                checked(&job, Raise::BadBinding, &what)?;
                 let keymap = &mut state.keys;
                 let binding = crate::keymap::Binding::new(code, keys == Keys::BindRoot);
                 let pressed = crate::keymap::keys(&keys_text).map_err(refused)?;
@@ -2162,10 +2223,8 @@ impl Host<'_> {
                     code: string(&next()?)?,
                     args: Vec::new(),
                 };
-                let tokens = fuxth::token::source("list action", &action.code)
+                fuxth::token::source("list action", &action.code)
                     .map_err(|e| refused(e.message))?;
-                super::callback_source(state.config.as_ref(), &tokens)
-                    .map_err(|e| refused(e.to_string()))?;
                 let keymap = &mut state.keys;
                 keymap
                     .modes

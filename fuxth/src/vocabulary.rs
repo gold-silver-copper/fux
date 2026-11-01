@@ -15,13 +15,15 @@ struct Word {
 /// The application's words, the codes of its failures, and the kinds of
 /// its values that must be used, each with what one left over is told.
 /// Each name means one thing: a second word called as another word is (the
-/// core's and the parsing words among them), or a code declared twice, is
+/// core's among them), or a code declared twice, is
 /// refused, never kept beside the first or in its place.
 #[derive(Clone, Debug, Default)]
 pub struct Vocabulary {
     words: Vec<Word>,
     unused: Vec<(String, String)>,
     codes: Vec<Code>,
+    literals: Option<fn(&str) -> Option<&'static str>>,
+    evaluates: bool,
 }
 
 fn refused(message: String) -> Error {
@@ -44,14 +46,12 @@ impl Vocabulary {
     /// (`pane text -- answer`): it is given as many values as there are
     /// names before the `--`. Its id, which the host is called with, is the
     /// number of words added before it. A word is added once, under a name
-    /// none of the core's or parsing words has: one name, one word.
+    /// none of the core's words has: one name, one word.
     pub fn add(&mut self, name: &str, effect: &str) -> Result<usize, Error> {
         let held = if self.words.iter().any(|w| w.name == name) {
             Some("a word already")
         } else if crate::Builtin::named(name).is_some() {
             Some("a word of the core")
-        } else if crate::Parsing::named(name).is_some() {
-            Some("a word of the language")
         } else {
             None
         };
@@ -105,6 +105,29 @@ impl Vocabulary {
             };
         }
         Err(format!("{name} is no code a word raises"))
+    }
+
+    /// Words the application reads as values, as fuxth reads numbers:
+    /// `read` names the word of its own a word is given to, as a string
+    /// (fux reads `%3` as `str %3 pane`). Such a word is never a name.
+    pub fn literals(&mut self, read: fn(&str) -> Option<&'static str>) {
+        self.literals = Some(read);
+    }
+
+    /// `evaluate` is in the dictionary: a string may be read as source.
+    pub fn evaluate(&mut self) {
+        self.evaluates = true;
+    }
+
+    pub(crate) fn evaluates(&self) -> bool {
+        self.evaluates
+    }
+
+    /// The id of the word `text` is given to, if the application reads it
+    /// as a value.
+    pub(crate) fn literal(&self, text: &str) -> Option<usize> {
+        let word = (self.literals?)(text)?;
+        self.words.iter().position(|w| w.name == word)
     }
 
     /// How many values word `id` takes.
