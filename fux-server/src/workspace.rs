@@ -44,6 +44,10 @@ pub struct Tab {
     /// shows is then laid out again (`Session::size_panes`).
     changed: bool,
     fit: Fit,
+    /// The pane that fills it on every screen showing it, if one does:
+    /// each client showing it focuses that pane, and its own focus comes
+    /// back when it no longer does.
+    zoomed: Option<PaneId>,
     seats: BTreeMap<ClientId, Seat>,
     /// The client that last typed into it, which hosts its panes while it
     /// shows it (`Session::host`).
@@ -141,7 +145,7 @@ impl Workspace {
 
     /// Shows `client` the tab `at` says here, if given and one of this
     /// workspace's, and in it focuses the pane it says, if given and there.
-    fn show(&mut self, client: ClientId, at: Option<crate::session::Spot>) {
+    fn show(&mut self, journal: &mut Journal, client: ClientId, at: Option<crate::session::Spot>) {
         let Some(crate::session::Spot { tab, pane }) =
             at.filter(|at| self.tabs.iter().any(|t| t.id == at.tab))
         else {
@@ -152,7 +156,7 @@ impl Workspace {
         };
         *shown = tab;
         if let Some((t, pane)) = self.tabs.iter_mut().find(|t| t.id == tab).zip(pane) {
-            t.set_focus(client, pane);
+            t.set_focus(journal, self.id, client, pane);
         }
     }
 
@@ -191,6 +195,7 @@ impl Tab {
             revision: Some(0),
             changed: true,
             fit,
+            zoomed: None,
             seats: clients.map(|c| (c, Seat::on(pane))).collect(),
             typist: None,
         }
@@ -281,17 +286,41 @@ impl Tab {
         self.seats.get_mut(&client)
     }
 
-    /// The pane `client` focuses here.
+    /// The pane `client` focuses here: the zoomed one while there is one.
     pub fn focus(&self, client: ClientId) -> Option<PaneId> {
-        Some(self.seat(client)?.focus)
+        Some(self.zoomed.unwrap_or(self.seat(client)?.focus))
+    }
+
+    pub fn zoomed(&self) -> Option<PaneId> {
+        self.zoomed
+    }
+
+    /// Zooms `pane`, or none, if it is one of the tab's, journaled if
+    /// that changes it.
+    fn zoom(&mut self, journal: &mut Journal, ws: WsId, pane: Option<PaneId>) {
+        if self.zoomed != pane && pane.is_none_or(|p| self.holds(p)) {
+            self.zoomed = pane;
+            self.changed = true;
+            journal.push(Event::Zoomed((ws, self.id), pane));
+        }
     }
 
     /// Focuses `pane` for `client`, if the tab holds it, remembering the
-    /// pane it replaces.
-    pub(crate) fn set_focus(&mut self, client: ClientId, pane: PaneId) {
-        let holds = self.holds(pane);
-        let seat = self.seats.get_mut(&client);
-        if let Some(seat) = seat.filter(|s| holds && s.focus != pane) {
+    /// pane it replaces. Another pane than the zoomed one ends the zoom.
+    pub(crate) fn set_focus(
+        &mut self,
+        journal: &mut Journal,
+        ws: WsId,
+        client: ClientId,
+        pane: PaneId,
+    ) {
+        if !self.holds(pane) || !self.seats.contains_key(&client) {
+            return;
+        }
+        if self.zoomed.is_some_and(|z| z != pane) {
+            self.zoom(journal, ws, None);
+        }
+        if let Some(seat) = self.seats.get_mut(&client).filter(|s| s.focus != pane) {
             (seat.last, seat.focus, seat.held) = (Some(seat.focus), pane, false);
         }
     }
@@ -313,6 +342,9 @@ impl Tab {
     }
 
     fn refocus(&mut self, journal: &mut Journal, ws: WsId) {
+        if self.zoomed.is_some_and(|z| !self.root.contains(z)) {
+            self.zoom(journal, ws, None);
+        }
         let root = &self.root;
         let inside = |p: &PaneId| root.contains(*p);
         for (&client, seat) in &mut self.seats {
@@ -479,7 +511,7 @@ impl Parts {
                 w.viewers.remove(&client);
             } else {
                 w.viewers.insert(client);
-                w.show(client, at);
+                w.show(&mut self.journal, client, at);
             }
         }
         let after = place_of(&self.workspaces, client);
@@ -537,6 +569,15 @@ impl Parts {
         }
     }
 
+    /// Zooms `pane` in its tab, or, if it is zoomed, ends the zoom.
+    pub(crate) fn zoom(&mut self, pane: PaneId) -> Option<()> {
+        let (ws, tab) = self.locate(pane)?;
+        let (_, tab) = tab_mut(&mut self.workspaces, tab)?;
+        let zoomed = (tab.zoomed != Some(pane)).then_some(pane);
+        tab.zoom(&mut self.journal, ws, zoomed);
+        Some(())
+    }
+
     pub(crate) fn set_fit(&mut self, tab: TabId, fit: impl FnOnce(Fit) -> Fit) -> Option<()> {
         let (ws, tab) = tab_mut(&mut self.workspaces, tab)?;
         let fit = fit(tab.fit);
@@ -572,7 +613,7 @@ impl Parts {
     pub(crate) fn focus(&mut self, tab: TabId, client: ClientId, pane: PaneId) {
         if let Some((ws, tab)) = tab_mut(&mut self.workspaces, tab) {
             let before = tab.focus(client);
-            tab.set_focus(client, pane);
+            tab.set_focus(&mut self.journal, ws, client, pane);
             if tab.focus(client) != before {
                 self.journal.push(Event::View {
                     client,

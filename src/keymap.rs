@@ -951,7 +951,7 @@ mod tests {
             steps,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(crate::testing::code("me zoom").into())
+                Effect::Run(crate::testing::code("me focused zoom").into())
             ]
         );
         assert_eq!(held, Held::Normal);
@@ -1087,11 +1087,11 @@ mod tests {
         )?;
         keymap.bind_root(
             key("M-t")?,
-            Binding::new(crate::testing::code("me zoom"), true),
+            Binding::new(crate::testing::code("me focused zoom"), true),
         )?;
         assert_eq!(
             keymap.describe(),
-            "unbind-all\nstr 'g n' code opts new-tab drop end bind\nstr 'y l' code me focused str right 1 move-border end bind  repeat\nstr M-t code me zoom end bind-root\n"
+            "unbind-all\nstr 'g n' code opts new-tab drop end bind\nstr 'y l' code me focused str right 1 move-border end bind  repeat\nstr M-t code me focused zoom end bind-root\n"
         );
         Ok(())
     }

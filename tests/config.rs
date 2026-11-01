@@ -295,7 +295,7 @@ fn a_bad_config_is_reported() -> Outcome {
     let ok = "define sr me focused str horizontal axis split drop end\nstr v code sr end bind\n";
     std::fs::write(&config, ok).map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
-    let text = "str C-a prefix\nstr v code sr end bind\ndefine sr me zoom end\n";
+    let text = "str C-a prefix\nstr v code sr end bind\ndefine sr me focused zoom end\n";
     std::fs::write(&config, text).map_err(e)?;
     let failed = fux::script::run_file(&config)
         .err()
@@ -469,8 +469,17 @@ fn key_words_refuse_the_command_line() -> Outcome {
     let server = Server::start("")?;
     for words in [
         &["str", "C-a", "prefix"][..],
-        &["str", "q", "code", "me", "zoom", "end", "bind"],
-        &["str", "F5", "code", "me", "zoom", "end", "bind-root"],
+        &["str", "q", "code", "me", "focused", "zoom", "end", "bind"],
+        &[
+            "str",
+            "F5",
+            "code",
+            "me",
+            "focused",
+            "zoom",
+            "end",
+            "bind-root",
+        ],
         &["str", "q", "unbind"],
         &["str", "F5", "unbind-root"],
         &["unbind-all"],

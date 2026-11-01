@@ -103,8 +103,8 @@ screen equals its `capture`. Then:
 
 Narrowed, and why:
 
-- **Sizes** are checked only for a tab's one pane and a zoomed client's
-  focused pane: a pane the layout cannot fit is hidden and keeps its size,
+- **Sizes** are checked only for a tab's one pane and a tab's zoomed
+  pane: a pane the layout cannot fit is hidden and keeps its size,
   and `ls` does not say which panes are placed.
 - **Overlays** are not checked across a resize: one drawn nowhere on a tiny
   screen appears when it grows.

@@ -344,7 +344,8 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
             "name" => b.optional(t.name.as_deref())?, "label" => b.text(&t.label)?,
             "fit" => b.text(if t.fixed { "fixed" } else { "clients" })?, "cols" => number(t.cols)?, "rows" => number(t.rows)?,
             "host" => t.host.map(|c| Value::App(Fux::Client(c,Some(run)))).unwrap_or_else(null),
-            "nodes" => nodes, "layout_revision" => t.revision.map(|r| b.text(&r.to_string())).unwrap_or_else(|| Ok(null()))?
+            "nodes" => nodes, "layout_revision" => t.revision.map(|r| b.text(&r.to_string())).unwrap_or_else(|| Ok(null()))?,
+            "zoomed" => t.zoomed.map(|p| id(AnyRef::Pane(p),run)).unwrap_or_else(null)
         }
     })?;
     let panes = b.list(&s.panes, |b,p| {
@@ -379,7 +380,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         "pane_rows" => number(c.pane_rows)?, "pane_cols" => number(c.pane_cols)?,
         "workspace" => c.workspace.map(|w| id(AnyRef::Workspace(w),run)).unwrap_or_else(null),
         "tab" => c.tab.map(|t| id(AnyRef::Tab(t),run)).unwrap_or_else(null), "pane" => c.pane.map(|p| id(AnyRef::Pane(p),run)).unwrap_or_else(null),
-        "zoom" => Value::Bool(c.zoom), "opening" => c.opening.map(number).unwrap_or_else(|| Ok(null()))?, "mode" => b.text(&c.mode)?
+        "opening" => c.opening.map(number).unwrap_or_else(|| Ok(null()))?, "mode" => b.text(&c.mode)?
     })?;
     let scope = match s.scope {
         Scope::All => Value::App(Fux::All),

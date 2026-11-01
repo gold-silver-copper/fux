@@ -15,7 +15,6 @@ pub enum ViewChange {
     Detached,
     Shown,
     Focused,
-    Zoomed,
     Resized,
     Screen,
 }
@@ -26,7 +25,6 @@ impl ViewChange {
             Self::Detached => "detached",
             Self::Shown => "shown",
             Self::Focused => "focused",
-            Self::Zoomed => "zoomed",
             Self::Resized => "view_resized",
             Self::Screen => "screen",
         }
@@ -148,6 +146,8 @@ pub enum Event {
     Workspace(WsId, Change),
     /// A tab's tree or fit changed. Consumers take a new snapshot.
     Layout((WsId, TabId)),
+    /// A tab's zoomed pane is now this one, or none.
+    Zoomed((WsId, TabId), Option<PaneId>),
     /// A client's discrete view state changed at this place, if any.
     View {
         client: ClientId,
@@ -280,6 +280,7 @@ impl Event {
         match self {
             Event::Pane(((ws, tab), pane), _) => (Some(*pane), Some(*tab), Some(*ws)),
             Event::Tab((ws, tab), _) | Event::Layout((ws, tab)) => (None, Some(*tab), Some(*ws)),
+            Event::Zoomed((ws, tab), pane) => (*pane, Some(*tab), Some(*ws)),
             Event::Workspace(ws, _) => (None, None, Some(*ws)),
             Event::View { at, .. } => at.map_or((None, None, None), |((ws, tab), pane)| {
                 (Some(pane), Some(tab), Some(ws))
@@ -297,6 +298,7 @@ impl Event {
             | Event::Tab(..)
             | Event::Workspace(..)
             | Event::Layout(..)
+            | Event::Zoomed(..)
             | Event::View { .. } => None,
         }
     }
@@ -305,6 +307,11 @@ impl Event {
         let (name, fields) = match self {
             Event::Pane(_, what) => what.said(),
             Event::Layout(_) => ("laid_out", Vec::new()),
+            // Unzoomed, `pane` is there as null.
+            Event::Zoomed(_, pane) => (
+                "zoomed",
+                pane.map_or_else(|| vec![("pane", Json::Null)], |_| Vec::new()),
+            ),
             Event::View { change, .. } => (change.name(), Vec::new()),
             Event::Tab(_, change) | Event::Workspace(_, change) => change.said(),
         };
@@ -335,6 +342,8 @@ pub fn every_kind(
         Event::Pane(at, PaneEvent::Closed),
         Event::Pane(at, PaneEvent::Moved(at.0)),
         Event::Layout(at.0),
+        Event::Zoomed(at.0, Some(at.1)),
+        Event::Zoomed(at.0, None),
     ];
     for change in [
         Change::Created(None),
@@ -371,7 +380,6 @@ pub fn every_kind(
         ViewChange::Detached,
         ViewChange::Shown,
         ViewChange::Focused,
-        ViewChange::Zoomed,
         ViewChange::Resized,
         ViewChange::Screen,
     ] {
@@ -496,9 +504,11 @@ impl Reader {
                 let (pane, tab, workspace) = entry.event.ids();
                 let client = match entry.event {
                     Event::View { client, .. } => Some(client),
-                    Event::Pane(..) | Event::Tab(..) | Event::Workspace(..) | Event::Layout(_) => {
-                        None
-                    }
+                    Event::Pane(..)
+                    | Event::Tab(..)
+                    | Event::Workspace(..)
+                    | Event::Layout(_)
+                    | Event::Zoomed(..) => None,
                 };
                 let moved_from = if let Event::Pane(_, PaneEvent::Moved(from)) = entry.event {
                     Some(from)
@@ -691,6 +701,7 @@ mod tests {
                 | Event::Tab(..)
                 | Event::Workspace(..)
                 | Event::Layout(_)
+                | Event::Zoomed(..)
                 | Event::View { .. } => None,
             });
         let title = texts.next().ok_or("title event")?;
@@ -740,12 +751,12 @@ mod tests {
                         | ViewChange::Detached
                         | ViewChange::Shown
                         | ViewChange::Focused
-                        | ViewChange::Zoomed
                         | ViewChange::Resized
                         | ViewChange::Screen,
                     ..
                 }
-                | Event::Layout(_) => {}
+                | Event::Layout(_)
+                | Event::Zoomed(..) => {}
             }
             let json = event.json();
             let Some(Json::String(name)) = json.get("event") else {

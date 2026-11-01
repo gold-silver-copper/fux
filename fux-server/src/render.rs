@@ -1438,7 +1438,11 @@ fn right_side(
         vec![(text.clone(), view.presentation.styles.keys.attributes())]
     } else {
         let mut parts = vec![(unseen.to_owned(), base)];
-        if view.zoom {
+        if session
+            .shown_tab(view.id)
+            .and_then(crate::workspace::Tab::zoomed)
+            .is_some()
+        {
             parts.push(("[zoom] ".to_owned(), base));
         }
         if whole {
@@ -1530,7 +1534,7 @@ fn bar(
 }
 
 /// What of the tab `view` shows its screen does not: `[hidden %3]` for each
-/// pane it has no room for (when zoomed, the focus alone is shown), first,
+/// pane it has no room for (when zoomed, that pane alone is shown), first,
 /// as nothing of it shows; then `[cut %2]` for each placed in less room
 /// than its size; each followed by a space; empty if it shows them all
 /// whole.
@@ -1538,8 +1542,8 @@ fn unseen(session: &Session, view: &View, placement: &Placement) -> String {
     let Some(tab) = session.shown_tab(view.id) else {
         return String::new();
     };
-    let panes = match tab.focus(view.id).filter(|_| view.zoom) {
-        Some(focus) => vec![focus],
+    let panes = match tab.zoomed() {
+        Some(zoomed) => vec![zoomed],
         None => tab.root().panes(),
     };
     let (mut cut, mut hidden) = (String::new(), String::new());
@@ -2209,7 +2213,7 @@ mod tests {
         check(&mut session)?;
         session.views.get_mut(&client).ok_or("client")?.notice = None;
         check(&mut session)?;
-        for command in ["str c1 client zoom", "str @1 tab str renamed rename"] {
+        for command in ["%1 zoom", "str @1 tab str renamed rename"] {
             run(&mut session, command)?;
             check(&mut session)?;
         }
@@ -2867,7 +2871,7 @@ mod tests {
         let (mut session, client) = attached(4, 40)?;
         session.out(PaneId::of(1), b"\x1b[4;1Hbottom prompt");
         let before = compose(&session, client).ok_or("before")?;
-        output_as(&mut session, Some(client), "me zoom")?;
+        output_as(&mut session, Some(client), "me focused zoom")?;
         let zoomed = compose(&session, client).ok_or("zoomed")?;
         assert!(zoomed.row_text(3).contains("bottom prompt"));
         assert_eq!(zoomed.cursor, before.cursor);

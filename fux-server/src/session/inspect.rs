@@ -122,6 +122,7 @@ impl Session {
                     nodes: tree,
                     revision: tab.revision(self.run),
                     host: self.host(Some(tab.id())),
+                    zoomed: tab.zoomed(),
                 };
                 snapshot.tabs.push(fact);
             }
@@ -190,7 +191,6 @@ impl Session {
                 workspace: place.map(|p| p.ws),
                 tab: place.map(|p| p.tab),
                 pane: place.map(|p| p.pane),
-                zoom: view.zoom,
                 opening: (!view.mode.is_normal()).then_some(view.opening),
                 mode: mode.to_owned(),
             };

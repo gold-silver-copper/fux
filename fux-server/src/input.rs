@@ -1051,7 +1051,7 @@ mod tests {
         let (mut s, c) = crate::session::testing::attached(100, 100)?;
         run(
             &mut s,
-            "str F2 code me zoom end bind-root str Session group",
+            "str F2 code me focused zoom end bind-root str Session group",
         )?;
         s.input(c, b"\x02");
         let text = screen_text(&s, c)?;
@@ -1553,8 +1553,7 @@ mod tests {
         s.input(c, b"\x1b[<0;2;2M");
         assert!(queued(&mut s, 1).is_empty() && queued(&mut s, 2).is_empty());
         // Zoomed, the pane fills the screen, and its cells are the screen's.
-        run(&mut s, "str c1 client str %2 pane show")?;
-        run(&mut s, "str c1 client zoom")?;
+        run(&mut s, "%2 zoom")?;
         s.input(c, b"\x1b[<0;2;2M");
         assert_eq!(queued(&mut s, 2), b"\x1b[<0;2;2M");
         Ok(())

@@ -21,6 +21,7 @@ Command::ResizePane target: PaneId, by: PaneResize
 Command::SendKeys to: To, inputs: Vec<Input>
 Command::HistoryBudget target: PaneId, bytes: HistoryBytes
 Command::ClearHistory target: PaneId
+Command::Zoom target: PaneId
 Command::CapturePane target: PaneId, history: Option<usize>, view: CaptureView
 Command::Reorder target: AnyRef, toward: Sibling
 Command::Resolve text: String, kind: Kind
@@ -102,7 +103,6 @@ ClientAction::Detach
 ClientAction::Capture
 ClientAction::Open screen: callback::Open
 ClientAction::Keys inputs: Vec<Input>
-ClientAction::Zoom
 ClientAction::SelectPane pick: PanePick
 ClientAction::SelectTab pick: Pick<TabId>
 ClientAction::SelectWorkspace pick: Pick<WsRef>
