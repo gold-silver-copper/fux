@@ -144,7 +144,8 @@ file holds the program's exit, failing if the reader ended (`kill -0`),
 then stops the reader.
 
 ```sh
-fux all str "$(fux ls str cursor get)" events >> journal.ndjson &
+C=$(fux ls str cursor get)
+fux all str "$C" events >> journal.ndjson &
 J=$!
 fux opts str work in 80 24 size str true program new-tab > /dev/null
 until grep -q '"exited"' journal.ndjson; do kill -0 "$J"; sleep 1; done
