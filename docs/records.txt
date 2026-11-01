@@ -34,6 +34,8 @@ events.events[][exited]: event pane tab workspace signal input_unread origin seq
 events.events[][history_budget]: event pane tab workspace history_bytes origin seq next
 events.events[][history_cleared]: event pane tab workspace origin seq next
 events.events[][hung_up]: event pane tab workspace origin seq next
+events.events[][input]: event pane tab workspace generation kind bytes expected origin seq next
+events.events[][input]: event pane tab workspace generation kind bytes origin seq next
 events.events[][laid_out]: event tab workspace origin seq next
 events.events[][moved]: event pane tab workspace from_tab from_workspace origin seq next
 events.events[][notification]: event pane tab workspace text truncated origin seq next
@@ -47,6 +49,7 @@ events.events[][resized]: event pane tab workspace cols rows origin seq next
 events.events[][respawned]: event pane tab workspace input_unread origin seq next
 events.events[][screen]: event pane tab workspace client origin seq next
 events.events[][shown]: event pane tab workspace client origin seq next
+events.events[][signalled]: event pane tab workspace generation signal origin seq next
 events.events[][stopped]: event reason origin seq next
 events.events[][title]: event pane tab workspace title truncated origin seq next
 events.events[][view_resized]: event pane tab workspace client origin seq next

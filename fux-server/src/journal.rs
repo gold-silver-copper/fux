@@ -2,7 +2,7 @@
 //! (`fux_wire::events`). A later snapshot may see newer state; events do not
 //! replicate live OS facts.
 use crate::pane::{End, Left, Said};
-use fux_wire::command::{AnyRef, Run};
+use fux_wire::command::{AnyRef, Run, Version};
 use fux_wire::events::{Actor, Batch, Cursor, Item, Seq, Status};
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::inspect::Scope;
@@ -135,7 +135,9 @@ impl Teller<'_> {
             | Told::Respawned(_)
             | Told::Resized(_)
             | Told::HistoryBudget(_)
-            | Told::HistoryCleared => self.journal.current_actor(),
+            | Told::HistoryCleared
+            | Told::Input { .. }
+            | Told::Signalled { .. } => self.journal.current_actor(),
         };
         self.journal
             .push_from(Event::Pane(self.at, PaneEvent::Told(what)), actor);
@@ -210,8 +212,33 @@ pub enum Told {
     HungUp,
     /// Reading its program's terminal failed unexpectedly, so.
     ReadFailed(fuxix::Errno),
+    /// A request's input was queued for its program `generation`: how it
+    /// came, how many bytes, and the version `expect` admitted it at, if
+    /// it did; never what it says.
+    Input {
+        kind: Sent,
+        bytes: usize,
+        // Boxed, so the rarer guard grows no entry of the journal.
+        expected: Option<Box<Version>>,
+        generation: u64,
+    },
+    /// A request sent `signal` to what runs in the foreground of its
+    /// program `generation`'s terminal.
+    Signalled {
+        signal: fuxix::process::Signal,
+        generation: u64,
+    },
     /// Its program ended.
     Exited(End),
+}
+
+/// How a request's input came: `send-keys`, a paste among its inputs or
+/// not, or `send-mouse`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sent {
+    Keys,
+    Paste,
+    Mouse,
 }
 
 /// An event's fields after its name and place.
@@ -281,6 +308,33 @@ impl Told {
                 "read_failed",
                 vec![("read_error", Json::str(error.to_string()))],
             ),
+            Told::Input {
+                kind,
+                bytes,
+                expected,
+                generation,
+            } => {
+                let kind = match kind {
+                    Sent::Keys => "keys",
+                    Sent::Paste => "paste",
+                    Sent::Mouse => "mouse",
+                };
+                let expected =
+                    (expected.as_ref()).map(|seen| ("expected", Json::str(seen.to_string())));
+                let fields = [
+                    ("generation", Json::uint(*generation)),
+                    ("kind", Json::str(kind)),
+                    ("bytes", Json::count(*bytes)),
+                ];
+                ("input", fields.into_iter().chain(expected).collect())
+            }
+            Told::Signalled { signal, generation } => (
+                "signalled",
+                vec![
+                    ("generation", Json::uint(*generation)),
+                    ("signal", Json::int(signal.raw())),
+                ],
+            ),
             Told::Resized(size) => {
                 let cols = ("cols", Json::int(size.cols()));
                 ("resized", vec![cols, ("rows", Json::int(size.rows()))])
@@ -348,7 +402,8 @@ impl Event {
 
 /// One event of every kind at `at`, each with every field it can say:
 /// `name` for what is named, `said` a title and a notification a pane
-/// told, `left` for what an end left, `size` resized to. The test
+/// told, `left` for what an end left, `size` resized to, `seen` the
+/// version an input was expected at. The test
 /// `the_event_and_status_tables_match_the_finite_schema` does not compile
 /// while a kind is missing; fux's list of records (`docs/records.txt`)
 /// reads them all.
@@ -359,6 +414,7 @@ pub fn every_kind(
     said: [Told; 2],
     left: Left,
     size: fux_vt::Size,
+    seen: Version,
 ) -> Vec<Event> {
     let mut events = vec![
         Event::Pane(at, PaneEvent::Created),
@@ -395,6 +451,23 @@ pub fn every_kind(
         Told::HistoryCleared,
         Told::HungUp,
         Told::ReadFailed(fuxix::Errno::INVAL),
+        // The most a fuxth integer says, as it reads them.
+        Told::Input {
+            kind: Sent::Keys,
+            bytes: isize::MAX.unsigned_abs(),
+            expected: Some(Box::new(seen)),
+            generation: i64::MAX.unsigned_abs(),
+        },
+        Told::Input {
+            kind: Sent::Mouse,
+            bytes: isize::MAX.unsigned_abs(),
+            expected: None,
+            generation: i64::MAX.unsigned_abs(),
+        },
+        Told::Signalled {
+            signal: fuxix::process::Signal::Usr1,
+            generation: i64::MAX.unsigned_abs(),
+        },
         ended(fux_wire::answer::Ended::Lost),
         ended(fux_wire::answer::Ended::Exited(i32::MIN)),
         ended(fux_wire::answer::Ended::Signalled(i32::MIN)),
@@ -440,7 +513,13 @@ pub fn every_kind_read(run: Run) -> Result<Batch, String> {
     let mut journal = Journal::new(kept);
     let mut reader = Reader::new(Scope::All, &journal, run, None)?;
     let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
-    let events = every_kind(at, "name", said, left, size);
+    let counts = fux_wire::command::Counts::default();
+    let seen = Version {
+        pane: at.1,
+        counts,
+        run,
+    };
+    let events = every_kind(at, "name", said, left, size, seen);
     for (event, actor) in events.into_iter().zip(actors.into_iter().cycle()) {
         journal.push_from(event, actor);
     }
@@ -722,7 +801,26 @@ mod tests {
         let notification = texts.next().ok_or("notification event")?;
         let left = Left { input: usize::MAX };
         let size = fux_vt::Size::new(4096, 4096)?;
-        Ok(every_kind(at, &name, [title, notification], left, size))
+        let counts = fux_wire::command::Counts {
+            respawns: u64::MAX,
+            screen: u64::MAX,
+            bells: u64::MAX,
+            done: u64::MAX,
+            ended: true,
+        };
+        let seen = Version {
+            pane: at.1,
+            counts,
+            run: run()?,
+        };
+        Ok(every_kind(
+            at,
+            &name,
+            [title, notification],
+            left,
+            size,
+            seen,
+        ))
     }
 
     #[test]
@@ -751,6 +849,8 @@ mod tests {
                         | Told::HistoryCleared
                         | Told::HungUp
                         | Told::ReadFailed(_)
+                        | Told::Input { .. }
+                        | Told::Signalled { .. }
                         | Told::Exited(_),
                     ),
                 )

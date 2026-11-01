@@ -876,8 +876,16 @@ impl Session {
         }
         .into();
         reply.run = Some(self.run);
+        let kind = match inputs.iter().any(|input| matches!(input, Input::Paste(_))) {
+            true => crate::journal::Sent::Paste,
+            false => crate::journal::Sent::Keys,
+        };
+        let expected = match to {
+            command::To::Seen(seen) => Some(seen),
+            command::To::Now(_) => None,
+        };
         for (version, bytes) in &each {
-            self.pane_mut(version.pane)?.push(bytes);
+            self.pane_mut(version.pane)?.send(bytes, kind, expected);
         }
         Ok(reply)
     }
@@ -2313,6 +2321,7 @@ impl Session {
                 let version = self.pane(target)?.version(self.run);
                 fuxix::process::kill_group(group, signal)
                     .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))?;
+                self.pane_mut(target)?.tell_signalled(signal);
                 Ok(acted(version))
             }
             &Command::Kill { target } => self.kill(target, now).map(|()| Reply::default()),
@@ -2559,7 +2568,7 @@ impl Session {
             return Err(fail(Raise::Mouse, message));
         }
         let version = p.version(run);
-        p.push_mouse(report, held);
+        p.send_mouse(&report, held);
         Ok(acted(version))
     }
 
@@ -5815,7 +5824,7 @@ mod tests {
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let queue = |s: &mut Session, bytes: &[u8]| {
             let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-            pane.push(bytes);
+            pane.push_with(|_, out| out.extend_from_slice(bytes));
             Ok::<_, String>(())
         };
         queue(&mut s, b"abc")?;
@@ -7662,6 +7671,20 @@ mod tests {
                 "\n"
             )
         );
+        Ok(())
+    }
+
+    /// Keys and a paste typed at an attached terminal are no request's:
+    /// the journal tells no `input` of them, as it does of `send-keys`.
+    #[test]
+    fn typing_at_a_terminal_journals_no_input() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        let typed = told(&mut s, |s| s.input(c, b"typed\x1b[200~pasted\x1b[201~"));
+        assert!(!typed.contains(r#""event":"input""#), "{typed}");
+        let mut ran = Ok(());
+        let sent = told(&mut s, |s| ran = run(s, "%1 str sent text send-keys"));
+        ran?;
+        assert!(sent.contains(r#""event":"input""#), "{sent}");
         Ok(())
     }
 

@@ -1,6 +1,6 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::after;
-use crate::journal::{Journal, Teller, Told};
+use crate::journal::{Journal, Sent, Teller, Told};
 use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Pid};
 use fux_vt::bytes::ByteQueue;
@@ -750,25 +750,38 @@ impl<'a> PaneMut<'a> {
     pub fn ended(&mut self, ended: Ended) -> End {
         self.pane.ended(ended, &mut self.tell)
     }
+    /// A request's `bytes` are queued for its program, and told as `kind`,
+    /// with the version `expect` admitted them at, if it did.
+    pub fn send(&mut self, bytes: &[u8], kind: Sent, expected: Option<fux_wire::command::Version>) {
+        self.pane.push(bytes);
+        self.queued();
+        self.tell.tell(Told::Input {
+            kind,
+            bytes: bytes.len(),
+            expected: expected.map(Box::new),
+            generation: self.pane.respawns,
+        });
+    }
+    /// Its program is sent `held`'s mouse report, `report`; the button
+    /// `send-mouse press` holds is `held` once it is queued.
+    pub fn send_mouse(&mut self, report: &[u8], held: Option<fux_vt::keys::mouse::MouseButton>) {
+        self.send(report, Sent::Mouse, None);
+        self.pane.mouse_held = held;
+    }
+    /// A request sent `signal` to what runs in its terminal's foreground.
+    pub(crate) fn tell_signalled(&mut self, signal: fuxix::process::Signal) {
+        let generation = self.pane.respawns;
+        self.tell.tell(Told::Signalled { signal, generation });
+    }
 
     // What the session changes that events do not tell: each change by
     // name, no whole pane, so none is put in its place or wrapped anew.
     pub fn write_input(&mut self) -> bool {
         self.pane.write_input()
     }
-    pub fn push(&mut self, bytes: impl AsRef<[u8]>) {
-        self.pane.push(bytes);
-        self.queued();
-    }
     pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) {
         self.pane.push_with(write);
         self.queued();
-    }
-    /// Its program is sent `held`'s mouse report, `report`; the button
-    /// `send-mouse press` holds is `held` once it is queued.
-    pub fn push_mouse(&mut self, report: Vec<u8>, held: Option<fux_vt::keys::mouse::MouseButton>) {
-        self.push(report);
-        self.pane.mouse_held = held;
     }
     /// Its program is told the scheme is `scheme`.
     pub fn offer_scheme(&mut self, scheme: Scheme) {

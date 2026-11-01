@@ -378,6 +378,8 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `hung_up` | its program closed its terminal and runs on (`hung_up`) |
 | `read_failed` | `read_error`, the errno text of an unexpected PTY read failure |
 | `exited` | `exited` (null when lost) or `signal`; optional `input_unread`; a shell's pane then closes |
+| `input` | a request's input queued for its program, never its text: the program's `generation`, `kind` (`keys` from `send-keys`, `paste` when a paste is among them, `mouse` from `send-mouse`), `bytes`, and `expected`, the version `expect` admitted it at, if it did. Typing at an attached terminal is not journaled |
+| `signalled` | `signal`'s number, sent by `signal` to what runs in the foreground of the program `generation` |
 | `command_started` | a shell command's output began (OSC 133 `C`) |
 | `done` | shell command's `status`, null when unreported |
 | `bell` | |
