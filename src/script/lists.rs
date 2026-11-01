@@ -116,7 +116,8 @@ fn held(answer: &super::Answer) -> Vec<String> {
 ///   its terminal's facts (sixel, its cell's size) and its pane shown a
 ///   picture, styled text, a copy, a link and a marked command, a pane split with a variable set,
 ///   and each kind of directory a launch observes;
-/// - a capture of that pane, with styles, and of the client;
+/// - a capture of that pane, with styles, since the split, and of the
+///   client;
 /// - held answers of every kind: an action's, a wait's that saw a change,
 ///   one that saw its program end, one whose pane closed, one timed out;
 /// - `buffers`, `status`, a batch of every kind of event, a word's record
@@ -148,6 +149,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
                  \x1b]133;C\x07out\x1b]133;D;0\x07";
     let pane = fux_wire::id::PaneId::of(1);
     session.output(pane, shown.as_bytes(), now);
+    let run = session.run;
     let mut draft = super::default_state()?.draft();
     let dir = fux_wire::words::quote(env!("CARGO_MANIFEST_DIR"));
     let split = format!("%1 str vertical axis str {dir} cwd split %1 str {dir} cwd stack");
@@ -186,8 +188,20 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = record::snapshot(*s).map_err(|e| e.message)?;
         records(&format!("snapshot.{name}"), &snapshot, &mut lines);
     }
+    // Every style and a link again, written after the split resized the
+    // pane, for a capture since then.
+    let before = (session.parts.panes().get(&pane))
+        .ok_or("pane")?
+        .version(run);
+    let again = "\x1b[1;2;3;4;5;7;8;9;38;5;1;48;2;1;2;3mstyled\x1b[0m\r\n\
+                 \x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\r\n";
+    session.output(pane, again.as_bytes(), now);
+    let asks = &mut InProcess(&mut session);
     let held = [
-        ("capture[pane]", "%1 styles capture".to_owned()),
+        (
+            "capture[pane]",
+            format!("%1 styles str {before} since capture"),
+        ),
         ("capture[client]", format!("str {client} client capture")),
     ];
     let held = held.into_iter().chain([
@@ -199,7 +213,6 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
             records(path, &value, &mut lines);
         }
     }
-    let run = session.run;
     let version = format!("%1:0.0.0.0.0:{run}")
         .parse()
         .map_err(|()| "version")?;

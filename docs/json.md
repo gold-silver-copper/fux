@@ -188,6 +188,20 @@ changing; the journal does not promise a complete stream of terminal replies.
 {"pane":"%1","screen_rows":23,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"],"wrap_pending":false,"version":"…","cursor":"SEQ:RUN",PANE FIELDS…,"above":0,"wrapped_rows":[false,…],"links":[{"row":0,"col":2,"len":4,"uri":"https://…"}]}
 ```
 
+`VERSION since` reads only the lines with a row changed after that
+version of the pane, a blank one too, and adds `"changed_rows":[3,7]`
+after `lines`: the row each line begins on, numbered as `rows` counts
+rows (as text, each line is written after it, `3:text`, as `grep -n`
+writes lines). `wrapped_rows` and `links` are of the rows of those lines
+alone. `version` is the version to read from next. A version of another
+server run, or another pane's, fails `bad_value`. It fails `stale`, and
+you capture the pane whole, where fux can't say which rows changed: the
+pane's program respawned since, on a new screen; its rows moved since,
+where no record says (a scroll, of the screen or of a region of it, a
+resize, a reset, a switch of screens or a change to history); or it was
+read while a repeat (REP) was still being drawn, so it names screens
+whose rows differ.
+
 `cursor` is the journal cursor read in the same server turn as `version`
 and the screen: `PANE str CURSOR events` from it starts reading the pane's
 journal entries after the capture, none from before it (as from any cursor,
@@ -199,15 +213,16 @@ history not asked for (`null` for `last-output`; rows a `rows` range
 leaves out are not counted).
 
 `wrapped_rows` and `links` are of the rows the capture read, and only
-those. `wrapped_rows` holds each row's `true` where its line goes on in
-the next row (the rows a joined capture joins), in order: with
-`wrapped`, a row each of `lines`; joined, a `rows` range reads each line
-whole, so it may begin above the range. `links` holds a run of cells side
-by side in one hyperlink (OSC 8) each, of the columns read: on row `row`,
-numbered as `rows` counts rows (the screen's rows, without `history` or
-`rows`), from column `col` (the row's own, counted from 0), `len` cells
-long, its target `uri`; a link that wraps has a run on each row. A
-link's text is what the screen shows; its `uri` is not.
+those (`since`: of the lines it reads). `wrapped_rows` holds each row's
+`true` where its line goes on in the next row (the rows a joined capture
+joins), in order: with `wrapped`, a row each of `lines`; joined, a
+`rows` range reads each line whole, so it may begin above the range.
+`links` holds a run of cells side by side in one hyperlink (OSC 8) each,
+of the columns read: on row `row`, numbered as `rows` counts rows (the
+screen's rows, without `history` or `rows`), from column `col` (the
+row's own, counted from 0), `len` cells long, its target `uri`; a link
+that wraps has a run on each row. A link's text is what the screen
+shows; its `uri` is not.
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped`
 (each screen row a line). Blanks at a line's end are trimmed, but with
@@ -219,7 +234,10 @@ whole. `screen_rows` and `screen_cols` are the screen's size;
 `lines` join or `rows` and `cols` take: `null` while hidden or on the
 screen not captured (`main-screen` under a full-screen program). `wrap_pending`:
 a glyph went into the last column, autowrap on, and the next goes on the
-next line, though the cursor shows on that last cell. With `marks`, each line holds its marks as text does. With the
+next line, though the cursor shows on that last cell. With `marks`, each line holds its marks as text does:
+`⟦this⟧` highlighted (reverse video, or a background colour, as a
+program draws a selection), `⟨this⟩` rendered faint (SGR 2), inside any
+highlighting. With the
 `styles` option, `"styles"` holds a list per line of its runs of cells that are not
 plain: `{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"inverse":true,
 "hidden":true,"dim":true,"italic":true,"strikeout":true,"underline":true,
@@ -477,8 +495,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":67,
- "server_release":"0.36.0","server_protocol":67,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":68,
+ "server_release":"0.36.0","server_protocol":68,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

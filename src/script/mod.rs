@@ -2309,6 +2309,7 @@ pub(crate) mod tests {
             styles: Vec::new(),
             styled: false,
             marks: false,
+            changed_rows: None,
         }
     }
 
@@ -2494,6 +2495,7 @@ pub(crate) mod tests {
             styles: Vec::new(),
             styled: false,
             marks: false,
+            changed_rows: None,
         };
         let reply = Reply {
             run: Some(version.run),
@@ -2535,6 +2537,7 @@ pub(crate) mod tests {
             )],
             styled: true,
             marks: false,
+            changed_rows: None,
         };
         let reply = Reply {
             run: Some(version.run),
