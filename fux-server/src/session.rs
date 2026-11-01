@@ -1440,8 +1440,9 @@ impl Session {
             .map(View::pane_area);
         let tab = || match here {
             Here::Client(_, place) => self.area_of(place.tab),
-            Here::Cli(..) => (here.pane().and_then(|p| self.locate(p)))
-                .and_then(|(_, tab)| self.area_of(tab)),
+            Here::Cli(..) => {
+                (here.pane().and_then(|p| self.locate(p))).and_then(|(_, tab)| self.area_of(tab))
+            }
         };
         let size = (own.or_else(tab)).and_then(|area| Size::new(area.h(), area.w()).ok());
         let why = "the caller has no screen that sizes panes and no tab, and no size was given";
@@ -5346,14 +5347,19 @@ mod tests {
         let laid = |s: &Session| -> Result<_, String> {
             let root = s.root(tab).ok_or("a layout")?;
             let sizes = (root.panes().into_iter()).map(|p| s.pane(p).map(Pane::size));
-            let sizes = sizes.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            let sizes = sizes
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
             Ok((s.area_of(tab), sizes))
         };
         let on = |s: &Session, rows, cols| -> Result<_, String> {
             let area = Rect::screen(rows, cols);
             let placed = layout::place(s.root(tab).ok_or("a layout")?, area);
             let size = |(_, r): &(PaneId, Rect)| sized(r.h(), r.w());
-            Ok((Some(area), placed.panes.iter().map(size).collect::<Result<_, _>>()?))
+            Ok((
+                Some(area),
+                placed.panes.iter().map(size).collect::<Result<_, _>>()?,
+            ))
         };
         let small = s.attach(20, 60, None)?;
         assert_eq!(laid(&s)?, on(&s, 20, 60)?, "the smallest screen");
@@ -5376,10 +5382,15 @@ mod tests {
             "%1 str horizontal axis split drop %2 str vertical axis split drop",
         )?;
         let fields = |s: &mut Session, pane: &str| {
-            let get = format!("{pane} str row get {pane} str col get {pane} str rows get {pane} str cols get");
+            let get = format!(
+                "{pane} str row get {pane} str col get {pane} str rows get {pane} str cols get"
+            );
             output(s, &get)
         };
-        let placed = layout::place(s.root(TabId::of(1)).ok_or("a layout")?, Rect::screen(24, 80));
+        let placed = layout::place(
+            s.root(TabId::of(1)).ok_or("a layout")?,
+            Rect::screen(24, 80),
+        );
         for (id, rect) in &placed.panes {
             let want = format!("{}\n{}\n{}\n{}\n", rect.y(), rect.x(), rect.h(), rect.w());
             assert_eq!(fields(&mut s, &id.to_string())?, want, "{id}");
@@ -5416,7 +5427,10 @@ mod tests {
     fn a_new_tab_takes_the_screen_of_the_callers_tab() -> TestResult {
         let (mut s, _small) = attached(24, 80)?;
         let big = s.attach(50, 200, None)?;
-        run(&mut s, "opts 100 30 size str other in new-tab drop @2 resize-auto")?;
+        run(
+            &mut s,
+            "opts 100 30 size str other in new-tab drop @2 resize-auto",
+        )?;
         run(
             &mut s,
             &format!("str {big} client str other workspace show"),
