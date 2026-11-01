@@ -227,6 +227,23 @@ fux str agent2 workspace str parent get str name get
 fux str agent2 workspace kill
 ```
 
+## An editor beside switchable terminals
+
+`stack` puts a new pane on another's rectangle, as `split` puts one beside
+it: the two are children of a stack, and each client is shown one child
+of a stack, its own. Every child keeps its size, so choosing one resizes no
+program. `step` on a pane in a stack shows a client its next, previous or
+last child (`C-b o`, `C-b q`), and `show` any pane. A tab's `nodes` lists a
+stack as `["stack",[CHILD,…]]`, which `arrange` takes too.
+
+```sh
+fux opts str work in str code name 80 24 size str sh program new-tab str editor rename
+fux str editor pane str horizontal axis str sh program split str tests rename
+fux str tests pane str sh program stack str build rename
+fux str code tab str topology snapshot str tabs get first str nodes get json
+[ "$(fux str tests pane str cols get)" = "$(fux str build pane str cols get)" ]
+```
+
 ## Save and restore a layout
 
 `dump` prints a fuxth program that makes the layout and its programs
