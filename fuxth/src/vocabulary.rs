@@ -5,13 +5,14 @@ use crate::Code;
 use crate::error::Error;
 use crate::value::{AppValue, Value};
 
-/// A word: its name, what it does to the stack, and how many values it
-/// takes.
+/// A word: its name, what it does to the stack, how many values it
+/// takes, and the codes it fails with, if declared.
 #[derive(Clone, Debug)]
 struct Word {
     name: String,
     effect: String,
     takes: usize,
+    codes: Option<Vec<Code>>,
 }
 
 /// The application's words, the codes of its failures, and the kinds of
@@ -24,6 +25,7 @@ pub struct Vocabulary {
     words: Vec<Word>,
     unused: Vec<(String, String)>,
     codes: Vec<Code>,
+    writes: Option<Vec<Code>>,
     literals: Option<fn(&str) -> Option<&'static str>>,
     evaluates: bool,
 }
@@ -67,8 +69,32 @@ impl Vocabulary {
             name: name.to_owned(),
             effect: effect.trim().to_owned(),
             takes: before.split_whitespace().count(),
+            codes: None,
         });
         Ok(self.words.len().saturating_sub(1))
+    }
+
+    /// Word `id` fails only with `codes` (and `stack_underflow`, given too
+    /// few values): a word's are unknown until they are declared, once.
+    pub fn fails(&mut self, id: usize, codes: &[Code]) -> Result<(), Error> {
+        let word = self
+            .words
+            .get_mut(id)
+            .ok_or_else(|| refused(format!("no word {id}")))?;
+        if word.codes.is_some() {
+            return Err(refused(format!(
+                "{}: its codes are declared already",
+                word.name
+            )));
+        }
+        word.codes = Some(codes.to_vec());
+        Ok(())
+    }
+
+    /// Writing text fails only with `codes`: the host's `write`, and the
+    /// text of its values. Unknown until declared.
+    pub fn writes(&mut self, codes: &[Code]) {
+        self.writes = Some(codes.to_vec());
     }
 
     /// A code the application's words may fail with, which a `try` may
@@ -145,6 +171,21 @@ impl Vocabulary {
     /// What word `id` does to the stack, as it was added.
     pub(crate) fn effect(&self, id: usize) -> Option<&str> {
         self.words.get(id).map(|w| w.effect.as_str())
+    }
+
+    /// The codes word `id` fails with, if declared.
+    pub(crate) fn codes(&self, id: usize) -> Option<&[Code]> {
+        self.words.get(id)?.codes.as_deref()
+    }
+
+    /// The codes writing text fails with, if declared.
+    pub(crate) fn written(&self) -> Option<&[Code]> {
+        self.writes.as_deref()
+    }
+
+    /// The codes the application's words raise, as declared.
+    pub(crate) fn declared(&self) -> &[Code] {
+        &self.codes
     }
 
     /// The words' names, by id.

@@ -8,6 +8,7 @@
 //! stack, and stopping is just dropping it.
 use crate::Code;
 use crate::Failure;
+use crate::codes::Codes;
 use crate::error::{Error, Floor, Wants, underflow};
 use crate::reader::{Building, Doc, Read};
 use crate::token::{Source, Token, Words};
@@ -415,6 +416,8 @@ pub struct Definition<'a> {
     pub effect: Option<&'a str>,
     pub about: Option<&'a str>,
     words: Option<&'a Source>,
+    /// Its code's version.
+    pub(crate) xt: usize,
 }
 
 impl Definition<'_> {
@@ -657,6 +660,7 @@ impl<A: AppValue> Machine<A> {
             effect,
             about,
             words: entry.words.as_ref(),
+            xt: entry.xt.index,
         }
     }
 
@@ -2189,11 +2193,14 @@ fn out_of_line<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// Expands rows `Variant "name" [flag] (arg: Marker, …) "effect" "about"
-/// { body }` to the enum `Builtin` of those variants: `Builtin::ALL` in
-/// that order; `name`, `effect` and `about`, each a match giving that row's
-/// column; `immediate` and `hosted`, whether its row is flagged so (a
-/// flagged row, `cold` too, runs out of line); and
+/// Expands rows `Variant "name" [flag] (arg: Marker, …) "effect"
+/// raises(Code … writes) "about" { body }` to the enum `Builtin` of those
+/// variants: `Builtin::ALL` in that order; `name`, `effect` and `about`,
+/// each a match giving that row's column; `immediate` and `hosted`, whether
+/// its row is flagged so (a flagged row, `cold` too, runs out of line);
+/// `raises`, the codes its body fails with as its row names them (`writes`
+/// for what the host's writing text fails with; `any` for unknown), and
+/// whether it takes values and any of a kind (`Any` takes every kind); and
 /// `Machine::builtin`, which runs one. It takes as many values as the row
 /// names (`take::<N>`; too few fail it), turns each into what its marker
 /// gives (a value of another kind fails the word), and runs the row's body
@@ -2208,6 +2215,19 @@ macro_rules! builtins {
     (@flag immediate immediate) => { true };
     (@flag hosted hosted) => { true };
     (@flag $want:ident $($got:ident)?) => { false };
+    (@typed Any) => { false };
+    (@typed $ty:ident) => { true };
+    (@raises [$($code:ident)*] $writes:literal) => {
+        Codes::Listed(&[$(Code::$code),*], $writes)
+    };
+    (@raises [$($code:ident)*] $writes:literal writes $($rest:ident)*) => {
+        builtins!(@raises [$($code)*] true $($rest)*)
+    };
+    (@raises [$($code:ident)*] $writes:literal $next:ident $($rest:ident)*) => {
+        builtins!(@raises [$($code)* $next] $writes $($rest)*)
+    };
+    (@raises any) => { Codes::Any };
+    (@raises $($rest:ident)*) => { builtins!(@raises [] false $($rest)*) };
     // A flagged row runs out of the step loop's line: its words shape a
     // program or are rare, and inlined they made the core's every step
     // slower (the dispatch past what the loop inlines).
@@ -2215,7 +2235,7 @@ macro_rules! builtins {
     (@arm $arm:block $flag:ident) => { out_of_line(move || $arm) };
     ($m:ident $host:ident; $(
         $variant:ident $name:literal $([$flag:ident])? ($($arg:ident: $ty:ident),*) $effect:literal
-        $about:literal $body:block
+        raises($($raises:ident)*) $about:literal $body:block
     )*) => {
         /// The words fuxth itself gives: its core. Everything else is the
         /// standard library, written in fuxth.
@@ -2264,6 +2284,19 @@ macro_rules! builtins {
                 }
             }
 
+            /// What it fails with as it runs, and whether it takes values
+            /// (else it fails `stack_underflow`) and any of a kind (else
+            /// `type`).
+            pub(crate) fn raises(self) -> (Codes, bool, bool) {
+                match self {
+                    $(Builtin::$variant => (
+                        builtins!(@raises $($raises)*),
+                        !<[&str]>::is_empty(&[$(stringify!($arg)),*]),
+                        false $(|| builtins!(@typed $ty))*,
+                    ),)*
+                }
+            }
+
             /// How many values it takes off the stack, for its effect to be
             /// held to; an immediate word takes its own.
             #[cfg(test)]
@@ -2307,20 +2340,20 @@ macro_rules! builtins {
 }
 
 builtins! { m host;
-    Drop "drop" (_x: Any) "x --" "the top value dropped" {
+    Drop "drop" (_x: Any) "x --" raises() "the top value dropped" {
         Ok(())
     }
-    Pick "pick" (n: Int) "xn … x0 n -- xn … x0 xn"
+    Pick "pick" (n: Int) "xn … x0 n -- xn … x0 xn" raises(Range)
         "a copy of the value n under the top (0 pick copies the top)" {
         let n = m.count(Builtin::Pick, n)?;
         m.pick(n)
     }
-    Roll "roll" (n: Int) "xn … x0 n -- xn-1 … x0 xn"
+    Roll "roll" (n: Int) "xn … x0 n -- xn-1 … x0 xn" raises(Range)
         "the value n under the top moved to the top (1 roll swaps)" {
         let n = m.count(Builtin::Roll, n)?;
         m.roll(n)
     }
-    Add "add" (a: Num, b: Num) "n m -- n+m"
+    Add "add" (a: Num, b: Num) "n m -- n+m" raises(InvalidAddress)
         "integer arithmetic, past 64 bits wrapping around; an address plus n is the address n cells on" {
         if let (Number::Int(a), Number::Int(b)) = (&a, &b) {
             m.push(Value::Int(a.wrapping_add(*b)));
@@ -2328,7 +2361,7 @@ builtins! { m host;
         }
         m.address_arithmetic(Builtin::Add, a, b)
     }
-    Sub "sub" (a: Num, b: Num) "n m -- n-m"
+    Sub "sub" (a: Num, b: Num) "n m -- n-m" raises(InvalidAddress)
         "integer arithmetic, past 64 bits wrapping around; an address minus n is the address n cells back, and two addresses subtract to how many cells apart they are" {
         if let (Number::Int(a), Number::Int(b)) = (&a, &b) {
             m.push(Value::Int(a.wrapping_sub(*b)));
@@ -2336,15 +2369,15 @@ builtins! { m host;
         }
         m.address_arithmetic(Builtin::Sub, a, b)
     }
-    Mul "mul" (a: Int, b: Int) "n m -- n*m" "integer arithmetic; past 64 bits it wraps around" {
+    Mul "mul" (a: Int, b: Int) "n m -- n*m" raises() "integer arithmetic; past 64 bits it wraps around" {
         m.push(Value::Int(a.wrapping_mul(b)));
         Ok(())
     }
-    Div "div" (a: Int, b: Int) "n m -- n/m"
+    Div "div" (a: Int, b: Int) "n m -- n/m" raises(DivByZero)
         "integer division, truncating toward zero; by zero it fails" {
         m.divided(a, b)
     }
-    MulDivMod "mul-div-mod" [cold] (n: Int, k: Int, d: Int) "n k d -- r q"
+    MulDivMod "mul-div-mod" [cold] (n: Int, k: Int, d: Int) "n k d -- r q" raises(DivByZero)
         "n times k divided by d, the product kept exact: the remainder and the quotient, truncating toward zero; by zero it fails" {
         // Past 128 bits no product of two integers goes, and a remainder
         // is smaller than d; a quotient past 64 bits wraps around.
@@ -2358,53 +2391,53 @@ builtins! { m host;
         m.push(Value::Int(q.cast_signed()));
         Ok(())
     }
-    And "and" [cold] (a: Any, b: Any) "a b -- x"
+    And "and" [cold] (a: Any, b: Any) "a b -- x" raises(Type)
         "whether both are true (both worked out first); of two integers, the bits set in both" {
         m.logic(Builtin::And, (a, b), |a, b| a & b, |a, b| a & b)
     }
-    Or "or" [cold] (a: Any, b: Any) "a b -- x"
+    Or "or" [cold] (a: Any, b: Any) "a b -- x" raises(Type)
         "whether either is true (both worked out first); of two integers, the bits set in either" {
         m.logic(Builtin::Or, (a, b), |a, b| a | b, |a, b| a | b)
     }
-    Xor "xor" [cold] (a: Any, b: Any) "a b -- x"
+    Xor "xor" [cold] (a: Any, b: Any) "a b -- x" raises(Type)
         "whether one is true and the other not; of two integers, the bits set in one only" {
         m.logic(Builtin::Xor, (a, b), |a, b| a ^ b, |a, b| a ^ b)
     }
-    ShiftLeft "shift-left" [cold] (n: Int, u: Int) "n u -- n"
+    ShiftLeft "shift-left" [cold] (n: Int, u: Int) "n u -- n" raises(Range)
         "n's bits moved u places up, 0s coming in (past 63 places, 0)" {
         let u = u32::try_from(m.count(Builtin::ShiftLeft, u)?).unwrap_or(u32::MAX);
         let moved = n.cast_unsigned().checked_shl(u).unwrap_or(0);
         m.push(Value::Int(moved.cast_signed()));
         Ok(())
     }
-    ShiftRight "shift-right" [cold] (n: Int, u: Int) "n u -- n"
+    ShiftRight "shift-right" [cold] (n: Int, u: Int) "n u -- n" raises(Range)
         "n's bits moved u places down, 0s coming in at the top (past 63 places, 0)" {
         let u = u32::try_from(m.count(Builtin::ShiftRight, u)?).unwrap_or(u32::MAX);
         let moved = n.cast_unsigned().checked_shr(u).unwrap_or(0);
         m.push(Value::Int(moved.cast_signed()));
         Ok(())
     }
-    Within "within" [cold] (x: Int, lo: Int, hi: Int) "x lo hi -- flag"
+    Within "within" [cold] (x: Int, lo: Int, hi: Int) "x lo hi -- flag" raises()
         "whether x is from lo up to before hi; with hi below lo, whether it is outside hi up to before lo" {
         let inside = x.wrapping_sub(lo).cast_unsigned() < hi.wrapping_sub(lo).cast_unsigned();
         m.push(Value::Bool(inside));
         Ok(())
     }
-    Lt "lt" (a: Any, b: Any) "a b -- a<b"
+    Lt "lt" (a: Any, b: Any) "a b -- a<b" raises(Type)
         "whether a comes before b: two integers, two strings or two lists" {
         let order = compare(&a, &b).ok_or_else(|| m.fail(Code::Type, unordered(&a, &b)))?;
         m.push(Value::Bool(order == Ordering::Less));
         Ok(())
     }
-    Eq "eq" (a: Any, b: Any) "a b -- a=b" "whether two values are the same, of one kind" {
+    Eq "eq" (a: Any, b: Any) "a b -- a=b" raises() "whether two values are the same, of one kind" {
         m.push(Value::Bool(a == b));
         Ok(())
     }
-    Len "len" (s: Seq) "seq -- n" "how many elements a string or list has" {
+    Len "len" (s: Seq) "seq -- n" raises() "how many elements a string or list has" {
         m.push(Value::Int(i64::try_from(s.len()).unwrap_or(i64::MAX)));
         Ok(())
     }
-    At "at" (s: Seq, i: Int) "seq i -- x"
+    At "at" (s: Seq, i: Int) "seq i -- x" raises(Range)
         "element i, from 0 (of a string, its character's code)" {
         let len = s.len();
         let i = m.index(i, len)?;
@@ -2417,7 +2450,7 @@ builtins! { m host;
         m.push(item);
         Ok(())
     }
-    Slice "slice" (s: Seq, from: Int, to: Int) "seq from to -- seq"
+    Slice "slice" (s: Seq, from: Int, to: Int) "seq from to -- seq" raises(Range)
         "the elements from `from` up to before `to`" {
         let len = s.len();
         let bounds = usize::try_from(from).ok().zip(usize::try_from(to).ok());
@@ -2431,117 +2464,117 @@ builtins! { m host;
         m.push(part);
         Ok(())
     }
-    Concat "concat" (list: Joined) "list -- seq"
+    Concat "concat" (list: Joined) "list -- seq" raises()
         "a list of strings joined into one string, or a list of lists into one list" {
         let joined = m.concat(&list)?;
         m.push(joined);
         Ok(())
     }
-    Push "push" (s: Seq, x: Any) "seq x -- seq" "x added at the end (to a string, x is a string)" {
+    Push "push" (s: Seq, x: Any) "seq x -- seq" raises() "x added at the end (to a string, x is a string)" {
         let pushed = m.pushed(s, x)?;
         m.push(pushed);
         Ok(())
     }
-    Put "put" (s: Seq, i: Int, x: Any) "seq i x -- seq"
+    Put "put" (s: Seq, i: Int, x: Any) "seq i x -- seq" raises(Range)
         "element i replaced by x (in a string, by a string)" {
         let i = m.index(i, s.len())?;
         let put = m.put(s, i, x)?;
         m.push(put);
         Ok(())
     }
-    Char "char" (n: Int) "c -- s" "the one-character string of the character with code c" {
+    Char "char" (n: Int) "c -- s" raises(Range) "the one-character string of the character with code c" {
         let c = m.character(n)?;
         let c = m.char(c);
         m.push(c);
         Ok(())
     }
-    Depth "depth" [cold] () "-- n"
+    Depth "depth" [cold] () "-- n" raises()
         "how many values the stack has (in list … end or try … catch, above where it began)" {
         let floor = m.marks.last().map_or(0, |(at, _)| *at);
         let n = m.stack.len().saturating_sub(floor);
         m.push(Value::Int(i64::try_from(n).unwrap_or(i64::MAX)));
         Ok(())
     }
-    ToReturn "to-return" [cold] (x: Any) "x --" "x moved to the return stack, which holds values only" {
+    ToReturn "to-return" [cold] (x: Any) "x --" raises() "x moved to the return stack, which holds values only" {
         m.returns.push(x);
         Ok(())
     }
-    FromReturn "from-return" [cold] () "-- x" "the return stack's top value moved back" {
+    FromReturn "from-return" [cold] () "-- x" raises(StackUnderflow) "the return stack's top value moved back" {
         m.returned()?;
         let x = m.returns.pop();
         m.stack.extend(x);
         Ok(())
     }
-    CopyReturn "copy-return" [cold] () "-- x" "a copy of the return stack's top value" {
+    CopyReturn "copy-return" [cold] () "-- x" raises(StackUnderflow) "a copy of the return stack's top value" {
         m.returned()?;
         let x = m.returns.last().cloned();
         m.stack.extend(x);
         Ok(())
     }
-    I "i" [cold] () "-- n" "in a do … loop: its index" {
+    I "i" [cold] () "-- n" raises(NotTopLevel) "in a do … loop: its index" {
         let index = m.running_loop(0, Builtin::I)?.index;
         m.push(Value::Int(index));
         Ok(())
     }
-    J "j" [cold] () "-- n" "in a do … loop in another: the outer loop's index" {
+    J "j" [cold] () "-- n" raises(NotTopLevel) "in a do … loop in another: the outer loop's index" {
         let index = m.running_loop(1, Builtin::J)?.index;
         m.push(Value::Int(index));
         Ok(())
     }
-    Leave "leave" [cold] () "--" "in a do … loop: end it now, going on after its loop"
+    Leave "leave" [cold] () "--" raises(NotTopLevel) "in a do … loop: end it now, going on after its loop"
         { m.leave_loop() }
-    DigitsBegin "digits-begin" [cold] () "--"
+    DigitsBegin "digits-begin" [cold] () "--" raises()
         "begin a number's text: digit, digits, hold, holds and sign put characters before it, and digits-end gives it" {
         m.digits.clear();
         Ok(())
     }
-    Hold "hold" [cold] (n: Int) "c --" "the character with code c put before the text digits-end gives" {
+    Hold "hold" [cold] (n: Int) "c --" raises(Range) "the character with code c put before the text digits-end gives" {
         let c = m.character(n)?;
         m.digits.push(c);
         Ok(())
     }
-    Holds "holds" [cold] (s: Str) "s --" "s put before the text digits-end gives" {
+    Holds "holds" [cold] (s: Str) "s --" raises() "s put before the text digits-end gives" {
         m.digits.extend(s.chars().rev());
         Ok(())
     }
-    DigitsEnd "digits-end" [cold] (_n: Int) "n -- s" "n dropped, and the text put together since digits-begin" {
+    DigitsEnd "digits-end" [cold] (_n: Int) "n -- s" raises() "n dropped, and the text put together since digits-begin" {
         let text: String = m.digits.chars().rev().collect();
         m.digits.clear();
         m.push(Value::str(text));
         Ok(())
     }
-    NextAddress "next-address" [cold] () "-- addr" "the address where the data space goes on, which store-next stores at" {
+    NextAddress "next-address" [cold] () "-- addr" raises(IdsExhausted Memory) "the address where the data space goes on, which store-next stores at" {
         let at = m.next_address()?;
         m.push(Value::Addr(at));
         Ok(())
     }
-    Allot "allot" [cold] (n: Int) "n --"
+    Allot "allot" [cold] (n: Int) "n --" raises(Range Memory)
         "n cells added to the data space, empty until a value is stored there; below 0, the last cells given back" {
         m.allot(n)
     }
-    StoreNext "store-next" [cold] (x: Any) "x --" "x stored in a cell added to the data space" {
+    StoreNext "store-next" [cold] (x: Any) "x --" raises(Memory) "x stored in a cell added to the data space" {
         m.grow(1)?;
         m.space.push(Some(x));
         Ok(())
     }
-    Fetch "fetch" [cold] (at: Addr) "addr -- x" "the value stored in the cell at addr" {
+    Fetch "fetch" [cold] (at: Addr) "addr -- x" raises(Unset InvalidAddress) "the value stored in the cell at addr" {
         let value = m.cells(at, 1)?.first().cloned().flatten();
         let value = value.ok_or_else(|| m.fail(Code::Unset, "the cell has no value stored yet"))?;
         m.push(value);
         Ok(())
     }
-    Store "store" [cold] (x: Any, at: Addr) "x addr --" "x stored in the cell at addr" {
+    Store "store" [cold] (x: Any, at: Addr) "x addr --" raises(InvalidAddress) "x stored in the cell at addr" {
         if let Some(cell) = m.cells(at, 1)?.first_mut() {
             *cell = Some(x);
         }
         Ok(())
     }
-    Fill "fill" [cold] (at: Addr, n: Int, x: Any) "addr u x --" "x stored in the u cells from addr" {
+    Fill "fill" [cold] (at: Addr, n: Int, x: Any) "addr u x --" raises(Range InvalidAddress) "x stored in the u cells from addr" {
         let n = m.count(Builtin::Fill, n)?;
         m.cells(at, n)?.fill(Some(x));
         Ok(())
     }
-    CopyCells "copy-cells" [cold] (from: Addr, to: Addr, n: Int) "from to u --"
+    CopyCells "copy-cells" [cold] (from: Addr, to: Addr, n: Int) "from to u --" raises(Range InvalidAddress)
         "the u cells from `from` copied to the u from `to`, which may overlap them" {
         let n = m.count(Builtin::CopyCells, n)?;
         m.cells(from, n)?;
@@ -2549,66 +2582,66 @@ builtins! { m host;
         m.copy_cells(from.at(), to.at(), n);
         Ok(())
     }
-    Base "base" [cold] () "-- addr"
+    Base "base" [cold] () "-- addr" raises(IdsExhausted Memory)
         "the address of the base number reads and digit writes in, 10 to begin with" {
         let at = m.address(0)?;
         m.push(Value::Addr(at));
         Ok(())
     }
-    Number "number" [cold] (s: Str) "s -- n"
+    Number "number" [cold] (s: Str) "s -- n" raises(Type Unset Fail)
         "the integer s writes in base, or after # in base 10, $ in 16 or % in 2 (Forth's prefixes); a - next or not; after 9, A to Z or a to z"
         { m.number(&s) }
-    Kind "kind" (x: Any) "x -- name" "integer, boolean, string, list, address, xt, or the host's kind" {
+    Kind "kind" (x: Any) "x -- name" raises() "integer, boolean, string, list, address, xt, or the host's kind" {
         m.push(Machine::text(x.kind_name()));
         Ok(())
     }
-    String "string" (x: Any) "x -- s" "x as text, as print shows it" {
+    String "string" (x: Any) "x -- s" raises(writes) "x as text, as print shows it" {
         let text = x.text().map_err(|f| m.failed(f))?;
         m.push(Value::str(text));
         Ok(())
     }
-    Print "print" (x: Any) "x --" "write x's text now, and a line end" {
+    Print "print" (x: Any) "x --" raises(writes) "write x's text now, and a line end" {
         let mut text = x.text().map_err(|f| m.fail(f.code, f.message))?;
         text.push('\n');
         m.written(host, &text)
     }
-    Write "write" [cold] (x: Any) "x --" "write x's text now, with no line end" {
+    Write "write" [cold] (x: Any) "x --" raises(writes) "write x's text now, with no line end" {
         let text = x.text().map_err(|f| m.fail(f.code, f.message))?;
         m.written(host, &text)
     }
-    Emit "emit" [cold] (n: Int) "c --" "write the character with code c now" {
+    Emit "emit" [cold] (n: Int) "c --" raises(Range writes) "write the character with code c now" {
         let c = m.character(n)?;
         m.written(host, c.encode_utf8(&mut [0; 4]))
     }
-    Fail "fail" (x: Any) "x --" "stop the program, with x as the reason" {
+    Fail "fail" (x: Any) "x --" raises(Fail writes) "stop the program, with x as the reason" {
         // Its reason is a string a try may keep: made as `string` makes one.
         let text = x.text().map_err(|f| m.fail(f.code, f.message))?;
         Err(m.fail(Code::Fail, text))
     }
-    Throw "throw" [cold] (x: Any) "x --"
+    Throw "throw" [cold] (x: Any) "x --" raises(any)
         "raise x, a failure, again; or the failure numbered x in Forth's table (0 raises none)"
         { m.throw(x) }
-    Abort "abort" [cold] () "--" "stop the program: the failure abort, -1 throw" {
+    Abort "abort" [cold] () "--" raises(Abort) "stop the program: the failure abort, -1 throw" {
         m.throw(Value::Int(-1))
     }
-    Quit "quit" [cold] () "--" "stop the program: the failure quit, -56 throw" {
+    Quit "quit" [cold] () "--" raises(Quit) "stop the program: the failure quit, -56 throw" {
         m.throw(Value::Int(-56))
     }
-    Execute "execute" [cold] (xt: Exec) "xt --" "run the word xt is" {
+    Execute "execute" [cold] (xt: Exec) "xt --" raises(any) "run the word xt is" {
         m.enter(&xt)
     }
-    Create "create" [cold] () "--"
+    Create "create" [cold] () "--" raises(MissingToken BadName IdsExhausted Memory)
         "create NAME: a word that gives the address where the data space goes on, for the data stored after (store-next, allot)"
         { m.create(Builtin::Create, None) }
-    Variable "variable" [cold] () "--"
+    Variable "variable" [cold] () "--" raises(MissingToken BadName IdsExhausted Memory)
         "variable NAME: a word that gives the address of a cell of its own, empty until a value is stored there"
         { m.create(Builtin::Variable, None) }
-    Constant "constant" [cold] (x: Any) "x --" "x constant NAME: a word that gives x"
+    Constant "constant" [cold] (x: Any) "x --" raises(MissingToken BadName IdsExhausted Memory) "x constant NAME: a word that gives x"
         { m.create(Builtin::Constant, Some(x)) }
-    Defer "defer" [cold] () "--"
+    Defer "defer" [cold] () "--" raises(MissingToken BadName IdsExhausted Memory)
         "defer NAME: a word that runs the xt is gives it, so code compiled before runs the one given last"
         { m.create(Builtin::Defer, None) }
-    BodyOf "body-of" [cold] (xt: Exec) "xt -- addr" "the address the word create made, xt, gives" {
+    BodyOf "body-of" [cold] (xt: Exec) "xt -- addr" raises() "the address the word create made, xt, gives" {
         m.index_of(&xt)?;
         let at = xt.body.ok_or_else(|| {
             let why = "body-of takes the xt of a word create made, and this is none";
@@ -2617,35 +2650,35 @@ builtins! { m host;
         m.push(Value::Addr(at));
         Ok(())
     }
-    Find "find" [cold] (s: Str) "s -- xt true | s false"
+    Find "find" [cold] (s: Str) "s -- xt true | s false" raises()
         "the word named s, as the dictionary has it now, and true; else s and false" {
         m.find(s);
         Ok(())
     }
-    NextWord "next-word" [cold] () "-- s" "the next word of the input, as written"
+    NextWord "next-word" [cold] () "-- s" raises(MissingToken) "the next word of the input, as written"
         { m.string(Builtin::NextWord) }
-    Immediate "immediate" [cold] () "--" "the word defined last runs even while a definition is compiled"
+    Immediate "immediate" [cold] () "--" raises(BadName) "the word defined last runs even while a definition is compiled"
         { m.immediate() }
-    Compiling "compiling" [cold] () "-- flag" "whether the words read are being compiled" {
+    Compiling "compiling" [cold] () "-- flag" raises() "whether the words read are being compiled" {
         m.push(Value::Bool(m.compiling));
         Ok(())
     }
-    StartCompiling "start-compiling" [cold] () "--" "compile the words read again, into the definition open"
+    StartCompiling "start-compiling" [cold] () "--" raises(NotTopLevel) "compile the words read again, into the definition open"
         { m.start_compiling() }
-    CompileCall "compile-call" [cold] (xt: Exec) "xt --" "a call to xt compiled into the definition open"
+    CompileCall "compile-call" [cold] (xt: Exec) "xt --" raises(NotTopLevel) "a call to xt compiled into the definition open"
         {
             m.index_of(&xt)?;
             m.compile_call(&xt)
         }
-    ImmediateWord "immediate-word" [cold] (xt: Exec) "xt -- flag"
+    ImmediateWord "immediate-word" [cold] (xt: Exec) "xt -- flag" raises()
         "whether xt is a word that runs even while a definition is compiled (immediate)" {
         m.push(Value::Bool(xt.immediate));
         Ok(())
     }
-    See "see" [cold] () "--"
+    See "see" [cold] () "--" raises(UnknownWord MissingToken writes)
         "see NAME: write the words that made NAME, as read, after where they were read: a define … end reads back as the same word, a word another made shows its maker and name; of a word in Rust, what it does to the stack"
         { m.see(host) }
-    Words "words" [cold] () "--" "write every word's name, a line each, in the order they were defined" {
+    Words "words" [cold] () "--" raises(writes) "write every word's name, a line each, in the order they were defined" {
         let mut text = String::new();
         for definition in m.dictionary() {
             text.push_str(definition.name);
@@ -2653,13 +2686,13 @@ builtins! { m host;
         }
         m.written(host, &text)
     }
-    Hide "hide" [cold] () "--"
+    Hide "hide" [cold] () "--" raises(UnknownWord MissingToken)
         "hide NAME: NAME leaves the dictionary, so it is found no more; code compiled before keeps calling the word" {
         let name = m.next_word(Builtin::Hide, "a name")?;
         let why = "no such word; text is `str WORD`";
         m.names.remove(&*name.text).map(drop).ok_or_else(|| Error::new(Code::UnknownWord, why, Some(&name)))
     }
-    PrintStack "print-stack" [cold] () "--"
+    PrintStack "print-stack" [cold] () "--" raises(writes)
         "write the values depth counts, a line each as print writes them, the deepest first, leaving them" {
         let floor = m.marks.last().map_or(0, |(at, _)| *at);
         let mut text = String::new();
@@ -2669,89 +2702,89 @@ builtins! { m host;
         }
         m.written(host, &text)
     }
-    Evaluate "evaluate" [hosted] (s: Str) "s --"
+    Evaluate "evaluate" [hosted] (s: Str) "s --" raises(any)
         "read s as a source file is read, and run it here" { m.evaluate(&s) }
-    StopCompiling "stop-compiling" [immediate] () "--"
+    StopCompiling "stop-compiling" [immediate] () "--" raises()
         "run the words read, until start-compiling, though a definition is open" {
         m.compiling = false;
         Ok(())
     }
-    Str "str" [immediate] () "-- s" "str WORD: WORD as text, whatever it looks like"
+    Str "str" [immediate] () "-- s" raises(MissingToken) "str WORD: WORD as text, whatever it looks like"
         { m.string(Builtin::Str) }
-    Define "define" [immediate] () "--"
+    Define "define" [immediate] () "--" raises(MissingToken BadName NotTopLevel)
         "define NAME … end: a word of your own, found from its end on (end closes code, list, each and try too)"
         { m.define() }
-    End "end" [immediate] () "--" "… end: closes the innermost of define, code, list, each and try … catch"
+    End "end" [immediate] () "--" raises(Unmatched) "… end: closes the innermost of define, code, list, each and try … catch"
         { m.end() }
-    Code "code" [immediate] () "-- xt" "code … end: the words between, compiled, as an xt"
+    Code "code" [immediate] () "-- xt" raises() "code … end: the words between, compiled, as an xt"
         { m.code() }
-    Let "let" [immediate] () "x --"
+    Let "let" [immediate] () "x --" raises(MissingToken BadName StackUnderflow)
         "x let NAME: NAME gives x from then on (in a definition, for that call)" { m.let_name() }
-    To "to" [immediate] () "x --" "x to NAME: the let name NAME gives x from then on"
+    To "to" [immediate] () "x --" raises(MissingToken BadName StackUnderflow) "x to NAME: the let name NAME gives x from then on"
         { m.set_name() }
-    Tick "tick" [immediate] () "-- xt" "tick NAME: the xt of the word NAME" { m.tick() }
-    Is "is" [immediate] () "xt --" "xt is NAME: the word defer made, NAME, runs xt from then on"
+    Tick "tick" [immediate] () "-- xt" raises(UnknownWord MissingToken) "tick NAME: the xt of the word NAME" { m.tick() }
+    Is "is" [immediate] () "xt --" raises(UnknownWord MissingToken BadName StackUnderflow InvalidAddress) "xt is NAME: the word defer made, NAME, runs xt from then on"
         { m.action(Builtin::Is, Builtin::Store) }
-    ActionOf "action-of" [immediate] () "-- xt" "action-of NAME: the xt the word defer made, NAME, runs"
+    ActionOf "action-of" [immediate] () "-- xt" raises(UnknownWord MissingToken BadName Unset InvalidAddress) "action-of NAME: the xt the word defer made, NAME, runs"
         { m.action(Builtin::ActionOf, Builtin::Fetch) }
-    Postpone "postpone" [immediate] () "--"
+    Postpone "postpone" [immediate] () "--" raises(UnknownWord MissingToken NotTopLevel)
         "postpone NAME: in a definition, what NAME does when compiled, done when the definition runs"
         { m.postpone() }
-    Literal "literal" [immediate] (x: Any) "x --" "x literal: in a definition, x, pushed when the definition runs"
+    Literal "literal" [immediate] (x: Any) "x --" raises(NotTopLevel) "x literal: in a definition, x, pushed when the definition runs"
         { m.literal(x) }
-    Recurse "recurse" [immediate] () "--" "in a definition: a call to the definition itself"
+    Recurse "recurse" [immediate] () "--" raises(NotTopLevel) "in a definition: a call to the definition itself"
         { m.compile_only(Builtin::Recurse, Op::Recurse) }
-    LeaveDefinition "leave-definition" [immediate] () "--"
+    LeaveDefinition "leave-definition" [immediate] () "--" raises(NotTopLevel)
         "in a definition: return from it now, its loops left"
         { m.compile_only(Builtin::LeaveDefinition, Op::Leave) }
-    Does "does" [immediate] () "--"
+    Does "does" [immediate] () "--" raises(NotTopLevel)
         "in a definition: return from it, the word create made last running the rest of the definition from then on, its address pushed first"
         { m.does_part() }
-    If "if" [immediate] () "flag --"
+    If "if" [immediate] () "flag --" raises()
         "flag if … else … then: the first part if flag is true (or an integer not 0), else the second"
         { m.open(crate::reader::Construct::If) }
-    Else "else" [immediate] () "--" "flag if … else … then: the part run when flag is false"
+    Else "else" [immediate] () "--" raises(Unmatched) "flag if … else … then: the part run when flag is false"
         { m.otherwise() }
-    Then "then" [immediate] () "--" "flag if … else … then: closes it" { m.then() }
-    Begin "begin" [immediate] () "--"
+    Then "then" [immediate] () "--" raises(Unmatched) "flag if … else … then: closes it" { m.then() }
+    Begin "begin" [immediate] () "--" raises()
         "begin … flag until: the body until flag is true; begin … flag while … end, begin … again"
         { m.open(crate::reader::Construct::Begin) }
-    Until "until" [immediate] () "flag --" "begin … flag until: closes it" { m.until() }
-    While "while" [immediate] () "flag --"
+    Until "until" [immediate] () "flag --" raises(Unmatched) "begin … flag until: closes it" { m.until() }
+    While "while" [immediate] () "flag --" raises(Unmatched)
         "begin … flag while … end: while flag is true, the part after while, then begin's again"
         { m.test_loop() }
-    Again "again" [immediate] () "--"
+    Again "again" [immediate] () "--" raises(Unmatched)
         "begin … again: closes it, the body run for ever (until leave-definition or a failure)"
         { m.again() }
-    Do "do" [immediate] () "limit first --"
+    Do "do" [immediate] () "limit first --" raises()
         "limit first do … loop: the body for each index from first up to before limit, none when the two are equal; i gives it"
         { m.open(crate::reader::Construct::Do) }
-    Loop "loop" [immediate] () "--" "limit first do … loop: closes it, the index 1 on each time"
+    Loop "loop" [immediate] () "--" raises(Unmatched) "limit first do … loop: closes it, the index 1 on each time"
         { m.close_loop(Op::Loop) }
-    LoopBy "loop-by" [immediate] () "n --"
+    LoopBy "loop-by" [immediate] () "n --" raises(Unmatched)
         "limit first do … n loop-by: closes it, the index n on each time, until it crosses from under the limit to it"
         { m.close_loop(Op::LoopBy) }
-    Case "case" [immediate] () "x --"
+    Case "case" [immediate] () "x --" raises()
         "x case v of … end … end: the part after the first v equal to x, x dropped; else the part before the last end, which drops x"
         { m.open(crate::reader::Construct::Case) }
-    Of "of" [immediate] () "x v -- | x"
+    Of "of" [immediate] () "x v -- | x" raises(Unmatched)
         "x case v of … end … end: when v equals x, x dropped and the part to of's end, then on after the case's"
         { m.of() }
-    Ahead "ahead" [immediate] () "--" "ahead … then: a jump past the words up to then"
+    Ahead "ahead" [immediate] () "--" raises() "ahead … then: a jump past the words up to then"
         { m.open(crate::reader::Construct::Ahead) }
-    List "list" [immediate] () "-- list"
+    List "list" [immediate] () "-- list" raises()
         "list … end: a list of the values its body leaves; the body starts with an empty stack"
         { m.open(crate::reader::Construct::List) }
-    Each "each" [immediate] () "seq --"
+    Each "each" [immediate] () "seq --" raises()
         "seq each … end: the body once per element, the element pushed (a string's are character codes)"
         { m.open(crate::reader::Construct::Each) }
-    Try "try" [immediate] () "codes --"
+    Try "try" [immediate] () "codes --" raises(BadCodes)
         "codes try … catch … end: the body from an empty stack, its values left; if it fails with one of codes (str 'timeout closed' just before try, str all for any), the handler instead, on the stack as it was at try and the failure"
         { m.try_body() }
-    Catch "catch" [immediate] () "--" "codes try … catch … end: the handler" { m.catch() }
-    Include "include" [immediate] () "--" "include PATH: the file's words read here, relative to the file naming it"
+    Catch "catch" [immediate] () "--" raises(Unmatched) "codes try … catch … end: the handler" { m.catch() }
+    Include "include" [immediate] () "--" raises(any) "include PATH: the file's words read here, relative to the file naming it"
         { m.include(host, Builtin::Include) }
-    Require "require" [immediate] () "--"
+    Require "require" [immediate] () "--" raises(any)
         "require PATH: the file's words read here, unless they were read already"
         { m.include(host, Builtin::Require) }
 }

@@ -141,6 +141,17 @@ fn vocabulary() -> Vocabulary {
         .and_then(|()| words.raises(Code::Host("far")))
         .and_then(|()| words.raises(Code::Unused));
     assert!(added.is_ok(), "{added:?}");
+    let asks = [
+        Code::Host("not_a_number"),
+        Code::Host("negative"),
+        Code::Host("far"),
+    ];
+    let declared = (words.fails(0, &[]))
+        .and_then(|()| words.fails(1, &asks))
+        .and_then(|()| words.fails(2, &[Code::Unused]))
+        .and_then(|()| words.fails(3, &[]));
+    assert!(declared.is_ok(), "{declared:?}");
+    words.writes(&[Code::Host("refused")]);
     words
 }
 
@@ -2136,5 +2147,85 @@ fn a_hosts_read_failure_keeps_its_code() -> Result<(), Error> {
     let caught = ran(&format!("{opt} opt stop"))?;
     assert_eq!(caught, [Value::str("caught")]);
     assert_eq!(ran("include gone").map_err(|e| e.code), Err(Code::Require));
+    Ok(())
+}
+
+/// The codes the word `name` fails with, as the dictionary says.
+fn codes_of(machine: &Machine<Ticket>, name: &str) -> Option<Vec<&'static str>> {
+    let definition = machine.definition(name)?;
+    let codes = machine.codes(&definition, &mut Known::default())?;
+    Some(codes.iter().map(|code| code.name()).collect())
+}
+
+#[test]
+fn every_core_word_fails_only_with_the_codes_it_declares() -> Result<(), Error> {
+    let mut machine = with_stdlib();
+    machine.read(token::source("t", "base dup 1000 add tick drop")?, None);
+    machine.run(&mut Toy::default(), u64::MAX)?;
+    let mut values = machine.stack().to_vec();
+    values.extend(ints(&[0, -1, 3, i64::MAX]));
+    values.extend([Value::str(""), Value::str("ab"), Value::Bool(true)]);
+    values.extend([Value::App(Ticket(i64::MIN))]);
+    values.push(Value::List(std::rc::Rc::new(List::new(ints(&[1])))));
+    let mut stacks = vec![Vec::new()];
+    for depth in 0..3 {
+        let deeper = stacks.iter().filter(|s: &&Vec<_>| s.len() == depth);
+        let deeper =
+            deeper.flat_map(|s| values.iter().map(|v| [s.clone(), vec![v.clone()]].concat()));
+        stacks.extend(deeper.collect::<Vec<_>>());
+    }
+    for builtin in Builtin::ALL {
+        let name = builtin.name();
+        let Some(codes) = codes_of(&machine, name) else {
+            continue;
+        };
+        // A word that reads the next word reads a name.
+        let source = token::source("t", &format!("{name} dup"))?;
+        let mut tried = machine.clone();
+        for stack in &stacks {
+            tried.clear();
+            for value in stack {
+                tried.push(value.clone());
+            }
+            tried.read(source.clone(), None);
+            let Err(error) = tried.run(&mut Toy::default(), 10_000) else {
+                continue;
+            };
+            // What the program's end finds is no word's; nor is a
+            // failure of `dup` after a word that reads none.
+            let at_word = error.word.as_deref() == Some(name);
+            if error.code.raised() && at_word {
+                let code = error.code.name();
+                assert!(codes.contains(&code), "{name} fails {code}: {codes:?}");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_definitions_codes_are_its_calls_but_those_a_try_catches() -> Result<(), Error> {
+    let mut machine = compile(
+        "define half 2 div end \
+         define safe str div_by_zero try half catch drop 0 end end \
+         define asks ask end \
+         define runs execute end \
+         defer later",
+    )?;
+    machine.run(&mut Toy::default(), u64::MAX)?;
+    let half = ["stack_underflow", "type", "div_by_zero"];
+    assert_eq!(codes_of(&machine, "half"), Some(half.to_vec()));
+    assert_eq!(
+        codes_of(&machine, "safe"),
+        Some(vec!["stack_underflow", "type"])
+    );
+    let asks = ["stack_underflow", "not_a_number", "negative", "far"];
+    assert_eq!(codes_of(&machine, "asks"), Some(asks.to_vec()));
+    assert_eq!(codes_of(&machine, "dup"), Some(vec!["stack_underflow"]));
+    // Unknown: what runs code it is given, and a host's word that
+    // declares none.
+    for unknown in ["runs", "later", "execute", "no-text"] {
+        assert_eq!(codes_of(&machine, unknown), None, "{unknown}");
+    }
     Ok(())
 }
