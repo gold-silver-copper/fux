@@ -22,7 +22,7 @@
 //! from another terminal showing the tab or kept from an earlier host. A
 //! pane with no host is answered no colour it did not set, as no one knows
 //! what it is shown on.
-use crate::pane::PaneMut;
+use crate::pane::{PaneMut, Said};
 use crate::session::{Outgoing, Session};
 use crate::view::{ClientKind, View};
 pub use fux_vt::Rgb;
@@ -405,10 +405,11 @@ impl Session {
         Some((pane, retold))
     }
 
-    /// Pane `id`'s program rang the bell: each client showing its workspace
-    /// is rung, at most once every [`BELL_GAP`], and one not showing its
-    /// tab has the tab marked in its bar until it shows it.
-    pub(crate) fn ring(&mut self, id: PaneId, now: Instant) {
+    /// Pane `id`'s program rang the bell or sent a notification. Each
+    /// client showing its workspace is told so in a notice: of a bell, one
+    /// not shown its tab, which has the tab marked in its bar until it
+    /// shows it; and a bell rings each, at most once every [`BELL_GAP`].
+    pub(crate) fn alert(&mut self, id: PaneId, bell: bool, notified: Option<Said>, now: Instant) {
         let Some(ws) =
             (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
         else {
@@ -418,20 +419,35 @@ impl Session {
         let viewers: BTreeMap<ClientId, bool> = (ws.viewers.iter())
             .map(|c| (*c, ws.tab_of(*c).is_some_and(|t| t.holds(id))))
             .collect();
+        let panes = self.parts.panes();
+        let rang = (ws.tabs().iter().find(|t| t.holds(id)))
+            .map_or_else(String::new, |t| format!("bell in {}", t.label(panes)));
+        let notice = (notified.zip(panes.get(&id))).map(|(said, p)| {
+            format!(
+                "{}: {}",
+                fux_wire::words::labelled(id, &p.label()),
+                said.as_str()
+            )
+        });
         let Some(tab) = (self.locate(id)).and_then(|(_, tab)| self.parts.tab_mut(tab)) else {
             return;
         };
         let mut rung = Vec::new();
         for view in self.views.values_mut() {
-            if !view.presentation.bell {
-                continue;
-            }
             let Some(&shown) = viewers.get(&view.id) else {
                 continue;
             };
+            if let Some(notice) = &notice {
+                view.notify(notice.clone(), false);
+            }
+            if !bell || !view.presentation.bell {
+                continue;
+            }
+            if !shown {
+                view.notify(rang.clone(), false);
+            }
             if let Some(seat) = tab.seat_mut(view.id).filter(|s| !shown && !s.rang) {
                 seat.rang = true;
-                view.dirty = true;
             }
             if view
                 .last_bell
@@ -860,6 +876,9 @@ mod tests {
     #[test]
     fn a_bell_rings_the_clients_showing_its_workspace_and_marks_its_tab() -> Outcome {
         let (mut s, c) = session()?;
+        crate::session::testing::output_as(&mut s, Some(c), crate::session::testing::BAR_ROW)?;
+        let shown = (s.views.get(&c)).map(|v| v.presentation.clone());
+        let shown = shown.ok_or("view")?;
         let _ = sent(&mut s, c);
         s.out(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
@@ -880,7 +899,8 @@ mod tests {
         past_the_gap(&mut s);
         s.out(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
-        assert!(tab_label(&s, c).contains(" %1! "), "{}", tab_label(&s, c));
+        let bar = tab_label(&s, c);
+        assert!(bar.contains(" %1! ") && bar.contains("bell in %1"), "{bar}");
         run(&mut s, "str c1 client str @1 tab show")?;
         let _ = s.before_paint(c);
         run(&mut s, "str c1 client str @2 tab show")?;
@@ -905,30 +925,24 @@ mod tests {
         let _ = sent(&mut s, c);
         // Opposing preferences on the same workspace remain independent.
         run(&mut s, "str c2 client str +1 workspace show")?;
-        let preferences = fux::script::default_state()
-            .map_err(|e| e.to_string())?
-            .preferences;
         s.apply(
             c,
             vec![fux_wire::act::Act::Presentation(
                 fux_wire::presentation::Presentation {
                     bell: false,
-                    ..preferences.presentation()
+                    ..shown.clone()
                 },
             )],
         );
         assert!(!tab_label(&s, c).contains('!'));
-        s.apply(
-            c,
-            vec![fux_wire::act::Act::Presentation(preferences.presentation())],
-        );
+        s.apply(c, vec![fux_wire::act::Act::Presentation(shown.clone())]);
         assert!(!tab_label(&s, c).contains('!'));
         s.apply(
             c,
             vec![fux_wire::act::Act::Presentation(
                 fux_wire::presentation::Presentation {
                     bell: false,
-                    ..preferences.presentation()
+                    ..shown
                 },
             )],
         );

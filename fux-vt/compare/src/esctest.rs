@@ -918,7 +918,7 @@ fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
 }
 
 /// Runs `area` in a pane of a fux server of its own, with a client
-/// attached on a PTY one row taller than esctest's terminal, for fux's bar.
+/// attached on a PTY of esctest's terminal's size: fux's bar takes no row.
 fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran, String> {
     let log = scratch.join(format!("{}.fux.log", area.stem()));
     let argv = esctest_argv(
@@ -931,7 +931,7 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
         &[],
     );
     let server = server(fux, &argv)?;
-    let rows = ROWS.saturating_add(1);
+    let rows = ROWS;
     let terminal = fux_vt::Options::new()
         .with(fux_vt::Feature::ExtendedReplies)
         .with(fux_vt::Feature::Events);

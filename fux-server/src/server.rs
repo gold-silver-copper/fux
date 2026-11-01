@@ -1745,11 +1745,6 @@ mod tests {
         let (mut server, _peer) = server()?;
         let client = *server.session.views.keys().next().ok_or("client")?;
         let pane = *server.session.parts.panes().keys().next().ok_or("pane")?;
-        crate::session::testing::output_as(
-            &mut server.session,
-            Some(client),
-            "str bar list str off list end list end false end set",
-        )?;
         let view = server.session.views.get_mut(&client).ok_or("view")?;
         view.terminal.sixel = Some(true);
         view.terminal.cell = fux_vt::CellSize::new(12, 12);
@@ -1841,14 +1836,16 @@ mod tests {
             crate::session::testing::output_as(
                 &mut server.session,
                 Some(client),
-                "str bar list str off list end list end false end set str styles list list str bar str default str default end list str notice str default str default end end set",
+                "str styles list list str bar str default str default end list str notice str default str default end end set",
             )?;
             server.session.out(pane, b"\x1b[10;1H\x1b]8;;https://example.test/old\x1b\\old A\x1b]8;;\x1b\\\x1b[5 q\x1b]12;#123456\x07");
             if clear_without_output {
                 server.session.out(pane, b"\x1b[?25l");
             }
             server.paint(0, Instant::now());
-            server.session.notify_to(client, "feedback", false);
+            // A notice a cell narrower than the screen covers its row.
+            let feedback = format!("{}feedback", "-".repeat(31));
+            server.session.notify_to(client, feedback, false);
             server.paint(0, Instant::now());
             let attached = server
                 .conns

@@ -27,23 +27,21 @@ fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane(
     client.wait_for("$")?;
     client.keys(&format!("{PREFIX}v"))?;
     client.wait("a vertical separator", |t| {
-        t.lines()
-            .all(|l| l.chars().nth(40) == Some('│') || l.contains("main"))
+        t.lines().all(|l| l.chars().nth(40) == Some('│'))
     })?;
     assert_eq!(focused(&server)?, "%2");
-    assert_eq!(size(&server, "%1")?, (19, 40));
-    assert_eq!(size(&server, "%2")?, (19, 40));
+    assert_eq!(size(&server, "%1")?, (20, 40));
+    assert_eq!(size(&server, "%2")?, (20, 40));
     client.keys(&format!("{PREFIX}s"))?;
     client.wait("a horizontal separator", |t| {
         t.lines().any(|l| l.contains("├─") || l.contains("─────"))
     })?;
     assert_eq!(focused(&server)?, "%3");
-    assert_eq!(size(&server, "%2")?, (9, 40));
+    assert_eq!(size(&server, "%2")?, (10, 40));
     assert_eq!(size(&server, "%3")?, (9, 40));
     // The new shell is live and typed into.
     client.keys("echo in-three\r")?;
     client.wait_for("in-three")?;
-    assert!(client.bar().contains("%3"), "{}", client.bar());
     // The CLI splits too; a line typed once its shell's prompt shows goes
     // into the new shell.
     let made = server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
@@ -115,7 +113,7 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
     assert_eq!(size(&server, "%1")?.1, 35);
     // The program sees its new size.
     client.keys("stty size\r")?;
-    client.wait("the size", |t| t.lines().any(|l| l.ends_with("19 45")))?;
+    client.wait("the size", |t| t.lines().any(|l| l.ends_with("20 45")))?;
     // Never below the minimum.
     server.ok(&["str", "%2", "pane", "str", "left", "200", "move-border"])?;
     assert_eq!(size(&server, "%1")?.1, 2);
@@ -140,34 +138,61 @@ fn zoom_fills_the_screen_and_restores() -> Outcome {
     client.keys(&format!("{PREFIX}v"))?;
     eventually("two panes", || Ok(size(&server, "%2").is_ok()))?;
     client.keys(&format!("{PREFIX}z"))?;
-    eventually("zoomed", || Ok(size(&server, "%2")? == (19, 81)))?;
-    client.wait("the bar says so", |t| {
-        t.lines().last().is_some_and(|b| b.contains("[zoom]"))
-    })?;
-    assert!(
-        !client.text().contains('│'),
-        "no separator while zoomed:\n{}",
-        client.text()
-    );
+    eventually("zoomed", || Ok(size(&server, "%2")? == (20, 81)))?;
+    client.wait("no separator while zoomed", |t| !t.contains('│'))?;
     // The unfocused pane keeps its last size while no one shows it.
-    assert_eq!(size(&server, "%1")?, (19, 40));
+    assert_eq!(size(&server, "%1")?, (20, 40));
     client.keys(&format!("{PREFIX}z"))?;
-    eventually("restored", || Ok(size(&server, "%2")? == (19, 40)))?;
+    eventually("restored", || Ok(size(&server, "%2")? == (20, 40)))?;
     // Changing focus ends a zoom.
     client.keys(&format!("{PREFIX}z"))?;
-    eventually("zoomed again", || Ok(size(&server, "%2")? == (19, 81)))?;
+    eventually("zoomed again", || Ok(size(&server, "%2")? == (20, 81)))?;
     client.keys(&format!("{PREFIX}o"))?;
     eventually("focus moved and zoom ended", || {
-        Ok(focused(&server)? == "%1" && size(&server, "%2")? == (19, 40))
+        Ok(focused(&server)? == "%1" && size(&server, "%2")? == (20, 40))
     })?;
+    Ok(())
+}
+
+/// With no bar, the default, a fresh client gives every row to its panes.
+/// The prefix draws the bar over the bottom row until it ends, and a bell
+/// in another tab takes only the row's corner. Neither resizes a pane.
+#[test]
+fn the_bar_draws_over_the_panes_only_while_the_prefix_is_in_use() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    let whole = || Ok::<_, String>(server.ok(&["ls", "listing"])?.contains("%1 60x10"));
+    assert!(whole()?);
+    client.keys("clear; printf '\\033[10;1Hbottom''-row'; sleep 100\r")?;
+    client.wait("the bottom row", |t| t.lines().nth(9) == Some("bottom-row"))?;
+    client.keys(PREFIX)?;
+    client.wait("the bar over it", |t| {
+        t.lines()
+            .nth(9)
+            .is_some_and(|b| b.contains("main") && b.contains("C-b"))
+    })?;
+    assert!(whole()?);
+    client.keys("\x1b")?;
+    client.wait("the row again", |t| t.lines().nth(9) == Some("bottom-row"))?;
+    let other = server.words("opts 60 10 size str +1 workspace in new-tab")?;
+    let other = other.split(':').next().unwrap_or_default();
+    server.type_line(other, "printf '\\a'")?;
+    client.wait("a corner notice", |t| {
+        let row = t.lines().nth(9).unwrap_or_default();
+        row.starts_with("bottom-row") && row.ends_with(&format!("bell in {other}"))
+    })?;
+    assert!(whole()?);
     Ok(())
 }
 
 #[test]
 fn the_bar_shows_workspace_tabs_pane_and_title() -> Outcome {
-    let server = Server::start("")?;
+    let server = Server::start(BAR_ROW)?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
+    // Its row is the panes' no longer.
+    assert!(server.ok(&["ls", "listing"])?.contains("%1 60x9"));
     server.ok(&["str", "+1", "workspace", "str", "work", "rename"])?;
     server.ok(&["str", "@1", "tab", "str", "code", "rename"])?;
     client.wait("the names", |t| {
@@ -259,7 +284,6 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
         "{before:?}"
     );
     server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
-    client.wait("two panes", |t| t.contains("%2"))?;
     eventually("the shrunk pane", || {
         let rows = captured(&server, "%1")?;
         Ok(rows.len() < before.len() && rows.last().map(String::as_str) == Some("last-line"))

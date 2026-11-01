@@ -38,11 +38,9 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 40)?;
     client.wait_for("$")?;
-    let bar = client.bar();
-    assert!(bar.contains("main"), "{bar}");
-    assert!(bar.contains("%1") && !bar.contains("%1 %1"), "{bar}");
+    // With no bar, the pane has every row.
     let ls = server.ok(&["ls", "listing"])?;
-    assert!(ls.contains("%1 40x9"), "{ls}");
+    assert!(ls.contains("%1 40x10"), "{ls}");
     assert!(ls.contains("client c1 40x10 +1 @1 %1"), "{ls}");
     client.keys("echo before-detach\r")?;
     client.wait("output", |t| t.lines().any(|l| l == "before-detach"))?;
@@ -111,7 +109,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     eventually("only the first client", || Ok(clients()? == 1))?;
     // The one left still sizes its pane alone.
     keep.keys("stty size\r")?;
-    keep.wait("its size", |t| t.lines().any(|l| l == "9 40"))?;
+    keep.wait("its size", |t| t.lines().any(|l| l == "10 40"))?;
     Ok(())
 }
 
@@ -145,8 +143,8 @@ fn a_resize_reaches_the_program() -> Outcome {
     client.wait_for("$")?;
     client.resize(20, 60)?;
     client.keys("stty size\r")?;
-    client.wait("the new size", |t| t.lines().any(|l| l == "19 60"))?;
-    assert!(server.ok(&["ls", "listing"])?.contains("%1 60x19"));
+    client.wait("the new size", |t| t.lines().any(|l| l == "20 60"))?;
+    assert!(server.ok(&["ls", "listing"])?.contains("%1 60x20"));
     // Past what a grid holds, refused and said: the view keeps its size.
     let past = fux_wire::protocol::AttachedFrame::Resize(sized(60000, 60000)?);
     client.frame(&past)?;
@@ -175,7 +173,7 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     let json = server.ok(&["str", "%1", "pane", "capture", "json"])?;
     assert!(
         json.starts_with(
-            "{\"pane\":\"%1\",\"screen_rows\":5,\"screen_cols\":30,\"screen_cursor\":["
+            "{\"pane\":\"%1\",\"screen_rows\":6,\"screen_cols\":30,\"screen_cursor\":["
         ),
         "{json}"
     );
@@ -225,12 +223,12 @@ fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
 fn the_real_client_attaches_restores_its_terminal_and_reattaches() -> Outcome {
     let server = Server::start("")?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
-    terminal.wait_for("%1")?;
+    terminal.wait_for("$")?;
     terminal.type_bytes(b"echo real-client\r")?;
     terminal.wait_for("real-client")?;
     terminal.resize(15, 70)?;
     terminal.type_bytes(b"stty size\r")?;
-    terminal.wait_for("14 70")?;
+    terminal.wait_for("15 70")?;
     // A program asks for the mouse, and the terminal is detached with it on.
     terminal.type_bytes(b"printf '\\033[?1002h\\033[?1006h'; echo mouse-ask''ed\r")?;
     terminal.wait_for("mouse-asked")?;
@@ -1098,7 +1096,7 @@ fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
                 None => command.env_remove("HOME"),
             };
         })?;
-        terminal.wait_for("%1")?;
+        terminal.wait_for("$")?;
         terminal.type_bytes(format!("pwd > '{}'; exit\r", marker.display()).as_bytes())?;
         let status = terminal.wait_exit();
         stop_server(&socket)?;
@@ -1160,7 +1158,7 @@ fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
 fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
     let server = Server::start("")?;
     let mut terminal = Terminal::attach(&server, 20, 60, &[])?;
-    terminal.wait_for("%1")?;
+    terminal.wait_for("$")?;
     let out = server.dir.join("typed");
     // The marker is assembled when it runs, so the typed line never
     // matches it.
@@ -1232,7 +1230,7 @@ fn a_stopped_key_program_leaves_the_next_one_asking() -> Outcome {
                 str k str 'me focused str next-''ok text send-keys' bind";
     let server = Server::start(keys)?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
-    terminal.wait_for("%1")?;
+    terminal.wait_for("$")?;
     terminal.type_bytes(b"echo sleep''ing; sleep 100\r")?;
     terminal.wait_for("sleeping")?;
     terminal.type_bytes(b"\x02j")?;
@@ -1414,7 +1412,7 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
         "{listed}"
     );
     assert!(
-        listed.contains("cat 40x9") && !listed.contains("%2"),
+        listed.contains("cat 40x10") && !listed.contains("%2"),
         "{listed}"
     );
     assert!(
@@ -1448,7 +1446,7 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
                 .env("XDG_CONFIG_HOME", server.dir.join("config"));
         },
     )?;
-    terminal.wait_for("%1")?;
+    terminal.wait_for("$")?;
     terminal.type_bytes(b"\x02d")?;
     assert!(terminal.wait_exit()?.success());
     let output = String::from_utf8_lossy(&terminal.output);
@@ -1465,14 +1463,17 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
     let existing = Server::start("")?;
     let empty = Server::empty()?;
     let (launch, why) = (["str", "", "program"], "a program is needed");
-    for (server, rows, refused) in [
-        (&existing, "10", None),
-        (&empty, "10", Some("no launch to start one")),
+    for (server, size, refused) in [
+        (&existing, "opts 40 10 size", None),
+        (&empty, "opts 40 10 size", Some("no launch to start one")),
         // The server's own reason stays first: a size that fits no pane.
-        (&empty, "1", Some("no room for a pane below its bar")),
+        (
+            &empty,
+            "str bar list str bottom list end list end false end set opts 40 1 size",
+            Some("no room for a pane below its bar"),
+        ),
     ] {
-        let args: Vec<&str> = ["opts", "40", rows, "size"]
-            .into_iter()
+        let args: Vec<&str> = (size.split(' '))
             .chain(launch.iter().copied())
             .chain(["attach"])
             .collect();
@@ -1533,14 +1534,13 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
     server.words("opts str second name 80 24 size new-workspace drop")?;
     for (args, expected) in [(&[][..], "%2"), (&["%1", "attach"][..], "%1")] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
-        terminal.wait_for(expected)?;
-        let listed = server.ok(&["ls", "listing"])?;
-        assert!(
-            listed
-                .lines()
-                .any(|line| line.starts_with("client ") && line.ends_with(expected)),
-            "{listed}"
-        );
+        eventually(&format!("the client on {expected}"), || {
+            let listed = server.ok(&["ls", "listing"])?;
+            Ok(
+                (listed.lines())
+                    .any(|line| line.starts_with("client ") && line.ends_with(expected)),
+            )
+        })?;
         terminal.type_bytes(b"\x02d")?;
         terminal.wait_exit()?;
         eventually("the detached view", || {
@@ -1648,11 +1648,13 @@ fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
         from.set_read_timeout(None).map_err(e)?;
         std::thread::spawn(move || std::io::copy(&mut from, &mut to));
     }
-    terminal.wait_for("%1")?;
+    eventually("the attached client", || {
+        Ok(server.ok(&["ls", "listing"])?.contains("client "))
+    })?;
     terminal.type_bytes(b"\x1b[15~")?;
     terminal.wait_for("fence-complete")?;
     eventually("the latest size", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("50x11"))
+        Ok(server.ok(&["ls", "listing"])?.contains("50x12"))
     })?;
     terminal.type_bytes(b"\x02d")?;
     assert!(terminal.wait_exit()?.success());

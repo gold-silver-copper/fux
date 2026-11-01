@@ -949,8 +949,8 @@ fn paint(
     let now = std::time::Instant::now();
     let mut s = started_session()?;
     let first = recordings.first().ok_or("no recordings")?;
-    // The bar takes a row: the pane is the recording's size.
-    let size = fux_vt::Size::new(first.rows.saturating_add(1), first.cols);
+    // The bar takes no row: the pane is the recording's size.
+    let size = fux_vt::Size::new(first.rows, first.cols);
     let attach = fux_wire::protocol::Attach {
         initial: Some(initial()?),
         ..fux_wire::protocol::Attach::of(size.map_err(|e| e.to_string())?, presentation()?)

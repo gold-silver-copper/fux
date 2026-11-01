@@ -526,7 +526,7 @@ mod tests {
         let (mut s, c) = session()?;
         let mut presentation = s.views.get(&c).ok_or("view")?.presentation.clone();
         presentation.bar = fux_wire::presentation::Bar::new(
-            fux_wire::presentation::BarPosition::Off,
+            fux_wire::presentation::BarPosition::Bottom,
             vec![],
             vec![],
             false,
@@ -549,7 +549,7 @@ mod tests {
                 .screen()
                 .size()
                 .rows(),
-            rows + 1
+            rows - 1
         );
         let batch = Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
             .batch(s.parts.journal(), true)?;
@@ -1462,11 +1462,6 @@ mod tests {
     #[test]
     fn bar_feedback_blocks_mouse_presses_but_preserves_a_held_release() -> Outcome {
         let (mut s, c) = crate::session::testing::attached(2, 20)?;
-        output_as(
-            &mut s,
-            Some(c),
-            "str bar list str off list end list end false end set",
-        )?;
         s.size_client(c, 1, 20).map_err(|e| e.to_string())?;
         s.out(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, b"\x1b[<0;1;1M");

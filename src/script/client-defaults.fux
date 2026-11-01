@@ -31,7 +31,9 @@ str styles list
   list str border       240 str default end
   list str border-focus   2 str default end
 end set
-str bar list str bottom
+# The bar takes no row: it draws over the panes while a screen of this
+# client's shows (the prefix's among them), and notices take a corner.
+str bar list str off
   list str workspace str tabs end
   list str pane end
   false
