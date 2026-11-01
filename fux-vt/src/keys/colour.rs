@@ -30,11 +30,6 @@ pub struct Colours {
 }
 
 impl Colours {
-    /// Whether the terminal said anything.
-    pub fn known(&self) -> bool {
-        *self != Colours::default()
-    }
-
     /// The answer to a program's `OSC number ; ?`, if fux knows that colour.
     pub fn answer(&self, number: u8, bel: bool) -> Option<Vec<u8>> {
         let colour = match number {

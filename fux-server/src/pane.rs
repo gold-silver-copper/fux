@@ -1724,6 +1724,7 @@ impl Pane {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::vt_feed::{Feed, Look};
     pub(crate) fn options(bytes: usize) -> Result<fux_wire::command::PaneOptions, String> {
         Ok(fux_wire::command::PaneOptions {
             history_bytes: fux_wire::command::HistoryBytes::new(bytes).ok_or("history budget")?,
@@ -2002,7 +2003,7 @@ pub(crate) mod tests {
             pane.screen()
                 .rows()
                 .skip(1)
-                .all(|row| row.cells().all(|cell| !cell.has_contents()))
+                .all(|row| row.cells().all(|cell| cell.contents().is_empty()))
         );
         Ok(())
     }
@@ -2470,9 +2471,12 @@ pub(crate) mod tests {
         assert_eq!(pane.input.drain_all(), b"\x1bP1$r0;4:3m\x1b\\");
         pane.output(b"\x1b[0m\x1b[4:3m\x1b[58:2::255:0:0mx\x1b[0m");
         let cell = pane.screen().cell(0, 0).ok_or("no cell")?;
-        assert_eq!(cell.underline_style(), fux_vt::UnderlineStyle::Curly);
         assert_eq!(
-            cell.underline_color(),
+            cell.attributes().underline_style(),
+            fux_vt::UnderlineStyle::Curly
+        );
+        assert_eq!(
+            cell.attributes().underline_color(),
             fux_vt::Color::Rgb([255, 0, 0].into())
         );
         Ok(())

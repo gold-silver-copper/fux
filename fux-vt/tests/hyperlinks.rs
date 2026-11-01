@@ -2,7 +2,17 @@
 //! `Feature::Hyperlinks`: each cell printed while a link is open keeps it,
 //! through scrolling, erasing, editing and resizing, within bounds.
 
-use fux_vt::{Feature, ID_LIMIT, OSC_PAYLOAD_LIMIT, Options, Parser, Row, Size, URI_LIMIT};
+use fux_vt::{Feature, OSC_PAYLOAD_LIMIT, Options, Parser, Row, Size};
+
+/// The longest hyperlink URI kept (README, `Hyperlinks`).
+const URI_LIMIT: usize = 2083;
+/// The longest hyperlink id kept (README, `Hyperlinks`).
+const ID_LIMIT: usize = 250;
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look, cells_text};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const LINKS: Options = Options::new().with(Feature::Hyperlinks);
@@ -40,26 +50,25 @@ fn a_link_covers_the_cells_printed_while_it_is_open() -> Result {
         2,
         6,
         0,
-        b"a\x1b]8;;http://x\x1b\\bc\x1b]8;;\x1b\\d\x1b]8;;http://y\x07e\x1b]8;;\x07",
+        b"a\x1b]8;;http://x\x1b\\bc\x1b]8;;\x1b\\d\x1b]8;;http://y\x07e\x1b]8;;\x07f",
     )?;
     let s = p.screen();
+    // The last closed, `f` takes none.
     assert_eq!(
         uris_at(&p, 0),
         expected(&["-", "http://x", "http://x", "-", "http://y", "-"])
     );
-    // No id given: none read, and each OSC 8 is a link of its own.
+    // No id given: each OSC 8 is a link of its own.
     let (b, c, e) = (s.link(0, 1), s.link(0, 2), s.link(0, 4));
-    assert_eq!(b.and_then(|l| l.id()), None);
     assert_eq!(b.map(|l| l.key()), c.map(|l| l.key()));
     assert_ne!(b.map(|l| l.key()), e.map(|l| l.key()));
-    assert_eq!(s.hyperlink(), None);
-    // Opening one link and then another without closing switches to it.
-    let p = parser(1, 4, 0, b"\x1b]8;;http://a\x07a\x1b]8;;http://b\x07b")?;
+    // Opening one link and then another without closing switches to it,
+    // and it stays open.
+    let p = parser(1, 4, 0, b"\x1b]8;;http://a\x07a\x1b]8;;http://b\x07bc")?;
     assert_eq!(
         uris_at(&p, 0),
-        expected(&["http://a", "http://b", "-", "-"])
+        expected(&["http://a", "http://b", "http://b", "-"])
     );
-    assert_eq!(p.screen().hyperlink(), Some(("http://b", None)));
     Ok(())
 }
 
@@ -91,17 +100,17 @@ fn an_id_joins_the_cells_of_one_link() -> Result {
         8,
         0,
         b"\x1b]8;id=1;http://a\x07ab\x1b]8;;\x07  \x1b]8;id=1;http://a\x07cd\x1b]8;id=1;http://b\x07e\r\n\
-          \x1b]8;foo=bar:id=1:baz;http://a\x07f\x1b]8;;http://a\x07g\x1b]8;id=;http://a\x07h",
+          \x1b]8;foo=bar:id=1:baz;http://a\x07f\x1b]8;;http://a\x07g\x1b]8;id=;http://a\x07h\
+          \x1b]8;;\x07 \x1b]8;id=;http://a\x07i",
     )?;
     let s = p.screen();
     let key = |row, col| s.link(row, col).map(|l| l.key());
-    assert_eq!(s.link(0, 0).and_then(|l| l.id()), Some("1"));
     assert_eq!(key(0, 0), key(0, 4));
     assert_eq!(key(0, 0), key(1, 0), "id among other parameters");
     assert_ne!(key(0, 0), key(0, 6), "the same id, another URI");
     assert_ne!(key(0, 0), key(1, 1), "no id");
-    assert_ne!(key(1, 1), key(1, 2), "an empty id is none");
-    assert_eq!(s.link(1, 2).and_then(|l| l.id()), None);
+    assert_ne!(key(1, 1), key(1, 2), "no id, another link");
+    assert_ne!(key(1, 2), key(1, 4), "an empty id is none");
     Ok(())
 }
 
@@ -112,7 +121,6 @@ fn without_the_option_links_are_ignored() -> Result {
     p.process(b"\x1b]8;;http://x\x07ab")?;
     let s = p.screen();
     assert_eq!(s.link(0, 0), None);
-    assert_eq!(s.hyperlink(), None);
     assert!(s.rows().nth_back(0).is_some_and(|r| !r.has_links()));
     assert_eq!(s.cell(0, 0).map(|c| c.contents()), Some("a"));
     Ok(())
@@ -195,7 +203,7 @@ fn a_margin_scroll_cuts_the_runs_at_the_margins() -> Result {
           A\x1b]8;;r\x07BC\x1b]8;;\x07DEF\x1b]8;;s\x07GHI\x1b]8;;\x07J\
           \x1b[?69h\x1b[3;8s\x1b[2;3H\n",
     )?;
-    let text = |y| p.screen().window().row(y).map(|r| r.cells_text());
+    let text = |y| p.screen().window().row(y).map(|r| cells_text(&r));
     assert_eq!(text(0).as_deref(), Some("abCDEFGHij"));
     assert_eq!(text(1).as_deref(), Some("AB      IJ"));
     let cells = |s: &str| expected(&s.split(' ').collect::<Vec<_>>());
@@ -357,7 +365,6 @@ fn screens_and_resets() -> Result {
     assert_eq!(uris_at(&p, 0), expected(&["u", "u", "-", "-"]));
     p.process(b"\x1bcd")?;
     assert_eq!(uris_at(&p, 0), expected(&["-"; 4]));
-    assert_eq!(p.screen().hyperlink(), None);
     // SGR 0, DECSTR and DECSC/DECRC are no end of a link, nor its start.
     let p = parser(1, 4, 0, b"\x1b7\x1b]8;;u\x07\x1b[0ma\x1b[!pb\x1b8c")?;
     assert_eq!(uris_at(&p, 0), expected(&["u", "u", "-", "-"]));

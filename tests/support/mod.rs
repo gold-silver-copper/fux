@@ -4,6 +4,12 @@
     dead_code,
     reason = "each test binary uses a different part of this module"
 )]
+
+/// How the tests feed a fux-vt parser, as fux-vt's own do.
+#[path = "../../fux-vt/tests/corpus/feed.rs"]
+mod feed;
+pub use feed::Feed;
+
 use fux::client::Keyboard;
 use fux::client_state::ClientState;
 use fux::screens::Dispatch;
@@ -42,6 +48,10 @@ pub const BAR_ROW: &str =
 /// How long a test waits for something to show.
 pub const PATIENCE: Duration = Duration::from_secs(10);
 
+/// The descriptor a server [`Server::start_inheriting`] starts holds open
+/// without close-on-exec.
+pub const LEAKED: i32 = 9;
+
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Servers are started one at a time, so no fork in one test can inherit
 /// another test's descriptors.
@@ -70,7 +80,10 @@ fn terminal(rows: u16, cols: u16) -> Result<fux_vt::Parser, String> {
 }
 
 pub fn pty_size(rows: u16, cols: u16) -> Result<fuxix::terminal::Size, String> {
-    fuxix::terminal::Size::new(rows, cols).ok_or_else(|| format!("a {rows}x{cols} terminal"))
+    std::num::NonZeroU16::new(rows)
+        .zip(std::num::NonZeroU16::new(cols))
+        .map(fuxix::terminal::Size::from)
+        .ok_or_else(|| format!("a {rows}x{cols} terminal"))
 }
 
 pub struct Server {
@@ -115,9 +128,8 @@ impl Server {
 
     /// A server that inherits a descriptor without close-on-exec, as one
     /// does whatever its parent leaked into it: the file `inherited` in its
-    /// directory, and the descriptor's number, which is the same in the
-    /// server. It is made while no other server can start, so only this one
-    /// inherits it.
+    /// directory, opened by the shell that runs it as [`LEAKED`], and that
+    /// number.
     pub fn start_inheriting(config: &str) -> Result<(Server, i32), String> {
         let (server, held) = Server::start_with(config, None, true, true, &journal()?)?;
         Ok((server, held.ok_or("a held descriptor")?))
@@ -155,22 +167,21 @@ impl Server {
         let log = std::fs::File::create(dir.join("server.log")).map_err(e)?;
         let (child, held) = {
             let _guard = SPAWN.lock().map_err(e)?;
-            let leaked = if inherit {
-                let file = std::fs::File::create(dir.join("inherited")).map_err(e)?;
-                Some(fuxix::io::duplicate_inheritable(&file).map_err(e)?)
+            let mut first: Vec<String> =
+                limits.map(|l| format!("ulimit {l}")).into_iter().collect();
+            if inherit {
+                let leaked = dir.join("inherited");
+                first.push(format!("exec {LEAKED}>'{}'", leaked.display()));
+            }
+            let mut command = if first.is_empty() {
+                Command::new(fux())
             } else {
-                None
-            };
-            let mut command = match limits {
                 // `exec` keeps the pid, so `pid()` is the server's.
-                Some(limits) => {
-                    let mut sh = Command::new("/bin/sh");
-                    sh.arg("-c")
-                        .arg(format!("ulimit {limits} && exec \"$0\" \"$@\""))
-                        .arg(fux());
-                    sh
-                }
-                None => Command::new(fux()),
+                let mut sh = Command::new("/bin/sh");
+                sh.arg("-c")
+                    .arg(format!("{} && exec \"$0\" \"$@\"", first.join(" && ")))
+                    .arg(fux());
+                sh
             };
             let child = command
                 .arg(fux::SERVE)
@@ -189,9 +200,7 @@ impl Server {
                 .stderr(log)
                 .spawn()
                 .map_err(e)?;
-            // Closed here once the server has its copy.
-            let held = leaked.as_ref().map(std::os::fd::AsRawFd::as_raw_fd);
-            (child, held)
+            (child, inherit.then_some(LEAKED))
         };
         let mut server = Server {
             dir,
@@ -721,10 +730,10 @@ impl Client {
                         if cell.is_wide_continuation() {
                             continue;
                         }
-                        line.push_str(if cell.has_contents() {
-                            cell.contents()
-                        } else {
+                        line.push_str(if cell.contents().is_empty() {
                             " "
+                        } else {
+                            cell.contents()
                         });
                     }
                 }
@@ -824,13 +833,20 @@ pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
     Ok(minutes.parse::<f64>().map_err(e)? * 60.0 + seconds.parse::<f64>().map_err(e)?)
 }
 
+/// Whether a process `pid` exists, as `ps -p` finds it: a zombie not yet
+/// reaped does.
+pub fn exists(pid: i32) -> bool {
+    Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .stdout(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Whether a process exists and has not exited: a zombie, which lingers
 /// until its parent reaps it, counts as gone.
 pub fn alive(pid: i32) -> bool {
-    let Some(p) = fuxix::process::Pid::from_raw(pid) else {
-        return false;
-    };
-    if !fuxix::process::exists(p) {
+    if fuxix::process::Pid::from_raw(pid).is_none() {
         return false;
     }
     Command::new("ps")
@@ -1070,10 +1086,10 @@ impl Terminal {
                         let mut line = String::new();
                         for cell in r.cells() {
                             if !cell.is_wide_continuation() {
-                                line.push_str(if cell.has_contents() {
-                                    cell.contents()
-                                } else {
+                                line.push_str(if cell.contents().is_empty() {
                                     " "
+                                } else {
+                                    cell.contents()
                                 });
                             }
                         }

@@ -6,8 +6,32 @@ mod pieces;
 
 #[path = "corpus/invariants.rs"]
 mod invariants;
-use fux_vt::{Feature, Identity, Mode, Options, Parser, Sink, Size};
+use fux_vt::{Feature, Identity, Mode, Options, Parser, Screen, Sink, Size};
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, cells_text};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// The screen's text: each line's trailing blanks cut, a row whose line
+/// goes on joined to the next, the others a newline apart.
+fn text(s: &Screen) -> String {
+    let w = s.window();
+    let (mut text, mut line) = (String::new(), String::new());
+    for (y, row) in (0..w.rows()).filter_map(|y| Some((y, w.row(y)?))) {
+        line.push_str(&cells_text(&row));
+        let last = y.saturating_add(1) == w.rows();
+        if last || !row.continues() {
+            text.push_str(line.trim_end_matches(' '));
+            line.clear();
+            if !last {
+                text.push('\n');
+            }
+        }
+    }
+    text
+}
 
 #[test]
 fn terminal_edge_streams_preserve_primary_history_and_modes() -> Result {
@@ -17,7 +41,7 @@ fn terminal_edge_streams_preserve_primary_history_and_modes() -> Result {
         p.process(bytes)?;
         invariants::check(&p);
         let s = p.screen();
-        let text = s.window().text((0, 0), (22, 79), 2000, 4000)?;
+        let text = text(s);
         match i {
             0 => {
                 assert!(text.starts_with("LINE-09\n"));
@@ -65,7 +89,7 @@ impl Sink for Replies {
 
 /// The adversarial corpus, after the terminal-edge streams, fed whole and in
 /// pieces of one to seven bytes: the two parsers agree (screens, history,
-/// links, prompt marks, replies) and the invariants hold after every
+/// links, replies) and the invariants hold after every
 /// operation. Without options; and with every feature, with and without
 /// reflow, links opened and closed, prompts marked and cells
 /// inserted and deleted among the operations, and the screen resized now

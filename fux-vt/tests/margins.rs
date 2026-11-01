@@ -14,6 +14,11 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod lines;
 use lines::lines;
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
+
 fn run(rows: u16, cols: u16, bytes: &[u8]) -> Result<Parser> {
     let mut parser = Parser::new(Size::new(rows, cols)?, 0)?;
     parser.process(bytes)?;
@@ -71,7 +76,10 @@ fn declrmm_lets_decslrm_set_the_margins() -> Result {
     // A right margin past the screen: the last column.
     let p = run(3, 8, b"\x1b[?69h\x1b[2;3H\x1b[3;99sX")?;
     assert_eq!(lines(&p), ["X", "", ""]);
-    assert_eq!(p.screen().left_right_margins(), (2, 7));
+    // The margins are columns 3 and 8: a line from the left one wraps after
+    // the last column.
+    let p = run(3, 8, b"\x1b[?69h\x1b[3;99s\x1b[1;3Habcdefg")?;
+    assert_eq!(lines(&p), ["  abcdef", "  g", ""]);
     // DECRQM.
     let report = b"\x1b[?69$p\x1b[?69h\x1b[?69$p";
     assert_eq!(replies(3, 8, report)?, ["\x1b[?69;2$y", "\x1b[?69;1$y"]);
@@ -90,7 +98,7 @@ fn declrmm_lets_decslrm_set_the_margins() -> Result {
 fn printing_wraps_at_the_right_margin() -> Result {
     let p = run(4, 10, b"\x1b[?69h\x1b[2;5s\x1b[3;1Hxxxxxxxxxxxxxxxxxxxx")?;
     assert_eq!(lines(&p), [" xxxx", " xxxx", "xxxxx", " xxx"]);
-    assert!(p.screen().row_wrapped(2));
+    assert!(p.screen().row_continues(2));
     // Right of the right margin, at the bottom: the next line is the same.
     let p = run(4, 10, b"\x1b[?69h\x1b[2;5s\x1b[4;9Hxyzwuv")?;
     assert_eq!(lines(&p), ["", "", "", " zwuv   xy"]);
@@ -98,7 +106,7 @@ fn printing_wraps_at_the_right_margin() -> Result {
     // row at the margin is soft-wrapped, keeping its flag as it stays.
     let p = run(5, 10, b"\x1b[?69h\x1b[2;5s\x1b[2;4r\x1b[4;3Hxxxxxxxxxxxxxx")?;
     assert_eq!(lines(&p), ["", " xxxx", " xxxx", " xxx", ""]);
-    assert!(p.screen().row_wrapped(3) && !p.screen().row_wrapped(2));
+    assert!(p.screen().row_continues(3) && !p.screen().row_continues(2));
     // DECAWM off.
     let p = run(6, 12, b"\x1b[?69h\x1b[5;9s\x1b[5;9r\x1b[5;8H\x1b[?7labcdef")?;
     assert_eq!(lines(&p).get(4).map(String::as_str), Some("       af"));
@@ -209,7 +217,7 @@ fn scrolling_is_bounded_by_the_margins() -> Result {
             "",
         ]
     );
-    let blue = |x: u16| p.screen().cell(1, x).map(|c| c.bgcolor());
+    let blue = |x: u16| p.screen().cell(1, x).map(|c| c.attributes().background());
     assert!((2..8).all(|x| blue(x) == Some(Color::Idx(4))));
     assert_eq!(
         (blue(1), blue(8)),
@@ -637,7 +645,7 @@ fn a_wrap_waiting_at_a_margin_reset_is_carried_out() -> Result {
         )?;
         assert_eq!(lines(&p), ["abcde", "X", ""], "{reset:?}");
         assert_eq!(p.screen().cursor_position(), (1, 1), "{reset:?}");
-        assert!(p.screen().row_wrapped(0), "{reset:?}");
+        assert!(p.screen().row_continues(0), "{reset:?}");
     }
     let p = run(
         3,

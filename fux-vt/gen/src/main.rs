@@ -542,11 +542,10 @@ fn tables(properties: &[u16], version: &str) -> Result<String> {
     )?;
     writeln!(
         out,
-        "/// The Unicode version grapheme clusters are segmented and measured by."
-    )?;
-    writeln!(
-        out,
-        "pub const UNICODE_VERSION: (u8, u8, u8) = ({major}, {minor}, {update});"
+        "/// The Unicode version grapheme clusters are segmented and measured by,\n\
+         /// which the tests compare with their references'.\n\
+         #[cfg(test)]\n\
+         pub(super) const UNICODE_VERSION: (u8, u8, u8) = ({major}, {minor}, {update});"
     )?;
     writeln!(out, "pub(super) const SHIFT: u32 = {shift};")?;
     write_array(&mut out, "BLOCK", "u16", &index)?;

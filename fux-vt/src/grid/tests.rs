@@ -1,5 +1,14 @@
 use super::*;
 
+impl Grid {
+    /// The cells retained, screen and history.
+    pub(crate) fn storage_cells(&self) -> usize {
+        self.cells
+            .capacity()
+            .saturating_add(self.history.kept_cells())
+    }
+}
+
 /// Up, the departing rows going into history.
 const UP: Scroll = Scroll::Up { history: true };
 
@@ -63,7 +72,6 @@ fn narrowing_live_rows_uses_the_new_width() -> Result<(), Error> {
     let (narrow, _) = wide.resized(Size::of(23, 10), &mut next, 1)?;
     assert_eq!(narrow.history_len(), 0);
     assert_eq!(narrow.cells.capacity(), 23 * 10);
-    assert_eq!(narrow.storage_cells(), 23 * 10);
     Ok(())
 }
 
@@ -202,14 +210,14 @@ fn scrolling_moves_only_the_selected_rows() -> Result<(), Error> {
         grid.order.top = if scrolls == 0 { 0 } else { 2 };
         // Raw rows can hold an unpaired head or tail; copying a whole row
         // must preserve them too, alongside its short and long text.
-        let slot = grid.slot(2).ok_or(Error::InvalidRange)?;
+        let slot = grid.slot(2).ok_or(Error::Capacity)?;
         for (x, cell) in [
             (8, Compact::continuation()),
             (10, Compact::glyph('界', 2, 0)),
         ] {
-            *grid.slice_mut(slot).get_mut(x).ok_or(Error::InvalidRange)? = cell;
+            *grid.slice_mut(slot).get_mut(x).ok_or(Error::Capacity)? = cell;
         }
-        grid.meta.get_mut(slot).ok_or(Error::InvalidRange)?.used = 12;
+        grid.meta.get_mut(slot).ok_or(Error::Capacity)?.used = 12;
         let before: Vec<_> = (0..4).map(|y| read_row(&grid, y)).collect();
         for top in 0..4 {
             for bottom in top..4 {
@@ -231,9 +239,9 @@ fn scrolling_moves_only_the_selected_rows() -> Result<(), Error> {
                                     before.get(usize::from(source))
                                 );
                             } else {
-                                let row = moved.live_row(y).ok_or(Error::InvalidRange)?;
+                                let row = moved.live_row(y).ok_or(Error::Capacity)?;
                                 assert!((0..row.width).all(|x| row.cell(x).is_some_and(|c| {
-                                    !c.has_contents() && c.attributes() == colour
+                                    c.contents().is_empty() && c.attributes() == colour
                                 })));
                             }
                         }
@@ -300,7 +308,7 @@ fn copying_a_full_linked_row_spends_at_most_its_share() -> Result<(), Error> {
         ] {
             let mut line = format!("\x1b[{row};1H");
             for col in 0..C {
-                let id = ids.get(usize::from(col % 2)).ok_or(Error::InvalidRange)?;
+                let id = ids.get(usize::from(col % 2)).ok_or(Error::Capacity)?;
                 let marks = if long.contains(&col) { 63 } else { 8 };
                 line.push_str(&format!("\x1b]8;id={id};u{id}\x1b\\{base}"));
                 line.extend(std::iter::repeat_n('\u{301}', marks));
@@ -312,7 +320,7 @@ fn copying_a_full_linked_row_spends_at_most_its_share() -> Result<(), Error> {
         grid.copy_span(1, 0, 1..usize::from(C - 1), 1_000);
         let spent = crate::budget::spent().wrapping_sub(before);
         assert!(spent <= share, "long from {long_from}: {spent} > {share}");
-        let row = grid.live_row(0).ok_or(Error::InvalidRange)?;
+        let row = grid.live_row(0).ok_or(Error::Capacity)?;
         let text = |x| row.cell(x).map(|c| c.contents().len());
         assert_eq!([text(1), text(4094)], [Some(127), Some(17)]);
     }

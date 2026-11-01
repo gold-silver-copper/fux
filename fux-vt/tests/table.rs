@@ -24,6 +24,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
+
 const TABLE: &str = include_str!("data/conformance.txt");
 #[path = "corpus/escapes.rs"]
 mod escapes;
@@ -254,7 +259,17 @@ impl Sink for Record {
 /// (but `without Identity`), four lines of text and the cursor on the third line's
 /// fifth column, an SGR last so no character is the last printed.
 fn context(without: &str) -> Result<Parser, Box<dyn std::error::Error>> {
-    let options = fux_vt::Feature::ALL
+    let mut parser = Parser::with_options(Size::new(6, 12)?, 1 << 16, options(without))?;
+    parser.set_host_graphics(fux_vt::CellSize::new(10, 20).map_or(Graphics::Text, Graphics::Sixel));
+    let text = b"\x1b[Habcdefghijk\r\nlmnopqrstuv\r\nwxyzABCDEFG\r\nHIJKLMNOPQR\x1b[3;5H\x1b[m";
+    parser.process_with(text, &mut Record::default())?;
+    Ok(parser)
+}
+
+/// The context's options: every feature but the one `without` names, and
+/// an identity but `without Identity`.
+fn options(without: &str) -> Options {
+    fux_vt::Feature::ALL
         .iter()
         .fold(Options::new(), |o, f| {
             o.set(*f, format!("{f:?}") != without)
@@ -262,12 +277,7 @@ fn context(without: &str) -> Result<Parser, Box<dyn std::error::Error>> {
         .with_identity((without != "Identity").then_some(Identity {
             name: "fux",
             version: "1.2.3",
-        }));
-    let mut parser = Parser::with_options(Size::new(6, 12)?, 1 << 16, options)?;
-    parser.set_host_graphics(fux_vt::CellSize::new(10, 20).map_or(Graphics::Text, Graphics::Sixel));
-    let text = b"\x1b[Habcdefghijk\r\nlmnopqrstuv\r\nwxyzABCDEFG\r\nHIJKLMNOPQR\x1b[3;5H\x1b[m";
-    parser.process_with(text, &mut Record::default())?;
-    Ok(parser)
+        }))
 }
 
 /// The screen's whole state, as `Debug` shows it, but its version, which
@@ -505,8 +515,7 @@ fn conformance_md_is_the_table() {
 }
 
 #[test]
-fn the_parser_has_every_feature_on_in_the_context() -> Result<(), Box<dyn std::error::Error>> {
-    let options = context("")?.options();
-    assert!(Feature::ALL.iter().all(|f| options.has(*f)));
-    Ok(())
+fn the_parser_has_every_feature_on_in_the_context() {
+    let every: Options = Feature::ALL.into_iter().collect();
+    assert_eq!(options("").with_identity(None), every);
 }

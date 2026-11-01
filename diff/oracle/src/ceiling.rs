@@ -176,7 +176,12 @@ pub fn resize_history(history: usize, fill: usize) -> Result<(u64, u64), String>
         incididunt ut labore et dolore magna aliqua, ut enim ad minim veniam, quis nostrud\r\n";
     let mut written = 0usize;
     while written < fill {
-        parser.process(line).map_err(|e| e.to_string())?;
+        let mut rest = &line[..];
+        while let Some((taken, _)) =
+            (parser.process_until_stop(rest, &mut Deaf)).map_err(|e| e.to_string())?
+        {
+            rest = rest.get(taken..).unwrap_or_default();
+        }
         written = written.saturating_add(line.len());
     }
     let (there, to, to_took) = cost(|| parser.resize(narrow));

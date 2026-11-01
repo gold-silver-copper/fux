@@ -2295,7 +2295,15 @@ mod tests {
                 }
             }
             let stdin = io::stdin();
-            let before = fuxix::terminal::attributes(&stdin)?.modes();
+            // Every setting of the terminal, as `stty -g` writes them.
+            let modes = || {
+                std::process::Command::new("stty")
+                    .arg("-g")
+                    .stdin(std::process::Stdio::inherit())
+                    .output()
+                    .map(|out| out.stdout)
+            };
+            let before = modes()?;
             for flush in [false, true] {
                 let result = Raw::enter_with(&stdin, &mut Refused { flush });
                 let error = result.err().ok_or("entry succeeded")?;
@@ -2305,7 +2313,7 @@ mod tests {
                     "entry write refused"
                 };
                 assert!(matches!(&error, Error::Output(e) if e.to_string() == expected));
-                assert_eq!(fuxix::terminal::attributes(&stdin)?.modes(), before);
+                assert_eq!(modes()?, before);
             }
             io::stdout().write_all(REPORT.as_bytes())?;
             return Ok(());

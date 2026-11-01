@@ -1034,7 +1034,10 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     // shell signals the terminal's foreground job: the client goes, and the
     // server, in a session of its own, stays.
     terminal.hang_up();
-    if let Some(client) = fuxix::process::Pid::of(&terminal.child) {
+    if let Some(client) = i32::try_from(terminal.child.id())
+        .ok()
+        .and_then(fuxix::process::Pid::from_raw)
+    {
         let _ = fuxix::process::kill_group(client, fuxix::process::Signal::Hup);
     }
     let gone = eventually("the client to go", || {
@@ -1177,7 +1180,10 @@ fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
         terminal.type_bytes(b"\r")?;
         terminal.resize(20, 60)?;
         // A signal straight to the client too, not only through the PTY.
-        let pid = fuxix::process::Pid::of(&terminal.child).ok_or("the client's pid")?;
+        let pid = i32::try_from(terminal.child.id())
+            .ok()
+            .and_then(fuxix::process::Pid::from_raw)
+            .ok_or("the client's pid")?;
         let _ = fuxix::process::kill(pid, fuxix::process::Signal::Winch);
         expected.push_str(&line);
         expected.push('\n');
@@ -1266,7 +1272,10 @@ fn a_signal_does_not_end_a_command_waiting_for_the_server() -> Outcome {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(e)?;
-        let pid = fuxix::process::Pid::of(&child).ok_or("a pid")?;
+        let pid = i32::try_from(child.id())
+            .ok()
+            .and_then(fuxix::process::Pid::from_raw)
+            .ok_or("a pid")?;
         for _ in 0..20 {
             let _ = fuxix::process::kill(pid, fuxix::process::Signal::Winch);
         }

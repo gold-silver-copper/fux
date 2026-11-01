@@ -5,21 +5,23 @@
 //! reflow, one that keeps the width keeps history's rows so too.
 use fux_vt::{Feature, Options, Parser, Row, Size};
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
+
 /// What a row is, cell by cell.
 fn fingerprint(row: &Row<'_>) -> String {
     let cells: Vec<String> = (0..row.len())
         .map(|c| format!("{:?}{:?}", row.cell(c), row.link(c)))
         .collect();
     format!(
-        "{:?} v{} wrapped {} continues {} {:?} prompt {} len {} text {} links {} {}",
+        "{:?} v{} continues {} {:?} len {} links {} {}",
         row.id(),
         row.version(),
-        row.wrapped(),
         row.continues(),
         row.rendition(),
-        row.starts_prompt(),
         row.len(),
-        row.text_len(),
         row.has_links(),
         cells.join("|")
     )
@@ -76,7 +78,7 @@ fn resizing_keeps_history_rows_that_need_no_reflow() -> Result<(), Box<dyn std::
             assert!(!history.is_empty());
             for row in history {
                 let was = before.iter().position(|(id, _)| *id == row.id());
-                if parser.options().has(Feature::Reflow) && was.is_none_or(|at| at >= held) {
+                if reflow && was.is_none_or(|at| at >= held) {
                     continue;
                 }
                 assert_eq!(

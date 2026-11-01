@@ -19,6 +19,9 @@ use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::keys::encode::{KeyMode, OtherKeysLevel, Report, key_bytes};
 use fux_vt::keys::{KeyPress, Keystroke, Kitty};
 
+/// The paste limit the tests' decoders keep.
+const PASTE_LIMIT: usize = 64 * 1024;
+
 #[path = "corpus/escapes.rs"]
 mod escapes;
 use escapes::bytes;
@@ -182,7 +185,8 @@ fn xterm_keys() -> Result {
 /// input space-separated, a key by its name (`C-a`, `M-Up`, a character as
 /// itself, or `U+XXXX` for one past ASCII), others by their kind.
 fn decoded(bytes: &[u8]) -> String {
-    let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+    let mut decoder =
+        Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
     let mut out = Vec::new();
     decoder.bytes(bytes, &mut out);
     decoder.timeout(&mut out);

@@ -849,7 +849,15 @@ mod tests {
     fn an_empty_keymap_has_no_native_prefix() {
         let keys = super::Keymap::default();
         let mut held = super::Held::default();
-        let stroke = super::KeyPress::new(super::Key::Char('b'), super::Modifiers::CTRL).into();
+        let stroke = super::KeyPress::new(
+            super::Key::Char('b'),
+            super::Modifiers {
+                ctrl: true,
+                alt: false,
+                shift: false,
+            },
+        )
+        .into();
         assert!(matches!(
             held.press(&keys, stroke, false).as_slice(),
             [crate::screens::Effect::Send(fux_wire::act::Act::Key(_))]

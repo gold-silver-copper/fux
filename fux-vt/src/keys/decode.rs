@@ -93,8 +93,6 @@ const DCS_LIMIT: usize = 256;
 /// The longest sequence the decoder holds unfinished: `ESC P` and a DCS
 /// answer's limit.
 const HELD: usize = DCS_LIMIT + 2;
-/// The largest paste delivered; a longer one is refused whole.
-pub const PASTE_LIMIT: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// What a terminal's input decodes to.
 pub enum Input {
@@ -102,8 +100,8 @@ pub enum Input {
     Key(Keystroke),
     /// A bracketed paste, its text whole.
     Paste(String),
-    /// A paste longer than the decoder's limit ([`PASTE_LIMIT`] unless
-    /// [`Decoder::with_paste_limit`] set another), dropped whole.
+    /// A paste longer than the decoder's limit
+    /// ([`Decoder::with_paste_limit`]), dropped whole.
     PasteTooLong,
     /// The terminal gained focus (`CSI I`).
     FocusIn,
@@ -381,20 +379,14 @@ enum Step {
 }
 
 impl Decoder {
-    /// A decoder with explicit timing and the native paste byte limit.
-    pub fn new(timing: Timing) -> Self {
-        Self::with_paste_limit(timing, PASTE_LIMIT)
-    }
-
     /// Change timing at the next read begun idle. Pending sequences and
     /// pastes retain their timing, including a paste's renewed wait.
     pub fn set_timing(&mut self, timing: Timing) {
         self.next_timing = timing;
     }
 
-    /// A decoder that keeps pastes of up to `limit` bytes, rather than
-    /// [`PASTE_LIMIT`]: a host that sends a long paste on in pieces. It
-    /// holds that much while a paste arrives.
+    /// A decoder that keeps pastes of up to `limit` bytes. It holds that
+    /// much while a paste arrives.
     pub fn with_paste_limit(timing: Timing, limit: usize) -> Self {
         Self {
             state: State::Idle,
@@ -1358,6 +1350,8 @@ fn after(from: Instant, wait: Duration) -> Instant {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The tests' paste limit.
+    pub(super) const PASTE_LIMIT: usize = 64 * 1024;
     const ESCAPE_DELAY: Duration = Duration::from_millis(35);
     const PASTE_DELAY: Duration = Duration::from_millis(5000);
     use crate::Rgb;
@@ -1367,7 +1361,7 @@ mod tests {
     fn timing_changes_wait_for_idle_without_retiming_pending_input() {
         let now = Instant::now();
         for (bytes, delay) in [(&b"\x1b"[..], 10), (&b"\x1b[200~text"[..], 20)] {
-            let mut decoder = Decoder::new(Timing::new(10, 20));
+            let mut decoder = Decoder::with_paste_limit(Timing::new(10, 20), PASTE_LIMIT);
             let mut out = Vec::new();
             decoder.bytes(bytes, &mut out);
             decoder.mark(now);
@@ -1401,7 +1395,7 @@ mod tests {
         d.deadline().is_some()
     }
     fn all(bytes: &[u8]) -> Vec<Input> {
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         d.bytes(bytes, &mut out);
         d.timeout(&mut out);
@@ -1412,7 +1406,7 @@ mod tests {
     fn split_anywhere(stream: &[u8], expecting: bool, expected: &[Input]) {
         for split in 1..stream.len() {
             let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
-            let mut d = Decoder::new(Timing::new(35, 5000));
+            let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
             if expecting {
                 d.expect(Instant::now());
             }
@@ -1574,7 +1568,7 @@ mod tests {
             let first = if bytes.first() == Some(&0x1b) { 2 } else { 1 };
             let (head, tail) = bytes.split_at_checked(first).unwrap_or((bytes, &[]));
             let reads = std::iter::once(head).chain(tail.iter().map(std::slice::from_ref));
-            let mut d = Decoder::new(Timing::new(35, 5000));
+            let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
             let mut out = Vec::new();
             let t0 = Instant::now();
             for read in reads {
@@ -1586,7 +1580,7 @@ mod tests {
             }
             assert_eq!(out, vec![expected], "{bytes:x?}");
         }
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         d.bytes(b"\xe4\xb8", &mut out);
         d.bytes(b"A", &mut out);
@@ -1645,7 +1639,7 @@ mod tests {
     fn the_deadline_runs_from_when_waiting_began() {
         let ms = Duration::from_millis;
         let t0 = Instant::now();
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         // The deadline after `bytes` read `at` ms after `t0`, from `t0`.
         let mut due = |bytes: &[u8], at| {
@@ -1700,7 +1694,7 @@ mod tests {
 
     #[test]
     fn escape_waits_for_the_deadline() {
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         d.bytes(b"\x1b", &mut out);
         assert!(out.is_empty());
@@ -1823,7 +1817,7 @@ mod tests {
             })]
         );
         // Escape is whole at once: no wait for the rest of a sequence.
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         d.bytes(b"\x1b[27u", &mut out);
         assert!(!waiting(&mut d));
@@ -1947,7 +1941,7 @@ mod tests {
     fn an_escape_the_terminal_sends_as_csi_u_is_never_waited_out() {
         let t0 = Instant::now();
         let waits = |answers: &[&[u8]]| {
-            let mut d = Decoder::new(Timing::new(35, 5000));
+            let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
             let mut out = Vec::new();
             for flags in answers {
                 d.bytes(flags, &mut out);
@@ -1980,7 +1974,7 @@ mod tests {
             (b"\x1b]1", false),
             (b"\x1bP1$r0;4", true),
         ] {
-            let mut d = Decoder::new(Timing::new(35, 5000));
+            let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
             let mut out = Vec::new();
             if expecting {
                 d.expect(t0);
@@ -1993,7 +1987,7 @@ mod tests {
             d.bytes(b"k", &mut out);
             assert_eq!(out, vec![key("k")]);
         }
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         d.bytes(b"\x1b", &mut out);
         d.mark(t0);
@@ -2002,7 +1996,7 @@ mod tests {
         // waiting `REPLY_DELAY` for its end as an answer cut short does.
         let mut long = b"\x1b]11;".to_vec();
         long.extend(std::iter::repeat_n(b'x', 200));
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         d.bytes(&long, &mut out);
         d.mark(t0);
         assert_eq!(d.deadline(), Some(t0 + REPLY_DELAY));
@@ -2022,7 +2016,7 @@ mod tests {
             ("\x1b[1;2\x7fA", vec![key("BSpace"), key("A")]),
             ("\x1b[\r", vec![key("M-["), key("Enter")]),
         ] {
-            let mut decoder = Decoder::new(Timing::new(35, 5000));
+            let mut decoder = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
             let mut out = Vec::new();
             decoder.bytes(bytes.as_bytes(), &mut out);
             assert_eq!(out, expected, "before the deadline: {bytes:?}");
@@ -2081,12 +2075,12 @@ mod tests {
     fn a_dcs_answer_begun_in_its_window_is_read_whole_after_it() {
         let t0 = Instant::now();
         let answer: &[u8] = b"\x1bP1$r0;4:3m\x1b\\";
-        let mut whole = Decoder::new(Timing::new(35, 5000));
+        let mut whole = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut expected = Vec::new();
         whole.expect(t0);
         whole.bytes(answer, &mut expected);
         let (first, rest) = answer.split_at_checked(8).unwrap_or((answer, &[]));
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         d.expect(t0);
         d.expire(t0 + Duration::from_millis(900));
@@ -2143,12 +2137,12 @@ mod tests {
             d.mark(t0);
             d.deadline().map(|at| at.duration_since(t0))
         };
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(ESCAPE_DELAY));
         d.timeout(&mut out);
         assert_eq!(out, vec![alt_bracket.clone()]);
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         d.expect(t0);
         let mut out = Vec::new();
         assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(REPLY_DELAY));
@@ -2161,13 +2155,13 @@ mod tests {
             Some(ESCAPE_DELAY)
         );
         assert_eq!(out, vec![Input::Reply(Reply::Attributes { sixel: false })]);
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         d.expect(t0);
         d.expire(t0 + REPLY_WINDOW);
         assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(ESCAPE_DELAY));
         // Two rounds of questions: the first DA1 answer leaves the second
         // expected, and the second ends it.
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         d.expect(t0);
         d.expect(t0);
         let da1 = b"\x1b[?1;2c\x1b]";
@@ -2220,13 +2214,13 @@ mod tests {
         assert_eq!(all(b"\x1bPx"), vec![alt_p.clone(), key("x")]);
         assert_eq!(all(b"\x1bP1x"), vec![alt_p.clone(), key("1"), key("x")]);
         let t0 = Instant::now();
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         d.bytes(b"\x1bP", &mut out);
         assert_eq!(out, vec![alt_p.clone()], "not waiting");
         assert!(!waiting(&mut d));
         for pending in [&b"\x1bP"[..], b"\x1bP1"] {
-            let mut d = Decoder::new(Timing::new(35, 5000));
+            let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
             d.expect(t0);
             let mut out = Vec::new();
             d.bytes(pending, &mut out);
@@ -2236,7 +2230,7 @@ mod tests {
             d.timeout(&mut out);
             assert_eq!(out.first(), Some(&alt_p), "{pending:?}");
         }
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         d.expect(t0);
         let mut out = Vec::new();
         d.bytes(b"\x1bPx", &mut out);
@@ -2316,7 +2310,7 @@ mod tests {
     fn a_key_csi_at_the_end_of_its_window_waits_for_its_final_byte() {
         // A kitty key whose parameters fill the window, 32 bytes, its final
         // byte in the next read: one key (the window's guard).
-        let mut d = Decoder::new(Timing::new(35, 5000));
+        let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         let digits: Vec<u8> = std::iter::repeat_n(b'0', 30).chain(*b"97").collect();
         d.bytes(&[b"\x1b[".as_slice(), &digits].concat(), &mut out);
@@ -2332,7 +2326,7 @@ mod tests {
     fn a_string_past_its_limit_is_dropped_alike_however_it_is_read() {
         // Read as answers are, while one is expected.
         let pieced = |bytes: &[u8], size: usize| {
-            let mut d = Decoder::new(Timing::new(35, 5000));
+            let mut d = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
             d.expect(Instant::now());
             let mut out = Vec::new();
             let mut rest = bytes;
@@ -2388,11 +2382,12 @@ mod tests {
 /// The key decoder's checks, each shown a decoder with its one fault.
 #[cfg(all(test, feature = "checks"))]
 mod faults {
+    use super::tests::PASTE_LIMIT;
     use super::*;
 
     #[test]
     fn a_long_sequence_held_or_a_paste_with_room_past_its_limit_are_faults() {
-        let mut decoder = Decoder::new(Timing::new(35, 5000));
+        let mut decoder = Decoder::with_paste_limit(Timing::new(35, 5000), PASTE_LIMIT);
         assert!(decoder.check().is_clean());
         decoder.state = State::Pending {
             held: vec![b'1'; DCS_LIMIT.saturating_add(3)],

@@ -1,12 +1,13 @@
 //! The fuzz targets' feeding as fux's pane feeds (`common::until_stops`)
 //! finishes the work a piece's last byte leaves: REP's copies under IRM,
 //! which stop at the budget between glyphs, are all made before it
-//! returns, as one call of `process_with` makes them.
+//! returns, as feeding from every stop until none is left makes them
+//! (`common::fed`).
 #[path = "../fuzz_targets/common.rs"]
 #[expect(dead_code, reason = "the targets' other helpers")]
 mod common;
 
-use fux_vt::{Parser, Size};
+use fux_vt::{Options, Parser, Size};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -14,9 +15,13 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 fn a_piece_s_last_rep_is_finished() -> Result {
     let size = Size::new(3, 511)?;
     let piece = b"\x1b[4hx\x1b[65535b";
-    let mut whole = Parser::new(size, 8 << 20)?;
-    whole.process(piece)?;
-    let mut fed = Parser::new(size, 8 << 20)?;
+    let mut whole = Parser::with_options(size, 8 << 20, Options::default())?;
+    assert!(common::fed(
+        &mut whole,
+        piece,
+        &mut common::Record::default()
+    ));
+    let mut fed = Parser::with_options(size, 8 << 20, Options::default())?;
     let mut calls = 0usize;
     common::until_stops(&mut fed, piece, &mut common::Record::default(), |_| {
         calls = calls.saturating_add(1);

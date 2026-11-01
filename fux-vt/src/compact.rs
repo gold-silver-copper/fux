@@ -317,11 +317,6 @@ impl Text {
             b" "
         }
     }
-    /// Bytes of long clusters kept, live or left behind: at most
-    /// `long_limit` of the row's cells. Short clusters are not counted.
-    pub(crate) fn long_len(&self) -> usize {
-        self.long.len()
-    }
     /// The bytes of text kept, long clusters and short.
     pub(crate) fn bytes(&self) -> usize {
         self.long.len().saturating_add(self.short.len())

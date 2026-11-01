@@ -5,7 +5,7 @@
 //! bytes, so that the paint is a full one. Bit 3 paints for a terminal that
 //! draws underline styles, and bit 4 says the old grid was painted for one.
 use fux_server::render::{Grid, paint_into};
-use fux_vt::{Attributes, CellRef, Color, Mode, Parser, UnderlineStyle};
+use fux_vt::{Attributes, CellRef, Color, Mode, Options, Parser, UnderlineStyle};
 use libfuzzer_sys::fuzz_target;
 
 /// The bytes that turn `old` (or nothing) into `new`.
@@ -130,10 +130,26 @@ fn grid(rows: u16, cols: u16) -> Grid {
     grid.unwrap_or_default()
 }
 
+/// Reads `bytes` into `terminal` as fux reads a pane's output, from each
+/// stop on until none is left: whether it was read whole, nothing refused.
+fn feed(terminal: &mut Parser, bytes: &[u8]) -> bool {
+    struct Deaf;
+    impl fux_vt::Sink for Deaf {}
+    let (refused, mut rest) = (terminal.refused(), bytes);
+    while let Ok(Some((taken, _))) = terminal.process_until_stop(rest, &mut Deaf) {
+        rest = rest.get(taken..).unwrap_or_default();
+    }
+    terminal.refused() == refused
+}
+
 /// A cell's width, halves, text and attributes; a blank for no cell.
 fn seen(cell: Option<CellRef<'_>>) -> (bool, bool, &str, Attributes) {
     cell.map_or((false, false, " ", Attributes::default()), |c| {
-        let text = if c.has_contents() { c.contents() } else { " " };
+        let text = if c.contents().is_empty() {
+            " "
+        } else {
+            c.contents()
+        };
         (c.is_wide(), c.is_wide_continuation(), text, c.attributes())
     })
 }
@@ -187,12 +203,13 @@ fuzz_target!(|data: &[u8]| {
     // The client's terminal: `old` as painted from nothing, then the paint
     // that turns it into `new`.
     let size = fux_vt::Size::new(new_rows, new_cols).expect("a grid has cells");
-    let Ok(mut terminal) = Parser::new(size, 0) else {
+    let Ok(mut terminal) = Parser::with_options(size, 0, Options::default()) else {
         return;
     };
-    assert!(terminal.process(&paint(None, &old)).is_ok());
-    assert!(terminal.process(&paint(Some(&old), &new)).is_ok());
+    assert!(feed(&mut terminal, &paint(None, &old)));
+    assert!(feed(&mut terminal, &paint(Some(&old), &new)));
     let screen = terminal.screen();
+    let window = screen.window();
     for y in 0..new_rows {
         for x in 0..new_cols {
             let mut want = seen(new.cells.get(index(&new, y, x)));
@@ -204,7 +221,7 @@ fuzz_target!(|data: &[u8]| {
             if !new.underline_styles && want.3.underline() {
                 want.3 = want.3.with_underline(true);
             }
-            let got = seen(screen.cell(y, x));
+            let got = seen(window.row(y).and_then(|row| row.cell(usize::from(x))));
             assert_eq!((got.0, got.1), (want.0, want.1), "width at {y},{x}");
             if !want.1 {
                 assert_eq!(got.2, want.2, "text at {y},{x}");

@@ -501,7 +501,7 @@ impl Attributes {
 /// cluster is never split, so what follows it is always where a program
 /// laid out with UAX #29 expects. 128 is the Unicode stream-safe limit of a
 /// starter and 30 combining marks, and holds every emoji sequence.
-pub const CLUSTER_CAPACITY: usize = 128;
+pub(crate) const CLUSTER_CAPACITY: usize = 128;
 
 /// The longest start of `text` of at most `max` bytes that ends on a char
 /// boundary.
@@ -524,15 +524,6 @@ pub struct CellRef<'a> {
 }
 
 /// Expands each `name of Type, "doc";` to `name(&self)`, returning `of()`.
-macro_rules! forward {
-    ($($name:ident $of:ident $ty:ty, $doc:literal;)*) => {$(
-        #[doc = $doc]
-        pub fn $name(&self) -> $ty {
-            self.attributes.$of()
-        }
-    )*};
-}
-
 impl<'a> CellRef<'a> {
     /// The second half of a wide glyph; and its first.
     pub(crate) const CONTINUATION: u8 = 0b0100_0000;
@@ -573,10 +564,6 @@ impl<'a> CellRef<'a> {
             text => text,
         }
     }
-    /// Whether the cell holds text.
-    pub fn has_contents(&self) -> bool {
-        !self.text.is_empty()
-    }
     /// Whether the cell holds a glyph two columns wide.
     pub fn is_wide(&self) -> bool {
         self.halves & Self::WIDE != 0
@@ -588,20 +575,6 @@ impl<'a> CellRef<'a> {
     /// The cell's colours and rendition.
     pub fn attributes(&self) -> Attributes {
         self.attributes
-    }
-    forward! {
-        fgcolor foreground Color, "The foreground colour.";
-        bgcolor background Color, "The background colour.";
-        underline_color underline_color Color, "The underline colour (SGR 58).";
-        bold bold bool, "Whether bold (SGR 1) is on.";
-        dim dim bool, "Whether dim (SGR 2) is on.";
-        italic italic bool, "Whether italic (SGR 3) is on.";
-        underline underline bool, "Whether the text is underlined, in any style.";
-        underline_style underline_style UnderlineStyle, "How the text is underlined.";
-        inverse inverse bool, "Whether inverse (SGR 7) is on.";
-        blink blink Blink, "How the text blinks.";
-        hidden hidden bool, "Whether hidden (SGR 8) is on.";
-        strikeout strikeout bool, "Whether strikeout (SGR 9) is on.";
     }
 }
 
@@ -666,15 +639,6 @@ impl Stored {
 }
 
 impl Cells {
-    /// The most bytes of text `len` cells keep for long clusters: 32 a cell
-    /// and one cluster more, so that even one cell holds its longest.
-    pub fn text_limit(len: usize) -> usize {
-        Text::long_limit(len)
-    }
-    /// Bytes of text kept for long clusters, overwritten ones included.
-    pub fn text_len(&self) -> usize {
-        self.text.long_len()
-    }
     /// `len` blank cells; `Error::Capacity` past `MAX_CELLS` (64 Mi, as a
     /// screen holds at most) or if there is no memory for them
     /// (`THREATS.md` B39).
@@ -701,10 +665,6 @@ impl Cells {
     /// The cell at `i`.
     pub fn get(&self, i: usize) -> Option<CellRef<'_>> {
         Some(self.cells.get(i)?.read(&self.text))
-    }
-    /// The cells, in order.
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = CellRef<'_>> + ExactSizeIterator + Clone {
-        self.range(0..self.len())
     }
     /// The cells in `range`, clipped to those there are.
     pub fn range(
@@ -785,45 +745,6 @@ impl Cells {
         self.text = Text::default();
         self.cells.resize(len, Stored::default());
         Ok(())
-    }
-    /// Makes the run `len` cells long, new ones `cell`. Shrinking stores
-    /// text again within the smaller budget, cutting what no longer fits to
-    /// 17 bytes. `Error::Capacity`, nothing changed, past `MAX_CELLS` or
-    /// with no memory.
-    pub fn resize(&mut self, len: usize, cell: CellRef<'_>) -> Result<(), Error> {
-        self.room_for(len)?;
-        let was = self.cells.len();
-        self.cells.resize(len, Stored::default());
-        if len < was {
-            self.text = Line::rebuilt(&mut self.cells, &self.text);
-        } else {
-            self.fill(was..len, cell);
-        }
-        Ok(())
-    }
-    /// A copy of `cells`, their text with them (`Cells::try_from_iter(row.
-    /// cells())`). `Error::Capacity` past `MAX_CELLS` or with no memory,
-    /// as [`Cells::new`].
-    pub fn try_from_iter<'a>(cells: impl IntoIterator<Item = CellRef<'a>>) -> Result<Self, Error> {
-        // All the cells first, so the text is stored within the budget of
-        // the whole run, as it was where it came from.
-        let cells = cells.into_iter();
-        if cells.size_hint().0 > crate::grid::MAX_CELLS {
-            return Err(Error::Capacity);
-        }
-        let mut read: Vec<CellRef<'a>> = Vec::new();
-        for cell in cells {
-            if read.len() >= crate::grid::MAX_CELLS {
-                return Err(Error::Capacity);
-            }
-            read.try_reserve(1).map_err(|_| Error::Capacity)?;
-            read.push(cell);
-        }
-        let mut copy = Self::new(read.len())?;
-        for (at, cell) in read.into_iter().enumerate() {
-            copy.set(at, cell);
-        }
-        Ok(copy)
     }
     fn line(&mut self) -> Line<'_, Stored> {
         Line {

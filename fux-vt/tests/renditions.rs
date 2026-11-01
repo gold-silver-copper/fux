@@ -12,6 +12,11 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod lines;
 use lines::lines;
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
+
 fn run(rows: u16, cols: u16, bytes: &[u8]) -> Result<Parser> {
     let mut parser = Parser::new(Size::new(rows, cols)?, 0)?;
     parser.process(bytes)?;
@@ -76,7 +81,7 @@ fn line_renditions_halve_the_line_and_lose_what_is_past_its_end() -> Result {
     // Text wraps at the line's end.
     let p = run(4, 10, b"\x1b#6abcdefgh")?;
     assert_eq!(first(&p, 2), ["abcde", "fgh"]);
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_continues(0));
     assert_eq!(p.screen().cursor_position(), (1, 3));
     // A cursor past the new end goes to it (DECDHL's algorithm).
     let p = run(4, 10, b"\x1b[2;8H\x1b#3X")?;
@@ -197,15 +202,15 @@ fn reflow_keeps_a_halved_line_whole_and_alone() -> Result {
     let options = Options::new().with(Feature::Reflow);
     let mut p = Parser::with_options(Size::new(4, 10)?, 4096, options)?;
     p.process(b"0123456789a\x1b#6bc\r\n\x1b#3abcde")?;
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_continues(0));
     p.resize(Size::new(5, 6)?)?;
     assert_eq!(first(&p, 4), ["012345", "6789", "abc", "abc"]);
     assert_eq!(
         renditions(&p).into_iter().take(4).collect::<Vec<_>>(),
         [Single, Single, DoubleWidth, DoubleHeightTop]
     );
-    assert!(p.screen().row_wrapped(0));
-    assert!(!p.screen().row_wrapped(1));
+    assert!(p.screen().row_continues(0));
+    assert!(!p.screen().row_continues(1));
     Ok(())
 }
 
@@ -240,7 +245,7 @@ fn decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions() -> Result {
         let p = run(2, 10, bytes.as_bytes())?;
         for col in 5..10 {
             assert_eq!(
-                p.screen().cell(0, col).map(|c| c.bgcolor()),
+                p.screen().cell(0, col).map(|c| c.attributes().background()),
                 Some(Color::Default),
                 "{bytes:?}, column {col}"
             );
@@ -248,7 +253,7 @@ fn decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions() -> Result {
     }
     let p = run(2, 10, b"\x1b#6\x1bVabcdef\x1bW\x1b[1;5H\x1b[1J")?;
     assert!(
-        !p.screen().row_wrapped(0),
+        !p.screen().row_continues(0),
         "whole-line guarded ED ends wraps"
     );
     // A single erase decides each line independently, including when the

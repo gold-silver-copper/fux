@@ -12,8 +12,10 @@
 //! `BLOCK` holds the block each run of `1 << SHIFT` code points uses;
 //! `PROPERTIES` holds the distinct blocks.
 
-/// The Unicode version grapheme clusters are segmented and measured by.
-pub const UNICODE_VERSION: (u8, u8, u8) = (17, 0, 0);
+/// The Unicode version grapheme clusters are segmented and measured by,
+/// which the tests compare with their references'.
+#[cfg(test)]
+pub(super) const UNICODE_VERSION: (u8, u8, u8) = (17, 0, 0);
 pub(super) const SHIFT: u32 = 7;
 pub(super) static BLOCK: [u16; 8704] = [
     0, 1, 2, 2, 2, 2, 3, 2, 2, 4, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,

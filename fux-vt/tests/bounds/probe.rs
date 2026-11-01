@@ -470,7 +470,7 @@ impl Drop for Probe {
         if let Some((path, _)) = self.kept.take() {
             let setup = &self.setup;
             let features: Vec<String> = (Feature::ALL.into_iter().enumerate())
-                .filter(|(_, f)| setup.options.has(*f))
+                .filter(|(_, f)| setup.options.with(*f) == setup.options)
                 .map(|(i, _)| i.to_string())
                 .collect();
             let text = format!(

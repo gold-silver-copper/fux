@@ -1,9 +1,10 @@
 //! fux-vt, the baseline's and the current one, fed the same random output
-//! in random pieces, with resizes between: after every piece, the same
-//! replies and events, and the same screen -- every cell of the history and
-//! the screen with its row's identity, version and wrap flag, the cursor,
-//! every mode, the cursor's shape, the scroll region, the rows changed
-//! since the last look -- and the same errors.
+//! in random pieces, read as a pane reads them (`process_until_stop` from
+//! each stop on), with resizes between: after every piece, the same replies
+//! and events, and the same screen -- every cell of the history and the
+//! screen with its row's identity and version, the cursor, every mode, the
+//! cursor's shape, the rows changed since the last look -- and the same
+//! refusals.
 //!
 //! The output is what both mean the same by. Left out are SGR 5, 6, 8, 9,
 //! 25, 28, 29, 58 and 59, CSI f, s and u, and characters that join the
@@ -212,9 +213,9 @@ macro_rules! stack {
                 out
             }
 
-            /// A row's identity, version and soft wrap, through what each
-            /// side has (accessors, in both since fux-vt 0.3).
-            fn identity($meta: Row<'_>) -> ($vt::RowId, u64, bool) {
+            /// A row's identity and version, through what each side has
+            /// (accessors, in both since fux-vt 0.3).
+            fn identity($meta: Row<'_>) -> ($vt::RowId, u64) {
                 $identity
             }
 
@@ -247,11 +248,16 @@ macro_rules! stack {
                     Ok(Terminal { parser, mark })
                 }
 
-                /// What processing the bytes gave back.
+                /// What processing the bytes gave back, and how many times room
+                /// was refused.
                 pub fn process(&mut self, bytes: &[u8]) -> String {
                     let mut heard = Heard::default();
-                    let result = self.parser.process_with(bytes, &mut heard);
-                    format!("{result:?} {}", heard.0)
+                    let (refused, mut rest) = (self.parser.refused(), bytes);
+                    while let Ok(Some((taken, _))) = self.parser.process_until_stop(rest, &mut heard) {
+                        rest = rest.get(taken..).unwrap_or_default();
+                    }
+                    let refused = self.parser.refused().saturating_sub(refused);
+                    format!("refused {refused} {}", heard.0)
                 }
 
                 pub fn resize(&mut self, rows: u16, cols: u16) -> String {
@@ -274,14 +280,11 @@ macro_rules! stack {
                     };
                     let _ = writeln!(
                         out,
-                        "{rows}x{cols} cursor {:?} modes {modes:?} shape {shape} region {:?} mouse {:?} {:?} attributes {} history {} storage {}",
+                        "{rows}x{cols} cursor {:?} modes {modes:?} shape {shape} mouse {:?} {:?} history {}",
                         s.cursor_position(),
-                        s.scroll_region(),
                         s.mouse_protocol_mode(),
                         s.mouse_protocol_encoding(),
-                        attributes(s.attributes()),
                         s.history_len(),
-                        s.storage_cells(),
                     );
                     let retained = s.history_len().saturating_add(usize::from(rows));
                     for offset in (0..retained).rev() {
@@ -290,13 +293,12 @@ macro_rules! stack {
                             $back
                         };
                         if let Some(row) = row {
-                            let (id, version, wrapped) = identity(row);
+                            let (id, version) = identity(row);
                             let _ = writeln!(
                                 out,
-                                "{:?} v{} wrapped {} at {:?} {}",
+                                "{:?} v{} at {:?} {}",
                                 id,
                                 version,
-                                wrapped,
                                 {
                                     let ($at, $id) = (s, id);
                                     $up
@@ -305,12 +307,13 @@ macro_rules! stack {
                             );
                         }
                     }
+                    let full = s.full_refresh_since(self.mark);
+                    let dirty = s.rows().filter(|row| full || row.changed_since(self.mark));
                     let _ = writeln!(
                         out,
-                        "changed {} refresh {} dirty {:?}",
-                        s.changed_since(self.mark),
-                        s.full_refresh_since(self.mark),
-                        s.dirty_rows_since(self.mark).map(|row| identity(row).0).collect::<Vec<_>>()
+                        "changed {} refresh {full} dirty {:?}",
+                        s.mark() != self.mark,
+                        dirty.map(|row| identity(row).0).collect::<Vec<_>>()
                     );
                     self.mark = s.mark();
                     out
@@ -330,7 +333,7 @@ stack!(
     baseline_vt,
     |row| row.cells(),
     |a| (a.foreground(), a.background()),
-    |row| (row.id(), row.version(), row.wrapped()),
+    |row| (row.id(), row.version()),
     |events, extended| Options::new()
         .set(baseline_vt::Feature::Events, events)
         .set(baseline_vt::Feature::ExtendedReplies, extended),
@@ -348,15 +351,15 @@ stack!(
     |r, c| [crate::base_size(r, c)],
     |s, offset| s.rows().nth_back(offset),
     |s, id| s
-        .row_by_id(id)
-        .and_then(|row| s.history_len().checked_sub(row.index()))
+        .row_index(id)
+        .and_then(|index| s.history_len().checked_sub(index))
 );
 stack!(
     cur,
     fux_vt,
     |row| row.cells(),
     |a| (a.foreground(), a.background()),
-    |row| (row.id(), row.version(), row.wrapped()),
+    |row| (row.id(), row.version()),
     |events, extended| Options::new()
         .set(fux_vt::Feature::Events, events)
         .set(fux_vt::Feature::ExtendedReplies, extended),
@@ -374,8 +377,8 @@ stack!(
     |r, c| [crate::size(r, c)],
     |s, offset| s.rows().nth_back(offset),
     |s, id| s
-        .row_by_id(id)
-        .and_then(|row| s.history_len().checked_sub(row.index()))
+        .row_index(id)
+        .and_then(|index| s.history_len().checked_sub(index))
 );
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {

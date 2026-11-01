@@ -64,9 +64,9 @@ pub struct Function(u8);
 
 impl Function {
     /// The last function key.
-    pub const LAST: u8 = 35;
+    pub(crate) const LAST: u8 = 35;
     /// F`n`, if there is one (`1..=35`).
-    pub fn new(n: u8) -> Option<Self> {
+    pub(crate) fn new(n: u8) -> Option<Self> {
         (1..=Self::LAST).contains(&n).then_some(Self(n))
     }
     /// Its number, 1 to 35.
@@ -135,22 +135,22 @@ impl Modifiers {
         shift: false,
     };
     /// Control alone.
-    pub const CTRL: Self = Self {
+    pub(crate) const CTRL: Self = Self {
         ctrl: true,
         ..Self::NONE
     };
     /// Alt alone.
-    pub const ALT: Self = Self {
+    pub(crate) const ALT: Self = Self {
         alt: true,
         ..Self::NONE
     };
     /// Shift alone.
-    pub const SHIFT: Self = Self {
+    pub(crate) const SHIFT: Self = Self {
         shift: true,
         ..Self::NONE
     };
     /// Whether no modifier is held.
-    pub fn is_empty(self) -> bool {
+    pub(crate) fn is_empty(self) -> bool {
         self == Self::NONE
     }
 }
@@ -302,7 +302,7 @@ impl fmt::Display for KeyPress {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     /// The name that was not recognised.
-    pub name: String,
+    pub(crate) name: String,
 }
 
 impl fmt::Display for Error {

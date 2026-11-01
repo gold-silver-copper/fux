@@ -1,27 +1,29 @@
-//! Prompt marks (OSC 133, `references/modern/osc133_semantic_prompts.md` and
-//! iTerm2's "Shell Integration/FinalTerm"): `A` marks the row a prompt
-//! starts on, after a fresh line; the mark goes with its row.
+//! Shell integration (OSC 133, `references/modern/osc133_semantic_prompts.md`
+//! and iTerm2's "Shell Integration/FinalTerm"): `A` starts a prompt after
+//! a fresh line, and `C` and `D` mark each command and its output.
 
 use fux_vt::{Event, Feature, Options, Parser, Sink, Size};
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const MARKS: Options = Options::new().with(Feature::PromptMarks);
 
-/// The retained rows a prompt starts on, counted from the oldest.
-fn marks(p: &Parser) -> Vec<usize> {
-    let s = p.screen();
-    s.rows()
-        .filter(|r| r.starts_prompt())
-        .map(|r| r.index())
-        .collect()
-}
-
 fn text(p: &Parser, row: u16) -> String {
     let s = p.screen();
     (0..s.size().cols())
         .filter_map(|x| s.cell(row, x))
-        .map(|c| if c.has_contents() { c.contents() } else { " " })
+        .map(|c| {
+            if c.contents().is_empty() {
+                " "
+            } else {
+                c.contents()
+            }
+        })
         .collect::<String>()
         .trim_end()
         .to_owned()
@@ -33,15 +35,12 @@ const SESSION: &[u8] =
     \x1b]133;A;cl=m;aid=12\x1b\\$ \x1b]133;B\x1b\\true\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ ";
 
 #[test]
-fn a_prompt_marks_its_row_and_the_others_change_nothing() -> Result {
+fn b_c_d_and_a_continuation_move_nothing_in_any_pieces() -> Result {
     let mut p = Parser::with_options(Size::new(8, 10)?, 10, MARKS)?;
     p.process(SESSION)?;
-    assert_eq!(marks(&p), [0, 3, 4]);
-    assert!(p.screen().starts_prompt(0) && !p.screen().starts_prompt(1));
-    // B, C, D and a continuation prompt move nothing and mark nothing.
+    // B, C, D and a continuation prompt move nothing.
     let mut q = Parser::with_options(Size::new(8, 10)?, 10, MARKS)?;
     q.process(b"ab\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;P;k=c\x07c")?;
-    assert_eq!(marks(&q), Vec::<usize>::new());
     assert_eq!(text(&q, 0), "abc");
     // The same whatever pieces the output came in, and with every option.
     for size in [1, 2, 5] {
@@ -50,7 +49,14 @@ fn a_prompt_marks_its_row_and_the_others_change_nothing() -> Result {
         for piece in pieces::pieces(SESSION, size) {
             q.process(piece)?;
         }
-        assert_eq!(marks(&q), marks(&p), "pieces of {size}");
+        for row in 0..8 {
+            assert_eq!(text(&q, row), text(&p, row), "pieces of {size}");
+        }
+        assert_eq!(
+            q.screen().commands(),
+            p.screen().commands(),
+            "pieces of {size}"
+        );
     }
     Ok(())
 }
@@ -66,107 +72,37 @@ fn a_and_l_start_a_fresh_line() -> Result {
     assert_eq!(text(&p, 1), "$");
     assert_eq!(text(&p, 2), "x");
     assert_eq!(text(&p, 3), "y");
-    assert_eq!(marks(&p), [1]);
     // At the bottom, the fresh line scrolls.
     let mut p = Parser::with_options(Size::new(2, 10)?, 1 << 10, MARKS)?;
     p.process(b"a\r\nb\x1b]133;A\x07$")?;
-    assert_eq!(marks(&p), [2]);
-    assert_eq!(text(&p, 1), "$");
+    assert_eq!((text(&p, 0), text(&p, 1)), ("b".to_owned(), "$".to_owned()));
+    assert_eq!(p.screen().history_len(), 1);
     Ok(())
 }
 
-/// Marks go into history with their rows, move with IL and DL, leave with
-/// the rows a scroll drops, and go when ED erases their row whole; EL, and
-/// ED from the cursor, leave the cursor's row its mark, as a shell erases
-/// from its prompt to redraw it.
-#[test]
-fn marks_go_with_their_rows() -> Result {
-    // Two rows of up to five cells: 24 bytes a row and 8 a cell.
-    let mut p = Parser::with_options(Size::new(3, 6)?, 2 * 64, MARKS)?;
-    p.process(b"\x1b]133;A\x07$ one\r\nout\r\n\x1b]133;A\x07$ two\r\nout\r\n\x1b]133;A\x07$")?;
-    assert_eq!(marks(&p), [0, 2, 4]);
-    // Past the history, the first row leaves.
-    p.process(b"\r\nx\r\ny")?;
-    assert_eq!(marks(&p), [0, 2]);
-    // IL in the screen's rows moves the marks below it.
-    let mut p = Parser::with_options(Size::new(4, 6)?, 0, MARKS)?;
-    p.process(b"a\r\n\x1b]133;A\x07b\x1b[1;1H\x1b[L")?;
-    assert_eq!(marks(&p), [2]);
-    p.process(b"\x1b[M\x1b[M")?;
-    assert_eq!(marks(&p), [0]);
-    p.process(b"\x1b[M")?;
-    assert_eq!(marks(&p), Vec::<usize>::new());
-    // EL and ED 0 at the prompt keep it; ED 2 does not.
-    let mut p = Parser::with_options(Size::new(3, 6)?, 0, MARKS)?;
-    p.process(b"\x1b]133;A\x07$ ls\r\n\x1b]133;A\x07$ \r\x1b[K\x1b[J")?;
-    assert_eq!(marks(&p), [0, 1]);
-    p.process(b"\x1b[1;1H\x1b[J")?;
-    assert_eq!(marks(&p), [0]);
-    p.process(b"\x1b[2J")?;
-    assert_eq!(marks(&p), Vec::<usize>::new());
-    // RIS forgets them.
-    let mut p = Parser::with_options(Size::new(3, 6)?, 0, MARKS)?;
-    p.process(b"\x1b]133;A\x07\x1bc")?;
-    assert_eq!(marks(&p), Vec::<usize>::new());
-    Ok(())
-}
-
-/// A resize keeps the marks of the rows it keeps; a reflow puts each on
-/// the row its prompt's first character goes to.
-#[test]
-fn marks_survive_resize_and_reflow() -> Result {
-    let input = b"\x1b]133;A\x07$ long command\r\noutput\r\n\x1b]133;A\x07$ ";
-    let mut p = Parser::with_options(Size::new(4, 20)?, 1 << 12, MARKS)?;
-    p.process(input)?;
-    p.resize(Size::new(4, 6)?)?;
-    assert_eq!(marks(&p), [0, 2]);
-    let mut p = Parser::with_options(Size::new(4, 20)?, 1 << 12, MARKS.with(Feature::Reflow))?;
-    p.process(input)?;
-    // "$ long command" takes three rows of six.
-    p.resize(Size::new(4, 6)?)?;
-    assert_eq!(marks(&p), [0, 4]);
-    p.resize(Size::new(4, 20)?)?;
-    assert_eq!(marks(&p), [0, 2]);
-    // A mark on a line's second row goes where that row's first cell goes:
-    // narrower, its own row; wider, the line's first. A mark is a row's, so
-    // from there on it is the first row's.
-    let mut p = Parser::with_options(Size::new(3, 4)?, 10, MARKS.with(Feature::Reflow))?;
-    p.process(b"abcde\r\x1b]133;A\x07")?;
-    assert_eq!(marks(&p), [1]);
-    p.resize(Size::new(3, 2)?)?;
-    assert_eq!(marks(&p), [2]);
-    p.resize(Size::new(3, 8)?)?;
-    assert_eq!(marks(&p), [0]);
-    p.resize(Size::new(3, 2)?)?;
-    assert_eq!(marks(&p), [0]);
-    Ok(())
-}
-
-/// Without `Feature::PromptMarks`, OSC 133 is ignored: no mark, no fresh
-/// line, and no OSC payload kept.
+/// Without `Feature::PromptMarks`, OSC 133 is ignored: no fresh line, and
+/// no OSC payload kept.
 #[test]
 fn without_the_option_prompt_marks_are_ignored() -> Result {
     let mut p = Parser::new(Size::new(4, 10)?, 0)?;
     p.process(b"ab\x1b]133;A\x07cd")?;
-    assert_eq!(marks(&p), Vec::<usize>::new());
     assert_eq!(text(&p, 0), "abcd");
     Ok(())
 }
 
 /// `N` is `A` (`references/modern/osc133_semantic_prompts.md`): a fresh
-/// line, then the mark. `P` of the primary kind (`k=i`, or none) marks the
-/// cursor's row without a fresh line; right-side and continuation prompts
-/// mark nothing.
+/// line, then the prompt. `P`, of any kind, starts its prompt where the
+/// cursor is, without a fresh line.
 #[test]
-fn n_is_a_and_a_primary_p_marks_its_row() -> Result {
+fn n_is_a_and_p_starts_no_fresh_line() -> Result {
     let mut p = Parser::with_options(Size::new(6, 10)?, 0, MARKS)?;
     p.process(b"x\x1b]133;N\x07$ ")?;
-    assert_eq!(marks(&p), [1]);
+    assert_eq!(text(&p, 1), "$");
     p.process(b"\r\n\x1b]133;P;k=c\x07> \x1b]133;P;k=r\x07")?;
-    assert_eq!(marks(&p), [1], "continuation and right prompts");
+    assert_eq!(text(&p, 2), ">", "continuation and right prompts");
     p.process(b"\r\nab\x1b]133;P;k=i\x07$ \r\n\x1b]133;P\x07$ ")?;
-    assert_eq!(marks(&p), [1, 3, 4], "primary prompts, no fresh line");
     assert_eq!(text(&p, 3), "ab$");
+    assert_eq!(text(&p, 4), "$");
     Ok(())
 }
 
@@ -185,7 +121,7 @@ fn n_ends_the_command_running() -> Result {
     assert_eq!(commands.finished, 1);
     assert_eq!(commands.last_status, None);
     assert!(commands.last_output.is_some());
-    assert_eq!(marks(&p), [0, 2]);
+    assert_eq!(text(&p, 2), "$");
     Ok(())
 }
 
@@ -256,39 +192,5 @@ fn a_start_while_a_command_runs_begins_none() -> Result {
     assert_eq!((commands.started, commands.finished), (1, 0));
     p.process(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;C\x07")?;
     assert_eq!(p.screen().commands().started, 2);
-    Ok(())
-}
-
-/// A row's prompt mark is part of what a host redraws from (`THREATS.md`
-/// section 6, invariant 28): marking a row, or taking its mark away,
-/// gives it a new version, and the mark shows in `dirty_rows_since`; a
-/// mark that stays as it was changes nothing.
-#[test]
-fn a_prompt_mark_changes_its_row_s_version() -> Result {
-    let mut p = Parser::with_options(Size::new(4, 10)?, 0, MARKS)?;
-    p.process(b"\x1b[2;1H")?;
-    let version = |p: &Parser| p.screen().rows().nth(1).map(|r| r.version());
-    let dirty = |p: &Parser, mark| {
-        (p.screen().dirty_rows_since(mark))
-            .map(|r| r.index())
-            .collect::<Vec<_>>()
-    };
-    let (before, mark) = (version(&p), p.screen().mark());
-    // A at the first column: no fresh line, the blank row marked.
-    p.process(b"\x1b]133;A\x07")?;
-    assert!(p.screen().starts_prompt(1));
-    assert!(version(&p) > before, "marked with no new version");
-    assert_eq!(dirty(&p, mark), [1]);
-    // P with no `k`: the row marked again, as it was.
-    let (before, mark) = (version(&p), p.screen().mark());
-    p.process(b"\x1b]133;P\x07")?;
-    assert_eq!(version(&p), before, "a mark as it was changed the row");
-    assert_eq!(dirty(&p, mark), Vec::<usize>::new());
-    // ED 2 takes it away from the blank row: a change of its own.
-    let (before, mark) = (version(&p), p.screen().mark());
-    p.process(b"\x1b[2J")?;
-    assert!(!p.screen().starts_prompt(1));
-    assert!(version(&p) > before, "unmarked with no new version");
-    assert!(dirty(&p, mark).contains(&1));
     Ok(())
 }

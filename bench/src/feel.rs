@@ -1051,7 +1051,10 @@ impl ServerCount {
 
     fn finish(mut self) -> Result<(u64, String), String> {
         self.control("disable").map_err(|e| self.error(e))?;
-        let pid = fuxix::process::Pid::of(&self.child).ok_or("perf pid out of range")?;
+        let pid = i32::try_from(self.child.id())
+            .ok()
+            .and_then(fuxix::process::Pid::from_raw)
+            .ok_or("perf pid out of range")?;
         fuxix::process::kill(pid, fuxix::process::Signal::Int).map_err(|e| self.error(e))?;
         let deadline = std::time::Instant::now().checked_add(std::time::Duration::from_secs(5));
         while self.child.try_wait().map_err(|e| self.error(e))?.is_none() {

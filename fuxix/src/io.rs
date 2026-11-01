@@ -1,6 +1,6 @@
 //! Reading, writing and the flags of a descriptor.
 use crate::errno::{Result, check, check_size};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd};
 
 /// Reads into `buffer`: how many bytes, 0 at the end.
 pub fn read(fd: impl AsFd, buffer: &mut [u8]) -> Result<usize> {
@@ -66,17 +66,6 @@ pub fn redirect_stdout(to: impl AsFd) -> Result<()> {
     check(unsafe { libc::dup2(to.as_fd().as_raw_fd(), libc::STDOUT_FILENO) }).map(drop)
 }
 
-/// A copy of `fd` that a program this process runs inherits, as it would
-/// any descriptor opened without close-on-exec. For tests of what a pane's
-/// program inherits.
-pub fn duplicate_inheritable(fd: impl AsFd) -> Result<OwnedFd> {
-    // SAFETY: dup takes a descriptor number and touches no memory; its
-    // copy is made without close-on-exec.
-    let copy = check(unsafe { libc::dup(fd.as_fd().as_raw_fd()) })?;
-    // SAFETY: `copy` was just opened, is valid, and nothing else owns it.
-    Ok(unsafe { OwnedFd::from_raw_fd(copy) })
-}
-
 /// Marks every descriptor from `first` up close-on-exec, whoever opened it
 /// and however: descriptors this process inherited without the flag, and
 /// ones another thread opened before it could set it. Nothing is closed,
@@ -87,7 +76,7 @@ pub fn duplicate_inheritable(fd: impl AsFd) -> Result<OwnedFd> {
 /// which on macOS leaves one window: a descriptor another thread opens
 /// between the listing and the fork, past where it then lowers the soft
 /// limit.
-pub fn cloexec_from(first: i32, listed: Listed) -> Result<()> {
+pub(crate) fn cloexec_from(first: i32, listed: Listed) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let start: libc::c_uint = crate::errno::fit(first)?;
@@ -114,13 +103,13 @@ pub fn cloexec_from(first: i32, listed: Listed) -> Result<()> {
 /// open, as `/dev/fd` lists them (`None` where they can't be listed).
 /// Elsewhere the child lists them itself, so nothing.
 #[derive(Clone, Copy, Debug)]
-pub struct Listed {
+pub(crate) struct Listed {
     #[cfg(target_os = "macos")]
     end: Option<i32>,
 }
 
 impl Listed {
-    pub fn now() -> Listed {
+    pub(crate) fn now() -> Listed {
         Listed {
             #[cfg(target_os = "macos")]
             end: (std::fs::read_dir("/dev/fd").ok()).and_then(|listed| {
@@ -138,6 +127,7 @@ impl Listed {
 /// mounted, or with no number free for the listing (EMFILE).
 #[cfg(not(target_os = "macos"))]
 fn cloexec_each(first: i32, _: Listed) -> Result<()> {
+    use std::os::fd::{FromRawFd, OwnedFd};
     /// Entries as getdents64 writes them: each 8-byte aligned, as the
     /// kernel's own buffers are, whose fields it writes whole.
     #[repr(align(8))]
@@ -214,7 +204,17 @@ fn cloexec_each(first: i32, listed: Listed) -> Result<()> {
 mod tests {
     use super::*;
     use crate::Errno;
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    /// A copy of `fd` that a program this process runs inherits, as it
+    /// would any descriptor opened without close-on-exec.
+    fn duplicate_inheritable(fd: impl AsFd) -> Result<OwnedFd> {
+        // SAFETY: dup takes a descriptor number and touches no memory; its
+        // copy is made without close-on-exec.
+        let copy = check(unsafe { libc::dup(fd.as_fd().as_raw_fd()) })?;
+        // SAFETY: `copy` was just opened, is valid, and nothing else owns it.
+        Ok(unsafe { OwnedFd::from_raw_fd(copy) })
+    }
 
     fn is_cloexec(fd: impl AsFd) -> bool {
         // SAFETY: F_GETFD on a valid descriptor touches no memory.

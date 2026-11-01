@@ -17,10 +17,10 @@ use std::sync::Arc;
 
 /// The longest URI kept, as VTE and iTerm2 bound it (the spec's "Length
 /// limits"). A longer one opens no link.
-pub const URI_LIMIT: usize = 2083;
+pub(crate) const URI_LIMIT: usize = 2083;
 /// The longest `id` kept, as VTE bounds it (the spec's "Length limits"). A
 /// link with a longer one is not opened.
-pub const ID_LIMIT: usize = 250;
+pub(crate) const ID_LIMIT: usize = 250;
 /// The most heap a grid's links hold at once: each link's string and `Arc`
 /// counts, plus the `id` table as allocated, two tables while it grows.
 pub(crate) const LINK_BYTES: usize = 4 << 20;
@@ -71,7 +71,7 @@ impl Hyperlink {
     }
     /// The nonempty `id` parameter, if given: at most [`ID_LIMIT`] printable
     /// ASCII bytes.
-    pub fn id(&self) -> Option<&str> {
+    pub(crate) fn id(&self) -> Option<&str> {
         self.parts().0
     }
     /// A unique key: cells with the same key are one link, as the spec
@@ -493,7 +493,7 @@ pub(crate) struct Links {
     ids: HashSet<ById>,
     /// Links still to refuse before making room is tried again.
     stalled: u32,
-    /// The link the program has open (`Screen::link`), as this grid has it.
+    /// The link the program has open, as this grid has it.
     pub(crate) open: Held,
 }
 

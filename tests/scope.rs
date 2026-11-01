@@ -104,10 +104,7 @@ fn a_pipeline_keeps_its_group_when_its_leader_is_gone() -> Outcome {
     eventually("a foreground group whose leader exited", || {
         let group = server.ok(&["%1", "str", "foreground_group", "get"])?;
         let group = group.trim().parse::<i32>().ok();
-        Ok(group.is_some_and(|g| {
-            g != shell
-                && fuxix::process::Pid::from_raw(g).is_some_and(|g| !fuxix::process::exists(g))
-        }))
+        Ok(group.is_some_and(|g| g != shell && !exists(g)))
     })?;
     Ok(())
 }

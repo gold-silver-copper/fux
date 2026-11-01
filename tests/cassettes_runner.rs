@@ -92,7 +92,7 @@ mod runner {
                 .trim()
                 .parse()
                 .map_err(e)?;
-            Ok(fuxix::process::Pid::from_raw(pid).is_some_and(fuxix::process::exists))
+            Ok(pid > 0 && exists(pid))
         }
 
         /// A fux that prints past the bound and then hangs is killed at the

@@ -2007,6 +2007,7 @@ fn differing_rows(old: Option<&Grid>, new: &Grid) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
+    use crate::vt_feed::{Feed, Look, cells_text};
     use std::time::Instant;
     #[global_allocator]
     static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
@@ -2021,14 +2022,22 @@ mod tests {
             grid.cells
                 .set(i, CellRef::new(&text, false, Attributes::default()));
         }
-        assert!(grid.cells.text_len() > 0);
+        assert!(
+            grid.cells
+                .get(0)
+                .is_some_and(|cell| cell.contents() == text)
+        );
         ALLOCATOR.reset_peak();
         let before = ALLOCATOR.live();
         grid.reset(1, 4, true)?;
         let allocated = ALLOCATOR.peak().saturating_sub(before);
         assert_eq!(allocated, 0, "blanking must not preserve spilled text");
-        assert_eq!(grid.cells.text_len(), 0);
-        assert!(grid.cells.iter().all(|cell| !cell.has_contents()));
+        let len = grid.cells.len();
+        assert!((0..len).all(|i| {
+            grid.cells
+                .get(i)
+                .is_some_and(|cell| cell.contents().is_empty())
+        }));
         Ok(())
     }
 
@@ -2066,11 +2075,8 @@ mod tests {
     /// (`fux-vt/THREATS.md` B08).
     #[test]
     fn a_moving_picture_is_encoded_once() -> Result<(), String> {
-        let solid = |rgba: [u8; 4]| {
-            let pixels = std::iter::repeat_n(rgba, 20 * 12).flatten().collect();
-            Picture::new(20, 12, pixels).map(Arc::new).ok_or("20 by 12")
-        };
-        let (red, blue) = (solid([255, 0, 0, 255])?, solid([0, 0, 255, 255])?);
+        let red = crate::test_picture::solid(20, 12, [true, false, false])?;
+        let blue = crate::test_picture::solid(20, 12, [false, false, true])?;
         let at = |picture: &Arc<Picture>, row: u16, crop| Visible {
             pane: PaneId::of(1),
             area: (row, 0, 1, 2),
@@ -2313,7 +2319,10 @@ mod tests {
         assert_eq!(text(1), "x");
         assert_eq!(text(2), "plain");
         // The blank beside x is in its colours.
-        assert!(grid.get(1, 1).is_some_and(|cell| cell.inverse()));
+        assert!(
+            grid.get(1, 1)
+                .is_some_and(|cell| cell.attributes().inverse())
+        );
         assert_eq!(grid.cursor, Some((0, 4)));
         Ok(())
     }
@@ -2757,7 +2766,7 @@ mod tests {
         let window = parser.screen().window();
         Ok((0..window.rows())
             .filter_map(|y| window.row(y))
-            .map(|row| row.cells_text().trim_end_matches(' ').to_owned())
+            .map(|row| cells_text(&row).trim_end_matches(' ').to_owned())
             .collect())
     }
 
@@ -3026,7 +3035,7 @@ mod tests {
         let cover = bar_cover(&session, view, &session.placement(view)).ok_or("cover")?;
         // " refused " and the trailing cell: the bottom row's last nine.
         assert_eq!((cover.y(), cover.x(), cover.w()), (3, 31, 9));
-        let picture = Arc::new(Picture::new(12, 48, vec![255; 12 * 48 * 4]).ok_or("picture")?);
+        let picture = crate::test_picture::solid(12, 48, [true, true, true])?;
         let at = |area, crop| Visible {
             pane: PaneId::of(1),
             area,
@@ -3207,7 +3216,7 @@ mod tests {
         parser
             .process(&paint(None, &grid))
             .map_err(|e| e.to_string())?;
-        let row = parser.screen().rows().next().map(|r| r.cells_text());
+        let row = parser.screen().rows().next().map(|r| cells_text(&r));
         assert_eq!(row.as_deref(), Some("cafe\u{301} 界\u{301}x"));
         Ok(())
     }
@@ -3245,8 +3254,11 @@ mod tests {
             for (x, style) in styles_of(keeps).iter().enumerate() {
                 let x = u16::try_from(x).map_err(|e| e.to_string())?;
                 let cell = parser.screen().cell(0, x).ok_or("a cell")?;
-                assert_eq!(cell.underline_style(), *style, "cell {x}");
-                assert_eq!(cell.underline_color(), Color::Rgb([255, 0, 0].into()));
+                assert_eq!(cell.attributes().underline_style(), *style, "cell {x}");
+                assert_eq!(
+                    cell.attributes().underline_color(),
+                    Color::Rgb([255, 0, 0].into())
+                );
             }
         }
         // The terminal turns out to draw styles: the screen is painted again
@@ -3297,7 +3309,11 @@ mod tests {
         let right: u16 = 21;
         let cells = |p: &fux_vt::Parser, x: u16| {
             let c = p.screen().cell(0, x)?;
-            Some((c.contents().to_owned(), c.fgcolor(), c.bgcolor()))
+            Some((
+                c.contents().to_owned(),
+                c.attributes().foreground(),
+                c.attributes().background(),
+            ))
         };
         assert!(!client.screen().colors_changed(), "the client's colours");
         assert_eq!(
@@ -3357,8 +3373,9 @@ mod tests {
         s.out(PaneId::of(1), b"\x1b[?5ha\x1b[7mb\x1b[27m");
         s.out(PaneId::of(2), b"a");
         let mut client = fux_vt::Parser::new(fux_vt::Size::new(6, 41)?, 0)?;
-        let inverse =
-            |p: &fux_vt::Parser, y: u16, x: u16| p.screen().cell(y, x).map(|c| c.inverse());
+        let inverse = |p: &fux_vt::Parser, y: u16, x: u16| {
+            p.screen().cell(y, x).map(|c| c.attributes().inverse())
+        };
         let grid = compose(&s, c).ok_or("a screen")?;
         client.process(&paint(None, &grid))?;
         assert_eq!(inverse(&client, 0, 0), Some(true));
@@ -3388,7 +3405,7 @@ mod tests {
         s.out(PaneId::of(1), b"\x1b[?5ha");
         s.resize_screen(PaneId::of(1), fux_vt::Size::new(3, 20)?);
         let grid = compose(&s, c).ok_or("a screen")?;
-        let inverse = |y, x| grid.get(y, x).map(|cell| cell.inverse());
+        let inverse = |y, x| grid.get(y, x).map(|cell| cell.attributes().inverse());
         assert_eq!(inverse(0, 0), Some(true));
         assert_eq!(inverse(0, 30), Some(true), "past the row's end");
         assert_eq!(inverse(4, 0), Some(true), "below the last row");
@@ -3414,24 +3431,25 @@ mod tests {
             let open = format!("\x1b]8;id=fux{pane}-1;http://x\x1b\\link\x1b]8;;\x1b\\");
             assert!(text.contains(&open), "{open:?} in {text:?}");
         }
-        // Read back, each linked cell has its link, and only those do.
+        // Read back, each linked cell has its pane's link, and only those do.
         let options = fux_vt::Feature::Hyperlinks.into();
         let mut parser = fux_vt::Parser::with_options(fux_vt::Size::new(6, 41)?, 0, options)?;
         parser.process(&bytes)?;
         let screen = parser.screen();
-        let ids: Vec<Option<String>> = (0..41)
-            .map(|x| screen.link(0, x).and_then(|l| l.id()).map(str::to_owned))
+        let keys: Vec<Option<u64>> = (0..41)
+            .map(|x| screen.link(0, x).map(|l| l.key()))
             .collect();
         let right: u16 = 21;
-        for (x, id) in ids.iter().enumerate() {
+        let (first, second) = (screen.link(0, 1), screen.link(0, right + 1));
+        let (first, second) = (first.map(|l| l.key()), second.map(|l| l.key()));
+        assert!(first.is_some() && second.is_some() && first != second);
+        for (x, key) in keys.iter().enumerate() {
             let expected = match x {
-                1..=4 => Some("fux1-1".to_owned()),
-                x if (usize::from(right) + 1..=usize::from(right) + 4).contains(&x) => {
-                    Some("fux2-1".to_owned())
-                }
+                1..=4 => first,
+                x if (usize::from(right) + 1..=usize::from(right) + 4).contains(&x) => second,
                 _ => None,
             };
-            assert_eq!(*id, expected, "column {x}");
+            assert_eq!(*key, expected, "column {x}");
         }
         assert_eq!(screen.link(0, 1).map(|l| l.uri()), Some("http://x"));
         // A link the program takes off its cells is taken off the client's:

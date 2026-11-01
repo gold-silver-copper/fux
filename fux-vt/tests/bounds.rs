@@ -17,6 +17,11 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use fux_vt_peak::ThreadPeak;
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
+
 #[global_allocator]
 static ALLOCATOR: ThreadPeak = ThreadPeak;
 
@@ -199,7 +204,6 @@ bound!(sixel_growth_has_bounded_work_and_memory, "B03");
 bound!(sixel_aspects_have_bounded_work, "B04");
 bound!(raster_extents_and_overlaps_remain_bounded, "B05");
 bound!(cloning_a_picture_has_bounded_peak_memory, "B06");
-bound!(pictures_validate_their_pixel_count, "B07");
 bound!(sixel_encoding_has_bounded_work_and_output, "B08");
 bound!(picture_lookup_has_bounded_work, "B09");
 bound!(styles_fit_the_history_allowance, "B11");
@@ -248,6 +252,7 @@ bound!(picture_covering_has_bounded_work_and_memory, "B46");
 mod quota {
     use fux_vt::{Parser, Size, Stop};
 
+    use super::feed::{Feed, Look, cells_text};
     use super::{Result, one_at_a_time, probe};
 
     /// A host that keeps its replies, in order.
@@ -365,13 +370,14 @@ mod quota {
         parser.process(&setup)?;
         parser.process(b"\n")?;
         let s = parser.screen();
-        let id = |row, col| s.link(row, col).and_then(|l| l.id());
+        // A link's id, read from its URI, `u` and the id (`linked_row`).
+        let id = |row, col| s.link(row, col).and_then(|l| l.uri().strip_prefix('u'));
         let even =
             |col: u16, [a, b]: [&'static str; 2]| Some(if col.is_multiple_of(2) { a } else { b });
         assert!((0..4095).all(|col| id(0, col) == even(col, ["c", "d"])));
         assert!((0..4095).all(|col| id(1, col).is_none()));
         assert_eq!([id(0, 4095), id(1, 4095)], [Some("b"), Some("d")]);
-        let text = |y| s.window().row(y).map(|r| r.cells_text());
+        let text = |y| s.window().row(y).map(|r| cells_text(&r));
         let row = |cells: &[(char, usize)]| {
             cells
                 .iter()

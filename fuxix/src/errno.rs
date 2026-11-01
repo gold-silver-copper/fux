@@ -12,12 +12,10 @@ impl Errno {
     pub const INTR: Self = Self(libc::EINTR);
     pub const AGAIN: Self = Self(libc::EAGAIN);
     pub const INPROGRESS: Self = Self(libc::EINPROGRESS);
-    pub const MFILE: Self = Self(libc::EMFILE);
-    pub const NFILE: Self = Self(libc::ENFILE);
     pub const SRCH: Self = Self(libc::ESRCH);
-    pub const INVAL: Self = Self(libc::EINVAL);
+    pub(crate) const INVAL: Self = Self(libc::EINVAL);
     /// No room left: as `signal::notify` says, when every slot is held.
-    pub const NOSPC: Self = Self(libc::ENOSPC);
+    pub(crate) const NOSPC: Self = Self(libc::ENOSPC);
     /// I/O error; a PTY master reports this when its slave closes.
     pub const IO: Self = Self(libc::EIO);
     /// XNU's kernel-private `EREDRIVEOPEN` (`bsd/sys/errno.h`), which no POSIX
@@ -30,7 +28,8 @@ impl Errno {
     /// What macOS's `open("/dev/ptmx")` returns when it loses a race with
     /// another process's close, as well as when every PTY is in use (see
     /// `pty::open`).
-    pub const NXIO: Self = Self(libc::ENXIO);
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) const NXIO: Self = Self(libc::ENXIO);
 
     /// The number.
     pub fn raw(self) -> i32 {
@@ -96,7 +95,7 @@ impl Errno {
     }
 
     /// The `errno` behind an I/O error, if it came from the system.
-    pub fn from_io_error(error: &std::io::Error) -> Option<Self> {
+    pub(crate) fn from_io_error(error: &std::io::Error) -> Option<Self> {
         error.raw_os_error().map(Self)
     }
 
@@ -169,8 +168,8 @@ mod tests {
         let mut tiny = 1usize;
         assert!(Errno::INTR.message(&mut tiny).is_err());
         assert_eq!(tiny, 1);
-        let io: std::io::Error = Errno::MFILE.into();
-        assert_eq!(Errno::from_io_error(&io), Some(Errno::MFILE));
+        let io: std::io::Error = Errno::INVAL.into();
+        assert_eq!(Errno::from_io_error(&io), Some(Errno::INVAL));
         assert_eq!(Errno::from_raw(libc::EINTR), Errno::INTR);
         assert_eq!(check(3), Ok(3));
         assert_eq!(check_size(7), Ok(7));

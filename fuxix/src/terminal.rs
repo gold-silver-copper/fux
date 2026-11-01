@@ -17,22 +17,7 @@ pub(crate) type Request = libc::Ioctl;
 #[derive(Clone)]
 pub struct Termios(libc::termios);
 
-/// Whether a terminal echoes typed input and edits it a line at a time.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub struct Modes {
-    pub canonical: bool,
-    pub echo: bool,
-}
-
 impl Termios {
-    /// The terminal's echo and line-editing flags.
-    pub fn modes(&self) -> Modes {
-        Modes {
-            canonical: self.0.c_lflag & libc::ICANON != 0,
-            echo: self.0.c_lflag & libc::ECHO != 0,
-        }
-    }
-
     /// Raw mode: no echo, no line editing, no signals from keys, and no
     /// output processing.
     pub fn make_raw(&mut self) {
@@ -66,7 +51,7 @@ pub struct Size {
 
 impl Size {
     /// `rows` by `cols`, if neither is zero.
-    pub fn new(rows: u16, cols: u16) -> Option<Size> {
+    pub(crate) fn new(rows: u16, cols: u16) -> Option<Size> {
         Some(Size::from((NonZeroU16::new(rows)?, NonZeroU16::new(cols)?)))
     }
 }
@@ -148,6 +133,14 @@ mod tests {
     use super::*;
     use crate::pty;
 
+    fn echoes(termios: &Termios) -> bool {
+        termios.0.c_lflag & libc::ECHO != 0
+    }
+
+    fn edits_lines(termios: &Termios) -> bool {
+        termios.0.c_lflag & libc::ICANON != 0
+    }
+
     fn size(rows: u16, cols: u16) -> std::result::Result<Size, String> {
         Size::new(rows, cols).ok_or_else(|| "a size".to_owned())
     }
@@ -163,22 +156,20 @@ mod tests {
         set_window_size(&master, size(5, 7)?, pixels).map_err(|e| e.to_string())?;
         assert_eq!(window_size(&slave), Some((size(5, 7)?, pixels)));
         let mut modes = attributes(&slave).map_err(|e| e.to_string())?;
-        assert!(modes.modes().echo, "a new terminal echoes");
-        assert!(modes.modes().canonical, "and edits a line at a time");
+        assert!(echoes(&modes), "a new terminal echoes");
+        assert!(edits_lines(&modes), "and edits a line at a time");
         let saved = modes.clone();
         modes.make_raw();
         set_attributes(&slave, &modes).map_err(|e| e.to_string())?;
         let again = attributes(&slave).map_err(|e| e.to_string())?;
-        assert!(!again.modes().echo && !again.modes().canonical);
+        assert!(!echoes(&again) && !edits_lines(&again));
         // The master reads the modes the program set on its side.
         let seen = attributes(&master).map_err(|e| e.to_string())?;
-        assert!(!seen.modes().echo && !seen.modes().canonical);
+        assert!(!echoes(&seen) && !edits_lines(&seen));
         // Restoring the complete saved attributes restores both flags.
         set_attributes(&slave, &saved).map_err(|e| e.to_string())?;
-        assert_eq!(
-            attributes(&slave).map_err(|e| e.to_string())?.modes(),
-            saved.modes()
-        );
+        let restored = attributes(&slave).map_err(|e| e.to_string())?;
+        assert!(echoes(&restored) && edits_lines(&restored));
         // No session has it as its terminal: no foreground group.
         assert_eq!(foreground_group(&master), Ok(None));
         assert!(attributes(std::fs::File::open("/dev/null").map_err(|e| e.to_string())?).is_err());

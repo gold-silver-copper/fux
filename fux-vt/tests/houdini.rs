@@ -26,6 +26,11 @@
 //! answers only below a VT220 (`terminal_id < 200`).
 
 use fux_vt::{Feature, Identity, Options, Parser, Size};
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Who the parser with every feature on answers as.

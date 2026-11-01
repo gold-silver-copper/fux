@@ -268,5 +268,5 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
         Ok(parent == server.pid().map(|p| p.to_string()).as_deref())
     })?;
     server.ok(&["str", &pane, "pane", "str", "C-d", "press"])?;
-    eventually("the orphan reaped", || Ok(!fuxix::process::exists(gone)))
+    eventually("the orphan reaped", || Ok(!support::exists(gone.as_raw())))
 }

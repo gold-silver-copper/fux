@@ -292,7 +292,7 @@ pub(crate) struct History {
     /// are free so what is kept does not depend on how identities run; the
     /// rest cost `spans::SPAN_BYTES` each (`THREATS.md` B40).
     spans: Spans,
-    /// The cells the rows keep, for `storage_cells`.
+    /// The cells the rows keep (`kept_cells`).
     cells: usize,
     /// The bytes of the rows' text.
     text: usize,

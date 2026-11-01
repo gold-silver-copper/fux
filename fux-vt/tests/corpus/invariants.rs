@@ -1,5 +1,10 @@
 //! Shared independent invariants for deterministic tests and cargo-fuzz.
-use fux_vt::{CLUSTER_CAPACITY, Cells, Mode, Parser};
+use fux_vt::{Attributes, Cells, Hyperlink, Mode, Parser, Sink};
+
+/// The most bytes a cell's cluster keeps.
+const CLUSTER_CAPACITY: usize = 128;
+/// The longest hyperlink URI kept (README, `Hyperlinks`).
+const URI_LIMIT: usize = 2083;
 
 fn cells(row: fux_vt::Row<'_>) -> Vec<fux_vt::CellRef<'_>> {
     row.cells().collect()
@@ -22,26 +27,21 @@ pub fn check(p: &Parser) {
         s.rows().len(),
         usize::from(rows).saturating_add(s.history_len())
     );
-    for row in s.rows() {
-        let offset = row.index();
+    for (offset, row) in s.rows().enumerate() {
         assert!(ids.insert(row.id()), "row identities alias");
         assert!(!row.is_empty());
-        // The row's text stays within its budget.
-        assert!(
-            row.text_len() <= Cells::text_limit(row.len()),
-            "row {offset}: {} bytes of text in {} cells",
-            row.text_len(),
-            row.len()
-        );
         // Copied cell by cell, with their text, the row is the same.
         assert!(
-            Cells::try_from_iter(row.cells()).is_ok_and(|copy| copy.iter().eq(row.cells())),
+            Cells::new(row.len()).is_ok_and(|mut copy| {
+                let kept = (0..).zip(row.cells()).all(|(i, c)| copy.set(i, c));
+                kept && copy.range(0..row.len()).eq(row.cells())
+            }),
             "row {offset} copies differently"
         );
         for (i, cell) in row.cells().enumerate() {
             assert!(cell.contents().len() <= CLUSTER_CAPACITY);
             // A cell with contents shows them: its text is where it says.
-            if cell.has_contents() {
+            if !cell.contents().is_empty() {
                 assert!(
                     !cell.contents().is_empty(),
                     "row {offset}: cell {i} lost its text"
@@ -62,21 +62,17 @@ pub fn check(p: &Parser) {
                         .is_some_and(|c| c.is_wide()),
                     "orphan continuation at {offset},{i}"
                 );
-                assert!(!cell.has_contents());
+                assert!(cell.contents().is_empty());
             }
             // A link is a glyph's: a blank cell has none, a wide glyph's
-            // halves have one, and it is within the spec's limits.
+            // halves have one, and its URI is within the spec's limits.
             let link = row.link(i);
             if let Some(link) = link {
                 assert!(row.has_links());
-                assert!(cell.has_contents() || cell.is_wide_continuation());
-                assert!(!link.uri().is_empty() && link.uri().len() <= fux_vt::URI_LIMIT);
-                assert!(
-                    link.id()
-                        .is_none_or(|id| !id.is_empty() && id.len() <= fux_vt::ID_LIMIT)
-                );
+                assert!(!cell.contents().is_empty() || cell.is_wide_continuation());
+                assert!(!link.uri().is_empty() && link.uri().len() <= URI_LIMIT);
                 let printable = |s: &str| s.bytes().all(|b| (0x20..=0x7e).contains(&b));
-                assert!(printable(link.uri()) && link.id().is_none_or(printable));
+                assert!(printable(link.uri()));
             }
             if cell.is_wide_continuation() {
                 assert_eq!(link, i.checked_sub(1).and_then(|i| row.link(i)));
@@ -84,15 +80,9 @@ pub fn check(p: &Parser) {
         }
     }
     let mark = s.mark();
-    for w in s.rows().map(|row| row.window()) {
-        assert_eq!((w.rows(), w.cols()), (rows, cols));
-        if let Some(last) = cols.checked_sub(1) {
-            for y in 0..rows {
-                assert!(!w.cell(y, last).is_some_and(|c| c.is_wide()));
-            }
-        }
-    }
-    assert_eq!(mark, s.mark(), "reading windows changed the terminal");
+    let w = s.window();
+    assert_eq!((w.rows(), w.cols()), (rows, cols));
+    assert_eq!(mark, s.mark(), "reading rows changed the terminal");
 }
 
 /// Two parsers fed the same bytes, split differently, alike in everything
@@ -106,33 +96,32 @@ pub fn same_feed(a: &Parser, b: &Parser) {
         (a.alternate_rows(), b.alternate_rows()),
     ] {
         assert_eq!(a.len(), b.len());
-        for (a, b) in a.zip(b) {
-            let offset = a.index();
+        for (offset, (a, b)) in a.zip(b).enumerate() {
             assert_eq!(cells(a), cells(b), "row {offset} of both screens");
-            assert_eq!(a.wrapped(), b.wrapped(), "row {offset} of both screens");
+            assert_eq!(a.continues(), b.continues(), "row {offset} of both screens");
         }
     }
 }
 
 /// Two parsers alike in everything a host reads of the screen in use:
-/// its rows, cursor, modes, margins, colours and pictures.
+/// its rows, cursor, modes, keys, colours and pictures; and in the state
+/// it reads only by what it does next (`probe`): the pen, the open link,
+/// the margins and the scroll region.
 pub fn equal(a: &Parser, b: &Parser) {
     assert_eq!(a.resize_report(), b.resize_report());
+    assert_eq!(probe(a), probe(b), "the pen, the open link or the margins");
     let (a, b) = (a.screen(), b.screen());
     assert_eq!(a.size(), b.size());
     assert_eq!(a.cursor_position(), b.cursor_position());
     assert_eq!(a.pending_wrap(), b.pending_wrap());
-    assert_eq!(a.attributes(), b.attributes());
-    assert_eq!(a.scroll_region(), b.scroll_region());
     assert_eq!(a.mouse_protocol_mode(), b.mouse_protocol_mode());
     assert_eq!(a.mouse_protocol_encoding(), b.mouse_protocol_encoding());
     assert_eq!(a.kitty_keyboard_flags(), b.kitty_keyboard_flags());
-    assert_eq!(a.modify_other_keys(), b.modify_other_keys());
-    for mode in Mode::ALL {
+    assert_eq!(a.key_mode(), b.key_mode());
+    for mode in MODES {
         assert_eq!(a.mode(mode), b.mode(mode), "{mode:?}");
     }
     assert_eq!(a.cursor_shape(), b.cursor_shape());
-    assert_eq!(a.left_right_margins(), b.left_right_margins());
     for index in 0..=u8::MAX {
         assert_eq!(
             a.palette_color(index),
@@ -151,26 +140,97 @@ pub fn equal(a: &Parser, b: &Parser) {
     assert_eq!(pictures(a), pictures(b));
     assert_eq!(a.history_len(), b.history_len());
     assert_eq!(a.rows().len(), b.rows().len());
-    for (a, b) in a.rows().zip(b.rows()) {
-        let offset = a.index();
+    for (offset, (a, b)) in a.rows().zip(b.rows()).enumerate() {
         assert_eq!(cells(a), cells(b), "row {offset}");
-        assert_eq!(a.wrapped(), b.wrapped(), "row {offset}");
+        assert_eq!(a.continues(), b.continues(), "row {offset}");
         assert_eq!(links(a), links(b), "row {offset}");
-        assert_eq!(a.starts_prompt(), b.starts_prompt(), "row {offset}");
     }
-    assert_eq!(a.hyperlink(), b.hyperlink());
 }
 
-/// A picture shown: its number, its top row and first column, the
-/// columns and rows it covers, and its size in pixels.
-type Shown = (u64, i64, u16, u16, u16, (u32, u32));
+/// Every mode, as `Mode` declares them.
+const MODES: [Mode; 37] = [
+    Mode::Insert,
+    Mode::NewLine,
+    Mode::ApplicationCursor,
+    Mode::SmoothScroll,
+    Mode::ReverseVideo,
+    Mode::Origin,
+    Mode::Autowrap,
+    Mode::AutoRepeat,
+    Mode::MousePress,
+    Mode::CursorBlink,
+    Mode::ShowCursor,
+    Mode::MoreFix,
+    Mode::ReverseWrap,
+    Mode::AlternateScreen,
+    Mode::HorizontalCursorCoupling,
+    Mode::ApplicationKeypad,
+    Mode::BackarrowSendsBackspace,
+    Mode::LeftRightMargins,
+    Mode::SixelDisplay,
+    Mode::MousePressRelease,
+    Mode::MouseHighlight,
+    Mode::MouseButtonMotion,
+    Mode::MouseAnyMotion,
+    Mode::FocusReporting,
+    Mode::MouseSgr,
+    Mode::AlternateScroll,
+    Mode::MouseUrxvt,
+    Mode::MouseSgrPixels,
+    Mode::ExtendedReverseWrap,
+    Mode::AlternateScreenCleared,
+    Mode::SaveCursor,
+    Mode::AlternateScreenSaveCursor,
+    Mode::BracketedPaste,
+    Mode::SynchronizedOutput,
+    Mode::ColorSchemeUpdates,
+    Mode::InBandResize,
+    Mode::GraphemeClustering,
+];
+
+/// Takes nothing.
+struct Deaf;
+impl Sink for Deaf {}
+
+/// What the state no host reads does next, in a copy of `p`: the glyph
+/// printed at the top left takes the pen and the open link; then, in
+/// origin mode, the cursor homes to the top left of the margins and the
+/// scroll region, and stops at their bottom right.
+type Probed = (Option<(Attributes, Option<Hyperlink>)>, [(u16, u16); 2]);
+
+/// [`Probed`] for `p`.
+fn probe(p: &Parser) -> Probed {
+    let mut p = p.clone();
+    fed(&mut p, b"\x1b[?6l\x1b[Hx");
+    let glyph = (p.screen().window().row(0)).map(|row| {
+        let attributes = row.cell(0).map(|c| c.attributes()).unwrap_or_default();
+        (attributes, row.link(0).cloned())
+    });
+    let corners = [
+        fed(&mut p, b"\x1b[?6h\x1b[H"),
+        fed(&mut p, b"\x1b[32767;32767H"),
+    ];
+    (glyph, corners)
+}
+
+/// `p` fed every byte of `bytes`, as a host does; the cursor then.
+fn fed(p: &mut Parser, bytes: &[u8]) -> (u16, u16) {
+    let mut rest = bytes;
+    while let Ok(Some((taken, _))) = p.process_until_stop(rest, &mut Deaf) {
+        rest = rest.get(taken..).unwrap_or_default();
+    }
+    p.screen().cursor_position()
+}
+
+/// A picture shown: its top row and first column, the columns and rows
+/// it covers, and its size in pixels.
+type Shown = (i64, u16, u16, u16, (u32, u32));
 
 /// Each picture shown.
 fn pictures(s: &fux_vt::Screen) -> Vec<Shown> {
     s.pictures()
         .map(|p| {
             (
-                p.id,
                 p.row,
                 p.col,
                 p.cols,
@@ -181,9 +241,7 @@ fn pictures(s: &fux_vt::Screen) -> Vec<Shown> {
         .collect()
 }
 
-/// Each cell's link: its URI, id and key.
-fn links(row: fux_vt::Row<'_>) -> Vec<Option<(&str, Option<&str>, u64)>> {
-    (0..row.len())
-        .map(|col| row.link(col).map(|l| (l.uri(), l.id(), l.key())))
-        .collect()
+/// Each cell's link (its URI, id and key alike).
+fn links(row: fux_vt::Row<'_>) -> Vec<Option<&Hyperlink>> {
+    (0..row.len()).map(|col| row.link(col)).collect()
 }

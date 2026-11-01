@@ -11,7 +11,7 @@
 //! however the output is cut up; and again after reflowing narrower and
 //! back.
 use arbitrary::Arbitrary;
-use fux_vt::{Feature, Options, Parser, Row, Size};
+use fux_vt::{Feature, Options, Parser, Row, Sink, Size};
 
 #[derive(Arbitrary, Debug)]
 pub enum Pick {
@@ -40,6 +40,23 @@ impl Pick {
     }
 }
 
+/// Takes nothing.
+struct Deaf;
+impl Sink for Deaf {}
+
+/// `parser` fed every byte of `bytes`, from each stop on, as a host does:
+/// whether no call failed and no room was refused.
+fn fed(parser: &mut Parser, bytes: &[u8]) -> bool {
+    let (mut rest, refused) = (bytes, parser.refused());
+    loop {
+        match parser.process_until_stop(rest, &mut Deaf) {
+            Ok(Some((taken, _))) => rest = rest.get(taken..).unwrap_or_default(),
+            Ok(None) => return parser.refused() == refused,
+            Err(_) => return false,
+        }
+    }
+}
+
 /// Asserts row `row` holds `expected`, and nothing after it.
 fn row_is(row: Row<'_>, expected: &[(String, bool)], line: &str) {
     let mut col = 0usize;
@@ -58,7 +75,10 @@ fn row_is(row: Row<'_>, expected: &[(String, bool)], line: &str) {
         }
         col = col.saturating_add(if *wide { 2 } else { 1 });
     }
-    assert!(row.cells().skip(col).all(|c| !c.has_contents()), "{line:?}");
+    assert!(
+        row.cells().skip(col).all(|c| c.contents().is_empty()),
+        "{line:?}"
+    );
 }
 
 /// Prints `input`'s lines and checks them against the model.
@@ -127,7 +147,7 @@ pub fn run(input: &Input) {
             .next()
             .map_or(rest.len(), |s| usize::from(*s % 16).saturating_add(1));
         let (piece, tail) = rest.split_at_checked(size).unwrap_or((rest, &[]));
-        assert!(parser.process(piece).is_ok());
+        assert!(fed(&mut parser, piece));
         rest = tail;
     }
     let check = |parser: &Parser| {

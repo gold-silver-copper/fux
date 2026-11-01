@@ -3,9 +3,10 @@
 //! reported as unhandled; and the opt-in kitty keyboard protocol, identity
 //! replies and reflow on resize.
 
-use fux_vt::keys::encode::OtherKeysLevel;
+use fux_vt::keys::encode::{KeyMode, OtherKeysLevel};
+use fux_vt::sixel::Picture;
 use fux_vt::{
-    Blink, CLUSTER_CAPACITY, CellRef, Color, Error, Feature, Identity, Options, Parser, Sink, Size,
+    Attributes, Blink, CellRef, Color, Error, Feature, Identity, Options, Parser, Sink, Size,
     Unhandled,
 };
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -14,16 +15,34 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 mod lines;
 use lines::lines;
 
-/// The rows of the window `offset` rows back into history.
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look, cells_text};
+
+/// The most bytes a cell's cluster keeps.
+const CLUSTER_CAPACITY: usize = 128;
+
+/// The screen's height of rows from `offset` rows back into history, or
+/// from the oldest, each as wide as the screen: a wide glyph its last
+/// column cuts is left out.
 fn window_lines(parser: &Parser, offset: usize) -> Vec<String> {
-    let window = parser.screen().window();
-    let window = window.row(0).map_or(window, |top| top.up(offset).window());
-    (0..window.rows())
-        .map(|y| {
-            (0..window.cols())
-                .filter_map(|x| window.cell(y, x))
-                .filter(|c| !c.is_wide_continuation())
-                .map(|c| if c.has_contents() { c.contents() } else { " " })
+    let s = parser.screen();
+    let (rows, cols) = (usize::from(s.size().rows()), usize::from(s.size().cols()));
+    let top = s.history_len().saturating_sub(offset);
+    (s.rows().skip(top).take(rows))
+        .map(|row| {
+            (row.cells().take(cols).enumerate())
+                .filter(|(x, c)| {
+                    !c.is_wide_continuation() && !(c.is_wide() && x.saturating_add(1) >= cols)
+                })
+                .map(|(_, c)| {
+                    if c.contents().is_empty() {
+                        " "
+                    } else {
+                        c.contents()
+                    }
+                })
                 .collect::<String>()
                 .trim_end()
                 .to_owned()
@@ -31,8 +50,16 @@ fn window_lines(parser: &Parser, offset: usize) -> Vec<String> {
         .collect()
 }
 
-fn cell(parser: &Parser, row: u16, col: u16) -> std::result::Result<CellRef<'_>, Error> {
-    parser.screen().cell(row, col).ok_or(Error::InvalidRange)
+fn cell(parser: &Parser, row: u16, col: u16) -> Result<CellRef<'_>> {
+    Ok(parser.screen().cell(row, col).ok_or("a cell")?)
+}
+
+/// The modifyOtherKeys level the keys are encoded with, no kitty flags set.
+fn other_keys(parser: &Parser) -> Result<Option<OtherKeysLevel>> {
+    match parser.screen().key_mode() {
+        KeyMode::Legacy { other_keys, .. } => Ok(other_keys),
+        KeyMode::Kitty { .. } => Err("kitty keyboard flags set".into()),
+    }
 }
 
 /// Replies and unhandled sequences, in order, as text.
@@ -103,7 +130,7 @@ const RATTY: Identity = Identity {
 fn blink_hidden_strikeout_and_underline_colour_are_stored_on_cells() -> Result {
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
     p.process(b"a\x1b[5mb\x1b[6mc\x1b[25md\x1b[5m\x1b[me")?;
-    let blink = |p: &Parser, col| cell(p, 0, col).map(|c| c.blink());
+    let blink = |p: &Parser, col| cell(p, 0, col).map(|c| c.attributes().blink());
     assert_eq!(blink(&p, 0)?, Blink::None);
     assert_eq!(blink(&p, 1)?, Blink::Slow);
     assert_eq!(blink(&p, 2)?, Blink::Rapid, "rapid replaces slow");
@@ -112,27 +139,32 @@ fn blink_hidden_strikeout_and_underline_colour_are_stored_on_cells() -> Result {
 
     let mut p = Parser::new(Size::new(2, 12)?, 0)?;
     p.process(b"a\x1b[8mb\x1b[28m\x1b[9mc\x1b[29m\x1b[58;2;1;2;3md\x1b[58;5;9me\x1b[59mf\x1b[8;9;58:2:4:5:6mg\x1b[mh")?;
-    assert!(!cell(&p, 0, 0)?.hidden() && !cell(&p, 0, 0)?.strikeout());
-    assert!(cell(&p, 0, 1)?.hidden());
-    assert!(!cell(&p, 0, 2)?.hidden() && cell(&p, 0, 2)?.strikeout());
-    assert!(!cell(&p, 0, 3)?.strikeout());
+    assert!(!cell(&p, 0, 0)?.attributes().hidden() && !cell(&p, 0, 0)?.attributes().strikeout());
+    assert!(cell(&p, 0, 1)?.attributes().hidden());
+    assert!(!cell(&p, 0, 2)?.attributes().hidden() && cell(&p, 0, 2)?.attributes().strikeout());
+    assert!(!cell(&p, 0, 3)?.attributes().strikeout());
     assert_eq!(
-        cell(&p, 0, 3)?.underline_color(),
+        cell(&p, 0, 3)?.attributes().underline_color(),
         Color::Rgb([1, 2, 3].into())
     );
-    assert_eq!(cell(&p, 0, 4)?.underline_color(), Color::Idx(9));
-    assert_eq!(cell(&p, 0, 5)?.underline_color(), Color::Default);
-    assert!(cell(&p, 0, 6)?.hidden() && cell(&p, 0, 6)?.strikeout());
     assert_eq!(
-        cell(&p, 0, 6)?.underline_color(),
+        cell(&p, 0, 4)?.attributes().underline_color(),
+        Color::Idx(9)
+    );
+    assert_eq!(
+        cell(&p, 0, 5)?.attributes().underline_color(),
+        Color::Default
+    );
+    assert!(cell(&p, 0, 6)?.attributes().hidden() && cell(&p, 0, 6)?.attributes().strikeout());
+    assert_eq!(
+        cell(&p, 0, 6)?.attributes().underline_color(),
         Color::Rgb([4, 5, 6].into())
     );
     assert!(
-        !cell(&p, 0, 7)?.hidden() && !cell(&p, 0, 7)?.strikeout(),
+        !cell(&p, 0, 7)?.attributes().hidden() && !cell(&p, 0, 7)?.attributes().strikeout(),
         "SGR 0 resets"
     );
-    assert_eq!(cell(&p, 0, 7)?.underline_color(), Color::Default);
-    assert_eq!(p.screen().attributes(), fux_vt::Attributes::default());
+    assert_eq!(cell(&p, 0, 7)?.attributes(), Attributes::default());
     Ok(())
 }
 
@@ -159,10 +191,11 @@ fn scosc_and_scorc_save_and_restore_position_and_attributes() -> Result {
     assert_eq!(p.screen().cursor_position(), (1, 2));
     // Like DECRC, SCORC restores the attributes SCOSC saved: an image
     // placeholder row wrapped in `CSI s` ... `CSI u` leaves the pen as it was.
-    assert!(!p.screen().attributes().bold());
-    assert_eq!(p.screen().attributes().foreground(), Color::Default);
     p.process(b"X")?;
-    assert_eq!(cell(&p, 1, 2)?.contents(), "X");
+    let x = cell(&p, 1, 2)?;
+    assert_eq!(x.contents(), "X");
+    assert!(!x.attributes().bold());
+    assert_eq!(x.attributes().foreground(), Color::Default);
     Ok(())
 }
 
@@ -244,7 +277,7 @@ fn a_cluster_grown_wide_in_the_last_column_wraps_as_a_wide_glyph() -> Result {
     let heart = "\u{2764}\u{fe0f}";
     let left = |p: &Parser| -> Result<bool> {
         let c = cell(p, 0, 3)?;
-        Ok(!c.has_contents() && c.bgcolor() == Color::Default)
+        Ok(c.contents().is_empty() && c.attributes().background() == Color::Default)
     };
     // Whole or a byte at a time, the same.
     let text = "abc\u{2764}\u{fe0f}X";
@@ -257,7 +290,7 @@ fn a_cluster_grown_wide_in_the_last_column_wraps_as_a_wide_glyph() -> Result {
     for p in [&whole, &split] {
         assert_eq!(lines(p), ["abc", &format!("{heart}X")]);
         assert!(cell(p, 1, 0)?.is_wide() && cell(p, 1, 1)?.is_wide_continuation());
-        assert!(left(p)? && p.screen().row_wrapped(0));
+        assert!(left(p)? && p.screen().row_continues(0));
         let row = p.screen().window().row(0).ok_or("row 0")?;
         assert!(row.ends_in_spacer());
         assert_eq!(p.screen().cursor_position(), (1, 3));
@@ -295,7 +328,7 @@ fn a_cluster_grown_wide_in_the_last_column_wraps_as_a_wide_glyph() -> Result {
         Options::new().with(Feature::Hyperlinks),
     )?;
     p.process("abc\x1b[41m\x1b]8;;u\x1b\\\u{2764}\x1b[m\x1b]8;;\x1b\\\u{fe0f}".as_bytes())?;
-    assert_eq!(cell(&p, 1, 0)?.bgcolor(), Color::Idx(1));
+    assert_eq!(cell(&p, 1, 0)?.attributes().background(), Color::Idx(1));
     let rows = p.screen().window();
     let link = |y: u16, x: usize| {
         let row = rows.row(y)?;
@@ -317,7 +350,10 @@ fn a_cluster_grown_wide_in_the_last_column_wraps_as_a_wide_glyph() -> Result {
     p.process(format!("{input}\x1b[48;2;2;0;0m\u{fe0f}").as_bytes())?;
     let own = Color::Rgb(fux_vt::Rgb { r: 1, g: 0, b: 0 });
     assert_eq!(
-        (cell(&p, 1, 0)?.contents(), cell(&p, 1, 0)?.bgcolor()),
+        (
+            cell(&p, 1, 0)?.contents(),
+            cell(&p, 1, 0)?.attributes().background()
+        ),
         (heart, own)
     );
     // With autowrap off it is not printed, as a wide glyph with no room
@@ -349,7 +385,7 @@ fn widening_needs_room_and_clears_what_it_covers() -> Result {
     p.process("\u{fe0f}".as_bytes())?;
     assert_eq!(cell(&p, 0, 0)?.contents(), "\u{2764}\u{fe0f}");
     assert!(cell(&p, 0, 1)?.is_wide_continuation());
-    assert!(!cell(&p, 0, 2)?.is_wide_continuation() && !cell(&p, 0, 2)?.has_contents());
+    assert!(!cell(&p, 0, 2)?.is_wide_continuation() && cell(&p, 0, 2)?.contents().is_empty());
     // Overwriting a clustered wide cell clears its second half.
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
     p.process("\u{2764}\u{fe0f}\r  ".as_bytes())?;
@@ -575,7 +611,7 @@ fn kitty_keyboard_stacks_are_per_screen_bounded_and_reset() -> Result {
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[>4u\x1b[>4;2m\x1bc")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
-    assert_eq!(p.screen().modify_other_keys(), None);
+    assert_eq!(other_keys(&p)?, None);
     Ok(())
 }
 
@@ -619,17 +655,17 @@ fn xtqmodkeys_answers_the_modify_other_keys_level() -> Result {
 #[test]
 fn modify_other_keys_levels_survive_split_sequences() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
-    assert_eq!(p.screen().modify_other_keys(), None);
+    assert_eq!(other_keys(&p)?, None);
     p.process(b"\x1b[>4;2m")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::All));
+    assert_eq!(other_keys(&p)?, Some(OtherKeysLevel::All));
     p.process(b"\x1b[>4;0m")?;
-    assert_eq!(p.screen().modify_other_keys(), None);
+    assert_eq!(other_keys(&p)?, None);
     for byte in b"\x1b[>4;1m" {
         p.process(&[*byte])?;
     }
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::Usual));
+    assert_eq!(other_keys(&p)?, Some(OtherKeysLevel::Usual));
     p.process(b"\x1b[>4m")?;
-    assert_eq!(p.screen().modify_other_keys(), None);
+    assert_eq!(other_keys(&p)?, None);
     // No parameters reset every resource (ctlseqs, XTMODKEYS: "If no
     // parameters are given, all resources are reset to their initial
     // values"), modifyOtherKeys among them; 0 alone is modifyKeyboard
@@ -637,32 +673,33 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     // leaves modifyOtherKeys, byte by byte too.
     p.process(b"\x1b[>4;2m")?;
     let record = run(&mut p, b"\x1b[>m")?;
-    assert_eq!(p.screen().modify_other_keys(), None);
+    assert_eq!(other_keys(&p)?, None);
     assert!(record.unhandled.is_empty());
     p.process(b"\x1b[>4;2m\x1b[>0m")?;
     for byte in b"\x1b[>0m" {
         p.process(&[*byte])?;
     }
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::All));
+    assert_eq!(other_keys(&p)?, Some(OtherKeysLevel::All));
     for byte in b"\x1b[>m" {
         p.process(&[*byte])?;
     }
-    assert_eq!(p.screen().modify_other_keys(), None);
+    assert_eq!(other_keys(&p)?, None);
     // `CSI > 4 n` disables it (ctlseqs: "Disable key modifier options",
     // the resource value -1), until set again; other resources are not
     // modifyOtherKeys, and `CSI > n` disables modifyFunctionKeys.
     p.process(b"\x1b[>4;2m\x1b[>4n")?;
-    assert_eq!(p.screen().modify_other_keys(), None);
+    assert_eq!(other_keys(&p)?, None);
     p.process(b"\x1b[>4;1m")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::Usual));
+    assert_eq!(other_keys(&p)?, Some(OtherKeysLevel::Usual));
     let record = run(&mut p, b"\x1b[>n\x1b[>2n")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::Usual));
+    assert_eq!(other_keys(&p)?, Some(OtherKeysLevel::Usual));
     assert_eq!(record.unhandled, ["CSI >0n", "CSI >2n"]);
     p.process(b"\x1b[>4n")?;
     // Other resources are not modifyOtherKeys, and not SGR either.
     let record = run(&mut p, b"\x1b[>1;2mx")?;
     assert_eq!(record.unhandled, ["CSI >1;2m"]);
-    assert_eq!(p.screen().attributes(), fux_vt::Attributes::default());
+    let x = cell(&p, 0, 0)?;
+    assert_eq!((x.contents(), x.attributes()), ("x", Attributes::default()));
     Ok(())
 }
 
@@ -672,7 +709,7 @@ fn without_the_option_keyboard_requests_are_ignored_and_unanswered() -> Result {
     let record = run(&mut p, b"\x1b[>5u\x1b[=3u\x1b[?u\x1b[>4;2m")?;
     assert!(record.replies.is_empty());
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
-    assert_eq!(p.screen().modify_other_keys(), None);
+    assert_eq!(other_keys(&p)?, None);
     assert_eq!(
         record.unhandled,
         ["CSI >5u", "CSI =3u", "CSI ?0u", "CSI >4;2m"]
@@ -688,8 +725,8 @@ fn narrowing_reflows_a_long_line_and_widening_joins_it() -> Result {
     p.process(b"0123456789abcdefghij\r\nnext")?;
     p.resize(Size::new(4, 8)?)?;
     assert_eq!(lines(&p), ["01234567", "89abcdef", "ghij", "next"]);
-    assert!(p.screen().row_wrapped(0) && p.screen().row_wrapped(1));
-    assert!(!p.screen().row_wrapped(2));
+    assert!(p.screen().row_continues(0) && p.screen().row_continues(1));
+    assert!(!p.screen().row_continues(2));
     assert_eq!(p.screen().cursor_position(), (3, 4));
     p.resize(Size::new(4, 30)?)?;
     assert_eq!(lines(&p), ["0123456789abcdefghij", "next", "", ""]);
@@ -753,7 +790,7 @@ fn reflow_keeps_a_cursor_past_the_text_on_its_row() -> Result {
     assert!(!p.screen().pending_wrap());
     p.process(b"X")?;
     assert_eq!(lines(&p), ["    X", "", ""]);
-    assert!(!p.screen().row_wrapped(0));
+    assert!(!p.screen().row_continues(0));
     Ok(())
 }
 
@@ -767,17 +804,17 @@ fn reflow_keeps_a_cursor_past_the_text_on_its_row() -> Result {
 fn deleting_or_inserting_lines_keeps_the_wrap_above() -> Result {
     let mut p = Parser::with_options(Size::new(4, 6)?, 100, REFLOW)?;
     p.process(b"abcdefgh\r\nxyz\x1b[2;1H\x1b[M")?;
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_continues(0));
     p.resize(Size::new(4, 12)?)?;
     assert_eq!(lines(&p), ["abcdefxyz", "", "", ""]);
     let mut p = Parser::with_options(Size::new(4, 6)?, 100, REFLOW)?;
     p.process(b"abcdefgh\x1b[2;1H\x1b[L")?;
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_continues(0));
     // Scrolling down, the row moved to the bottom margin keeps its own,
     // as xterm keeps it (`--size 6x1 '~!@#\e[3;5r\e[10H\e[2T'`).
     let mut p = Parser::new(Size::new(6, 1)?, 0)?;
     p.process(b"~!@#\x1b[3;5r\x1b[10H\x1b[2T")?;
-    let wrapped: Vec<bool> = (0..6).map(|y| p.screen().row_wrapped(y)).collect();
+    let wrapped: Vec<bool> = (0..6).map(|y| p.screen().row_continues(y)).collect();
     assert_eq!(wrapped, [true, true, false, false, true, false]);
     Ok(())
 }
@@ -871,7 +908,7 @@ fn reflow_resets_the_scroll_region_and_keeps_the_history_budget() -> Result {
     let mut p = Parser::with_options(Size::new(10, 20)?, 0, REFLOW)?;
     p.process(b"\x1b[2;5r")?;
     p.resize(Size::new(10, 21)?)?;
-    assert_eq!(p.screen().scroll_region(), (0, 9));
+    // The whole screen scrolls: a line feed on its last row.
     p.process(b"\x1b[10;1Hlast\r\nafter")?;
     assert_eq!(lines(&p).get(8).map(String::as_str), Some("last"));
     assert_eq!(lines(&p).get(9).map(String::as_str), Some("after"));
@@ -1110,6 +1147,14 @@ fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are
     Ok(())
 }
 
+/// Counts the pictures not placed.
+struct Refusals(usize);
+impl Sink for Refusals {
+    fn picture(&mut self, placed: bool) {
+        self.0 = self.0.saturating_add(usize::from(!placed));
+    }
+}
+
 /// Lost margin bands are refused; copied bands stay blank, unmoved
 /// bands keep their placeholders, and out-of-column new lines only move
 /// the cursor. Below the region, bands stack at the screen's bottom.
@@ -1137,12 +1182,9 @@ fn margin_placement_preserves_refusal_and_unmoved_bands() -> Result {
         let bands: String = std::iter::repeat_n("~-", rows.saturating_sub(1)).collect();
         let tail: String = std::iter::repeat_n('-', trailing).collect();
         let picture = format!("\x1bPq\"1;1{bands}~{tail}\x1b\\");
-        p.process(picture.as_bytes())?;
-        assert_eq!(
-            p.pictures_refused(),
-            refused,
-            "{at}/{col}/{rows}/{trailing}"
-        );
+        let mut refusals = Refusals(0);
+        p.process_with(picture.as_bytes(), &mut refusals)?;
+        assert_eq!(refusals.0, refused, "{at}/{col}/{rows}/{trailing}");
         assert_eq!(p.screen().pictures().count(), shown);
         for y in 0..6 {
             let expected = if kept.contains(&y) {
@@ -1247,9 +1289,9 @@ fn a_picture_scrolling_its_top_off_a_region_as_placed_is_cropped() -> Result {
     p.process(b"\x1b[3;6r\x1b[1;1H\x1bPq\"1;1#1;2;100;0;0~-~\x1b\\")?;
     p.process(b"\x1b[3;1H\x1bPq\"1;1#1;2;100;0;0~-~-~-~-~\x1b\\")?;
     let shown: Vec<_> = (p.screen().pictures())
-        .map(|s| (s.id, s.row, s.rows, s.cropped))
+        .map(|s| (s.row, s.rows, s.cropped))
         .collect();
-    assert_eq!(shown, [(1, 0, 2, 0), (2, 1, 5, 1)]);
+    assert_eq!(shown, [(0, 2, 0), (1, 5, 1)]);
     #[cfg(feature = "checks")]
     {
         let report = p.check();
@@ -1463,8 +1505,9 @@ fn a_copy_over_a_picture_reads_its_cells_as_blanks() -> Result {
     // 2 cells by 2 at row 1 col 3, and a `z` after them on its first row.
     p.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~\x1b\\\x1b[2;8Hz")?;
     assert_eq!(p.screen().pictures().count(), 1);
-    let copied = p.screen().window().text((1, 0), (1, 9), 100, 100)?;
-    assert_eq!(copied, "       z");
+    assert_eq!(cell(&p, 1, 3)?.contents(), fux_vt::PLACEHOLDER);
+    let row = p.screen().window().row(1).ok_or("a row")?;
+    assert_eq!(cells_text(&row).trim_end(), "       z");
     Ok(())
 }
 
@@ -1477,7 +1520,27 @@ fn sixel_pixel(sixel: &str, (x, y): (u32, u32)) -> Result<Drawn> {
     p.process(format!("\x1bP{sixel}\x1b\\").as_bytes())?;
     let shown = p.screen().pictures().next().ok_or("no picture")?;
     let picture = shown.picture;
-    Ok(((picture.width(), picture.height()), picture.pixel(x, y)))
+    Ok(((picture.width(), picture.height()), pixel(picture, x, y)))
+}
+
+/// The pixel at `x`, `y` as a host reads it, `sixel::encode` of it alone:
+/// `None` outside the picture, clear if nothing opaque is drawn there,
+/// else its colour, opaque, from the percents the encoding gives.
+fn pixel(picture: &Picture, x: u32, y: u32) -> Option<[u8; 4]> {
+    let mut out = Vec::new();
+    fux_vt::sixel::encode(picture, (x, y, 1, 1), &mut out);
+    if out.is_empty() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out);
+    let Some((_, colour)) = text.split_once("#0;2;") else {
+        return Some([0; 4]);
+    };
+    let mut shares = colour.split(';').map(|share| {
+        let digits: String = share.chars().take_while(char::is_ascii_digit).collect();
+        u8::try_from(digits.parse::<u32>().ok()?.saturating_mul(255) / 100).ok()
+    });
+    Some([shares.next()??, shares.next()??, shares.next()??, 255])
 }
 
 /// DEC STD 070, 7.1 and 8.1.2: a pixel is as tall, to its width, as P1's

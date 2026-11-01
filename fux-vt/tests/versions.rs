@@ -2,9 +2,14 @@
 //! other: after every `process`, a row whose cells or wrap flag differ has a
 //! greater version and is among the dirty rows; and input whose every edit
 //! leaves its row as it was changes no version at all.
-use fux_vt::{Attributes, Blink, CellRef, Cells, Color, Parser, RowId, Size};
+use fux_vt::{Attributes, Blink, CellRef, Cells, Color, Mark, Parser, Row, RowId, Screen, Size};
 use std::collections::HashMap;
 use std::fmt::Write;
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -86,10 +91,20 @@ fn piece(r: &mut Rng) -> String {
 fn retained(parser: &Parser) -> Result<HashMap<RowId, (u64, bool, Cells)>> {
     let rows = parser.screen().rows();
     rows.map(|row| {
-        let cells = Cells::try_from_iter(row.cells())?;
-        Ok((row.id(), (row.version(), row.wrapped(), cells)))
+        let mut cells = Cells::new(row.len())?;
+        for (i, cell) in row.cells().enumerate() {
+            cells.set(i, cell);
+        }
+        Ok((row.id(), (row.version(), row.continues(), cells)))
     })
     .collect()
+}
+
+/// The rows a host redraws after `mark`: every row on a full refresh,
+/// else those changed since.
+fn dirty_rows_since(screen: &Screen, mark: Mark) -> impl Iterator<Item = Row<'_>> {
+    let full = screen.full_refresh_since(mark);
+    screen.rows().filter(move |r| full || r.changed_since(mark))
 }
 
 /// The SGR that sets `attributes`' underline style, kitty's `4:n`.
@@ -158,7 +173,7 @@ fn no_op(parser: &Parser) -> String {
         // Where the blank tail starts, if it is one blank in one style.
         let tail = cells
             .iter()
-            .rposition(|c| c.has_contents() || c.is_wide_continuation())
+            .rposition(|c| !c.contents().is_empty() || c.is_wide_continuation())
             .map_or(0, |i| i.saturating_add(1));
         let rest = cells.get(tail..).unwrap_or_default();
         let uniform = rest
@@ -173,7 +188,7 @@ fn no_op(parser: &Parser) -> String {
             }
             let width = if cell.is_wide() { 2 } else { 1 };
             x = x.saturating_add(width);
-            if !cell.has_contents() || text.chars().nth(1).is_some() {
+            if cell.contents().is_empty() || text.chars().nth(1).is_some() {
                 // Stepped over, not written: to the column after it.
                 let _ = write!(out, "\x1b[{}G", x.saturating_add(1));
             } else {
@@ -183,7 +198,7 @@ fn no_op(parser: &Parser) -> String {
         }
         if let Some(blank) = uniform
             && tail < usize::from(cols)
-            && !row.wrapped()
+            && !row.continues()
         {
             let _ = write!(out, "\x1b[{}G", tail.saturating_add(1));
             out.push_str(&sgr(blank.attributes()));
@@ -215,7 +230,7 @@ fn a_version_changes_with_its_row_and_only_then() -> Result {
             parser.process(bytes.as_bytes())?;
             let after = retained(&parser)?;
             let screen = parser.screen();
-            let dirty: Vec<RowId> = screen.dirty_rows_since(mark).map(|r| r.id()).collect();
+            let dirty: Vec<RowId> = dirty_rows_since(screen, mark).map(|r| r.id()).collect();
             let full = screen.full_refresh_since(mark);
             for (id, (version, wrapped, cells)) in &after {
                 let Some((was, was_wrapped, was_cells)) = before.get(id) else {
@@ -266,12 +281,12 @@ fn the_common_redraw_changes_no_version() -> Result {
     let mark = parser.screen().mark();
     parser.process(redraw.as_bytes())?;
     assert_eq!(versions(&parser), before);
-    assert_eq!(parser.screen().dirty_rows_since(mark).count(), 0);
+    assert_eq!(dirty_rows_since(parser.screen(), mark).count(), 0);
     // Output was still processed.
-    assert!(parser.screen().changed_since(mark));
+    assert_ne!(parser.screen().mark(), mark);
     // A real edit is still a change.
     parser.process(b"\x1b[3;1HthreE")?;
-    assert_eq!(parser.screen().dirty_rows_since(mark).count(), 1);
+    assert_eq!(dirty_rows_since(parser.screen(), mark).count(), 1);
     Ok(())
 }
 

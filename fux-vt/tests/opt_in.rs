@@ -7,6 +7,11 @@ use fux_vt::{
     Attributes, CellRef, Cells, Color, Event, Feature, Mode, OSC_PAYLOAD_LIMIT, Options, Parser,
     Sink, Size, Stop,
 };
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
 #[path = "corpus/checksums.rs"]
 mod checksums;
 #[path = "corpus/pieces.rs"]
@@ -64,9 +69,6 @@ const SAMPLE: &[u8] = b"\x1b]0;both\x07\x1b]1;icon\x1b\\\x1b]2;title\x07\x07\
 fn defaults_deliver_no_events_and_only_the_original_replies() -> Result {
     let record = run(Options::default(), SAMPLE)?;
     assert_eq!(record, Record::default());
-    // `Parser::new` is exactly the default options.
-    let p = Parser::new(Size::new(2, 2)?, 0)?;
-    assert_eq!(p.options(), Options::default());
     // The original reply set is unchanged by default.
     let record = run(Options::default(), b"\x1b[5n\x1b[6n\x1b[c")?;
     assert_eq!(
@@ -722,8 +724,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
         ));
     }
     let row = screen.rows().nth_back(1).ok_or("row")?;
-    let original = Cells::try_from_iter(row.cells().take(6))?;
-    assert_eq!(copy, original);
+    assert!(copy.range(0..6).eq(row.cells().take(6)));
     assert_eq!(copy.get(4).map(|c| c.contents()), Some(family));
     let attributes = Attributes::new(Color::Idx(1), Color::Default);
     assert!(!attributes.with_bold(true).with_bold(false).bold());

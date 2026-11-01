@@ -33,7 +33,7 @@ fn keeps_mode(n: u16) -> bool {
         return false;
     };
     let mut heard = Heard::default();
-    let _ = parser.process_with(format!("\x1b[?{n}$p").as_bytes(), &mut heard);
+    let _ = crate::feed(&mut parser, format!("\x1b[?{n}$p").as_bytes(), &mut heard);
     let reply = String::from_utf8_lossy(&heard.replies).into_owned();
     reply.starts_with(&format!("\x1b[?{n};")) && !reply.starts_with(&format!("\x1b[?{n};0$y"))
 }
@@ -798,9 +798,7 @@ fn tally(recordings: &[Recording]) -> Result<BTreeMap<String, Row>, String> {
                 | Token::Esc { whole, .. }
                 | Token::String { whole, .. } => whole,
             };
-            parser
-                .process_with(whole, &mut heard)
-                .map_err(|e| format!("fux-vt: {e}"))?;
+            crate::feed(&mut parser, whole, &mut heard).map_err(|e| format!("fux-vt: {e}"))?;
             let found: Vec<(String, Does)> = match token {
                 Token::Other(_) => Vec::new(),
                 Token::Csi {
