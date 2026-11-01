@@ -174,7 +174,7 @@ end
 # nodes index -- pane : the first leaf of a flat subtree, without recursive calls
 define dump-first
   swap let nodes
-  begin nodes swap at dup is-list while 3 at end
+  begin nodes swap at dup is-list while dup first str stack eq if 1 at first else 3 at then end
 end
 # pane-record -- path : a shell starts again where it is now, when that is known; else, as a program always does, where it was started
 define dump-cwd
@@ -287,19 +287,23 @@ dup len 0 gt if first let taken opts taken in taken name 80 24 size str / cwd ne
       then
       upto let wi
       tab str fit get str clients eq if first-pane dump-id str ' tab resize-auto' 10 char then
-      list 0 end let pending
-      begin pending len 0 gt while
-        pending pop let index let pending
-        nodes index at dup is-list if
-          let node nodes node 3 at dump-first let before
-          nodes node 4 at dump-first let after
-          panes ids after index-of at
-          list before dump-id str ' ' node 0 at dump-text str 'axis '
-            node 1 at string str ' ' node 2 at string str ' shares ' end glue
-          str split dump-create
-          pending node 4 at push node 3 at push let pending
-        else drop then
-      end
+      # The other panes made in a stack with the first, then laid out as they were.
+      nodes len 1 gt if
+        nodes each dup is-list if drop else
+          dup first-pane eq if drop else
+            panes ids rot index-of at list first-pane dump-id str ' ' end glue str stack dump-create
+          then
+        then end
+        list first-pane dump-id str ' tab dup str layout_revision get list' nodes each
+          str ' ' swap dup is-list if
+            dup first str stack eq if
+              str 'list str stack list ' swap 1 at each string str ' ' end str 'end end'
+            else
+              str 'list ' swap dup first dump-text swap 1 5 slice each string str ' ' end str 'end'
+            then
+          else dump-id then
+        end str ' end arrange' 10 char end glue
+      then
     end
   end glue
 end

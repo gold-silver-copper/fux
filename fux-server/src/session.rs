@@ -11,15 +11,14 @@ use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
 use fux_wire::code::{Error, Raise, fail};
 use fux_wire::command::Start;
 use fux_wire::command::{
-    self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PaneResize,
-    Request, Resized, Sibling, SwapWith, Way, WsRef,
+    self, AnyRef, Beside, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo,
+    PaneResize, Request, Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
 use fux_wire::json::{Fields, Json};
-use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
+use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
 use std::collections::BTreeMap;
-use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 mod inspect;
 use std::time::{Duration, Instant};
@@ -894,21 +893,26 @@ impl Session {
         }
     }
 
-    /// The split of `target` along `axis`, the two taking `shares` if
-    /// given, and the size the new pane starts at: the one settling gives
-    /// it in the layout the split makes, which its tab must have room for,
-    /// unzoomed if `followers` focus it. Shown on no screen (the tab zoomed
-    /// on another pane), it starts at its place on the tab's own size.
+    /// The layout with a new pane `beside` `target`, and the size the new
+    /// pane starts at: the one settling gives it in that layout, which its
+    /// tab must have room for, unzoomed if `followers` focus it. Shown on
+    /// no screen (the tab zoomed on another pane), it starts at its place
+    /// on the tab's own size.
     fn split_size(
         &self,
         target: PaneId,
-        (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
+        beside: Beside,
         followers: &[ClientId],
     ) -> Result<(Split, Size), Error> {
         let new = self.ids.clone().pane()?;
-        let shares = shares.map_or(Shares::HALVED, |(a, b)| Shares::new(a, b));
-        let split = (self.parts.plan_split((target, new), axis, shares))
-            .map_err(|NoPane| Error::NoPane(target))?;
+        let add = |root: &mut Tree| match beside {
+            Beside::Split(axis, shares) => {
+                let shares = shares.map_or(Shares::HALVED, |(a, b)| Shares::new(a, b));
+                root.split((target, new), (axis, Side::After), shares)
+            }
+            Beside::Stack => root.stack((target, new)),
+        };
+        let split = (self.parts.plan_split(target, add)).map_err(|NoPane| Error::NoPane(target))?;
         self.room(split.tab(), split.root(), None)?;
         let zoomed = (self.tab(split.tab()).and_then(Tab::zoomed)).filter(|_| followers.is_empty());
         let (mut placed, mut shown) = (Placement::default(), Vec::new());
@@ -1374,7 +1378,12 @@ impl Session {
     /// `out`, whatever it held, reusing its buffers.
     pub fn placement_into(&self, view: &View, out: &mut Placement) {
         match self.shown_tab(view.id) {
-            Some(tab) => lay_out(tab.root(), tab.zoomed(), view.pane_area(), out),
+            Some(tab) => lay_out(
+                (tab.root(), Some(view.id)),
+                tab.zoomed(),
+                view.pane_area(),
+                out,
+            ),
             None => out.clear(),
         }
     }
@@ -1603,7 +1612,7 @@ impl Session {
         let mut sizing = self.sizing(tab).peekable();
         let fit = sizing.peek().is_none().then(|| t.fit().area());
         for area in sizing.map(View::pane_area).chain(fit) {
-            lay_out(root, zoomed, area, placed);
+            lay_out((root, None), zoomed, area, placed);
             let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
             out.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
         }
@@ -2355,15 +2364,14 @@ impl Session {
                 col,
             } => self.send_mouse(target, mouse, row, col),
             &Command::Split {
-                axis,
+                beside,
                 target,
                 ref start,
                 ref cwd,
-                shares,
                 options,
             } => self.split(
                 target,
-                (axis, shares),
+                beside,
                 (start, options),
                 cwd.as_deref(),
                 origin,
@@ -2628,13 +2636,12 @@ impl Session {
         Ok(acted(version))
     }
 
-    /// `split`: a new pane beside `target`, along `axis`, the two taking
-    /// `shares` if given, running `start` in `dir`, with the id `id` asked
-    /// for.
+    /// `split` and `stack`: a new pane `beside` `target`, running `start`
+    /// in `dir`.
     fn split(
         &mut self,
         target: PaneId,
-        (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
+        beside: Beside,
         (start, options): (&Start, command::PaneOptions),
         dir: Option<&Path>,
         origin: &Origin,
@@ -2644,17 +2651,18 @@ impl Session {
         let target = self.pane(target)?.id();
         let cwd = self.start_dir(here, dir, Some(target))?;
         // The splitting client follows the new pane, if it shows its tab;
-        // from the CLI, the clients that focus the split one.
+        // from the CLI, the clients that focus the split one, while a stack
+        // made there shows no client its new child.
         let tab = self.locate(target).map(|(_, tab)| tab);
         let shows = |c: &ClientId| tab.is_some_and(|t| self.shows(*c, t));
-        let shown = |c: &ClientId| self.focused(*c) == Some(target);
+        let shown = |c: &ClientId| self.focused(*c) == Some(target) && beside != Beside::Stack;
         let followers: Vec<ClientId> = match here {
             Here::Client(client, _) => [client].into_iter().filter(shows).collect(),
             Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
         };
         // Its tab found (by `split_size`) before the program starts, which
         // nothing can then leave running.
-        let (split, size) = self.split_size(target, (axis, shares), &followers)?;
+        let (split, size) = self.split_size(target, beside, &followers)?;
         let mut ids = self.ids.clone();
         let new = NewPane::new(start, &cwd, options, (size, self.graphics(target).cell()));
         let pane = self.new_pane(&mut ids, new, now)?;
@@ -2796,7 +2804,9 @@ impl Session {
     fn neighbor(&self, from: PaneId, direction: Direction, here: Here) -> Result<PaneId, Error> {
         let found = self.locate(from).and_then(|(_, tab)| {
             let area = self.reference_area(tab, here)?;
-            layout::neighbor(&layout::place(self.root(tab)?, area), from, direction)
+            let mut placed = Placement::default();
+            layout::place_into(self.root(tab)?, area, here.client(), &mut placed);
+            layout::neighbor(&placed, from, direction)
         });
         found.ok_or(Error::NoNeighbor { from, direction })
     }
@@ -2933,9 +2943,30 @@ impl Session {
 
     /// The sibling of `from` that `way` says client `view` is shown: the
     /// next or previous among what holds it, going round, the one it was
-    /// shown there before, or a pane's neighbour on its screen.
+    /// shown there before, or a pane's neighbour on its screen. What holds
+    /// a pane is the stack nearest it in its tab's layout, whose child
+    /// shown is a pane there (`Tree::first_shown`), else its tab, of
+    /// whose panes those shown.
     fn step(&self, view: &View, from: AnyRef, way: Way) -> Result<AnyRef, Error> {
         let kind = from.kind();
+        let root = |p| self.locate(p).and_then(|(_, tab)| self.root(tab));
+        if let (AnyRef::Pane(p), Way::Step(_) | Way::Last) = (from, way)
+            && let Some(stack) = root(p).and_then(|r| r.stack_of(p))
+        {
+            let children: Vec<&Tree> = stack.children().collect();
+            let child = match way {
+                Way::Step(toward) => {
+                    let index = children.iter().position(|c| c.contains(p));
+                    round(&children, index.unwrap_or(0), toward)
+                }
+                Way::Last | Way::Toward(_) => {
+                    let last = stack.shown(view.id).last;
+                    last.and_then(|i| children.get(i))
+                }
+            };
+            let child = child.ok_or_else(|| fail(Raise::NoPane, "no previously shown pane"))?;
+            return Ok(AnyRef::Pane(child.first_shown(view.id)));
+        }
         let within = match from {
             AnyRef::Pane(p) => Some(AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1)),
             AnyRef::Tab(t) => Some(AnyRef::Workspace(self.tab_workspace(t)?)),
@@ -2944,9 +2975,10 @@ impl Session {
             }
         };
         let siblings: Vec<AnyRef> = match (from, within) {
-            (AnyRef::Pane(_), _) => {
-                (self.panes_of(within)?.into_iter().map(AnyRef::Pane)).collect()
-            }
+            (AnyRef::Pane(p), _) => (root(p).into_iter())
+                .flat_map(|r| r.shown_panes(view.id))
+                .map(AnyRef::Pane)
+                .collect(),
             (_, Some(AnyRef::Workspace(w))) => (self.workspace(w).into_iter())
                 .flat_map(|w| w.stack().children().iter().map(crate::workspace::Child::id))
                 .collect(),
@@ -2971,9 +3003,11 @@ impl Session {
                     fail(code, format!("no previously shown {}", kind.name()))
                 }),
             (Way::Toward(direction), AnyRef::Pane(from)) => {
-                let tab = self.locate(from).and_then(|(_, tab)| self.root(tab));
-                let placement = tab.map(|root| layout::place(root, view.pane_area()));
-                let found = placement.and_then(|p| layout::neighbor(&p, from, direction));
+                let mut placed = Placement::default();
+                let found = root(from).and_then(|root| {
+                    layout::place_into(root, view.pane_area(), Some(view.id), &mut placed);
+                    layout::neighbor(&placed, from, direction)
+                });
                 found
                     .map(AnyRef::Pane)
                     .ok_or(Error::NoNeighbor { from, direction })
@@ -3136,14 +3170,20 @@ fn check_name(name: &str) -> Result<(), Error> {
 }
 
 /// Where each pane of a tab laid out as `root` is in `area`, into `out`:
-/// the `zoomed` pane alone, filling it, if one is and it has room.
-fn lay_out(root: &Tree, zoomed: Option<PaneId>, area: Rect, out: &mut Placement) {
+/// the `zoomed` pane alone, filling it, if one is and it has room; else
+/// what `client` is shown, or with none every pane (`layout::place_into`).
+fn lay_out(
+    (root, client): (&Tree, Option<ClientId>),
+    zoomed: Option<PaneId>,
+    area: Rect,
+    out: &mut Placement,
+) {
     match zoomed.filter(|_| !area.is_empty()) {
         Some(pane) => {
             out.clear();
             out.panes.push((pane, area));
         }
-        None => layout::place_into(root, area, out),
+        None => layout::place_into(root, area, client, out),
     }
 }
 
@@ -3744,6 +3784,7 @@ mod tests {
     use super::*;
     use crate::pane::Left;
     use fux_wire::code::Code;
+    use std::num::NonZeroU32;
 
     fn reap(s: &mut Session) {
         for dying in std::mem::take(&mut s.dying) {
@@ -5432,6 +5473,81 @@ mod tests {
         let zoomed = sizes(&s);
         s.detach_client(c);
         assert_eq!(sizes(&s), zoomed);
+        Ok(())
+    }
+
+    #[test]
+    fn each_client_chooses_its_own_stack_child_and_no_program_resizes() -> TestResult {
+        let (mut s, c1) = attached(24, 81)?;
+        let c2 = s.attach(24, 81, None)?;
+        output_as(&mut s, Some(c1), BAR_ROW)?;
+        // An editor on the left, two alternatives on the right.
+        run(&mut s, "%1 str horizontal axis split drop %2 stack drop")?;
+        s.out(PaneId::of(2), b"second");
+        s.out(PaneId::of(3), b"third");
+        let sizes = |s: &Session| [1, 2, 3].map(|p| s.pane(PaneId::of(p)).map(Pane::size).ok());
+        let before = sizes(&s);
+        assert_eq!(
+            before[1], before[2],
+            "both children are sized on the stack's room"
+        );
+        let lines = told(&mut s, |s| _ = run(s, &format!("str {c2} client %3 show")));
+        assert!(lines.contains(r#""event":"shown""#), "{lines}");
+        assert!(!lines.contains("resized"), "{lines}");
+        assert_eq!(sizes(&s), before);
+        let screen = |s: &mut Session, c| output(s, &format!("str {c} client capture string"));
+        let (one, two) = (screen(&mut s, c1)?, screen(&mut s, c2)?);
+        assert!(one.contains("second") && !one.contains("third"), "{one}");
+        assert!(two.contains("third") && !two.contains("second"), "{two}");
+        // The bar lists the children of the focus's stack.
+        let bar = one.lines().last().unwrap_or_default();
+        assert!(bar.contains("%2") && bar.contains("%3"), "{one}");
+        // A pane's next steps among its stack's children, going round.
+        let step =
+            |s: &mut Session, way| run(s, &format!("str {c1} client dup focused str {way} step"));
+        for (way, shown) in [("next", 3), ("next", 2), ("last", 3)] {
+            step(&mut s, way)?;
+            assert_eq!(s.focused(c1), Some(PaneId::of(shown)), "{way}");
+        }
+        assert_eq!(s.focused(c2), Some(PaneId::of(3)));
+        // The client record has each choice with the tab's revision.
+        use fux_wire::inspect::{Projection, Scope};
+        let Body::Snapshot(snapshot) = s.inspect(Scope::All, Projection::Facts)? else {
+            return Err("snapshot".into());
+        };
+        snapshot.validate()?;
+        let choices = |c| {
+            let client = snapshot.clients.iter().find(|r| r.id == c);
+            client.map(|r| {
+                r.choices
+                    .iter()
+                    .map(|ch| (ch.stack, ch.current, ch.last))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(choices(c1), Some(vec![(2, 4, Some(3))]));
+        assert_eq!(choices(c2), Some(vec![(2, 4, Some(3))]));
+        // A child closed shows each client shown it the one it was before.
+        run(&mut s, "%3 kill")?;
+        assert_eq!([c1, c2].map(|c| s.focused(c)), [Some(PaneId::of(2)); 2]);
+        assert_eq!(sizes(&s)[1], before[1]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_stack_child_no_client_is_shown_needs_its_room_too() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts 20 9 size str +1 workspace in new-tab drop")?;
+        run(&mut s, &format!("str {c} client %2 show"))?;
+        // `[%2, %3 / %4 / %5]`, shown %2: the hidden child needs 8 rows.
+        let made = "%2 stack drop %3 str vertical axis split drop %4 str vertical axis split drop";
+        run(&mut s, made)?;
+        assert_eq!(s.focused(c), Some(PaneId::of(2)));
+        for refused in ["%5 str vertical axis split", "@2 20 7 resize"] {
+            let why = run(&mut s, refused).err().unwrap_or_default();
+            assert!(why.starts_with("size: "), "{refused}: {why}");
+        }
+        assert_eq!(s.parts.panes().len(), 5);
         Ok(())
     }
 
@@ -8004,7 +8120,8 @@ mod tests {
                 .iter()
                 .map(|node| match node {
                     fux_wire::layout::Node::Pane(_) => fux_wire::layout::Node::Pane(PaneId::of(1)),
-                    split @ fux_wire::layout::Node::Split { .. } => split.clone(),
+                    node @ (fux_wire::layout::Node::Split { .. }
+                    | fux_wire::layout::Node::Stack { .. }) => node.clone(),
                 })
                 .collect::<Vec<_>>()
         };
@@ -8427,6 +8544,10 @@ mod tests {
             "%5 kill",
             "%3 str @2 tab move",
             "%6 kill",
+            "%2 stack drop",
+            "%8 str vertical axis split drop",
+            "%2 stack drop",
+            "%10 kill",
         ] {
             run(&mut s, change)?;
             let dump = s.dump_recipe(Some(AnyRef::Tab(tab)))?;

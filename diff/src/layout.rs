@@ -105,7 +105,7 @@ macro_rules! stack {
                 pub fn shown(&mut self) -> String {
                     match &self.root {
                         Some(root) => {
-                            layout::place_into(root, self.area, &mut self.placed);
+                            self.placed = layout::place(root, self.area);
                             format!(
                                 "{}\n{:?}\n{:?}\n{:?}",
                                 root.shape(),

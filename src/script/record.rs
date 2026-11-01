@@ -361,6 +361,10 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
                 let row = [b.text(match axis { fux_wire::layout::Axis::Horizontal => "horizontal", fux_wire::layout::Axis::Vertical => "vertical" })?, number(first_share.get())?, number(second_share.get())?, number(*first)?, number(*second)?];
                 b.list(&row, |_,v| Ok(v.clone()))
             }
+            fux_wire::layout::Node::Stack { children } => {
+                let row = [b.text("stack")?, b.list(children, |_,c| number(*c))?];
+                b.list(&row, |_,v| Ok(v.clone()))
+            }
         })?;
         record! { b; "id" => id(AnyRef::Tab(t.id),run), "workspace" => id(AnyRef::Workspace(t.workspace),run),
             "name" => b.optional(t.name.as_deref())?, "label" => b.text(&t.label)?,
@@ -406,6 +410,10 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         "seats" => b.list(&c.seats, |b,s| record! { b;
             "in" => s.within.map(|w| id(w,run)).unwrap_or_else(null), "current" => id(s.current,run),
             "last" => s.last.map(|l| id(l,run)).unwrap_or_else(null)
+        })?,
+        "choices" => b.list(&c.choices, |b,choice| record! { b;
+            "layout_revision" => b.text(&choice.revision.to_string())?, "stack" => number(choice.stack)?,
+            "current" => number(choice.current)?, "last" => choice.last.map(number).unwrap_or_else(|| Ok(null()))?
         })?,
         "opening" => c.opening.map(number).unwrap_or_else(|| Ok(null()))?, "mode" => b.text(&c.mode)?
     })?;

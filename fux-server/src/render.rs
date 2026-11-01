@@ -1358,16 +1358,36 @@ fn bar_fields(
                 }
             }
             Field::Pane => {
-                if let Some(p) = session
-                    .focused(view.id)
-                    .and_then(|f| session.parts.panes().get(&f))
-                {
-                    push(
-                        &mut parts,
-                        &mut room,
-                        fux_wire::words::labelled(p.id(), &p.label()),
-                        base,
-                    );
+                let Some(focus) = session.focused(view.id) else {
+                    continue;
+                };
+                // The children of the stack nearest the focus, the one
+                // shown marked, each by the pane shown first in it: else
+                // the focus alone.
+                let stack = (session.shown_tab(view.id)).and_then(|t| t.root().stack_of(focus));
+                let children: Vec<_> = match stack {
+                    Some(stack) => (stack.children())
+                        .map(|c| match c.contains(focus) {
+                            true => (focus, true),
+                            false => (c.first_shown(view.id), false),
+                        })
+                        .collect(),
+                    None => vec![(focus, false)],
+                };
+                for (id, current) in children {
+                    let Some(p) = session.parts.panes().get(&id) else {
+                        continue;
+                    };
+                    let attrs = match current {
+                        true => view.presentation.styles.tab.attributes(),
+                        false => base,
+                    };
+                    let label = fux_wire::words::labelled(p.id(), &p.label());
+                    let label = match stack {
+                        Some(_) => format!(" {label} "),
+                        None => label,
+                    };
+                    push(&mut parts, &mut room, label, attrs);
                 }
             }
             Field::Slot(id) => {
@@ -1554,7 +1574,7 @@ fn unseen(session: &Session, view: &View, placement: &Placement) -> String {
     };
     let panes = match tab.zoomed() {
         Some(zoomed) => vec![zoomed],
-        None => tab.root().panes(),
+        None => tab.root().shown_panes(view.id),
     };
     let (mut cut, mut hidden) = (String::new(), String::new());
     for id in panes {

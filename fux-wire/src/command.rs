@@ -260,6 +260,17 @@ wire! {
 }
 
 wire! {
+    /// Where a new pane goes beside its target: split off along `axis`,
+    /// the two taking `shares` if given, else halves (`split`); or an
+    /// alternative to it on its rectangle, in a stack (`stack`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Beside {
+        Split(axis: Axis, shares: Option<(NonZeroU32, NonZeroU32)>),
+        Stack,
+    }
+}
+
+wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum MoveTo {
         Tab(id: TabId),
@@ -776,17 +787,15 @@ wire! {
             start: Start,
             options: PaneOptions,
         },
+        /// A new pane beside `target` (`split`, `stack`).
         Split {
-            axis: Axis,
+            beside: Beside,
             target: PaneId,
             /// Its launch: the shell or program role, with argv.
             start: Start,
             /// Where its shell starts (default: the caller's directory; from a
             /// client, the split pane's).
             cwd: Option<PathBuf>,
-            /// The shares of their split the split pane and the new one
-            /// take (`shares`), if given; else the pane's is halved.
-            shares: Option<(NonZeroU32, NonZeroU32)>,
             options: PaneOptions,
         },
         /// The program a pane was started with, started again in its pane.

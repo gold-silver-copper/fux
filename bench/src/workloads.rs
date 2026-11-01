@@ -959,11 +959,10 @@ fn paint(
     if split {
         let split = command::Command::Split {
             options: pane_options(HISTORY)?,
-            axis: fux_wire::layout::Axis::Horizontal,
+            beside: command::Beside::Split(fux_wire::layout::Axis::Horizontal, None),
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
             cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
-            shares: None,
         };
         s.run_command(
             &split,
@@ -1198,11 +1197,10 @@ fn session(panes: usize) -> Result<fux_server::session::Session, String> {
     for _ in 1..panes {
         let split = command::Command::Split {
             options: pane_options(HISTORY)?,
-            axis: fux_wire::layout::Axis::Horizontal,
+            beside: command::Beside::Split(fux_wire::layout::Axis::Horizontal, None),
             target: *s.parts.panes().keys().next().ok_or("no pane")?,
             start: initial()?.start,
             cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
-            shares: None,
         };
         s.run_command(
             &split,

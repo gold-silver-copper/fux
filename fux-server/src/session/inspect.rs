@@ -4,7 +4,7 @@ use crate::workspace::{Child, Fit};
 use fux_wire::command::AnyRef;
 use fux_wire::inspect::{self, Projection, Scope, Snapshot};
 use fux_wire::json::Json;
-use fux_wire::layout::{Node, Tree};
+use fux_wire::layout::Node;
 use fux_wire::protocol::Body;
 use fux_wire::wire::Memory;
 
@@ -57,11 +57,16 @@ impl Session {
             ),
             (None, _) => (self.parts.every_workspace(), self.parts.tabs_in(None)),
         };
+        // The tabs whose whole layout is here, which choices index.
+        let mut laid_out = Vec::new();
         for (ws, tab) in tabs {
             // A pane's tab as far as it is in scope: the pane alone.
             let tree = match target {
-                Some(AnyRef::Pane(pane)) => flatten(&Tree::Pane(pane)),
-                Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) | None => flatten(tab.root()),
+                Some(AnyRef::Pane(pane)) => vec![Node::Pane(pane)],
+                Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) | None => {
+                    laid_out.push(tab);
+                    tab.root().nodes()
+                }
             };
             for node in &tree {
                 let Node::Pane(id) = node else {
@@ -190,6 +195,18 @@ impl Session {
                 tab: place.map(|p| p.tab),
                 pane: place.map(|p| p.pane),
                 seats: self.parts.seats(view.id),
+                choices: (laid_out.iter())
+                    .filter_map(|tab| Some((tab.revision(self.run)?, tab.root())))
+                    .flat_map(|(revision, root)| {
+                        let choices = root.choices(view.id).into_iter();
+                        choices.map(move |(stack, shown)| inspect::Choice {
+                            revision,
+                            stack,
+                            current: shown.current,
+                            last: shown.last,
+                        })
+                    })
+                    .collect(),
                 opening: (!view.mode.is_normal()).then_some(view.opening),
                 mode: mode.to_owned(),
             };
@@ -207,59 +224,9 @@ fn path(value: &std::ffi::OsStr) -> inspect::Path {
     }
 }
 
-/// Preorder nodes share arrange's schema and fixed root index zero.
-fn flatten(root: &Tree) -> Vec<Node> {
-    let mut work = vec![(root, None)];
-    let mut nodes = Vec::new();
-    while let Some((tree, parent)) = work.pop() {
-        let at = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
-        if let Some((index, second_child)) = parent
-            && let Some(Node::Split { first, second, .. }) = nodes.get_mut(index)
-        {
-            if second_child {
-                *second = at;
-            } else {
-                *first = at;
-            }
-        }
-        let node = match tree {
-            Tree::Pane(pane) => Node::Pane(*pane),
-            Tree::Split(split) => {
-                let index = nodes.len();
-                let (first, second) = split.children();
-                work.extend([(second, Some((index, true))), (first, Some((index, false)))]);
-                let (first_share, second_share) = split.shares().get();
-                Node::Split {
-                    axis: split.axis(),
-                    first_share,
-                    second_share,
-                    first: 0,
-                    second: 0,
-                }
-            }
-        };
-        nodes.push(node);
-    }
-    nodes
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn deep_trees_are_flat() {
-        let mut tree = Tree::Pane(fux_wire::id::PaneId::of(1));
-        for n in 2..70 {
-            tree.append(fux_wire::id::PaneId::of(n));
-        }
-        let nodes = flatten(&tree);
-        assert!(matches!(nodes.first(), Some(Node::Split { .. })));
-        assert_eq!(
-            nodes.iter().filter(|n| matches!(n, Node::Pane(_))).count(),
-            69
-        );
-    }
 
     #[test]
     fn recipe_paths_keep_exact_os_bytes() {

@@ -9,8 +9,8 @@ use fux_vt::keys::Direction;
 use fux_wire::callback::Open;
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{
-    AnyRef, Button, ClientAction, Command, Extent, HistoryBytes, Input, Kind, Limit, Members,
-    Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since, Source,
+    AnyRef, Beside, Button, ClientAction, Command, Extent, HistoryBytes, Input, Kind, Limit,
+    Members, Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since, Source,
     SwapWith, To, Usage, Wait, Way, Wheel, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId};
@@ -322,6 +322,7 @@ words! {
         Finding Focused "focused" "client -- pane" raises(Type asks) "the pane a client focuses: its tab's zoomed one while it has one" "fux str c1 client focused capture" [];
         Starting Opts "opts" "-- opts" raises() "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program new-tab" [];
         Starting Split "split" "subject -- answer" raises(Type Unused Usage Config asks) "split a pane along its required axis: a shell, or the program given" "fux %3 str vertical axis split" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
+        Starting Stack "stack" "subject -- answer" raises(Type Unused Config asks) "an alternative to a pane on its rectangle, in the stack it is a child of, else a new one: a shell, or the program given; each client is shown one child of a stack (step, show)" "fux %3 str /bin/sh program stack" [Pane: Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
         Starting NewTab "new-tab" "opts -- answer" raises(Type Unused Config asks) "a tab with the client's shell or explicit launch, in the workspace in names (made if it is not there; str new-workspace in makes an unnamed one), else the caller's" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
         Starting Respawn "respawn" "subject -- answer" raises(Type Unused asks) "start again in its pane the program it was given (new-tab, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Program Arg];
         Waiting Wait "wait" "place -- place" raises(Type Unused asks) "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
@@ -349,8 +350,8 @@ words! {
         Changing ClearHistory "clear-history" "pane --" raises(Type asks) "drop the pane's history" "fux %3 clear-history" [];
         Changing Zoom "zoom" "pane --" raises(Type asks) "fill its tab with the pane on every screen showing it, or restore the tab if it does" "fux %3 zoom" [];
         Clients Attach "attach" "attachable --" raises(Type Unused Nested NotHere asks) "show the server in this terminal (bare fux runs opts attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach (or bare fux, which runs opts attach)" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
-        Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it" "fux str c1 client %3 show" [];
-        Clients Step "step" "client handle way --" raises(Type asks) "show a client the next, previous or last shown of the handle's siblings, or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux str c1 client @2 str next step" [];
+        Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it, a pane's stacks too" "fux str c1 client %3 show" [];
+        Clients Step "step" "client handle way --" raises(Type asks) "show a client the next, previous or last shown of the handle's siblings (a pane's: the children of the stack nearest it, else its tab's panes shown), or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux str c1 client @2 str next step" [];
         Clients Detach "detach" "client --" raises(Type asks) "detach a client" "fux str c1 client detach" [];
         Server Start "start" "--" raises(NotHere asks) "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
@@ -1524,14 +1525,25 @@ impl Host<'_> {
                 })?;
                 let (start, options) = self.launch(&built)?;
                 let split = Command::Split {
-                    axis,
+                    beside: Beside::Split(axis, built.shares),
                     target: p,
                     start,
                     cwd: built.cwd,
                     options,
-                    shares: built.shares,
                 };
                 later(ask(split))
+            }
+            Act::Stack => {
+                let (p, built) = request_pane(act, next()?)?;
+                let (start, options) = self.launch(&built)?;
+                let stack = Command::Split {
+                    beside: Beside::Stack,
+                    target: p,
+                    start,
+                    cwd: built.cwd,
+                    options,
+                };
+                later(ask(stack))
             }
             Act::Respawn => {
                 let (p, mut built) = request_pane(act, next()?)?;
@@ -1790,12 +1802,21 @@ impl Host<'_> {
                         let node = if let Some(pane) = as_pane(node) {
                             of = super::same_run(of, super::scope(node))?;
                             fux_wire::layout::Node::Pane(pane)
+                        } else if let Value::List(fields) = node
+                            && let [Value::Str(kind), Value::List(children)] = fields.items()
+                            && &***kind == "stack"
+                        {
+                            let index = |c| within(c, 0..=i64::from(u32::MAX));
+                            let children = children.items().iter().map(index);
+                            fux_wire::layout::Node::Stack {
+                                children: children.collect::<Result<_, _>>()?,
+                            }
                         } else if let Value::List(fields) = node {
                             let [axis, first_share, second_share, first, second] = fields.items()
                             else {
                                 return Err(fail(
                                     Raise::BadValue,
-                                    "a split is list AXIS SHARE SHARE FIRST SECOND end",
+                                    "a split is list AXIS SHARE SHARE FIRST SECOND end; a stack, list str stack list CHILD … end end",
                                 ));
                             };
                             let Value::Str(axis) = axis else {
@@ -1819,7 +1840,7 @@ impl Host<'_> {
                                 second: within(second, 0..=i64::from(u32::MAX))?,
                             }
                         } else {
-                            return Err(wrong("a pane or split list", node));
+                            return Err(wrong("a pane, split or stack list", node));
                         };
                         nodes.push(node);
                     }
