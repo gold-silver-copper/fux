@@ -89,6 +89,11 @@ jobs:
           cargo clippy -p fux-server --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
           cargo test -p fux-server --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
 
+      # fuxed, the editor written in fuxth, headless on the fuxth the
+      # workspace's tests built.
+      - name: fuxed's own test
+        run: fuxed/test.sh target/debug/fuxth
+
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
       # in release, as debug is too slow for the step's 5 minutes; built in
       # a step of its own, and run under an 8 GiB data limit, so a bound
