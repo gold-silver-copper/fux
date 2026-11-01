@@ -15,19 +15,22 @@
 use crate::Code;
 use crate::error::Error;
 use crate::machine::{Builtin, Entry, Frame, Host, Machine, Op, Steps};
-use crate::token::{self, Token};
+use crate::token::{self, Source, Token, Words};
 use crate::value::{Address, AppValue, Mark, Text, Value, Xt};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-/// A source being read: its words, the next one, its file, and which
-/// source given the machine it is.
+/// A source being read: its words, the next one, where the words a
+/// parsing word read last begin (`next_word`, all of them up to `next`
+/// while no other was read), its file, and which source given the
+/// machine it is.
 #[derive(Clone, Debug)]
 pub(crate) struct Read {
     tokens: Rc<[Token]>,
     pub(crate) next: usize,
+    parsed: Range<usize>,
     pub(crate) path: Option<PathBuf>,
     pub(crate) id: u64,
 }
@@ -107,7 +110,8 @@ pub(crate) enum Kind {
 /// before it began, whether its last step is a number or `str` written
 /// just before (so a `pick` or `roll` after it may take it as its count,
 /// or a `try` as its codes), in a library, where its `define` is, and, a
-/// `code … end`'s, the source it is read from (by id) and where in it.
+/// `code … end`'s, the source it is read from (by id) and where in it;
+/// a definition's, the words it is made of, gathered as they are read.
 #[derive(Clone, Debug)]
 pub(crate) struct Building<A> {
     code: Steps<A>,
@@ -119,6 +123,45 @@ pub(crate) struct Building<A> {
     literal: bool,
     from: Option<usize>,
     words: Option<(u64, usize)>,
+    made: Option<Gathered>,
+}
+
+/// The words a definition is made of, gathered from the sources that give
+/// them: the runs read already, and the run being read, if a source is.
+#[derive(Clone, Debug)]
+struct Gathered {
+    runs: Vec<Words>,
+    run: Option<Run>,
+}
+
+/// A run of a source's words being read: the source's frame, id and
+/// tokens, and the word the run begins at.
+#[derive(Clone, Debug)]
+struct Run {
+    at: usize,
+    id: u64,
+    tokens: Rc<[Token]>,
+    from: usize,
+}
+
+impl Run {
+    /// Where its source is read up to, if it is still read, in `frames`.
+    fn next(&self, frames: &[Frame]) -> Option<usize> {
+        match frames.get(self.at) {
+            Some(Frame::Read(read)) if read.id == self.id => Some(read.next),
+            Some(Frame::Read(_) | Frame::Code { .. }) | None => None,
+        }
+    }
+}
+
+impl Gathered {
+    /// The run, its source read up to `to`, closed.
+    fn close(&mut self, to: usize) {
+        let run = self.run.take();
+        let words = run.and_then(|run| Words::of(&run.tokens, run.from..to));
+        self.runs
+            .extend(words.filter(|words| !words.tokens().is_empty()));
+    }
 }
 
 impl<A: AppValue> Machine<A> {
@@ -129,27 +172,84 @@ impl<A: AppValue> Machine<A> {
             self.loaded.insert(path.clone(), false);
         }
         self.sources = self.sources.saturating_add(1);
+        let tokens: Rc<[Token]> = tokens.into();
+        let at = self.frames.len();
+        let run = || Run {
+            at,
+            id: self.sources,
+            tokens: Rc::clone(&tokens),
+            from: 0,
+        };
+        let Some(made) = self.building.first_mut().and_then(|b| b.made.as_mut()) else {
+            return self.push_read(tokens, path);
+        };
+        // A definition open goes on in this source, unless a word of its
+        // own (`include`) opened it, read from the source it is read from.
+        let reading = (made.run.as_ref()).and_then(|run| Some((run.next(&self.frames)?, run.from)));
+        match reading {
+            Some((next, from)) if next > from => {}
+            Some((next, _)) => {
+                made.close(next);
+                made.run = Some(run());
+            }
+            None => made.run = Some(run()),
+        }
+        self.push_read(tokens, path);
+    }
+
+    fn push_read(&mut self, tokens: Rc<[Token]>, path: Option<PathBuf>) {
         self.frames.push(Frame::Read(Box::new(Read {
-            tokens: tokens.into(),
+            tokens,
             next: 0,
+            parsed: 0..0,
             path,
             id: self.sources,
         })));
     }
 
+    /// `read`, a source, read to its end or left: the run of the open
+    /// definition's words read from it closed, and one begun in the source
+    /// under it, which it may go on in.
+    pub(crate) fn source_left(&mut self, read: &Read) {
+        let Machine {
+            building, frames, ..
+        } = self;
+        let Some(made) = building.first_mut().and_then(|b| b.made.as_mut()) else {
+            return;
+        };
+        if made.run.as_ref().is_none_or(|run| run.id != read.id) {
+            return;
+        }
+        made.close(read.next);
+        let under = frames
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(at, frame)| match frame {
+                Frame::Read(read) => Some((at, read)),
+                Frame::Code { .. } => None,
+            });
+        made.run = under.map(|(at, read)| Run {
+            at,
+            id: read.id,
+            tokens: Rc::clone(&read.tokens),
+            from: read.next,
+        });
+    }
+
     /// Reads `text`, a library named `source`, to its end, and gives each
     /// of its definitions' help, which the comment on the line just above
-    /// its `define` says: `# EFFECT : ABOUT`. A definition without it is
-    /// refused, and the machine is as it was. A library is read on a
-    /// machine at rest, run as any program is, on `host` (the one its
-    /// programs run on, so the machine's code is made for one host), and
-    /// may not wait for it.
+    /// its `define` says: `# EFFECT : ABOUT`; the dictionary keeps it with
+    /// the definition (`Definition`). A definition without it is refused,
+    /// and the machine is as it was. A library is read on a machine at
+    /// rest, run as any program is, on `host` (the one its programs run on,
+    /// so the machine's code is made for one host), and may not wait for it.
     pub fn library<H: Host<Value = A>>(
         &mut self,
         source: &str,
         text: &str,
         host: &mut H,
-    ) -> Result<Vec<Doc>, Error> {
+    ) -> Result<Vec<Rc<Doc>>, Error> {
         if !self.frames.is_empty() || !self.building.is_empty() {
             let why = "a library is read on a machine at rest";
             return Err(Error::new(Code::Contract, why, None));
@@ -170,10 +270,21 @@ impl<A: AppValue> Machine<A> {
                 Err(Error::new(Code::Contract, "a library stopped short", None))
             }
         });
-        if docs.is_err() {
-            *self = before;
+        match docs {
+            Ok(docs) => {
+                let docs: Vec<Rc<Doc>> = docs.into_iter().map(Rc::new).collect();
+                for doc in &docs {
+                    if let Some(entry) = self.names.get_mut(doc.name.as_str()) {
+                        entry.doc = Some(Rc::clone(doc));
+                    }
+                }
+                Ok(docs)
+            }
+            Err(error) => {
+                *self = before;
+                Err(error)
+            }
         }
-        docs
     }
 
     /// The next word of the source on top, read and run (or compiled);
@@ -189,10 +300,11 @@ impl<A: AppValue> Machine<A> {
         };
         let Some(token) = read.take() else {
             self.read_last = read.last();
-            if let Some(Frame::Read(read)) = self.frames.pop()
-                && let Some(path) = read.path
-            {
-                self.loaded.insert(path, true);
+            if let Some(Frame::Read(read)) = self.frames.pop() {
+                self.source_left(&read);
+                if let Some(path) = read.path {
+                    self.loaded.insert(path, true);
+                }
             }
             return Ok(None);
         };
@@ -211,10 +323,11 @@ impl<A: AppValue> Machine<A> {
             self.given(Value::Int(n), true);
             return Ok(None);
         }
-        if let Some(Entry { xt, immediate }) = self.names.get(text) {
+        if let Some(Entry { xt, .. }) = self.names.get(text) {
             // A word of the core's that shapes the program runs here, in
             // no frame of its own.
-            if let (true, Some(Op::Builtin(word))) = (*immediate, xt.leaf()) {
+            let immediate = xt.immediate;
+            if let (true, Some(Op::Builtin(word))) = (immediate, xt.leaf()) {
                 // The core word itself, not a word of one step made of it.
                 self.read_here = *xt.name == *word.name();
                 let word = *word;
@@ -259,13 +372,33 @@ impl<A: AppValue> Machine<A> {
             Frame::Read(read) => Some(read),
             Frame::Code { .. } => None,
         });
-        match read.and_then(|read| read.take()) {
+        let taken = read.and_then(|read| {
+            if read.parsed.end != read.next {
+                read.parsed.start = read.next;
+            }
+            let token = read.take()?;
+            read.parsed.end = read.next;
+            Some(token)
+        });
+        match taken {
             Some(token) => Ok(token),
             None => Err(self.fail(
                 Code::MissingToken,
                 format!("{} needs {what} after it", word.name()),
             )),
         }
+    }
+
+    /// The word of its own the reader read last, of the innermost source,
+    /// to run or compile it: the source's id, and where it is there. It is
+    /// the one before the words parsing words read since, if any were.
+    fn invoked(&self) -> Option<(u64, usize)> {
+        let read = self.source()?;
+        let after = match read.parsed.end == read.next {
+            true => read.parsed.start,
+            false => read.next,
+        };
+        Some((read.id, after.checked_sub(1)?))
     }
 
     /// The source being read, the innermost.
@@ -357,6 +490,31 @@ impl<A: AppValue> Machine<A> {
                 .map(|read| (read.id, read.next)),
             Kind::Define(_) | Kind::Does | Kind::Temp => None,
         };
+        // A definition is made of the words from the one the reader read
+        // and ran that began it (`define`, or a word that runs it).
+        let made = match kind {
+            // A library's own are known from where they are (`finished`).
+            Kind::Define(_) if self.made.is_some() && from.is_some() => None,
+            Kind::Define(_) => self.invoked().and_then(|(id, from)| {
+                let at = (self.frames.iter())
+                    .rposition(|frame| matches!(frame, Frame::Read(read) if read.id == id))?;
+                let Some(Frame::Read(read)) = self.frames.get(at) else {
+                    return None;
+                };
+                let tokens = Rc::clone(&read.tokens);
+                let run = Some(Run {
+                    at,
+                    id,
+                    tokens,
+                    from,
+                });
+                Some(Gathered {
+                    runs: Vec::new(),
+                    run,
+                })
+            }),
+            Kind::Code | Kind::Does | Kind::Temp => None,
+        };
         self.building.push(Building {
             code: Steps::new(name),
             locals: HashMap::new(),
@@ -367,6 +525,7 @@ impl<A: AppValue> Machine<A> {
             literal: false,
             from,
             words,
+            made,
         });
         self.compiling = true;
     }
@@ -677,31 +836,57 @@ impl<A: AppValue> Machine<A> {
         self.compiling = building.was_compiling;
         let mut code = building.code;
         code.locals = building.locals.len();
-        // The words read from its source between the `code` and the `end`
-        // the reader itself read there and ran, so `code` WORDS `end` read
-        // again does as they did; none if another word opened or closed it.
-        code.words = building.words.and_then(|(id, from)| {
-            let read = self
-                .source()
-                .filter(|read| read.id == id && self.read_here)?;
-            read.tokens
-                .get(from..read.next.checked_sub(1)?)
-                .map(Rc::from)
-        });
-        let code = self.version(code);
         let Kind::Define(name) = building.kind else {
+            // The words read from its source between the `code` and the
+            // `end` the reader itself read there and ran, so `code` WORDS
+            // `end` read again does as they did; none if another word
+            // opened or closed it.
+            code.words = (building.words)
+                .filter(|_| self.read_here)
+                .and_then(|(id, from)| self.read_since(id, from, 1));
+            let code = self.version(code);
             return self.given(Value::Xt(Xt(code)), false);
         };
+        let code = self.version(code);
         let at = self.position();
+        let mut source = None;
         if let (Some(made), Some(from), Some(to)) = (&mut self.made, building.from, at) {
             made.push((from, to));
+            // A library's own: its words from its `define` to its `end`,
+            // where they are in the one source read, the first frame's,
+            // which gathered none.
+            let words = match self.frames.first() {
+                Some(Frame::Read(read)) => Words::of(&read.tokens, from..to.saturating_add(1)),
+                Some(Frame::Code { .. }) | None => None,
+            };
+            source = words.map(|words| Source::of(Vec::new(), words));
         }
-        let entry = Entry {
-            xt: code,
-            immediate: false,
-        };
-        self.names.insert(Rc::clone(&name), entry);
+        // Its words gathered: none known if a source it was read from
+        // couldn't say.
+        if let Some(made) = building.made {
+            source = made.run.and_then(|run| {
+                let last = Words::of(&run.tokens, run.from..run.next(&self.frames)?)?;
+                Some(Source::of(made.runs, last))
+            });
+        }
+        self.define_word(Rc::clone(&name), code, source);
         self.latest = Some(name);
+    }
+
+    /// The words of the source `id`, the innermost being read, from `from`
+    /// up to the word read last, but for the `short` last of them.
+    fn read_since(&self, id: u64, from: usize, short: usize) -> Option<Words> {
+        let read = self.source().filter(|read| read.id == id)?;
+        Words::of(&read.tokens, from..read.next.checked_sub(short)?)
+    }
+
+    /// The words that made a word, its name just read from the source the
+    /// word that made it was: from that word, which the reader read and
+    /// ran, to the name. None known if the name came from another source.
+    fn made_words(&self) -> Option<Source> {
+        let (id, from) = self.invoked()?;
+        let words = self.read_since(id, from, 0)?;
+        Some(Source::of(Vec::new(), words))
     }
 
     /// Where the word read last is in a library's tokens: the source read
@@ -739,21 +924,22 @@ impl<A: AppValue> Machine<A> {
     pub(crate) fn create(&mut self, word: Builtin, x: Option<Value<A>>) -> Result<(), Error> {
         let name = self.next_word(word, "a name")?;
         self.check_name(&name)?;
+        let words = self.made_words();
         let body = self.next_address()?;
         if matches!(word, Builtin::Variable | Builtin::Defer) {
             self.allot(1)?;
         }
         match x {
-            Some(x) => self.created(name.text, None, false, vec![(Op::Push(x), None)]),
+            Some(x) => self.created(name.text, None, (false, words), vec![(Op::Push(x), None)]),
             None if word == Builtin::Defer => {
                 let mut code = Steps::new(Rc::clone(&name.text));
                 code.action = Some(body);
                 code.push(Op::Push(Value::Addr(body)), None);
                 code.push(Op::Builtin(Builtin::Fetch), None);
                 code.push(Op::Builtin(Builtin::Execute), None);
-                self.named_word(name.text, code, false);
+                self.named_word(name.text, code, words);
             }
-            None => self.created(name.text, Some(body), false, Vec::new()),
+            None => self.created(name.text, Some(body), (false, words), Vec::new()),
         }
         Ok(())
     }
@@ -827,41 +1013,48 @@ impl<A: AppValue> Machine<A> {
     #[inline(never)]
     pub(crate) fn does(&mut self, action: usize) -> Result<(), Error> {
         let latest = (self.latest.as_ref()).and_then(|name| self.names.get_key_value(name));
-        let made = latest.and_then(|(name, e)| Some((Rc::clone(name), e.xt.body?, e.immediate)));
-        let Some((name, body, immediate)) = made else {
+        let made = latest.and_then(|(name, e)| {
+            Some((
+                Rc::clone(name),
+                e.xt.body?,
+                (e.xt.immediate, e.words.clone()),
+            ))
+        });
+        let Some((name, body, made)) = made else {
             let why = "does gives the word create made last what it does, \
                        and the word defined last is none of create's";
             return Err(self.fail(Code::Type, why));
         };
         let slots = self.version_at(action).map_or(0, |code| code.locals);
         let call = vec![(Op::Call(action, slots), self.at())];
-        self.created(name, Some(body), immediate, call);
+        self.created(name, Some(body), made, call);
         self.leave_definition(self.frames.len());
         Ok(())
     }
 
-    /// `name` defined as the word defined last: it pushes `body`, if one,
-    /// for `body-of`, then takes `steps`.
+    /// `name` defined as the word defined last, immediate or not, made by
+    /// `words`: it pushes `body`, if one, for `body-of`, then takes `steps`.
     fn created(
         &mut self,
         name: Rc<str>,
         body: Option<Address>,
-        immediate: bool,
+        (immediate, words): (bool, Option<Source>),
         steps: Vec<(Op<A>, Option<Token>)>,
     ) {
         let mut code = Steps::new(Rc::clone(&name));
         code.body = body;
+        code.immediate = immediate;
         let pushed = body.map(|body| (Op::Push(Value::Addr(body)), None));
         for (op, token) in pushed.into_iter().chain(steps) {
             code.push(op, token);
         }
-        self.named_word(name, code, immediate);
+        self.named_word(name, code, words);
     }
 
-    /// `name` defined as `code`, the word defined last.
-    fn named_word(&mut self, name: Rc<str>, code: Steps<A>, immediate: bool) {
+    /// `name` defined as `code`, made by `words`, the word defined last.
+    fn named_word(&mut self, name: Rc<str>, code: Steps<A>, words: Option<Source>) {
         let xt = self.version(code);
-        self.names.insert(Rc::clone(&name), Entry { xt, immediate });
+        self.define_word(Rc::clone(&name), xt, words);
         self.latest = Some(name);
     }
 
@@ -917,11 +1110,8 @@ impl<A: AppValue> Machine<A> {
                 let slot = self.globals.len();
                 self.globals.push(None);
                 let xt = self.one(&name.text, Op::GetGlobal(slot));
-                let entry = Entry {
-                    xt,
-                    immediate: false,
-                };
-                self.names.insert(name.text, entry);
+                let words = self.made_words();
+                self.define_word(name.text, xt, words);
                 slot
             }
         };
@@ -1008,7 +1198,7 @@ impl<A: AppValue> Machine<A> {
         self.compiled_only(Builtin::Postpone)?;
         let name = self.next_word(Builtin::Postpone, "a name")?;
         let entry = self.found(&name)?;
-        match entry.immediate {
+        match entry.xt.immediate {
             true => self.compile_word(&entry.xt),
             false => {
                 self.compile(Op::Compile(entry.xt));
@@ -1049,16 +1239,29 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    /// `immediate`.
+    /// `immediate`: the word defined last made again, immediate, as a
+    /// version of its own, so code compiled before keeps the one it was
+    /// compiled against.
     pub(crate) fn immediate(&mut self) -> Result<(), Error> {
-        let entry = (self.latest.as_ref()).and_then(|name| self.names.get_mut(name));
-        match entry {
-            Some(entry) => {
-                entry.immediate = true;
-                Ok(())
-            }
-            None => Err(self.fail(Code::BadName, "no word was defined yet")),
+        let latest = (self.latest.clone())
+            .and_then(|name| Some((Steps::clone(&self.names.get(&name)?.xt), name)));
+        let Some((mut steps, name)) = latest else {
+            return Err(self.fail(Code::BadName, "no word was defined yet"));
+        };
+        steps.immediate = true;
+        let xt = self.version(steps);
+        if let Some(entry) = self.names.get_mut(&name) {
+            entry.xt = xt;
         }
+        Ok(())
+    }
+
+    /// `see NAME`: what the dictionary says of NAME, written.
+    pub(crate) fn see<H: Host<Value = A>>(&mut self, host: &mut H) -> Result<(), Error> {
+        let name = self.next_word(Builtin::See, "a name")?;
+        self.found(&name)?;
+        let said = self.definition(&name.text).map(|d| d.to_string());
+        self.written(host, &said.unwrap_or_default())
     }
 
     /// `start-compiling`.
@@ -1103,7 +1306,9 @@ impl<A: AppValue> Machine<A> {
             }
             Some(_) | None => {}
         }
-        let text = host.read(&canonical).map_err(failed)?;
+        let text = host.read(&canonical).map_err(|f| {
+            Error::new(f.code, format!("{}: {}", path.text, f.message), at.as_ref())
+        })?;
         let place = at.map_or_else(|| path.place.to_string(), |t| t.place.to_string());
         let name = format!("{place} -> {}", canonical.display());
         let tokens = token::source(&name, &text)?;

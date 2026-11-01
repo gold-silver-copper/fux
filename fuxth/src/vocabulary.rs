@@ -5,10 +5,12 @@ use crate::Code;
 use crate::error::Error;
 use crate::value::{AppValue, Value};
 
-/// A word: its name, and how many values it takes.
+/// A word: its name, what it does to the stack, and how many values it
+/// takes.
 #[derive(Clone, Debug)]
 struct Word {
     name: String,
+    effect: String,
     takes: usize,
 }
 
@@ -63,6 +65,7 @@ impl Vocabulary {
         };
         self.words.push(Word {
             name: name.to_owned(),
+            effect: effect.trim().to_owned(),
             takes: before.split_whitespace().count(),
         });
         Ok(self.words.len().saturating_sub(1))
@@ -137,6 +140,11 @@ impl Vocabulary {
     /// How many values word `id` takes.
     pub(crate) fn takes(&self, id: usize) -> usize {
         self.words.get(id).map_or(0, |w| w.takes)
+    }
+
+    /// What word `id` does to the stack, as it was added.
+    pub(crate) fn effect(&self, id: usize) -> Option<&str> {
+        self.words.get(id).map(|w| w.effect.as_str())
     }
 
     /// The words' names, by id.
