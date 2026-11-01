@@ -246,24 +246,26 @@ define dump-recipe
   end
   0 let wi
   list
-    str '#!/usr/bin/env -S fux --file' 10 char
-    str '# fux: running this makes it again; its programs take the environment of the server that runs them.' 10 char
-    str '# Its workspaces go in the workspace its first argument names, else at the top.' 10 char
-    str 'args len 0 gt if opts args first in else opts then let top' 10 char
+    str '#!/usr/bin/env -S fux --file
+# fux: running this makes it again; its programs take the environment of the server that runs them.
+# Its workspaces go in the workspace its first argument names, else at the top.
+args len 0 gt if opts args first in else opts then let top
+'
     str 'list ' tops each
       str name get dup kind str null eq if drop else dump-text then
     end str 'end let joins' 10 char
     str 'list ' recipe str tabs get panes cat inner cat each
       str name get dup kind str null eq if drop else dump-text then
     end str 'end let names' 10 char
-    str '# Refused before anything is made if a name it gives is taken here; a workspace of its name is joined.' 10 char
-    str 'all str topology snapshot let s' 10 char
-    str 'list s str tabs get each str name get end s str panes get each str name get end end let held' 10 char
-    str 'list s str workspaces get each str name get end end let workspaces' 10 char
-    str 'list joins each held over contains if else drop then end' 10 char
-    str '  names each held over contains workspaces 2 pick contains or if else drop then end end' 10 char
-    str '# A tab named as the workspace it would make is refused (name_taken), whether that name is free or not.' 10 char
-    str 'dup len 0 gt if first let taken opts taken in taken name 80 24 size str / cwd new-tab else drop then' 10 char
+    str '# Refused before anything is made if a name it gives is taken here; a workspace of its name is joined.
+all str topology snapshot let s
+list s str tabs get each str name get end s str panes get each str name get end end let held
+list s str workspaces get each str name get end end let workspaces
+list joins each held over contains if else drop then end
+  names each held over contains workspaces 2 pick contains or if else drop then end end
+# A tab named as the workspace it would make is refused (name_taken), whether that name is free or not.
+dup len 0 gt if first let taken opts taken in taken name 80 24 size str / cwd new-tab else drop then
+'
     recipe str tabs get each
       let tab
       tab str nodes get let nodes
@@ -354,22 +356,14 @@ define chooser-selected
   let current let rows
   current len 0 gt if current else list rows len 0 gt if 0 then end then
 end
-# snapshot handle -- rows : a row for each of the handle's siblings, in order, among what holds it
+# snapshot handle -- rows : a row for each of the handle's siblings of its kind, in order, among what holds it
 define chooser-siblings
-  let it let s s str workspaces get let wss
-  it kind str pane eq if
-    s str panes get it chooser-find str tab get let held
-    list s str panes get each dup str tab get held eq if else drop then end end
-  else
-    it kind str tab eq if s str tabs get it chooser-find str workspace get
-    else wss it chooser-find str parent get then let held
-    held kind str null eq if
-      list wss each dup str parent get held eq if else drop then end end
-    else
-      wss s str tabs get cat let records
-      list wss held chooser-find str children get each records swap chooser-find end end
-    then
-  then let siblings
+  let it let s
+  it kind str workspace eq if str workspaces str parent else
+    it kind str tab eq if str tabs str workspace else str panes str tab then
+  then let holder let kinds
+  s kinds get it chooser-find holder get let held
+  list s kinds get each dup holder get held eq if else drop then end end let siblings
   list siblings each
     dup str id get kind str pane eq if chooser-row else s swap chooser-container-row then
   end end
