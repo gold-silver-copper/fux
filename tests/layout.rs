@@ -64,7 +64,9 @@ fn focus_moves_next_previous_last_and_by_direction() -> Outcome {
     client.keys(&format!("{PREFIX}o"))?;
     eventually("next wraps to %1", || Ok(focused(&server)? == "%1"))?;
     // The previous pane has no key of its own: the command.
-    server.ok(&["str", "c1", "client", "str", "previous", "focus"])?;
+    server.ok(&[
+        "str", "c1", "client", "dup", "focused", "str", "previous", "step",
+    ])?;
     eventually("previous: %3", || Ok(focused(&server)? == "%3"))?;
     client.keys(&format!("{PREFIX}q"))?;
     eventually("last: %1", || Ok(focused(&server)? == "%1"))?;

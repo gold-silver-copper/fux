@@ -62,7 +62,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     let mut reap = Reap::default();
     for how in ["pane kill", "exit", "workspace kill"] {
         let launch = if how == "workspace kill" {
-            "opts 80 24 size str doomed name new-workspace"
+            "opts 80 24 size str doomed in new-tab"
         } else {
             "%1 str horizontal axis split"
         };

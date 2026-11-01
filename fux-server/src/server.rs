@@ -1632,7 +1632,7 @@ mod tests {
                 after(now, Duration::from_secs(30)),
             ))));
         let kill = fux_wire::command::Command::Kill {
-            target: fux_wire::command::AnyRef::Pane(PaneId::of(1)),
+            target: Some(fux_wire::command::AnyRef::Pane(PaneId::of(1))),
         };
         let cli = Origin::Cli(Caller::default());
         let Begun::Done(_) = server

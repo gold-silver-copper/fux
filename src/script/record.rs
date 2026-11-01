@@ -393,6 +393,10 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         "pane_rows" => number(c.pane_rows)?, "pane_cols" => number(c.pane_cols)?,
         "workspace" => c.workspace.map(|w| id(AnyRef::Workspace(w),run)).unwrap_or_else(null),
         "tab" => c.tab.map(|t| id(AnyRef::Tab(t),run)).unwrap_or_else(null), "pane" => c.pane.map(|p| id(AnyRef::Pane(p),run)).unwrap_or_else(null),
+        "seats" => b.list(&c.seats, |b,s| record! { b;
+            "in" => s.within.map(|w| id(w,run)).unwrap_or_else(null), "current" => id(s.current,run),
+            "last" => s.last.map(|l| id(l,run)).unwrap_or_else(null)
+        })?,
         "opening" => c.opening.map(number).unwrap_or_else(|| Ok(null()))?, "mode" => b.text(&c.mode)?
     })?;
     let scope = match s.scope {

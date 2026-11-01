@@ -109,8 +109,20 @@ wire! {
         pub workspace: Option<WsId>,
         pub tab: Option<TabId>,
         pub pane: Option<PaneId>,
+        /// What it is shown in each stack and focuses in each tab.
+        pub seats: Vec<Seat>,
         pub opening: Option<u64>,
         pub mode: String,
+    }
+}
+wire! {
+    /// A client's choice among what `within` holds (the server's
+    /// workspaces, with none): the one it is shown, and the one before.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Seat {
+        pub within: Option<AnyRef>,
+        pub current: AnyRef,
+        pub last: Option<AnyRef>,
     }
 }
 

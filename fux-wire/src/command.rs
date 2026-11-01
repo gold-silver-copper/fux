@@ -175,7 +175,7 @@ wire! {
 wire! {
     /// Any target: a pane, a tab or a workspace (`%N`, `@N`, `+N`), as a
     /// client's words found it.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     pub enum AnyRef {
         Pane(id: PaneId),
         Tab(id: TabId),
@@ -239,7 +239,7 @@ impl Kind {
 
 wire! {
     /// Which way `reorder` moves a pane, tab or workspace among its siblings,
-    /// or `focus`, `step-tab` and `step-workspace` step from the current one.
+    /// or `step` steps from one.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Sibling {
         Next,
@@ -248,22 +248,12 @@ wire! {
 }
 
 wire! {
-    /// Which tab or workspace `show` picks.
+    /// Which sibling `step` shows a client: the next or previous, going
+    /// round, the one it was shown there last, or among a tab's panes the
+    /// one beside on its screen.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Pick<T> {
+    pub enum Way {
         Step(step: Sibling),
-        Last,
-        Id(id: T),
-    }
-}
-
-wire! {
-    /// Which pane `focus` picks.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum PanePick {
-        Step(step: Sibling),
-        Id(id: PaneId),
-        /// The previously focused pane.
         Last,
         Toward(direction: Direction),
     }
@@ -772,14 +762,6 @@ wire! {
         /// Stops the server; from the CLI, refused from one of its own panes
         /// or with people attached.
         KillServer,
-        NewWorkspace {
-            name: Option<String>,
-            size: Size,
-            /// Where its shell starts (default: the caller's directory).
-            cwd: Option<PathBuf>,
-            start: Start,
-            options: PaneOptions,
-        },
         /// A tab with a shell or a program, in the workspace given (made if
         /// named and not there), else the caller's; a client asking from a
         /// key or prompt is moved to it.
@@ -824,9 +806,9 @@ wire! {
             row: u16,
             col: u16,
         },
-        /// Closes a pane, a tab or a workspace.
+        /// Closes a pane, a tab or a workspace, or with none every one.
         Kill {
-            target: AnyRef,
+            target: Option<AnyRef>,
         },
         /// A signal to what runs in the pane's foreground, what its terminal's
         /// keys reach (a job its shell runs, or the program it was started with), never
@@ -892,10 +874,10 @@ wire! {
             text: String,
             kind: Kind,
         },
-        /// The panes or tabs a pane, tab or workspace is or holds,
-        /// answered with their ids in layout order.
+        /// The panes or tabs in a pane, tab or workspace, or with none in
+        /// the whole session, answered with their ids in layout order.
         Members {
-            target: AnyRef,
+            target: Option<AnyRef>,
             members: Members,
         },
         /// A command on one client's screen: the client named (`str c1 client`), or the one
@@ -929,9 +911,10 @@ wire! {
         /// Keys as typed at its terminal: its bindings, overlays and prompts
         /// take them as a person's keys.
         Keys(inputs: Vec<Input>),
-        SelectPane(pick: PanePick),
-        SelectTab(pick: Pick<TabId>),
-        SelectWorkspace(pick: Pick<WsRef>),
+        /// Shows it the pane, tab or workspace, and each that holds it.
+        Show(target: AnyRef),
+        /// Shows it the sibling of `from` that `way` says.
+        Step { from: AnyRef, way: Way },
     }
 }
 
@@ -1029,8 +1012,7 @@ impl Command {
             | C::SendKeys { .. }
             | C::SendMouse { .. }
             | C::Signal { .. } => true,
-            C::NewWorkspace { .. }
-            | C::NewTab { .. }
+            C::NewTab { .. }
             | C::Split { .. }
             | C::Respawn { .. }
             | C::Notify { .. }
@@ -1048,10 +1030,7 @@ impl Command {
             | C::KillServer => false,
             C::Client { action, .. } => match action {
                 ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Open(_) => true,
-                ClientAction::Detach
-                | ClientAction::SelectPane(_)
-                | ClientAction::SelectTab(_)
-                | ClientAction::SelectWorkspace(_) => false,
+                ClientAction::Detach | ClientAction::Show(_) | ClientAction::Step { .. } => false,
             },
         }
     }

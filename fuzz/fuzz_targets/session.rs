@@ -24,6 +24,7 @@ use fux_server::outer;
 use fux_server::render::{Grid, compose_view, paint_into};
 use fux_server::session::{Outgoing, Session};
 use fux_server::view::Mode;
+use fux_server::workspace::Child as _;
 use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::keys::{Key, Keystroke};
 use fux_wire::act::Act;

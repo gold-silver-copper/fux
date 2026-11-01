@@ -1,7 +1,9 @@
 //! Workspaces, their tabs and panes, and where each attached client is
-//! among them, kept in what it names: a workspace holds the clients showing
-//! it, and each tab a [`Seat`] for every client. Closing a tab takes its
-//! seats with it, and its layout changes only through [`Tab::edit`], which
+//! among them. The server is a [`Stack`] of workspaces and a workspace a
+//! stack of tabs: a stack shows each client one of its children, its own,
+//! and keeps the one it showed before. A tab keeps each client's focus in a
+//! [`Seat`] the same way. A child's leaving repairs what each client is
+//! shown, and a tab's layout changes only through [`Tab::edit`], which
 //! keeps each focus on one of its panes: no client names a tab or pane that
 //! is gone.
 //!
@@ -11,11 +13,138 @@
 //! journal at the pane's place.
 use crate::journal::{Change, Event, Journal, PaneEvent, ViewChange};
 use crate::pane::{Pane, PaneMut};
-use fux_wire::command::Sibling;
+use fux_wire::command::{AnyRef, Sibling};
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::{self, Axis, NoPane, Rect, Removed, Side, Tree};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// What a client is shown of a stack, or focuses in a tab: its current
+/// child, and the one before it, another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shown<I> {
+    pub current: I,
+    pub last: Option<I>,
+}
+
+impl<I: Copy + Eq> Shown<I> {
+    fn on(current: I) -> Shown<I> {
+        Shown {
+            current,
+            last: None,
+        }
+    }
+
+    pub fn map<J>(self, f: impl Fn(I) -> J) -> Shown<J> {
+        Shown {
+            current: f(self.current),
+            last: self.last.map(f),
+        }
+    }
+
+    /// Shows `id`, the current one becoming the last: whether it changed.
+    fn show(&mut self, id: I) -> bool {
+        let changed = self.current != id;
+        if changed {
+            self.last = Some(std::mem::replace(&mut self.current, id));
+        }
+        changed
+    }
+
+    /// Of the children `was` before a change, those `kept` are left, and
+    /// `first` heads them all: a current one gone becomes the last, else
+    /// its neighbour (the next one left, else the one before), else
+    /// `first`. Whether the current one changed.
+    fn keep(&mut self, was: &[I], kept: impl Fn(I) -> bool, first: Option<I>) -> bool {
+        self.last = self.last.filter(|last| kept(*last));
+        if kept(self.current) {
+            return false;
+        }
+        let at = was.iter().position(|c| *c == self.current).unwrap_or(0);
+        let (before, after) = was.split_at_checked(at).unwrap_or((was, &[]));
+        let mut near = after.iter().chain(before.iter().rev()).copied();
+        let next = self.last.take().or_else(|| near.find(|c| kept(*c)));
+        match next.or(first) {
+            Some(next) => {
+                self.current = next;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// A stack's child: a workspace or a tab, by its id.
+pub trait Child {
+    type Id: Copy + Eq;
+    fn id(&self) -> Self::Id;
+}
+
+/// Children shown one at a time: each attached client is shown its own,
+/// while there is any.
+pub struct Stack<C: Child> {
+    children: Vec<C>,
+    shown: BTreeMap<ClientId, Shown<C::Id>>,
+}
+
+impl<C: Child> Stack<C> {
+    pub fn children(&self) -> &[C] {
+        &self.children
+    }
+
+    pub fn get(&self, id: C::Id) -> Option<&C> {
+        self.children.iter().find(|c| c.id() == id)
+    }
+
+    fn get_mut(&mut self, id: C::Id) -> Option<&mut C> {
+        self.children.iter_mut().find(|c| c.id() == id)
+    }
+
+    /// What `client` is shown here.
+    pub fn shown(&self, client: ClientId) -> Option<Shown<C::Id>> {
+        self.shown.get(&client).copied()
+    }
+
+    /// The child `client` is shown.
+    pub fn current(&self, client: ClientId) -> Option<&C> {
+        self.get(self.shown.get(&client)?.current)
+    }
+
+    /// Shows `client` child `id`, if it is one.
+    fn show(&mut self, client: ClientId, id: C::Id) {
+        let child = self.children.iter().any(|c| c.id() == id);
+        if let Some(shown) = self.shown.get_mut(&client).filter(|_| child) {
+            shown.show(id);
+        }
+    }
+
+    /// Takes child `id` out: each client it was shown to is shown the one
+    /// it was shown before, else its neighbour.
+    fn remove(&mut self, id: C::Id) -> Option<C> {
+        let was: Vec<C::Id> = self.children.iter().map(C::id).collect();
+        let (gone, kept) = (std::mem::take(&mut self.children).into_iter())
+            .partition::<Vec<C>, _>(|c| c.id() == id);
+        self.children = kept;
+        let child = gone.into_iter().next()?;
+        for shown in self.shown.values_mut() {
+            shown.keep(&was, |c| c != id, None);
+        }
+        self.shown.retain(|_, shown| shown.current != id);
+        Some(child)
+    }
+
+    /// Swaps child `id` with its sibling `toward`: none if there is no such
+    /// child, false if it has no sibling that way.
+    fn reorder(&mut self, id: C::Id, toward: Sibling) -> Option<bool> {
+        let index = self.children.iter().position(|c| c.id() == id)?;
+        let first = match toward {
+            Sibling::Next => Some(index),
+            Sibling::Previous => index.checked_sub(1),
+        };
+        let pair = first.and_then(|i| self.children.get_mut(i..i.checked_add(2)?));
+        Some(pair.map(<[C]>::reverse).is_some())
+    }
+}
 
 /// A workspace and its tabs, of which it always has one or more: each is
 /// made with one, and the session removes a workspace its last tab leaves.
@@ -23,12 +152,14 @@ pub struct Workspace {
     /// Given as it is made, and never changed: its events' place.
     id: WsId,
     name: Option<String>,
-    tabs: Vec<Tab>,
-    /// The clients showing it: each attached client shows one workspace
-    /// while there is any.
-    pub(crate) viewers: BTreeSet<ClientId>,
-    /// The tab each attached client is shown when it shows the workspace.
-    shown: BTreeMap<ClientId, TabId>,
+    tabs: Stack<Tab>,
+}
+
+impl Child for Workspace {
+    type Id = WsId;
+    fn id(&self) -> WsId {
+        self.id
+    }
 }
 
 pub struct Tab {
@@ -52,6 +183,13 @@ pub struct Tab {
     /// The client that last typed into it, which hosts its panes while it
     /// shows it (`Session::host`).
     pub(crate) typist: Option<ClientId>,
+}
+
+impl Child for Tab {
+    type Id = TabId;
+    fn id(&self) -> TabId {
+        self.id
+    }
 }
 
 /// What a tab no client shows is laid out on: a size every tab has, given
@@ -84,11 +222,8 @@ impl Fit {
 /// A client's place in a tab: every attached client has one in every tab.
 #[derive(Clone, Copy)]
 pub struct Seat {
-    /// The pane it focuses, one of the tab's.
-    focus: PaneId,
-    /// The pane it focused before (`str last focus`), another of the
-    /// tab's.
-    last: Option<PaneId>,
+    /// The pane it focuses, one of the tab's, and the one before.
+    pub focus: Shown<PaneId>,
     /// The bell rang here while it was shown another tab, marked in its bar
     /// until it shows this one (`Session::ring`).
     pub(crate) rang: bool,
@@ -101,22 +236,14 @@ impl Seat {
     /// A seat focusing `pane`, new.
     fn on(focus: PaneId) -> Seat {
         Seat {
-            focus,
-            last: None,
+            focus: Shown::on(focus),
             rang: false,
             held: false,
         }
     }
-    pub fn last(&self) -> Option<PaneId> {
-        self.last
-    }
 }
 
 impl Workspace {
-    pub fn id(&self) -> WsId {
-        self.id
-    }
-
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
@@ -128,53 +255,23 @@ impl Workspace {
 
     pub(crate) fn display_label(&self) -> fux_wire::words::Label<'_> {
         self.name().map_or(
-            fux_wire::words::Label::Id(fux_wire::command::AnyRef::Workspace(self.id)),
+            fux_wire::words::Label::Id(AnyRef::Workspace(self.id)),
             fux_wire::words::Label::Text,
         )
     }
 
     pub fn tabs(&self) -> &[Tab] {
+        self.tabs.children()
+    }
+
+    /// Its tabs, and what each client is shown of them.
+    pub fn stack(&self) -> &Stack<Tab> {
         &self.tabs
     }
 
     /// The tab `client` is shown here.
     pub fn tab_of(&self, client: ClientId) -> Option<&Tab> {
-        let shown = self.shown.get(&client)?;
-        self.tabs.iter().find(|t| t.id == *shown)
-    }
-
-    /// Shows `client` the tab `at` says here, if given and one of this
-    /// workspace's, and in it focuses the pane it says, if given and there.
-    fn show(&mut self, journal: &mut Journal, client: ClientId, at: Option<crate::session::Spot>) {
-        let Some(crate::session::Spot { tab, pane }) =
-            at.filter(|at| self.tabs.iter().any(|t| t.id == at.tab))
-        else {
-            return;
-        };
-        let Some(shown) = self.shown.get_mut(&client) else {
-            return;
-        };
-        *shown = tab;
-        if let Some((t, pane)) = self.tabs.iter_mut().find(|t| t.id == tab).zip(pane) {
-            t.set_focus(journal, self.id, client, pane);
-        }
-    }
-
-    /// Removes tab `tab`: the clients it was shown to are shown its
-    /// neighbour.
-    fn remove_tab(&mut self, tab: TabId) {
-        let Some(index) = self.tabs.iter().position(|t| t.id == tab) else {
-            return;
-        };
-        // Tab IDs are unique: this removes the tab at `index`.
-        self.tabs.retain(|t| t.id != tab);
-        let next = index.min(self.tabs.len().saturating_sub(1));
-        if let Some(next) = self.tabs.get(next).map(|t| t.id) {
-            self.shown
-                .values_mut()
-                .filter(|t| **t == tab)
-                .for_each(|t| *t = next);
-        }
+        self.tabs.current(client)
     }
 }
 
@@ -199,10 +296,6 @@ impl Tab {
             seats: clients.map(|c| (c, Seat::on(pane))).collect(),
             typist: None,
         }
-    }
-
-    pub fn id(&self) -> TabId {
-        self.id
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -288,7 +381,7 @@ impl Tab {
 
     /// The pane `client` focuses here: the zoomed one while there is one.
     pub fn focus(&self, client: ClientId) -> Option<PaneId> {
-        Some(self.zoomed.unwrap_or(self.seat(client)?.focus))
+        Some(self.zoomed.unwrap_or(self.seat(client)?.focus.current))
     }
 
     pub fn zoomed(&self) -> Option<PaneId> {
@@ -300,7 +393,7 @@ impl Tab {
     fn zoom(&mut self, journal: &mut Journal, ws: WsId, pane: Option<PaneId>) {
         if self.zoomed != pane {
             for seat in self.seats.values_mut() {
-                let focus = |zoomed: Option<PaneId>| zoomed.unwrap_or(seat.focus);
+                let focus = |zoomed: Option<PaneId>| zoomed.unwrap_or(seat.focus.current);
                 seat.held &= focus(self.zoomed) == focus(pane);
             }
             self.zoomed = pane;
@@ -311,60 +404,44 @@ impl Tab {
 
     /// Focuses `pane` for `client`, if the tab holds it, remembering the
     /// pane it replaces. Another pane than the zoomed one ends the zoom.
-    pub(crate) fn set_focus(
-        &mut self,
-        journal: &mut Journal,
-        ws: WsId,
-        client: ClientId,
-        pane: PaneId,
-    ) {
+    fn set_focus(&mut self, journal: &mut Journal, ws: WsId, client: ClientId, pane: PaneId) {
         if !self.holds(pane) {
             return;
         }
         if self.zoomed.is_some_and(|z| z != pane) {
             self.zoom(journal, ws, None);
         }
-        if let Some(seat) = self.seats.get_mut(&client).filter(|s| s.focus != pane) {
-            (seat.last, seat.focus, seat.held) = (Some(seat.focus), pane, false);
+        if let Some(seat) = self.seats.get_mut(&client)
+            && seat.focus.show(pane)
+        {
+            seat.held = false;
         }
     }
 
     /// Changes the layout with `change`; each client then focuses the pane
-    /// it did if the tab still holds it, else the one before, else the
-    /// first.
+    /// it did if the tab still holds it, else the one before, else its
+    /// neighbour.
     fn edit<R>(
         &mut self,
         journal: &mut Journal,
         ws: WsId,
         change: impl FnOnce(&mut Tree) -> R,
     ) -> R {
+        let was = self.root.panes();
         let out = change(&mut self.root);
         self.revised();
         self.changed = true;
-        self.refocus(journal, ws);
-        out
-    }
-
-    fn refocus(&mut self, journal: &mut Journal, ws: WsId) {
         if self.zoomed.is_some_and(|z| !self.root.contains(z)) {
             self.zoom(journal, ws, None);
         }
         let root = &self.root;
-        let inside = |p: &PaneId| root.contains(*p);
-        for (&client, seat) in &mut self.seats {
-            let before = seat.focus;
-            let (focus, last) = (Some(seat.focus).filter(inside), seat.last.filter(inside));
-            seat.held &= focus.is_some();
-            seat.focus = focus.or(last).unwrap_or_else(|| root.first_pane());
-            seat.last = last.filter(|l| *l != seat.focus);
-            if before != seat.focus {
-                journal.push(Event::View {
-                    client,
-                    at: Some(((ws, self.id), seat.focus)),
-                    change: ViewChange::Focused,
-                });
-            }
+        for seat in self.seats.values_mut() {
+            let moved = seat
+                .focus
+                .keep(&was, |p| root.contains(p), Some(root.first_pane()));
+            seat.held &= !moved;
         }
+        out
     }
 }
 
@@ -372,7 +449,7 @@ impl Tab {
 /// happened to them: what events tell of them changes only by its methods,
 /// each of which journals what it changes as it changes it.
 pub struct Parts {
-    workspaces: Vec<Workspace>,
+    workspaces: Stack<Workspace>,
     /// Each in one tab: a pane is added in its place and leaves with it.
     panes: BTreeMap<PaneId, Pane>,
     journal: Journal,
@@ -408,21 +485,10 @@ pub enum Destination {
 }
 
 /// Tab `id` of `workspaces`, and its workspace's id.
-fn tab_mut(workspaces: &mut [Workspace], id: TabId) -> Option<(WsId, &mut Tab)> {
-    let mut tabs = (workspaces.iter_mut()).flat_map(|w| w.tabs.iter_mut().map(|t| (w.id, t)));
+fn tab_mut(workspaces: &mut Stack<Workspace>, id: TabId) -> Option<(WsId, &mut Tab)> {
+    let mut tabs = (workspaces.children.iter_mut())
+        .flat_map(|w| w.tabs.children.iter_mut().map(|t| (w.id, t)));
     tabs.find(|(_, t)| t.id == id)
-}
-
-/// Swaps the item `is` picks with its sibling `toward`: none if `is` picks
-/// none, false if it has no sibling that way.
-fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) -> Option<bool> {
-    let index = items.iter().position(is)?;
-    let first = match toward {
-        Sibling::Next => Some(index),
-        Sibling::Previous => index.checked_sub(1),
-    };
-    let pair = first.and_then(|i| items.get_mut(i..i.checked_add(2)?));
-    Some(pair.map(<[T]>::reverse).is_some())
 }
 
 /// Names `old` `new`, journaled as `renamed` makes it if it is another
@@ -439,8 +505,16 @@ fn rename(
     }
 }
 
-fn place_of(workspaces: &[Workspace], client: ClientId) -> Option<crate::journal::PaneAt> {
-    let ws = workspaces.iter().find(|w| w.viewers.contains(&client))?;
+/// A client's place, and its current child in each node (`Parts::places`).
+type Place = (
+    Option<crate::journal::PaneAt>,
+    BTreeMap<Option<AnyRef>, AnyRef>,
+);
+
+/// Where `client` is: the workspace it is shown, the tab it is shown there
+/// and the pane it focuses in it.
+fn place_of(workspaces: &Stack<Workspace>, client: ClientId) -> Option<crate::journal::PaneAt> {
+    let ws = workspaces.current(client)?;
     let tab = ws.tab_of(client)?;
     Some(((ws.id, tab.id), tab.focus(client)?))
 }
@@ -449,7 +523,10 @@ impl Parts {
     /// Nothing yet, its journal keeping `journal` events.
     pub fn new(journal: fux_wire::command::JournalEntries) -> Parts {
         Parts {
-            workspaces: Vec::new(),
+            workspaces: Stack {
+                children: Vec::new(),
+                shown: BTreeMap::new(),
+            },
             panes: BTreeMap::new(),
             journal: Journal::new(journal),
             input: BTreeSet::new(),
@@ -457,36 +534,138 @@ impl Parts {
     }
 
     pub fn workspaces(&self) -> &[Workspace] {
+        self.workspaces.children()
+    }
+
+    /// The workspaces, and what each client is shown of them.
+    pub fn stack(&self) -> &Stack<Workspace> {
         &self.workspaces
     }
 
-    /// Tab `id`, to change what events do not tell: what its clients
-    /// focus, its fit. One tab at a time, and none is made but here, so
-    /// none is put in another's place (`mem::swap`), its panes moved with
-    /// no journal entry.
+    /// Where `client` is (`place_of`).
+    pub fn place(&self, client: ClientId) -> Option<crate::journal::PaneAt> {
+        place_of(&self.workspaces, client)
+    }
+
+    /// Tab `id`, to change what events do not tell: its bell marks, its
+    /// fit. One tab at a time, and none is made but here, so none is put
+    /// in another's place (`mem::swap`), its panes moved with no journal
+    /// entry.
     pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> {
         tab_mut(&mut self.workspaces, id).map(|(_, tab)| tab)
     }
 
-    /// A client attaches: it is shown each workspace's first tab, and
-    /// focuses each tab's first pane.
-    pub(crate) fn attach(&mut self, client: ClientId) {
-        for w in &mut self.workspaces {
-            if let Some(first) = w.tabs.first() {
-                w.shown.insert(client, first.id);
+    /// What `client` is shown of the workspaces, of each workspace's tabs
+    /// and of each tab's panes, in that order.
+    pub fn seats(&self, client: ClientId) -> Vec<fux_wire::inspect::Seat> {
+        let seat = |within, shown: Option<Shown<AnyRef>>| {
+            shown.map(|Shown { current, last }| fux_wire::inspect::Seat {
+                within,
+                current,
+                last,
+            })
+        };
+        let root = self
+            .workspaces
+            .shown(client)
+            .map(|s| s.map(AnyRef::Workspace));
+        let mut seats: Vec<_> = seat(None, root).into_iter().collect();
+        for ws in self.workspaces() {
+            let tabs = ws.tabs.shown(client).map(|s| s.map(AnyRef::Tab));
+            seats.extend(seat(Some(AnyRef::Workspace(ws.id)), tabs));
+            for tab in ws.tabs() {
+                let focus = tab.seat(client).map(|s| s.focus.map(AnyRef::Pane));
+                seats.extend(seat(Some(AnyRef::Tab(tab.id)), focus));
             }
-            for tab in &mut w.tabs {
-                let first = tab.root.first_pane();
-                tab.seats.entry(client).or_insert(Seat::on(first));
-                tab.refocus(&mut self.journal, w.id);
+        }
+        seats
+    }
+
+    /// Does `change`, journaling `shown` for each client whose place, or
+    /// current child anywhere, it changes: at the place it left, if
+    /// another, and at the one it is at (none, with the last workspace
+    /// gone).
+    fn viewing<R>(&mut self, change: impl FnOnce(&mut Parts) -> R) -> R {
+        let before = self.places();
+        let out = change(self);
+        self.moved(before);
+        out
+    }
+
+    /// Where each client is, and its current child at every node.
+    fn places(&self) -> BTreeMap<ClientId, Place> {
+        let clients = self.workspaces.shown.keys().copied();
+        let currents = |c| {
+            (self.seats(c).iter())
+                .map(|s| (s.within, s.current))
+                .collect()
+        };
+        clients
+            .map(|c| (c, (place_of(&self.workspaces, c), currents(c))))
+            .collect()
+    }
+
+    /// Journals `shown` for each client whose place, or current child in a
+    /// node there before and after (not one made or closed), is not as `before`.
+    fn moved(&mut self, before: BTreeMap<ClientId, Place>) {
+        let after = self.places();
+        let clients: BTreeSet<ClientId> = before.keys().chain(after.keys()).copied().collect();
+        let moved = |c: &ClientId| match (before.get(c), after.get(c)) {
+            (Some((was, then)), Some((now, currents))) => {
+                was != now
+                    || (then.iter()).any(|(node, c)| currents.get(node).is_some_and(|n| n != c))
+            }
+            (was, now) => was != now,
+        };
+        for client in clients.into_iter().filter(moved) {
+            let place = |of: &BTreeMap<ClientId, Place>| of.get(&client).and_then(|p| p.0);
+            let (was, now) = (place(&before), place(&after));
+            for at in (was.filter(|was| Some(*was) != now).map(Some).into_iter()).chain([now]) {
+                let change = ViewChange::Shown;
+                self.journal.push(Event::View { client, at, change });
             }
         }
     }
 
+    /// A client attaches, shown `at` and each that holds it, and elsewhere
+    /// each first child, with nothing shown before.
+    pub(crate) fn attach(&mut self, client: ClientId, at: AnyRef) {
+        let path = match at {
+            AnyRef::Pane(pane) => self
+                .locate(pane)
+                .map(|(ws, tab)| (ws, Some(tab), Some(pane))),
+            AnyRef::Tab(tab) => {
+                tab_mut(&mut self.workspaces, tab).map(|(ws, _)| (ws, Some(tab), None))
+            }
+            AnyRef::Workspace(ws) => Some((ws, None, None)),
+        };
+        let Some((ws, tab, pane)) = path else {
+            return;
+        };
+        self.viewing(|parts| {
+            parts.workspaces.shown.insert(client, Shown::on(ws));
+            for w in &mut parts.workspaces.children {
+                let first = w.tabs.children.first().map(|t| t.id);
+                if let Some(current) = tab.filter(|_| w.id == ws).or(first) {
+                    w.tabs.shown.insert(client, Shown::on(current));
+                }
+                for t in &mut w.tabs.children {
+                    let focus = pane.filter(|_| Some(t.id) == tab);
+                    t.seats
+                        .insert(client, Seat::on(focus.unwrap_or(t.root.first_pane())));
+                    // Focusing another pane than the zoomed one ends the zoom.
+                    if let Some(focus) = focus.filter(|f| t.zoomed.is_some_and(|z| z != *f)) {
+                        t.set_focus(&mut parts.journal, w.id, client, focus);
+                    }
+                }
+            }
+        });
+    }
+
     /// Disabling bells clears only this client's pending tab marks.
     pub(crate) fn clear_bells(&mut self, client: ClientId) {
-        for ws in &mut self.workspaces {
-            for tab in &mut ws.tabs {
+        for ws in &mut self.workspaces.children {
+            for tab in &mut ws.tabs.children {
                 if let Some(seat) = tab.seat_mut(client) {
                     seat.rang = false;
                 }
@@ -496,49 +675,55 @@ impl Parts {
 
     /// A client detaches: nothing names it.
     pub(crate) fn forget(&mut self, client: ClientId) {
-        for w in &mut self.workspaces {
-            w.viewers.remove(&client);
-            w.shown.remove(&client);
-            for tab in &mut w.tabs {
+        self.workspaces.shown.remove(&client);
+        for w in &mut self.workspaces.children {
+            w.tabs.shown.remove(&client);
+            for tab in &mut w.tabs.children {
                 tab.seats.remove(&client);
                 tab.typist = tab.typist.filter(|t| *t != client);
             }
         }
     }
 
-    /// Shows `client` workspace `ws`, and there the tab and pane `at`
-    /// says, each if given and there.
-    pub(crate) fn show(&mut self, client: ClientId, ws: WsId, at: Option<crate::session::Spot>) {
-        let before = place_of(&self.workspaces, client);
-        for w in &mut self.workspaces {
-            if w.id != ws {
-                w.viewers.remove(&client);
-            } else {
-                w.viewers.insert(client);
-                w.show(&mut self.journal, client, at);
+    /// Shows `client` `target`, a pane, tab or workspace, and each that
+    /// holds it; nothing if it is not there.
+    pub(crate) fn show(&mut self, client: ClientId, target: AnyRef) {
+        self.viewing(|parts| parts.show_path(client, target));
+    }
+
+    fn show_path(&mut self, client: ClientId, target: AnyRef) {
+        let ws = match target {
+            AnyRef::Pane(pane) => {
+                let Some((ws, tab)) = self.locate(pane) else {
+                    return;
+                };
+                if let Some((_, t)) = tab_mut(&mut self.workspaces, tab) {
+                    t.set_focus(&mut self.journal, ws, client, pane);
+                }
+                if let Some(w) = self.workspaces.get_mut(ws) {
+                    w.tabs.show(client, tab);
+                }
+                ws
             }
-        }
-        let after = place_of(&self.workspaces, client);
-        if before != after {
-            let change = if before.map(|at| at.0) == after.map(|at| at.0) {
-                ViewChange::Focused
-            } else {
-                ViewChange::Shown
-            };
-            for at in before.map(Some).into_iter().chain([after]) {
-                self.journal.push(Event::View { client, at, change });
+            AnyRef::Tab(tab) => {
+                let Some(w) =
+                    (self.workspaces.children.iter_mut()).find(|w| w.tabs.get(tab).is_some())
+                else {
+                    return;
+                };
+                w.tabs.show(client, tab);
+                w.id
             }
-        }
+            AnyRef::Workspace(ws) => ws,
+        };
+        self.workspaces.show(client, ws);
     }
 
     /// Swaps tab `tab` with its sibling `toward` in its workspace: none if
     /// there is no such tab, false if it has no sibling that way.
     pub(crate) fn reorder_tab(&mut self, tab: TabId, toward: Sibling) -> Option<bool> {
-        let ws = self
-            .workspaces
-            .iter_mut()
-            .find(|w| w.tabs.iter().any(|t| t.id == tab))?;
-        let changed = swap_sibling(&mut ws.tabs, |t| t.id == tab, toward)?;
+        let ws = (self.workspaces.children.iter_mut()).find(|w| w.tabs.get(tab).is_some())?;
+        let changed = ws.tabs.reorder(tab, toward)?;
         if changed {
             self.journal
                 .push(Event::Tab((ws.id, tab), Change::Reordered));
@@ -547,7 +732,7 @@ impl Parts {
     }
 
     pub(crate) fn reorder_workspace(&mut self, ws: WsId, toward: Sibling) -> Option<bool> {
-        let changed = swap_sibling(&mut self.workspaces, |w| w.id == ws, toward)?;
+        let changed = self.workspaces.reorder(ws, toward)?;
         if changed {
             self.journal.push(Event::Workspace(ws, Change::Reordered));
         }
@@ -576,10 +761,12 @@ impl Parts {
     /// Zooms `pane` in its tab, or, if it is zoomed, ends the zoom.
     pub(crate) fn zoom(&mut self, pane: PaneId) -> Option<()> {
         let (ws, tab) = self.locate(pane)?;
-        let (_, tab) = tab_mut(&mut self.workspaces, tab)?;
-        let zoomed = (tab.zoomed != Some(pane)).then_some(pane);
-        tab.zoom(&mut self.journal, ws, zoomed);
-        Some(())
+        self.viewing(|parts| {
+            let (_, tab) = tab_mut(&mut parts.workspaces, tab)?;
+            let zoomed = (tab.zoomed != Some(pane)).then_some(pane);
+            tab.zoom(&mut parts.journal, ws, zoomed);
+            Some(())
+        })
     }
 
     pub(crate) fn set_fit(&mut self, tab: TabId, fit: impl FnOnce(Fit) -> Fit) -> Option<()> {
@@ -596,7 +783,7 @@ impl Parts {
     /// changed since their panes were sized, for sizing them on their fit.
     /// Those are then taken as sized, as is a sized one, by its clients.
     pub(crate) fn changed_unshown(&mut self, sized: impl Fn(TabId) -> bool) -> Vec<TabId> {
-        let tabs = self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut());
+        let tabs = (self.workspaces.children.iter_mut()).flat_map(|w| w.tabs.children.iter_mut());
         let changed = |tab: &mut Tab| std::mem::take(&mut tab.changed) && !sized(tab.id);
         tabs.filter_map(|tab| changed(tab).then_some(tab.id))
             .collect()
@@ -614,27 +801,14 @@ impl Parts {
         self.journal.actor(actor)
     }
 
-    pub(crate) fn focus(&mut self, tab: TabId, client: ClientId, pane: PaneId) {
-        if let Some((ws, tab)) = tab_mut(&mut self.workspaces, tab) {
-            let before = tab.focus(client);
-            tab.set_focus(&mut self.journal, ws, client, pane);
-            if tab.focus(client) != before {
-                self.journal.push(Event::View {
-                    client,
-                    at: Some(((ws, tab.id), pane)),
-                    change: ViewChange::Focused,
-                });
-            }
-        }
-    }
-
     pub fn journal(&self) -> &Journal {
         &self.journal
     }
 
     /// The workspace and tab that hold pane `pane`.
     pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
-        let mut tabs = (self.workspaces.iter()).flat_map(|w| w.tabs.iter().map(|t| (w.id, t)));
+        let mut tabs = (self.workspaces.children.iter())
+            .flat_map(|w| w.tabs.children.iter().map(|t| (w.id, t)));
         tabs.find(|(_, t)| t.holds(pane)).map(|(w, t)| (w, t.id))
     }
 
@@ -658,8 +832,8 @@ impl Parts {
             journal,
             input,
         } = self;
-        for ws in workspaces.iter() {
-            for tab in &ws.tabs {
+        for ws in &workspaces.children {
+            for tab in ws.tabs() {
                 for id in tab.root.panes() {
                     if let Some(pane) = panes.get_mut(&id) {
                         change(&mut PaneMut::new(pane, (ws.id, tab.id), journal, input));
@@ -682,41 +856,39 @@ impl Parts {
     }
 
     /// Adds workspace `id` named `name`, its one tab `tab` named
-    /// `tab_name` and laid out on `fit`, a seat there for each of
-    /// `clients`, holding `pane`, new.
+    /// `tab_name` and laid out on `fit`, holding `pane`, new.
     pub(crate) fn add_workspace(
         &mut self,
         ws: (WsId, Option<String>),
         first: (TabId, Option<String>, Fit),
-        clients: impl Iterator<Item = ClientId>,
         pane: Pane,
     ) {
         let at = (ws.0, first.0);
-        self.push_workspace(ws, first, clients, pane.id());
+        self.push_workspace(ws, first, pane.id());
         self.placed(at, pane);
     }
 
-    /// `add_workspace`, holding pane `pane`, in the session.
+    /// `add_workspace`, holding pane `pane`, in the session: each client
+    /// is shown the tab there and focuses the pane, and is shown the
+    /// workspace if it is the first.
     fn push_workspace(
         &mut self,
         (id, name): (WsId, Option<String>),
         (tab, tab_name, fit): (TabId, Option<String>, Fit),
-        clients: impl Iterator<Item = ClientId>,
         pane: PaneId,
     ) {
         self.journal
             .push(Event::Workspace(id, Change::Created(name.clone())));
         self.journal
             .push(Event::Tab((id, tab), Change::Created(tab_name.clone())));
-        let first = Tab::new(tab, tab_name, fit, clients, pane);
-        let shown = first.seats.keys().map(|c| (*c, tab)).collect();
-        self.workspaces.push(Workspace {
-            id,
-            name,
-            tabs: vec![first],
-            viewers: BTreeSet::new(),
+        let clients: Vec<ClientId> = self.workspaces.shown.keys().copied().collect();
+        let first = Tab::new(tab, tab_name, fit, clients.iter().copied(), pane);
+        let shown = clients.into_iter().map(|c| (c, Shown::on(tab))).collect();
+        let tabs = Stack {
+            children: vec![first],
             shown,
-        });
+        };
+        (self.workspaces.children).push(Workspace { id, name, tabs });
     }
 
     /// Adds tab `id` to workspace `ws`, with optional name `name`,
@@ -746,10 +918,10 @@ impl Parts {
         fit: Fit,
         pane: PaneId,
     ) -> Option<()> {
-        let workspace = self.workspaces.iter_mut().find(|w| w.id == ws)?;
-        let clients = workspace.tabs.first().map(|t| t.seats.keys().copied());
-        let tab = Tab::new(id, name.clone(), fit, clients.into_iter().flatten(), pane);
-        workspace.tabs.push(tab);
+        let clients: Vec<ClientId> = self.workspaces.shown.keys().copied().collect();
+        let workspace = self.workspaces.get_mut(ws)?;
+        let tab = Tab::new(id, name.clone(), fit, clients.into_iter(), pane);
+        workspace.tabs.children.push(tab);
         self.journal
             .push(Event::Tab((ws, id), Change::Created(name)));
         Some(())
@@ -772,10 +944,9 @@ impl Parts {
         axis: Axis,
         shares: layout::Shares,
     ) -> Result<Split, NoPane> {
-        let (_, tab) = self.locate(target).ok_or(NoPane)?;
-        let mut tabs = (self.workspaces.iter()).flat_map(|w| &w.tabs);
-        let was = tabs.find(|t| t.id == tab).map(|t| t.root.clone());
-        let was = was.ok_or(NoPane)?;
+        let (ws, tab) = self.locate(target).ok_or(NoPane)?;
+        let was = self.workspaces.get(ws).and_then(|w| w.tabs.get(tab));
+        let was = was.map(|t| t.root.clone()).ok_or(NoPane)?;
         let mut root = was.clone();
         root.split((target, new), (axis, Side::After), shares)?;
         Ok(Split { tab, was, root })
@@ -802,80 +973,65 @@ impl Parts {
     /// empties closes too, as does a workspace left with no tabs.
     pub(crate) fn close_pane(&mut self, id: PaneId) -> Option<Pane> {
         let at = self.locate(id)?;
-        let (_, tab) = tab_mut(&mut self.workspaces, at.1)?;
-        let emptied = match tab.root.remove(id) {
-            Removed::Left(rest) => {
-                tab.edit(&mut self.journal, at.0, |root| *root = rest);
-                false
+        self.viewing(|parts| {
+            let (_, tab) = tab_mut(&mut parts.workspaces, at.1)?;
+            let emptied = match tab.root.remove(id) {
+                Removed::Left(rest) => {
+                    tab.edit(&mut parts.journal, at.0, |root| *root = rest);
+                    false
+                }
+                Removed::Emptied => true,
+                Removed::Absent => return None,
+            };
+            parts.journal.push(Event::Pane((at, id), PaneEvent::Closed));
+            if emptied {
+                parts.drop_tab(at.1);
             }
-            Removed::Emptied => true,
-            Removed::Absent => return None,
-        };
-        self.journal.push(Event::Pane((at, id), PaneEvent::Closed));
-        if emptied {
-            self.drop_tab(at.1);
-        }
-        self.input.remove(&id);
-        self.panes.remove(&id)
+            parts.input.remove(&id);
+            parts.panes.remove(&id)
+        })
     }
 
     /// Removes tab `tab` and gives back the panes in it, closed. A
-    /// workspace it leaves with none goes too, its viewers shown the first
-    /// workspace left.
+    /// workspace it leaves with none goes too.
     pub(crate) fn remove_tab(&mut self, tab: TabId) -> Vec<Pane> {
         let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) else {
             return Vec::new();
         };
         let panes = t.root.panes();
-        for &pane in &panes {
-            self.input.remove(&pane);
-            self.journal
-                .push(Event::Pane(((ws, tab), pane), PaneEvent::Closed));
-        }
-        self.drop_tab(tab);
-        (panes.into_iter())
-            .filter_map(|pane| self.panes.remove(&pane))
-            .collect()
+        self.viewing(|parts| {
+            for &pane in &panes {
+                parts.input.remove(&pane);
+                (parts.journal).push(Event::Pane(((ws, tab), pane), PaneEvent::Closed));
+            }
+            parts.drop_tab(tab);
+            (panes.into_iter())
+                .filter_map(|pane| parts.panes.remove(&pane))
+                .collect()
+        })
     }
 
     /// Takes tab `tab` out of its workspace, and the workspace if it is
-    /// left with none, its viewers shown the first workspace left.
+    /// left with none: each client shown either is shown the one it was
+    /// shown before, else the neighbour (`Stack::remove`).
     fn drop_tab(&mut self, tab: TabId) {
-        let ws = (self.workspaces.iter_mut()).find(|w| w.tabs.iter().any(|t| t.id == tab));
+        let ws = (self.workspaces.children.iter_mut()).find(|w| w.tabs.get(tab).is_some());
         let Some(ws) = ws else {
             return;
         };
-        let clients: Vec<_> = ws
-            .viewers
-            .iter()
-            .copied()
-            .filter(|c| ws.shown.get(c) == Some(&tab))
-            .collect();
-        ws.remove_tab(tab);
-        let id = ws.id;
-        let viewers = ws.tabs.is_empty().then(|| std::mem::take(&mut ws.viewers));
+        ws.tabs.remove(tab);
+        let (id, emptied) = (ws.id, ws.tabs.children.is_empty());
         self.journal.push(Event::Tab((id, tab), Change::Closed));
-        if let Some(viewers) = viewers {
-            self.workspaces.retain(|w| w.id != id);
-            if let Some(first) = self.workspaces.first_mut() {
-                first.viewers.extend(viewers);
-            }
+        if emptied {
+            self.workspaces.remove(id);
             self.journal.push(Event::Workspace(id, Change::Closed));
-        }
-        for client in clients {
-            let at = place_of(&self.workspaces, client);
-            self.journal.push(Event::View {
-                client,
-                at,
-                change: ViewChange::Shown,
-            });
         }
     }
 
     /// Closes everything: the panes given back, to end.
     pub(crate) fn close_all(&mut self) -> Vec<Pane> {
-        let tabs: Vec<TabId> = (self.workspaces.iter())
-            .flat_map(|w| w.tabs.iter().map(|t| t.id))
+        let tabs: Vec<TabId> = (self.workspaces.children.iter())
+            .flat_map(|w| w.tabs().iter().map(|t| t.id))
             .collect();
         tabs.into_iter()
             .flat_map(|tab| self.remove_tab(tab))
@@ -884,7 +1040,7 @@ impl Parts {
 
     /// Names workspace `id` `name`, if there is one.
     pub(crate) fn rename_workspace(&mut self, id: WsId, name: String) -> Option<()> {
-        let ws = self.workspaces.iter_mut().find(|w| w.id == id)?;
+        let ws = self.workspaces.get_mut(id)?;
         let renamed = |change| Event::Workspace(id, change);
         rename(&mut self.journal, renamed, &mut ws.name, name);
         Some(())
@@ -907,21 +1063,21 @@ impl Parts {
         let (Some(was_a), Some(was_b)) = (self.locate(a), self.locate(b)) else {
             return;
         };
-        // Only the tabs that hold them: another, laid out anew, would lose
-        // what its panes have (a zoomed pane, its whole screen).
-        let tabs = self
-            .workspaces
-            .iter_mut()
-            .flat_map(|w| w.tabs.iter_mut().map(|t| (w.id, t)));
-        for (ws, tab) in tabs.filter(|(_, t)| t.id == was_a.1 || t.id == was_b.1) {
-            tab.edit(&mut self.journal, ws, |root| root.swap(a, b));
-        }
-        self.journal.push(Event::Layout(was_a));
-        if was_a != was_b {
-            self.journal.push(Event::Layout(was_b));
-            (self.journal).push(Event::Pane((was_b, a), PaneEvent::Moved(was_a)));
-            (self.journal).push(Event::Pane((was_a, b), PaneEvent::Moved(was_b)));
-        }
+        self.viewing(|parts| {
+            // Only the tabs that hold them: another, laid out anew, would
+            // lose what its panes have (a zoomed pane, its whole screen).
+            let tabs = (parts.workspaces.children.iter_mut())
+                .flat_map(|w| w.tabs.children.iter_mut().map(|t| (w.id, t)));
+            for (ws, tab) in tabs.filter(|(_, t)| t.id == was_a.1 || t.id == was_b.1) {
+                tab.edit(&mut parts.journal, ws, |root| root.swap(a, b));
+            }
+            parts.journal.push(Event::Layout(was_a));
+            if was_a != was_b {
+                parts.journal.push(Event::Layout(was_b));
+                (parts.journal).push(Event::Pane((was_b, a), PaneEvent::Moved(was_a)));
+                (parts.journal).push(Event::Pane((was_a, b), PaneEvent::Moved(was_b)));
+            }
+        });
     }
 
     /// Moves `pane` from its tab to `to`, another: its tab lets go of it,
@@ -931,13 +1087,16 @@ impl Parts {
     /// there is not.
     pub(crate) fn relocate(&mut self, pane: PaneId, to: Destination) -> Option<()> {
         let was = self.locate(pane)?;
+        self.viewing(|parts| parts.relocated(pane, was, to))
+    }
+
+    fn relocated(&mut self, pane: PaneId, was: (WsId, TabId), to: Destination) -> Option<()> {
         let (_, from) = tab_mut(&mut self.workspaces, was.1)?;
         let rest = match from.root.remove(pane) {
             Removed::Left(rest) => Some(rest),
             Removed::Emptied => None,
             Removed::Absent => return None,
         };
-        let clients: Vec<ClientId> = from.seats.keys().copied().collect();
         // Taken in before its tab lets go: the workspace a new tab goes in
         // may be the one that would close.
         let at = match to {
@@ -952,7 +1111,7 @@ impl Parts {
             }
             Destination::NewWorkspace(ws, first) => {
                 let at = (ws.0, first.0);
-                self.push_workspace(ws, first, clients.into_iter(), pane);
+                self.push_workspace(ws, first, pane);
                 at
             }
         };

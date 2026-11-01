@@ -1063,7 +1063,7 @@ mod tests {
             press("j")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(crate::testing::code("me str down focus").into())
+                Effect::Run(crate::testing::code("me-focused str down step").into())
             ]
         );
         Ok(())

@@ -371,8 +371,8 @@ the next, `links` the hyperlinks (OSC 8) as `row`, `col`, `len` and `uri`,
 `start..end` ranges from 0, like `slice`; equal endpoints select nothing.
 A joined row range includes each whole logical line it touches; `wrapped`
 selects physical rows only.
-Every pane of a tab or workspace, in layout order: `str agent workspace
-panes each capture print end`; `tabs` gives its tabs the same way.
+Every pane of a tab, a workspace or `all`, in layout order: `str agent
+workspace panes each capture print end`; `tabs` gives its tabs the same way.
 
 ## shells: Shells and their marks
 
@@ -562,7 +562,10 @@ read-file`. `X warn` prints on stderr:
   first and last line of its own). `all dump` prints the layout as a program
   that makes it again; `opts 100 30 size attach` is a client with no
   terminal (`str c2 client … send-keys` types at it, `capture`
-  shows it): how to drive fux's own screens.
+  shows it): how to drive fux's own screens. Each client is shown its own
+  workspace, tab and pane: `str c2 client %3 show` shows it `%3`, and
+  `str c2 client @2 str next step` the tab after `@2` (`str last`: the one
+  it was shown there before; a pane also steps `str left` and so on).
 
 A split needs an explicit axis: `%2 str horizontal axis split`; resize
 with `%2 50 percent str horizontal resize-pane`. `panes` and `tabs`

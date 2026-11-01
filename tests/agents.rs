@@ -964,7 +964,6 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         (&on, &["100", "30", "size"], "respawn"),
         (&on, &["str", "/", "cwd"], "respawn"),
         (&on, &["str", "vertical", "axis"], "respawn"),
-        (&opts, &["str", "nowhere", "in"], "new-workspace"),
         (&opts, &["5", "timeout"], "new-tab"),
     ] {
         let refused = server.fux(&[before, unused, &[word]].concat())?;

@@ -781,7 +781,7 @@ mod tests {
         for _ in 0..3 {
             run(&mut s, NEW_TAB)?;
         }
-        run(&mut s, "str c1 client choose-tab")?;
+        run(&mut s, "str c1 client dup focused tab choose-among")?;
         s.input(c, b"\x1b[H");
         let shown = screen_text(&s, c)?;
         assert!(shown.contains("@1 %1"), "{shown}");
@@ -793,7 +793,7 @@ mod tests {
     fn list_and_confirm_keys_match_exact_case() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, NEW_TAB)?;
-        run(&mut s, "str c1 client choose-tab")?;
+        run(&mut s, "str c1 client dup focused tab choose-among")?;
         s.input(c, b"\x1b[HJ");
         assert!(mode(&s, c).ends_with(" 0"));
         s.input(c, b"j");
@@ -816,7 +816,7 @@ mod tests {
         for _ in 0..40 {
             run(&mut s, NEW_TAB)?;
         }
-        run(&mut s, "str c1 client choose-tab")?;
+        run(&mut s, "str c1 client dup focused tab choose-among")?;
         s.input(c, b"\x1b[H");
         s.input(c, &downs(30));
         let Some(Mode::Panel(Panel::List(list))) = s.views.get(&c).map(|v| &v.mode) else {
@@ -990,7 +990,12 @@ mod tests {
         assert_eq!(mode(&s, c), "repeat REORDER  h l · Esc");
         escape(&mut s, c);
         let order: Vec<String> = (s.parts.workspaces().first())
-            .map(|w| w.tabs().iter().map(|t| t.id().to_string()).collect())
+            .map(|w| {
+                w.tabs()
+                    .iter()
+                    .map(|t| crate::workspace::Child::id(t).to_string())
+                    .collect()
+            })
             .unwrap_or_default();
         assert_eq!(order, ["@2", "@3", "@1"]);
         Ok(())
@@ -1104,7 +1109,7 @@ mod tests {
         run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str %2 pane str vertical axis split")?;
         run(&mut s, NEW_TAB)?;
-        run(&mut s, "opts 80 24 size new-workspace")?;
+        run(&mut s, "opts str new-workspace in 80 24 size new-tab")?;
         run(&mut s, "str c1 client str %2 pane show")?;
         Ok((s, c))
     }
@@ -1192,11 +1197,36 @@ mod tests {
                 self.0.ask(asked)
             }
         }
+        // A workspace that closed, or a pane to move to, opens none.
+        let gone = "opts str gone in str / cwd 80 24 size new-tab workspace let w w kill";
+        for (code, refused) in [
+            (
+                format!("{gone} me w choose-among"),
+                "chooser target is absent",
+            ),
+            (
+                format!("{gone} me %2 w choose-move"),
+                "chooser target is absent",
+            ),
+            (
+                "me %2 %2 choose-move".to_owned(),
+                "takes a tab or workspace",
+            ),
+        ] {
+            let code = code.as_str();
+            let (mut s, c) = busy()?;
+            let error = output_as(&mut s, Some(c), code).err().unwrap_or_default();
+            assert!(error.contains(refused), "{code}: {error}");
+            assert!(
+                s.views.get(&c).is_some_and(|v| v.mode.is_normal()),
+                "{code}"
+            );
+        }
         for (code, captures) in [
-            ("me choose-tab", 0),
-            ("me choose-workspace", 0),
-            ("me %2 choose-tab-for", 1),
-            ("me %2 choose-workspace-for", 1),
+            ("me me focused tab choose-among", 0),
+            ("me me focused workspace choose-among", 0),
+            ("me %2 %2 tab choose-move", 1),
+            ("me %2 %2 workspace choose-move", 1),
             ("me %2 choose-pane", 1),
         ] {
             let (mut s, c) = busy()?;
@@ -1255,16 +1285,21 @@ mod tests {
     #[test]
     fn library_chooser_callbacks_act_on_the_selected_destination() -> Outcome {
         for (open, keys, observe, expected) in [
-            ("me choose-tab", "j\r", "me focused tab string", "@2\n"),
             (
-                "me choose-workspace",
+                "me me focused tab choose-among",
+                "j\r",
+                "me focused tab string",
+                "@2\n",
+            ),
+            (
+                "me me focused workspace choose-among",
                 "j\r",
                 "me focused workspace string",
                 "+2\n",
             ),
-            ("me %2 choose-tab-for", "j\r", "%2 tab string", "@2\n"),
+            ("me %2 %2 tab choose-move", "j\r", "%2 tab string", "@2\n"),
             (
-                "me %2 choose-workspace-for",
+                "me %2 %2 workspace choose-move",
                 "j\r",
                 "%2 workspace string",
                 "+2\n",
@@ -1289,10 +1324,10 @@ mod tests {
     #[test]
     fn list_rename_and_close_callbacks_address_each_choosers_destination() -> Outcome {
         for (open, target, kind) in [
-            ("me choose-tab", "@1", "tab"),
-            ("me choose-workspace", "+1", "workspace"),
-            ("me %2 choose-tab-for", "@1", "tab"),
-            ("me %2 choose-workspace-for", "+1", "workspace"),
+            ("me me focused tab choose-among", "@1", "tab"),
+            ("me me focused workspace choose-among", "+1", "workspace"),
+            ("me %2 %2 tab choose-move", "@1", "tab"),
+            ("me %2 %2 workspace choose-move", "+1", "workspace"),
             ("me %2 choose-pane", "%1", "pane"),
         ] {
             let (mut s, c) = busy()?;
@@ -1406,7 +1441,7 @@ mod tests {
             &mut s,
             "@1 str shared rename opts 80 24 size str +1 workspace in new-tab drop",
         )?;
-        output_as(&mut s, Some(c), "me choose-tab")?;
+        output_as(&mut s, Some(c), "me me focused tab choose-among")?;
         run(
             &mut s,
             "@1 kill opts 80 24 size str +1 workspace in str shared name new-tab drop",

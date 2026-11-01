@@ -14,7 +14,6 @@ pub enum ViewChange {
     Attached,
     Detached,
     Shown,
-    Focused,
     Resized,
     Screen,
 }
@@ -24,7 +23,6 @@ impl ViewChange {
             Self::Attached => "attached",
             Self::Detached => "detached",
             Self::Shown => "shown",
-            Self::Focused => "focused",
             Self::Resized => "view_resized",
             Self::Screen => "screen",
         }
@@ -389,7 +387,6 @@ pub fn every_kind(
         ViewChange::Attached,
         ViewChange::Detached,
         ViewChange::Shown,
-        ViewChange::Focused,
         ViewChange::Resized,
         ViewChange::Screen,
     ] {
@@ -749,7 +746,6 @@ mod tests {
                         ViewChange::Attached
                         | ViewChange::Detached
                         | ViewChange::Shown
-                        | ViewChange::Focused
                         | ViewChange::Resized
                         | ViewChange::Screen,
                     ..

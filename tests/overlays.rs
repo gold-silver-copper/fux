@@ -175,7 +175,7 @@ fn choosers_select_rename_and_close() -> Outcome {
         Ok(!server.ok(&["ls", "listing"])?.contains("@3"))
     })?;
     // The workspace chooser lists every workspace with its panes.
-    server.words("opts 100 29 size str elsewhere name new-workspace")?;
+    server.words("opts 100 29 size str elsewhere in new-tab")?;
     client.keys(&format!("{PREFIX}wg"))?;
     client.wait("the workspace chooser", |t| {
         t.contains("+2 elsewhere") && t.contains("* +1 main")

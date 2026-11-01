@@ -228,7 +228,7 @@ clipped. A malformed reply ends that request's connection.
 
 ## What a word made
 
-`split`, `new-tab`, `new-workspace` and `respawn` leave an answer
+`split`, `new-tab` and `respawn` leave an answer
 (below), which is also the new pane: a word that wants a pane takes it as
 one, and `wait` waits from its version. `json` of a pane, tab or workspace is its id as a string, `"%4"`,
 and `X info json` all of it. `X panes json` and `X tabs json` are arrays
@@ -237,7 +237,7 @@ of them in layout order, `["%3","%4"]`.
 ## Answers and waits
 
 `json` of an action's answer (`send-keys`, `send-mouse`,
-`signal`, `split`, `new-tab`, `new-workspace`, `respawn`) is
+`signal`, `split`, `new-tab`, `respawn`) is
 `{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":0}`: its pane's version from
 just before it acted, or as a new pane starts: one object for an action
 or wait on a pane, an array for one on a tab or workspace, however many
@@ -368,7 +368,7 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `laid_out` | tab/workspace; same-tab swap, reshaping, a guarded `arrange`, fit or effective host changed; pane resizes can follow |
 | `moved` | `from_tab`, `from_workspace`; both old and new scopes receive it |
 | `attached`, `detached` | `client` and its last place if known |
-| `shown`, `focused` | `client` and the affected place; departures invalidate both places; includes automatic repair |
+| `shown` | `client` and its place, each time it changes at any level (workspace, tab, focused pane, or a zoom of its tab): one at the place left, one at the place reached; includes automatic repair after a close |
 | `zoomed` | tab/workspace and its zoomed `pane`, null when it no longer has one: by `zoom`, a focus on another pane there, or the pane leaving |
 | `view_resized` | `client`; client size invalidated |
 | `screen` | `client`; fresh opening, close or mode ending invalidated |
@@ -451,8 +451,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":64,
- "server_release":"0.36.0","server_protocol":64,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":65,
+ "server_release":"0.36.0","server_protocol":65,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

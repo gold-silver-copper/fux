@@ -339,49 +339,37 @@ define chooser-selected
   let current let rows
   current len 0 gt if current else list rows len 0 gt if 0 then end then
 end
-# client -- : choose a tab in the client's workspace from one topology observation
-define choose-tab
-  let c c str topology snapshot let s
-  s str clients get c chooser-find let place
-  list s str tabs get each
-    dup str workspace get place str workspace get eq if s swap chooser-container-row else drop then
-  end end let rows
-  rows place str tab get chooser-index let current
-  c str tabs rows current rows current chooser-selected code show end choose
+# snapshot handle -- rows : a row for each of the handle's siblings, among what holds it
+define chooser-siblings
+  let it let s
+  it kind str workspace eq if s str workspaces get dup it chooser-find drop else
+    it kind str tab eq if str tabs str workspace else str panes str tab then let holder let kinds
+    s kinds get it chooser-find holder get let held
+    list s kinds get each dup holder get held eq if else drop then end end
+  then let siblings
+  list siblings each
+    dup str id get kind str pane eq if chooser-row else s swap chooser-container-row then
+  end end
 end
-# client -- : choose a workspace from one topology observation
-define choose-workspace
-  let c all str topology snapshot let s
-  s str clients get c chooser-find let place
-  list s str workspaces get each s swap chooser-container-row end end let rows
-  rows place str workspace get chooser-index let current
-  c str workspaces rows current rows current chooser-selected code show end choose
+# client handle -- : choose among the handle's siblings from one topology observation, and show the one chosen
+define choose-among
+  let it let c all str topology snapshot it chooser-siblings let rows
+  rows it chooser-index let current
+  c list it kind str s end glue rows current rows current chooser-selected code show end choose
 end
-# client pane -- : choose a destination tab from one topology observation
-define choose-tab-for
-  let source let c all str topology snapshot let s
+# client pane handle -- : choose where to move the pane: one of the siblings of handle, a tab or workspace, from one topology observation
+define choose-move
+  str 'tab workspace' str 'a tab or workspace, where the pane moves' assert-kind
+  let it let source let c all str topology snapshot let s
   s str panes get source chooser-find drop
-  s str clients get c chooser-find let place
-  list s str tabs get each
-    dup str workspace get place str workspace get eq if s swap chooser-container-row else drop then
-  end end let rows
-  rows place str tab get chooser-index let current
-  c list list str 'move ' source string str ' to tab' end glue source end rows
-  current rows current chooser-selected list list source end code nip move end end choose
-end
-# client pane -- : choose a destination workspace from one topology observation
-define choose-workspace-for
-  let source let c all str topology snapshot let s
-  s str panes get source chooser-find drop
-  s str clients get c chooser-find let place
-  list s str workspaces get each s swap chooser-container-row end end let rows
-  rows place str workspace get chooser-index let current
-  c list list str 'move ' source string str ' to workspace' end glue source end rows
+  s it chooser-siblings let rows
+  rows it chooser-index let current
+  c list list str 'move ' source string str ' to ' it kind end glue source end rows
   current rows current chooser-selected list list source end code nip move end end choose
 end
 # client pane -- : choose another pane in its tab, from one topology observation
 define choose-pane
-  let source let c source str topology snapshot let s
+  let source let c source tab str topology snapshot let s
   s str panes get source chooser-find str tab get let tab-id
   list s str panes get each let item
     item str tab get tab-id eq item str id get string source string ne and if item chooser-row then
@@ -391,3 +379,4 @@ define choose-pane
   list end list 0 end list list source end code nip swap-with end end choose
 end
 hide chooser-row hide chooser-find hide chooser-container-row hide chooser-index hide chooser-selected
+hide chooser-siblings
