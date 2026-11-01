@@ -1589,6 +1589,38 @@ fn an_xt_of_another_machine_is_refused() -> Result<(), Error> {
     Ok(())
 }
 
+/// An address works only in the machine whose data space made it (or a
+/// copy made after it), as an xt does: another refuses it, -9, and the
+/// xt of a word `create` made, for `body-of`.
+#[test]
+fn an_address_of_another_machine_is_refused() -> Result<(), Error> {
+    let mut a = compile("create a 111 store-next a tick a")?;
+    a.run(&mut Toy::default(), u64::MAX)?;
+    let [address, xt] = [0, 1].map(|i| a.stack().get(i).cloned().unwrap_or(Value::Int(0)));
+    let mut b = compile("create b 222 store-next")?;
+    b.run(&mut Toy::default(), u64::MAX)?;
+    // The words run on a copy of `machine`, with `given` on its stack.
+    let ran = |machine: &Machine<Ticket>, given: &[&Value<Ticket>], words: &str| {
+        let mut machine = machine.clone();
+        machine.clear();
+        given.iter().for_each(|v| machine.push((*v).clone()));
+        machine.read(token::source("t", words)?, None);
+        machine.run(&mut Toy::default(), u64::MAX)?;
+        Ok(machine.stack().to_vec())
+    };
+    assert_eq!(code(ran(&b, &[&address], "fetch")), Some("invalid_address"));
+    let stored = "let place let x str all try x place store catch drop end b fetch";
+    assert_eq!(ran(&b, &[&Value::Int(5), &address], stored)?, ints(&[222]));
+    assert_eq!(
+        code(ran(&b, &[&Value::Int(5), &address], "store")),
+        Some("invalid_address")
+    );
+    assert_eq!(code(ran(&b, &[&xt], "body-of")), Some("type"));
+    assert_eq!(ran(&a, &[&address], "fetch")?, ints(&[111]));
+    assert_eq!(ran(&a, &[&xt], "body-of fetch")?, ints(&[111]));
+    Ok(())
+}
+
 /// Lists in code in lists, however deep, are let go without a recursion.
 #[test]
 fn lists_and_code_nested_alternately_are_let_go_on_a_small_stack() -> Result<(), String> {
@@ -1660,6 +1692,18 @@ fn every_data_space_access_is_checked() -> Result<(), Error> {
         "create b 2 allot -2 allot b fetch",
     ] {
         assert_eq!(code(run(outside)), Some("invalid_address"), "{outside}");
+    }
+    // Both ranges are checked before a cell is copied: a range past the
+    // end, of either, changes nothing.
+    for copy in ["b next-address 1000000", "b 1 add b 1000000"] {
+        let refused = format!(
+            "create b 1 store-next 999999 allot str all try {copy} copy-cells catch end b fetch"
+        );
+        let left = run(&refused)?;
+        assert!(
+            matches!(left.as_slice(), [Value::Failure(f), Value::Int(1)] if f.number == Some(-9)),
+            "{copy}: {left:?}"
+        );
     }
     let caught = run("str all try next-address fetch catch end")?;
     assert!(matches!(caught.as_slice(), [Value::Failure(f)] if f.number == Some(-9)));

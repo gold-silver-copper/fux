@@ -32,7 +32,7 @@ end
 # pane-or-seen -- list : the five counts of a pane or held version: respawns screen bells done ended
 define counts
   version str : split-on 1 at str . split-on let parts
-  list parts each number end end
+  list parts each str '#' swap cat number end end
 end
 # pane-or-observation -- capture : retain a pane capture without refreshing it, otherwise sample a pane or single answer; client captures and requests are refused
 define observed
@@ -308,9 +308,9 @@ define layout-axis
   if str 'layout axis must be horizontal or vertical' fail then
 end
 # Empty input is an error; list/step/weight bounds apply before arrange submits anything.
-# panes way alternate base -- tree : balanced flat nodes with absolute child indices; leaves share room by pane count
+# panes way alternate start -- tree : balanced flat nodes with absolute child indices; leaves share room by pane count
 define layout-of
-  let base let alternate layout-axis let way let ps
+  let start let alternate layout-axis let way let ps
   ps len let n
   n 0 eq if str 'a layout needs at least one pane' fail then
   n 1 eq if list ps first end else
@@ -318,9 +318,9 @@ define layout-of
     alternate if
       way str horizontal eq if str vertical else str horizontal then
     else way then let next-way
-    list list way a b base 1 add base a 2 mul add end end
-    ps 0 a slice next-way alternate base 1 add recurse cat
-    ps a n slice next-way alternate base a 2 mul add recurse cat
+    list list way a b start 1 add start a 2 mul add end end
+    ps 0 a slice next-way alternate start 1 add recurse cat
+    ps a n slice next-way alternate start a 2 mul add recurse cat
   then
 end
 # panes way -- tree : balanced equal-share row or column, rejecting empty input

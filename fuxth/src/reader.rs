@@ -744,7 +744,8 @@ impl<A: AppValue> Machine<A> {
     #[inline(never)]
     pub(crate) fn does(&mut self, action: usize) -> Result<(), Error> {
         let latest = (self.latest.as_ref()).and_then(|name| self.names.get_key_value(name));
-        let made = latest.and_then(|(name, e)| Some((Rc::clone(name), e.xt.body?, e.immediate)));
+        let made =
+            latest.and_then(|(name, e)| Some((Rc::clone(name), e.xt.body.clone()?, e.immediate)));
         let Some((name, body, immediate)) = made else {
             let why = "does gives the word create made last what it does, \
                        and the word defined last is none of create's";
@@ -767,7 +768,7 @@ impl<A: AppValue> Machine<A> {
         steps: Vec<(Op<A>, Option<Token>)>,
     ) {
         let mut code = Steps::new(Rc::clone(&name));
-        code.body = body;
+        code.body = body.clone();
         let pushed = body.map(|body| (Op::Push(Value::Addr(body)), None));
         for (op, token) in pushed.into_iter().chain(steps) {
             code.push(op, token);

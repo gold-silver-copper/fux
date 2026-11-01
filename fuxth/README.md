@@ -128,6 +128,7 @@ which only its own code's words resolve; `end` closes the innermost.
 | `fetch store fill copy-cells` | addr -- x / x addr -- / addr u x -- / from to u -- | a cell read, written; x in u cells; u cells copied, overlapping or not (Forth's `@ ! fill move`) |
 | `create NAME`, `does`, `body-of` | -- / -- / xt -- addr | a word that gives where the data space goes on; in a definition, the rest of it what the word `create` made last does, its address pushed first; the address a `create`d word gives (Forth's `>body`) |
 | `variable NAME`, `constant NAME` | -- / x -- | a word that gives the address of a cell of its own; a word that gives x |
+| `base`, `number` | -- addr / s -- n | the address of the base `number` reads and `digit` writes in (10 to begin with); the integer s writes in it, or after Forth's prefixes `#`, `$` and `%` in base 10, 16 or 2 |
 | `kind` | x -- name | `integer`, `boolean`, `string`, `list`, `address`, `xt`, or the host's |
 | `string` | x -- s | as `print` shows it: a list's elements with spaces |
 | `print`, `write`, `emit` | x -- / x -- / c -- | now: a line; text with no line end; a character |
@@ -144,10 +145,10 @@ which only its own code's words resolve; `end` closes the innermost.
 The standard library adds, among others: `dup swap over rot nip -rot
 2dup 2drop tuck dup-nonzero 2swap 2over`, `true false not invert`, `gt le
 ge ne min max`, `mod negate abs even pow div-mod mul-div`, `add-store
-erase base decimal hex`, `is-int
+erase decimal hex`, `is-int
 is-string is-list`, `empty cat glue first last pop shift remove range
 reverse index-of contains count sum largest smallest merge sort pack
-unpack`, `quote number digit digits sign join split-on fields lines trim
+unpack`, `quote digit digits sign join split-on fields lines trim
 starts-with is-space is-digit is-upper is-lower is-letter upper lower copies
 pad`.
 

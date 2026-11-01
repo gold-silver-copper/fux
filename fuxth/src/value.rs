@@ -42,6 +42,8 @@ fn bare(kind: &str) -> &str {
 pub enum Value<A> {
     Int(i64),
     Str(Rc<Text>),
+    /// A cell of the data space.
+    Addr(Address),
     List(Rc<List<A>>),
     App(A),
     /// An execution token: a word's code, which `execute` runs.
@@ -52,21 +54,38 @@ pub enum Value<A> {
     /// A failure, as a `try`'s handler gets it.
     Failure(Rc<Thrown<A>>),
     Bool(bool),
-    /// A cell of the data space.
-    Addr(Address),
 }
 
-/// Where a cell of the data space is: only the machine's words make one
-/// (`next-address`, `create`), and an integer never becomes one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Address(pub(crate) usize);
+/// Where a cell is: which machine's data space, and which of its cells.
+/// Only the machine's words make one (`next-address`, `create`), and an
+/// integer never becomes one. A machine takes only its own data space's,
+/// as it runs only its own xts; a copy of a machine has the same data
+/// space's identity, so the addresses copied with it stay its own. The
+/// two are behind one pointer, so no value is larger for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Address(Rc<(u64, usize)>);
 
 impl Address {
-    /// How many cells on from `other` it is. An address is from 0 to the
-    /// largest integer (`Machine::moved_by`), so this never wraps.
-    pub(crate) fn cells_from(self, other: Address) -> i64 {
-        let at = |a: Address| i64::try_from(a.0).unwrap_or(i64::MAX);
-        at(self).wrapping_sub(at(other))
+    pub(crate) fn new(space: u64, at: usize) -> Self {
+        Self(Rc::new((space, at)))
+    }
+
+    /// Which data space it is of.
+    pub(crate) fn space(&self) -> u64 {
+        self.0.0
+    }
+
+    /// Which cell it is.
+    pub(crate) fn at(&self) -> usize {
+        self.0.1
+    }
+
+    /// How many cells on from `other` it is, if they are of one data
+    /// space. An address is from 0 to the largest integer
+    /// (`Machine::moved_by`), so this never wraps.
+    pub(crate) fn cells_from(&self, other: &Address) -> Option<i64> {
+        let at = |a: &Address| i64::try_from(a.at()).unwrap_or(i64::MAX);
+        (self.space() == other.space()).then(|| at(self).wrapping_sub(at(other)))
     }
 }
 
@@ -407,9 +426,7 @@ impl<A: AppValue> Value<A> {
                 Self::Failure(thrown) => {
                     write!(out, "{}", thrown.error).map_err(|_| unwritten())?
                 }
-                Self::Addr(Address(at)) => {
-                    write!(out, "(address {at})").map_err(|_| unwritten())?
-                }
+                Self::Addr(at) => write!(out, "(address {})", at.at()).map_err(|_| unwritten())?,
             }
             // The next item of the innermost list under way.
             value = loop {

@@ -704,8 +704,9 @@ fn core_fill_and_move() {
 /// BASE DECIMAL HEX and >NUMBER, as `base decimal hex number`: T{ GN2 ->
 /// 10 A }T with `: GN2 BASE @ >R HEX BASE @ DECIMAL BASE @ R> BASE ! ;`.
 /// Deviations: `number` takes one string and gives one integer, failing
-/// where >NUMBER stops at the first character that is no digit; `digit`,
-/// Forth's #, writes in `base` too.
+/// where >NUMBER stops at the first character that is no digit, and reads
+/// the number prefixes the outer interpreter has in Forth 2012 (`#`, `$`,
+/// `%`); `digit`, Forth's #, writes in `base` too.
 #[test]
 fn core_base() {
     let gn2 = "define gn2 base fetch to-return hex base fetch decimal base fetch
@@ -719,6 +720,11 @@ fn core_base() {
             &[V::Int(255), V::Int(-255), V::Int(255)],
         ),
         ("2 base store str 101 number", &[V::Int(5)]),
+        // Forth 2012's prefixes, whatever base holds: #, $ and %.
+        (
+            "hex str '#255' number str '$ff' number str %-101 number decimal",
+            &[V::Int(255), V::Int(255), V::Int(-5)],
+        ),
         (
             "hex 255 digits-begin digits digits-end decimal",
             &[text("FF")],
@@ -733,6 +739,8 @@ fn core_base() {
     }
     // A digit past the base is no digit; and a base past 2 to 36 writes none.
     assert!(ends("fail")(&fuxth("hex str g number", u64::MAX)));
+    assert!(ends("fail")(&fuxth("str '#ff' number", u64::MAX)));
+    assert!(ends("fail")(&fuxth("str '#-' number", u64::MAX)));
     assert!(ends("fail")(&fuxth("8 base store str 8 number", u64::MAX)));
     assert!(ends("fail")(&fuxth(
         "1 base store 5 digits-begin digits",

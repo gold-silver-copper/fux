@@ -2447,6 +2447,23 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A version's counts are decimal, as the server writes them, whatever
+    /// base the program reads its own numbers in.
+    #[test]
+    fn counts_read_a_version_in_decimal_whatever_the_base() -> TestResult {
+        use super::*;
+        let code = "hex str %1:0.1552.0.0.0:1-0 counts 2 base store str 101 number";
+        let mut machine = compile(&fuxth::token::source("key", code)?)?;
+        let mut out = Vec::new();
+        let mut host = Host::new(Context::default(), None, &mut out);
+        let left = run(&mut machine, &mut host, &mut ConfigOnly::default(), None)?;
+        let text: Vec<String> = (left.iter().map(Value::text))
+            .collect::<Result<_, _>>()
+            .map_err(|f| f.message)?;
+        assert_eq!(text, ["0 1552 0 0 0", "5"]);
+        Ok(())
+    }
+
     #[test]
     fn attach_words_accept_compiled_action_answers_and_keep_their_run() -> TestResult {
         use super::*;

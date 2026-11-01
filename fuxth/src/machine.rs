@@ -18,6 +18,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// How many data spaces were made, which names each: a machine's, and
+/// its copies'.
+static SPACES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// What runs the application's words.
 pub trait Host {
     type Value: AppValue;
@@ -417,8 +421,11 @@ pub struct Machine<A> {
     /// The digits held so far between `digits-begin` and `digits-end`, the
     /// last first.
     digits: String,
-    /// The data space: its cells, each a value once one is stored there.
+    /// The data space: its cells, each a value once one is stored there,
+    /// the first `base`'s, and which data space it is, which its
+    /// addresses carry.
     space: Vec<Option<Value<A>>>,
+    space_id: u64,
     /// What application words give, kept between calls.
     out: Vec<Value<A>>,
     /// Steps taken in all, through every run.
@@ -464,7 +471,8 @@ impl<A: AppValue> Machine<A> {
             loops: Vec::new(),
             returns: Vec::new(),
             digits: String::new(),
-            space: Vec::new(),
+            space: vec![Some(Value::Int(10))],
+            space_id: SPACES.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             out: Vec::new(),
             steps: 0,
             chars: Vec::new(),
@@ -1528,21 +1536,89 @@ impl<A: AppValue> Machine<A> {
 
     /// Where the data space goes on: the address `store-next` stores at.
     pub(crate) fn next_address(&self) -> Address {
-        Address(self.space.len())
+        Address::new(self.space_id, self.space.len())
     }
 
     /// The `n` cells from `at`, if the data space has them all.
-    fn cells(&mut self, at: Address, n: usize) -> Result<&mut [Option<Value<A>>], Error> {
-        let has = self.space.len();
-        let Some(end) = at.0.checked_add(n).filter(|end| *end <= has) else {
+    fn cells(&mut self, at: &Address, n: usize) -> Result<&mut [Option<Value<A>>], Error> {
+        if at.space() != self.space_id {
+            let why =
+                "an address of another machine's data space: it is used only where it was made";
+            return Err(self.fail(Code::InvalidAddress, why));
+        }
+        let (has, at) = (self.space.len(), at.at());
+        let Some(end) = at.checked_add(n).filter(|end| *end <= has) else {
             let what = match n {
-                1 => format!("address {}", at.0),
-                _ => format!("{n} cells from address {}", at.0),
+                1 => format!("address {at}"),
+                _ => format!("{n} cells from address {at}"),
             };
             let why = format!("{what}, and the data space has {has} cells");
             return Err(self.fail(Code::InvalidAddress, why));
         };
-        Ok(self.space.get_mut(at.0..end).unwrap_or_default())
+        Ok(self.space.get_mut(at..end).unwrap_or_default())
+    }
+
+    /// The `n` cells from `from` copied to the `n` from `to`, both checked
+    /// already, in the store: each copied before it is written over, and
+    /// nothing allocated.
+    fn copy_cells(&mut self, from: usize, to: usize, n: usize) {
+        let up = to > from;
+        for k in 0..n {
+            let i = if up {
+                n.saturating_sub(k).saturating_sub(1)
+            } else {
+                k
+            };
+            let value = self.space.get(from.saturating_add(i)).cloned();
+            if let (Some(value), Some(cell)) = (value, self.space.get_mut(to.saturating_add(i))) {
+                *cell = value;
+            }
+        }
+    }
+
+    /// `number`: the integer `s` writes, in `base`, or in the base its
+    /// prefix names, as Forth 2012's `#`, `$` and `%` do, so text another
+    /// program wrote in decimal reads so whatever `base` holds.
+    fn number(&mut self, s: &str) -> Result<(), Error> {
+        if s.is_empty() {
+            return Err(self.fail(Code::Fail, "the string is empty"));
+        }
+        let mut prefixes = [('#', 10), ('$', 16), ('%', 2)].into_iter();
+        let (s, base) = match prefixes.find_map(|(c, b)| Some((s.strip_prefix(c)?, b))) {
+            Some(prefixed) => prefixed,
+            None => match self.space.first() {
+                Some(Some(Value::Int(base))) => (s, *base),
+                Some(Some(other)) => {
+                    let why = format!("base holds {}, not an integer", other.kind());
+                    return Err(self.fail(Code::Type, why));
+                }
+                Some(None) | None => return Err(self.fail(Code::Unset, "base holds no value")),
+            },
+        };
+        let (negative, digits) = s.strip_prefix('-').map_or((false, s), |s| (true, s));
+        let radix = u32::try_from(base).ok().filter(|r| (2..=36).contains(r));
+        let Some(radix) = radix.filter(|_| !digits.is_empty()) else {
+            let why = if digits.is_empty() {
+                "no digits"
+            } else {
+                "base is from 2 to 36"
+            };
+            return Err(self.fail(Code::Fail, why));
+        };
+        let mut n = 0i64;
+        for c in digits.chars() {
+            let Some(d) = c.to_digit(radix).map(i64::from) else {
+                return Err(self.fail(Code::Fail, format!("not a digit: {c}")));
+            };
+            n = n.wrapping_mul(i64::from(radix));
+            n = if negative {
+                n.wrapping_sub(d)
+            } else {
+                n.wrapping_add(d)
+            };
+        }
+        self.push(Value::Int(n));
+        Ok(())
     }
 
     /// Room for `n` more cells, unless the allocator refuses it.
@@ -1583,7 +1659,11 @@ impl<A: AppValue> Machine<A> {
             (Number::Addr(at), Number::Int(n)) | (Number::Int(n), Number::Addr(at)) if !sub => {
                 self.moved_by(at, n.into())?
             }
-            (Number::Addr(a), Number::Addr(b)) if sub => Value::Int(a.cells_from(b)),
+            (Number::Addr(a), Number::Addr(b)) if sub => {
+                let why = "two addresses of different machines' data spaces";
+                let apart = a.cells_from(&b);
+                Value::Int(apart.ok_or_else(|| self.fail(Code::InvalidAddress, why))?)
+            }
             (Number::Int(a), Number::Int(b)) => Value::Int(match sub {
                 true => a.wrapping_sub(b),
                 false => a.wrapping_add(b),
@@ -1605,13 +1685,15 @@ impl<A: AppValue> Machine<A> {
     /// `at` moved `n` cells on: an address is from 0 to the largest
     /// integer, so two subtract to an integer (`Address::cells_from`).
     fn moved_by(&self, at: Address, n: i128) -> Result<Value<A>, Error> {
-        let to = i128::try_from(at.0).unwrap_or(i128::MAX).saturating_add(n);
+        let to = i128::try_from(at.at())
+            .unwrap_or(i128::MAX)
+            .saturating_add(n);
         let to = i64::try_from(to)
             .ok()
             .and_then(|to| usize::try_from(to).ok());
-        let why = || format!("address {} moved {n} cells is no address", at.0);
+        let why = || format!("address {} moved {n} cells is no address", at.at());
         let to = to.ok_or_else(|| self.fail(Code::InvalidAddress, why()))?;
-        Ok(Value::Addr(Address(to)))
+        Ok(Value::Addr(Address::new(at.space(), to)))
     }
 }
 
@@ -2260,31 +2342,39 @@ builtins! { m host;
         Ok(())
     }
     Fetch "fetch" [cold] (at: Addr) "addr -- x" "the value stored in the cell at addr" {
-        let value = m.cells(at, 1)?.first().cloned().flatten();
+        let value = m.cells(&at, 1)?.first().cloned().flatten();
         let value = value.ok_or_else(|| m.fail(Code::Unset, "the cell has no value stored yet"))?;
         m.push(value);
         Ok(())
     }
     Store "store" [cold] (x: Any, at: Addr) "x addr --" "x stored in the cell at addr" {
-        if let Some(cell) = m.cells(at, 1)?.first_mut() {
+        if let Some(cell) = m.cells(&at, 1)?.first_mut() {
             *cell = Some(x);
         }
         Ok(())
     }
     Fill "fill" [cold] (at: Addr, n: Int, x: Any) "addr u x --" "x stored in the u cells from addr" {
         let n = m.count(Builtin::Fill, n)?;
-        m.cells(at, n)?.fill(Some(x));
+        m.cells(&at, n)?.fill(Some(x));
         Ok(())
     }
     CopyCells "copy-cells" [cold] (from: Addr, to: Addr, n: Int) "from to u --"
         "the u cells from `from` copied to the u from `to`, which may overlap them" {
         let n = m.count(Builtin::CopyCells, n)?;
-        let copied = m.cells(from, n)?.to_vec();
-        for (cell, value) in m.cells(to, n)?.iter_mut().zip(copied) {
-            *cell = value;
-        }
+        m.cells(&from, n)?;
+        m.cells(&to, n)?;
+        m.copy_cells(from.at(), to.at(), n);
         Ok(())
     }
+    Base "base" [cold] () "-- addr"
+        "the address of the base number reads and digit writes in, 10 to begin with" {
+        let at = Address::new(m.space_id, 0);
+        m.push(Value::Addr(at));
+        Ok(())
+    }
+    Number "number" [cold] (s: Str) "s -- n"
+        "the integer s writes in base, or after # in base 10, $ in 16 or % in 2 (Forth's prefixes); a - next or not; after 9, A to Z or a to z"
+        { m.number(&s) }
     Kind "kind" (x: Any) "x -- name" "integer, boolean, string, list, address, xt, or the host's kind" {
         m.push(Machine::text(x.kind_name()));
         Ok(())
@@ -2333,7 +2423,8 @@ builtins! { m host;
     Constant "constant" [cold] (x: Any) "x --" "x constant NAME: a word that gives x"
         { m.create(Builtin::Constant, Some(x)) }
     BodyOf "body-of" [cold] (xt: Exec) "xt -- addr" "the address the word create made, xt, gives" {
-        let at = xt.body.ok_or_else(|| {
+        m.index_of(&xt)?;
+        let at = xt.body.clone().ok_or_else(|| {
             let why = "body-of takes the xt of a word create made, and this is none";
             m.fail(Code::Type, why)
         })?;
