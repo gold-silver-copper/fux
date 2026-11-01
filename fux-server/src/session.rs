@@ -1,10 +1,11 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
+use crate::journal::{Detach, ViewChange};
 use crate::pane::{self, Pane, PaneMut, Process, Runs};
 use crate::process::{self, Child};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Waiting, Watches};
-use crate::workspace::{Child as _, Destination, Fit, Parts, Split, Tab, Workspace};
+use crate::workspace::{Child as _, Destination, Fit, Killing, Parts, Split, Tab, Workspace};
 use fux_vt::Size;
 use fux_vt::keys::Direction;
 use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
@@ -130,6 +131,14 @@ pub struct Place {
 /// A pane's size to begin with, and the cell its program is told it
 /// starts in: none in a tab with no host yet (`Session::graphics`).
 type Starts = (Size, Option<fux_vt::CellSize>);
+
+/// How a tab is laid out: its layout revision, the size each of its panes
+/// is laid out at, and its host.
+type Laid = (
+    Option<fux_wire::command::LayoutRevision>,
+    Vec<(PaneId, Size)>,
+    Option<ClientId>,
+);
 
 /// A pane to make: what it starts, where, and how it starts (`Starts`).
 #[derive(Clone, Copy)]
@@ -294,6 +303,8 @@ pub struct Session {
     /// The tabs clients sized at the last settle: one of a size of its own
     /// none sizes now is laid out on that size again (`size_panes`).
     sized: Vec<TabId>,
+    /// How each tab was laid out at the last settle (`tell_laid_out`).
+    laid: BTreeMap<TabId, Laid>,
     ids: Ids,
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
@@ -382,6 +393,7 @@ impl Session {
             shown_sizes: Vec::new(),
             placed: Placement::default(),
             sized: Vec::new(),
+            laid: BTreeMap::new(),
             ids: Ids::default(),
             changes: 0,
             #[cfg(test)]
@@ -1302,6 +1314,10 @@ impl Session {
             false => ClientKind::Terminal,
         };
         view.read_only = attach.read_only;
+        let attached = ViewChange::Attached {
+            kind: view.kind,
+            read_only: view.read_only,
+        };
         // The pane it runs in, if any: the one whose program it descends
         // from, or whose session it is in, as the OS says (a parent between
         // them may have gone). A headless client shows on no terminal, so on
@@ -1321,15 +1337,16 @@ impl Session {
         view.runs_in = runs_in.map(|(id, _)| *id);
         self.views.insert(id, view);
         self.parts.attach(id, at);
-        self.view_event(id, crate::journal::ViewChange::Attached);
+        self.view_event(id, attached);
         self.ask(id, crate::outer::QUERIES);
         self.settle(now);
         Ok(id)
     }
 
-    pub fn detach(&mut self, id: ClientId, now: Instant) {
+    /// Client `id` detaches, for `why`.
+    pub fn detach(&mut self, id: ClientId, why: Detach, now: Instant) {
         if self.views.contains_key(&id) {
-            self.view_event(id, crate::journal::ViewChange::Detached);
+            self.view_event(id, ViewChange::Detached(why));
         }
         self.views.remove(&id);
         self.parts.forget(id);
@@ -1360,7 +1377,8 @@ impl Session {
         let Some(view) = view else { return Ok(false) };
         (view.rows, view.cols) = size;
         view.dirty = true;
-        self.view_event(id, crate::journal::ViewChange::Resized);
+        let (rows, cols) = size;
+        self.view_event(id, ViewChange::Resized { rows, cols });
         self.settle(now);
         Ok(true)
     }
@@ -1481,7 +1499,7 @@ impl Session {
         self.views = views;
         for ended in &ended {
             if let Outgoing::To(client, _) = ended {
-                self.view_event(*client, crate::journal::ViewChange::Screen);
+                self.view_event(*client, ViewChange::Screen(None));
             }
         }
         self.outbox.extend(ended);
@@ -1575,20 +1593,20 @@ impl Session {
         self.placed = placed;
         // A pane's rectangles side by side, for the smallest.
         sizes.sort_unstable_by_key(|(pane, _)| *pane);
-        let mut resized = false;
-        for shown in sizes.chunk_by(|a, b| a.0 == b.0) {
-            let Some(&(id, first)) = shown.first() else {
-                continue;
-            };
+        let smallest = sizes.chunk_by(|a, b| a.0 == b.0).filter_map(|shown| {
+            let &(id, first) = shown.first()?;
             let (rows, cols) = shown.iter().fold(first, |(rows, cols), (_, (h, w))| {
                 (rows.min(*h), cols.min(*w))
             });
+            Some((id, Size::new(rows, cols).ok()?))
+        });
+        let smallest: BTreeMap<PaneId, Size> = smallest.collect();
+        self.tell_laid_out(&smallest);
+        let mut resized = false;
+        for (id, size) in smallest {
             // A frame it holds is read as it resizes, as every read of
             // its output is (`read_with`): its terminal's facts given it,
             // its bells and copies taken.
-            let Ok(size) = Size::new(rows, cols) else {
-                continue;
-            };
             if self.pane(id).is_ok_and(|p| p.size() != size) {
                 self.read_with(id, |pane| pane.resize(size, now), now);
                 resized = true;
@@ -1600,6 +1618,37 @@ impl Session {
         if resized {
             self.touch();
         }
+    }
+
+    /// Journals `laid_out` for each tab laid out otherwise than at the last
+    /// settle, at the same revision: a pane of it at another size (`sized`,
+    /// as this settle sizes them, else as it is), or another host. A new
+    /// revision was journaled as it was made, and a new tab is told
+    /// `created`.
+    fn tell_laid_out(&mut self, sized: &BTreeMap<PaneId, Size>) {
+        let size = |pane: PaneId| {
+            sized
+                .get(&pane)
+                .copied()
+                .or(self.pane(pane).ok().map(Pane::size))
+        };
+        let laid: BTreeMap<TabId, Laid> = (self.parts.tabs_in(None).into_iter())
+            .map(|(_, tab)| {
+                let id = tab.id();
+                let panes = tab.root().panes().into_iter();
+                let sizes = panes.filter_map(|p| Some((p, size(p)?))).collect();
+                (id, (tab.revision(self.run), sizes, self.host(Some(id))))
+            })
+            .collect();
+        let moved = |(id, now): (&TabId, &Laid)| {
+            let was = self.laid.get(id)?;
+            (was != now && was.0 == now.0).then_some(*id)
+        };
+        let moved: Vec<TabId> = laid.iter().filter_map(moved).collect();
+        for tab in moved {
+            self.parts.laid_out(tab);
+        }
+        self.laid = laid;
     }
 
     /// The rectangles, rows and columns, each pane of tab `tab` laid out as
@@ -1666,9 +1715,13 @@ impl Session {
         // closing empties takes its viewers elsewhere.
         let viewers = self.viewers(AnyRef::Pane(id));
         let mut notice = None;
-        if let Some(mut pane) = self.parts.close_pane(id) {
-            // Closed for its program's end (a reason given), or by fux.
-            let closed = why.is_none();
+        // Closed for its program's end (a reason given), or by fux.
+        let closed = why.is_none();
+        let close = match closed {
+            true => crate::journal::Close::Killed,
+            false => crate::journal::Close::Exited,
+        };
+        if let Some(mut pane) = self.parts.close_pane(id, close) {
             let failed = pane.has_terminal_errors();
             let status =
                 why.map(|why| format!("{} {why}", fux_wire::words::labelled(id, &pane.label())));
@@ -1693,10 +1746,11 @@ impl Session {
         }
     }
 
-    /// Removes a tab and whatever panes are in it (`Parts::remove_tab`).
-    fn remove_tab(&mut self, tab: TabId, now: Instant) {
+    /// Removes a tab and whatever panes are in it, killed as `killing`
+    /// kills it (`Parts::remove_tab`).
+    fn remove_tab(&mut self, tab: TabId, killing: Killing, now: Instant) {
         let viewers = self.viewers(AnyRef::Tab(tab));
-        for gone in self.parts.remove_tab(tab) {
+        for gone in self.parts.remove_tab(tab, killing) {
             self.end_pane(gone, true, &viewers, now);
         }
     }
@@ -2262,7 +2316,7 @@ impl Session {
         }
     }
 
-    pub(crate) fn view_event(&mut self, client: ClientId, change: crate::journal::ViewChange) {
+    pub(crate) fn view_event(&mut self, client: ClientId, change: ViewChange) {
         let at = self.place(client).map(|p| ((p.ws, p.tab), p.pane));
         self.parts
             .journal_mut()
@@ -2690,8 +2744,13 @@ impl Session {
             self.close_pane(pane, None, now);
             return Ok(());
         }
+        let killing = match scope {
+            None => Killing::All,
+            Some(AnyRef::Workspace(ws)) => Killing::Within(ws),
+            Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => Killing::None,
+        };
         for tab in self.tabs_of(scope)? {
-            self.remove_tab(tab, now);
+            self.remove_tab(tab, killing, now);
         }
         self.after_close(now);
         Ok(())
@@ -2765,7 +2824,7 @@ impl Session {
                 return Ok(PaneResults::Many(Vec::new()).into());
             }
             ClientAction::Detach => {
-                self.detach(client, now);
+                self.detach(client, Detach::Detached, now);
                 let exit = ToAttached::Exit("detached");
                 self.outbox.push(Outgoing::To(client, exit));
                 return Ok(Reply::default());
@@ -3396,7 +3455,7 @@ pub(crate) mod testing {
             self.settle(Instant::now())
         }
         pub(crate) fn detach_client(&mut self, id: ClientId) {
-            self.detach(id, Instant::now())
+            self.detach(id, crate::journal::Detach::Detached, Instant::now())
         }
         pub(crate) fn attach_client(
             &mut self,
@@ -4203,10 +4262,10 @@ mod tests {
         assert_eq!(
             closed,
             [
-                r#"{"event":"closed","pane":"%3","tab":"@3","workspace":"+5"}"#,
-                r#"{"event":"closed","tab":"@3","workspace":"+5"}"#,
-                r#"{"event":"closed","workspace":"+5","parent":"+4"}"#,
-                r#"{"event":"closed","workspace":"+4","parent":"+3"}"#,
+                r#"{"event":"closed","pane":"%3","tab":"@3","workspace":"+5","why":"killed"}"#,
+                r#"{"event":"closed","tab":"@3","workspace":"+5","why":"emptied"}"#,
+                r#"{"event":"closed","workspace":"+5","parent":"+4","why":"emptied"}"#,
+                r#"{"event":"closed","workspace":"+4","parent":"+3","why":"emptied"}"#,
                 "",
             ]
             .join("\n")
@@ -6279,7 +6338,7 @@ mod tests {
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
         assert!(
             lines.contains(
-                r#"{"event":"respawned","pane":"%2","tab":"@2","workspace":"+2","input_unread":2}"#
+                r#"{"event":"respawned","pane":"%2","tab":"@2","workspace":"+2","generation":2,"input_unread":2}"#
             ),
             "{lines}"
         );
@@ -8111,6 +8170,126 @@ mod tests {
         Ok(())
     }
 
+    /// Each change of a tab's layout journals `laid_out` once, at the
+    /// revision the tab then has: one of its tree or fit, which makes a
+    /// new revision, or of the size it is laid out on or its host, which
+    /// keeps it.
+    #[test]
+    fn every_layout_change_journals_its_new_revision() -> TestResult {
+        /// `change` journals one `laid_out` of tab `@1`, at its revision.
+        fn laid_out(
+            s: &mut Session,
+            what: &str,
+            change: impl FnOnce(&mut Session) -> Result<(), String>,
+        ) -> TestResult {
+            let mut changed = Ok(());
+            let lines = told(s, |s| changed = change(s));
+            changed?;
+            let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+            let revision = revision.ok_or("a revision")?;
+            let laid_out = format!(
+                r#"{{"event":"laid_out","tab":"@1","workspace":"+1","layout_revision":"{revision}"}}"#
+            );
+            let laid: Vec<&str> = (lines.lines())
+                .filter(|l| l.contains(r#""event":"laid_out","tab":"@1""#))
+                .collect();
+            assert_eq!(laid, [laid_out.as_str()], "{what}");
+            Ok(())
+        }
+        let mut s = started()?;
+        let arrange = "@1 str topology snapshot str tabs get first let t \
+            t str id get t str layout_revision get t str nodes get arrange";
+        for code in [
+            "%1 str horizontal axis split drop",
+            "%1 %2 swap-with",
+            "%1 str right 3 move-border",
+            "@1 90 30 resize",
+            arrange,
+            "%1 str vertical axis split drop",
+            "%3 kill",
+            "%2 str new-tab move",
+        ] {
+            laid_out(&mut s, code, |s| run(s, code))?;
+        }
+        // Fixed at 90 by 30, it is laid out on the screens that show it.
+        let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        let attach = |s: &mut Session, rows, cols| {
+            s.attach(rows, cols, Some("+1")).map_err(|e| e.to_string())
+        };
+        let mut first = None;
+        laid_out(&mut s, "a client shows it", |s| {
+            first = Some(attach(s, 24, 80)?);
+            Ok(())
+        })?;
+        let first = first.ok_or("a client")?;
+        laid_out(&mut s, "its screen resized", |s| {
+            s.size_client(first, 30, 100)
+                .map(drop)
+                .map_err(|e| e.to_string())
+        })?;
+        let second = attach(&mut s, 30, 100)?;
+        laid_out(&mut s, "its host detached", |s| {
+            s.detach_client(first);
+            Ok(())
+        })?;
+        laid_out(&mut s, "its host shows another tab", |s| {
+            run(s, &format!("str {second} client str @2 tab show"))
+        })?;
+        let now = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        assert_eq!(now, revision, "laid out otherwise, not anew");
+        // A pane a screen too small to show it leaves is sized by another
+        // alone, its smallest screen as it was.
+        let mut s = started()?;
+        run(&mut s, "@1 80 24 resize %1 str horizontal axis split drop")?;
+        attach(&mut s, 24, 2)?;
+        let large = attach(&mut s, 24, 80)?;
+        let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        let cols = |s: &Session| s.pane(PaneId::of(2)).map(|p| p.size().cols());
+        let before = cols(&s)?;
+        laid_out(&mut s, "the screen that shows it alone resized", |s| {
+            (s.size_client(large, 24, 100).map(drop)).map_err(|e| e.to_string())
+        })?;
+        assert!(cols(&s)? > before, "sized by the larger screen");
+        let now = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        assert_eq!(now, revision, "laid out otherwise, not anew");
+        Ok(())
+    }
+
+    /// A kill closes what it kills as killed, and each workspace it
+    /// leaves empty that it does not kill as emptied.
+    #[test]
+    fn a_kill_closes_what_it_kills_and_empties_the_rest() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "opts str a in str b in 80 24 size new-tab drop")?;
+        run(&mut s, "opts +2 in 80 24 size new-tab drop")?;
+        let mut ran = Ok(());
+        let lines = told(&mut s, |s| ran = run(s, "+2 kill"));
+        ran?;
+        let closed: Vec<&str> = (lines.lines())
+            .filter(|l| l.contains(r#""event":"closed""#))
+            .collect();
+        assert_eq!(closed.len(), 6, "{lines}");
+        assert!(
+            closed.iter().all(|l| l.ends_with(r#""why":"killed"}"#)),
+            "{lines}"
+        );
+        run(&mut s, "opts str c in 80 24 size new-tab drop")?;
+        let mut ran = Ok(());
+        let lines = told(&mut s, |s| ran = run(s, "@4 kill"));
+        ran?;
+        assert_eq!(
+            lines,
+            [
+                r#"{"event":"closed","pane":"%4","tab":"@4","workspace":"+4","why":"killed"}"#,
+                r#"{"event":"closed","tab":"@4","workspace":"+4","why":"killed"}"#,
+                r#"{"event":"closed","workspace":"+4","parent":null,"why":"emptied"}"#,
+                "",
+            ]
+            .join("\n")
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_tab_made_with_a_name_is_told_made_with_it() -> TestResult {
         let mut s = started()?;
@@ -8125,7 +8304,7 @@ mod tests {
             concat!(
                 r#"{"event":"created","tab":"@2","workspace":"+1","name":"t"}"#,
                 "\n",
-                r#"{"event":"created","pane":"%2","tab":"@2","workspace":"+1"}"#,
+                r#"{"event":"created","pane":"%2","tab":"@2","workspace":"+1","role":"shell"}"#,
                 "\n"
             )
         );
@@ -8182,8 +8361,12 @@ mod tests {
             assert_eq!(
                 lines,
                 format!(
-                    "{prefix}{{\"event\":\"exited\",\"pane\":\"%2\",\"tab\":\"@1\",\"workspace\":\"+1\",{status}}}\n{}\n{}\n",
-                    r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
+                    "{prefix}{{\"event\":\"exited\",\"pane\":\"%2\",\"tab\":\"@1\",\"workspace\":\"+1\",{status}}}\n{}\n{}\n{}\n",
+                    r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1","why":"exited"}"#,
+                    format_args!(
+                        r#"{{"event":"laid_out","tab":"@1","workspace":"+1","layout_revision":"@1:2:{}"}}"#,
+                        s.run
+                    ),
                     r#"{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","cols":80,"rows":24}"#
                 )
             );
@@ -8834,7 +9017,7 @@ mod journal_tests {
             assert!(!named(&b, name).is_empty(), "missing {name}: {b:?}");
         }
         let from = b.next;
-        s.detach(client, Instant::now());
+        s.detach(client, Detach::Detached, Instant::now());
         assert_eq!(named(&batch(&s, from)?, "detached").len(), 1);
         Ok(())
     }

@@ -2,6 +2,7 @@
 //! (`fux_wire::events`). A later snapshot may see newer state; events do not
 //! replicate live OS facts.
 use crate::pane::{End, Left, Said};
+use crate::view::ClientKind;
 use fux_wire::command::{AnyRef, Run, Version};
 use fux_wire::events::{Actor, Batch, Cursor, Item, Seq, Status};
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
@@ -11,21 +12,120 @@ use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewChange {
-    Attached,
-    Detached,
+    /// Attached: as a terminal or headless, and only watching if
+    /// `read_only`.
+    Attached {
+        kind: ClientKind,
+        read_only: bool,
+    },
+    Detached(Detach),
     Shown,
-    Resized,
-    Screen,
+    /// Its terminal is now `rows` by `cols`.
+    Resized {
+        rows: u16,
+        cols: u16,
+    },
+    /// A screen of its opened, or its last closed (none).
+    Screen(Option<Opening>),
 }
 impl ViewChange {
+    /// Its name, and what else it says.
+    fn said(self) -> (&'static str, Fields) {
+        match self {
+            Self::Attached { kind, read_only } => {
+                let kind = match kind {
+                    ClientKind::Terminal => "terminal",
+                    ClientKind::Headless => "headless",
+                };
+                let fields = vec![
+                    ("kind", Json::str(kind)),
+                    ("read_only", Json::Bool(read_only)),
+                ];
+                ("attached", fields)
+            }
+            Self::Detached(why) => ("detached", vec![("why", Json::str(why.name()))]),
+            Self::Shown => ("shown", Vec::new()),
+            Self::Resized { rows, cols } => {
+                let fields = vec![("cols", Json::int(cols)), ("rows", Json::int(rows))];
+                ("view_resized", fields)
+            }
+            Self::Screen(opening) => {
+                let kind = opening.map_or(Json::Null, |o| Json::str(o.name()));
+                ("screen", vec![("kind", kind)])
+            }
+        }
+    }
+}
+
+/// Why a client detached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detach {
+    /// It was asked to: by its own terminal, or by a `detach`.
+    Detached,
+    /// Its connection closed or failed.
+    Disconnected,
+    /// The server stopped.
+    ServerStopped,
+    /// The server could not paint it, and ended it.
+    Failed,
+}
+impl Detach {
     fn name(self) -> &'static str {
         match self {
-            Self::Attached => "attached",
             Self::Detached => "detached",
-            Self::Shown => "shown",
-            Self::Resized => "view_resized",
-            Self::Screen => "screen",
+            Self::Disconnected => "disconnected",
+            Self::ServerStopped => "server_stopped",
+            Self::Failed => "failed",
         }
+    }
+}
+
+/// Which of its client's screens a client shows over its panes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opening {
+    Column,
+    Repeat,
+    List,
+    Prompt,
+}
+impl Opening {
+    pub fn of(panel: &fux_wire::act::Panel) -> Opening {
+        use fux_wire::act::Panel;
+        match panel {
+            Panel::Column(_) => Opening::Column,
+            Panel::Repeat(_) => Opening::Repeat,
+            Panel::List(_) => Opening::List,
+            Panel::Prompt { .. } => Opening::Prompt,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Column => "column",
+            Self::Repeat => "repeat",
+            Self::List => "list",
+            Self::Prompt => "prompt",
+        }
+    }
+}
+
+/// Why a pane, tab or workspace closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Close {
+    /// A `kill` of it, or of what holds it.
+    Killed,
+    /// Its shell exited.
+    Exited,
+    /// Its last child left it.
+    Emptied,
+}
+impl Close {
+    fn field(self) -> (&'static str, Json) {
+        let why = match self {
+            Self::Killed => "killed",
+            Self::Exited => "exited",
+            Self::Emptied => "emptied",
+        };
+        ("why", Json::str(why))
     }
 }
 
@@ -89,7 +189,7 @@ impl Journal {
             Event::Pane(..)
             | Event::Tab(..)
             | Event::Workspace(..)
-            | Event::Layout(_)
+            | Event::Layout(..)
             | Event::Zoomed(..)
             | Event::View { .. }
             | Event::Stopped(_) => None,
@@ -193,7 +293,7 @@ impl Teller<'_> {
             | Told::ReadFailed(_)
             | Told::Exited(_) => Actor::Program(self.at.1, self.generation),
             Told::Renamed(_)
-            | Told::Respawned(_)
+            | Told::Respawned { .. }
             | Told::Resized(_)
             | Told::HistoryBudget(_)
             | Told::HistoryCleared
@@ -213,8 +313,10 @@ pub enum Event {
     Tab((WsId, TabId), Change),
     /// At the workspace it is in (none: the top), and the workspace.
     Workspace((Option<WsId>, WsId), Change),
-    /// A tab's tree or fit changed. Consumers take a new snapshot.
-    Layout((WsId, TabId)),
+    /// A tab's tree, fit, size or host changed, at its layout revision
+    /// then (none once its counter is exhausted). Consumers take a new
+    /// snapshot.
+    Layout((WsId, TabId), Option<u64>),
     /// A tab's zoomed pane is now this one, or none.
     Zoomed((WsId, TabId), Option<PaneId>),
     /// A client's discrete view state changed at this place, if any.
@@ -235,7 +337,7 @@ pub enum Change {
     Created(Option<String>),
     /// Named otherwise: its new name.
     Renamed(String),
-    Closed,
+    Closed(Close),
     Reordered,
     /// A workspace moved here from the one it was in (none: the top).
     Moved(Option<WsId>),
@@ -244,8 +346,11 @@ pub enum Change {
 /// What happens to a pane, and in it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaneEvent {
-    Created,
-    Closed,
+    /// Made, to run a shell, or a program if not `shell`.
+    Created {
+        shell: bool,
+    },
+    Closed(Close),
     /// To another tab, from this workspace and tab.
     Moved((WsId, TabId)),
     /// What the pane itself tells: these alone a `Teller` takes; its
@@ -258,9 +363,12 @@ pub enum PaneEvent {
 pub enum Told {
     /// Named otherwise: its new name.
     Renamed(String),
-    /// Its program started again (`respawn`), over one that ran: what
-    /// that one left.
-    Respawned(Left),
+    /// Its program started again (`respawn`), as generation `generation`,
+    /// over one that ran: what that one left.
+    Respawned {
+        left: Left,
+        generation: u64,
+    },
     Bell,
     Notification(Said),
     Title(Said),
@@ -322,7 +430,7 @@ impl Change {
                 vec![("name", name.as_ref().map_or(Json::Null, Json::str))],
             ),
             Change::Renamed(name) => ("renamed", named(name)),
-            Change::Closed => ("closed", Vec::new()),
+            Change::Closed(why) => ("closed", vec![why.field()]),
             Change::Reordered => ("reordered", Vec::new()),
             Change::Moved(_) => ("moved", Vec::new()),
         }
@@ -333,8 +441,11 @@ impl PaneEvent {
     /// Its name, and what else it says.
     fn said(&self) -> (&'static str, Fields) {
         match self {
-            PaneEvent::Created => ("created", Vec::new()),
-            PaneEvent::Closed => ("closed", Vec::new()),
+            PaneEvent::Created { shell } => {
+                let role = if *shell { "shell" } else { "program" };
+                ("created", vec![("role", Json::str(role))])
+            }
+            PaneEvent::Closed(why) => ("closed", vec![why.field()]),
             PaneEvent::Moved(_) => ("moved", Vec::new()),
             PaneEvent::Told(told) => told.said(),
         }
@@ -354,7 +465,13 @@ impl Told {
         };
         match self {
             Told::Renamed(name) => ("renamed", named(name)),
-            Told::Respawned(left) => ("respawned", left.fields().collect()),
+            Told::Respawned { left, generation } => {
+                let generation = ("generation", Json::uint(*generation));
+                (
+                    "respawned",
+                    std::iter::once(generation).chain(left.fields()).collect(),
+                )
+            }
             Told::Bell => ("bell", Vec::new()),
             Told::Notification(n) => ("notification", said("text", n.as_str(), n.cut())),
             Told::Title(title) => ("title", said("title", title.as_str(), title.cut())),
@@ -418,7 +535,7 @@ impl Event {
     fn ids(&self) -> (Option<PaneId>, Option<TabId>, Option<WsId>) {
         match self {
             Event::Pane(((ws, tab), pane), _) => (Some(*pane), Some(*tab), Some(*ws)),
-            Event::Tab((ws, tab), _) | Event::Layout((ws, tab)) => (None, Some(*tab), Some(*ws)),
+            Event::Tab((ws, tab), _) | Event::Layout((ws, tab), _) => (None, Some(*tab), Some(*ws)),
             Event::Zoomed((ws, tab), pane) => (*pane, Some(*tab), Some(*ws)),
             Event::Workspace((_, ws), _) => (None, None, Some(*ws)),
             Event::View { at, .. } => at.map_or((None, None, None), |((ws, tab), pane)| {
@@ -431,9 +548,9 @@ impl Event {
     /// What it closed, if it is a close.
     fn closed(&self) -> Option<AnyRef> {
         match self {
-            Event::Pane((_, pane), PaneEvent::Closed) => Some(AnyRef::Pane(*pane)),
-            Event::Tab((_, tab), Change::Closed) => Some(AnyRef::Tab(*tab)),
-            Event::Workspace((_, ws), Change::Closed) => Some(AnyRef::Workspace(*ws)),
+            Event::Pane((_, pane), PaneEvent::Closed(_)) => Some(AnyRef::Pane(*pane)),
+            Event::Tab((_, tab), Change::Closed(_)) => Some(AnyRef::Tab(*tab)),
+            Event::Workspace((_, ws), Change::Closed(_)) => Some(AnyRef::Workspace(*ws)),
             Event::Pane(..)
             | Event::Tab(..)
             | Event::Workspace(..)
@@ -444,16 +561,25 @@ impl Event {
         }
     }
 
-    fn json(&self) -> Json {
+    /// What it says, in server run `run`.
+    fn json(&self, run: Run) -> Json {
         let (name, fields) = match self {
             Event::Pane(_, what) => what.said(),
-            Event::Layout(_) => ("laid_out", Vec::new()),
+            Event::Layout((_, tab), serial) => {
+                let revision = serial.map(|serial| fux_wire::command::LayoutRevision {
+                    tab: *tab,
+                    serial,
+                    run,
+                });
+                let revision = revision.map_or(Json::Null, |r| Json::str(r.to_string()));
+                ("laid_out", vec![("layout_revision", revision)])
+            }
             // Unzoomed, `pane` is there as null.
             Event::Zoomed(_, pane) => (
                 "zoomed",
                 pane.map_or_else(|| vec![("pane", Json::Null)], |_| Vec::new()),
             ),
-            Event::View { change, .. } => (change.name(), Vec::new()),
+            Event::View { change, .. } => change.said(),
             Event::Tab(_, change) | Event::Workspace(_, change) => change.said(),
             Event::Stopped(reason) => ("stopped", vec![("reason", Json::str(reason))]),
         };
@@ -482,20 +608,24 @@ pub fn every_kind(
     seen: Version,
 ) -> Vec<Event> {
     let mut events = vec![
-        Event::Pane(at, PaneEvent::Created),
-        Event::Pane(at, PaneEvent::Closed),
+        Event::Pane(at, PaneEvent::Created { shell: true }),
+        Event::Pane(at, PaneEvent::Created { shell: false }),
         Event::Pane(at, PaneEvent::Moved(at.0)),
-        Event::Layout(at.0),
+        // The most a revision is, and one exhausted.
+        Event::Layout(at.0, Some(u64::MAX)),
+        Event::Layout(at.0, None),
         Event::Zoomed(at.0, Some(at.1)),
         Event::Zoomed(at.0, None),
     ];
-    for change in [
+    let closes = [Close::Killed, Close::Exited, Close::Emptied];
+    events.extend(closes.map(|why| Event::Pane(at, PaneEvent::Closed(why))));
+    let changes = [
         Change::Created(None),
         Change::Created(Some(name.to_owned())),
         Change::Renamed(name.to_owned()),
-        Change::Closed,
         Change::Reordered,
-    ] {
+    ];
+    for change in changes.into_iter().chain(closes.map(Change::Closed)) {
         events.push(Event::Tab(at.0, change.clone()));
         events.push(Event::Workspace((Some(at.0.0), at.0.0), change));
     }
@@ -507,7 +637,10 @@ pub fn every_kind(
     let ended = |ended| Told::Exited(End { ended, left });
     for told in [
         Told::Renamed(name.to_owned()),
-        Told::Respawned(left),
+        Told::Respawned {
+            left,
+            generation: i64::MAX.unsigned_abs(),
+        },
         Told::Bell,
         notification,
         title,
@@ -543,13 +676,33 @@ pub fn every_kind(
     ] {
         events.push(Event::Pane(at, PaneEvent::Told(told)));
     }
-    for change in [
-        ViewChange::Attached,
-        ViewChange::Detached,
+    let attached = |kind, read_only| ViewChange::Attached { kind, read_only };
+    let detaches = [
+        Detach::Detached,
+        Detach::Disconnected,
+        Detach::ServerStopped,
+        Detach::Failed,
+    ];
+    let screens = [
+        Opening::Column,
+        Opening::Repeat,
+        Opening::List,
+        Opening::Prompt,
+    ];
+    let views = [
+        attached(ClientKind::Terminal, false),
+        attached(ClientKind::Headless, true),
         ViewChange::Shown,
-        ViewChange::Resized,
-        ViewChange::Screen,
-    ] {
+        ViewChange::Resized {
+            rows: u16::MAX,
+            cols: u16::MAX,
+        },
+        ViewChange::Screen(None),
+    ];
+    let views = (views.into_iter())
+        .chain(detaches.map(ViewChange::Detached))
+        .chain(screens.map(|s| ViewChange::Screen(Some(s))));
+    for change in views {
         events.push(Event::View {
             client: ClientId::of(u32::MAX),
             at: Some(at),
@@ -651,7 +804,7 @@ impl Reader {
             Scope::All => false,
             Scope::Target(t) => event.closed() == Some(t),
             Scope::Client(c) => {
-                matches!(event, Event::View { client, change: ViewChange::Detached, .. } if *client == c)
+                matches!(event, Event::View { client, change: ViewChange::Detached(_), .. } if *client == c)
             }
         }
     }
@@ -686,7 +839,7 @@ impl Reader {
                     Event::Pane(..)
                     | Event::Tab(..)
                     | Event::Workspace(..)
-                    | Event::Layout(_)
+                    | Event::Layout(..)
                     | Event::Zoomed(..)
                     | Event::Stopped(_) => None,
                 };
@@ -699,13 +852,13 @@ impl Reader {
                     Event::Workspace((parent, _), _) => parent,
                     Event::Pane(..)
                     | Event::Tab(..)
-                    | Event::Layout(_)
+                    | Event::Layout(..)
                     | Event::Zoomed(..)
                     | Event::View { .. }
                     | Event::Stopped(_) => None,
                 };
                 let item = Item {
-                    data: entry.event.json(),
+                    data: entry.event.json(self.next.run),
                     pane,
                     tab,
                     workspace,
@@ -873,7 +1026,7 @@ mod tests {
                 Event::Pane(..)
                 | Event::Tab(..)
                 | Event::Workspace(..)
-                | Event::Layout(_)
+                | Event::Layout(..)
                 | Event::Zoomed(..)
                 | Event::View { .. }
                 | Event::Stopped(_) => None,
@@ -914,12 +1067,12 @@ mod tests {
             match &event {
                 Event::Pane(
                     _,
-                    PaneEvent::Created
-                    | PaneEvent::Closed
+                    PaneEvent::Created { .. }
+                    | PaneEvent::Closed(_)
                     | PaneEvent::Moved(_)
                     | PaneEvent::Told(
                         Told::Renamed(_)
-                        | Told::Respawned(_)
+                        | Told::Respawned { .. }
                         | Told::Bell
                         | Told::Notification(_)
                         | Told::Title(_)
@@ -939,7 +1092,7 @@ mod tests {
                     _,
                     Change::Created(_)
                     | Change::Renamed(_)
-                    | Change::Closed
+                    | Change::Closed(_)
                     | Change::Reordered
                     | Change::Moved(_),
                 )
@@ -947,24 +1100,24 @@ mod tests {
                     _,
                     Change::Created(_)
                     | Change::Renamed(_)
-                    | Change::Closed
+                    | Change::Closed(_)
                     | Change::Reordered
                     | Change::Moved(_),
                 )
                 | Event::View {
                     change:
-                        ViewChange::Attached
-                        | ViewChange::Detached
+                        ViewChange::Attached { .. }
+                        | ViewChange::Detached(_)
                         | ViewChange::Shown
-                        | ViewChange::Resized
-                        | ViewChange::Screen,
+                        | ViewChange::Resized { .. }
+                        | ViewChange::Screen(_),
                     ..
                 }
-                | Event::Layout(_)
+                | Event::Layout(..)
                 | Event::Zoomed(..)
                 | Event::Stopped(_) => {}
             }
-            let json = event.json();
+            let json = event.json(run()?);
             let Some(Json::String(name)) = json.get("event") else {
                 return Err("event name".into());
             };
@@ -1174,7 +1327,7 @@ mod tests {
         let mut old = Reader::new(Scope::Target(AnyRef::Tab(from.1)), &journal, run()?, None)?;
         let mut new = Reader::new(Scope::Target(AnyRef::Tab(to.1)), &journal, run()?, None)?;
         journal.push(Event::Pane((to, pane), PaneEvent::Moved(from)));
-        journal.push(Event::Tab(from, Change::Closed));
+        journal.push(Event::Tab(from, Change::Closed(Close::Emptied)));
         journal.push(bell(1));
         let closed = old.batch(&journal, false)?;
         assert_eq!(closed.events.len(), 2);
