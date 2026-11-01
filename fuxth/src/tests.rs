@@ -611,6 +611,27 @@ fn a_library_says_what_each_word_does() {
         .unwrap_or_default();
     let code: Vec<&str> = docs.iter().map(|d| d.code.as_str()).collect();
     assert_eq!(code, ["define double\n  dup add\nend"]);
+    // A word the library hides says nothing, and its callers still call it.
+    let library = "# n -- m : tripled\ndefine triple 3 mul end\n\
+        # n -- m : sextupled\ndefine sextuple double triple end\nhide triple\n";
+    let docs = machine
+        .library("l", library, &mut Toy::default())
+        .unwrap_or_default();
+    let names: Vec<&str> = docs.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, ["sextuple"]);
+    machine.read(token::source("t", "2 sextuple").unwrap_or_default(), None);
+    assert_eq!(
+        machine
+            .run(&mut Toy::default(), u64::MAX)
+            .map_err(|e| e.code),
+        Ok(Outcome::Finished)
+    );
+    assert_eq!(machine.stack(), ints(&[12]));
+    machine.clear();
+    machine.read(token::source("t", "2 triple").unwrap_or_default(), None);
+    let hidden = machine.run(&mut Toy::default(), u64::MAX);
+    assert_eq!(hidden.map_err(|e| e.code), Err(Code::UnknownWord));
+    machine.clear();
     // A comment after a token is that line's, not the definition's below.
     let silent = machine.library(
         "l",
@@ -1157,6 +1178,7 @@ fn every_core_word_documents_its_effect_and_meaning() {
                         | Builtin::Defer
                         | Builtin::CompileCall
                         | Builtin::See
+                        | Builtin::Hide
                         | Builtin::Words
                         | Builtin::PrintStack
                 ),

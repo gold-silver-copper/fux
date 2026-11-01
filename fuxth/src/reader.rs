@@ -240,7 +240,8 @@ impl<A: AppValue> Machine<A> {
     /// Reads `text`, a library named `source`, to its end, and gives each
     /// of its definitions' help, which the comment on the line just above
     /// its `define` says: `# EFFECT : ABOUT`; the dictionary keeps it with
-    /// the definition (`Definition`). A definition without it is refused,
+    /// the definition (`Definition`), and a definition the library hid
+    /// (`hide`) gives none. A definition without it is refused,
     /// and the machine is as it was. A library is read on a machine at
     /// rest, run as any program is, on `host` (the one its programs run on,
     /// so the machine's code is made for one host), and may not wait for it.
@@ -272,13 +273,15 @@ impl<A: AppValue> Machine<A> {
         });
         match docs {
             Ok(docs) => {
-                let docs: Vec<Rc<Doc>> = docs.into_iter().map(Rc::new).collect();
-                for doc in &docs {
+                let mut said = Vec::new();
+                for doc in docs {
                     if let Some(entry) = self.names.get_mut(doc.name.as_str()) {
-                        entry.doc = Some(Rc::clone(doc));
+                        let doc = Rc::new(doc);
+                        entry.doc = Some(Rc::clone(&doc));
+                        said.push(doc);
                     }
                 }
-                Ok(docs)
+                Ok(said)
             }
             Err(error) => {
                 *self = before;
@@ -1262,6 +1265,15 @@ impl<A: AppValue> Machine<A> {
         self.found(&name)?;
         let said = self.definition(&name.text).map(|d| d.to_string());
         self.written(host, &said.unwrap_or_default())
+    }
+
+    /// `hide NAME`: NAME out of the dictionary. Calls compiled before
+    /// hold the word itself, so they keep calling it.
+    pub(crate) fn hide(&mut self) -> Result<(), Error> {
+        let name = self.next_word(Builtin::Hide, "a name")?;
+        self.found(&name)?;
+        self.names.remove(&*name.text);
+        Ok(())
     }
 
     /// `start-compiling`.

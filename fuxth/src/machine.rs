@@ -2653,6 +2653,9 @@ builtins! { m host;
         }
         m.written(host, &text)
     }
+    Hide "hide" [cold] () "--"
+        "hide NAME: NAME leaves the dictionary, so it is found no more; code compiled before keeps calling the word"
+        { m.hide() }
     PrintStack "print-stack" [cold] () "--"
         "write the values depth counts, a line each as print writes them, the deepest first, leaving them" {
         let floor = m.marks.last().map_or(0, |(at, _)| *at);
