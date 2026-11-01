@@ -70,6 +70,8 @@ wire! {
         pub pane: Option<PaneId>,
         pub tab: Option<TabId>,
         pub workspace: Option<WsId>,
+        /// A workspace's event: the workspace it is in, none at the top.
+        pub parent: Option<WsId>,
         pub client: Option<ClientId>,
         pub moved_from: Option<(WsId, TabId)>,
         pub origin: Actor,
@@ -126,6 +128,10 @@ impl Batch {
                     if let Some(value) = value {
                         fields.push((key.into(), Json::str(value)));
                     }
+                }
+                if item.tab.is_none() && item.workspace.is_some() {
+                    let parent = item.parent.map(|id| Json::str(id.to_string()));
+                    fields.push(("parent".into(), parent.unwrap_or(Json::Null)));
                 }
                 if let Json::Object(data) = &item.data {
                     fields.extend(data.iter().filter(|(k, _)| k != "event").cloned());

@@ -32,7 +32,6 @@ impl Session {
             Some(AnyRef::Tab(t)) => Some((self.tab_workspace(t)?, t)),
             Some(AnyRef::Workspace(_)) | None => None,
         };
-        let selected_tab = selected_place.map(|(_, tab)| tab);
         let empty = matches!(scope, Scope::Client(_)) && target.is_none();
         let mut snapshot = Snapshot {
             run: self.run,
@@ -44,91 +43,91 @@ impl Session {
             panes: Vec::new(),
             clients: Vec::new(),
         };
-        for ws in self.parts.workspaces().iter().filter(|_| !empty) {
-            if selected_place.is_some_and(|(id, _)| id != ws.id())
-                || matches!(target,Some(AnyRef::Workspace(id)) if id != ws.id())
-            {
-                continue;
+        // The workspaces in scope, each before those in it, and their tabs
+        // in order: a workspace and those in it, or a tab's or pane's own.
+        let (workspaces, tabs) = match (selected_place, target) {
+            _ if empty => (Vec::new(), Vec::new()),
+            (Some((ws, tab)), _) => {
+                let tabs = self.parts.tab(tab).into_iter().collect();
+                (self.workspace(ws).into_iter().collect(), tabs)
             }
-            let selected = |tab: &&crate::workspace::Tab| match target {
-                Some(AnyRef::Workspace(id)) => ws.id() == id,
-                Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => selected_tab == Some(tab.id()),
-                None => true,
+            (None, Some(AnyRef::Workspace(ws))) => {
+                (self.parts.workspaces_in(Some(ws)), self.parts.tabs_in(Some(ws)))
+            }
+            (None, _) => (self.parts.every_workspace(), self.parts.tabs_in(None)),
+        };
+        for (ws, tab) in tabs {
+            // A pane's tab as far as it is in scope: the pane alone.
+            let tree = match target {
+                Some(AnyRef::Pane(pane)) => flatten(&Tree::Pane(pane)),
+                Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) | None => flatten(tab.root()),
             };
-            if !ws.tabs().iter().any(|tab| selected(&tab)) {
-                continue;
-            }
-            let tabs = ws.tabs().iter().map(|tab| tab.id()).collect();
-            for tab in ws.tabs().iter().filter(selected) {
-                // A pane's tab as far as it is in scope: the pane alone.
-                let tree = match target {
-                    Some(AnyRef::Pane(pane)) => flatten(&Tree::Pane(pane)),
-                    Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) | None => flatten(tab.root()),
+            for node in &tree {
+                let Node::Pane(id) = node else {
+                    continue;
                 };
-                for node in &tree {
-                    let Node::Pane(id) = node else {
-                        continue;
+                let pane = self.parts.panes().get(id).ok_or(Error::NoPane(*id))?;
+                let (state, launch) = if projection == Projection::Topology {
+                    (None, None)
+                } else {
+                    let fields = crate::capture::state(pane)?;
+                    let fields = fields.into_iter().map(|(k, v)| (k.to_owned(), v));
+                    let launch = pane.runs.launch();
+                    let launch = inspect::Launch {
+                        shell: matches!(pane.runs, crate::pane::Runs::Shell(_)),
+                        argv: launch.argv.iter().map(str::to_owned).collect(),
+                        cwd: path(launch.cwd.as_os_str()),
                     };
-                    let pane = self.parts.panes().get(id).ok_or(Error::NoPane(*id))?;
-                    let (state, launch) = if projection == Projection::Topology {
-                        (None, None)
-                    } else {
-                        let fields = crate::capture::state(pane)?;
-                        let fields = fields.into_iter().map(|(k, v)| (k.to_owned(), v));
-                        let launch = pane.runs.launch();
-                        let launch = inspect::Launch {
-                            shell: matches!(pane.runs, crate::pane::Runs::Shell(_)),
-                            argv: launch.argv.iter().map(str::to_owned).collect(),
-                            cwd: path(launch.cwd.as_os_str()),
-                        };
-                        (Some(Json::Object(fields.collect())), Some(launch))
-                    };
-                    let cwd = if projection == Projection::Recipe {
-                        Some(match self.dir_with(*id, &mut Memory)? {
-                            Ok(Some(dir)) => inspect::Directory::Known(path(dir.as_os_str())),
-                            Ok(None) => inspect::Directory::Unknown,
-                            Err(errno) => inspect::Directory::Failed(errno.raw()),
-                        })
-                    } else {
-                        None
-                    };
-                    let fact = inspect::Pane {
-                        id: *id,
-                        tab: tab.id(),
-                        name: pane.name().map(str::to_owned),
-                        label: format!("{}", pane.display_label()),
-                        title: pane.title().as_str().to_owned(),
-                        rows: pane.size().rows(),
-                        cols: pane.size().cols(),
-                        version: pane.version(self.run),
-                        state,
-                        launch,
-                        cwd,
-                        pid: pane.process().child().map(|c| c.leader.pid().as_raw()),
-                    };
-                    snapshot.panes.push(fact);
-                }
-                let size = tab.fit().size();
-                let fact = inspect::Tab {
-                    id: tab.id(),
-                    workspace: ws.id(),
-                    name: tab.name().map(str::to_owned),
-                    label: format!("{}", tab.display_label(self.parts.panes())),
-                    fixed: matches!(tab.fit(), Fit::Fixed(_)),
-                    cols: size.cols(),
-                    rows: size.rows(),
-                    nodes: tree,
-                    revision: tab.revision(self.run),
-                    host: self.host(Some(tab.id())),
-                    zoomed: tab.zoomed(),
+                    (Some(Json::Object(fields.collect())), Some(launch))
                 };
-                snapshot.tabs.push(fact);
+                let cwd = if projection == Projection::Recipe {
+                    Some(match self.dir_with(*id, &mut Memory)? {
+                        Ok(Some(dir)) => inspect::Directory::Known(path(dir.as_os_str())),
+                        Ok(None) => inspect::Directory::Unknown,
+                        Err(errno) => inspect::Directory::Failed(errno.raw()),
+                    })
+                } else {
+                    None
+                };
+                let fact = inspect::Pane {
+                    id: *id,
+                    tab: tab.id(),
+                    name: pane.name().map(str::to_owned),
+                    label: format!("{}", pane.display_label()),
+                    title: pane.title().as_str().to_owned(),
+                    rows: pane.size().rows(),
+                    cols: pane.size().cols(),
+                    version: pane.version(self.run),
+                    state,
+                    launch,
+                    cwd,
+                    pid: pane.process().child().map(|c| c.leader.pid().as_raw()),
+                };
+                snapshot.panes.push(fact);
             }
+            let size = tab.fit().size();
+            let fact = inspect::Tab {
+                id: tab.id(),
+                workspace: ws,
+                name: tab.name().map(str::to_owned),
+                label: format!("{}", tab.display_label(self.parts.panes())),
+                fixed: matches!(tab.fit(), Fit::Fixed(_)),
+                cols: size.cols(),
+                rows: size.rows(),
+                nodes: tree,
+                revision: tab.revision(self.run),
+                host: self.host(Some(tab.id())),
+                zoomed: tab.zoomed(),
+            };
+            snapshot.tabs.push(fact);
+        }
+        for ws in workspaces {
             let fact = inspect::Workspace {
                 id: ws.id(),
+                parent: self.parts.parent(ws.id()).flatten(),
                 name: ws.name().map(str::to_owned),
                 label: format!("{}", ws.display_label()),
-                tabs,
+                children: ws.stack().children().iter().map(Child::id).collect(),
             };
             snapshot.workspaces.push(fact);
         }
@@ -137,7 +136,9 @@ impl Session {
             let selected = match scope {
                 Scope::All => true,
                 Scope::Client(id) => id == view.id,
-                Scope::Target(AnyRef::Workspace(id)) => place.is_some_and(|p| p.ws == id),
+                Scope::Target(AnyRef::Workspace(id)) => {
+                    place.is_some_and(|p| self.parts.within(p.ws, id))
+                }
                 Scope::Target(AnyRef::Tab(id)) => place.is_some_and(|p| p.tab == id),
                 Scope::Target(AnyRef::Pane(id)) => place.is_some_and(|p| p.pane == id),
             };

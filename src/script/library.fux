@@ -112,38 +112,50 @@ define chooser-row
   let item item str id get let id
   list id list id string item str label get dup id string eq if drop else str ' ' swap then end glue end
 end
-# record -- string : a held snapshot hierarchy; facts include process outcomes
+# record -- string : a held snapshot hierarchy, each workspace's tabs and workspaces under it; facts include process outcomes
 define listing
   let s s str scope get kind let sk
   s str projection get str facts eq let facts
-  s str tabs get let tabs s str panes get let panes
+  s str workspaces get let wss s str panes get let panes
+  list wss each str id get end end let wids
   sk str all eq sk str client eq or let clients
   clients sk str workspace eq or let whole
   sk str pane eq let one
-  whole if str '    ' else one if str '' else str '  ' then then let indent
-  0 let ti 0 let pi
+  list end let shown 0 let pi
   list
-    s str workspaces get each let w w str id get let wid
-      whole if w chooser-row last then
-      begin ti tabs len lt if tabs ti at str workspace get wid eq else false then while
-        tabs ti at let t
-        t str id get let tid
-        one not if list whole if str '  ' then t chooser-row last end glue then
-        begin pi panes len lt if panes pi at str tab get tid eq else false then while
-          panes pi at let p
-          list indent p chooser-row last str ' '
-            p str cols get string str x p str rows get string
-            p str pid get kind str null ne if str ' pid ' p str pid get string else
-              facts if p str state get let st
-                st str exited get kind str null ne if str ' exited ' st str exited get string else
-                st str signal get kind str null ne if str ' signal ' st str signal get string else
-                str ' ended, its status lost' then then
-              then
+    s str tabs get each let t
+      t str id get let tid
+      # Its workspaces in the snapshot, outermost first: a row for each not yet shown.
+      list end let chain t str workspace get let w
+      whole if
+        begin wids w index-of dup 0 lt not while
+          wss swap at let r list w end chain cat let chain r str parent get let w
+        end drop
+      then
+      0 let k
+      begin k shown len lt k chain len lt and if shown k at chain k at eq else false then while
+        k 1 add let k
+      end
+      chain len k do
+        list list i 0 do str '  ' loop end glue wss wids chain i at index-of at chooser-row last end glue
+      loop
+      chain let shown
+      list chain len 0 do str '  ' loop end glue let indent
+      one not if list indent t chooser-row last end glue then
+      one if str '' else list indent str '  ' end glue then let indent
+      begin pi panes len lt if panes pi at str tab get tid eq else false then while
+        panes pi at let p
+        list indent p chooser-row last str ' '
+          p str cols get string str x p str rows get string
+          p str pid get kind str null ne if str ' pid ' p str pid get string else
+            facts if p str state get let st
+              st str exited get kind str null ne if str ' exited ' st str exited get string else
+              st str signal get kind str null ne if str ' signal ' st str signal get string else
+              str ' ended, its status lost' then then
             then
-          end glue
-          pi 1 add let pi
-        end
-        ti 1 add let ti
+          then
+        end glue
+        pi 1 add let pi
       end
     end
     clients if
@@ -232,13 +244,23 @@ define dump-recipe
   recipe str projection get str recipe ne if str 'dump needs a recipe snapshot' fail then
   recipe str panes get let panes
   list panes each str id get end end let ids
+  recipe str workspaces get let wss
+  list wss each str id get end end let wids
+  # The workspaces whose workspace it does not hold go in the one its first argument names.
+  list end let tops list end let inner
+  wss each let w
+    wids w str parent get index-of 0 lt if tops w push let tops else inner w push let inner then
+  end
+  list end let made
   list
     str '#!/usr/bin/env -S fux --file' 10 char
     str '# fux: running this makes it again; its programs take the environment of the server that runs them.' 10 char
-    str 'list ' recipe str workspaces get each
+    str '# Its workspaces go in the workspace its first argument names, else at the top.' 10 char
+    str 'args len 0 gt if opts args first in else opts then let top' 10 char
+    str 'list ' tops each
       str name get dup kind str null eq if drop else dump-text then
     end str 'end let joins' 10 char
-    str 'list ' recipe str tabs get panes cat each
+    str 'list ' recipe str tabs get panes cat inner cat each
       str name get dup kind str null eq if drop else dump-text then
     end str 'end let names' 10 char
     str '# Refused before anything is made if a name it gives is taken here; a workspace of its name is joined.' 10 char
@@ -249,41 +271,47 @@ define dump-recipe
     str '  names each held over contains workspaces 2 pick contains or if else drop then end end' 10 char
     str '# A tab named as the workspace it would make is refused (name_taken), whether that name is free or not.' 10 char
     str 'dup len 0 gt if first let taken opts taken in taken name 80 24 size str / cwd new-tab else drop then' 10 char
-    recipe str workspaces get each
-      let ws true let opens
-      recipe str tabs get each
-        let tab tab str workspace get ws str id get eq if
-          tab str nodes get let nodes
-          nodes 0 dump-first let first-pane
-          panes ids first-pane index-of at let p
-          list
-            str 'opts '
-            opens if
-              ws str name get dup kind str null eq if drop str new-workspace then dump-text str 'in '
-            else ws str id get dump-id str ' in ' then
-            tab str name get dup kind str null eq if drop else dump-text str 'name ' then
-            tab str cols get string str ' ' tab str rows get string str ' size '
-          end glue let prefix
-          p prefix str new-tab dump-create
-          opens if
-            first-pane dump-id str ' workspace let ' ws str id get dump-id 10 char
-            false let opens
-          then
-          tab str fit get str clients eq if first-pane dump-id str ' tab resize-auto' 10 char then
-          list 0 end let pending
-          begin pending len 0 gt while
-            pending pop let index let pending
-            nodes index at dup is-list if
-              let node nodes node 3 at dump-first let before
-              nodes node 4 at dump-first let after
-              panes ids after index-of at
-              list before dump-id str ' ' node 0 at dump-text str 'axis '
-                node 1 at string str ' ' node 2 at string str ' shares ' end glue
-              str split dump-create
-              pending node 4 at push node 3 at push let pending
-            else drop then
-          end
-        then
+    recipe str tabs get each
+      let tab
+      tab str nodes get let nodes
+      nodes 0 dump-first let first-pane
+      panes ids first-pane index-of at let p
+      # Its workspaces, outermost first; those made by now are bound to a name.
+      list end let chain tab str workspace get let w
+      begin wids w index-of dup 0 lt not while
+        wss swap at let r list w end chain cat let chain r str parent get let w
+      end drop
+      -1 let k
+      chain len 0 do made chain i at index-of 0 lt not if i let k then loop
+      list
+        k 0 lt if str 'top ' else list str 'opts ' chain k at dump-id str ' in ' end glue then
+        chain len k 1 add do
+          wss wids chain i at index-of at
+          str name get dup kind str null eq if drop str new-workspace then dump-text str 'in '
+        loop
+        tab str name get dup kind str null eq if drop else dump-text str 'name ' then
+        tab str cols get string str ' ' tab str rows get string str ' size '
+      end glue let prefix
+      p prefix str new-tab dump-create
+      chain len 1 sub let d
+      d k gt if first-pane dump-id str ' workspace let ' chain d at dump-id 10 char then
+      begin d 1 sub let d d k gt while
+        chain d 1 add at dump-id str ' str parent get let ' chain d at dump-id 10 char
+      end
+      made chain cat let made
+      tab str fit get str clients eq if first-pane dump-id str ' tab resize-auto' 10 char then
+      list 0 end let pending
+      begin pending len 0 gt while
+        pending pop let index let pending
+        nodes index at dup is-list if
+          let node nodes node 3 at dump-first let before
+          nodes node 4 at dump-first let after
+          panes ids after index-of at
+          list before dump-id str ' ' node 0 at dump-text str 'axis '
+            node 1 at string str ' ' node 2 at string str ' shares ' end glue
+          str split dump-create
+          pending node 4 at push node 3 at push let pending
+        else drop then
       end
     end
   end glue
@@ -319,11 +347,17 @@ define chooser-find
   list records each dup str id get string wanted eq if else drop then end end
   dup len 1 ne if str 'chooser target is absent or ambiguous' fail then first
 end
-# snapshot record -- row : a tab/workspace label with its pane summary
+# snapshot record -- row : a tab/workspace label with its pane summary, of the workspaces in it too
 define chooser-container-row
   let item let s item chooser-row let row
-  item str id get kind str tab eq if list item str id get end
-  else item str tabs get then let tabs
+  item str id get kind str tab eq if list item str id get end else
+    list end list item end
+    begin dup len 0 gt while
+      pop str children get each let c
+        c kind str tab eq if swap c push swap else s str workspaces get c chooser-find push then
+      end
+    end drop
+  then let tabs
   list s str panes get each let p
     tabs p str tab get contains if p chooser-row last then
   end end str ', ' join let names
@@ -339,13 +373,21 @@ define chooser-selected
   let current let rows
   current len 0 gt if current else list rows len 0 gt if 0 then end then
 end
-# snapshot handle -- rows : a row for each of the handle's siblings, among what holds it
+# snapshot handle -- rows : a row for each of the handle's siblings, in order, among what holds it
 define chooser-siblings
-  let it let s
-  it kind str workspace eq if s str workspaces get dup it chooser-find drop else
-    it kind str tab eq if str tabs str workspace else str panes str tab then let holder let kinds
-    s kinds get it chooser-find holder get let held
-    list s kinds get each dup holder get held eq if else drop then end end
+  let it let s s str workspaces get let wss
+  it kind str pane eq if
+    s str panes get it chooser-find str tab get let held
+    list s str panes get each dup str tab get held eq if else drop then end end
+  else
+    it kind str tab eq if s str tabs get it chooser-find str workspace get
+    else wss it chooser-find str parent get then let held
+    held kind str null eq if
+      list wss each dup str parent get kind str null eq if else drop then end end
+    else
+      wss s str tabs get cat let records
+      list wss held chooser-find str children get each records swap chooser-find end end
+    then
   then let siblings
   list siblings each
     dup str id get kind str pane eq if chooser-row else s swap chooser-container-row then

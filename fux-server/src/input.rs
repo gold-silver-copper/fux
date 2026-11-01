@@ -355,7 +355,7 @@ mod tests {
 
     /// How many tabs the first workspace has.
     fn tabs(s: &Session) -> Option<usize> {
-        s.parts.workspaces().first().map(|w| w.tabs().len())
+        s.parts.workspaces().first().map(|w| w.tabs().count())
     }
 
     /// The prefix, then `keys`.
@@ -992,7 +992,6 @@ mod tests {
         let order: Vec<String> = (s.parts.workspaces().first())
             .map(|w| {
                 w.tabs()
-                    .iter()
                     .map(|t| crate::workspace::Child::id(t).to_string())
                     .collect()
             })
@@ -1102,14 +1101,15 @@ mod tests {
     }
 
     /// A session with room for every command to act: two workspaces, the
-    /// first with two tabs, its first with three panes, 1 | (2 / 3), the
-    /// client on %2.
+    /// first with two tabs and a workspace, its first tab with three panes,
+    /// 1 | (2 / 3), the client on %2.
     fn busy() -> Result<(Session, ClientId), String> {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str %2 pane str vertical axis split")?;
         run(&mut s, NEW_TAB)?;
         run(&mut s, "opts str new-workspace in 80 24 size new-tab")?;
+        run(&mut s, "opts +1 in str new-workspace in 80 24 size new-tab")?;
         run(&mut s, "str c1 client str %2 pane show")?;
         Ok((s, c))
     }
@@ -1167,13 +1167,14 @@ mod tests {
             assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
         }
         // Refused as the session stands: no pane that way, nothing before
-        // the first tab or workspace, nothing but a shell to signal, and no
-        // readable nearby cwd in these processless panes.
+        // the first tab or workspace, none holding the first workspace,
+        // nothing but a shell to signal, and no readable nearby cwd in
+        // these processless panes.
         refused.sort();
         assert_eq!(
             refused,
             [
-                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wmh", "wn"
+                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wk", "wmh", "wn"
             ]
         );
         Ok(())

@@ -267,6 +267,8 @@ wire! {
         NewTab,
         NewWorkspace,
         Beside(direction: Direction),
+        /// A workspace's place at the top (`all`).
+        Top,
     }
 }
 
@@ -762,11 +764,12 @@ wire! {
         /// Stops the server; from the CLI, refused from one of its own panes
         /// or with people attached.
         KillServer,
-        /// A tab with a shell or a program, in the workspace given (made if
-        /// named and not there), else the caller's; a client asking from a
-        /// key or prompt is moved to it.
+        /// A tab with a shell or a program, in the last workspace of
+        /// `target`, each in the one before (each from the first not there
+        /// made, the first at the top), else the caller's; a client asking
+        /// from a key or prompt is moved to it.
         NewTab {
-            target: Option<WsRef>,
+            target: Vec<WsRef>,
             name: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
@@ -821,8 +824,10 @@ wire! {
             target: AnyRef,
             name: String,
         },
-        MovePane {
-            target: PaneId,
+        /// A pane to another place, or a workspace into another or to the
+        /// top.
+        Move {
+            target: AnyRef,
             to: MoveTo,
         },
         SwapPane {
@@ -1019,7 +1024,7 @@ impl Command {
             | C::Resize(_)
             | C::Kill { .. }
             | C::Rename { .. }
-            | C::MovePane { .. }
+            | C::Move { .. }
             | C::SwapPane { .. }
             | C::Arrange { .. }
             | C::ResizePane { .. }

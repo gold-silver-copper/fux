@@ -36,9 +36,12 @@ wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Workspace {
         pub id: WsId,
+        /// The workspace it is in, none at the top.
+        pub parent: Option<WsId>,
         pub name: Option<String>,
         pub label: String,
-        pub tabs: Vec<TabId>,
+        /// Its tabs and workspaces, in order.
+        pub children: Vec<crate::command::AnyRef>,
     }
 }
 wire! {
@@ -173,7 +176,7 @@ impl Snapshot {
             .try_fold(entities, |n, t| n.checked_add(t.nodes.len()))?;
         self.workspaces
             .iter()
-            .try_fold(nodes, |n, w| n.checked_add(w.tabs.len()))
+            .try_fold(nodes, |n, w| n.checked_add(w.children.len()))
     }
 }
 
@@ -198,25 +201,19 @@ impl Snapshot {
         sorted(self.tabs.iter().map(|t| t.id))?;
         let panes = sorted(self.panes.iter().map(|p| p.id))?;
         sorted(self.clients.iter().map(|c| c.id))?;
-        let mut ordered_tabs = self.tabs.iter().peekable();
+        // Each workspace holds what names it as its own, and something.
+        let holds = |w: &Workspace, child| w.children.contains(&child);
+        let held_by = |id: Option<WsId>, child| {
+            id.and_then(|id| self.workspaces.iter().find(|w| w.id == id))
+                .is_none_or(|w| holds(w, child))
+        };
         for w in &self.workspaces {
-            if w.tabs.is_empty() {
-                return Err(bad());
-            }
-            sorted(w.tabs.iter().copied())?;
-            for id in &w.tabs {
-                if ordered_tabs
-                    .peek()
-                    .is_some_and(|t| t.id == *id && t.workspace == w.id)
-                {
-                    ordered_tabs.next();
-                }
-            }
-            if ordered_tabs.peek().is_some_and(|t| t.workspace == w.id) {
+            sorted(w.children.iter().copied())?;
+            if w.children.is_empty() || !held_by(w.parent, AnyRef::Workspace(w.id)) {
                 return Err(bad());
             }
         }
-        if ordered_tabs.next().is_some() {
+        if !(self.tabs.iter()).all(|t| held_by(Some(t.workspace), AnyRef::Tab(t.id))) {
             return Err(bad());
         }
         let mut ordered_panes = self.panes.iter();

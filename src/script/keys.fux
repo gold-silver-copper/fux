@@ -7,6 +7,10 @@ str C-b prefix
 
 # -- client pane : the client whose key runs this, and the pane it focuses
 define me-focused me me focused end
+# handle -- workspace : the workspace holding the handle's, a level out
+define outer workspace str parent get dup kind str null eq if str 'none holds it' fail then end
+# handle -- workspace : the first workspace in the handle's, a level in
+define inner workspace str children get let kids list kids each dup kind str workspace eq if else drop then end end dup len 0 eq if str 'none is in it' fail then first end
 
 str v code me focused str horizontal axis split drop end bind  str 'split side by side' label  str Panes group
 str s code me focused str vertical axis split drop end bind  str 'split stacked' label  str Panes group
@@ -35,6 +39,8 @@ str 't m l' code me focused tab str next reorder end bind  str 'move tab later' 
 str 'w n' code opts str new-workspace in new-tab drop end bind  str 'new workspace' label  str Workspaces group
 str 'w h' code me-focused workspace str previous step end bind  str 'previous workspace' label  str Workspaces group
 str 'w l' code me-focused workspace str next step end bind  str 'next workspace' label  str Workspaces group
+str 'w j' code me-focused inner show end bind  str 'into a workspace in it' label  str Workspaces group
+str 'w k' code me-focused outer str next step end bind  str 'next workspace a level out' label  str Workspaces group
 str 'w g' code me-focused workspace choose-among end bind  str 'choose a workspace' label  str Workspaces group
 str 'w r' code me-focused workspace rename-prompt end bind  str 'rename workspace' label  str Workspaces group
 str 'w x' code me-focused workspace confirm-close end bind  str 'close workspace' label  str Workspaces group

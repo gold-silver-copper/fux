@@ -22,10 +22,10 @@ events.events[][attached]: event pane tab workspace client origin next
 events.events[][bell]: event pane tab workspace origin next
 events.events[][closed]: event pane tab workspace origin next
 events.events[][closed]: event tab workspace origin next
-events.events[][closed]: event workspace origin next
+events.events[][closed]: event workspace parent origin next
 events.events[][created]: event pane tab workspace origin next
 events.events[][created]: event tab workspace name origin next
-events.events[][created]: event workspace name origin next
+events.events[][created]: event workspace parent name origin next
 events.events[][detached]: event pane tab workspace client origin next
 events.events[][done]: event pane tab workspace status origin next
 events.events[][exited]: event pane tab workspace exited input_unread origin next
@@ -34,12 +34,13 @@ events.events[][history_budget]: event pane tab workspace history_bytes origin n
 events.events[][history_cleared]: event pane tab workspace origin next
 events.events[][laid_out]: event tab workspace origin next
 events.events[][moved]: event pane tab workspace from_tab from_workspace origin next
+events.events[][moved]: event workspace parent origin next
 events.events[][notification]: event pane tab workspace text truncated origin next
 events.events[][renamed]: event pane tab workspace name origin next
 events.events[][renamed]: event tab workspace name origin next
-events.events[][renamed]: event workspace name origin next
+events.events[][renamed]: event workspace parent name origin next
 events.events[][reordered]: event tab workspace origin next
-events.events[][reordered]: event workspace origin next
+events.events[][reordered]: event workspace parent origin next
 events.events[][resized]: event pane tab workspace cols rows origin next
 events.events[][respawned]: event pane tab workspace input_unread origin next
 events.events[][screen]: event pane tab workspace client origin next
@@ -63,7 +64,7 @@ snapshot.facts.panes[].state.pictures[]: row col rows cropped cols width height
 snapshot.facts.panes[].state: foreground_group hung_up read_error exited signal alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output bells notification truncated input_queued input_unread
 snapshot.facts.panes[]: id tab name label title pid rows cols version state launch
 snapshot.facts.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
-snapshot.facts.workspaces[]: id name label tabs
+snapshot.facts.workspaces[]: id parent name label children
 snapshot.facts: run cursor scope projection workspaces tabs panes clients
 snapshot.recipe.clients[].output: graphics underline_styles clipboard kitty_flags_requested
 snapshot.recipe.clients[].seats[]: in current last
@@ -82,7 +83,7 @@ snapshot.recipe.panes[].state.pictures[]: row col rows cropped cols width height
 snapshot.recipe.panes[].state: foreground_group hung_up read_error exited signal alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output bells notification truncated input_queued input_unread
 snapshot.recipe.panes[]: id tab name label title pid rows cols version state launch cwd
 snapshot.recipe.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
-snapshot.recipe.workspaces[]: id name label tabs
+snapshot.recipe.workspaces[]: id parent name label children
 snapshot.recipe: run cursor scope projection workspaces tabs panes clients
 snapshot.topology.clients[].output: graphics underline_styles clipboard kitty_flags_requested
 snapshot.topology.clients[].seats[]: in current last
@@ -91,7 +92,7 @@ snapshot.topology.clients[].terminal: sixel_reported cell_reported underline_sty
 snapshot.topology.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane seats opening mode
 snapshot.topology.panes[]: id tab name label title pid rows cols version
 snapshot.topology.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
-snapshot.topology.workspaces[]: id name label tabs
+snapshot.topology.workspaces[]: id parent name label children
 snapshot.topology: run cursor scope projection workspaces tabs panes clients
 status: socket release protocol server_release server_protocol server_pid compatible
 word: name provenance effect documentation definition codes

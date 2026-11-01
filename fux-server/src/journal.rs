@@ -7,7 +7,7 @@ use fux_wire::events::{Actor, Batch, Cursor, Item, Seq, Status};
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::inspect::Scope;
 use fux_wire::json::Json;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewChange {
@@ -45,6 +45,13 @@ pub struct Journal {
     next: Seq,
     actor: Actor,
     exhausted: bool,
+    /// The workspace each workspace in one is in, as the session's parts
+    /// keep it (`nest`).
+    parents: BTreeMap<WsId, WsId>,
+    /// For each entry kept that happened in a workspace in another, the
+    /// workspaces that held those it names then, beyond them: so a
+    /// workspace's reader reads what happens in those in it.
+    within: BTreeMap<Seq, Box<[WsId]>>,
 }
 impl Journal {
     pub fn new(kept: fux_wire::command::JournalEntries) -> Journal {
@@ -54,7 +61,34 @@ impl Journal {
             next: Seq::default(),
             actor: Actor::default(),
             exhausted: false,
+            parents: BTreeMap::new(),
+            within: BTreeMap::new(),
         }
+    }
+    /// Workspace `ws` is in `parent` from now on, or at the top (or gone).
+    pub(crate) fn nest(&mut self, ws: WsId, parent: Option<WsId>) {
+        match parent {
+            Some(parent) => self.parents.insert(ws, parent),
+            None => self.parents.remove(&ws),
+        };
+    }
+    /// The workspaces holding those `event` names, beyond them.
+    fn within_of(&self, event: &Event) -> Box<[WsId]> {
+        let parent = |ws: &WsId| self.parents.get(ws).copied();
+        let up = |ws: WsId| std::iter::successors(parent(&ws), parent).take(self.parents.len());
+        let (_, _, ws) = event.ids();
+        let from = match event {
+            Event::Pane(_, PaneEvent::Moved((from, _))) => Some(*from),
+            Event::Workspace(_, Change::Moved(from)) => *from,
+            Event::Pane(..)
+            | Event::Tab(..)
+            | Event::Workspace(..)
+            | Event::Layout(_)
+            | Event::Zoomed(..)
+            | Event::View { .. } => None,
+        };
+        let from = from.into_iter().flat_map(|f| std::iter::once(f).chain(up(f)));
+        ws.into_iter().flat_map(up).chain(from).collect()
     }
     /// Request scopes restore the previous actor before returning; deferred
     /// work retains its own actor rather than inheriting a later request's.
@@ -75,8 +109,14 @@ impl Journal {
         let seq = self.next;
         self.next = Seq(next);
         // Evict first so a full ring never grows.
-        if self.entries.len() == self.kept {
-            self.entries.pop_front();
+        if self.entries.len() == self.kept
+            && let Some(evicted) = self.entries.pop_front()
+        {
+            self.within.remove(&evicted.seq);
+        }
+        let within = self.within_of(&event);
+        if !within.is_empty() {
+            self.within.insert(seq, within);
         }
         self.entries.push_back(Entry { seq, event, actor });
     }
@@ -141,7 +181,8 @@ impl Teller<'_> {
 pub enum Event {
     Pane(PaneAt, PaneEvent),
     Tab((WsId, TabId), Change),
-    Workspace(WsId, Change),
+    /// At the workspace it is in (none: the top), and the workspace.
+    Workspace((Option<WsId>, WsId), Change),
     /// A tab's tree or fit changed. Consumers take a new snapshot.
     Layout((WsId, TabId)),
     /// A tab's zoomed pane is now this one, or none.
@@ -163,6 +204,8 @@ pub enum Change {
     Renamed(String),
     Closed,
     Reordered,
+    /// A workspace moved here from the one it was in (none: the top).
+    Moved(Option<WsId>),
 }
 
 /// What happens to a pane, and in it.
@@ -217,6 +260,7 @@ impl Change {
             Change::Renamed(name) => ("renamed", named(name)),
             Change::Closed => ("closed", Vec::new()),
             Change::Reordered => ("reordered", Vec::new()),
+            Change::Moved(_) => ("moved", Vec::new()),
         }
     }
 }
@@ -279,7 +323,7 @@ impl Event {
             Event::Pane(((ws, tab), pane), _) => (Some(*pane), Some(*tab), Some(*ws)),
             Event::Tab((ws, tab), _) | Event::Layout((ws, tab)) => (None, Some(*tab), Some(*ws)),
             Event::Zoomed((ws, tab), pane) => (*pane, Some(*tab), Some(*ws)),
-            Event::Workspace(ws, _) => (None, None, Some(*ws)),
+            Event::Workspace((_, ws), _) => (None, None, Some(*ws)),
             Event::View { at, .. } => at.map_or((None, None, None), |((ws, tab), pane)| {
                 (Some(pane), Some(tab), Some(ws))
             }),
@@ -291,7 +335,7 @@ impl Event {
         match self {
             Event::Pane((_, pane), PaneEvent::Closed) => Some(AnyRef::Pane(*pane)),
             Event::Tab((_, tab), Change::Closed) => Some(AnyRef::Tab(*tab)),
-            Event::Workspace(ws, Change::Closed) => Some(AnyRef::Workspace(*ws)),
+            Event::Workspace((_, ws), Change::Closed) => Some(AnyRef::Workspace(*ws)),
             Event::Pane(..)
             | Event::Tab(..)
             | Event::Workspace(..)
@@ -351,8 +395,9 @@ pub fn every_kind(
         Change::Reordered,
     ] {
         events.push(Event::Tab(at.0, change.clone()));
-        events.push(Event::Workspace(at.0.0, change));
+        events.push(Event::Workspace((Some(at.0.0), at.0.0), change));
     }
+    events.push(Event::Workspace((None, at.0.0), Change::Moved(Some(at.0.0))));
     let [title, notification] = said;
     let ended = |ended| Told::Exited(End { ended, left });
     for told in [
@@ -447,7 +492,8 @@ impl Reader {
         }
         Ok(Self { scope, next })
     }
-    fn wants(&self, event: &Event) -> bool {
+    fn wants(&self, journal: &Journal, entry: &Entry) -> bool {
+        let event = &entry.event;
         let (pane, tab, ws) = event.ids();
         let from = if let Event::Pane(_, PaneEvent::Moved(from)) = event {
             Some(*from)
@@ -459,7 +505,8 @@ impl Reader {
             Scope::Target(AnyRef::Pane(p)) => pane == Some(p),
             Scope::Target(AnyRef::Tab(t)) => tab == Some(t) || from.is_some_and(|(_, f)| f == t),
             Scope::Target(AnyRef::Workspace(w)) => {
-                ws == Some(w) || from.is_some_and(|(f, _)| f == w)
+                let within = journal.within.get(&entry.seq);
+                ws == Some(w) || within.is_some_and(|within| within.contains(&w))
             }
             Scope::Client(c) => matches!(event, Event::View { client, .. } if *client == c),
         }
@@ -493,7 +540,7 @@ impl Reader {
             missed = missed.saturating_add(entry.seq.0.saturating_sub(self.next.seq.0));
             self.next.seq = entry.seq;
             let mut value = None;
-            if self.wants(&entry.event) {
+            if self.wants(journal, entry) {
                 let next = Cursor {
                     seq: Seq(entry.seq.0.saturating_add(1)),
                     run: self.next.run,
@@ -512,11 +559,20 @@ impl Reader {
                 } else {
                     None
                 };
+                let parent = match entry.event {
+                    Event::Workspace((parent, _), _) => parent,
+                    Event::Pane(..)
+                    | Event::Tab(..)
+                    | Event::Layout(_)
+                    | Event::Zoomed(..)
+                    | Event::View { .. } => None,
+                };
                 let item = Item {
                     data: entry.event.json(),
                     pane,
                     tab,
                     workspace,
+                    parent,
                     client,
                     moved_from,
                     origin: entry.actor,
@@ -736,11 +792,19 @@ mod tests {
                 )
                 | Event::Tab(
                     _,
-                    Change::Created(_) | Change::Renamed(_) | Change::Closed | Change::Reordered,
+                    Change::Created(_)
+                    | Change::Renamed(_)
+                    | Change::Closed
+                    | Change::Reordered
+                    | Change::Moved(_),
                 )
                 | Event::Workspace(
                     _,
-                    Change::Created(_) | Change::Renamed(_) | Change::Closed | Change::Reordered,
+                    Change::Created(_)
+                    | Change::Renamed(_)
+                    | Change::Closed
+                    | Change::Reordered
+                    | Change::Moved(_),
                 )
                 | Event::View {
                     change:
@@ -830,7 +894,7 @@ mod tests {
         assert_eq!(lost.batch(&journal, true)?.missed, 0);
         if cfg!(target_pointer_width = "64") {
             assert_eq!(std::mem::size_of::<Entry>(), 80);
-            assert_eq!(std::mem::size_of::<Journal>(), 72);
+            assert_eq!(std::mem::size_of::<Journal>(), 120);
             assert_eq!(std::mem::size_of::<Event>(), 56);
         }
         Ok(())
@@ -854,7 +918,7 @@ mod tests {
             session
                 .parts
                 .journal_mut()
-                .push(Event::Workspace(WsId::of(2), Change::Reordered));
+                .push(Event::Workspace((None, WsId::of(2)), Change::Reordered));
         }
         for _ in 0..3 {
             assert!(

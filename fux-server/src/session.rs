@@ -407,17 +407,17 @@ impl Session {
             ));
         }
         let new = NewPane::new(&initial.start, &initial.cwd, initial.options, (size, None));
-        self.create_workspace(initial.name.clone(), None, Fit::Clients(size), new, now)
-            .map(drop)
+        let made = vec![initial.name.clone()];
+        (self.create_workspaces(None, made, None, Fit::Clients(size), new, now)).map(drop)
     }
 
     // ---------------------------------------------------------------- lookup
 
     pub fn workspace(&self, id: WsId) -> Option<&Workspace> {
-        self.parts.workspaces().iter().find(|w| w.id() == id)
+        self.parts.workspace(id)
     }
     pub fn tab(&self, id: TabId) -> Option<&Tab> {
-        (self.parts.workspaces().iter().flat_map(Workspace::tabs)).find(|t| t.id() == id)
+        self.parts.tab(id).map(|(_, tab)| tab)
     }
     /// A tab's layout.
     pub fn root(&self, tab: TabId) -> Option<&Tree> {
@@ -429,8 +429,7 @@ impl Session {
     }
     /// The workspace a tab is in.
     pub fn tab_workspace(&self, tab: TabId) -> Result<WsId, Error> {
-        let ws = (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.id() == tab));
-        ws.map(|w| w.id()).ok_or(Error::NoTab(tab))
+        self.parts.tab(tab).map(|(ws, _)| ws).ok_or(Error::NoTab(tab))
     }
     /// The workspace that holds `target` (a workspace, itself), if it is
     /// there.
@@ -441,13 +440,13 @@ impl Session {
             AnyRef::Workspace(w) => self.workspace(w).map(|w| w.id()),
         }
     }
-    /// The workspace client `client` shows.
+    /// The workspace client `client` shows that holds the tab it shows.
     pub fn shown_workspace(&self, client: ClientId) -> Option<&Workspace> {
-        self.parts.stack().current(client)
+        self.workspace(self.place(client)?.ws)
     }
     /// The tab client `client` shows.
     pub fn shown_tab(&self, client: ClientId) -> Option<&Tab> {
-        self.shown_workspace(client)?.tab_of(client)
+        self.tab(self.place(client)?.tab)
     }
     pub(crate) fn shown_tab_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
         let tab = self.shown_tab(client)?.id();
@@ -739,9 +738,9 @@ impl Session {
     /// The workspace, tab or pane named `name`: one at most, as every
     /// name is checked by `check_free` as it is given.
     fn named(&self, name: &str) -> Option<AnyRef> {
-        let workspaces = self.parts.workspaces();
+        let workspaces = self.parts.every_workspace();
         let workspace = workspaces.iter().find(|w| w.name() == Some(name));
-        let tab = || (workspaces.iter().flat_map(Workspace::tabs)).find(|t| t.name() == Some(name));
+        let tab = || (workspaces.iter().flat_map(|w| w.tabs())).find(|t| t.name() == Some(name));
         let pane = || (self.parts.panes().values()).find(|p| p.name() == Some(name));
         (workspace.map(|w| AnyRef::Workspace(w.id())))
             .or_else(|| tab().map(|t| AnyRef::Tab(t.id())))
@@ -819,13 +818,13 @@ impl Session {
         }
     }
 
-    /// The tabs in `scope`, in order: a tab itself, a workspace's, or with
-    /// none every one; a pane holds none.
+    /// The tabs in `scope`, in order: a tab itself, a workspace's and
+    /// those of the workspaces in it, or with none every one; a pane holds
+    /// none.
     fn tabs_of(&self, scope: Option<AnyRef>) -> Result<Vec<TabId>, Error> {
-        let workspaces = self.parts.workspaces().iter();
         let tabs = |ws: Option<WsId>| {
-            let ws = workspaces.filter(|w| ws.is_none_or(|id| w.id() == id));
-            ws.flat_map(Workspace::tabs).map(Tab::id).collect()
+            let tabs = self.parts.tabs_in(ws).into_iter();
+            tabs.map(|(_, tab)| tab.id()).collect()
         };
         Ok(match scope.map(|target| self.there(target)).transpose()? {
             None => tabs(None),
@@ -1034,41 +1033,101 @@ impl Session {
         })
     }
 
-    /// A workspace with one tab, laid out on `fit`, holding one new pane.
-    fn create_workspace(
+    /// Workspaces `made`, named as each says, each in the one before and
+    /// the first in `parent` (none: at the top), the last with one tab
+    /// named `tab_name`, laid out on `fit`, holding one new pane.
+    fn create_workspaces(
         &mut self,
-        name: Option<String>,
+        parent: Option<WsId>,
+        made: Vec<Option<String>>,
         tab_name: Option<String>,
         fit: Fit,
         new: NewPane<'_>,
         now: Instant,
     ) -> Result<Place, Error> {
-        if let Some(name) = &name {
+        for name in made.iter().flatten() {
             self.check_free(name, None)?;
         }
         // The IDs are taken before the pane starts, so that none can run out
         // after, and are committed once it has.
         let mut ids = self.ids.clone();
-        let id = ids.workspace()?;
+        let made = (made.into_iter())
+            .map(|name| Ok((ids.workspace()?, name)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let ws = made.last().map(|(id, _)| *id).ok_or(Error::NoWorkspaceGiven)?;
         let tab = ids.tab()?;
         let pane = self.new_pane(&mut ids, new, now)?;
-        self.ids = ids;
-        let made = Place {
-            ws: id,
+        let place = Place {
+            ws,
             tab,
             pane: pane.id(),
         };
-        (self.parts).add_workspace((id, name), (tab, tab_name, fit), pane);
-        Ok(made)
+        if let Err(pane) = (self.parts).add_workspaces(parent, made, (tab, tab_name, fit), pane) {
+            self.end(pane.into_process(), true, now);
+            return Err(parent.map_or(Error::NoWorkspaceGiven, Error::NoWorkspace));
+        }
+        self.ids = ids;
+        Ok(place)
     }
 
-    /// Adds a tab named `name` (checked by `new-tab`) to
-    /// the workspace `ws` names, or else `here`'s, laid out on `fit`,
-    /// holding one new pane. A workspace not there that `ws` names by its
-    /// name is made, the tab its first.
+    /// Where `in`'s workspaces `path` put a new tab named `tab`: the
+    /// workspace there that holds the rest, and the names of the rest, made
+    /// in it, each in the one before. Each from the first not there is
+    /// made; one there is in the one before it, and the first anywhere.
+    /// With none, `here`'s.
+    fn nesting(
+        &self,
+        path: &[WsRef],
+        here: Here,
+        tab: Option<&str>,
+    ) -> Result<(Option<WsId>, Vec<Option<String>>), Error> {
+        if path.is_empty() {
+            return Ok((Some(here.ws().ok_or(Error::NoWorkspaceGiven)?), Vec::new()));
+        }
+        let (mut parent, mut made) = (None, Vec::<Option<String>>::new());
+        for (i, r) in path.iter().enumerate() {
+            let found = match r {
+                WsRef::Id(id) => Some(self.workspace(*id).ok_or(Error::NoWorkspace(*id))?.id()),
+                WsRef::Name(name) => match self.named(name) {
+                    Some(AnyRef::Workspace(id)) => Some(id),
+                    Some(holder) => return Err(Error::NameTaken(name.clone(), holder)),
+                    None => None,
+                },
+                WsRef::New => None,
+            };
+            match (found, r) {
+                (Some(id), _) if made.is_empty() => {
+                    if i > 0 && self.parts.parent(id) != Some(parent) {
+                        let p = parent.map_or_else(String::new, |p| p.to_string());
+                        let why = format!("{} is not in {p}", AnyRef::Workspace(id));
+                        return Err(fail(Raise::BadValue, why));
+                    }
+                    parent = Some(id);
+                }
+                (Some(id), _) => {
+                    let why = format!("{} is not in a workspace made here", AnyRef::Workspace(id));
+                    return Err(fail(Raise::BadValue, why));
+                }
+                (None, WsRef::Name(name)) => {
+                    if tab == Some(name) || made.contains(&Some(name.clone())) {
+                        let why = format!("a workspace and its tab or another workspace made with it cannot both be named {name:?}");
+                        return Err(fail(Raise::NameTaken, why));
+                    }
+                    made.push(Some(name.clone()));
+                }
+                (None, WsRef::Id(_) | WsRef::New) => made.push(None),
+            }
+        }
+        Ok((parent, made))
+    }
+
+    /// Adds a tab named `name` (checked by `new-tab`) to the workspace
+    /// `in`'s `path` names (`nesting`), or else `here`'s, laid out on
+    /// `fit`, holding one new pane; the workspaces it names that are not
+    /// there are made, the tab the first child of the last.
     fn create_tab(
         &mut self,
-        ws: Option<&WsRef>,
+        path: &[WsRef],
         here: Here,
         name: Option<String>,
         fit: Fit,
@@ -1078,19 +1137,10 @@ impl Session {
         if let Some(name) = &name {
             self.check_free(name, None)?;
         }
-        let id = match (self.ws_target(ws, here), ws) {
-            (Ok(id), _) => id,
-            (Err(_), Some(WsRef::New)) => {
-                return self.create_workspace(None, name, fit, new, now);
-            }
-            (Err(_), Some(WsRef::Name(ws_name))) => {
-                if name.as_ref() == Some(ws_name) {
-                    let why = format!("a workspace and its tab cannot both be named {ws_name:?}");
-                    return Err(fail(Raise::NameTaken, why));
-                }
-                return self.create_workspace(Some(ws_name.clone()), name, fit, new, now);
-            }
-            (Err(error), _) => return Err(error),
+        let (parent, made) = self.nesting(path, here, name.as_deref())?;
+        let id = match (parent, made.is_empty()) {
+            (Some(id), true) => id,
+            (parent, _) => return self.create_workspaces(parent, made, name, fit, new, now),
         };
         // Found before its pane's program starts, which nothing can then
         // leave running. As for a workspace: the ID first, committed after
@@ -1655,8 +1705,12 @@ impl Session {
             AnyRef::Pane(p) => self.locate(p).map(|(_, tab)| AnyRef::Tab(tab)),
             AnyRef::Tab(_) | AnyRef::Workspace(_) => Some(of),
         };
-        let at = |p: Place| [AnyRef::Tab(p.tab), AnyRef::Workspace(p.ws)].map(Some);
-        let shown = |c: &ClientId| self.place(*c).is_some_and(|p| at(p).contains(&of));
+        let at = |p: Place| match of {
+            Some(AnyRef::Workspace(ws)) => self.parts.within(p.ws, ws),
+            Some(tab) => tab == AnyRef::Tab(p.tab),
+            None => false,
+        };
+        let shown = |c: &ClientId| self.place(*c).is_some_and(at);
         self.views.keys().copied().filter(shown).collect()
     }
 
@@ -2228,7 +2282,7 @@ impl Session {
                 let new = NewPane::new(start, &cwd, *options, sized);
                 // A workspace named that is not there is made, its first tab
                 // this one.
-                let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new, now)?;
+                let made = self.create_tab(target, here, name.clone(), fit, new, now)?;
                 self.follow(here, AnyRef::Tab(made.tab));
                 Ok(acted(self.pane(made.pane)?.version(self.run)))
             }
@@ -2297,9 +2351,12 @@ impl Session {
                 let target = self.there(*target)?;
                 self.rename(target, name.clone()).map(|()| Reply::default())
             }
-            &Command::MovePane { target, ref to } => {
-                self.move_pane(target, to, here).map(|()| Reply::default())
+            &Command::Move { target, ref to } => match target {
+                AnyRef::Pane(pane) => self.move_pane(pane, to, here),
+                AnyRef::Workspace(ws) => self.move_workspace(ws, to, here),
+                AnyRef::Tab(_) => Err(fail(Raise::BadValue, "move takes a pane or workspace")),
             }
+            .map(|()| Reply::default()),
             &Command::SwapPane { target, with } => {
                 let source = self.pane(target)?.id();
                 let other = match with {
@@ -2732,8 +2789,8 @@ impl Session {
             &MoveTo::Tab(tab) => Destination::Tab(self.tab(tab).ok_or(Error::NoTab(tab))?.id()),
             MoveTo::Workspace(r) => {
                 let ws = self.resolve_ws(r)?;
-                let first = self.workspace(ws).and_then(|w| w.tabs().first());
-                Destination::Tab(first.ok_or(Error::NoWorkspace(ws))?.id())
+                let first = self.parts.tabs_in(Some(ws)).first().map(|(_, t)| t.id());
+                Destination::Tab(first.ok_or(Error::NoWorkspace(ws))?)
             }
             // A tab made for it holds it alone, which shows on every size
             // it is laid out on (each has a cell: its fit's, and a screen
@@ -2743,6 +2800,10 @@ impl Session {
             MoveTo::NewWorkspace => {
                 let (id, tab) = (ids.workspace()?, ids.tab()?);
                 Destination::NewWorkspace((id, None), (tab, None, fit))
+            }
+            MoveTo::Top => {
+                let why = "all is where a workspace moves; a pane moves to a tab or workspace";
+                return Err(fail(Raise::BadValue, why));
             }
         };
         let tab = match &dest {
@@ -2760,6 +2821,33 @@ impl Session {
         self.ids = ids;
         // The moving client follows its pane.
         self.follow(here, AnyRef::Pane(pane));
+        Ok(())
+    }
+
+    /// `move` of workspace `ws`: into the workspace `to` names, after what
+    /// it holds, or with `all` to the top; never into itself or one in it.
+    fn move_workspace(&mut self, ws: WsId, to: &MoveTo, here: Here) -> Result<(), Error> {
+        let from = self.parts.parent(ws).ok_or(Error::NoWorkspace(ws))?;
+        let into = match to {
+            MoveTo::Workspace(r) => Some(self.resolve_ws(r)?),
+            MoveTo::Top => None,
+            MoveTo::Tab(_) | MoveTo::NewTab | MoveTo::NewWorkspace | MoveTo::Beside(_) => {
+                let why = "a workspace moves into a workspace, or with all to the top";
+                return Err(fail(Raise::BadValue, why));
+            }
+        };
+        if let Some(into) = into.filter(|into| self.parts.within(*into, ws)) {
+            let (ws, into) = (AnyRef::Workspace(ws), AnyRef::Workspace(into));
+            let why = match ws == into {
+                true => format!("{ws} cannot move into itself"),
+                false => format!("{ws} cannot move into {into}, which is in it"),
+            };
+            return Err(fail(Raise::BadValue, why));
+        }
+        if from != into {
+            (self.parts.move_workspace(ws, into)).ok_or(Error::NoWorkspace(ws))?;
+            self.follow(here, AnyRef::Workspace(ws));
+        }
         Ok(())
     }
 
@@ -2804,10 +2892,8 @@ impl Session {
                 self.parts.swap(p, other);
                 return Ok(());
             }
-            AnyRef::Tab(t) => self.parts.reorder_tab(t, toward).ok_or(Error::NoTab(t))?,
-            AnyRef::Workspace(w) => {
-                (self.parts.reorder_workspace(w, toward)).ok_or(Error::NoWorkspace(w))?
-            }
+            AnyRef::Tab(t) => self.parts.reorder(target, toward).ok_or(Error::NoTab(t))?,
+            AnyRef::Workspace(w) => (self.parts.reorder(target, toward)).ok_or(Error::NoWorkspace(w))?,
         };
         moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
     }
@@ -2820,12 +2906,16 @@ impl Session {
         let within = match from {
             AnyRef::Pane(p) => Some(AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1)),
             AnyRef::Tab(t) => Some(AnyRef::Workspace(self.tab_workspace(t)?)),
-            AnyRef::Workspace(_) => None,
+            AnyRef::Workspace(w) => {
+                (self.parts.parent(w).ok_or(Error::NoWorkspace(w))?).map(AnyRef::Workspace)
+            }
         };
-        let siblings: Vec<AnyRef> = match from {
-            AnyRef::Pane(_) => (self.panes_of(within)?.into_iter().map(AnyRef::Pane)).collect(),
-            AnyRef::Tab(_) => (self.tabs_of(within)?.into_iter().map(AnyRef::Tab)).collect(),
-            AnyRef::Workspace(_) => (self.parts.workspaces().iter())
+        let siblings: Vec<AnyRef> = match (from, within) {
+            (AnyRef::Pane(_), _) => (self.panes_of(within)?.into_iter().map(AnyRef::Pane)).collect(),
+            (_, Some(AnyRef::Workspace(w))) => (self.workspace(w).into_iter())
+                .flat_map(|w| w.stack().children().iter().map(crate::workspace::Child::id))
+                .collect(),
+            (_, _) => (self.parts.workspaces().iter())
                 .map(|w| AnyRef::Workspace(w.id()))
                 .collect(),
         };
@@ -2933,11 +3023,15 @@ impl Session {
                 match field {
                     "name" => ws.name().map_or(Json::Null, Json::str),
                     "label" => Json::str(format!("{}", ws.display_label())),
-                    "tabs" => {
-                        let mut ids = Vec::with_capacity(ws.tabs().len());
-                        ids.extend(ws.tabs().iter().map(|t| AnyRef::Tab(t.id())));
+                    "children" => {
+                        let children = ws.stack().children().iter();
+                        let ids = children.map(crate::workspace::Child::id).collect();
                         return Ok(Body::Handles(ids));
                     }
+                    "parent" => match self.parts.parent(id).flatten() {
+                        Some(parent) => return Ok(Body::Found(AnyRef::Workspace(parent))),
+                        None => Json::Null,
+                    },
                     _ => return Err(no_field()),
                 }
             }
@@ -3708,7 +3802,7 @@ mod tests {
                 let mut w = workspace.clone();
                 w.id = WsId::of(ws);
                 w.label = w.id.to_string();
-                w.tabs.clear();
+                w.children.clear();
                 for _ in 0..tabs_per_workspace {
                     let id = u32::try_from(snapshot.panes.len())?.saturating_add(1);
                     let mut t = tab.clone();
@@ -3723,7 +3817,7 @@ mod tests {
                     p.tab = t.id;
                     p.label = p.id.to_string();
                     p.version.pane = p.id;
-                    w.tabs.push(t.id);
+                    w.children.push(AnyRef::Tab(t.id));
                     snapshot.tabs.push(t);
                     snapshot.panes.push(p);
                 }
@@ -3805,7 +3899,7 @@ mod tests {
             };
             snapshot.validate()?;
             let ws = snapshot.workspaces.first().ok_or("workspace")?;
-            assert_eq!(ws.tabs.len(), 3);
+            assert_eq!(ws.children.len(), 3);
             assert_eq!((snapshot.tabs.len(), snapshot.panes.len()), (1, panes));
             let tab = snapshot.tabs.first().ok_or("tab")?;
             assert_eq!(tab.revision, s.tab(tab.id).and_then(|t| t.revision(s.run)));
@@ -3909,7 +4003,7 @@ mod tests {
         fn invariants(s: &Session) -> Result<(), String> {
             for &client in s.views.keys() {
                 holds(s.parts.stack(), client)?;
-                for ws in s.parts.workspaces() {
+                for ws in s.parts.every_workspace() {
                     holds(ws.stack(), client)?;
                     for tab in ws.tabs() {
                         let Shown { current, last } = tab.seat(client).ok_or("no seat")?.focus;
@@ -3927,8 +4021,8 @@ mod tests {
         };
         let at = |current, last: Option<u32>| {
             Some(Shown {
-                current: TabId::of(current),
-                last: last.map(TabId::of),
+                current: AnyRef::Tab(TabId::of(current)),
+                last: last.map(|l| AnyRef::Tab(TabId::of(l))),
             })
         };
         let (mut s, c) = attached(10, 40)?;
@@ -4008,9 +4102,10 @@ mod tests {
             Some(Shown { current, last })
         }
         let tabs = |s: &Session, ws| s.workspace(WsId::of(ws)).and_then(|w| w.stack().shown(e));
+        let on_tab = |tab| on(AnyRef::Tab(TabId::of(tab)), None);
         assert_eq!(s.parts.stack().shown(e), on(WsId::of(2), None));
-        assert_eq!(tabs(&s, 2), on(TabId::of(3), None));
-        assert_eq!(tabs(&s, 1), on(TabId::of(1), None));
+        assert_eq!(tabs(&s, 2), on_tab(3));
+        assert_eq!(tabs(&s, 1), on_tab(1));
         for (from, refused) in [
             ("@3", "no previously shown tab"),
             ("+2", "no previously shown workspace"),
@@ -4019,7 +4114,7 @@ mod tests {
             assert!(error.is_some_and(|e| e.contains(refused)), "{from}");
         }
         run(&mut s, "@3 kill")?;
-        assert_eq!(tabs(&s, 2), on(TabId::of(4), None));
+        assert_eq!(tabs(&s, 2), on_tab(4));
         run(&mut s, "+2 kill")?;
         assert_eq!(s.parts.stack().shown(e), on(WsId::of(3), None));
         Ok(())
@@ -5085,7 +5180,7 @@ mod tests {
         let new_tab = Command::NewTab {
             options: fux::script::default_state()?.preferences.pane_options(),
             start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
-            target: None,
+            target: Vec::new(),
             name: None,
             size: None,
             cwd: Some("/".into()),
@@ -7088,7 +7183,6 @@ mod tests {
             ("opts", "str a name", "str b name", "new-tab"),
             ("opts", "40 10 size", "40 10 size", "new-tab"),
             ("opts", "str / cwd", "str / cwd", "new-tab"),
-            ("opts", "str a in", "str b in", "new-tab"),
             ("opts", "str cat program", "str sh program", "new-tab"),
             (
                 "opts",
@@ -7574,9 +7668,9 @@ mod tests {
         assert_eq!(
             lines,
             concat!(
-                r#"{"event":"renamed","workspace":"+1","name":"x"}"#,
+                r#"{"event":"renamed","workspace":"+1","parent":null,"name":"x"}"#,
                 "\n",
-                r#"{"event":"renamed","workspace":"+1","name":"main"}"#,
+                r#"{"event":"renamed","workspace":"+1","parent":null,"name":"main"}"#,
                 "\n"
             )
         );
@@ -7775,7 +7869,6 @@ mod tests {
                     (
                         ws.name().map(str::to_owned),
                         ws.tabs()
-                            .iter()
                             .map(|tab| {
                                 (
                                     tab.name().map(str::to_owned),
@@ -7834,7 +7927,7 @@ mod tests {
         std::fs::create_dir_all(&dir)?;
         let mut s = started()?;
         let program = Command::NewTab {
-            target: Some(WsRef::Name("agent".into())),
+            target: vec![WsRef::Name("agent".into())],
             name: None,
             size: Some(fux_wire::command::Screen::new(24, 80)?),
             cwd: Some(dir.clone()),

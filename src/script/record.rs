@@ -281,6 +281,12 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
             ),
             ("from_tab", at(from_tab.map(AnyRef::Tab))),
             ("from_workspace", at(from_workspace.map(AnyRef::Workspace))),
+            // A workspace's event: the workspace it is in, null at the top.
+            (
+                "parent",
+                (item.tab.is_none() && item.workspace.is_some())
+                    .then(|| at(item.parent.map(AnyRef::Workspace)).unwrap_or_else(null)),
+            ),
         ];
         let Json::Object(data) = &item.data else {
             return Err(fail());
@@ -336,8 +342,10 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
     let b = &mut Builder;
     let run = s.run;
     let workspaces = b.list(&s.workspaces, |b,w| record! { b;
-        "id" => id(AnyRef::Workspace(w.id), run), "name" => b.optional(w.name.as_deref())?,
-        "label" => b.text(&w.label)?, "tabs" => b.list(&w.tabs, |_,t| Ok(id(AnyRef::Tab(*t), run)))?
+        "id" => id(AnyRef::Workspace(w.id), run),
+        "parent" => w.parent.map(|p| id(AnyRef::Workspace(p), run)).unwrap_or_else(null),
+        "name" => b.optional(w.name.as_deref())?,
+        "label" => b.text(&w.label)?, "children" => b.list(&w.children, |_,c| Ok(id(*c, run)))?
     })?;
     let tabs = b.list(&s.tabs, |b,t| {
         let nodes = b.list(&t.nodes, |b,n| match n {
@@ -634,6 +642,7 @@ mod tests {
                     pane: Some(PaneId::of(1)),
                     tab: Some(TabId::of(2)),
                     workspace: Some(WsId::of(3)),
+                    parent: None,
                     client: Some(ClientId::of(4)),
                     moved_from: Some((WsId::of(5), TabId::of(6))),
                     origin,

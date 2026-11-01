@@ -412,19 +412,17 @@ impl Session {
     /// rings each, at most once every [`BELL_GAP`], and marks the tab in the
     /// bar of each not shown it until it shows it.
     pub(crate) fn alert(&mut self, id: PaneId, bell: bool, notified: Option<Said>, now: Instant) {
-        let Some(ws) =
-            (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
-        else {
+        let Some((ws, tab)) = self.locate(id) else {
             return;
         };
         // Each client showing the workspace, and whether it is shown the tab.
         let viewers: BTreeMap<ClientId, bool> = (self
-            .viewers(fux_wire::command::AnyRef::Workspace(ws.id())))
+            .viewers(fux_wire::command::AnyRef::Workspace(ws)))
         .into_iter()
-        .map(|c| (c, ws.tab_of(c).is_some_and(|t| t.holds(id))))
+        .map(|c| (c, self.shows(c, tab)))
         .collect();
         let panes = self.parts.panes();
-        let rang = (ws.tabs().iter().find(|t| t.holds(id)))
+        let rang = (self.tab(tab))
             .map_or_else(String::new, |t| format!("bell in {}", t.label(panes)));
         let notice = (notified.zip(panes.get(&id))).map(|(said, p)| {
             format!(
@@ -433,7 +431,7 @@ impl Session {
                 said.as_str()
             )
         });
-        let Some(tab) = (self.locate(id)).and_then(|(_, tab)| self.parts.tab_mut(tab)) else {
+        let Some(tab) = self.parts.tab_mut(tab) else {
             return;
         };
         let mut rung = Vec::new();
