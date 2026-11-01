@@ -457,8 +457,8 @@ impl Tab {
     }
 
     /// Changes the layout with `change`; each client then focuses the pane
-    /// it did if the tab still holds it, else the one before, else its
-    /// neighbour.
+    /// it did if the tab still holds it, else of those it is shown the one
+    /// before, else its neighbour.
     fn edit<R>(
         &mut self,
         journal: &mut Journal,
@@ -474,9 +474,17 @@ impl Tab {
         }
         let root = &mut self.root;
         for (client, seat) in &mut self.seats {
-            let moved = seat
-                .focus
-                .keep(&was, |p| root.contains(p), Some(root.first_pane()));
+            // A focus gone goes among what the client is shown, its stacks
+            // repaired first: its last pane, else the neighbour, else the
+            // first.
+            let moved = match root.contains(seat.focus.current) {
+                true => seat.focus.keep(&was, |p| root.contains(p), None),
+                false => {
+                    let shown: BTreeSet<PaneId> = root.shown_panes(*client).into_iter().collect();
+                    let first = Some(root.first_shown(*client));
+                    seat.focus.keep(&was, |p| shown.contains(&p), first)
+                }
+            };
             seat.held &= !moved;
             root.reveal(*client, seat.focus.current);
         }
@@ -784,7 +792,7 @@ impl Parts {
         let shown = |c| {
             let mut shown = BTreeMap::new();
             for (_, tab) in &tabs {
-                let seen = tab.root.shown_panes(c);
+                let seen: BTreeSet<PaneId> = tab.root.shown_panes(c).into_iter().collect();
                 tab.root
                     .for_each_pane(&mut |p| _ = shown.insert(p, seen.contains(&p)));
             }

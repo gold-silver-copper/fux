@@ -2304,13 +2304,7 @@ impl Session {
                     let now = now.map_or_else(|| "exhausted".into(), |r| r.to_string());
                     return Err(fail(code, format!("{target} is at {now}, not {revision}")));
                 }
-                let root = layout::from_nodes(nodes)?;
-                if !root.same_panes(tab.root()) {
-                    return Err(fail(
-                        Raise::BadValue,
-                        "layout must contain every current tab pane exactly once",
-                    ));
-                }
+                let root = layout::from_nodes(nodes, &tab.root().panes())?;
                 self.room(*target, &root, None)?;
                 self.parts
                     .arrange(*target, root)
@@ -2813,8 +2807,7 @@ impl Session {
     fn neighbor(&self, from: PaneId, direction: Direction, here: Here) -> Result<PaneId, Error> {
         let found = self.locate(from).and_then(|(_, tab)| {
             let area = self.reference_area(tab, here)?;
-            let mut placed = Placement::default();
-            layout::place_into(self.root(tab)?, area, here.client(), &mut placed);
+            let placed = placed_from(self.root(tab)?, area, here.client(), from);
             layout::neighbor(&placed, from, direction)
         });
         found.ok_or(Error::NoNeighbor { from, direction })
@@ -3012,9 +3005,8 @@ impl Session {
                     fail(code, format!("no previously shown {}", kind.name()))
                 }),
             (Way::Toward(direction), AnyRef::Pane(from)) => {
-                let mut placed = Placement::default();
                 let found = root(from).and_then(|root| {
-                    layout::place_into(root, view.pane_area(), Some(view.id), &mut placed);
+                    let placed = placed_from(root, view.pane_area(), Some(view.id), from);
                     layout::neighbor(&placed, from, direction)
                 });
                 found
@@ -3194,6 +3186,20 @@ fn lay_out(
         }
         None => layout::place_into(root, area, client, out),
     }
+}
+
+/// Where each pane of a tab laid out as `root` is in `area` that `client`
+/// is shown, or with none every pane, `from` among them: at the stacks that
+/// hold it, the child holding it, as a zoom shows it to a client that chose
+/// another, its choices kept.
+fn placed_from(root: &Tree, area: Rect, client: Option<ClientId>, from: PaneId) -> Placement {
+    let mut root = std::borrow::Cow::Borrowed(root);
+    if let Some(client) = client {
+        root.to_mut().reveal(client, from);
+    }
+    let mut placed = Placement::default();
+    layout::place_into(&root, area, client, &mut placed);
+    placed
 }
 
 /// The item after the one at `index` among `items`, or before it, going
@@ -5540,6 +5546,104 @@ mod tests {
         run(&mut s, "%3 kill")?;
         assert_eq!([c1, c2].map(|c| s.focused(c)), [Some(PaneId::of(2)); 2]);
         assert_eq!(sizes(&s)[1], before[1]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_focus_gone_follows_its_stack_back_to_the_child_shown_before() -> TestResult {
+        let shown = |s: &Session, c| s.root(TabId::of(1)).map(|r| r.shown_panes(c));
+        // `[%1, %2 | %4, %3]`: the stack's last child is %1, the seat's
+        // last pane %2, which closes first.
+        let (mut s, c) = attached(24, 80)?;
+        run(
+            &mut s,
+            "%1 stack drop %2 stack drop %2 str horizontal axis split drop",
+        )?;
+        run(
+            &mut s,
+            &format!("str {c} client %2 show str {c} client %4 show"),
+        )?;
+        run(&mut s, "%2 kill %4 kill")?;
+        assert_eq!(s.focused(c), Some(PaneId::of(1)));
+        assert_eq!(shown(&s, c), Some(vec![PaneId::of(1)]));
+        // Moved out, as closed: `[%1 | %5, %3, %4]`, shown %4, then %1 and
+        // %5; %5 leaves for its last pane, then %1 for the stack's last.
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts 80 24 size str other in new-tab drop")?;
+        run(
+            &mut s,
+            "%1 stack drop %3 stack drop %1 str horizontal axis split drop",
+        )?;
+        for pane in [4, 1, 5] {
+            run(&mut s, &format!("str {c} client %{pane} show"))?;
+        }
+        run(&mut s, "%5 str @2 tab move")?;
+        assert_eq!(s.focused(c), Some(PaneId::of(1)));
+        run(&mut s, "%1 str @2 tab move")?;
+        assert_eq!(s.focused(c), Some(PaneId::of(4)));
+        assert_eq!(shown(&s, c), Some(vec![PaneId::of(4)]));
+        Ok(())
+    }
+
+    #[test]
+    fn a_step_from_a_zoom_finds_the_zoomed_panes_neighbour() -> TestResult {
+        let (mut s, c1) = attached(24, 80)?;
+        let c2 = s.attach(24, 80, None)?;
+        run(&mut s, "%1 str horizontal axis split drop %2 stack drop")?;
+        run(
+            &mut s,
+            &format!("str {c1} client %2 show str {c2} client %3 show %2 zoom"),
+        )?;
+        run(
+            &mut s,
+            &format!("str {c2} client dup focused str left step"),
+        )?;
+        assert_eq!(s.tab(TabId::of(1)).and_then(Tab::zoomed), None);
+        assert_eq!(s.focused(c2), Some(PaneId::of(1)));
+        let shown = s.root(TabId::of(1)).map(|r| r.shown_panes(c2));
+        assert_eq!(
+            shown,
+            Some(vec![PaneId::of(1), PaneId::of(3)]),
+            "its choice kept"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_layout_deeper_than_64_dumps_and_replays_as_it_is() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "opts 240 24 size str deep in new-tab drop")?;
+        for _ in 0..65 {
+            run(
+                &mut s,
+                "opts 10 10 size str other in new-tab str @2 tab move",
+            )?;
+        }
+        let tab = TabId::of(2);
+        let dump = s.dump_recipe(Some(AnyRef::Tab(tab)))?;
+        let mut again = started()?;
+        run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
+        let made = (again.parts.workspaces().iter())
+            .flat_map(|w| w.tabs())
+            .last();
+        // The same tree, each pane by its place in the layout.
+        let shape = |root: &Tree| {
+            let panes = root.panes();
+            let at = |p: &PaneId| panes.iter().position(|q| q == p);
+            let nodes = root.nodes().into_iter();
+            nodes
+                .map(|n| match n {
+                    fux_wire::layout::Node::Pane(p) => format!("{:?}", at(&p)),
+                    node @ (fux_wire::layout::Node::Split { .. }
+                    | fux_wire::layout::Node::Stack { .. }) => format!("{node:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        let (Some(root), Some(made)) = (s.root(tab), made.map(Tab::root)) else {
+            return Err("no layout".into());
+        };
+        assert_eq!(root.panes().len(), 66);
+        assert_eq!(shape(made), shape(root));
         Ok(())
     }
 

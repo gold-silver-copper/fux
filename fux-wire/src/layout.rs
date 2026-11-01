@@ -124,10 +124,6 @@ wire! {
     }
 }
 
-/// How deep a layout's native tree, which is walked as a recursion, may
-/// nest.
-pub const DEPTH_MAX: usize = 64;
-
 /// Whether a flat layout of `len` nodes may be given: none is no layout
 /// (`bad_value`), from the word or the server alike.
 pub fn admit_nodes(len: usize) -> Result<(), crate::code::Error> {
@@ -140,25 +136,32 @@ pub fn admit_nodes(len: usize) -> Result<(), crate::code::Error> {
     }
 }
 
-/// Validates a flat layout before constructing its native tree. Pane
-/// membership is checked separately against the tab at the commit boundary.
-/// A layout deeper than `DEPTH_MAX` is `too_long`; one that is no tree, `bad_value`.
-pub fn from_nodes(nodes: &[Node]) -> Result<Tree, crate::code::Error> {
+/// The native tree of a flat layout of exactly `panes`, a leaf each: one
+/// that is no tree, or holds others, is `bad_value`. Its leaves are checked
+/// before it is walked, so it is no deeper than a tree of those panes that
+/// edits make; it is walked and built with stacks of its own.
+pub fn from_nodes(nodes: &[Node], panes: &[PaneId]) -> Result<Tree, crate::code::Error> {
     use crate::code::{Raise, fail};
     admit_nodes(nodes.len())?;
-    let deep = || {
-        fail(
-            Raise::TooLong,
-            format!("a layout is past its depth of {DEPTH_MAX}"),
-        )
-    };
     let bad = |why: &str| fail(Raise::BadValue, why);
+    let sorted = |mut leaves: Vec<PaneId>| {
+        leaves.sort_unstable();
+        leaves
+    };
+    let leaves = (nodes.iter()).filter_map(|n| match n {
+        Node::Pane(pane) => Some(*pane),
+        Node::Split { .. } | Node::Stack { .. } => None,
+    });
+    if sorted(leaves.collect()) != sorted(panes.to_vec()) {
+        return Err(bad(
+            "layout must contain every current tab pane exactly once",
+        ));
+    }
+    // Each node, parents before their children.
+    let mut order = Vec::with_capacity(nodes.len());
     let mut seen = vec![false; nodes.len()];
-    let mut pending = vec![(0usize, 0usize)];
-    while let Some((at, depth)) = pending.pop() {
-        if depth > DEPTH_MAX {
-            return Err(deep());
-        }
+    let mut pending = vec![0usize];
+    while let Some(at) = pending.pop() {
         let visited = seen
             .get_mut(at)
             .ok_or_else(|| bad("layout child index is out of range"))?;
@@ -166,50 +169,65 @@ pub fn from_nodes(nodes: &[Node]) -> Result<Tree, crate::code::Error> {
             return Err(bad("layout nodes must be reached exactly once"));
         }
         *visited = true;
-        let children = match nodes.get(at) {
-            Some(Node::Split { first, second, .. }) => vec![*first, *second],
+        order.push(at);
+        match nodes.get(at) {
+            Some(Node::Split { first, second, .. }) => {
+                pending.extend([*second as usize, *first as usize]);
+            }
             Some(Node::Stack { children }) if children.len() < 2 => {
                 return Err(bad("a stack needs two or more children"));
             }
-            Some(Node::Stack { children }) => children.clone(),
-            Some(Node::Pane(_)) | None => Vec::new(),
-        };
-        let depth = depth.checked_add(1).ok_or_else(deep)?;
-        pending.extend(children.into_iter().rev().map(|c| (c as usize, depth)));
+            Some(Node::Stack { children }) => {
+                pending.extend(children.iter().rev().map(|c| *c as usize));
+            }
+            Some(Node::Pane(_)) | None => {}
+        }
     }
     if seen.iter().any(|v| !v) {
         return Err(bad("layout contains unreachable nodes"));
     }
-    // The graph above is a bounded tree, so construction cannot cycle.
-    fn build(nodes: &[Node], at: usize) -> Result<Tree, &'static str> {
-        match nodes.get(at).ok_or("layout child index is out of range")? {
-            Node::Pane(pane) => Ok(Tree::Pane(*pane)),
-            Node::Split {
+    // Children before their parents, each taken once: the walk above found
+    // a tree.
+    let mut built: Vec<Option<Tree>> = std::iter::repeat_with(|| None).take(nodes.len()).collect();
+    let take = |built: &mut Vec<Option<Tree>>, at: u32| {
+        (built.get_mut(at as usize))
+            .and_then(Option::take)
+            .ok_or_else(|| bad("layout nodes must be reached exactly once"))
+    };
+    for &at in order.iter().rev() {
+        let tree = match nodes.get(at) {
+            Some(Node::Pane(pane)) => Tree::Pane(*pane),
+            Some(Node::Split {
                 axis,
                 first_share,
                 second_share,
                 first,
                 second,
-            } => Ok(Tree::Split(Box::new(Split {
+            }) => Tree::Split(Box::new(Split {
                 axis: *axis,
                 shares: Shares::new(*first_share, *second_share),
-                first: build(nodes, *first as usize)?,
-                second: build(nodes, *second as usize)?,
-            }))),
-            Node::Stack { children } => {
-                let mut children = children.iter().map(|c| build(nodes, *c as usize));
+                first: take(&mut built, *first)?,
+                second: take(&mut built, *second)?,
+            })),
+            Some(Node::Stack { children }) => {
+                let mut children = children.iter().map(|c| take(&mut built, *c));
                 let first = children
                     .next()
-                    .ok_or("a stack needs two or more children")??;
-                Ok(Tree::Stack(Box::new(Stack {
+                    .ok_or_else(|| bad("a stack needs two or more children"))??;
+                let rest = children.collect::<Result<_, _>>()?;
+                Tree::Stack(Box::new(Stack {
                     first,
-                    rest: children.collect::<Result<_, _>>()?,
+                    rest,
                     shown: BTreeMap::new(),
-                })))
+                }))
             }
+            None => return Err(bad("layout child index is out of range")),
+        };
+        if let Some(slot) = built.get_mut(at) {
+            *slot = Some(tree);
         }
     }
-    build(nodes, 0).map_err(bad)
+    take(&mut built, 0)
 }
 
 /// Two trees side by side along `axis`, a separator between, sharing what
@@ -746,81 +764,82 @@ impl Tree {
     /// Its nodes, flat, in preorder: the root first, as `from_nodes` takes
     /// them.
     pub fn nodes(&self) -> Vec<Node> {
-        fn flatten(tree: &Tree, nodes: &mut Vec<Node>) {
-            let at = nodes.len();
-            let index = |nodes: &Vec<Node>| u32::try_from(nodes.len()).unwrap_or(u32::MAX);
-            match tree {
-                Tree::Pane(pane) => nodes.push(Node::Pane(*pane)),
-                Tree::Split(split) => {
-                    nodes.push(Node::Stack {
-                        children: Vec::new(),
-                    });
-                    let first = index(nodes);
-                    flatten(&split.first, nodes);
-                    let second = index(nodes);
-                    flatten(&split.second, nodes);
-                    let (first_share, second_share) = split.shares.get();
-                    if let Some(node) = nodes.get_mut(at) {
-                        *node = Node::Split {
-                            axis: split.axis,
-                            first_share,
-                            second_share,
-                            first,
-                            second,
-                        };
-                    }
-                }
-                Tree::Stack(stack) => {
-                    nodes.push(Node::Stack {
-                        children: Vec::new(),
-                    });
-                    let mut children = Vec::with_capacity(stack.len());
-                    for child in stack.children() {
-                        children.push(index(nodes));
-                        flatten(child, nodes);
-                    }
-                    if let Some(node) = nodes.get_mut(at) {
-                        *node = Node::Stack { children };
-                    }
-                }
-            }
-        }
-        let mut nodes = Vec::new();
-        flatten(self, &mut nodes);
-        nodes
+        self.flat().0
     }
 
     /// What `client` is shown at each stack, as indices of `nodes`: the
     /// stack's, then its child's and the one before.
     pub fn choices(&self, client: ClientId) -> Vec<(u32, Shown<u32>)> {
-        fn visit(tree: &Tree, at: &mut u32, client: ClientId, out: &mut Vec<(u32, Shown<u32>)>) {
-            let here = *at;
-            *at = at.saturating_add(1);
-            match tree {
-                Tree::Pane(_) => {}
+        let (nodes, stacks) = self.flat();
+        let at = |i: usize| u32::try_from(i).ok();
+        (stacks.into_iter())
+            .filter_map(|(index, stack)| {
+                let Some(Node::Stack { children }) = nodes.get(index) else {
+                    return None;
+                };
+                let child = |i: usize| children.get(i).copied();
+                let shown = stack.shown(client);
+                let current = child(shown.current)?;
+                Some((
+                    at(index)?,
+                    Shown {
+                        current,
+                        last: shown.last.and_then(child),
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// Its nodes in preorder, and each stack with its index there: walked
+    /// with a stack of its own, as deep as it is.
+    fn flat(&self) -> (Vec<Node>, Vec<(usize, &Stack)>) {
+        let (mut nodes, mut stacks) = (Vec::new(), Vec::new());
+        // Each tree left, and the node and child it is of.
+        let mut work: Vec<(&Tree, Option<(usize, usize)>)> = vec![(self, None)];
+        while let Some((tree, parent)) = work.pop() {
+            let at = nodes.len();
+            let index = u32::try_from(at).unwrap_or(u32::MAX);
+            match parent.and_then(|(p, child)| Some((nodes.get_mut(p)?, child))) {
+                Some((Node::Split { first, .. }, 0)) => *first = index,
+                Some((Node::Split { second, .. }, _)) => *second = index,
+                Some((Node::Stack { children }, child)) => {
+                    if let Some(c) = children.get_mut(child) {
+                        *c = index;
+                    }
+                }
+                Some((Node::Pane(_), _)) | None => {}
+            }
+            let node = match tree {
+                Tree::Pane(pane) => Node::Pane(*pane),
                 Tree::Split(split) => {
-                    visit(&split.first, at, client, out);
-                    visit(&split.second, at, client, out);
+                    work.extend([
+                        (&split.second, Some((at, 1))),
+                        (&split.first, Some((at, 0))),
+                    ]);
+                    let (first_share, second_share) = split.shares.get();
+                    Node::Split {
+                        axis: split.axis,
+                        first_share,
+                        second_share,
+                        first: 0,
+                        second: 0,
+                    }
                 }
                 Tree::Stack(stack) => {
-                    let mut starts = Vec::with_capacity(stack.len());
-                    for child in stack.children() {
-                        starts.push(*at);
-                        visit(child, at, client, out);
-                    }
-                    let shown = stack.shown(client);
-                    let index = |i: usize| starts.get(i).copied();
-                    if let Some(current) = index(shown.current) {
-                        let last = shown.last.and_then(index);
-                        out.push((here, Shown { current, last }));
+                    let children: Vec<&Tree> = stack.children().collect();
+                    work.extend(
+                        (children.iter().enumerate().rev()).map(|(i, c)| (*c, Some((at, i)))),
+                    );
+                    stacks.push((at, &**stack));
+                    Node::Stack {
+                        children: vec![0; children.len()],
                     }
                 }
-            }
+            };
+            nodes.push(node);
         }
-        let mut out = Vec::new();
-        visit(self, &mut 0, client, &mut out);
-        out.sort_unstable_by_key(|(stack, _)| *stack);
-        out
+        (nodes, stacks)
     }
 }
 
@@ -1244,8 +1263,9 @@ mod tests {
     }
 
     #[test]
-    fn flat_layouts_require_one_bounded_reachable_tree() -> Result<(), crate::code::Error> {
-        use crate::code::{Code, Raise};
+    fn flat_layouts_require_one_reachable_tree_of_the_tabs_panes() -> Result<(), crate::code::Error>
+    {
+        use crate::code::Code;
         let branch = |first, second| Node::Split {
             axis: Axis::Horizontal,
             first_share: NonZeroU32::MIN,
@@ -1254,16 +1274,17 @@ mod tests {
             second,
         };
         let leaf = Node::Pane(p(1));
-        let (bad, past) = (Code::BadValue, Code::from(Raise::TooLong));
+        let bad = Code::BadValue;
         for (nodes, code) in [
             (vec![], bad),
+            (vec![Node::Pane(p(2))], bad),
             (vec![branch(0, 1), leaf.clone()], bad),
             (vec![branch(1, 1), leaf.clone()], bad),
             (vec![branch(1, 3), leaf.clone(), leaf.clone()], bad),
             (vec![leaf.clone(), leaf.clone()], bad),
         ] {
             assert_eq!(
-                from_nodes(&nodes).map(drop).map_err(|e| e.code()),
+                from_nodes(&nodes, &[p(1)]).map(drop).map_err(|e| e.code()),
                 Err(code)
             );
         }
@@ -1276,11 +1297,9 @@ mod tests {
             nodes.push(Node::Pane(p(depth)));
             nodes
         };
-        assert_eq!(from_nodes(&chain(64))?.panes().len(), 65);
-        assert_eq!(
-            from_nodes(&chain(65)).map(drop).map_err(|e| e.code()),
-            Err(past)
-        );
+        // As deep as its panes let it be, as edits make it.
+        let panes: Vec<PaneId> = (0..=1000).map(p).collect();
+        assert_eq!(from_nodes(&chain(1000), &panes)?.panes(), panes);
         let shares = Shares::new(NonZeroU32::MIN, NonZeroU32::MAX);
         let nodes = vec![
             Node::Split {
@@ -1293,7 +1312,7 @@ mod tests {
             Node::Pane(p(2)),
             Node::Pane(p(1)),
         ];
-        let root = from_nodes(&nodes)?;
+        let root = from_nodes(&nodes, &[p(1), p(2)])?;
         assert_eq!(root.panes(), vec![p(1), p(2)]);
         assert!(
             matches!(root, Tree::Split(split) if split.axis() == Axis::Vertical && split.shares() == shares)
@@ -1536,7 +1555,8 @@ mod tests {
         let way = (Axis::Vertical, Side::After);
         assert_eq!(root.split((p(2), p(3)), way, Shares::HALVED), Ok(()));
         assert_eq!(root.panes(), [0, 1, 2, 3, 4].map(p));
-        assert_eq!(from_nodes(&root.nodes()).map_err(|e| e.to_string())?, root);
+        let rebuilt = from_nodes(&root.nodes(), &root.panes()).map_err(|e| e.to_string())?;
+        assert_eq!(rebuilt, root);
         let mut deep = Tree::Pane(p(0));
         (1..70).for_each(|n| deep.append(p(n)));
         let leaves = deep
@@ -1550,7 +1570,7 @@ mod tests {
         );
         let few = |children| vec![Node::Stack { children }, Node::Pane(p(1))];
         for nodes in [few(vec![]), few(vec![1])] {
-            let refused = from_nodes(&nodes).map(drop).map_err(|e| e.code());
+            let refused = from_nodes(&nodes, &[p(1)]).map(drop).map_err(|e| e.code());
             assert_eq!(refused, Err(Code::BadValue));
         }
         // Each child has the stack's whole room, shown or not, and the
