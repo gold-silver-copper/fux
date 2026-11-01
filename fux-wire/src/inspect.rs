@@ -54,6 +54,8 @@ wire! {
         pub nodes: Vec<Node>,
         pub revision: Option<crate::command::LayoutRevision>,
         pub host: Option<ClientId>,
+        /// The pane that fills it on every screen showing it, if one does.
+        pub zoomed: Option<PaneId>,
     }
 }
 wire! {
@@ -107,7 +109,6 @@ wire! {
         pub workspace: Option<WsId>,
         pub tab: Option<TabId>,
         pub pane: Option<PaneId>,
-        pub zoom: bool,
         pub opening: Option<u64>,
         pub mode: String,
     }

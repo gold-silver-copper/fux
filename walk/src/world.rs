@@ -13,6 +13,8 @@ pub struct Tab {
     pub id: String,
     pub label: String,
     pub panes: Vec<Pane>,
+    /// The pane that fills it on every screen showing it, if one does.
+    pub zoomed: Option<String>,
 }
 
 pub struct Workspace {
@@ -27,8 +29,6 @@ pub struct ClientView {
     pub cols: u16,
     pub workspace: Option<String>,
     pub tab: Option<String>,
-    pub pane: Option<String>,
-    pub zoom: bool,
 }
 
 pub struct World {
@@ -89,6 +89,7 @@ impl World {
                     id: text(tab, "id")?,
                     label: text(tab, "label")?,
                     panes,
+                    zoomed: tab.get("zoomed").and_then(Value::as_str).map(str::to_owned),
                 });
             }
             workspaces.push(Workspace {
@@ -106,8 +107,6 @@ impl World {
                 cols: size(c, "cols")?,
                 workspace: word("workspace"),
                 tab: word("tab"),
-                pane: word("pane"),
-                zoom: c.get("zoom").and_then(Value::as_bool).unwrap_or(false),
             });
         }
         Ok(World {

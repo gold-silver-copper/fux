@@ -918,7 +918,7 @@ impl Session {
     /// The split of `target` along `axis`, the two taking `shares` if
     /// given, and the size the new pane starts at: the one settling gives
     /// it in the layout the split makes, which its tab must have room for,
-    /// `followers` focusing it unzoomed. Shown on no screen (each zoomed
+    /// unzoomed if `followers` focus it. Shown on no screen (the tab zoomed
     /// on another pane), it starts at its place on the tab's own size.
     fn split_size(
         &self,
@@ -931,12 +931,9 @@ impl Session {
         let split = (self.parts.plan_split((target, new), axis, shares))
             .map_err(|NoPane| Error::NoPane(target))?;
         self.room(split.tab(), split.root(), None)?;
-        let seat = |view: &View, now| match followers.contains(&view.id) {
-            true => (false, Some(new)),
-            false => now,
-        };
+        let zoomed = (self.tab(split.tab()).and_then(Tab::zoomed)).filter(|_| followers.is_empty());
         let (mut placed, mut shown) = (Placement::default(), Vec::new());
-        self.shown_in((split.tab(), split.root()), seat, &mut placed, &mut shown);
+        self.shown_in((split.tab(), split.root()), zoomed, &mut placed, &mut shown);
         let mut sizes = shown.into_iter().filter(|(p, _)| *p == new).map(|(_, s)| s);
         let least = sizes
             .next()
@@ -1214,14 +1211,15 @@ impl Session {
             Some(command::AttachTarget::Workspace(workspace)) => {
                 (self.resolve_ws(workspace)?, None)
             }
+            // Its first pane focused, as every new seat is, or the
+            // zoomed one: a tab's zoom stays.
             Some(command::AttachTarget::Tab(tab)) => {
                 let ws = self.tab_workspace(*tab)?;
-                let pane = self.root(*tab).ok_or(Error::NoTab(*tab))?.first_pane();
                 (
                     ws,
                     Some(Spot {
                         tab: *tab,
-                        pane: Some(pane),
+                        pane: None,
                     }),
                 )
             }
@@ -1313,7 +1311,7 @@ impl Session {
         self.settle(now);
     }
 
-    /// The command's client follows what it made or moved, unzoomed.
+    /// The command's client follows what it made or moved.
     /// Remember the place before the command: a move may already have
     /// closed its old tab and selected a temporary replacement.
     fn follow(&mut self, here: Here, ws: WsId, at: Option<Spot>) {
@@ -1321,7 +1319,6 @@ impl Session {
             && self.views.contains_key(&client)
         {
             self.parts.show(client, ws, at);
-            self.zoom_to(client, false);
             if let (Some(after), Some(view)) = (self.place(client), self.views.get_mut(&client)) {
                 if before.tab != after.tab {
                     view.last_tab = Some(before.tab);
@@ -1373,19 +1370,10 @@ impl Session {
     /// Where each pane of a view's current tab is on its screen, into
     /// `out`, whatever it held, reusing its buffers.
     pub fn placement_into(&self, view: &View, out: &mut Placement) {
-        let area = view.pane_area();
-        let tab = self.shown_tab(view.id);
-        let Some(root) = tab.map(Tab::root) else {
-            return out.clear();
-        };
-        if view.zoom
-            && let Some(focus) = tab.and_then(|t| t.focus(view.id))
-            && !area.is_empty()
-        {
-            out.clear();
-            return out.panes.push((focus, area));
+        match self.shown_tab(view.id) {
+            Some(tab) => lay_out(tab.root(), tab.zoomed(), view.pane_area(), out),
+            None => out.clear(),
         }
-        layout::place_into(root, area, out);
     }
 
     /// The area to lay out a tab in for a command: the screen of a client
@@ -1569,7 +1557,8 @@ impl Session {
         changed.retain(|tab| !dropped.contains(tab));
         for tab in screens.into_keys().chain(changed).chain(dropped) {
             if let Some(root) = self.root(tab) {
-                self.shown_in((tab, root), |_, now| now, &mut placed, &mut sizes);
+                let zoomed = self.tab(tab).and_then(Tab::zoomed);
+                self.shown_in((tab, root), zoomed, &mut placed, &mut sizes);
             }
         }
         self.placed = placed;
@@ -1603,15 +1592,14 @@ impl Session {
     }
 
     /// The rectangles, rows and columns, each pane of tab `tab` laid out as
-    /// `root` is shown in, into `out` (empty ones left out): on the screen
-    /// of each client that sizes the tab, zoomed and focusing as `seat`
-    /// makes of what the client is now (zoomed, its focus there); with
+    /// `root` and zoomed on `zoomed` is shown in, into `out` (empty ones
+    /// left out): on the screen of each client that sizes the tab; with
     /// none, on what the tab's fit says. Settling sizes a pane to the
     /// smallest it has here, and leaves one with none at its size.
     fn shown_in(
         &self,
         (tab, root): (TabId, &Tree),
-        seat: impl Fn(&View, (bool, Option<PaneId>)) -> (bool, Option<PaneId>),
+        zoomed: Option<PaneId>,
         placed: &mut Placement,
         out: &mut Vec<(PaneId, (u16, u16))>,
     ) {
@@ -1619,22 +1607,9 @@ impl Session {
             return;
         };
         let mut sizing = self.sizing(tab).peekable();
-        let fit = sizing.peek().is_none().then(|| (t.fit().area(), None));
-        let screens = sizing.map(|view| {
-            let zoomed = match seat(view, (view.zoom, t.focus(view.id))) {
-                (true, focus) => focus,
-                (false, _) => None,
-            };
-            (view.pane_area(), zoomed)
-        });
-        for (area, zoomed) in screens.chain(fit) {
-            match zoomed.filter(|_| !area.is_empty()) {
-                Some(focus) => {
-                    placed.clear();
-                    placed.panes.push((focus, area));
-                }
-                None => layout::place_into(root, area, placed),
-            }
+        let fit = sizing.peek().is_none().then(|| t.fit().area());
+        for area in sizing.map(View::pane_area).chain(fit) {
+            lay_out(root, zoomed, area, placed);
             let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
             out.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
         }
@@ -1679,11 +1654,6 @@ impl Session {
         // Who sees the pane is known before its tab can go: a tab its
         // closing empties takes its viewers elsewhere.
         let viewers = self.viewers(self.locate(id).map(|(_, t)| t));
-        for client in &viewers {
-            if self.focused(*client) == Some(id) {
-                self.zoom_to(*client, false);
-            }
-        }
         let mut notice = None;
         if let Some(mut pane) = self.parts.close_pane(id) {
             // Closed for its program's end (a reason given), or by fux.
@@ -1715,9 +1685,6 @@ impl Session {
     /// Removes a tab and whatever panes are in it (`Parts::remove_tab`).
     fn remove_tab(&mut self, tab: TabId, now: Instant) {
         let viewers = self.viewers(Some(tab));
-        for client in &viewers {
-            self.zoom_to(*client, false);
-        }
         for gone in self.parts.remove_tab(tab) {
             self.end_pane(gone, true, &viewers, now);
         }
@@ -2256,13 +2223,6 @@ impl Session {
         }
     }
 
-    fn zoom_to(&mut self, client: ClientId, zoom: bool) {
-        if let Some(view) = self.views.get_mut(&client).filter(|v| v.zoom != zoom) {
-            view.zoom = zoom;
-            self.view_event(client, crate::journal::ViewChange::Zoomed);
-        }
-    }
-
     pub(crate) fn view_event(&mut self, client: ClientId, change: crate::journal::ViewChange) {
         let at = self.place(client).map(|p| ((p.ws, p.tab), p.pane));
         self.parts
@@ -2438,6 +2398,10 @@ impl Session {
             &Command::ResizePane { target, by } => self.resize_pane(target, by, here),
             &Command::ClearHistory { target } => {
                 self.pane_mut(target)?.clear_history();
+                Ok(Reply::default())
+            }
+            &Command::Zoom { target } => {
+                self.parts.zoom(target).ok_or(Error::NoPane(target))?;
                 Ok(Reply::default())
             }
             &Command::SendKeys { to, ref inputs } => self.send_keys(to, inputs),
@@ -2705,7 +2669,6 @@ impl Session {
         let (_, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
         for client in followers {
             self.parts.focus(tab, client, new);
-            self.zoom_to(client, false);
         }
         let version = self.pane(new)?.version(self.run);
         Ok(acted(version))
@@ -2815,21 +2778,13 @@ impl Session {
                 let captured = crate::capture::client(client, &grid);
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
-            ClientAction::Zoom => None,
-            ClientAction::SelectPane(pick) => Some(self.pick_pane(view()?, place, pick)?),
-            ClientAction::SelectTab(pick) => Some(self.pick_tab(view()?, place, pick)?),
-            ClientAction::SelectWorkspace(ref pick) => Some(self.pick_ws(view()?, pick)?),
+            ClientAction::SelectPane(pick) => self.pick_pane(view()?, place, pick)?,
+            ClientAction::SelectTab(pick) => self.pick_tab(view()?, place, pick)?,
+            ClientAction::SelectWorkspace(ref pick) => self.pick_ws(view()?, pick)?,
         };
-        // A select shows the client where it picked, unzoomed.
-        match picked {
-            Some(Picked { ws, at }) => self.follow(Here::Client(client, place), ws, at),
-            None => {
-                if let Some(view) = self.views.get(&client) {
-                    let zoom = !view.zoom;
-                    self.zoom_to(client, zoom);
-                }
-            }
-        }
+        // A select shows the client where it picked.
+        let Picked { ws, at } = picked;
+        self.follow(Here::Client(client, place), ws, at);
         Ok(Reply::default())
     }
 
@@ -3178,6 +3133,18 @@ fn check_name(name: &str) -> Result<(), Error> {
         return Err(fail(Raise::BadName, message));
     }
     Ok(())
+}
+
+/// Where each pane of a tab laid out as `root` is in `area`, into `out`:
+/// the `zoomed` pane alone, filling it, if one is and it has room.
+fn lay_out(root: &Tree, zoomed: Option<PaneId>, area: Rect, out: &mut Placement) {
+    match zoomed.filter(|_| !area.is_empty()) {
+        Some(pane) => {
+            out.clear();
+            out.panes.push((pane, area));
+        }
+        None => layout::place_into(root, area, out),
+    }
 }
 
 /// The item after the one at `index` among `items`, or before it, going
@@ -4340,10 +4307,7 @@ mod tests {
             .tab(tab)
             .and_then(|t| t.revision(s.run))
             .ok_or("revision")?;
-        s.parts
-            .tab_mut(tab)
-            .ok_or("tab")?
-            .set_focus(client, PaneId::of(3));
+        s.parts.focus(tab, client, PaneId::of(3));
         let before = s.root(tab).cloned().ok_or("tree")?;
         let cursor = s.parts.journal().end(s.run);
         let origin = Origin::Cli(Caller::default());
@@ -5233,39 +5197,75 @@ mod tests {
     fn a_split_elsewhere_leaves_the_splitters_zoom() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "%1 str horizontal axis str / cwd split drop")?;
-        run(&mut s, &format!("str {c} client zoom"))?;
+        run(&mut s, &format!("str {c} client focused zoom"))?;
         run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
         output_as(
             &mut s,
             Some(c),
             "%3 str horizontal axis str / cwd split drop",
         )?;
-        assert!(s.views.get(&c).is_some_and(|v| v.zoom), "still zoomed");
+        let zoomed = s.tab(TabId::of(1)).and_then(Tab::zoomed);
+        assert_eq!(zoomed, Some(PaneId::of(2)), "still zoomed");
         Ok(())
     }
 
     #[test]
-    fn a_zoom_ends_with_its_pane() -> TestResult {
+    fn a_zoom_is_the_tabs_and_ends_with_its_pane() -> TestResult {
         let (mut s, c1) = attached(24, 80)?;
         let c2 = s.attach(24, 80, None)?;
+        run(
+            &mut s,
+            "%1 str horizontal axis split drop %2 str vertical axis split drop",
+        )?;
+        run(
+            &mut s,
+            &format!("str {c1} client %1 show str {c2} client %2 show %3 zoom"),
+        )?;
+        let zoomed = |s: &Session| s.tab(TabId::of(1)).and_then(Tab::zoomed);
+        let focused = |s: &Session| [c1, c2].map(|c| s.focused(c));
+        let both = |p| [Some(PaneId::of(p)); 2];
+        // Every client showing the tab focuses its zoomed pane, and its
+        // own focus comes back after.
+        assert_eq!(focused(&s), both(3));
+        let lines = told(&mut s, |s| {
+            let _ = run(s, "%3 zoom");
+        });
+        let unzoomed = r#"{"event":"zoomed","tab":"@1","workspace":"+1","pane":null}"#;
+        assert!(lines.starts_with(unzoomed), "{lines}");
+        assert_eq!(focused(&s), [1, 2].map(|p| Some(PaneId::of(p))));
+        run(&mut s, "%3 zoom %1 kill")?;
+        assert_eq!(zoomed(&s), Some(PaneId::of(3)), "another pane's close");
+        run(&mut s, "%3 kill")?;
+        assert_eq!(zoomed(&s), None);
+        assert_eq!(focused(&s), both(2));
+        Ok(())
+    }
+
+    #[test]
+    fn attaching_to_a_zoomed_tab_keeps_its_zoom() -> TestResult {
+        let (mut s, c1) = attached(24, 80)?;
         run(&mut s, "%1 str horizontal axis split drop")?;
-        run(
-            &mut s,
-            &format!(
-                "str {c1} client %1 show str {c1} client zoom str {c2} client %2 show str {c2} client zoom"
-            ),
-        )?;
-        run(&mut s, "%1 kill")?;
-        assert!(!s.views.get(&c1).ok_or("first view")?.zoom);
-        assert!(s.views.get(&c2).ok_or("second view")?.zoom);
-        run(
-            &mut s,
-            "opts 80 24 size str +1 workspace in new-tab drop @1 kill",
-        )?;
-        assert!(
-            !s.views.get(&c2).ok_or("second view")?.zoom,
-            "closing its tab ends the zoom too"
-        );
+        run(&mut s, &format!("str {c1} client %1 show %2 zoom"))?;
+        let presentation = fux::script::default_state()?.preferences.presentation();
+        let size = sized(24, 80)?;
+        let mut clients = vec![c1];
+        let lines = told(&mut s, |s| {
+            for read_only in [false, true] {
+                let attach = Attach {
+                    target: Some(command::AttachTarget::Tab(TabId::of(1))),
+                    read_only,
+                    ..Attach::of(size, presentation.clone())
+                };
+                clients.extend(s.attach_as(attach, Instant::now()));
+            }
+        });
+        assert_eq!(clients.len(), 3, "{lines}");
+        assert!(!lines.contains("zoomed"), "{lines}");
+        let zoomed = s.tab(TabId::of(1)).and_then(Tab::zoomed);
+        assert_eq!(zoomed, Some(PaneId::of(2)));
+        for c in clients {
+            assert_eq!(s.focused(c), Some(PaneId::of(2)), "{c}");
+        }
         Ok(())
     }
 
@@ -5275,7 +5275,7 @@ mod tests {
             |s: &Session| [1, 2].map(|p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size));
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "%1 str horizontal axis split drop")?;
-        run(&mut s, &format!("str {c} client zoom"))?;
+        run(&mut s, &format!("str {c} client focused zoom"))?;
         let zoomed = sizes(&s);
         s.detach_client(c);
         assert_eq!(sizes(&s), zoomed);
@@ -6401,8 +6401,8 @@ mod tests {
             Some(a),
             "str titles true set str bell false set str terminal-clipboard false set",
         )?;
-        output_as(&mut s, Some(b), "me zoom")?;
-        output_as(&mut s, Some(a), "me zoom")?;
+        output_as(&mut s, Some(b), "me focused zoom")?;
+        output_as(&mut s, Some(a), "me focused zoom")?;
         for (client, titles, bell, terminal_clipboard) in
             [(a, true, false, false), (b, false, true, true)]
         {
@@ -6479,8 +6479,8 @@ mod tests {
             &mut s,
             "%1 str horizontal axis false program-clipboard split",
         )?;
+        run(&mut s, "%2 zoom")?;
         if let Some(view) = s.views.get_mut(&b) {
-            view.zoom = true;
             view.read_only = true;
         }
         s.outbox.clear();
@@ -6529,7 +6529,7 @@ mod tests {
         // Leaving a tab whose layout is unchanged resizes nothing: a zoomed
         // pane keeps the whole screen.
         run(&mut s, "str c1 client str @2 tab show")?;
-        run(&mut s, "str c1 client zoom")?;
+        run(&mut s, "%2 zoom")?;
         run(&mut s, "str c1 client str @1 tab show")?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         // Nor does a swap or a move in another tab.
@@ -7905,10 +7905,10 @@ mod tests {
             &mut s,
             "%1 str horizontal axis split drop %1 str vertical axis split drop",
         )?;
-        run(&mut s, "str c1 client %1 show str c1 client zoom")?;
+        run(&mut s, "str c1 client %1 show %1 zoom")?;
         for tiny in [false, true] {
             if tiny {
-                run(&mut s, "str c1 client zoom")?;
+                run(&mut s, "%1 zoom")?;
                 s.size_client(c, 2, 2)?;
             }
             let dump = s.dump_recipe(None)?;
@@ -8021,8 +8021,8 @@ mod tests {
         let wide = s.attach(10, 101, None)?;
         s.attach(10, 81, None)?;
         let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
-        // The narrow one, zoomed, follows the split unzoomed.
-        run(&mut s, "str c2 client zoom")?;
+        // Zoomed, the tab is unzoomed by the clients following the split.
+        run(&mut s, "%1 zoom")?;
         let lines = told(&mut s, |s| {
             let _ = run(s, "%1 str horizontal axis str / cwd split drop");
         });
@@ -8291,10 +8291,7 @@ mod journal_tests {
         )?;
         let from = s.parts.journal().end(s.run);
         run(&mut s, "%1 %2 swap-with @2 str previous reorder")?;
-        run(
-            &mut s,
-            &format!("str {client} client %1 show str {client} client zoom"),
-        )?;
+        run(&mut s, &format!("str {client} client %1 show %1 zoom"))?;
         run(
             &mut s,
             "%2 str right 3 move-border %1 128 history-budget %1 clear-history all str note notify",

@@ -315,7 +315,7 @@ words! {
         Finding Workspace "workspace" "ref -- workspace" raises(Type NoTarget asks) "the workspace ref names: its name, +N, or a pane's or tab's workspace" "fux str agent workspace kill" [];
         Finding Here "here" "-- pane" raises(asks) "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
         Finding Client "client" "name -- client" raises(Type) "a client by its id, c2" "fux str c1 client str left focus" [];
-        Finding Me "me" "-- client" raises(NotHere) "the client whose key or prompt runs this" "str z code me zoom end bind" [];
+        Finding Me "me" "-- client" raises(NotHere) "the client whose key or prompt runs this" "str z code me focused zoom end bind" [];
         Finding Panes "panes" "handle -- list" raises(Type asks) "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
         Finding Tabs "tabs" "handle -- list" raises(Type asks) "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding All "all" "-- all" raises() "the whole session, for info, notify, events and dump" "fux all info" [];
@@ -348,12 +348,12 @@ words! {
         Changing Reorder "reorder" "handle way --" raises(Type asks) "move one place: next or previous" "fux @2 str next reorder" [];
         Changing HistoryBudget "history-budget" "pane integer --" raises(Type Range asks) "change this pane's history budget in bytes; lowering evicts old rows" "fux %3 4194304 history-budget" [];
         Changing ClearHistory "clear-history" "pane --" raises(Type asks) "drop the pane's history" "fux %3 clear-history" [];
+        Changing Zoom "zoom" "pane --" raises(Type asks) "fill its tab with the pane on every screen showing it, or restore the tab if it does" "fux %3 zoom" [];
         Clients Attach "attach" "attachable --" raises(Type Unused Nested NotHere asks) "show the server in this terminal (bare fux runs opts attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach (or bare fux, which runs opts attach)" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" raises(Type asks) "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients Show "show" "client handle --" raises(Type asks) "show and follow a pane, tab or workspace" "fux str c1 client %3 show" [];
         Clients StepTab "step-tab" "client way --" raises(Type asks) "show the next, previous or last visited tab" "fux str c1 client str next step-tab" [];
         Clients StepWorkspace "step-workspace" "client way --" raises(Type asks) "show the next, previous or last visited workspace" "fux str c1 client str previous step-workspace" [];
-        Clients Zoom "zoom" "client --" raises(Type asks) "zoom the focused pane, or restore" "fux str c1 client zoom" [];
         Clients Detach "detach" "client --" raises(Type asks) "detach a client" "fux str c1 client detach" [];
         Server Start "start" "--" raises(NotHere asks) "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
@@ -1934,6 +1934,9 @@ impl Host<'_> {
             Act::ClearHistory => tell(Command::ClearHistory {
                 target: pane(&next()?)?,
             }),
+            Act::Zoom => tell(Command::Zoom {
+                target: pane(&next()?)?,
+            }),
             // ----------------------------------------------------- clients
             Act::Attach => {
                 let (target, built) = attach_options(act, next()?)?;
@@ -1971,7 +1974,6 @@ impl Host<'_> {
                 client(&next()?)?,
                 ClientAction::SelectWorkspace(pick(&next()?)?),
             ),
-            Act::Zoom => order(client(&next()?)?, ClientAction::Zoom),
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
             // ------------------------------------------------------ server
             Act::Start => {
@@ -2663,7 +2665,7 @@ mod tests {
             "str c1 client str T str s list list end list end end prompt",
             "str c1 client str T str s str 'str x print' prompt",
             "str c1 client str T list end list end list end str 2drop choose",
-            "str v str 'me zoom' bind",
+            "str v str 'me focused zoom' bind",
             "str F5 str ls bind-root",
             "str r str rename-prompt bind-action",
         ] {

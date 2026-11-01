@@ -870,6 +870,11 @@ wire! {
         ClearHistory {
             target: PaneId,
         },
+        /// The pane fills its tab on every screen showing it, or, if it
+        /// does, the tab is laid out again.
+        Zoom {
+            target: PaneId,
+        },
         /// What the pane shows, with up to `history` lines before it, as text
         /// and as JSON.
         CapturePane {
@@ -924,7 +929,6 @@ wire! {
         /// Keys as typed at its terminal: its bindings, overlays and prompts
         /// take them as a person's keys.
         Keys(inputs: Vec<Input>),
-        Zoom,
         SelectPane(pick: PanePick),
         SelectTab(pick: Pick<TabId>),
         SelectWorkspace(pick: Pick<WsRef>),
@@ -1038,13 +1042,13 @@ impl Command {
             | C::Arrange { .. }
             | C::ResizePane { .. }
             | C::ClearHistory { .. }
+            | C::Zoom { .. }
             | C::HistoryBudget { .. }
             | C::Reorder { .. }
             | C::KillServer => false,
             C::Client { action, .. } => match action {
                 ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Open(_) => true,
                 ClientAction::Detach
-                | ClientAction::Zoom
                 | ClientAction::SelectPane(_)
                 | ClientAction::SelectTab(_)
                 | ClientAction::SelectWorkspace(_) => false,

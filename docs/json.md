@@ -90,7 +90,9 @@ Each workspace has `id`, `name`, `label`, and `tabs`. Its `tabs` is always the
 full ordered membership, including in a tab- or pane-scoped snapshot, whose
 `tabs` facts collection contains only the selected tab. Each tab fact has
 `id`, `workspace`, `name`, `label`, `fit` (`fixed` or `clients`), `cols`,
-`rows`, `nodes`, `layout_revision`, and `host`. Client fit reports its retained size.
+`rows`, `nodes`, `layout_revision`, `host`, and `zoomed`: the pane that fills
+the tab on every screen showing it, each client focusing it there, or null.
+Client fit reports its retained size.
 
 `layout_revision` is `TAB:REVISION:RUN`, the native layout revision, or null if its
 counter is exhausted. Screen output does not change it. `nodes` uses the
@@ -116,7 +118,7 @@ not saved process memory.
 
 Each client has `id`, `kind` (`terminal` or `headless`), `read_only`, physical
 `rows`/`cols`, `pane_rows`/`pane_cols`, optional `workspace`/`tab`/`pane`,
-`zoom`, `opening` (null without an open screen), and `mode`.
+`opening` (null without an open screen), and `mode`.
 
 All includes every root and view. Workspace includes its descendants and
 views showing it; tab includes its whole tab and parent workspace reference.
@@ -346,7 +348,8 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `laid_out` | tab/workspace; same-tab swap, reshaping, a guarded `arrange`, fit or effective host changed; pane resizes can follow |
 | `moved` | `from_tab`, `from_workspace`; both old and new scopes receive it |
 | `attached`, `detached` | `client` and its last place if known |
-| `shown`, `focused`, `zoomed` | `client` and the affected place; departures invalidate both places; includes automatic repair |
+| `shown`, `focused` | `client` and the affected place; departures invalidate both places; includes automatic repair |
+| `zoomed` | tab/workspace and its zoomed `pane`, null when it no longer has one: by `zoom`, a focus on another pane there, or the pane leaving |
 | `view_resized` | `client`; client size invalidated |
 | `screen` | `client`; fresh opening, close or mode ending invalidated |
 | `history_budget` | pane's new `history_bytes` |
@@ -427,8 +430,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":62,
- "server_release":"0.36.0","server_protocol":62,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":63,
+ "server_release":"0.36.0","server_protocol":63,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

@@ -8,7 +8,7 @@ str 'q' code me str last focus end bind str 'last pane' label str 'Focus' group
 str 'v' code me focused str horizontal axis split drop end bind str 'split side by side' label str 'Panes' group
 str 's' code me focused str vertical axis split drop end bind str 'split stacked' label str 'Panes' group
 str 'x' code me me focused confirm-close end bind str 'close pane' label str 'Panes' group
-str 'z' code me zoom end bind str 'zoom or restore' label str 'Panes' group
+str 'z' code me focused zoom end bind str 'zoom or restore' label str 'Panes' group
 str 'a r' code me me focused rename-prompt end bind str 'rename pane' label str 'Pane actions' group
 str 'r h' code me focused str left 1 move-border end bind str 'shrink or grow left' label str 'Resize' group repeat
 str 'r j' code me focused str down 1 move-border end bind str 'shrink or grow down' label str 'Resize' group repeat

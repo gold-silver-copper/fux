@@ -54,7 +54,6 @@ pub struct View {
     pub kind: ClientKind,
     pub rows: u16,
     pub cols: u16,
-    pub zoom: bool,
     /// The previous distinct places this attachment showed, across workspaces.
     pub last_tab: Option<TabId>,
     pub last_workspace: Option<WsId>,
@@ -91,7 +90,6 @@ impl View {
             kind: ClientKind::Terminal,
             rows,
             cols,
-            zoom: false,
             last_tab: None,
             last_workspace: None,
             mode: Mode::Normal,

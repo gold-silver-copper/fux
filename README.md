@@ -20,8 +20,8 @@ fux                               # attach, starting a server if none runs
 
 `fux` alone runs `opts attach`, starting a server in the
 background if none answers. `fux opts str work in attach` attaches to workspace
-`work`; `fux @2 attach` shows a tab's first pane in layout order, and
-`fux %3 attach` focuses that pane. Explicit targets must exist.
+`work`; `fux @2 attach` shows a tab's first pane in layout order (its
+zoomed pane, while it has one), and `fux %3 attach` focuses that pane. Explicit targets must exist.
 `fux opts watch attach` only watches (keys do nothing but `C-b d`, which
 detaches), and never starts a server or creates a workspace.
 
@@ -106,7 +106,7 @@ none: while one of fux's screens shows, the whole bar overlays the bottom
 pane row; other feedback covers only its right corner, without resizing
 PTYs. Client captures include that feedback; pane captures retain the underlying
 pane text. Feedback disappears on the normal input/cancel paths. Zoom alone
-does not create an overlay with the bar off; the focused pane fills the screen.
+does not create an overlay with the bar off; the zoomed pane fills the screen.
 `str show-column false set` hides the column body while keeping prefix dispatch,
 navigation, Escape cancellation and repeat feedback active; its default is true.
 
@@ -318,7 +318,7 @@ prefix again sends it to the pane.
 | `o` / `q` | `me str next focus` / `me str last focus` | focus the next / last pane |
 | `v` / `s` | `me focused str horizontal axis split drop` / `… str vertical axis …` | split side by side / stacked |
 | `x` | `me me focused confirm-close` | close the pane (asks: `y` or Enter closes, `n` or Esc keeps it) |
-| `z` | `me zoom` | zoom the pane, or restore it |
+| `z` | `me focused zoom` | zoom the pane, or restore it, on every screen showing its tab |
 | `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
 | `c` | `me edit-history` | the pane's history in your `$EDITOR`, at its end, in a split that closes when the editor exits |
 | `n` / `b` | `me str next step-tab` / `me str previous step-tab` | next / previous tab |
@@ -428,7 +428,7 @@ file, as `vi`, `vim`, `nvim`, `nano` and `emacs` all take it.
 
 A program in a pane that copies with OSC 52, as Neovim and Helix do, copies
 to the terminals showing that tab whose `terminal-clipboard` is on
-(watchers and zoomed views included), up to 64 KiB encoded, while its
+(watchers and zoomed tabs included), up to 64 KiB encoded, while its
 creation supplied `program-clipboard true` (the bundled default); `false
 program-clipboard` refuses its copies. fux keeps no copy. A longer copy,
 or one that is not base64 (RFC 4648, padded or not) of UTF-8 text, copies
