@@ -1,0 +1,5 @@
+# The save was refused before anything was made or replaced. One test a
+# line, as bash -e runs it.
+[ -L 'notes(os error 2)' ]
+[ "$(readlink 'notes(os error 2)')" = 'notes(os error 2)' ]
+[ "$(ls -A | wc -l)" -eq 1 ]

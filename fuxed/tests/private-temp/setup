@@ -1,0 +1,4 @@
+# A file size limit of one block makes the save's first write fail, so the
+# temporary file stays to be looked at; ignoring SIGXFSZ makes it a refused
+# write, as a full disk would be. umask 022 would make it 0644.
+umask 022; ulimit -f 1; trap '' XFSZ

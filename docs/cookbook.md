@@ -237,6 +237,21 @@ echo args > args.fux && fuxth args.fux one two
 echo '1 0 div' | fuxth || [ $? -eq 1 ]
 ```
 
+## Edit a file with fuxed
+
+fuxed is a small screen editor written in fuxth, in a checkout of fux at
+`fuxed/fuxed.fux`: `fuxth fuxed/fuxed.fux FILE` on a terminal. Its keys and
+commands are in `fuxed/README.md`; M-x runs a line of fuxth in it, such as
+`str w first ctrl str save bind`. Off a terminal it reads its keys from
+stdin and the screen size from `LINES` and `COLUMNS`, so a file of keys
+edits a file: here, type, Enter, type, C-s to save and C-q to quit.
+
+```sh
+printf 'hello\015world\023\021' > keys
+LINES=24 COLUMNS=80 fuxth fuxed/fuxed.fux notes.txt < keys > /dev/null
+[ "$(cat notes.txt)" = "$(printf 'hello\nworld')" ]
+```
+
 ## Clean up
 
 Close the workspace the recipes made, and with it their panes. A server
