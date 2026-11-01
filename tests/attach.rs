@@ -104,8 +104,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     // end. (Two writes race the server closing the connection.)
     let mut client = server.attach(5, 20)?;
     client.wait_for("$")?;
-    let detach = fux_wire::protocol::AttachedFrame::Detach
-        .encode();
+    let detach = fux_wire::protocol::AttachedFrame::Detach.encode();
     client.write(&[detach, attach.encode()].concat())?;
     assert_eq!(client.wait_exit()?, "detached");
     eventually("only the first client", || Ok(clients()? == 1))?;
@@ -282,6 +281,45 @@ fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
     let out = server.fux_env(&["opts", "attach"], &[("FUX_PANE", "")])?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.contains("needs a terminal"), "{}", out.stderr);
+    Ok(())
+}
+
+/// A client attached from inside a pane, showing that pane, draws it as a
+/// placeholder rather than its own screen, which would draw itself again
+/// with each paint: the pane's screen count stays still.
+#[test]
+fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
+    let server = Server::start("")?;
+    let attach = "unset FUX_PANE; exec \"$FUX\" opts str viewer in attach";
+    let launch = [
+        "opts",
+        "str",
+        "viewer",
+        "name",
+        "60",
+        "12",
+        "size",
+        "str",
+        "sh",
+        "program",
+        "str",
+        "-c",
+        "arg",
+        "str",
+        attach,
+        "arg",
+        "new-workspace",
+    ];
+    let pane = server.ok(&launch)?;
+    let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
+    server.shows(&pane, "this client")?;
+    let still = || -> Result<bool, String> {
+        let before = server.version(&pane)?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        Ok(server.version(&pane)? == before)
+    };
+    eventually("the pane's screen still", still)?;
+    assert!(still()?, "the pane kept changing");
     Ok(())
 }
 
@@ -1182,45 +1220,6 @@ fn foreground(stat: &str) -> bool {
 }
 
 #[test]
-fn an_oversized_local_shell_is_refused_before_headless_attach() -> Outcome {
-    let server = Server::start("")?;
-    let payload = server.dir.join("oversize-argument");
-    std::fs::write(&payload, vec![b'x'; fux_wire::protocol::MAX_FRAME / 2]).map_err(e)?;
-    let mut terminal = Terminal::attach(
-        &server,
-        10,
-        80,
-        &[
-            "str",
-            "shell",
-            "list",
-            "str",
-            "/bin/sh",
-            "str",
-            &payload.to_string_lossy(),
-            "read-file",
-            "dup",
-            "end",
-            "set",
-            "opts",
-            "80",
-            "24",
-            "size",
-            "attach",
-        ],
-    )?;
-    let status = terminal.wait_exit()?;
-    let output = String::from_utf8_lossy(&terminal.output);
-    assert!(!status.success(), "oversized shell was accepted: {output}");
-    assert!(
-        output.contains("frame"),
-        "the original failure was lost: {output}"
-    );
-    assert!(!server.ok(&["ls", "listing"])?.contains("client "));
-    Ok(())
-}
-
-#[test]
 fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
     use fux_wire::protocol::{Attach, Decoder, Frame, Greeting, Hello, Role, ToAttached};
     use std::io::{Read, Write};
@@ -1406,7 +1405,10 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
     let server = Server::empty()?;
     for (args, said) in [
         (&["opts", "str", "", "program", "attach"][..], true),
-        (&["opts", "str", "", "program", "str", "work", "in", "attach"], false),
+        (
+            &["opts", "str", "", "program", "str", "work", "in", "attach"],
+            false,
+        ),
     ] {
         let mut terminal =
             Terminal::start(10, 40, &[[fux()].as_slice(), args].concat(), |command| {

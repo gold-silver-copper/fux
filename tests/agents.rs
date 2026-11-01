@@ -854,7 +854,10 @@ fn send_keys_sends_input_of_any_size_as_one_paste() -> Outcome {
     )?;
     assert_eq!(sent.status, 0, "{}", sent.stderr);
     server.shows(&sink, "done")?;
-    assert!(std::fs::read(&got).map_err(e)? == pasted, "not one whole paste");
+    assert!(
+        std::fs::read(&got).map_err(e)? == pasted,
+        "not one whole paste"
+    );
     Ok(())
 }
 

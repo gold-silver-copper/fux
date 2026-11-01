@@ -332,7 +332,9 @@ impl Screen {
             LineAct::Edit(edit) => {
                 let refused = prompt.line.edit(&edit).err();
                 *self = Self::Prompt(prompt);
-                let shown = self.panel(modes).map(|p| Effect::Screen(ScreenAct::Show(p)));
+                let shown = self
+                    .panel(modes)
+                    .map(|p| Effect::Screen(ScreenAct::Show(p)));
                 shown.into_iter().chain(refused.map(refusal)).collect()
             }
         }

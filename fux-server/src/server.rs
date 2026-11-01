@@ -397,6 +397,10 @@ impl Conn {
     fn attach(&mut self, session: &mut Session, attach: Attach, now: Instant) {
         match session.attach_as(attach, now) {
             Ok(client) => {
+                let peer = fuxix::socket::peer(&self.stream)
+                    .ok()
+                    .and_then(|peer| peer.pid);
+                session.runs_in(client, peer.and_then(fuxix::process::session));
                 let attached = Attached::new(client, now);
                 self.enter(session, Stage::Attached(Box::new(attached)), now);
                 self.send(&ToAttached::Welcome(client, session.run));

@@ -200,7 +200,10 @@ pub trait Frame<'a>: Sized {
             return;
         }
         let kind = out.get(start.saturating_add(4)).copied().unwrap_or(MORE);
-        let payload = out.get(start.saturating_add(5)..).unwrap_or_default().to_vec();
+        let payload = out
+            .get(start.saturating_add(5)..)
+            .unwrap_or_default()
+            .to_vec();
         out.truncate(start);
         let (whole, rest) = payload.as_chunks::<MAX_PAYLOAD>();
         let mut pieces = (whole.iter().map(<[u8; MAX_PAYLOAD]>::as_slice))
@@ -1017,7 +1020,10 @@ mod tests {
         decoder.push(last);
         assert!(decoder.ready()?);
         assert_eq!(decoder.frame::<AttachedFrame>()?, Some(long));
-        assert_eq!(decoder.frame::<AttachedFrame>()?, Some(AttachedFrame::Detach));
+        assert_eq!(
+            decoder.frame::<AttachedFrame>()?,
+            Some(AttachedFrame::Detach)
+        );
         assert_eq!(decoder.buffered(), 0);
         let mut decoder = Decoder::default();
         // Any length past the limit will do.

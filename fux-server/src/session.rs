@@ -1215,6 +1215,18 @@ impl Session {
         result
     }
 
+    /// Client `client` runs in the session `leader` leads, where the OS
+    /// says: the pane whose program that is, if any (`View::runs_in`).
+    pub fn runs_in(&mut self, client: ClientId, leader: Option<fuxix::process::Pid>) {
+        let leads =
+            |pane: &Pane| (pane.process().child()).is_some_and(|c| Some(c.leader.pid()) == leader);
+        let pane = self.parts.panes().iter().find(|(_, pane)| leads(pane));
+        let pane = pane.map(|(id, _)| *id);
+        if let Some(view) = self.views.get_mut(&client) {
+            view.runs_in = pane;
+        }
+    }
+
     fn attach_checked(&mut self, attach: Attach, now: Instant) -> Result<ClientId, Error> {
         self.check_run(attach.of)?;
         if attach.initial.is_some() && (attach.target.is_some() || attach.read_only) {
@@ -1442,7 +1454,15 @@ impl Session {
 
     /// The clients showing tab `tab` that size its panes.
     fn sizing(&self, tab: TabId) -> impl Iterator<Item = &View> {
-        (self.views.values()).filter(move |v| v.sizes() && self.shows(v.id, tab))
+        (self.views.values()).filter(move |v| self.shows(v.id, tab) && self.sizes(v, tab))
+    }
+
+    /// Whether `view` sizes tab `tab`'s panes as it shows it: not if its
+    /// client runs in one of them (`View::runs_in`), whose terminal would
+    /// follow what it is sized to.
+    fn sizes(&self, view: &View, tab: TabId) -> bool {
+        let own = view.runs_in.and_then(|pane| self.locate(pane));
+        view.sizes() && own.is_none_or(|(_, t)| t != tab)
     }
 
     /// The size a client's screen gives panes, below its bar, if any.
@@ -1539,9 +1559,11 @@ impl Session {
         sizes.clear();
         // Each tab a client sizes, and its smallest screen.
         let mut screens = BTreeMap::new();
-        for view in self.views.values().filter(|v| v.sizes()) {
+        for view in self.views.values() {
             let size = Self::screen_size(view).map(Size::nonzero);
-            if let (Some(tab), Some((rows, cols))) = (self.shown_tab(view.id), size) {
+            if let (Some(tab), Some((rows, cols))) = (self.shown_tab(view.id), size)
+                && self.sizes(view, tab.id())
+            {
                 let (r, c) = screens.entry(tab.id()).or_insert((rows, cols));
                 (*r, *c) = ((*r).min(rows), (*c).min(cols));
             }
