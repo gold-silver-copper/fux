@@ -3956,6 +3956,9 @@ mod tests {
         assert_eq!((shown(&s, c), shown(&s, d)), (at(3, Some(2)), at(1, None)));
         output_as(&mut s, Some(c), "me @3 str last step")?;
         assert_eq!(shown(&s, c), at(2, Some(3)));
+        // Showing it again or reordering it changes neither.
+        output_as(&mut s, Some(c), "me @2 show @2 str previous reorder")?;
+        assert_eq!(shown(&s, c), at(2, Some(3)));
         // Its current tab closed, a client goes to its last; with none, to
         // the next one, else the one before.
         run(&mut s, "@2 kill")?;
@@ -3983,6 +3986,18 @@ mod tests {
             [c, d].map(|v| s.place(v).map(|p| p.pane)),
             [Some(PaneId::of(3)); 2]
         );
+        // A move that closes its tab leaves a last the client was shown.
+        run(
+            &mut s,
+            "opts +1 in 80 24 size new-tab drop opts +1 in 80 24 size new-tab drop",
+        )?;
+        output_as(&mut s, Some(c), "me @5 show me @6 show %7 @3 move")?;
+        assert_eq!(shown(&s, c), at(3, Some(5)));
+        invariants(&s)?;
+        // A client attached anew has no last.
+        s.detach_client(c);
+        let e = s.attach(10, 40, None)?;
+        assert_eq!(shown(&s, e), at(3, None));
         invariants(&s)?;
         Ok(())
     }
