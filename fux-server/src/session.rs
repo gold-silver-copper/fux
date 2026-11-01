@@ -1401,8 +1401,8 @@ impl Session {
         if let Fit::Fixed(_) = tab.fit() {
             return stored;
         }
-        let joining = (joining.and_then(|c| self.views.get(&c))).filter(|v| v.sizes());
-        let smallest = (self.sizing(tab.id()).chain(joining))
+        let joining = (joining.and_then(|c| self.views.get(&c))).filter(|v| Self::sizes(v, root));
+        let smallest = (self.sizing(tab.id(), root).chain(joining))
             .map(View::pane_area)
             .map(|area| (area.h(), area.w()))
             .reduce(|(rows, cols), (h, w)| (rows.min(h), cols.min(w)))
@@ -1454,17 +1454,18 @@ impl Session {
         })
     }
 
-    /// The clients showing tab `tab` that size its panes.
-    fn sizing(&self, tab: TabId) -> impl Iterator<Item = &View> {
-        (self.views.values()).filter(move |v| self.shows(v.id, tab) && self.sizes(v, tab))
+    /// The clients showing tab `tab` that size it laid out as `root`.
+    fn sizing<'a>(&'a self, tab: TabId, root: &'a Tree) -> impl Iterator<Item = &'a View> {
+        (self.views.values()).filter(move |v| self.shows(v.id, tab) && Self::sizes(v, root))
     }
 
-    /// Whether `view` sizes tab `tab`'s panes as it shows it: not if its
-    /// client runs in one of them (`View::runs_in`), whose terminal would
-    /// follow what it is sized to.
-    fn sizes(&self, view: &View, tab: TabId) -> bool {
-        let own = view.runs_in.and_then(|pane| self.locate(pane));
-        view.sizes() && own.is_none_or(|(_, t)| t != tab)
+    /// Whether `view` sizes a tab it shows laid out as `root`: not if its
+    /// client runs in one of its panes (`View::runs_in`), whose terminal
+    /// would follow what it is sized to. Settling asks it of the tab's
+    /// layout and `room` of the one proposed, so what `room` admits is what
+    /// settling lays out.
+    fn sizes(view: &View, root: &Tree) -> bool {
+        view.sizes() && view.runs_in.is_none_or(|pane| !root.contains(pane))
     }
 
     // -------------------------------------------------------------- repair
@@ -1539,7 +1540,10 @@ impl Session {
     fn size_panes(&mut self, now: Instant) {
         let mut placed = std::mem::take(&mut self.placed);
         let mut tabs: BTreeSet<TabId> = (self.views.values())
-            .filter_map(|view| self.shown_tab(view.id).filter(|t| self.sizes(view, t.id())))
+            .filter_map(|view| {
+                self.shown_tab(view.id)
+                    .filter(|t| Self::sizes(view, t.root()))
+            })
             .map(Tab::id)
             .collect();
         tabs.extend(self.parts.take_changed());
@@ -2886,9 +2890,10 @@ impl Session {
     }
 
     /// Refused unless tab `tab` laid out as `root` shows every pane on its
-    /// effective size (`effective`), with `joining` about to show it. So a
-    /// split or a move hides no pane, and a dump can make every layout
-    /// there is again.
+    /// effective size (`effective`), with `joining` about to show it: the
+    /// size settling gives it, sized by the clients that will size it laid
+    /// out so (`sizes`). So a split or a move hides no pane, and a dump can
+    /// make every layout there is again.
     fn room(&self, tab: TabId, root: &Tree, joining: Option<ClientId>) -> Result<(), Error> {
         let area = self.effective(self.tab(tab).ok_or(Error::NoTab(tab))?, root, joining);
         if layout::shows_all(root, area) {
@@ -8740,6 +8745,29 @@ mod tests {
         // into it keeps its own size.
         output_as(&mut s, Some(small), "%2 str @3 tab move")?;
         assert_eq!(s.area_of(TabId::of(3)), Some(Rect::screen(10, 100)));
+        Ok(())
+    }
+
+    /// A client moving the pane it runs in into a tab is not one that
+    /// will size that tab: the move is checked on the size the tab will
+    /// have without it, its stored one, and refused if that hides a pane.
+    #[test]
+    fn a_client_moving_its_own_pane_does_not_size_where_it_goes() -> TestResult {
+        let (mut s, c) = attached(24, 80)?;
+        run(
+            &mut s,
+            "opts 4 24 size str +1 workspace in new-tab drop @2 resize-auto",
+        )?;
+        s.views.get_mut(&c).ok_or("its view")?.runs_in = Some(PaneId::of(1));
+        let roots = |s: &Session| [1, 2].map(|t| s.root(TabId::of(t)).cloned());
+        let before = roots(&s);
+        let refused = output_as(&mut s, Some(c), "%1 str @2 tab move").err();
+        let refused = refused.unwrap_or_default();
+        assert!(
+            refused.contains("no room") && refused.contains("4x24"),
+            "{refused}"
+        );
+        assert_eq!(roots(&s), before);
         Ok(())
     }
 

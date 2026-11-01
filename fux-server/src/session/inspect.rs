@@ -2,11 +2,13 @@ use super::{Error, Session};
 use crate::view::{ClientKind, Mode};
 use crate::workspace::{Child, Fit};
 use fux_wire::command::AnyRef;
+use fux_wire::id::PaneId;
 use fux_wire::inspect::{self, Projection, Scope, Snapshot};
 use fux_wire::json::Json;
-use fux_wire::layout::Node;
+use fux_wire::layout::{Node, Rect};
 use fux_wire::protocol::Body;
 use fux_wire::wire::Memory;
+use std::collections::BTreeMap;
 
 impl Session {
     pub(super) fn inspect(&self, scope: Scope, projection: Projection) -> Result<Body, Error> {
@@ -60,7 +62,8 @@ impl Session {
         // The tabs whose whole layout is here, which choices index.
         let mut laid_out = Vec::new();
         for (ws, tab) in tabs {
-            let sized = self.sized(tab);
+            // Where each pane is, found once for the tab.
+            let at: BTreeMap<PaneId, Rect> = self.sized(tab).panes.into_iter().collect();
             // A pane's tab as far as it is in scope: the pane alone.
             let tree = match target {
                 Some(AnyRef::Pane(pane)) => vec![Node::Pane(pane)],
@@ -104,8 +107,8 @@ impl Session {
                     title: pane.title().as_str().to_owned(),
                     rows: pane.size().rows(),
                     cols: pane.size().cols(),
-                    row: sized.rect(*id).map(|r| r.y()),
-                    col: sized.rect(*id).map(|r| r.x()),
+                    row: at.get(id).map(Rect::y),
+                    col: at.get(id).map(Rect::x),
                     version: pane.version(self.run),
                     state,
                     launch,
