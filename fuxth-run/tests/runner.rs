@@ -335,17 +335,43 @@ impl Terminal {
 }
 
 impl Terminal {
-    /// Waits until the program has the terminal in key mode: what is typed
-    /// before would be echoed and edited by the terminal.
-    fn wait_until_keys(&self) -> Outcome {
+    /// Its status once it ends, within 10 seconds. What it writes is read
+    /// meanwhile: macOS has a program's exit wait until its terminal's
+    /// output is read.
+    fn ended(&mut self) -> Result<std::process::ExitStatus, String> {
+        let deadline = after(Duration::from_secs(10));
+        loop {
+            if let Some(status) = self.child.try_wait().map_err(e)? {
+                return Ok(status);
+            }
+            if Instant::now() > deadline {
+                return Err(format!("it never ended: {:?}", self.seen));
+            }
+            let mut fds = [PollFd::new(&self.master, Events::IN)];
+            if poll(&mut fds, Some(Duration::from_millis(20))).map_err(e)? > 0 {
+                let mut buffer = [0; 4096];
+                // Ended, its terminal reads as closed.
+                if let Ok(n) = fuxix::io::read(&self.master, &mut buffer) {
+                    self.seen
+                        .push_str(&text(buffer.get(..n).unwrap_or_default()));
+                }
+            }
+        }
+    }
+
+    /// Waits until the program has the terminal in line mode (`canonical`)
+    /// or key mode: what is typed before would be echoed and edited by the
+    /// terminal, or not.
+    fn wait_until_canonical(&self, canonical: bool) -> Outcome {
         let deadline = after(Duration::from_secs(10));
         while fuxix::terminal::attributes(&self.master)
             .map_err(e)?
             .modes()
             .canonical
+            != canonical
         {
             if Instant::now() > deadline {
-                return Err("the terminal never went into key mode".to_owned());
+                return Err(format!("the terminal never went canonical {canonical}"));
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -365,14 +391,15 @@ fn a_line_read_after_a_key_on_a_terminal_ends_at_enter() -> Outcome {
     let dir = dir("line")?;
     std::fs::write(dir.join("line.fux"), "read-key print 99 accept print").map_err(e)?;
     let mut keys = Terminal::start(&dir, &["line.fux"])?;
-    keys.wait_until_keys()?;
+    keys.wait_until_canonical(false)?;
     keys.type_in("\r")?;
     assert_eq!(keys.wait_for("13\r\n")?, "13\r\n");
     // The line is the terminal's to echo, and Enter ends it.
+    keys.wait_until_canonical(true)?;
     keys.type_in("hello\r")?;
     let echoed = "hello\r\nhello\r\n";
     assert_eq!(keys.wait_for(echoed)?, echoed);
-    let status = keys.child.wait().map_err(e)?;
+    let status = keys.ended()?;
     assert!(status.success(), "{status:?}");
     Ok(())
 }
@@ -382,11 +409,10 @@ fn an_ending_signal_puts_the_terminal_back() -> Outcome {
     let dir = dir("ending")?;
     std::fs::write(dir.join("keys.fux"), "begin read-key drop false until").map_err(e)?;
     let mut keys = Terminal::start(&dir, &["keys.fux"])?;
-    keys.wait_until_keys()?;
+    keys.wait_until_canonical(false)?;
     let pid = fuxix::process::Pid::of(&keys.child).ok_or("no pid")?;
     fuxix::process::kill(pid, fuxix::process::Signal::Term).map_err(e)?;
-    let status = keys.child.wait().map_err(e)?;
-    assert_eq!(status.code(), Some(128 + 15));
+    assert_eq!(keys.ended()?.code(), Some(128 + 15));
     let modes = fuxix::terminal::attributes(&keys.master)
         .map_err(e)?
         .modes();
@@ -411,20 +437,12 @@ fn an_ending_signal_ends_a_write_held_up_by_a_full_pipe() -> Outcome {
     )
     .map_err(e)?;
     let mut keys = Terminal::start_with(&dir, &["sh", "-c", "exec \"$0\" print.fux > out", FUXTH])?;
-    keys.wait_until_keys()?;
+    keys.wait_until_canonical(false)?;
     keys.type_in("k")?;
     std::thread::sleep(Duration::from_millis(500));
     let pid = fuxix::process::Pid::of(&keys.child).ok_or("no pid")?;
     fuxix::process::kill(pid, fuxix::process::Signal::Term).map_err(e)?;
-    let deadline = after(Duration::from_secs(10));
-    let status = loop {
-        match keys.child.try_wait().map_err(e)? {
-            Some(status) => break status,
-            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            None => return Err("SIGTERM never ended the held write".to_owned()),
-        }
-    };
-    assert_eq!(status.code(), Some(128 + 15));
+    assert_eq!(keys.ended()?.code(), Some(128 + 15));
     let modes = fuxix::terminal::attributes(&keys.master)
         .map_err(e)?
         .modes();
@@ -464,9 +482,11 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
         };
         assert_eq!(repl.wait_for(&expected)?, expected);
     }
-    // Ctrl-C stops a runaway, and the REPL goes on.
-    repl.type_in("begin false until\n")?;
-    repl.wait_for("begin false until\r\n")?;
+    // Ctrl-C stops a runaway, and the REPL goes on. It is typed once the
+    // runaway runs: before the REPL reads its line, the terminal would
+    // discard the line with the Ctrl-C.
+    repl.type_in("str running print begin false until\n")?;
+    repl.wait_for("running\r\n")?;
     repl.type_in("\x03")?;
     let stopped = repl.wait_for("ok\r\n")?;
     assert!(stopped.contains("fuxth: interrupt: "), "{stopped:?}");
@@ -474,14 +494,14 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
     // was outside it; Ctrl-D ends the REPL.
     repl.type_in("read-key print\n")?;
     repl.wait_for("read-key print\r\n")?;
-    repl.wait_until_keys()?;
+    repl.wait_until_canonical(false)?;
     repl.type_in("\x1b[A")?;
     assert_eq!(repl.wait_for("ok\r\n")?, "1114112\r\nok\r\n");
     // Enter reads as the 13 a terminal sends, though the terminal's own
     // modes turn it into a newline, which ends this line.
     repl.type_in("read-key print\r")?;
     repl.wait_for("read-key print\r\n")?;
-    repl.wait_until_keys()?;
+    repl.wait_until_canonical(false)?;
     repl.type_in("\r")?;
     assert_eq!(repl.wait_for("ok\r\n")?, "13\r\nok\r\n");
     // A key typed ahead with the lines after it, which the key read reads
@@ -489,12 +509,12 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
     // REPL's next line.
     repl.type_in("read-key print 99 accept print\r")?;
     repl.wait_for("read-key print 99 accept print\r\n")?;
-    repl.wait_until_keys()?;
+    repl.wait_until_canonical(false)?;
     repl.type_in("xhello\r1 2 add print\r")?;
     let ahead = "120\r\nhello\r\nok\r\n3\r\nok\r\n";
     assert_eq!(repl.wait_for(ahead)?, ahead);
     repl.type_in("\x04")?;
-    let status = repl.child.wait().map_err(e)?;
+    let status = repl.ended()?;
     assert!(status.success(), "{status:?}");
     Ok(())
 }

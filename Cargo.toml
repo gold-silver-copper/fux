@@ -19,7 +19,7 @@ repository = "https://github.com/gold-silver-copper/fux"
 readme = "README.md"
 keywords = ["terminal", "multiplexer", "pty", "tmux"]
 categories = ["command-line-utilities"]
-include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.md", "/LICENSE"]
+include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.md", "/docs/cookbook.md", "/LICENSE"]
 
 [features]
 # `script::testing`: a session asked in-process as the tests ask it
