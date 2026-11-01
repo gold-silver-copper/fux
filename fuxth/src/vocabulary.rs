@@ -83,7 +83,7 @@ impl Vocabulary {
             if name.is_empty() || name.contains(char::is_whitespace) {
                 return Err(refused(format!("{name:?}: a code is one word")));
             }
-            if Code::ALL.iter().any(|c| c.name() == name) {
+            if name == "all" || Code::ALL.iter().any(|c| c.name() == name) {
                 return Err(refused(format!("{name}: a code of the language's")));
             }
         }
@@ -91,14 +91,18 @@ impl Vocabulary {
         Ok(())
     }
 
-    /// The code `name` names, if a running word may raise it, for a `try`
-    /// to catch: the language's or the application's; else why not.
-    pub(crate) fn caught(&self, name: &str) -> Result<Code, String> {
+    /// The codes `name` names, if a running word may raise them, for a
+    /// `try` to catch: the language's or the application's, one, or `all`
+    /// of them; else why not.
+    pub(crate) fn caught(&self, name: &str) -> Result<Vec<Code>, String> {
         let raised = |code: &&Code| code.raised() || self.codes.contains(code);
         let all = Code::ALL.iter().chain(&self.codes);
+        if name == "all" {
+            return Ok(all.filter(raised).copied().collect());
+        }
         if let Some(code) = all.clone().find(|c| c.name() == name) {
             return match raised(&code) {
-                true => Ok(*code),
+                true => Ok(vec![*code]),
                 false => Err(format!(
                     "{name} is found compiling, at the program's end or in the application, never raised by a running word: no try catches it"
                 )),

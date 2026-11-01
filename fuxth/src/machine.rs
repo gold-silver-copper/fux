@@ -11,7 +11,7 @@ use crate::Failure;
 use crate::error::{Error, Floor, Wants, underflow};
 use crate::reader::{Building, Read};
 use crate::token::Token;
-use crate::value::{AppValue, List, Text, Value, Xt};
+use crate::value::{AppValue, List, Text, Thrown, Value, Xt};
 use crate::vocabulary::Vocabulary;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -373,9 +373,9 @@ pub struct Machine<A> {
     steps: u64,
     /// The one-character ASCII strings made so far, by code.
     chars: Vec<Option<Value<A>>>,
-    /// The names of the codes caught so far: a closed set, so made once a
-    /// run, holding nothing, as a literal does.
-    codes: Vec<(Code, Value<A>)>,
+    /// The steps whose words took effect (`acted`), each once, in the order
+    /// they first did: what a failure says had happened before it.
+    actions: Vec<Token>,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, usize, usize)>,
@@ -407,7 +407,7 @@ impl<A: AppValue> Machine<A> {
             out: Vec::new(),
             steps: 0,
             chars: Vec::new(),
-            codes: Vec::new(),
+            actions: Vec::new(),
             last: None,
         };
         let vocabulary = Rc::clone(&machine.vocabulary);
@@ -500,6 +500,20 @@ impl<A: AppValue> Machine<A> {
         self.building.clear();
         self.compiling = false;
         self.last = None;
+        self.actions.clear();
+    }
+
+    /// The word at `step` took effect (the host did what it asked): listed,
+    /// once, with every failure from then on.
+    pub fn acted(&mut self, step: Token) {
+        if !self.actions.contains(&step) {
+            self.actions.push(step);
+        }
+    }
+
+    /// The steps whose words took effect, in the order they first did.
+    pub fn actions(&self) -> &[Token] {
+        &self.actions
     }
 
     /// It is a callback's: what it is given must be used up, so it fails
@@ -510,12 +524,12 @@ impl<A: AppValue> Machine<A> {
 
     /// Raises a suspended word's failure at it, as if the word had failed
     /// when called: a `try` around it that catches its code goes on at its
-    /// handler, when the machine runs again, which gets `carried` in place
-    /// of the message if the failure carries a value (a failed wait's
-    /// answer); else its error, said at the word, ends the run.
+    /// handler, when the machine runs again, its failure carrying `carried`
+    /// if given (a failed wait's answer); else its error, said at the word,
+    /// ends the run.
     pub fn raise(&mut self, failure: Failure, carried: Option<Value<A>>) -> Result<(), Error> {
         let error = self.failed(failure);
-        self.recover(error, carried)
+        self.recover(thrown(error, carried))
     }
 
     /// An application word's failure, said at the word, or the word it
@@ -527,21 +541,22 @@ impl<A: AppValue> Machine<A> {
         error
     }
 
-    /// `error` caught by the innermost `try` that names its code: what the
+    /// `thrown` caught by the innermost `try` that names its code: what the
     /// body began undone (its calls, sources, `let` frames, blocks, values
-    /// and code being compiled), its message (or the value it carries) and
-    /// code pushed, the handler next. Else the error no `try` caught, the
-    /// machine left where that error happened, for its host to say where,
-    /// but for the code it was compiling.
-    fn recover(&mut self, error: Error, carried: Option<Value<A>>) -> Result<(), Error> {
-        let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&error.code));
+    /// and code being compiled), the failure pushed, with the actions taken
+    /// so far, the handler next. Else its error, which no `try` caught, the
+    /// machine left where it happened, for its host to say where, but for
+    /// the code it was compiling.
+    fn recover(&mut self, thrown: Thrown<A>) -> Result<(), Error> {
+        let code = thrown.error.code;
+        let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&code));
         let Some(caught) = self.marks.iter().rposition(catches) else {
             // Uncaught, the code being compiled means nothing: it and its
             // marks go, and the values stay.
             self.building.clear();
             self.compiling = false;
             self.stack.retain(|value| !matches!(value, Value::Mark(_)));
-            return Err(error);
+            return Err(thrown.error);
         };
         // Those inside it end with it.
         self.marks.truncate(caught.saturating_add(1));
@@ -557,7 +572,7 @@ impl<A: AppValue> Machine<A> {
             },
         )) = self.marks.pop()
         else {
-            return Err(error);
+            return Err(thrown.error);
         };
         while self.frames.len() > frames {
             self.leave();
@@ -567,19 +582,36 @@ impl<A: AppValue> Machine<A> {
         self.building.truncate(building);
         self.compiling = compiling;
         self.jump(handler);
-        let message = carried.unwrap_or_else(|| Self::text(&error.message));
-        let made = self.codes.iter().find(|(code, _)| *code == error.code);
-        let code = match made.map(|(_, name)| name.clone()) {
-            Some(name) => name,
-            None => {
-                let name = Value::str(error.code.name());
-                self.codes.push((error.code, name.clone()));
-                name
+        let actions = self.actions.clone();
+        self.push(Value::Failure(Rc::new(Thrown { actions, ..thrown })));
+        Ok(())
+    }
+
+    /// `throw`: a failure raised again, or the failure of number `n` (none
+    /// for 0).
+    fn throw(&mut self, x: Value<A>) -> Result<(), Error> {
+        let thrown = match x {
+            Value::Int(0) => return Ok(()),
+            Value::Int(n) => {
+                let error = self.fail(Code::numbered(n), format!("{n} thrown"));
+                Thrown {
+                    number: Some(n),
+                    ..thrown(error, None)
+                }
+            }
+            Value::Failure(thrown) => Rc::unwrap_or_clone(thrown),
+            other @ (Value::Bool(_)
+            | Value::Str(_)
+            | Value::List(_)
+            | Value::App(_)
+            | Value::Xt(_)
+            | Value::Mark(_)) => {
+                let app = matches!(other, Value::App(_));
+                let wants = Wants::Takes(Builtin::Throw, "0, a number or a failure");
+                return Err(self.refused(Some(wants), other.kind(), app));
             }
         };
-        self.push(message);
-        self.push(code);
-        Ok(())
+        self.recover(thrown)
     }
 
     /// The step each call under way is at, the outermost first: the word
@@ -690,7 +722,7 @@ impl<A: AppValue> Machine<A> {
         let until = self.steps.saturating_add(budget);
         loop {
             match self.steps_until(host, until) {
-                Err(error) => self.recover(error, None)?,
+                Err(error) => self.recover(thrown(error, None))?,
                 ran => return ran,
             }
         }
@@ -1034,7 +1066,10 @@ impl<A: AppValue> Machine<A> {
             | Value::List(_)
             | Value::App(_)
             | Value::Xt(_)
-            | Value::Mark(_)) => Err(self.fail(Code::Type, Wants::Flag.not(other.kind(), false))),
+            | Value::Mark(_)
+            | Value::Failure(_)) => {
+                Err(self.fail(Code::Type, Wants::Flag.not(other.kind(), false)))
+            }
         }
     }
 
@@ -1139,7 +1174,12 @@ impl<A: AppValue> Machine<A> {
             match item {
                 Value::Str(_) => strings = true,
                 Value::List(_) => lists = true,
-                Value::Int(_) | Value::Bool(_) | Value::App(_) | Value::Xt(_) | Value::Mark(_) => {
+                Value::Int(_)
+                | Value::Bool(_)
+                | Value::App(_)
+                | Value::Xt(_)
+                | Value::Mark(_)
+                | Value::Failure(_) => {
                     return Err(self.fail(
                         Code::Type,
                         format!(
@@ -1164,7 +1204,8 @@ impl<A: AppValue> Machine<A> {
                 | Value::List(_)
                 | Value::App(_)
                 | Value::Xt(_)
-                | Value::Mark(_) => None,
+                | Value::Mark(_)
+                | Value::Failure(_) => None,
             });
             return Ok(Self::text(&strings.collect::<String>()));
         }
@@ -1218,6 +1259,16 @@ impl<A: AppValue> Machine<A> {
     /// Writes `text` through the host, said at the word.
     fn written<H: Host<Value = A>>(&self, host: &mut H, text: &str) -> Result<(), Error> {
         host.write(text).map_err(|f| self.fail(f.code, f.message))
+    }
+}
+
+/// `error` as a failure to raise, carrying `carried`: its number its code's.
+fn thrown<A>(error: Error, carried: Option<Value<A>>) -> Thrown<A> {
+    Thrown {
+        number: error.code.number(),
+        error,
+        carried,
+        actions: Vec::new(),
     }
 }
 
@@ -1288,7 +1339,8 @@ fn compare<A: PartialEq>(mut a: &Value<A>, mut b: &Value<A>) -> Option<Ordering>
                 | Value::List(_)
                 | Value::App(_)
                 | Value::Xt(_)
-                | Value::Mark(_),
+                | Value::Mark(_)
+                | Value::Failure(_),
                 _,
             ) => {
                 return None;
@@ -1346,7 +1398,8 @@ impl Int {
             | Value::List(_)
             | Value::App(_)
             | Value::Xt(_)
-            | Value::Mark(_)) => Err(other.kind()),
+            | Value::Mark(_)
+            | Value::Failure(_)) => Err(other.kind()),
         }
     }
 }
@@ -1367,7 +1420,8 @@ impl Str {
             | Value::List(_)
             | Value::App(_)
             | Value::Xt(_)
-            | Value::Mark(_)) => Err(other.kind()),
+            | Value::Mark(_)
+            | Value::Failure(_)) => Err(other.kind()),
         }
     }
 }
@@ -1388,7 +1442,8 @@ impl Exec {
             | Value::Str(_)
             | Value::List(_)
             | Value::App(_)
-            | Value::Mark(_)) => Err(other.kind()),
+            | Value::Mark(_)
+            | Value::Failure(_)) => Err(other.kind()),
         }
     }
 }
@@ -1409,7 +1464,8 @@ impl Seq {
             | Value::Bool(_)
             | Value::App(_)
             | Value::Xt(_)
-            | Value::Mark(_)) => Err(other.kind()),
+            | Value::Mark(_)
+            | Value::Failure(_)) => Err(other.kind()),
         }
     }
 }
@@ -1430,7 +1486,8 @@ impl Joined {
             | Value::Str(_)
             | Value::App(_)
             | Value::Xt(_)
-            | Value::Mark(_)) => Err(other.kind()),
+            | Value::Mark(_)
+            | Value::Failure(_)) => Err(other.kind()),
         }
     }
 }
@@ -1682,6 +1739,15 @@ builtins! { m host;
         let text = x.text().map_err(|f| m.fail(f.code, f.message))?;
         Err(m.fail(Code::Fail, text))
     }
+    Throw "throw" [cold] (x: Any) "x --"
+        "raise x, a failure, again; or the failure numbered x in Forth's table (0 raises none)"
+        { m.throw(x) }
+    Abort "abort" [cold] () "--" "stop the program: the failure abort, -1 throw" {
+        m.throw(Value::Int(-1))
+    }
+    Quit "quit" [cold] () "--" "stop the program: the failure quit, -56 throw" {
+        m.throw(Value::Int(-56))
+    }
     Execute "execute" [cold] (xt: Exec) "xt --" "run the word xt is" {
         m.enter(&xt)
     }
@@ -1747,7 +1813,7 @@ builtins! { m host;
         "seq each … end: the body once per element, the element pushed (a string's are character codes)"
         { m.open(crate::reader::Construct::Each) }
     Try "try" [immediate] () "codes --"
-        "codes try … catch … end: the body from an empty stack, its values left; if it fails with one of codes (str 'timeout closed' just before try), the handler instead, on the stack as it was at try and the failure's message (or the value it carries) and code"
+        "codes try … catch … end: the body from an empty stack, its values left; if it fails with one of codes (str 'timeout closed' just before try, str all for any), the handler instead, on the stack as it was at try and the failure"
         { m.try_body() }
     Catch "catch" [immediate] () "--" "codes try … catch … end: the handler" { m.catch() }
     Include "include" [immediate] () "--" "include PATH: the file's words read here, relative to the file naming it"

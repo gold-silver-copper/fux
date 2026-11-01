@@ -68,7 +68,8 @@ fn data_within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
         Value::App(Fux::Client(c, run)) => Data::Client(*c, *run),
         Value::App(Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..))
         | Value::Xt(_)
-        | Value::Mark(_) => {
+        | Value::Mark(_)
+        | Value::Failure(_) => {
             return Err(fail());
         }
     })

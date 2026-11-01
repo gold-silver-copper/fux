@@ -166,6 +166,32 @@ pub(super) fn from_fields(fields: Vec<(String, V)>, of: Option<Run>) -> Result<V
     Builder.finish(fields, of)
 }
 
+/// A failure's fields, as a handler reads them: its `code`, its `number`
+/// in Forth's table, its `message`, the `value` it carries (a failed wait's
+/// answer) and the `actions` that had taken effect before it, each where
+/// its word is.
+pub(super) fn failure(thrown: &fuxth::Thrown<Fux>) -> Record {
+    let number = thrown.number.map_or_else(null, Value::Int);
+    let actions = thrown.actions.iter();
+    let actions = actions.map(|t| Value::str(format!("{}: {}", t.place, t.text)));
+    let fields = [
+        ("code", Value::str(thrown.error.code.name())),
+        ("number", number),
+        ("message", Value::str(&*thrown.error.message)),
+        ("value", thrown.carried.clone().unwrap_or_else(null)),
+        (
+            "actions",
+            Value::List(Rc::new(List::new(actions.collect()))),
+        ),
+    ];
+    let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
+    Record {
+        fields,
+        of: None,
+        batch: false,
+    }
+}
+
 pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
     Builder.json(value, 0)
 }
