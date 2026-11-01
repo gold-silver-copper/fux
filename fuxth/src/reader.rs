@@ -576,27 +576,16 @@ impl<A: AppValue> Machine<A> {
 
     /// `end`.
     pub(crate) fn end(&mut self) -> Result<(), Error> {
-        use Construct::{Case, Catch, Code as Coded, Define, Each, Endof, List, Of, While};
+        use Construct::{Case, Catch, Code as Coded, Define, Does, Each, Endof, List, Of, While};
         let none = "no block that end closes is open";
-        let mut mark = self.close(
-            &[
-                Define,
-                Coded,
-                Construct::Does,
-                List,
-                Each,
-                Catch,
-                While,
-                Of,
-                Case,
-                Endof,
-            ],
-            none,
-        )?;
+        let closes = [
+            Define, Coded, Does, List, Each, Catch, While, Of, Case, Endof,
+        ];
+        let mut mark = self.close(&closes, none)?;
         // What follows each `does` closes with its definition.
-        while mark.construct == Construct::Does {
+        while mark.construct == Does {
             self.end_does(&mark);
-            mark = self.close(&[Define, Coded, Construct::Does], none)?;
+            mark = self.close(&[Define, Coded, Does], none)?;
         }
         match mark.construct {
             List => self.compile(Op::Gather),
@@ -643,7 +632,7 @@ impl<A: AppValue> Machine<A> {
             | Construct::Do
             | Construct::Ahead
             | Construct::Try
-            | Construct::Does => {}
+            | Does => {}
         }
         self.closed()
     }
@@ -702,31 +691,19 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `create NAME`: a word that pushes where the data space goes on;
-    /// `variable NAME`, one with a cell of its own there.
-    pub(crate) fn create(&mut self, word: Builtin) -> Result<(), Error> {
+    /// `variable NAME`, one with a cell of its own there; `x constant
+    /// NAME`, one that pushes x, copied in where it is compiled.
+    pub(crate) fn create(&mut self, word: Builtin, x: Option<Value<A>>) -> Result<(), Error> {
         let name = self.next_word(word, "a name")?;
         self.check_name(&name)?;
         let body = self.next_address();
         if word == Builtin::Variable {
             self.allot(1)?;
         }
-        self.created(Rc::clone(&name.text), body, false, None);
-        self.latest = Some(name.text);
-        Ok(())
-    }
-
-    /// `constant NAME`: a word that pushes `x`, one step, so it is copied
-    /// in where it is compiled, as a `let` value is.
-    pub(crate) fn constant(&mut self, x: Value<A>) -> Result<(), Error> {
-        let name = self.next_word(Builtin::Constant, "a name")?;
-        self.check_name(&name)?;
-        let xt = self.one(&name.text, Op::Push(x));
-        let entry = Entry {
-            xt,
-            immediate: false,
-        };
-        self.names.insert(Rc::clone(&name.text), entry);
-        self.latest = Some(name.text);
+        match x {
+            Some(x) => self.created(name.text, None, false, vec![(Op::Push(x), None)]),
+            None => self.created(name.text, Some(body), false, Vec::new()),
+        }
         Ok(())
     }
 
@@ -774,29 +751,30 @@ impl<A: AppValue> Machine<A> {
             return Err(self.fail(Code::Type, why));
         };
         let slots = self.version_at(action).map_or(0, |code| code.locals);
-        let call = (Op::Call(action, slots), self.at());
-        self.created(name, body, immediate, Some(call));
+        let call = vec![(Op::Call(action, slots), self.at())];
+        self.created(name, Some(body), immediate, call);
         self.leave_definition(self.frames.len());
         Ok(())
     }
 
-    /// `name` defined as a word `create` made, which pushes `body`, then
-    /// takes the step `then`, if one.
+    /// `name` defined as the word defined last: it pushes `body`, if one,
+    /// for `body-of`, then takes `steps`.
     fn created(
         &mut self,
         name: Rc<str>,
-        body: Address,
+        body: Option<Address>,
         immediate: bool,
-        then: Option<(Op<A>, Option<Token>)>,
+        steps: Vec<(Op<A>, Option<Token>)>,
     ) {
         let mut code = Steps::new(Rc::clone(&name));
-        code.body = Some(body);
-        code.push(Op::Push(Value::Addr(body)), None);
-        if let Some((op, token)) = then {
+        code.body = body;
+        let pushed = body.map(|body| (Op::Push(Value::Addr(body)), None));
+        for (op, token) in pushed.into_iter().chain(steps) {
             code.push(op, token);
         }
         let xt = self.version(code);
-        self.names.insert(name, Entry { xt, immediate });
+        self.names.insert(Rc::clone(&name), Entry { xt, immediate });
+        self.latest = Some(name);
     }
 
     /// `code`.

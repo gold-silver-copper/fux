@@ -1535,12 +1535,10 @@ impl<A: AppValue> Machine<A> {
     fn cells(&mut self, at: Address, n: usize) -> Result<&mut [Option<Value<A>>], Error> {
         let has = self.space.len();
         let Some(end) = at.0.checked_add(n).filter(|end| *end <= has) else {
-            let what = match n {
-                1 => format!("address {}", at.0),
-                _ => format!("{n} cells from address {}", at.0),
-            };
-            let cells = if has == 1 { "cell" } else { "cells" };
-            let why = format!("{what}, and the data space has {has} {cells}");
+            let why = format!(
+                "{n} from address {}, and the data space has {has} cells",
+                at.0
+            );
             return Err(self.fail(Code::InvalidAddress, why));
         };
         Ok(self.space.get_mut(at.0..end).unwrap_or_default())
@@ -1607,16 +1605,12 @@ impl<A: AppValue> Machine<A> {
     /// integer, so two subtract to an integer (`Address::cells_from`).
     fn moved_by(&self, at: Address, n: i128) -> Result<Value<A>, Error> {
         let to = i128::try_from(at.0).unwrap_or(i128::MAX).saturating_add(n);
-        match i64::try_from(to)
+        let to = i64::try_from(to)
             .ok()
-            .and_then(|to| usize::try_from(to).ok())
-        {
-            Some(to) => Ok(Value::Addr(Address(to))),
-            None => {
-                let why = format!("address {} moved {n} cells is no address", at.0);
-                Err(self.fail(Code::InvalidAddress, why))
-            }
-        }
+            .and_then(|to| usize::try_from(to).ok());
+        let why = || format!("address {} moved {n} cells is no address", at.0);
+        let to = to.ok_or_else(|| self.fail(Code::InvalidAddress, why()))?;
+        Ok(Value::Addr(Address(to)))
     }
 }
 
@@ -2331,12 +2325,12 @@ builtins! { m host;
     }
     Create "create" [cold] () "--"
         "create NAME: a word that gives the address where the data space goes on, for the data stored after (store-next, allot)"
-        { m.create(Builtin::Create) }
+        { m.create(Builtin::Create, None) }
     Variable "variable" [cold] () "--"
         "variable NAME: a word that gives the address of a cell of its own, empty until a value is stored there"
-        { m.create(Builtin::Variable) }
+        { m.create(Builtin::Variable, None) }
     Constant "constant" [cold] (x: Any) "x --" "x constant NAME: a word that gives x"
-        { m.constant(x) }
+        { m.create(Builtin::Constant, Some(x)) }
     BodyOf "body-of" [cold] (xt: Exec) "xt -- addr" "the address the word create made, xt, gives" {
         let at = xt.body.ok_or_else(|| {
             let why = "body-of takes the xt of a word create made, and this is none";
