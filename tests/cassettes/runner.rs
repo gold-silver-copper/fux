@@ -1094,11 +1094,7 @@ fn scan(text: &str) -> impl Iterator<Item = &str> {
 /// A field holding a process id, at the start of `text`: the field, and
 /// what follows its digits.
 fn pid_at(text: &str) -> Option<(&'static str, &str)> {
-    [
-        "\"pid\":",
-        "\"foreground_group\":",
-        "\"foreground_leader\":",
-    ]
+    ["\"pid\":", "\"foreground_group\":"]
     .into_iter()
     .find_map(|field| {
         let after = text.strip_prefix(field)?;

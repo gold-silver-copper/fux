@@ -271,6 +271,12 @@ panes as it begins and answers changes in watch order, not exit chronology.
 - **Whether a program waits for keys:** fux does not say; no system
   reports it as a fact. Wait for what the program shows when it asks (a
   prompt's text), or for quiet.
+- **What a pane runs, and where:** fux gives `pid` and `foreground_group`
+  (G: `%3 str foreground_group get`); the OS says the rest. Linux:
+  `ps -o comm=,args= -p G`, `/proc/G/cmdline` (exact arguments),
+  `readlink /proc/G/cwd`, `pgrep -a -g G` (the whole group, also once its
+  leader exited); macOS: `ps -o comm=,args= -p G`, `lsof -a -p G -d cwd
+  -Fn`, `pgrep -lf -g G`.
 
 ## keys: Keys, the mouse and stopping
 
@@ -488,18 +494,19 @@ read-file`. `X warn` prints on stderr:
   A hand-written `%N`, `@N`, `+N` or `str cN client` means the selected server
   now. Printing one of these handles loses its run: that text is not durable
   across restarts.
-- `str NAME server` (`NAME.sock` in fux's directory) or `str PATH socket`
-  first chooses another server; `start` starts one, with nothing in it
+- `FUX_SOCKET=PATH fux …` talks to the server on that socket, else
+  `server.sock` in fux's directory; `start` starts one, with nothing in it
   (the first client to attach starts a shell on its screen; one that only
   watches is refused, as there is nothing to watch), `status` says which
   answers, and fails (`no_server`) where none does: `fux status || fux
-  start`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
-  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `NAME.sock` files:
+  start`. One `fux` command talks to one server; join two with a pipe:
+  `fux %1 capture | FUX_SOCKET=B fux %1 input paste send-keys`. The
+  servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
+  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `.sock` files:
   `status` each.
 
   ```sh
-  ls "${XDG_RUNTIME_DIR-$TMPDIR}/fux" | sed -n -e 's/\.sock$//p' |
-    while read -r n; do fux str "$n" server status; done
+  for s in "${XDG_RUNTIME_DIR-$TMPDIR}"/fux/*.sock; do FUX_SOCKET=$s fux status; done
   ```
   Inside a person's pane, `here` is that pane. Every pane has
   `FUX_PANE` (`%N:GENERATION`, the pane and its program generation),

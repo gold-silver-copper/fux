@@ -16,7 +16,7 @@ const COOKBOOK: &str = include_str!("../docs/cookbook.md");
 
 /// Programs a recipe may use beyond `sh` and fux; a recipe that names one
 /// the machine lacks is skipped, saying so.
-const NEEDS: &[&str] = &["jq", "timeout"];
+const NEEDS: &[&str] = &["jq", "timeout", "ps", "pgrep"];
 
 /// How long one block may run before it fails as hung.
 const HUNG: Duration = Duration::from_secs(120);

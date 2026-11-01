@@ -120,6 +120,26 @@ fux str shell pane capture json | jq -r '.version, .lines[-1]'
 fux ls | jq -r '.panes[] | [.id, .name // "", .state.exited // ""] | @tsv'
 ```
 
+## What a pane runs, and where
+
+fux gives the pane's process (`pid`) and its terminal's foreground
+process group (`foreground_group`); the OS says what they run. The
+group's leader may have exited while the rest of a pipeline runs on:
+then `ps -p` fails and `pgrep -g` still lists the group.
+
+```sh
+G=$(fux str shell pane str foreground_group get)
+ps -o comm=,args= -p "$G"
+if [ "$(uname)" = Linux ]; then
+  tr '\0' '\n' < "/proc/$G/cmdline"
+  readlink "/proc/$G/cwd"
+  pgrep -a -g "$G"
+else
+  lsof -a -p "$G" -d cwd -Fn
+  pgrep -lf -g "$G"
+fi
+```
+
 ## Follow events from a cursor
 
 `events` prints the journal's events, one JSON object a line, each with
