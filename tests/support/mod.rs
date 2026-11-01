@@ -240,8 +240,7 @@ impl Server {
 
     /// Its socket, as fux takes it.
     pub fn socket_path(&self) -> Result<fux_server::socket::SocketPath, String> {
-        fux_server::socket::socket_path(&fux_wire::protocol::Choice::Path(self.socket.clone()))
-            .map_err(e)
+        fux_server::socket::socket_path(Some(&self.socket)).map_err(e)
     }
 
     /// The server's process id, while it runs.

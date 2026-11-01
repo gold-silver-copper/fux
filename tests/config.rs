@@ -447,33 +447,17 @@ fn history_rows(server: &Server) -> Result<usize, String> {
         .count())
 }
 
-/// Local creation defaults never become server policy when selecting servers.
+/// Local creation defaults never become server policy.
 #[test]
-fn launch_defaults_do_not_change_either_selected_server() -> Outcome {
-    for named in [true, false] {
-        let a = Server::start("")?;
-        let b = Server::start("")?;
-        let select = if named {
-            "str fux server".to_owned()
-        } else {
-            format!(
-                "str {} socket",
-                fux_wire::words::quote(&b.socket.to_string_lossy())
-            )
-        };
-        let runtime = [("XDG_RUNTIME_DIR", b.dir.to_str().ok_or("runtime path")?)];
-        let code = format!("str history-bytes 0 set {select}");
-        let out = a.fux_env(&[&code], &runtime)?;
+fn launch_defaults_do_not_change_the_server() -> Outcome {
+    let server = Server::start("")?;
+    for code in ["str history-bytes 0 set", "str history-bytes 0 set ls"] {
+        let out = server.fux(&[code])?;
         assert_eq!(out.status, 0, "{}", out.stderr);
-        assert!(history_rows(&a)? > 5, "local budget changed the old server");
         assert!(
-            history_rows(&b)? > 5,
-            "local budget changed the newly selected server"
+            history_rows(&server)? > 5,
+            "local budget changed the server"
         );
-        let out = a.fux_env(&[&format!("{select} str history-bytes 0 set ls")], &runtime)?;
-        assert_eq!(out.status, 0, "{}", out.stderr);
-        assert!(history_rows(&a)? > 5);
-        assert!(history_rows(&b)? > 5);
     }
     Ok(())
 }

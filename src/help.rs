@@ -145,9 +145,9 @@ workspace (send-keys: or a client), which no word that wants a pane takes.
         79,
     ));
     out.push_str(
-        "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
-         FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux, or with\n\
-         XDG_RUNTIME_DIR unset $TMPDIR/fux. Nothing is saved on its own:\n\
+        "\n\nThe server: FUX_SOCKET's socket (`FUX_SOCKET=/abs/path fux …`); else\n\
+         server.sock in $XDG_RUNTIME_DIR/fux, or with XDG_RUNTIME_DIR unset\n\
+         $TMPDIR/fux. Nothing is saved on its own:\n\
          `fux all dump > FILE` saves the layouts and launches when you choose\n\
          (never what a process held), and `fux start && fux --file FILE` makes\n\
          them again on a fresh server.\n",

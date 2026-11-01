@@ -1,5 +1,5 @@
-//! What a script or an agent needs of the server itself: naming the one it
-//! means, not stopping or closing the wrong thing, hearing what happens as
+//! What a script or an agent needs of the server itself: choosing the one
+//! it means, not stopping or closing the wrong thing, hearing what happens as
 //! it happens, a place's panes and tabs as handles, sending keys to every
 //! pane of a tab, and making a dump's panes again.
 mod support;
@@ -7,15 +7,19 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use support::*;
 
-/// A command line run with only its words naming the server (`str NAME
-/// server`): no FUX_SOCKET, FUX_PANE or FUX_SERVER, and fux's directory
-/// under `rt`.
-fn named(rt: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> Result<Output, String> {
+/// A command line on the server `NAME.sock` in fux's directory under `rt`,
+/// chosen by FUX_SOCKET alone: no FUX_PANE or FUX_SERVER.
+fn named(
+    rt: &std::path::Path,
+    name: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<Output, String> {
     let mut command = Command::new(FUX);
     command
         .args(args)
         .env("XDG_RUNTIME_DIR", rt)
-        .env_remove("FUX_SOCKET")
+        .env("FUX_SOCKET", rt.join("fux").join(format!("{name}.sock")))
         .env_remove("FUX_PANE")
         .env_remove("FUX_SERVER")
         .stdin(Stdio::null());
@@ -44,12 +48,12 @@ fn private(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
     Ok(rt)
 }
 
-/// `str NAME server` names a server for what follows, `start` starts one
-/// and returns once it answers, and `status` says what answers. A FUX_PANE
+/// FUX_SOCKET chooses a server, `start` starts one and returns once it
+/// answers, and `status` says what answers. A FUX_PANE
 /// of another server's pane is not acted on; `kill-server` from a server's
 /// own pane, and a kill with no target, are refused.
 #[test]
-fn servers_are_named_and_kills_are_guarded() -> Outcome {
+fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     let server = Server::start("")?;
     // `status` names the server's process, where the system says it.
     let ours = server.fux(&["status", "json"])?;
@@ -61,9 +65,9 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         ours.stdout
     );
     let rt = private(&server.dir)?;
-    let started = named(&rt, &["str", "t", "server", "start"], &[])?;
+    let started = named(&rt, "t", &["start"], &[])?;
     assert_eq!(started.status, 0, "{}", started.stderr);
-    let status = named(&rt, &["str", "t", "server", "status", "json"], &[])?;
+    let status = named(&rt, "t", &["status", "json"], &[])?;
     assert_eq!(status.status, 0);
     assert!(
         status.stdout.contains(r#""compatible":true"#) && status.stdout.contains("/fux/t.sock"),
@@ -83,7 +87,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     );
     assert!(!status.stdout.contains("\"version\""));
     // With no server, status fails, so a shell's `if fux status` reads it.
-    let none = named(&rt, &["str", "none", "server", "status"], &[])?;
+    let none = named(&rt, "none", &["status"], &[])?;
     assert_eq!(none.status, 1, "{}", none.stderr);
     assert!(
         none.stderr.starts_with("fux: no_server: ") && none.stderr.contains("no fux server at"),
@@ -99,14 +103,14 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         ("FUX_PANE", identity.as_str()),
         ("FUX_SERVER", "another-run"),
     ];
-    let stray = named(&rt, &["str", "t", "server", "here", "capture"], &theirs)?;
+    let stray = named(&rt, "t", &["here", "capture"], &theirs)?;
     assert_eq!(stray.status, 1);
     assert!(
         stray.stderr.contains("another fux server"),
         "{}",
         stray.stderr
     );
-    let untargeted = named(&rt, &["str", "t", "server", "here", "kill"], &[])?;
+    let untargeted = named(&rt, "t", &["here", "kill"], &[])?;
     assert_eq!(untargeted.status, 1);
     assert!(
         untargeted.stderr.starts_with("fux: no_target: "),
@@ -152,10 +156,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         fuxix::process::Signal::Term,
     );
     assert!(client.wait_exit()?.contains("stopped by a signal"));
-    assert_eq!(
-        named(&rt, &["str", "t", "server", "kill-server"], &[])?.status,
-        0
-    );
+    assert_eq!(named(&rt, "t", &["kill-server"], &[])?.status, 0);
     Ok(())
 }
 
@@ -174,10 +175,10 @@ fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
         let file = std::fs::File::create(&held).map_err(e)?;
         let _leaked = fuxix::io::duplicate_inheritable(&file).map_err(e)?;
         Command::new(FUX)
-            .args(["str", "d", "server", "start"])
+            .arg("start")
             .current_dir(&here)
             .env("XDG_RUNTIME_DIR", &rt)
-            .env_remove("FUX_SOCKET")
+            .env("FUX_SOCKET", rt.join("fux").join("d.sock"))
             .env_remove("FUX_PANE")
             .env_remove("FUX_SERVER")
             .stdin(Stdio::null())
@@ -814,9 +815,9 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
             "agent-opts 80 24 size str {cwd} cwd {argv} new-tab"
         )])?;
         let pane = answer.trim().split(':').next().ok_or("pane")?;
+        // It prints once it changed directory.
         eventually("the program changed directory", || {
-            Ok(server.ok(&[pane, "str", "cwd", "get"])?.trim()
-                == child.to_str().ok_or("child text")?)
+            Ok(server.ok(&[pane, "capture"])?.contains("saved-launch"))
         })?;
         let dump = server.ok(&[pane, "tab", "dump"])?;
         assert!(
@@ -847,17 +848,12 @@ fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
         "agent-opts 80 24 size str {cwd} cwd list str /bin/sh str -c str {body} str shell str {observed} end shell-program new-tab"
     )])?;
     let pane = answer.trim().split(':').next().ok_or("pane")?;
+    let in_child = format!("str '{}' cwd", child.display());
     eventually("the shell changed directory", || {
-        Ok(
-            server.ok(&[pane, "str", "cwd", "get"])?.trim()
-                == child.to_str().ok_or("child text")?,
-        )
+        Ok(server.ok(&[pane, "capture"])?.contains("shell-directory"))
     })?;
     let dump = server.ok(&[pane, "tab", "dump"])?;
-    assert!(
-        dump.contains(&format!("str '{}' cwd", child.display())),
-        "{dump}"
-    );
+    assert!(dump.contains(&in_child), "{dump}");
     server.ok(&[&dump])?;
     let (replayed, _) = server.newest_pane()?;
     assert_ne!(replayed, pane);
@@ -865,8 +861,7 @@ fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
         Ok(server
             .ok(&[&replayed, "capture"])?
             .contains("shell-directory")
-            && server.ok(&[&replayed, "str", "cwd", "get"])?.trim()
-                == child.to_str().ok_or("child text")?)
+            && server.ok(&[&replayed, "tab", "dump"])?.contains(&in_child))
     })?;
     Ok(())
 }

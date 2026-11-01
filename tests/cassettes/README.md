@@ -108,7 +108,7 @@ Before anything is compared, each line of output becomes:
 | a server run `PID-HEX16` | `R1`, `R2`… in order of appearance |
 | `%3`, `@2`, `+1`, `c1` | `%a`, `@a`, `+a`, `ca`… by first appearance within their server run: a version's own, else the one run its line names, else the last run printed |
 | a cursor or layout serial `N:R1` | `#:R1` |
-| `"pid":N`, `"foreground_group":N`, `"foreground_leader":N` | `<pid>` |
+| `"pid":N`, `"foreground_group":N` | `<pid>` |
 | the cassette's directory, this repository | `$DIR`, `$REPO` |
 
 ## The lint
