@@ -342,8 +342,8 @@ impl Checker {
     ///
     /// Narrowed: a pane the layout cannot fit is hidden and keeps its size,
     /// as the README says, and `ls` does not say which panes are placed. So
-    /// only panes that surely are: the one pane of a tab, and a zoomed
-    /// client's focused pane, each of which fills the client's pane area.
+    /// only panes that surely are: the one pane of a tab, and a tab's
+    /// zoomed pane, each of which fills the client's pane area.
     fn sizes(&self, world: &World, at: usize) -> Result<(), End> {
         for c in &world.clients {
             let Some(tab) = c.tab.as_ref().and_then(|t| world.tab(t)) else {
@@ -354,13 +354,12 @@ impl Checker {
                 continue;
             }
             let (rows, cols) = (c.rows.saturating_sub(1), c.cols);
-            let shown: Vec<&crate::world::Pane> = match (tab.panes.as_slice(), c.zoom) {
-                ([only], _) => vec![only],
-                (panes, true) => panes
+            let shown: Vec<&crate::world::Pane> = match tab.panes.as_slice() {
+                [only] => vec![only],
+                panes => panes
                     .iter()
-                    .filter(|p| c.pane.as_ref() == Some(&p.id))
+                    .filter(|p| tab.zoomed.as_ref() == Some(&p.id))
                     .collect(),
-                (_, false) => Vec::new(),
             };
             for p in shown {
                 if p.rows > rows || p.cols > cols {
@@ -511,7 +510,7 @@ impl Checker {
             // The right of the bar says `[zoom]` unless a notice, a
             // layer's "…" or a repeat mode's keys have it, or it is cut.
             let right_taken = has_notice(client) || bar.ends_with('…') || bar.contains("· Esc");
-            if view.zoom && !right_taken && !bar.contains("[zoom]") {
+            if tab.is_some_and(|t| t.zoomed.is_some()) && !right_taken && !bar.contains("[zoom]") {
                 return Err(fail(
                     at,
                     "a zoomed client says so",

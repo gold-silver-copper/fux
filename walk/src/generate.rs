@@ -87,7 +87,7 @@ const LETTERS: &[u8] = b"hjklwbaeudtzfrnpvsxoyq";
 /// own, some of it wrong.
 const PROMPT: &[&str] = &[
     "me focused str horizontal axis split drop\r",
-    "me zoom\r",
+    "me focused zoom\r",
     "ls\r",
     "me str next step-tab\r",
     "nonsense\r",
@@ -355,7 +355,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             client(rng),
             workspace(rng)
         ),
-        22 => format!("str {} client zoom", client(rng)),
+        22 => format!("str {} pane zoom", pane(rng)),
         // The prefix sent to a client is taken as typed there: it opens
         // the column if it is that client's prefix.
         23 => match rng.below(4) {

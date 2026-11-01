@@ -8,7 +8,7 @@ str C-b prefix
 str v code me focused str horizontal axis split drop end bind  str 'split side by side' label  str Panes group
 str s code me focused str vertical axis split drop end bind  str 'split stacked' label  str Panes group
 str x code me me focused confirm-close end bind  str 'close pane' label  str Panes group
-str z code me zoom end bind  str 'zoom or restore' label  str Panes group
+str z code me focused zoom end bind  str 'zoom or restore' label  str Panes group
 str c code me edit-history end bind  str 'history in the editor' label  str Panes group
 
 str h code me str left focus end bind  str 'focus left' label  str Focus group

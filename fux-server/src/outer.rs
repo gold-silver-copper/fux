@@ -975,7 +975,7 @@ mod tests {
     fn a_bell_notice_shows_even_from_a_pane_hidden_by_zoom() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, "%1 str horizontal axis split drop")?;
-        run(&mut s, "str c1 client str %1 pane show str c1 client zoom")?;
+        run(&mut s, "%1 zoom")?;
         s.out(PaneId::of(2), b"\x07");
         assert_eq!(notice(&s, c).as_deref(), Some("bell in %1"));
         // Its tab is shown: no mark for it.

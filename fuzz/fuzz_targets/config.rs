@@ -28,17 +28,17 @@ const KEYS: &[&str] = &[
 /// compiles there: words the config's dictionary has, and some it does
 /// not, or that close or comment out the `end`.
 const CODES: &[(&str, bool)] = &[
-    ("me zoom", true),
+    ("me focused zoom", true),
     ("opts new-tab drop", true),
     ("me focused str right 1 move-border", true),
     ("me str next focus", true),
     ("", true),
     ("str 'a b' drop", true),
-    ("1 if me zoom then", true),
+    ("1 if me focused zoom then", true),
     ("# only a comment", false),
     ("'unclosed", false),
     ("nope-no-word", false),
-    ("define x me zoom end x", false),
+    ("define x me focused zoom end x", false),
     ("if", false),
     ("end", false),
 ];

@@ -3021,7 +3021,7 @@ pub(crate) mod tests {
             screens.len()
         );
         // Quotes, a backslash and a line end, as a config writes them.
-        let mine = r#"str M-t code me zoom end bind-root str Mine group
+        let mine = r#"str M-t code me focused zoom end bind-root str Mine group
             str g code me focused str horizontal axis str sh program str "echo it's" arg split drop end bind
             str "a \\ and
             a line" label"#;

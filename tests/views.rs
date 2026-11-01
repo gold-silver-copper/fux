@@ -110,11 +110,20 @@ fn two_clients_have_independent_views() -> Outcome {
         Ok(client_line(&server, "c1")?.contains(" @2 "))
     })?;
     assert!(client_line(&server, "c2")?.contains(" @1 "));
-    // Zoom is per client too: the zoomed pane alone, no separator.
+    // Zoom is the tab's: every client showing it sees the zoomed pane
+    // alone and focuses it, and gets its own focus back after.
     two.keys(&format!("{PREFIX}z"))?;
     two.wait("two is zoomed", |t| !t.contains('│'))?;
     one.keys(&format!("{PREFIX}b"))?;
-    one.wait("one is not", |t| t.contains('│'))?;
+    one.wait("one sees the zoom", |t| {
+        t.contains("typed-by-two") && !t.contains('│')
+    })?;
+    assert!(client_line(&server, "c1")?.ends_with("%1"));
+    one.keys(&format!("{PREFIX}z"))?;
+    two.wait("two sees it end", |t| t.contains('│'))?;
+    eventually("one's own focus is back", || {
+        Ok(client_line(&server, "c1")?.ends_with("%2"))
+    })?;
     Ok(())
 }
 
