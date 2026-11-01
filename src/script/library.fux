@@ -84,6 +84,15 @@ define grows
     then
   until
 end
+# client -- : its focused pane's history in $EDITOR (else vi), in a split closed when the editor exits; after a failure, Enter closes it. env(1) gives the program the pane's id, and "${FUX:-fux}" is the server's fux
+define edit-history
+  focused let p
+  p str vertical axis
+  str env program  list str FUX_TARGET= p string end glue arg
+  str sh arg  str -c arg
+  str 'f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg
+  split drop
+end
 # client handle -- : a prompt for its new name
 define rename-prompt
   dup kind str answer eq if pane then let it
@@ -114,9 +123,6 @@ define confirm-close
   list list it end str kill end
   confirm
 end
-
-# -- id : choose the newest paste buffer when the request runs
-define newest str newest end
 
 # -- record : one facts observation of all workspaces, tabs, panes and clients
 define ls all info end
@@ -188,7 +194,7 @@ define dump-first
   swap let nodes
   begin nodes swap at dup is-list if 3 at false else true then until
 end
-# pane-record -- source : warnings for unknown directories and omitted non-text launch inputs
+# pane-record -- source : warnings for unknown directories and non-text directories
 define dump-warnings
   let p p str launch get let launch
   list
@@ -197,13 +203,6 @@ define dump-warnings
       if drop true else str status get str known ne then
       if str '# ' p str id get string str ': its current directory is unknown, so it starts in its launch directory' 10 char then
     then
-    launch str env get each
-      let e e str value get let v
-      v kind str null ne if v str encoding get str utf8 ne if
-        e str name get dump-text str 'drop # ' p str id get string
-        str ': environment is not UTF-8 text; its saved value is omitted' 10 char
-      then then
-    end
     launch dump-cwd let cwd
     cwd str encoding get str utf8 ne if
       str '# ' p str id get string str ': directory bytes (hex) ' cwd str text get
@@ -232,17 +231,9 @@ define dump-create
     launch str reflow get string str ' reflow '
     launch str alternate_scroll_lines get string str ' alternate-scroll-lines '
     launch str picture_bytes get string str ' picture-bytes '
-    launch str program_clipboard get string str ' program-clipboard list end copy-environment '
+    launch str program_clipboard get string str ' program-clipboard '
     launch dump-cwd let cwd
     cwd str encoding get str utf8 eq if cwd str text get dump-text str 'cwd ' then
-    launch str env get each
-      let e e str value get let v
-      v kind str null eq if e str name get dump-text str 'unset-env ' else
-        v str encoding get str utf8 eq if
-          e str name get dump-text v str text get dump-text str 'env '
-        then
-      then
-    end
     launch str choice get str shell eq if
       str 'list ' launch str argv get each dump-text end str 'end shell-program '
     else
@@ -269,7 +260,7 @@ define dump-recipe
   list panes each str id get end end let ids
   list
     str '#!/usr/bin/env -S fux --file' 10 char
-    str '# fux: running this makes it again; environment patches apply to the server startup environment.' 10 char
+    str '# fux: running this makes it again; its programs take the environment of the server that runs them.' 10 char
     recipe str workspaces get each
       let ws true let opens
       recipe str tabs get each
@@ -397,33 +388,6 @@ end
 # For restartable consumers use events-since and retain its returned cursor.
 # event-scope -- : till the stream ends, 30 seconds per wait; every batch prints its checkpoint
 define events str '' 30 0 events-since drop end
-
-# One finite hook run. Trigger by event AND source; notification cannot trigger another copy.
-# cursor secs n -- string : notify views about admitted program copies, returning the next checkpoint
-define copy-notices
-  let batches let seconds let cursor
-  batches 1 lt if str 'copy-notices takes 1 batch or more' fail then
-  seconds 0 lt if str 'copy-notices takes 0 seconds or more' fail then
-  false let ended
-  0 let taken
-  begin
-    ended taken batches eq or dup not if
-      all cursor seconds next-events events-checked let batch
-      batch str events get each
-        let event
-        event str event get str copied eq if
-          event str origin get str kind get str program eq if
-            all str 'a program copied text' notify
-          then
-        then
-      end
-      batch str next get let cursor
-      batch str status get dup str gone eq swap str stopped eq or let ended
-      taken 1 add let taken
-    then
-  until
-  cursor
-end
 
 # tab -- tab revision list : one topology observation's tab, revision and panes in tree order
 define layout-current

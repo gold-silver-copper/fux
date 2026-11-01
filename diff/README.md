@@ -40,10 +40,9 @@ area differed, 2 for a bad argument.
 | Area | Input | Compared |
 | --- | --- | --- |
 | `layout` | random trees of halved splits, areas up to `u16::MAX` wide (differs from 0.33.1, whose n-ary weights the binary tree replaced) | placements, neighbours, resizes, splits, removals and swaps |
-| `protocol` | random frames (made by the current fux's frame types: hellos, attaches, resizes, detaches, paints, exits, stdout, reply parts, dones) and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces, each kind as the frame type of the stage it is allowed in; an attached client's `Act` and a command's request are typed values fux's own tests decode |
+| `protocol` | random frames (made by the current fux's frame types: hellos, attaches, resizes, detaches, paints, exits, stdout, reply parts) and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces, each kind as the frame type of the stage it is allowed in; an attached client's `Act` and a command's request are typed values fux's own tests decode |
 | `terminal` | fux-vt fed random output in pieces, with resizes | after every piece: replies, events, errors, every retained row, the cursor, modes, the cursor's shape, scroll region, changed rows. Leaves out what fux-vt 0.2.0 changed on purpose (SGR 5, 6, 8, 9, 25, 28, 29, 58, 59; CSI f, s, u; characters that join a cluster), and a DECSCUSR Ps ctlseqs lists no style for; the shape is compared as its Ps, the terminal's own (`Initial`) as 0 |
 | `input` | client input in pieces with Escape timeouts, key names, pastes, held command lines, pane input queues | decoded input and the Escape deadline, encoded keys and pastes, the queues |
-| `copy` | screens and history from random lines; searches both ways | matches, copied text, row positions |
 | `text` | random words and key names | `quote`, key names, JSON strings, base64 |
 | `system` | errnos, nonblocking requests on pipes, sockets and PTYs | fuxix's results, and the config file's path for every mix of `XDG_CONFIG_HOME` and `HOME` |
 
@@ -51,7 +50,7 @@ Not covered: the server's connection handling in `server.rs` (the walk,
 `walk/`, and the integration tests cover it), and performance (see
 `bench/`: `fux-bench --against REF` counts fux-vt's instructions against
 any commit, in paired rounds). Nor, since fuxth, whole sessions, command
-lines, copy mode's errors in a session, or config files: areas for them,
+lines, or config files: areas for them,
 now that the baseline (0.31.0) has fuxth too, are still to be written.
 
 ### The baseline

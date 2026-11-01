@@ -389,9 +389,10 @@ class Fux(Driver):
         return self.run([self.bin, *words], check=check, timeout=timeout)
 
     def start(self):
-        self.run([self.bin, "force-kill-server"], check=False)
-        self.calls -= 1
-        self.server = subprocess.Popen([self.bin, "__serve", self.env["FUX_SOCKET"]],
+        # A server a killed run left on this socket, stopped as a person does.
+        subprocess.run(["sh", "-c", 'pid=$("$0" status str server_pid get) && kill "$pid"', self.bin],
+                       env=self.env, capture_output=True, timeout=20)
+        self.server = subprocess.Popen([self.bin, "__serve", self.env["FUX_SOCKET"], "16384"],
                                        env=self.env, cwd=self.work,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         end = time.time() + 5
@@ -399,8 +400,8 @@ class Fux(Driver):
             time.sleep(0.02)
 
     def stop(self):
-        self.fux("force-kill-server", check=False)
         if self.server:
+            self.server.terminate()
             try:
                 self.server.wait(5)
             except subprocess.TimeoutExpired:

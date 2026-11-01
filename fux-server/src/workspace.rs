@@ -335,7 +335,6 @@ impl Tab {
 /// The session's workspaces, their tabs and panes, and the journal of what
 /// happened to them: what events tell of them changes only by its methods,
 /// each of which journals what it changes as it changes it.
-#[derive(Default)]
 pub struct Parts {
     workspaces: Vec<Workspace>,
     /// Each in one tab: a pane is added in its place and leaves with it.
@@ -411,6 +410,16 @@ fn place_of(workspaces: &[Workspace], client: ClientId) -> Option<crate::journal
 }
 
 impl Parts {
+    /// Nothing yet, its journal keeping `journal` events.
+    pub fn new(journal: fux_wire::command::JournalEntries) -> Parts {
+        Parts {
+            workspaces: Vec::new(),
+            panes: BTreeMap::new(),
+            journal: Journal::new(journal),
+            input: BTreeSet::new(),
+        }
+    }
+
     pub fn workspaces(&self) -> &[Workspace] {
         &self.workspaces
     }

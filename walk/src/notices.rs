@@ -11,7 +11,6 @@ const SOURCES: &[&str] = &[
     include_str!("../../src/client_state.rs"),
     include_str!("../../fux-wire/src/code.rs"),
     include_str!("../../fux-wire/src/command.rs"),
-    include_str!("../../fux-server/src/copy.rs"),
     include_str!("../../fux-vt/src/keys/decode.rs"),
     include_str!("../../fux-vt/src/keys/encode.rs"),
     include_str!("../../fux-server/src/input.rs"),
@@ -238,12 +237,10 @@ mod tests {
             "config: set: no setting \"nope\"; the settings are shell and bell (prompt:1)",
             "bundled initialization did not set shell",
             "only one pane",
-            "nothing selected: start a selection before copying",
             "C-b t q is not bound",
             "bad_binding: nonsense: no such word; text is `str WORD`, in the binding for x (/w/config/fux/config.fux:3)",
             "unknown_word: nonsense: no such word; text is `str WORD` (prompt:1)",
             "unknown_word: nonsense: no such word; text is `str WO…",
-            "nothing selected: start a selection befo…",
         ] {
             assert!(notices.known(known), "{known}");
         }

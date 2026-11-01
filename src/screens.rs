@@ -1,17 +1,15 @@
-//! A client's own screens: choosers, the command prompt, rename
-//! prompts and copy mode. They belong to the client, which
-//! reads the keys: every change of mode happens here, at the key that
-//! causes it, so no key is ever read in another mode's table. The server
-//! draws what the client describes (`ScreenAct::Show`), and keeps copy mode's
-//! cursor in the scrollback, which it alone holds (`ScreenAct::Copy`).
+//! A client's own screens: choosers, the command prompt and rename
+//! prompts. They belong to the client, which reads the keys: every change
+//! of mode happens here, at the key that causes it, so no key is ever read
+//! in another mode's table. The server draws what the client describes
+//! (`ScreenAct::Show`).
 //!
 //! What a screen's entry does is fuxth, run as the client runs a binding.
 use crate::keymap::{Held, Keymap, Modes};
 use crate::script;
 use fux_vt::keys::decode::Input;
 use fux_vt::keys::{KeyPress, Keystroke};
-use fux_wire::act::Line;
-use fux_wire::act::{Act, CopyAct, LineAct, List, ListAct, Panel, ScreenAct, Seek};
+use fux_wire::act::{Act, LineAct, List, ListAct, Panel, ScreenAct};
 use fux_wire::callback::{Callback, Data, ListScreen, Open, Prompt};
 use fux_wire::protocol::MAX_FRAME;
 
@@ -23,8 +21,6 @@ pub enum Screen {
     Keys(Held),
     List(ListScreen),
     Prompt(Prompt),
-    /// Copy mode, and the search line being typed in it, forward or back.
-    Copy(Option<(Seek, Line)>),
 }
 
 /// What a key leads to, in a screen or through the bindings: an action for
@@ -67,7 +63,7 @@ impl Display {
             Ok(opening) => opening,
             Err(text) => return vec![Act::Notice { text, error: true }],
         };
-        let Some(act) = screen.opened(modes) else {
+        let Some(act) = screen.panel(modes).map(ScreenAct::Show) else {
             return Vec::new();
         };
         if !fits(&act) {
@@ -113,10 +109,7 @@ impl Display {
                     Effect::Screen(act) => (act, false),
                 };
                 if fresh || !active {
-                    if !matches!(
-                        act,
-                        ScreenAct::Show(_) | ScreenAct::Copy(CopyAct::Enter { .. })
-                    ) {
+                    if !matches!(act, ScreenAct::Show(_)) {
                         return None;
                     }
                     match self.next() {
@@ -128,9 +121,7 @@ impl Display {
                     }
                     active = true;
                 }
-                if matches!(&act, ScreenAct::Hide)
-                    || matches!(&act, ScreenAct::Copy(copy) if copy.ends())
-                {
+                if matches!(&act, ScreenAct::Hide) {
                     active = false;
                 }
                 Some(Dispatch::Send(Act::Screen {
@@ -206,7 +197,6 @@ impl From<Open> for Screen {
         match open {
             Open::List(list) => Screen::List(list),
             Open::Prompt(prompt) => Screen::Prompt(prompt),
-            Open::Copy => Screen::Copy(None),
         }
     }
 }
@@ -223,23 +213,10 @@ impl Screen {
         !matches!(self, Self::Keys(_))
     }
 
-    /// What opening it sends the server.
-    pub fn opened(&self, modes: &Modes) -> Option<ScreenAct> {
-        match self {
-            Self::Copy(_) => Some(ScreenAct::Copy(CopyAct::Enter {
-                hints: modes.copy.hints(),
-                typing: modes.line.hints(),
-            })),
-            Self::Keys(_) | Self::List(_) | Self::Prompt(_) => {
-                self.panel(modes).map(ScreenAct::Show)
-            }
-        }
-    }
-
     /// What the server draws of it, with the hints of `modes`.
     pub fn panel(&self, modes: &Modes) -> Option<Panel> {
         match self {
-            Self::Keys(_) | Self::Copy(_) => None,
+            Self::Keys(_) => None,
             Self::List(list) => Some(Panel::List(List {
                 title: list.title.clone(),
                 items: list.items.iter().map(|i| i.label.clone()).collect(),
@@ -303,23 +280,21 @@ impl Screen {
                     Vec::new()
                 }
             },
-            Self::Copy(search) => self.copy(modes, search, press),
         }
     }
 
     /// Text pasted: a line being typed takes it; with no screen open, the
-    /// pane does, and the column or a repeat mode ends; a list or copy mode
-    /// takes none, and says so.
+    /// pane does, and the column or a repeat mode ends; a list takes none,
+    /// and says so.
     pub fn paste(&mut self, modes: &Modes, text: &str) -> Vec<Effect> {
         let insert = LineAct::Edit(fux_wire::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
             Self::Keys(Held::Normal) => vec![Effect::Send(Act::Paste(text.to_owned()))],
             Self::Keys(_) => vec![HIDE, Effect::Send(Act::Paste(text.to_owned()))],
             Self::Prompt(prompt) => self.prompt(modes, prompt, insert),
-            Self::Copy(Some(search)) => self.copy_search(search, insert),
-            other @ (Self::List(_) | Self::Copy(_)) => {
+            other @ Self::List(_) => {
                 *self = other;
-                let why = "a list or copy mode is open: nothing was pasted";
+                let why = "a list is open: nothing was pasted";
                 vec![refusal(why.to_owned())]
             }
         }
@@ -382,60 +357,6 @@ impl Screen {
             }
         }
     }
-
-    fn copy(
-        &mut self,
-        modes: &Modes,
-        search: Option<(Seek, Line)>,
-        press: KeyPress,
-    ) -> Vec<Effect> {
-        if let Some(search) = search {
-            return match modes.line.typed(press) {
-                Some(act) => self.copy_search(search, act),
-                None => {
-                    *self = Self::Copy(Some(search));
-                    Vec::new()
-                }
-            };
-        }
-        let act = modes.copy.get(press);
-        *self = match &act {
-            // Leaving and copying end it, here as on the server.
-            Some(act) if act.ends() => Self::default(),
-            Some(CopyAct::Typing(Some((seek, ..)))) => {
-                Self::Copy(Some((*seek, Line::new(String::new()))))
-            }
-            Some(_) | None => Self::Copy(None),
-        };
-        Vec::from_iter(act.map(|act| Effect::Screen(ScreenAct::Copy(act))))
-    }
-
-    fn copy_search(&mut self, (seek, mut line): (Seek, Line), act: LineAct) -> Vec<Effect> {
-        let sent = match act {
-            LineAct::Cancel => CopyAct::Typing(None),
-            LineAct::Submit => CopyAct::Find {
-                query: line.text(),
-                seek,
-            },
-            LineAct::Edit(edit) => {
-                let before = line.clone();
-                let mut refused = line.edit(&edit).err();
-                let typing =
-                    |line: &Line| (seek, line.before().to_owned(), line.after().to_owned());
-                let mut shown = ScreenAct::Copy(CopyAct::Typing(Some(typing(&line))));
-                if !fits(&shown) {
-                    line = before;
-                    shown = ScreenAct::Copy(CopyAct::Typing(Some(typing(&line))));
-                    refused = Some(past_a_frame());
-                }
-                *self = Self::Copy(Some((seek, line)));
-                let shown = Effect::Screen(shown);
-                return std::iter::once(shown).chain(refused.map(refusal)).collect();
-            }
-        };
-        *self = Self::Copy(None);
-        vec![Effect::Screen(ScreenAct::Copy(sent))]
-    }
 }
 
 /// A line's refusal of an edit, told as an error's notice.
@@ -459,6 +380,7 @@ fn past_a_frame() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fux_wire::act::Line;
     use fux_wire::callback::Item;
 
     /// Key `name` typed at `screen`, with the default bindings.
@@ -497,7 +419,7 @@ mod tests {
             line: Line::new("unsent work".into()),
             action: None,
         });
-        for replacement in [list(), prompt, Screen::Copy(None)] {
+        for replacement in [list(), prompt] {
             let mut display = Display::default();
             display.open(replacement.clone(), &keys.modes);
             let old = display.opening;
@@ -520,7 +442,7 @@ mod tests {
             opening: u64::MAX,
             ..Display::default()
         };
-        let acts = display.open(Screen::Copy(None), &Modes::default());
+        let acts = display.open(list(), &Modes::default());
         assert!(matches!(acts.as_slice(), [Act::Notice { error: true, .. }]));
         assert_eq!(display.screen, Screen::default());
     }
@@ -567,14 +489,11 @@ mod tests {
     /// A paste where no line is typed goes nowhere, and says so.
     #[test]
     fn a_paste_no_screen_takes_is_told() {
-        let told = vec![refusal(
-            "a list or copy mode is open: nothing was pasted".into(),
-        )];
-        for mut screen in [list(), Screen::Copy(None)] {
-            let was = screen.clone();
-            assert_eq!(screen.paste(&Modes::default(), "x"), told);
-            assert_eq!(screen, was);
-        }
+        let told = vec![refusal("a list is open: nothing was pasted".into())];
+        let mut screen = list();
+        let was = screen.clone();
+        assert_eq!(screen.paste(&Modes::default(), "x"), told);
+        assert_eq!(screen, was);
     }
 
     /// A prompt's action is given the line typed as a string, whatever it
@@ -616,7 +535,11 @@ mod tests {
             line: Line::new(String::new()),
             action: None,
         });
-        assert!(screen.opened(&modes).is_some_and(|act| fits(&act)));
+        assert!(
+            screen
+                .panel(&modes)
+                .is_some_and(|p| fits(&ScreenAct::Show(p)))
+        );
         let typed = std::iter::repeat_n('x', 4096).collect();
         let edit = LineAct::Edit(fux_wire::act::Edit::Insert(typed));
         let Screen::Prompt(prompt) = &screen else {
@@ -648,30 +571,6 @@ mod tests {
             [HIDE],
             "Escape leaves, held or not"
         );
-        Ok(())
-    }
-
-    /// Copy mode's search line is typed on the client; the search it asks
-    /// for is the server's to make.
-    #[test]
-    fn copy_mode_searches_from_the_clients_line() -> Result<(), String> {
-        let mut screen = Screen::Copy(None);
-        key(&mut screen, "f")?;
-        key(&mut screen, "a")?;
-        let found = key(&mut screen, "Enter")?;
-        assert_eq!(
-            found,
-            [Effect::Screen(ScreenAct::Copy(CopyAct::Find {
-                query: "a".into(),
-                seek: Seek::Forward
-            }))]
-        );
-        assert_eq!(screen, Screen::Copy(None));
-        assert_eq!(
-            key(&mut screen, "q")?,
-            [Effect::Screen(ScreenAct::Copy(CopyAct::Leave))]
-        );
-        assert_eq!(screen, Screen::default());
         Ok(())
     }
 }

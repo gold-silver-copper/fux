@@ -47,7 +47,6 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `alternate_scroll_lines` | the ordinary wheel step when the program enables alternate scroll; 0–32767 arrows |
 | `picture_bytes` | the creation picture budget, 0–96 MiB; zero disables picture support |
 | `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
-| `copy_mode` | a client has it in copy mode |
 | `command_running` | a shell command runs (OSC 133 marks) |
 | `last_status` | the last shell command's status, else `null` |
 | `bells` | bells and notifications rung since it started |
@@ -89,8 +88,7 @@ Arrays become fuxth lists, objects become records, booleans and integers keep
 their types, and strings keep their exact text. Null has kind `null`; it is
 neither false nor an empty string/list. An absent field fails `no_field`.
 Unsigned numbers above i64 fail `range`. There is no float or string-to-ID
-conversion. `buffers` now returns a list of records; `buffers json` renders
-its array. `X str FIELD get` on a live handle and `panes`/`tabs` remain native
+conversion. `X str FIELD get` on a live handle and `panes`/`tabs` remain native
 selective reads. `get id` and container membership return typed handles.
 
 Each workspace has `id`, `name`, `label`, and `tabs`. Its `tabs` is always the
@@ -112,11 +110,10 @@ Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
 and `version`. A name is given or null; a label is display text. Facts adds
 `state`, containing the process/terminal fields above. Topology uses only
 retained state and performs no process metadata queries. Recipe adds `launch`:
-`choice` (`shell` or `program`), ordered `argv`, `env`, `initial_cwd`,
+`choice` (`shell` or `program`), ordered `argv`, `initial_cwd`,
 `observed_cwd`, `history_bytes`, `program_clipboard`, `reflow`, `alternate_scroll_lines`, and
 `picture_bytes`. Both launch choices
-retain their original inputs. Environment entries have `name` and `value`;
-null means removal. OS text uses `{encoding: utf8, text: ...}` or
+retain their original inputs. OS text uses `{encoding: utf8, text: ...}` or
 `{encoding: hex, text: ...}` for exact non-UTF-8 bytes. Observed cwd is null
 when unknown, `{status: known, path: ...}`, or
 `{status: failed, operation: cwd, errno: N}`. Replay launches new processes;
@@ -224,7 +221,7 @@ of them in layout order, `["%3","%4"]`.
 
 ## Answers and waits
 
-`json` of an action's answer (`send-keys`, `paste-buffer`, `send-mouse`,
+`json` of an action's answer (`send-keys`, `send-mouse`,
 `signal`, `split`, `new-tab`, `new-workspace`, `respawn`) is
 `{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":0}`: its pane's version from
 just before it acted, or as a new pane starts: one object for an action
@@ -285,7 +282,7 @@ is exactly the consumed journal prefix, including filtered entries. It can
 advance with no matching events. Each event also has its own continuation
 `next`. A count of matches is never a cursor. In fuxth, subject and origin
 handles retain their server run; JSON renders them as short IDs for display.
-The cursor and buffer ID remain run-qualified when exported as text.
+The cursor remains run-qualified when exported as text.
 
 `SECONDS` is an explicit timeout, 0 seconds or more. With nothing to read,
 the connection waits until a matching change, loss, closure, shutdown,
@@ -301,8 +298,9 @@ closes the pending read. Status is:
 | `gone` | the scoped object closed; the final close is included when retained |
 | `stopped` | the server stopped; `reason` says why |
 
-The journal keeps the last 16,384 entries, its ring, evicting the oldest
-before appending to a full ring. Retention promises a number of entries, not
+The journal keeps the last `journal-entries` entries (16,384 unless the
+client that started the server set it otherwise), its ring, evicting the
+oldest before appending to a full ring. Retention promises a number of entries, not
 seconds; scope filtering reserves no private window. `missed` counts exactly
 the entries evicted before this cursor, including nonmatches. On loss,
 resnapshot and reconcile, or fail the task explicitly. A full ring is
@@ -352,7 +350,6 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `shown`, `focused`, `zoomed` | `client` and the affected place; departures invalidate both places; includes automatic repair |
 | `view_resized` | `client`; client size invalidated |
 | `screen` | `client`; fresh opening, close or mode ending invalidated |
-| `copied` | admitted stable `buffer` ID, no duplicate text; denied program copies emit none |
 | `history_budget` | pane's new `history_bytes` |
 | `history_cleared` | pane history invalidated |
 | `respawned` | generation changed; optional `input_unread`, the old program's input not written to its terminal |
@@ -373,14 +370,8 @@ then events and a checkpoint marker after every batch (its status as `event`,
 `next`, `reason`). Loss prints `missed` with its count/cursor and fails before
 consumer effects. Keep the last successful checkpoint to restart; effects
 are not exactly once. A gone scope ends the library stream successfully; `gone` is data, not a raised error.
-Copy cursor motion is continuous
-view state; opening or leaving copy mode invalidates the view.
-
-`copy-notices` is one ordinary hook recipe over those same batches. It filters
-both event and origin, notifying about admitted program copies. Notification
-cannot itself generate the copied event that triggers it. See
-[program-copies.fux](../examples/hooks/program-copies.fux). Hooks run as separate
-client programs, with explicit source, never on the server.
+A hook is an ordinary client program over those same batches, filtering
+both event and origin, with explicit source; it never runs on the server.
 
 ## Errors
 
@@ -391,8 +382,8 @@ wait's own (above). CODE stays; every one fux gives
 
 - reaching a server: `no_server`, `mismatch`, `client`;
 - what a command names: `no_pane`, `no_tab`, `no_workspace`, `no_client`,
-  `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
-  `selection`, `name_taken`, `ids_exhausted`, `bad_value`, `usage`;
+  `no_target`, `stray_pane`, `no_field`, `nothing_there`,
+  `name_taken`, `ids_exhausted`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `stale`, `no_marks`, `start`, `size`, `memory`, `mouse`, `signal`,
   `not_headless`, `own_server`, `people_attached`;
@@ -423,8 +414,8 @@ they run, so a `try` may name them too.
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":57,
- "server_release":"0.36.0","server_protocol":57,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":58,
+ "server_release":"0.36.0","server_protocol":58,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain
@@ -436,10 +427,3 @@ against a server of another protocol runs again with that process's binary.
 With no server, `status` fails (`no_server`), saying the socket and whether
 a server that stopped left it there. Every server in fux's directory:
 `status json` on each socket there (`fux help servers`).
-
-`buffers` returns an array of metadata objects, newest first, for example
-`[{"id":"b7:48211-1867a3f9c2b8e7d6","bytes":7,"preview":"hello  "}]`.
-`bytes` is the exact UTF-8 byte length; `preview` contains at most 50 characters,
-with control characters replaced by spaces. The full text is returned only by
-`str ID buffer`. IDs include the server run and are never reused in that run;
-an evicted ID returns `no_buffer`; an ID from another run is refused with `bad_value`.

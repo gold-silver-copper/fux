@@ -13,7 +13,7 @@ import subprocess
 
 HERE = Path(__file__).resolve().parent
 # The harness's own: starting and stopping a server out of the agent's way.
-OWN = {"__serve", "force-kill-server"}
+OWN = {"__serve"}
 
 
 def words_of_fux(help_text):

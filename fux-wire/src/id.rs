@@ -3,7 +3,7 @@
 //! typed (`%3`, `@2`, `+1`, `c1`) by `FromStr`, or decoded from a frame as
 //! its number. The session looks it up before acting on it.
 use crate::code::Error;
-use crate::command::{Kind, Run, Usage};
+use crate::command::{Kind, Usage};
 use std::fmt;
 use std::str::FromStr;
 
@@ -55,59 +55,6 @@ id!(
     ClientId, 'c'
 );
 
-/// A retained copy, `bN:RUN`: its number is never reused within that server run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BufferId {
-    run: Run,
-    number: u64,
-}
-
-crate::wire::shaped!(
-    codec struct BufferId {
-        run: Run,
-        number: u64,
-    }
-);
-
-impl crate::wire::Wire for BufferId {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.put_fields(out);
-    }
-    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
-        let (run, number) = Self::get_fields(r)?;
-        (number > 0)
-            .then_some(Self { run, number })
-            .ok_or(crate::wire::Error::Bad("buffer id"))
-    }
-}
-
-impl BufferId {
-    pub fn run(self) -> Run {
-        self.run
-    }
-}
-
-impl fmt::Display for BufferId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "b{}:{}", self.number, self.run)
-    }
-}
-
-impl FromStr for BufferId {
-    type Err = ();
-    fn from_str(text: &str) -> Result<Self, ()> {
-        let (n, run) = text
-            .strip_prefix('b')
-            .and_then(|s| s.split_once(':'))
-            .ok_or(())?;
-        let id = Self {
-            run: run.parse()?,
-            number: number(n).filter(|n| *n > 0).ok_or(())?,
-        };
-        (id.to_string() == text).then_some(id).ok_or(())
-    }
-}
-
 /// Digits only: no sign, no space.
 pub(crate) fn number<T: FromStr>(text: &str) -> Option<T> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
@@ -138,20 +85,9 @@ pub struct Ids {
     tab: u32,
     workspace: u32,
     client: u32,
-    buffer: u64,
 }
 
 impl Ids {
-    pub fn buffer(&mut self, run: Run) -> Result<BufferId, Error> {
-        self.buffer = self.buffer.checked_add(1).ok_or_else(|| {
-            crate::code::fail(crate::code::Raise::IdsExhausted, "no buffer IDs are left")
-        })?;
-        Ok(BufferId {
-            run,
-            number: self.buffer,
-        })
-    }
-
     pub fn pane(&mut self) -> Result<PaneId, Error> {
         take(&mut self.pane, "pane").map(PaneId)
     }
@@ -222,10 +158,6 @@ impl ClientId {
 }
 #[cfg(any(test, feature = "testing"))]
 impl Ids {
-    pub fn exhaust_buffers(&mut self) {
-        self.buffer = u64::MAX;
-    }
-
     /// Uses up the tab IDs.
     pub fn exhaust_tabs(&mut self) {
         self.tab = u32::MAX;

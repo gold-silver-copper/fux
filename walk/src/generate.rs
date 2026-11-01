@@ -80,8 +80,8 @@ const OVERLAY: &[&str] = &[
     "q", "r", "x", "h", "l", "\x7f",
 ];
 
-/// Copy mode's letters.
-const COPY: &[u8] = b"hjklwbaeudtzfrnpvsxoyq";
+/// Letters, to whatever has the keys: a pane, or a screen's keys.
+const LETTERS: &[u8] = b"hjklwbaeudtzfrnpvsxoyq";
 
 /// Lines typed into the command prompt, fuxth the client runs as its
 /// own, some of it wrong.
@@ -93,7 +93,6 @@ const PROMPT: &[&str] = &[
     "nonsense\r",
     "str %99 pane kill\r",
     "me me focused tab rename-prompt\r",
-    "me copy-mode\r",
     "str 'g l' str 'me focused str right 1 move-border' bind repeat\r",
 ];
 
@@ -211,7 +210,7 @@ fn keys(rng: &mut Rng, prefix: u8) -> Vec<u8> {
         }
         2 => {
             for _ in 0..rng.below(6).saturating_add(1) {
-                out.push(rng.pick(COPY).copied().unwrap_or(b'j'));
+                out.push(rng.pick(LETTERS).copied().unwrap_or(b'j'));
             }
         }
         3 => {
@@ -359,15 +358,14 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         22 => format!("str {} client zoom", client(rng)),
         // The prefix sent to a client is taken as typed there: it opens
         // the column if it is that client's prefix.
-        23 => match rng.below(5) {
+        23 => match rng.below(4) {
             0 => format!("str {} client str C-b key send-keys", client(rng)),
             n => format!(
                 "str {} client {}",
                 client(rng),
                 match n {
                     1 => "command-prompt",
-                    2 => "copy-mode",
-                    3 => "choose-tab",
+                    2 => "choose-tab",
                     _ => "choose-workspace",
                 }
             ),
@@ -396,8 +394,8 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         31 => format!("str {} pane 20 history capture", pane(rng)),
         32 => "ls".into(),
         33 => "list-keys".into(),
-        34 => "buffers".into(),
-        35 => format!("str {} pane newest paste-buffer", pane(rng)),
+        34 => format!("str {} pane str pasted paste send-keys", pane(rng)),
+        35 => format!("str {} pane all-history capture", pane(rng)),
         36 => format!("str {} pane str TERM signal", pane(rng)),
         37 if clients.len() > 1 => format!("str {} client detach", client(rng)),
         38 => format!("str {} client capture", client(rng)),

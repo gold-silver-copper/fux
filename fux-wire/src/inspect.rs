@@ -77,7 +77,6 @@ wire! {
     pub struct Recipe {
         pub shell: bool,
         pub argv: Vec<String>,
-        pub env: Vec<(String, Option<Path>)>,
         pub initial_cwd: Path,
         pub observed_cwd: Directory,
         pub options: crate::command::PaneOptions,

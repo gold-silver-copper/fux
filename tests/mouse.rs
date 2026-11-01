@@ -18,7 +18,7 @@ fn painted_eventually(client: &mut Client, from: usize, needle: &str) -> Outcome
 
 /// The client's terminal is asked for mouse reports only while the focused
 /// pane's program wants them, and a report reaches that program, in its
-/// pane's cells; copy mode takes the reports away until it ends.
+/// pane's cells; the command column takes the reports away until it ends.
 #[test]
 fn the_mouse_reaches_a_program_that_asked_for_it_and_no_other() -> Outcome {
     let server = Server::start("")?;
@@ -37,12 +37,12 @@ fn the_mouse_reaches_a_program_that_asked_for_it_and_no_other() -> Outcome {
     client.send(b"\x1b[<0;5;3M\x1b[<0;5;3m")?;
     client.keys("\r")?;
     client.wait("the report", |t| t.contains("^[[<0;5;3M^[[<0;5;3m"))?;
-    // Copy mode has the keys: reporting goes off, and comes back after it.
+    // The column has the keys: reporting goes off, and comes back after it.
     let before = client.painted.len();
-    client.keys("\x02c")?;
+    client.keys("\x02")?;
     painted_eventually(&mut client, before, MOUSE_OFF)?;
     let before = client.painted.len();
-    client.keys("q")?;
+    client.keys("\x1b")?;
     painted_eventually(&mut client, before, "\x1b[?1002h\x1b[?1006h")?;
     // The program turns it off: so does the client's terminal.
     let before = client.painted.len();

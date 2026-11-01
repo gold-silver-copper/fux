@@ -7,7 +7,6 @@ use crate::process::Pid;
 use crate::render::{self, Grid};
 use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer, Within};
 use crate::socket::{Endpoint, SocketPath};
-use crate::view::ClientKind;
 use crate::wait::Waiting;
 use fux_vt::bytes::ByteQueue;
 use fux_wire::code::Code;
@@ -147,9 +146,8 @@ enum Stage {
     /// Its first frame is to be a `Hello`. A client need not wait for the
     /// answer to send its `Attach`.
     Hello,
-    /// It said hello as `fux opts attach`: its `Attach` is next, and the kind
-    /// of client it is.
-    Attaching(ClientKind),
+    /// It said hello as `fux opts attach`: its `Attach` is next.
+    Attaching,
     /// Its client is attached: its input, resizes and detach come next.
     Attached(Box<Attached>),
     /// It said hello as a command client: its requests come next, each
@@ -177,7 +175,7 @@ impl Stage {
     fn reads(&self) -> bool {
         match self {
             Stage::Hello
-            | Stage::Attaching(_)
+            | Stage::Attaching
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Waiting(_)
@@ -191,7 +189,7 @@ impl Stage {
         match self {
             Stage::Blocked(_) | Stage::Waiting(_) => true,
             Stage::Hello
-            | Stage::Attaching(_)
+            | Stage::Attaching
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Closing
@@ -399,8 +397,8 @@ impl Conn {
 
     /// Its client attaches as `attach` says: it is told its id before
     /// anything is painted; or why it cannot attach.
-    fn attach(&mut self, session: &mut Session, kind: ClientKind, attach: Attach, now: Instant) {
-        match session.attach_as(kind, attach, now) {
+    fn attach(&mut self, session: &mut Session, attach: Attach, now: Instant) {
+        match session.attach_as(attach, now) {
             Ok(client) => {
                 let attached = Attached::new(client, now);
                 self.enter(session, Stage::Attached(Box::new(attached)), now);
@@ -537,7 +535,7 @@ impl std::error::Error for Error {}
 
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
-pub fn serve(socket: &SocketPath) -> Result<(), Error> {
+pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) -> Result<(), Error> {
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| Error::Setup(e.into()))?;
     // Orphans the panes' programs leave stay the server's to read and reap.
@@ -551,7 +549,7 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
             "the system clock is before 1970 or past 2554: this run cannot be told from another",
         ))
     })?;
-    let session = Session::new(socket.path().to_owned(), true, run);
+    let session = Session::new(socket.path().to_owned(), true, run, journal);
     let read_buffer = read_buffer()?;
     // Last of what can fail: once it listens, a server that started
     // with it finds it there (`socket::bind_socket`).
@@ -680,7 +678,6 @@ impl Server {
         self.wrote_input(wrote);
         // Only the deadline survives compaction, never connection indices.
         self.close_conns();
-        self.session.hold_copies();
         // Delivery can detach a client, resize its panes or start shutdown.
         changed |= !self.session.outbox.is_empty();
         self.deliver(now);
@@ -740,7 +737,6 @@ impl Server {
                 return ControlFlow::Break(());
             }
             Wake::Paint(index) => {
-                self.session.hold_copies();
                 self.deliver(now);
                 self.paint(index, now);
             }
@@ -885,7 +881,7 @@ impl Server {
             let session = &mut self.session;
             match conn.stage {
                 Stage::Hello => conn.end(session, &Greeting::Exit(&exit), now),
-                Stage::Attaching(_) | Stage::Attached(_) => {
+                Stage::Attaching | Stage::Attached(_) => {
                     conn.end(session, &ToAttached::Exit(&exit), now);
                 }
                 Stage::Command | Stage::Blocked(_) | Stage::Waiting(_) => {
@@ -1237,31 +1233,39 @@ impl Server {
                 let Some(hello) = decoder.frame::<Hello>()? else {
                     return Ok(false);
                 };
+                // An older client's kill: refused before any Hello, which it
+                // would take as the server stopped.
+                if hello.role == Role::RETIRED_KILL {
+                    let why = format!(
+                        "the server runs {}, which takes no kill: `kill` on its process stops it \
+                         (`fux status` gives its `server_pid`, where the system says it)",
+                        fux_wire::protocol::Build::OURS
+                    );
+                    conn.end(session, &Greeting::Exit(&why), now);
+                    return Ok(true);
+                }
                 let ours = Hello::ours(hello.role);
                 let between = Mismatch::between(&hello, &ours);
                 conn.send(session, &Greeting::Hello(ours), now);
+                // A mismatch is answered whatever the role: a client of
+                // another protocol may say one this protocol has not.
                 match (between, hello.role) {
                     (Err(mismatch), _) => {
                         conn.end(session, &Greeting::Exit(&mismatch.to_string()), now);
                     }
-                    (Ok(()), Role::Kill) => {
-                        conn.end(session, &Greeting::Done(0), now);
-                        self.stop("stopped by fux force-kill-server".into(), now);
-                    }
-                    (Ok(()), Role::Attach) => {
-                        conn.enter(session, Stage::Attaching(ClientKind::Terminal), now);
-                    }
-                    (Ok(()), Role::Headless) => {
-                        conn.enter(session, Stage::Attaching(ClientKind::Headless), now);
-                    }
+                    (Ok(()), Role::Attach) => conn.enter(session, Stage::Attaching, now),
                     (Ok(()), Role::Command) => conn.enter(session, Stage::Command, now),
+                    (Ok(()), Role::Unknown(byte)) => {
+                        let why = format!("role {byte} is none of this protocol's");
+                        conn.end(session, &Greeting::Exit(&why), now);
+                    }
                 }
             }
-            &mut Stage::Attaching(kind) => {
+            Stage::Attaching => {
                 let Some(attach) = decoder.frame::<Attach>()? else {
                     return Ok(false);
                 };
-                conn.attach(session, kind, attach, now);
+                conn.attach(session, attach, now);
             }
             Stage::Attached(attached) => {
                 match decoder.frame()? {
@@ -1628,7 +1632,7 @@ mod tests {
             crate::wait::Watches::Pane((pane, counts)),
             server.session.run,
             now,
-            Duration::from_secs(1),
+            Some(Duration::from_secs(1)),
         );
         server.conns.first_mut().ok_or("worker")?.stage = Stage::Waiting(Box::new(waiting));
         server.session.output(pane, b"changed", now);
@@ -1657,7 +1661,7 @@ mod tests {
             crate::wait::Watches::Pane((pane, counts)),
             server.session.run,
             after(now, Duration::from_millis(1)),
-            crate::pane::FRAME_TIMEOUT,
+            Some(crate::pane::FRAME_TIMEOUT),
         );
         let late = after(waiting.due().ok_or("deadline")?, Duration::from_millis(1));
         server.conns.first_mut().ok_or("worker")?.stage = Stage::Waiting(Box::new(waiting));

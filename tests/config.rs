@@ -9,30 +9,13 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     let server = Server::start("")?;
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
-        "str wait-seconds 0 set\nstr C-a prefix\n",
+        "str shell list str /no/such/leaked-shell end set\nstr C-a prefix\n",
     )
     .map_err(e)?;
-    // With the bundled wait, this waits for the child's output/exit. A
-    // leaked wait=0 instead answers timeout before the child writes.
+    // With the bundled shell, this starts a shell and waits for its
+    // prompt. A leaked shell instead fails to start.
     let waiting = [
-        "opts",
-        "str",
-        "main",
-        "in",
-        "80",
-        "24",
-        "size",
-        "str",
-        "/bin/sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "sleep 1; echo observed",
-        "arg",
-        "new-tab",
-        "wait",
+        "opts", "str", "main", "in", "80", "24", "size", "new-tab", "wait",
     ];
     // Exercise start on a fresh socket: an already running server would
     // bypass the old startup config path. Clean up even on a refusal.
@@ -50,8 +33,9 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
         }
         Ok(())
     })();
-    let _ = server.fux_env(&["force-kill-server"], &env);
+    let stopped = stop_server(std::path::Path::new(socket));
     started?;
+    stopped?;
     assert!(server.ok(&["list-keys"])?.contains("str C-b prefix"));
     for args in [
         &["opts", "watch", "attach"][..],
@@ -210,7 +194,7 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
 /// An imported config cannot act on the server or commit half its local state.
 #[test]
 fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
-    let server = Server::start("str wait-seconds 0 set")?;
+    let server = Server::start("")?;
     let directory = server.dir.join("config/fux");
     let mut a = server.attach(8, 80)?;
     let mut b = server.attach(8, 80)?;
@@ -220,11 +204,11 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     std::fs::write(directory.join("config.fux"), "require shared.fux").map_err(e)?;
     std::fs::write(
         directory.join("shared.fux"),
-        "str wait-seconds 2 set str titles true set str history-bytes 0 set",
+        "str titles true set str history-bytes 0 set",
     )
     .map_err(e)?;
     let configured = fux::script::run_file(&directory.join("config.fux")).map_err(e)?;
-    assert_eq!(configured.preferences.wait.seconds(), 2);
+    assert_eq!(configured.preferences.history_bytes.get(), 0);
     assert!(configured.preferences.titles);
     assert_eq!(server.ok(&["ls", "listing"])?, before);
     a.pump()?;
@@ -233,7 +217,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     assert!(!String::from_utf8_lossy(&b.painted).contains("\x1b]2;"));
     std::fs::write(
         directory.join("shared.fux"),
-        "str C-a prefix str wait-seconds 0 set str titles true set \
+        "str C-a prefix str titles true set \
          opts str missing in attach-defaults \
          define only-in-failed-config 41 end \
          %1 str horizontal axis split drop",
@@ -395,33 +379,6 @@ fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
     Ok(())
 }
 
-/// Selected absence is saved even when the patch has no present values.
-#[test]
-fn an_absent_selection_unsets_the_server_value() -> Outcome {
-    let server = Server::start("")?;
-    let code = "str copy-environment list str ENV end set agent-opts 80 24 size \
-        str /bin/sh program str -c arg str 'echo ${ENV-unset}' arg new-tab";
-    let out = std::process::Command::new(FUX)
-        .arg(code)
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE")
-        .env_remove("FUX_SERVER")
-        .env_remove("ENV")
-        .output()
-        .map_err(e)?;
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let answer = String::from_utf8(out.stdout).map_err(e)?;
-    let pane = answer.trim().split(':').next().ok_or("pane")?;
-    server.exits(pane)?;
-    assert_eq!(server.ok(&[pane, "capture"])?.trim(), "unset");
-    assert!(server.ok(&["all", "dump"])?.contains("str 'ENV' unset-env"));
-    Ok(())
-}
-
 /// The examples of the words a config uses run as a config: none binds
 /// after a key bound by default.
 #[test]
@@ -437,73 +394,6 @@ fn the_config_words_examples_run_as_a_config() -> Outcome {
         std::fs::write(&config, example).map_err(e)?;
         fux::script::run_file(&config).map_err(|f| format!("{example}: {f}"))?;
     }
-    Ok(())
-}
-
-/// `copy-environment` names what a new pane takes from the client that
-/// made it: one the client has is passed on, as the bytes it is, UTF-8 or
-/// not; one it lacks is removed, even though the server has it (here
-/// `ENV`, which the test server is given).
-#[test]
-fn copy_environment_takes_the_clients_variables_or_none() -> Outcome {
-    use std::os::unix::ffi::OsStrExt;
-    let server =
-        Server::start("str copy-environment list str ENV str FUXT_GIVEN str FUXT_BYTES end set")?;
-    let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"; \
-                 printf %s \"${FUXT_BYTES-unset}\" | od -An -tx1";
-    let out = std::process::Command::new(FUX)
-        .args([
-            "agent-opts",
-            "list",
-            "str",
-            "ENV",
-            "str",
-            "FUXT_GIVEN",
-            "str",
-            "FUXT_BYTES",
-            "end",
-            "copy-environment",
-            "80",
-            "24",
-            "size",
-            "str",
-            "sh",
-            "program",
-            "str",
-            "-c",
-            "arg",
-            "str",
-            shown,
-            "arg",
-            "str",
-            "FUXT_OTHER",
-            "str",
-            "x",
-            "env",
-            "new-tab",
-        ])
-        .env("FUX_SOCKET", &server.socket)
-        .env("XDG_CONFIG_HOME", server.dir.join("config"))
-        .env_remove("FUX_PANE")
-        .env_remove("ENV")
-        .env("FUXT_GIVEN", "yes")
-        .env("FUXT_BYTES", std::ffi::OsStr::from_bytes(b"caf\xe9"))
-        .output()
-        .map_err(e)?;
-    let pane = String::from_utf8_lossy(&out.stdout);
-    let pane = pane.split(':').next().ok_or("its pane")?;
-    server.exits(pane)?;
-    let stdout = server.ok(&["str", pane, "pane", "capture"])?;
-    assert!(stdout.contains("[unset] [yes]"), "{stdout}");
-    // od spaces its bytes as each system likes.
-    let bytes = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(bytes.contains("63 61 66 e9"), "{stdout}");
-    let dump = server.ok(&["all", "dump"])?;
-    assert!(
-        dump.contains("str 'FUXT_BYTES' drop # ")
-            && dump.contains(": environment is not UTF-8 text; its saved value is omitted"),
-        "{dump}"
-    );
     Ok(())
 }
 
@@ -536,32 +426,6 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
         result.stderr
     );
     assert_eq!(server.panes()?.len(), 1);
-    let result = server.fux(&[
-        "str",
-        "wait-seconds",
-        "0",
-        "set",
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "/bin/sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "sleep 1",
-        "arg",
-        "new-tab",
-        "wait",
-    ])?;
-    assert_eq!(
-        result.status, 124,
-        "wait used the previous limit: {}",
-        result.stderr
-    );
     Ok(())
 }
 
@@ -782,47 +646,6 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
         );
         assert_eq!(server.panes()?.len(), before);
     }
-    let code = "str copy-environment list str F4_VALUE str ENV end set \
-        agent-opts 80 24 size str /bin/sh program str -c arg \
-        str 'printf \"%s|%s\" \"$F4_VALUE\" \"${ENV-unset}\"' arg new-tab";
-    let out = std::process::Command::new(FUX)
-        .arg(code)
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE")
-        .env_remove("FUX_SERVER")
-        .env_remove("ENV")
-        .env("F4_VALUE", "saved")
-        .output()
-        .map_err(e)?;
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let answer = String::from_utf8(out.stdout).map_err(e)?;
-    let pane = answer.trim().split(':').next().ok_or("program pane")?;
-    server.exits(pane)?;
-    assert_eq!(server.ok(&[pane, "capture"])?.trim(), "saved|unset");
-    // A new caller's selection never replaces the saved patch on respawn.
-    server.ok(&[&format!(
-        "str copy-environment list str HOME end set {pane} respawn drop"
-    )])?;
-    server.exits(pane)?;
-    assert_eq!(server.ok(&[pane, "capture"])?.trim(), "saved|unset");
-    let dump = server.ok(&["all", "dump"])?;
-    assert!(dump.contains("list end copy-environment"), "{dump}");
-    assert!(dump.contains("str 'ENV' unset-env"), "{dump}");
-    assert!(dump.contains("str 'F4_VALUE' str 'saved' env"), "{dump}");
-    // Changing local selection before replay cannot add a new selected name.
-    let replay = format!("str copy-environment list str F4_LEAK end set\n{dump}");
-    let _ = server.ok(&[&replay])?;
-    assert_eq!(
-        server
-            .ok(&["all", "dump"])?
-            .matches("str 'F4_LEAK'")
-            .count(),
-        0
-    );
     Ok(())
 }
 

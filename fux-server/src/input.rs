@@ -1,12 +1,12 @@
 //! What an attached client sends: typed actions (`fux_wire::act`), routed to
-//! its overlay, its copy mode, or its focused pane. The client reads its
+//! its overlay or its focused pane. The client reads its
 //! own keyboard and runs its own bindings; a key reaches the server only
 //! as literal input for the pane it focuses.
 use crate::session::Session;
 use crate::view::Mode;
 use fux_vt::keys::Keystroke;
 use fux_vt::keys::mouse::{MouseAction, MouseEvent};
-use fux_wire::act::{Act, CopyAct, ScreenAct};
+use fux_wire::act::{Act, ScreenAct};
 use fux_wire::id::ClientId;
 use std::time::Instant;
 
@@ -79,18 +79,14 @@ impl Session {
             Act::Focus(gained) => return self.focus_event(client, gained),
             Act::Mouse(event) => return self.mouse(client, event),
             Act::Reply(reply) => self.terminal_reply(client, reply),
-            // The client's screen, drawn as it says; copy mode left, if
-            // the client has moved on from it.
-            // A notice from before the screen opened or closed is old news;
-            // one the screen's keys bring comes after.
+            // The client's screen, drawn as it says. A notice from before
+            // the screen opened or closed is old news; one the screen's
+            // keys bring comes after.
             Act::Screen { opening, act } => {
                 let Some(view) = self.views.get_mut(&client) else {
                     return false;
                 };
-                let starts = matches!(
-                    &act,
-                    ScreenAct::Show(_) | ScreenAct::Copy(CopyAct::Enter { .. })
-                );
+                let starts = matches!(&act, ScreenAct::Show(_));
                 let fresh = opening > view.opening;
                 if !(fresh && starts || opening == view.opening && !view.mode.is_normal()) {
                     return false;
@@ -107,15 +103,8 @@ impl Session {
                         view.mode = Mode::Normal;
                         view.notice = None;
                     }
-                    ScreenAct::Copy(CopyAct::Enter { .. }) if !fresh => return false,
-                    ScreenAct::Copy(act) => crate::copy::act(self, client, act),
                 }
-                if changed
-                    || self
-                        .views
-                        .get(&client)
-                        .is_some_and(|view| view.mode.is_normal())
-                {
+                if changed || view.mode.is_normal() {
                     self.view_event(client, crate::journal::ViewChange::Screen);
                 }
             }
@@ -139,7 +128,7 @@ impl Session {
         let ended = !view.mode.is_normal();
         let shown = match view.mode {
             Mode::Normal => view.notice.take().is_some(),
-            Mode::Panel(_) | Mode::Copy(_) => {
+            Mode::Panel(_) => {
                 view.mode = Mode::Normal;
                 true
             }
@@ -288,7 +277,7 @@ mod tests {
     use crate::session::testing::{output, output_as, run};
     use crate::view::Mode;
     use fux::screens::Screen;
-    use fux_wire::act::{Act, CopyAct, Panel, ScreenAct};
+    use fux_wire::act::{Act, Panel, ScreenAct};
     use fux_wire::id::{ClientId, PaneId};
 
     type Outcome = Result<(), String>;
@@ -314,7 +303,6 @@ mod tests {
             Some(Mode::Panel(Panel::Prompt { before, after, .. })) => {
                 format!("prompt {before}|{after}")
             }
-            Some(Mode::Copy(_)) => "copy".into(),
             None => "gone".into(),
         }
     }
@@ -389,7 +377,7 @@ mod tests {
     const NEW_TAB: &str = "opts 80 24 size str +1 workspace in new-tab";
 
     #[test]
-    fn openings_replacements_closes_and_copy_endings_invalidate_from_the_prior_cursor() -> Outcome {
+    fn openings_replacements_and_closes_invalidate_from_the_prior_cursor() -> Outcome {
         use crate::journal::Reader;
         use fux_wire::events::Actor;
         use fux_wire::inspect::Scope;
@@ -403,15 +391,6 @@ mod tests {
                 false,
             ),
             (2, ScreenAct::Hide, true),
-            (
-                3,
-                ScreenAct::Copy(CopyAct::Enter {
-                    hints: vec![],
-                    typing: vec![],
-                }),
-                false,
-            ),
-            (3, ScreenAct::Copy(CopyAct::Leave), true),
         ] {
             let from = s.parts.journal().end(s.run);
             s.apply(c, vec![Act::Screen { opening, act }]);
@@ -428,13 +407,8 @@ mod tests {
             assert_eq!(view.opening, opening);
             assert_eq!(view.mode.is_normal(), normal);
         }
-        for start in [
-            ScreenAct::Show(Panel::Repeat("key ends this".into())),
-            ScreenAct::Copy(CopyAct::Enter {
-                hints: vec![],
-                typing: vec![],
-            }),
-        ] {
+        {
+            let start = ScreenAct::Show(Panel::Repeat("key ends this".into()));
             let opening = s.views.get(&c).ok_or("view")?.opening + 1;
             s.apply(
                 c,
@@ -546,31 +520,20 @@ mod tests {
     }
 
     /// Every server-side screen action belongs to one opening, including
-    /// edits and copy keys already in flight when that opening ended.
+    /// edits already in flight when that opening ended.
     #[test]
     fn stale_screen_actions_cannot_change_a_new_opening() -> Outcome {
-        use fux_wire::act::{Act, CopyAct, ScreenAct};
+        use fux_wire::act::{Act, ScreenAct};
         let (mut s, c) = session()?;
         s.out(PaneId::of(1), b"first\r\nlast");
-        let cursor = |s: &Session| {
-            s.views.get(&c).and_then(|v| match &v.mode {
-                Mode::Copy(copy) => Some(copy.cursor),
-                Mode::Normal | Mode::Panel(_) => None,
-            })
-        };
         let panel = Panel::Prompt {
             title: "prompt".into(),
             before: "unsent work".into(),
             after: String::new(),
             hints: vec![],
         };
-        for start in [
-            ScreenAct::Show(panel.clone()),
-            ScreenAct::Copy(CopyAct::Enter {
-                hints: vec![],
-                typing: vec![],
-            }),
-        ] {
+        {
+            let start = ScreenAct::Show(panel.clone());
             let old = s.views.get(&c).ok_or("view")?.opening.saturating_add(1);
             let new = old.saturating_add(1);
             s.apply(
@@ -587,18 +550,13 @@ mod tests {
                 ],
             );
             let before = mode(&s, c);
-            let copy_cursor = cursor(&s);
             for act in [
                 ScreenAct::Hide,
-                ScreenAct::Copy(CopyAct::Leave),
-                ScreenAct::Copy(CopyAct::Yank),
-                ScreenAct::Copy(CopyAct::Top),
                 ScreenAct::Show(Panel::Repeat("old panel".into())),
                 start.clone(),
             ] {
                 s.apply(c, vec![Act::Screen { opening: old, act }]);
                 assert_eq!(mode(&s, c), before);
-                assert_eq!(cursor(&s), copy_cursor);
                 assert_eq!(s.views.get(&c).ok_or("view")?.opening, new);
             }
             s.apply(
@@ -651,19 +609,6 @@ mod tests {
         Ok(())
     }
 
-    /// A copy opening refused without a focused pane ends on both sides
-    /// and reports the missing focus without command-line instructions.
-    #[test]
-    fn copy_without_a_focused_pane_ends_visibly() -> Outcome {
-        let (mut s, c) = session()?;
-        s.close_now(PaneId::of(1), None);
-        s.input(c, b"\x02c");
-        assert_eq!(mode(&s, c), "normal");
-        assert_eq!(screen(&s, c), Screen::default());
-        assert_eq!(notice(&s, c), "copy mode: no pane focused");
-        Ok(())
-    }
-
     /// A name typed into a rename prompt is the name, whatever it looks
     /// like.
     #[test]
@@ -699,29 +644,29 @@ mod tests {
     #[test]
     fn a_screens_keys_are_the_configs() -> Outcome {
         let (mut s, c) = session()?;
-        let config = "str copy str q unbind-in  str copy str g str leave bind-in  str done label";
+        let config = "str list str q unbind-in  str list str n unbind-in  \
+                      str list str g str cancel bind-in  str done label";
         output_as(&mut s, Some(c), config)?;
         for (bad, said) in [
-            ("str copy str Escape str top bind-in", "cannot be bound"),
-            (
-                "str copy str g str nowhere bind-in",
-                "\"nowhere\" is not left, right",
-            ),
+            ("str list str Escape str first bind-in", "cannot be bound"),
+            ("str list str g str nowhere bind-in", "\"nowhere\" is not "),
         ] {
             let refused = output_as(&mut s, Some(c), bad).err().unwrap_or_default();
             assert!(refused.contains(said), "{refused}");
         }
-        s.input(c, b"\x02c");
+        s.input(c, b"\x02tg");
         let hints = match s.views.get(&c).map(|v| &v.mode) {
-            Some(Mode::Copy(copy)) => copy.hints.iter().map(|h| h.keys.clone()).collect(),
+            Some(Mode::Panel(Panel::List(list))) => {
+                list.hints.iter().map(|h| h.keys.clone()).collect()
+            }
             _ => Vec::new(),
         };
         assert!(hints.contains(&"g Escape".to_owned()), "{hints:?}");
         s.input(c, b"q");
-        assert_eq!(mode(&s, c), "copy");
+        assert!(mode(&s, c).starts_with("list "), "{}", mode(&s, c));
         s.input(c, b"g");
         assert_eq!(mode(&s, c), "normal");
-        s.input(c, b"\x02c");
+        s.input(c, b"\x02tg");
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
         Ok(())
@@ -1088,13 +1033,7 @@ mod tests {
         // A chord bound to nothing reaches the pane as it was typed.
         s.input(c, b"\x1bl");
         assert_eq!(queued_focused(&mut s, c), b"\x1bl");
-        // In copy mode and in the column the key is theirs, not the binding's.
-        run(&mut s, "str c1 client copy-mode")?;
-        assert_eq!(mode(&s, c), "copy");
-        s.input(c, b"\x1bt");
-        assert_eq!(tabs(&s), Some(2));
-        s.input(c, b"q");
-        assert_eq!(mode(&s, c), "normal");
+        // In the column the key is the column's, not the binding's.
         s.input(c, &prefixed("\x1bt"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(notice(&s, c), "C-b M-t is not bound");
@@ -1174,14 +1113,14 @@ mod tests {
             }
             assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
         }
-        // Refused as the session stands: no pane that way, no copy to
-        // paste, nothing before the first tab or workspace, nothing but a
-        // shell to signal, and no readable nearby cwd in these processless panes.
+        // Refused as the session stands: no pane that way, nothing before
+        // the first tab or workspace, nothing but a shell to signal, and no
+        // readable nearby cwd in these processless panes.
         refused.sort();
         assert_eq!(
             refused,
             [
-                "ak", "k", "l", "mk", "ml", "p", "s", "tmh", "tn", "v", "wmh", "wn"
+                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wmh", "wn"
             ]
         );
         Ok(())
@@ -1556,13 +1495,9 @@ mod tests {
         assert_eq!(asked_mouse_level(&s, c), Some(1003));
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         let press = format!("\x1b[<0;{};2M", right.x() + 2);
-        // Copy mode, the column and a prompt have the keys: no reporting,
-        // and a report in flight is dropped.
-        for (open, close) in [
-            (&b"\x02c"[..], &b"q"[..]),
-            (b"\x02", b"\x1b"),
-            (b"\x02e", b"\x1b"),
-        ] {
+        // The column and a prompt have the keys: no reporting, and a
+        // report in flight is dropped.
+        for (open, close) in [(&b"\x02"[..], &b"\x1b"[..]), (b"\x02e", b"\x1b")] {
             let name = String::from_utf8_lossy(open);
             s.input(c, open);
             assert_eq!(asked_mouse_level(&s, c), Some(0), "{name:?}");

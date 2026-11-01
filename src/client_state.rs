@@ -3,7 +3,7 @@ use crate::keymap::Keymap;
 use crate::script::settings::{Reads, Unread};
 use crate::script::{Config, Fux};
 use fux_wire::command::{
-    DecodeMillis, EnvName, HistoryBytes, Limit, PictureBytes, Program, ScrollLines,
+    DecodeMillis, HistoryBytes, JournalEntries, PictureBytes, Program, ScrollLines,
 };
 use fuxth::Value;
 
@@ -128,6 +128,8 @@ preferences! {
     shell "shell": Program;
     /// The history budget in bytes for panes this client creates.
     history_bytes "history-bytes": HistoryBytes;
+    /// The events the journal of a server this client starts keeps.
+    journal_entries "journal-entries": JournalEntries;
     /// Rewrap recorded primary-screen lines when a new pane is resized.
     reflow "reflow": bool;
     /// Arrows per alternate-screen wheel action; Ctrl keeps half-page scrolling.
@@ -140,9 +142,7 @@ preferences! {
     paste_timeout "paste-timeout-ms": DecodeMillis;
     /// Position after each non-ASCII glyph; bounds drift, not glyph footprints.
     cell_placement "cell-placement": bool;
-    /// This client's limit for waits without an explicit timeout.
-    wait "wait-seconds": Limit;
-    /// Whether newly created panes may copy program output to paste buffers.
+    /// Whether newly created panes' programs may copy to the terminals' clipboards (OSC 52).
     program_clipboard "program-clipboard": bool;
     /// Whether copies are delivered to this client's terminal clipboard.
     terminal_clipboard "terminal-clipboard": bool;
@@ -158,9 +158,6 @@ preferences! {
     slots "bar-slots": fux_wire::presentation::Slots;
     /// Whether the prefix column is drawn; dispatch and bar feedback stay active.
     show_column "show-column": bool;
-    /// Names selected from this client for new launches. Their concrete
-    /// values and unsets are saved for respawn and dump.
-    copy_environment "copy-environment": Vec<EnvName>;
 }
 
 /// An initialized preference, or the bundled setting that is missing.
@@ -181,9 +178,6 @@ impl PreferenceDraft {
             program_clipboard: required(self.program_clipboard, "program-clipboard")?,
         })
     }
-    pub(crate) fn wait(&self) -> Result<Limit, String> {
-        required(self.wait, "wait-seconds")
-    }
     /// Seed an in-process client draft from its own view.
     pub fn presentation(&mut self, p: fux_wire::presentation::Presentation) {
         self.styles = Some(p.styles);
@@ -198,8 +192,8 @@ impl PreferenceDraft {
     pub(crate) fn shell(&self) -> Result<&Program, String> {
         required(self.shell.as_ref(), "shell")
     }
-    pub(crate) fn copy_environment(&self) -> Result<&[EnvName], String> {
-        required(self.copy_environment.as_deref(), "copy-environment")
+    pub(crate) fn journal_entries(&self) -> Result<JournalEntries, String> {
+        required(self.journal_entries, "journal-entries")
     }
 }
 
@@ -245,13 +239,10 @@ mod tests {
         assert!(Draft::default().finish().is_err());
         let state = crate::script::default_state()?;
         let mut draft = state.draft();
-        draft.preferences.wait = None;
-        assert!(draft.finish().is_err());
-        let mut draft = state.draft();
         draft.attach = None;
         assert!(draft.finish().is_err());
         assert_eq!(state.preferences.history_bytes.get(), 8 << 20);
-        assert_eq!(state.preferences.wait.seconds(), 30);
+        assert_eq!(state.preferences.journal_entries.get(), 16_384);
         assert!(state.preferences.reflow);
         assert_eq!(state.preferences.alternate_scroll_lines.get(), 5);
         assert_eq!(state.preferences.picture_bytes.get(), fux_vt::PICTURE_BYTES);
@@ -260,7 +251,6 @@ mod tests {
         assert!(!state.preferences.cell_placement);
         assert!(state.preferences.program_clipboard && state.preferences.terminal_clipboard);
         assert!(state.preferences.bell && !state.preferences.titles);
-        assert!(state.preferences.copy_environment.is_empty());
         assert!(state.preferences.show_column);
         let mut draft = state.draft();
         draft.preferences.styles = None;
@@ -280,12 +270,10 @@ mod tests {
         let mut draft = PreferenceDraft::default();
         for (name, value) in [
             ("history-bytes", Value::Int(0)),
-            ("wait-seconds", Value::Int(0)),
             ("program-clipboard", Value::Bool(false)),
             ("show-column", Value::Bool(false)),
             ("terminal-clipboard", Value::Bool(false)),
             ("shell", list(&["/bin/my shell", "a b", ""])?),
-            ("copy-environment", list(&["OK", "FUX_EXTRA"])?),
         ] {
             draft.set(name, &value)?;
         }
@@ -300,19 +288,13 @@ mod tests {
             ("cell-placement", Value::str("cells")),
             ("history-bytes", Value::Int(-1)),
             ("history-bytes", Value::Int((1 << 30) + 1)),
-            ("wait-seconds", Value::Int(1 << 32)),
-            ("wait-seconds", Value::Int(-1)),
+            ("journal-entries", Value::Int(0)),
             ("bell", Value::Int(0)),
             ("bell", Value::str("off")),
             ("shell", list(&[])?),
             ("shell", list(&[""])?),
             ("shell", list(&["/bin/sh", "a\0b"])?),
             ("shell", Value::str("/bin/sh")),
-            ("copy-environment", list(&["BAD-NAME"])?),
-            ("copy-environment", list(&["FUX_PANE"])?),
-            ("copy-environment", list(&["FUX_SOCKET"])?),
-            ("copy-environment", list(&["FUX_SERVER"])?),
-            ("copy-environment", list(&["FUX"])?),
             ("buffers", Value::Int(0)),
             ("buffers", Value::Int(16)),
             ("clipboard", Value::Bool(true)),

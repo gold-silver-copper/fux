@@ -9,9 +9,9 @@ use fux_vt::keys::Direction;
 use fux_wire::callback::Open;
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{
-    AnyRef, Buffer, Button, ClientAction, Command, EnvName, Extent, HistoryBytes, Input, Kind,
-    Limit, Members, Mouse, MoveTo, PanePick, PaneResize, Percent, Pick, Program, Request, Resized,
-    Sibling, Since, Source, SwapWith, To, Usage, Wait, Wheel, WsRef,
+    AnyRef, Button, ClientAction, Command, Extent, HistoryBytes, Input, Kind, Limit, Members,
+    Mouse, MoveTo, PanePick, PaneResize, Percent, Pick, Program, Request, Resized, Sibling, Since,
+    Source, SwapWith, To, Usage, Wait, Wheel, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Axis;
@@ -268,10 +268,10 @@ words! {
         Finding All "all" "-- all" "the whole session, for info, notify, events and dump" "fux all info" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
         Starting Opts "opts" "-- opts" "empty options, for new-tab, new-workspace, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program new-tab" [];
-        Starting Split "split" "subject -- answer" "split a pane along its required axis: a shell, or the program given" "fux %3 str vertical axis split" [Pane: Axis Shares Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
-        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
-        Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
-        Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (new-tab, new-workspace, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env UnsetEnv Program Arg];
+        Starting Split "split" "subject -- answer" "split a pane along its required axis: a shell, or the program given" "fux %3 str vertical axis split" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
+        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
+        Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
+        Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (new-tab, new-workspace, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Program Arg];
         Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
         Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; as much as one request (1 MiB) carries" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
@@ -295,10 +295,7 @@ words! {
         Changing Reorder "reorder" "handle way --" "move one place: next or previous" "fux @2 str next reorder" [];
         Changing HistoryBudget "history-budget" "pane integer --" "change this pane's history budget in bytes (0 to 1 GiB); lowering evicts old rows" "fux %3 4194304 history-budget" [];
         Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
-        Changing Buffers "buffers" "-- list" "paste buffer metadata, newest first: id, bytes and preview" "fux buffers" [];
-        Changing Buffer "buffer" "id -- text" "exact paste buffer text by id or newest" "fux newest buffer" [];
-        Changing PasteBuffer "paste-buffer" "pane id -- answer" "paste a buffer by id or newest into a pane; answers as send-keys does" "fux %3 newest paste-buffer" [];
-        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd Env UnsetEnv CopyEnvironment HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
+        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients Show "show" "client handle --" "show and follow a pane, tab or workspace" "fux str c1 client %3 show" [];
         Clients StepTab "step-tab" "client way --" "show the next, previous or last visited tab" "fux str c1 client str next step-tab" [];
@@ -310,7 +307,6 @@ words! {
         Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
         Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "fux str test server kill-server" [];
-        Server ForceKillServer "force-kill-server" "--" "stop it anyway, whatever fux version it is" "fux str test server force-kill-server" [];
         Config AttachDefaults "attach-defaults" "attachable --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
         Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Reading Version "version" "pane-or-seen -- string" "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
@@ -329,16 +325,13 @@ words! {
         Starting Name "name" "x name -- x" "the given name: new-tab's tab, or new-workspace's workspace" "fux agent-opts str web name 80 24 size str ./app program new-tab";
         Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux agent-opts 80 24 size str ./app program new-tab";
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux agent-opts str /srv cwd 80 24 size str ./app program new-tab";
-        Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux agent-opts str PORT 8080 env 80 24 size str ./app program new-tab";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell; its pane stays once it exits" "fux agent-opts 80 24 size str ./app program new-tab";
         Starting HistoryBytes "history-bytes" "x integer -- x" "history budget for the new pane, in bytes (0 to 1 GiB)" "fux agent-opts 0 history-bytes str /bin/cat program new-tab";
         Starting Reflow "reflow" "x boolean -- x" "whether the new pane rewraps primary-screen lines on resize" "fux agent-opts false reflow str /bin/cat program new-tab";
         Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" "arrows per alternate-screen wheel action (0 to 32767)" "fux agent-opts 3 alternate-scroll-lines str /bin/cat program new-tab";
         Starting PictureBytes "picture-bytes" "x integer -- x" "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux agent-opts 0 picture-bytes str /bin/cat program new-tab";
-        Starting ProgramClipboard "program-clipboard" "x boolean -- x" "whether the new pane's program may copy to paste buffers" "fux agent-opts false program-clipboard str /bin/cat program new-tab";
+        Starting ProgramClipboard "program-clipboard" "x boolean -- x" "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux agent-opts false program-clipboard str /bin/cat program new-tab";
         Starting ShellProgram "shell-program" "x list -- x" "the checked argv list to start with shell role; its exit closes the pane" "fux opts 80 24 size list str /bin/sh end shell-program new-tab";
-        Starting CopyEnvironment "copy-environment" "x list -- x" "replace the client selection for this creation; empty selects nothing; selected values are saved and exported by dump" "fux agent-opts list str LANG end copy-environment str /bin/cat program new-tab";
-        Starting UnsetEnv "unset-env" "x name -- x" "explicitly remove this environment name from the child" "fux agent-opts str OLD unset-env str /bin/cat program new-tab";
         Starting Arg "arg" "x text -- x" "an argument for the program" "fux agent-opts 80 24 size str ./app program str -v arg new-tab";
         Starting Axis "axis" "x way -- x" "horizontal (side by side) or vertical (stacked); split requires it" "fux %3 str horizontal axis split";
         Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 str horizontal axis 2 1 shares split";
@@ -346,7 +339,7 @@ words! {
         Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
         Waiting Changed "changed" "seen -- changed-request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
-        Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout, else this client's wait-seconds" "fux %3 300 timeout wait";
+        Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout; with none, until something changes" "fux %3 300 timeout wait";
         Input Expect "expect" "seen -- expected-request" "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux %3 capture let seen seen string str '[y/N]' contains if seen expect str y text send-keys drop then";
         Input Text "text" "x text -- x" "text, typed" "fux %3 str 'ls -l' text str Enter key send-keys";
         Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
@@ -366,7 +359,6 @@ words! {
     Screen {
         Clients Choose "choose" "client title list list list callback --" "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end str 'drop drop' choose";
         Clients Prompt "prompt" "client name text callback --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
-        Clients CopyMode "copy-mode" "client --" "copy and select in the focused pane" "fux str c1 client copy-mode";
         Clients CommandPrompt "command-prompt" "client --" "a prompt for fuxth" "fux str c1 client command-prompt";
     }
     Keys {
@@ -379,8 +371,8 @@ words! {
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
         Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
         Config BindAction "bind-action" "key code --" "an explicit executable list callback, receiving client payload; Escape cannot be bound" "str r str rename-prompt bind-action str rename label";
-        Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (copy list line), a key does one of its actions, as the default keys bind each" "str copy str g str top bind-in str top label";
-        Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str copy str g unbind-in";
+        Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "str list str g str first bind-in str first label";
+        Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str list str g unbind-in";
         Config UnbindAll "unbind-all" "--" "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
     }
 }
@@ -604,19 +596,6 @@ fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Re
             (from, to) => format!("{from} to {to}"),
         };
         fail(Raise::Range, format!("{n} is out of range: {said}"))
-    })
-}
-
-fn buffer(value: &Value<Fux>) -> Result<Buffer, Failure> {
-    let text = string(value)?;
-    if text == "newest" {
-        return Ok(Buffer::Newest);
-    }
-    text.parse().map(Buffer::Id).map_err(|()| {
-        fail(
-            Raise::BadValue,
-            format!("{text:?} is not a buffer id (bN:RUN) or newest"),
-        )
     })
 }
 
@@ -868,7 +847,7 @@ fn modify(
     };
     if !matches!(
         opt,
-        Opt::Arg | Opt::Env | Opt::UnsetEnv | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes
+        Opt::Arg | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes
     ) && built.given.iter().any(|given| given.slot() == opt.slot())
     {
         return Err(fail(
@@ -936,32 +915,6 @@ fn modify(
                 return Err(fail(Raise::Usage, "comes after program"));
             }
             built.argv.push(arg);
-        }
-        Opt::Env => {
-            let (key, value) = (string(&next()?)?, next()?);
-            // A pane, tab or workspace as fux writes it (`%3`).
-            let value = match (target(&value), text(&value)) {
-                (Ok(handle), _) => handle.to_string(),
-                (Err(_), Ok(text)) => text,
-                (Err(_), Err(failure)) => {
-                    if failure.code != fuxth::Code::Type {
-                        return Err(failure);
-                    }
-                    let what = "a string, a number, a boolean, or a pane, tab or workspace";
-                    return Err(wrong(what, &value));
-                }
-            };
-            built
-                .env
-                .push(key, Some(value.into()))
-                .map_err(|why| fail(Raise::BadValue, why))?;
-        }
-        Opt::UnsetEnv => built
-            .env
-            .push(string(&next()?)?, None)
-            .map_err(|why| fail(Raise::BadValue, why))?,
-        Opt::CopyEnvironment => {
-            built.copy_environment = Some(read::<Vec<EnvName>>(&next()?, Raise::BadValue)?);
         }
         Opt::MainScreen => built.view.source = Source::Main,
         Opt::AltScreen => built.view.source = Source::Alternate,
@@ -1103,9 +1056,6 @@ pub(super) fn check_attach_creation(
                 option,
                 Opt::Name
                     | Opt::Cwd
-                    | Opt::Env
-                    | Opt::UnsetEnv
-                    | Opt::CopyEnvironment
                     | Opt::HistoryBytes
                     | Opt::Reflow
                     | Opt::AlternateScrollLines
@@ -1221,25 +1171,10 @@ fn members_of(target: AnyRef, members: Members) -> Ask {
 }
 
 fn ask(request: impl Into<Request>) -> Ask {
-    let request = request.into();
-    let of = if let Request::Do(
-        Command::ShowBuffer {
-            buffer: Buffer::Id(id),
-        }
-        | Command::PasteBuffer {
-            buffer: Buffer::Id(id),
-            ..
-        },
-    ) = &request
-    {
-        Some(id.run())
-    } else {
-        None
-    };
     Ask::Server {
-        request: Box::new(request),
+        request: Box::new(request.into()),
         client: None,
-        of,
+        of: None,
     }
 }
 
@@ -1369,14 +1304,7 @@ impl Host<'_> {
     fn launch(
         &mut self,
         built: &Opts,
-    ) -> Result<
-        (
-            fux_wire::command::Start,
-            fux_wire::command::EnvPatch,
-            fux_wire::command::PaneOptions,
-        ),
-        Failure,
-    > {
+    ) -> Result<(fux_wire::command::Start, fux_wire::command::PaneOptions), Failure> {
         self.prepare()
             .map_err(|why| fail(Raise::Config, why.to_string()))?;
         let preferences = &self
@@ -1394,11 +1322,8 @@ impl Host<'_> {
                 preferences
                     .shell()
                     .map_err(|why| fail(Raise::Config, why))?,
-                preferences
-                    .copy_environment()
-                    .map_err(|why| fail(Raise::Config, why))?,
             )
-            .map(|(start, env)| (start, env, options))
+            .map(|start| (start, options))
             .map_err(|why| fail(Raise::BadValue, why))
     }
 }
@@ -1465,13 +1390,12 @@ impl Host<'_> {
             Act::Opts => now(out, Value::App(Fux::Opts(std::rc::Rc::default()))),
             Act::NewTab => {
                 let built = finished(act, next()?)?;
-                let (start, env, options) = self.launch(&built)?;
+                let (start, options) = self.launch(&built)?;
                 let tab = Command::NewTab {
                     target: built.place,
                     name: built.name,
                     size: built.size,
                     cwd: built.cwd,
-                    env,
                     options,
                     start,
                 };
@@ -1479,12 +1403,11 @@ impl Host<'_> {
             }
             Act::NewWorkspace => {
                 let built = finished(act, next()?)?;
-                let (start, env, options) = self.launch(&built)?;
+                let (start, options) = self.launch(&built)?;
                 let workspace = Command::NewWorkspace {
                     name: built.name,
                     size: built.size,
                     cwd: built.cwd,
-                    env,
                     options,
                     start,
                 };
@@ -1498,13 +1421,12 @@ impl Host<'_> {
                         "split requires a direction: %2 str horizontal axis split",
                     )
                 })?;
-                let (start, env, options) = self.launch(&built)?;
+                let (start, options) = self.launch(&built)?;
                 let split = Command::Split {
                     axis,
                     target: p,
                     start,
                     cwd: built.cwd,
-                    env,
                     options,
                     shares: built.shares,
                 };
@@ -1520,7 +1442,6 @@ impl Host<'_> {
                     } else {
                         Some(built.program().map_err(|why| fail(Raise::BadValue, why))?)
                     },
-                    env: built.env,
                 };
                 later(ask(respawn))
             }
@@ -1539,19 +1460,7 @@ impl Host<'_> {
                 };
                 let wait = Wait {
                     since,
-                    timeout: match built.timeout {
-                        Some(limit) => limit,
-                        None => {
-                            self.prepare()
-                                .map_err(|why| fail(Raise::Config, why.to_string()))?;
-                            self.state
-                                .as_deref()
-                                .ok_or_else(|| fail(Raise::Config, "wait needs client defaults"))?
-                                .preferences
-                                .wait()
-                                .map_err(|why| fail(Raise::Config, why))?
-                        }
-                    },
+                    timeout: built.timeout,
                 };
                 later(ask(Request::Wait(wait)))
             }
@@ -1870,15 +1779,6 @@ impl Host<'_> {
             Act::ClearHistory => tell(Command::ClearHistory {
                 target: pane(&next()?)?,
             }),
-            Act::Buffers => later(ask(Command::ListBuffers)),
-            Act::Buffer => later(ask(Command::ShowBuffer {
-                buffer: buffer(&next()?)?,
-            })),
-            Act::PasteBuffer => {
-                let p = pane(&next()?)?;
-                let buffer = buffer(&next()?)?;
-                later(ask(Command::PasteBuffer { buffer, target: p }))
-            }
             // ----------------------------------------------------- clients
             Act::Attach => {
                 let (target, built) = attach_options(act, next()?)?;
@@ -1925,10 +1825,13 @@ impl Host<'_> {
             Act::Socket => local(Local::Server(fux_wire::protocol::Choice::Path(
                 string(&next()?)?.into(),
             ))),
-            Act::Start => local(Local::Start),
+            Act::Start => {
+                self.prepare()
+                    .map_err(|why| fail(Raise::Config, why.to_string()))?;
+                local(Local::Start)
+            }
             Act::Status => local(Local::Status),
             Act::KillServer => tell(Command::KillServer),
-            Act::ForceKillServer => local(Local::ForceKill),
             Act::AttachDefaults => {
                 self.prepare()
                     .map_err(|why| fail(Raise::Config, why.to_string()))?;
@@ -2144,7 +2047,6 @@ impl Host<'_> {
                     client: fux_wire::callback::Data::Client(c, self.context.of),
                 })
             }
-            Screen::CopyMode => Open::Copy,
             Screen::CommandPrompt => Open::Prompt(fux_wire::callback::Prompt {
                 title: ":".to_owned(),
                 line: fux_wire::act::Line::new(String::new()),
@@ -2374,9 +2276,6 @@ mod tests {
             for option in [
                 "str x name",
                 "str / cwd",
-                "str X str value env",
-                "str X unset-env",
-                "list end copy-environment",
                 "0 history-bytes",
                 "false program-clipboard",
                 "str '' program",
@@ -2492,7 +2391,7 @@ mod tests {
             ("fail", "1 dump".to_owned()),
             ("fail", "str c1 client dump".to_owned()),
             // An element of a list of the wrong kind is a list it refuses.
-            ("bad_value", "opts list 1 end copy-environment".to_owned()),
+            ("bad_value", "opts list 1 end shell-program".to_owned()),
         ];
         // all-history's guard, whatever comes after it.
         for target in ["opts", "@1", "+1", "str c1 client", "1"] {
@@ -2616,7 +2515,6 @@ mod tests {
             "opts str nope reflow",
             "opts 1 program-clipboard",
             "opts str sh shell-program",
-            "opts str HOME copy-environment",
             "%1 str nope history-budget",
         ] {
             let source = format!("str type try {program} drop catch 2drop str caught print end");
@@ -2706,7 +2604,6 @@ mod tests {
         // An option on what `values` give, or an action consuming them.
         for (step, values, code) in [
             (Ok(Opt::ShellProgram), vec![fresh(), list(&big, 8)?], bad),
-            (Ok(Opt::CopyEnvironment), vec![fresh(), list(&big, 8)?], bad),
             (Err(Act::Respawn), vec![unique()], bad),
         ] {
             let mut values = values.into_iter();
@@ -2739,9 +2636,6 @@ mod tests {
             (Opt::Program, vec![Value::str("cat")]),
             (Opt::Arg, vec![Value::str("a")]),
             (Opt::Arg, vec![Value::str("b")]),
-            (Opt::Env, vec![Value::str("X"), Value::str("first")]),
-            (Opt::UnsetEnv, vec![Value::str("Y")]),
-            (Opt::Env, vec![Value::str("Z"), Value::str("last")]),
             (Opt::Text, vec![Value::str("a")]),
             (Opt::Key, vec![Value::str("Enter")]),
             (Opt::Paste, vec![Value::str("b")]),
@@ -2766,16 +2660,6 @@ mod tests {
                 Input::Paste("b".into()),
                 Input::Bytes(vec![b'c'])
             ]
-        );
-        let env = built
-            .env
-            .as_slice()
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_ref().and_then(|v| v.to_str())))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            env,
-            [("X", Some("first")), ("Y", None), ("Z", Some("last"))]
         );
         Ok(())
     }
@@ -2880,13 +2764,7 @@ mod tests {
                     Opt::Reflow => vec![Value::Bool(false)],
                     Opt::AlternateScrollLines | Opt::PictureBytes => vec![Value::Int(0)],
                     Opt::ProgramClipboard => vec![Value::Bool(false)],
-                    Opt::Name
-                    | Opt::Cwd
-                    | Opt::Program
-                    | Opt::Arg
-                    | Opt::Text
-                    | Opt::Paste
-                    | Opt::UnsetEnv => {
+                    Opt::Name | Opt::Cwd | Opt::Program | Opt::Arg | Opt::Text | Opt::Paste => {
                         vec![Value::str("x")]
                     }
                     Opt::ShellProgram => {
@@ -2894,12 +2772,8 @@ mod tests {
                             Value::str("sh"),
                         ])))]
                     }
-                    Opt::CopyEnvironment => {
-                        vec![Value::List(std::rc::Rc::new(fuxth::List::new(vec![])))]
-                    }
                     Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
                     Opt::Rows | Opt::Cols => vec![Value::Int(0), Value::Int(1)],
-                    Opt::Env => vec![Value::str("X"), Value::Int(1)],
                     Opt::In => vec![Value::str("+1")],
                     Opt::Timeout | Opt::History => vec![Value::Int(0)],
                     Opt::Key => vec![Value::str("Enter")],

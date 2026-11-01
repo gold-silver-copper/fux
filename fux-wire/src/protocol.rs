@@ -34,7 +34,7 @@ pub enum Choice {
 }
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 57;
+pub const PROTOCOL: u32 = 58;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -69,8 +69,8 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// A client and a server of different protocols, which understand each
-/// other's `Hello` and nothing after it but `Kill`: what both sides say of
-/// it, the server's protocol and version.
+/// other's `Hello` and nothing after it: what both sides say of it, the
+/// server's protocol and version.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mismatch {
     pub protocol: u32,
@@ -81,7 +81,7 @@ impl Mismatch {
     /// Whether a client that said `client` can go on with a server that
     /// said `server`: either may ask, holding both.
     pub fn between(client: &Hello, server: &Hello) -> Result<(), Self> {
-        if client.role == Role::Kill || client.protocol == server.protocol {
+        if client.protocol == server.protocol {
             return Ok(());
         }
         Err(Self {
@@ -99,7 +99,7 @@ impl std::fmt::Display for Mismatch {
         };
         write!(
             f,
-            "the server runs {theirs}; use a matching client to keep its panes running. `fux force-kill-server` stops it and its panes; a new server does not resume them",
+            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on its process stops it and its panes (`fux status` gives its `server_pid`, where the system says it); a new server does not resume them",
         )
     }
 }
@@ -129,24 +129,48 @@ impl std::fmt::Display for Build<'_> {
 
 impl std::error::Error for Mismatch {}
 
-wire! {
-    /// What a connecting client is for; its tag is its byte in a `Hello`'s
-    /// payload.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Role {
-        /// An interactive client: `Attach`, then input.
-        Attach,
-        /// One command, then its output.
-        Command,
-        /// Stop the server. Accepted whatever the protocol version, so that
-        /// `fux force-kill-server` can always stop a server from another fux version:
-        /// for that, a `Hello`'s frame and payload never change.
-        Kill,
-        /// A client with no terminal (`opts COLS ROWS size attach`): `Attach`, then
-        /// nothing but its end; the server sizes it (`resize`).
-        Headless,
+/// What a connecting client is for, as the byte in its `Hello`'s payload
+/// says. A server of any protocol reads that byte, so one this protocol
+/// has no role for is kept as it came (`Unknown`): its client, of another
+/// protocol, is answered its mismatch, and never served.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// A client that shows the server: `Attach`, then input.
+    Attach,
+    /// One command, then its output.
+    Command,
+    /// Another protocol's byte: 2 was a kill's, 3 a headless attach's.
+    Unknown(u8),
+}
+
+impl Wire for Role {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        out.push(match self {
+            Role::Attach => 0,
+            Role::Command => 1,
+            Role::Unknown(byte) => *byte,
+        });
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        Ok(match <u8 as Wire>::get(r)? {
+            0 => Role::Attach,
+            1 => Role::Command,
+            byte => Role::Unknown(byte),
+        })
     }
 }
+
+impl Role {
+    /// The byte an older protocol's kill said, which a server of that
+    /// protocol obeyed whatever the client's protocol. Its client takes any
+    /// `Hello` as leave to have stopped the server, but reports an `Exit`
+    /// before one as a failure: so it is answered that alone.
+    pub const RETIRED_KILL: Role = Role::Unknown(2);
+}
+
+// Its shape is its byte's.
+#[cfg(test)]
+impl crate::wire::Reach for Role {}
 
 /// The frames one side expects at one point of a connection, decoded from
 /// a kind and a payload lent for `'a`, and encoded.
@@ -308,7 +332,8 @@ macro_rules! frames {
 wire! {
     /// Both ways, the first frame from each side: a client's says what it is
     /// for, the server's answer the role it took. Its fields go in the order
-    /// declared, which never changes, nor do they (`Role::Kill`).
+    /// declared, which never changes, nor do they: a server of any protocol
+    /// reads it, to say which one it speaks.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Hello {
         pub protocol: u32,
@@ -338,10 +363,13 @@ impl OneKind for Hello {
 }
 
 wire! {
-    /// An attaching client and its optional conditional first launch.
+    /// An attaching client and its optional conditional first launch. A
+    /// headless one has no terminal (`opts COLS ROWS size attach`): nothing
+    /// but its end follows, and the server sizes it (`resize`).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Attach {
         pub of: Option<crate::command::Run>,
+        pub headless: bool,
         pub size: fux_vt::Size,
         pub target: Option<crate::command::AttachTarget>,
         pub read_only: bool,
@@ -359,6 +387,7 @@ impl Attach {
     pub fn of(size: fux_vt::Size, presentation: crate::presentation::Presentation) -> Attach {
         Attach {
             of: None,
+            headless: false,
             size,
             target: None,
             read_only: false,
@@ -555,14 +584,12 @@ impl From<crate::answer::PaneResults> for Reply {
 frames! {
     /// The server's first frames to a client: its `Hello`, the answer to
     /// the client's; or, before or after it, an `Exit` saying why it goes no
-    /// further; and to a `Kill`, `Done` as it stops. A client of any version
-    /// reads these, so their kinds and payloads never change.
+    /// further. A client of any version reads these, so their kinds and
+    /// payloads never change.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Greeting<'a> {
         Hello(hello: Hello) = HELLO,
         Exit(reason: &'a str) = EXIT,
-        /// The kill's answer, with its status: 0.
-        Done(status: u8) = 11,
     }
 }
 
@@ -592,10 +619,8 @@ frames! {
         /// questions for the terminal). Every paint comes so.
         Paint(bytes: Cow<'a, [u8]>) = 7,
         Exit(reason: &'a str) = EXIT,
-        /// The server ended its screen opening by itself (copy mode
-        /// whose rows dropped from history, whose pane went or is no longer
-        /// focused, or with no pane to copy; a chooser or prompt whose
-        /// subject closed), the mode being the client's.
+        /// The server ended its screen opening by itself (a chooser or
+        /// prompt whose subject closed), the mode being the client's.
         Ended(opening: u64) = 14,
         /// Owned screen data; callbacks are checked by the receiving client.
         Open(screen: crate::callback::Open) = 15,
@@ -720,7 +745,7 @@ mod tests {
         use crate::wire::Reader;
         let wait = Wait {
             since: Since::Now(AnyRef::Pane("%1".parse()?)),
-            timeout: Limit::read(0)?,
+            timeout: Some(Limit::read(0)?),
         };
         let bytes = crate::wire::encode(&wait);
         assert_eq!(Reader::new(&bytes).whole::<Wait>()?, wait);
@@ -733,7 +758,7 @@ mod tests {
     /// release; with one of another, it is told the server's protocol and
     /// release; a kill goes on with any.
     #[test]
-    fn only_the_protocol_decides_a_mismatch_and_a_kill_has_none() {
+    fn only_the_protocol_decides_a_mismatch() {
         let hello = |protocol, version: &str, role| Hello {
             protocol,
             version: version.into(),
@@ -751,9 +776,6 @@ mod tests {
         assert_eq!(other, Err(theirs(55, "0.36.0")));
         let both = between(&hello(23, "0.37.0", Role::Command));
         assert_eq!(both, Err(theirs(23, "0.37.0")));
-        let kill = hello(54, "0.36.0", Role::Kill);
-        let server = hello(23, "0.37.0", Role::Kill);
-        assert_eq!(Mismatch::between(&kill, &server), Ok(()));
     }
 
     /// A frame decodes only from the bytes it encodes to: an `Act` whose
@@ -802,7 +824,7 @@ mod tests {
             role,
         };
         round_trip!(Hello, 1, hello(Role::Attach));
-        round_trip!(Greeting, 1, Greeting::Hello(hello(Role::Kill)));
+        round_trip!(Greeting, 1, Greeting::Hello(hello(Role::Command)));
         let size = fux_vt::Size::from((std::num::NonZeroU16::MIN, std::num::NonZeroU16::MAX));
         let presentation = crate::presentation::sample()?;
         let workspace = Some(crate::command::WsRef::Name("main".to_owned()));
@@ -811,6 +833,7 @@ mod tests {
             2,
             Attach {
                 of: None,
+                headless: false,
                 size,
                 target: workspace.map(crate::command::AttachTarget::Workspace),
                 read_only: false,
@@ -824,6 +847,7 @@ mod tests {
             2,
             Attach {
                 of: None,
+                headless: true,
                 size,
                 target: workspace.map(crate::command::AttachTarget::Workspace),
                 read_only: true,
@@ -836,11 +860,6 @@ mod tests {
         for act in [
             crate::act::ScreenAct::Show(crate::act::Panel::Repeat("resize".into())),
             crate::act::ScreenAct::Hide,
-            crate::act::ScreenAct::Copy(crate::act::CopyAct::Enter {
-                hints: vec![],
-                typing: vec![],
-            }),
-            crate::act::ScreenAct::Copy(crate::act::CopyAct::Yank),
         ] {
             let act = Act::Screen {
                 opening: u64::MAX,
@@ -887,13 +906,16 @@ mod tests {
         round_trip!(Greeting, 8, Greeting::Exit("refused"));
         round_trip!(ToCommand, 8, ToCommand::Exit("stopped"));
         round_trip!(ToAttached, 8, ToAttached::Exit("detached"));
-        round_trip!(Greeting, 11, Greeting::Done(2));
         round_trip!(ToAttached, 12, ToAttached::Welcome(ClientId::of(2), run));
         round_trip!(ToAttached, 14, ToAttached::Ended(7));
         round_trip!(
             ToAttached,
             15,
-            ToAttached::Open(crate::callback::Open::Copy)
+            ToAttached::Open(crate::callback::Open::Prompt(crate::callback::Prompt {
+                title: "rename".into(),
+                line: crate::act::Line::new("main".into()),
+                action: None,
+            }))
         );
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));
         for target in [
@@ -911,30 +933,26 @@ mod tests {
         }
         round_trip!(ToCommand, 17, ToCommand::Part(Cow::Borrowed(b"reply")));
         round_trip!(ToCommand, 18, ToCommand::PartsEnd);
-        // A Hello's bytes never change, so that `Kill` reaches a server of
-        // any version: the length, the kind, the protocol, the role, then
-        // the version's length and bytes.
-        let kill = Hello {
+        // A Hello's bytes never change, so that a server of any version
+        // reads it: the length, the kind, the protocol, the role, then the
+        // version's length and bytes.
+        let command = Hello {
             protocol: 9,
             version: "0.13.0".into(),
-            role: Role::Kill,
+            role: Role::Command,
         };
-        let head = [0, 0, 0, 16, 1, 0, 0, 0, 9, 2, 0, 0, 0, 6];
-        assert_eq!(kill.encode(), Ok([&head[..], b"0.13.0"].concat()));
-        // Nor do the kill's answer's, which a client of any version reads
-        // after it: the length, the kind, and its status, 0.
-        let done = Greeting::Done(0);
-        assert_eq!(done.encode(), Ok(vec![0, 0, 0, 2, 11, 0]));
+        let head = [0, 0, 0, 16, 1, 0, 0, 0, 9, 1, 0, 0, 0, 6];
+        assert_eq!(command.encode(), Ok([&head[..], b"0.13.0"].concat()));
         // Each role's byte is the wire format's too: after the length, the
-        // kind and the protocol's four bytes.
-        for (role, byte) in [
-            (Role::Attach, 0),
-            (Role::Command, 1),
-            (Role::Kill, 2),
-            (Role::Headless, 3),
-        ] {
+        // kind and the protocol's four bytes. Byte 2 was a kill's, which an
+        // older server takes whatever the protocol, so no role of this
+        // protocol's has it; another protocol's byte decodes as it came.
+        for (role, byte) in [(Role::Attach, 0), (Role::Command, 1), (Role::Unknown(3), 3)] {
             let encoded = hello(role).encode().unwrap_or_default();
             assert_eq!(encoded.get(9), Some(&byte), "{role:?}");
+            let mut decoder = Decoder::default();
+            decoder.push(&encoded);
+            assert_eq!(decoder.frame::<Hello>()?.map(|h| h.role), Some(role));
         }
         Ok(())
     }
@@ -1007,12 +1025,12 @@ mod tests {
             (server, vec![0, 0, 0, 1, 17], "unexpected frame kind 17"),
             (
                 greeting,
-                vec![0, 0, 0, 1, 11],
+                vec![0, 0, 0, 1, 1],
                 "a frame's payload: the bytes end early",
             ),
             (
                 greeting,
-                vec![0, 0, 0, 3, 11, 0, 0],
+                vec![0, 0, 0, 11, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 9],
                 "a frame's payload: bytes after the value",
             ),
             (
@@ -1041,11 +1059,11 @@ mod tests {
             (
                 hello,
                 vec![0, 0, 0, 6, 1, 0, 0, 0, 1, 7],
-                "a frame's payload: no Role has tag 7",
+                "a frame's payload: the bytes end early",
             ),
             (
                 attach,
-                vec![0, 0, 0, 7, 2, 0, 0, 1, 0, 1, 2],
+                vec![0, 0, 0, 8, 2, 0, 0, 0, 1, 0, 1, 2],
                 "a frame's payload: no option has tag 2",
             ),
             (

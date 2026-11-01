@@ -81,6 +81,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     keep.wait_for("$")?;
     let attach = Attach {
         of: None,
+        headless: false,
         size: sized(5, 20)?,
         target: None,
         read_only: false,
@@ -368,14 +369,15 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
         Ok(String::from_utf8_lossy(&out.stdout).contains("client c1"))
     });
     let log = std::fs::read_to_string(dir.join("s").join("fux.log"));
-    let _ = std::process::Command::new(FUX)
-        .arg("force-kill-server")
-        .env("FUX_SOCKET", &socket)
-        .output();
-    let _ = child.wait();
+    // The client first: a server a terminal is attached to refuses
+    // `kill-server`, which stops it where the system names no process.
+    let ended = end(&mut child);
+    let stopped = stop_server(&socket);
     drop(master);
     let _ = std::fs::remove_dir_all(&dir);
     result?;
+    ended?;
+    stopped?;
     assert!(log.is_ok(), "the server logs beside its socket");
     Ok(())
 }
@@ -478,58 +480,75 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
     Ok(())
 }
 
+/// A client of another protocol is answered the server's `Hello`, then its
+/// mismatch, so that it can follow: whatever role it says, one this
+/// protocol has (attach) or not (byte 3, protocol 57's headless attach).
+/// An older protocol's kill (byte 2) is answered an `Exit` alone, which its
+/// client reports as a failure, and the server lives.
 #[test]
-fn a_protocol_mismatch_refuses_attach_but_accepts_force_kill() -> Outcome {
-    use fux_wire::protocol::{Frame, Greeting, Hello};
+fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
+    use fux_wire::protocol::{Frame, Greeting, Hello, Role};
     use std::io::{Read, Write};
     let server = Server::start("")?;
-    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
-    // Set before writing: macOS refuses a timeout on a socket its peer
-    // has closed, as the server may have by the time the writes are done.
-    stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
-    let hello = Hello {
-        protocol: 999,
-        version: "0.0.0".into(),
-        role: fux_wire::protocol::Role::Attach,
-    };
-    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
-    let mut decoder = fux_wire::protocol::Decoder::default();
-    let mut buffer = [0u8; 4096];
-    let mut exit = None;
-    loop {
-        // A signal interrupts a read with a timeout rather than restarting
-        // it; under emulation that happens nearly every run.
-        let n = match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(format!("reading the server's answer: {error}")),
+    for (protocol, role) in [
+        (999, Role::Attach),
+        (57, Role::Unknown(3)),
+        (57, Role::RETIRED_KILL),
+    ] {
+        let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+        // Set before writing: macOS refuses a timeout on a socket its peer
+        // has closed, as the server may have by the time the writes are done.
+        stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+        let hello = Hello {
+            protocol,
+            version: "0.36.0".into(),
+            role,
         };
-        decoder.push(buffer.get(..n).unwrap_or_default());
-        while let Some(frame) = decoder.frame().map_err(e)? {
-            if let Greeting::Exit(reason) = frame {
-                exit = Some(reason.to_owned());
+        stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+        let mut decoder = fux_wire::protocol::Decoder::default();
+        let mut buffer = [0u8; 4096];
+        let mut frames = Vec::new();
+        loop {
+            // A signal interrupts a read with a timeout rather than restarting
+            // it; under emulation that happens nearly every run.
+            let n = match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(format!("reading the server's answer: {error}")),
+            };
+            decoder.push(buffer.get(..n).unwrap_or_default());
+            while let Some(frame) = decoder.frame::<Greeting>().map_err(e)? {
+                frames.push(match frame {
+                    Greeting::Hello(theirs) => Ok(theirs.protocol),
+                    Greeting::Exit(reason) => Err(reason.to_owned()),
+                });
             }
         }
+        if role == Role::RETIRED_KILL {
+            let [Err(reason)] = frames.as_slice() else {
+                return Err(format!("a kill: not an Exit alone: {frames:?}"));
+            };
+            assert!(reason.contains("takes no kill"), "{reason}");
+            assert!(
+                server.ok(&["ls", "listing"])?.contains("%1"),
+                "the server lives"
+            );
+            continue;
+        }
+        let [Ok(theirs), Err(reason)] = frames.as_slice() else {
+            return Err(format!("{role:?}: not a Hello then an Exit: {frames:?}"));
+        };
+        assert_eq!(*theirs, fux_wire::protocol::PROTOCOL, "{role:?}");
+        assert!(
+            reason.contains(&format!("protocol {}", fux_wire::protocol::PROTOCOL))
+                && reason.contains("use a matching client")
+                && reason.contains("`kill` on its process")
+                && reason.contains("stops it and its panes")
+                && reason.contains("a new server does not resume them"),
+            "{reason}"
+        );
     }
-    let reason = exit.ok_or("no Exit frame")?;
-    assert!(
-        reason.contains(&format!("protocol {}", fux_wire::protocol::PROTOCOL))
-            && reason.contains("use a matching client")
-            && reason.contains("fux force-kill-server")
-            && reason.contains("stops it and its panes")
-            && reason.contains("a new server does not resume them"),
-        "{reason}"
-    );
-    // The frozen Kill greeting works even with that same wrong version.
-    let mut client = server.attach(10, 40)?;
-    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
-    let kill = Hello {
-        role: fux_wire::protocol::Role::Kill,
-        ..hello
-    };
-    stream.write_all(&kill.encode().map_err(e)?).map_err(e)?;
-    assert!(client.wait_exit()?.contains("force-kill-server"));
     Ok(())
 }
 
@@ -901,15 +920,13 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
         let out = ls()?;
         Ok(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("client c1"))
     });
-    let _ = std::process::Command::new(FUX)
-        .arg("force-kill-server")
-        .env("FUX_SOCKET", &socket)
-        .output();
+    let stopped = stop_server(&socket);
     drop(terminal);
     let _ = std::fs::remove_dir_all(&dir);
     started?;
     gone?;
-    after
+    after?;
+    stopped
 }
 
 /// The first pane uses the invoking client's directory, regardless of HOME.
@@ -946,10 +963,7 @@ fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
         terminal.wait_for("%1")?;
         terminal.type_bytes(format!("pwd > '{}'; exit\r", marker.display()).as_bytes())?;
         let status = terminal.wait_exit();
-        let _ = std::process::Command::new(FUX)
-            .arg("force-kill-server")
-            .env("FUX_SOCKET", &socket)
-            .output();
+        stop_server(&socket)?;
         assert!(status?.success());
         assert_eq!(
             std::fs::read_to_string(&marker).map_err(e)?.trim(),
@@ -1228,7 +1242,7 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
         let mut stream = UnixStream::connect(&server.socket).map_err(e)?;
         stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
         stream
-            .write_all(&Hello::ours(Role::Headless).encode().map_err(e)?)
+            .write_all(&Hello::ours(Role::Attach).encode().map_err(e)?)
             .map_err(e)?;
         let mut decoder = Decoder::default();
         decoder.push(&wire(&mut stream)?);
@@ -1241,7 +1255,10 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
     }
 
     let server = Server::empty()?;
-    let attach = Attach::of(sized(10, 40)?, server.state.preferences.presentation());
+    let attach = Attach {
+        headless: true,
+        ..Attach::of(sized(10, 40)?, server.state.preferences.presentation())
+    };
     let mut watch = attach.clone();
     watch.read_only = true;
     let mut watcher = connect(&server, &watch)?;
@@ -1278,7 +1295,6 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
         )?),
         options: server.state.preferences.pane_options(),
         cwd: server.dir.clone(),
-        env: fux_wire::command::EnvPatch::default(),
     });
     let mut first = connect(&server, &conditional)?;
     // The second branch would fail if used, but the stored workspace wins.
@@ -1311,21 +1327,12 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
 
 #[test]
 fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
     let server = Server::start("")?;
     let mut terminal = Terminal::start(
         10,
         40,
         &[
             fux(),
-            "str",
-            "copy-environment",
-            "list",
-            "str",
-            "ATTACH_UNUSED",
-            "end",
-            "set",
             "opts",
             "str",
             "",
@@ -1339,8 +1346,7 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
             command
                 .env("FUX_SOCKET", &server.socket)
                 .env("SHELL", "/bin/sh")
-                .env("XDG_CONFIG_HOME", server.dir.join("config"))
-                .env("ATTACH_UNUSED", OsString::from_vec(vec![0xff]));
+                .env("XDG_CONFIG_HOME", server.dir.join("config"));
         },
     )?;
     terminal.wait_for("%1")?;
@@ -1359,25 +1365,19 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
 fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
     let existing = Server::start("")?;
     let empty = Server::empty()?;
-    let half = existing.dir.join("half-frame");
-    std::fs::write(&half, vec![b'x'; fux_wire::protocol::MAX_FRAME / 2]).map_err(e)?;
-    let half = half.to_string_lossy();
+    let big = existing.dir.join("near-a-frame");
+    std::fs::write(&big, vec![b'x'; fux_wire::protocol::MAX_FRAME - 40]).map_err(e)?;
+    let big = big.to_string_lossy();
     let malformed = ["str", "", "program"];
-    // Each fits a frame alone; together they do not.
+    // The program fits a frame alone; with the rest of the attach it does not.
     let oversized = [
         "str",
         "/bin/cat",
         "program",
         "str",
-        &half,
+        &big,
         "read-file",
         "arg",
-        "str",
-        "BIG",
-        "str",
-        &half,
-        "read-file",
-        "env",
     ];
     for (launch, why) in [
         (&malformed[..], "a program is needed"),
@@ -1423,18 +1423,14 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
 #[test]
 fn a_targeted_attach_resolves_no_launch() -> Outcome {
     let server = Server::empty()?;
-    // A shell that fits a launch frame alone, and a small selected variable
-    // that takes the whole request past it.
-    let half: String = std::iter::repeat_n('x', 524_000).collect();
+    // A shell that fits a launch frame alone, which the rest of the attach
+    // request takes past it.
+    let half: String = std::iter::repeat_n('x', 524_250).collect();
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
-        format!(
-            "str shell list str /bin/sh str {half} dup end set\n\
-             str copy-environment list str ATTACH_PAD end set\n"
-        ),
+        format!("str shell list str /bin/sh str {half} dup end set\n"),
     )
     .map_err(e)?;
-    let pad: String = std::iter::repeat_n('x', 4_000).collect();
     for (args, said) in [
         (&["opts", "attach"][..], true),
         (&["opts", "str", "work", "in", "attach"], false),
@@ -1443,8 +1439,7 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
             Terminal::start(10, 40, &[[fux()].as_slice(), args].concat(), |command| {
                 command
                     .env("FUX_SOCKET", &server.socket)
-                    .env("XDG_CONFIG_HOME", server.dir.join("config"))
-                    .env("ATTACH_PAD", &pad);
+                    .env("XDG_CONFIG_HOME", server.dir.join("config"));
             })?;
         assert!(!terminal.wait_exit()?.success());
         let output = String::from_utf8_lossy(&terminal.output);

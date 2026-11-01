@@ -168,7 +168,6 @@ pub fn admit(
             }
             p.title = fux_wire::words::clean(&p.title);
         }
-        Open::Copy => {}
     }
     Ok(open.into())
 }

@@ -133,7 +133,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
 }
 
 #[test]
-fn send_keys_signal_and_buffers() -> Outcome {
+fn send_keys_and_signal() -> Outcome {
     let server = Server::start("")?;
     // send-keys types at once; after the prompt, so the output is a line
     // of its own however slowly the shell starts.
@@ -182,9 +182,6 @@ fn send_keys_signal_and_buffers() -> Outcome {
         server.ok(&["ls", "listing"])?.contains("%1"),
         "the shell survives"
     );
-    // No buffers yet.
-    assert_eq!(server.ok(&["buffers", "json"])?.trim(), "[]");
-    assert_eq!(server.fux(&["newest", "buffer"])?.status, 1);
     Ok(())
 }
 

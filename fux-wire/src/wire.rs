@@ -2,7 +2,7 @@
 //! as the same value, so that the server receives what a client's words
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
-use crate::command::{EnvPatch, Limit, Percent};
+use crate::command::{Limit, Percent};
 use fux_vt::keys::mouse::MouseButton;
 use fux_vt::keys::{Direction, KeyPress};
 use fuxix::process::Signal;
@@ -240,22 +240,6 @@ impl Wire for std::path::PathBuf {
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         std::ffi::OsString::get(r).map(Self::from)
-    }
-}
-
-/// Variables, each name checked as it is read: one no shell takes is
-/// refused.
-impl Wire for EnvPatch {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        put_list(self.as_slice(), out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let mut env = EnvPatch::default();
-        for (name, value) in Vec::<(String, Option<std::ffi::OsString>)>::get(r)? {
-            env.push(name, value)
-                .map_err(|_| Error::Bad("variable name"))?;
-        }
-        Ok(env)
     }
 }
 
@@ -859,78 +843,16 @@ mod tests {
             "@4294967295:18446744073709551615:4294967295-ffffffffffffffff",
             24,
         )?;
-        token::<crate::id::BufferId>("b18446744073709551615:4294967295-ffffffffffffffff", 20)?;
         token::<crate::events::Cursor>("18446744073709551615:4294967295-ffffffffffffffff", 20)
     }
 
     #[test]
     fn numeric_tokens_keep_their_value_checks() -> TestResult {
-        let run = "1-2".parse::<crate::command::Run>().map_err(|()| "run")?;
-        assert_eq!(
-            Reader::new(&encode(&(run, 0u64))).whole::<crate::id::BufferId>(),
-            Err(Error::Bad("buffer id"))
-        );
         let mut counts = encode(&crate::command::Counts::default());
         *counts.last_mut().ok_or("ended byte")? = 2;
         assert_eq!(
             Reader::new(&counts).whole::<crate::command::Counts>(),
             Err(Error::Tag("flag", 2))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn environment_patches_validate_names_identity_and_bytes() -> TestResult {
-        let mut patch = EnvPatch::default();
-        patch.push(
-            "A_1".into(),
-            Some(std::ffi::OsString::from_vec(vec![0xff, b'x'])),
-        )?;
-        patch.push("ABSENT".into(), None)?;
-        assert_eq!(
-            Reader::new(&encode(&patch)).whole::<EnvPatch>(),
-            Ok(patch.clone())
-        );
-        for name in [
-            "FUX",
-            "FUX_PANE",
-            "FUX_SOCKET",
-            "FUX_SERVER",
-            "A=B",
-            "1BAD",
-            "A\0",
-        ] {
-            for value in [None, Some(std::ffi::OsString::from("forged"))] {
-                assert!(patch.push(name.into(), value.clone()).is_err());
-                let bytes = encode(&vec![(name.to_owned(), value)]);
-                assert!(Reader::new(&bytes).whole::<EnvPatch>().is_err(), "{name}");
-            }
-        }
-        let duplicate = vec![("A".to_owned(), None::<std::ffi::OsString>); 2];
-        assert!(
-            Reader::new(&encode(&duplicate))
-                .whole::<EnvPatch>()
-                .is_err()
-        );
-        assert!(patch.push("A_1".into(), None).is_err());
-        let nul = vec![("A".to_owned(), Some(std::ffi::OsString::from_vec(vec![0])))];
-        assert!(Reader::new(&encode(&nul)).whole::<EnvPatch>().is_err());
-        assert!(
-            patch
-                .push("A".into(), nul.into_iter().next().and_then(|(_, v)| v))
-                .is_err()
-        );
-        assert!(
-            patch
-                .push(
-                    "BIG".into(),
-                    Some(
-                        std::iter::repeat_n('x', crate::protocol::MAX_FRAME)
-                            .collect::<String>()
-                            .into()
-                    )
-                )
-                .is_err()
         );
         Ok(())
     }
@@ -966,7 +888,6 @@ mod tests {
             target: crate::id::PaneId::of(1),
             start: crate::command::Start::Shell(Program::new("/bin/sh".into(), Vec::new())?),
             cwd: Some(dir.clone()),
-            env: EnvPatch::default(),
             shares: None,
         };
         let read = Command::get(&mut Reader::new(&encode(&split))).ok();

@@ -49,7 +49,7 @@ A pane's lines re-wrap when its width changes, history included.
 
 By default the bottom row is the bar: the workspace and its tabs on the left; on the
 right the focused pane's id and label (its given name, else its OSC 0/2
-title, launch program or id), a notice, or copy mode's position. A screen too
+title, launch program or id), or a notice. A screen too
 small for its tab (a watcher's, or one too small for all its panes)
 shows panes cut off at their right and bottom, or none of a pane it has
 no room for: the bar names them before the title, hidden first: `[hidden %3] [cut %2]`.
@@ -279,10 +279,9 @@ letter but `a W`: case counts, so `C-b T` is not `C-b t`. The keys are your clie
 each terminal attached has its own prefix and bindings, from its config, and
 the server knows none of them. A key that is not fux's reaches the focused
 pane as you typed it. So are fux's screens: the command column,
-choosers, prompts and copy mode belong to your client, which
+choosers and prompts belong to your client, which
 switches between them at the key that does it, so a key typed fast is never
-read in the wrong one; the server draws what your client shows, and keeps
-copy mode's cursor in the history only it holds.
+read in the wrong one; the server draws what your client shows.
 
 A binding's program first waits for the server to process this client's
 preceding keys and resizes, including any refusals. Later keys wait for the
@@ -305,8 +304,7 @@ prefix again sends it to the pane.
 | `x` | `me me focused confirm-close` | close the pane (asks: `y` or Enter closes, `n` or Esc keeps it) |
 | `z` | `me zoom` | zoom the pane, or restore it |
 | `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
-| `c` | `me copy-mode` | copy and select |
-| `p` | `me focused newest paste-buffer drop` | paste the newest copy |
+| `c` | `me edit-history` | the pane's history in `$EDITOR`, in a split that closes when the editor exits |
 | `n` / `b` | `me str next step-tab` / `me str previous step-tab` | next / previous tab |
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
@@ -384,16 +382,16 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
   `me str Rename str '' list list %3 end str rename end prompt`.
   The rename prompts and close questions use this typed form in the library.
 - **These screens' keys are a config too**, as the bindings are: `bind-in`
-  gives a key of copy mode, a chooser or a line being typed one of that
+  gives a key of a chooser or a line being typed one of that
   screen's actions, and `label` names it in the screen's hints
-  (`str copy str g str top bind-in str top label`); `unbind-in` takes one
+  (`str list str g str first bind-in str first label`); `unbind-in` takes one
   away. `bind-in` accepts only native actions. Executable list keys use
   `str r str rename-prompt bind-action` and
   `str x str confirm-close bind-action`; each receives `client payload`
   and must leave an empty stack. An unknown native action always refuses.
   Escape always leaves a screen, and is never bound.
 - **A key's program** runs as your client, one at a time. While one that may
-  open a screen runs (it has `copy-mode`, a chooser or another such word), the
+  open a screen runs (it has a chooser or another such word), the
   keys you type wait for it, and go to the screen it opens. The prefix, then
   Esc, stops a program a key or the prompt runs, if it takes long.
 
@@ -401,55 +399,21 @@ Directional focus picks, among the panes beyond the focused pane's edge,
 the one whose centre is closest across the direction, then along it, then
 the lowest number.
 
-### Copy and select
+### Copying and pasting
 
-`C-b c` puts a keyboard cursor on the focused pane. For your terminal the
-pane holds still while output continues; other terminals see it live. If
-the history drops the rows copy mode holds, copy mode ends and says why.
+`C-b c` opens the focused pane's history in your editor (`$EDITOR`, else
+`vi`), in a split that closes when the editor exits: search, select and copy
+there (`me edit-history`, a library word).
 
-Its keys, as keys.fux binds them: letters matched in the exact case shown,
-and the brackets; the arrows, PageUp/PageDown, Home, End, Enter and Esc also work.
-
-| Keys | Do |
-| --- | --- |
-| `h` `j` `k` `l`, arrows | move |
-| `w` / `b` | next word / back a word |
-| `a` / `e` or End | first / last non-blank of the line |
-| Home | column 0 |
-| `u` / `d` | half a page up / down |
-| PageUp / PageDown | a page up / down |
-| `t` / `z` | top of the history / the live bottom |
-| `f` / `r`, then `n` / `p` | search forward / back; next / previous match |
-| `[` / `]` | previous / next shell prompt |
-| `v` / `s` / `x` | select characters / lines / a block; again to clear |
-| `o` | swap the selection's ends |
-| `y` or Enter | copy and leave |
-| `q` or Esc | leave without copying |
-
-Search is literal and case-sensitive over the whole history. `[` and `]`
-find prompts marked with `OSC 133 ; A` (see [Shell marks](#shell-marks)). A copy keeps wide
-characters whole, joins soft-wrapped lines, and trims trailing blanks.
-
-`buffers` returns JSON metadata, newest first: `id`, `bytes`, and a preview
-of at most 50 characters. An id such as `b7:48211-1867a3f9c2b8e7d6` names
-one copy in one server run. `str ID buffer` reads its exact text, including
-trailing newlines; `%2 str ID paste-buffer` pastes it atomically. Later copies
-never change what that id names; eviction or a different server returns
-`no_buffer`. `newest buffer` and `%2 newest paste-buffer` explicitly choose
-the newest copy when the request runs.
-
-**Clipboards.** A copy goes to fux's shared paste buffers (the newest 16);
-`C-b p` pastes the newest, bracketed if the program asked for bracketed paste. It is also sent to your terminal's clipboard as OSC 52, unless this client sets `str terminal-clipboard false set`; your terminal must
-allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
-and Helix do, copies the same way, up to 64 KiB encoded, but only while
-its creation supplied `program-clipboard true` (the bundled default).
-`false program-clipboard` refuses program copies before buffer insertion.
-Accepted program copies go once into the shared buffers, then to clients
-showing that tab whose terminal delivery is on, including watchers and zoomed
-views even when a different pane is focused. A manual yank always enters a
-buffer and is delivered only to the copying client, if enabled. A longer copy, or one that is not base64 (RFC 4648,
-padded or not) of UTF-8 text, copies nothing, and the clients showing
-the pane say so. fux never reads the clipboard.
+A program in a pane that copies with OSC 52, as Neovim and Helix do, copies
+to the terminals showing that tab whose `terminal-clipboard` is on
+(watchers and zoomed views included), up to 64 KiB encoded, while its
+creation supplied `program-clipboard true` (the bundled default); `false
+program-clipboard` refuses its copies. fux keeps no copy. A longer copy,
+or one that is not base64 (RFC 4648, padded or not) of UTF-8 text, copies
+nothing, and the clients showing the pane say so. fux never reads the
+clipboard. Paste with your terminal, or from a file:
+`fux %2 input paste send-keys < FILE`.
 
 ## Shell marks
 
@@ -457,7 +421,7 @@ fux starts your shell as it is, and reads the OSC 133 marks any program
 sends: `C` where a command's output begins, `D;STATUS` where it ends, `A`
 where a prompt starts. With them, a pane's version counts the commands
 that end, `last_status` says how the last did, `last-output` reads its
-output alone, and copy mode's `[` and `]` jump between prompts; without
+output alone; without
 them, each says there are none. `fux help shells` shows the lines
 that send them, for bash, zsh and fish, to put in your own startup files
 ([docs/agents.md](docs/agents.md#shells-shells-and-their-marks)).
@@ -484,22 +448,17 @@ taken too. Unknown names are refused; `fux key-names` prints the vocabulary.
 | `FUX_SERVER` | which run of which server the pane is of, the run every version names. A fux command from a pane of another server, or of an earlier run of this one, or with `FUX_PANE` and no `FUX_SERVER`, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
 | `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"${FUX:-fux}"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
 
-The rest is the server's environment when it started. A client's
-`copy-environment` selects names for each new launch; a selected name absent
-from that client is explicitly unset. The library selection is empty. An
-operation's `list end copy-environment` replaces that selection with an empty
-one; `env` and `unset-env` override selected entries. Repeated explicit names
-and changes to the four identity names above are refused. Values keep their
-original bytes; a launch's argv and patch must fit its one frame. The concrete patch is saved for respawn and exported by
-`dump`, so selected values remain available after the client detaches.
+The rest is the server's environment when it started. `env(1)` gives a
+program others: `str env program str PORT=8080 arg str ./app arg new-tab`;
+`env -u NAME` removes one. A launch's argv must fit its one frame.
 
 Every launch carries checked argv and a role. `program` chooses program role;
 `list str /bin/sh end shell-program` chooses shell role. Shell exit closes its
-pane; program exit retains it. Respawn uses the saved program launch and
-explicit overrides, without selecting the new caller's environment. An unknown
+pane; program exit retains it. Respawn uses the saved program launch, or
+the program given. An unknown
 nearby working directory is refused: give an absolute `cwd`. The first pane
 starts in the invoking client's directory, independently of HOME.
-Dump records saved argv, role and environment patches. Programs keep their
+Dump records saved argv and role. Programs keep their
 saved launch cwd, even if they have since changed directories; shells use
 their current directory when it is known.
 Creation options on attach require an untargeted writable invocation; explicit
@@ -546,10 +505,14 @@ commands use only the bundled state; they never load this file.
 Its `set` and key words build one candidate client state. Keys, frozen
 definitions and preferences commit together; a failed config keeps the whole
 bundled state, preserves earlier explicit CLI settings, and shows one
-diagnostic. Evaluation and local setters send no requests. Each observation wait sends
-this client's `wait-seconds` unless it has an explicit `timeout`.
-Shared paste buffers retain the newest 16 copies; retention is fixed.
-Shell argv, environment selection, `history-bytes`, `program-clipboard`,
+diagnostic. Evaluation and local setters send no requests. A wait without
+`timeout` waits until something changes; `SECS timeout`, or coreutils
+`timeout`, bounds it.
+`journal-entries` (16,384) is how many events the journal of a server this
+client starts keeps (`start`, or an attach that finds none running); a
+running server keeps the size it started with:
+`fux str journal-entries 65536 set start`.
+Shell argv, `history-bytes`, `program-clipboard`,
 `reflow`, `alternate-scroll-lines` and `picture-bytes`
 are local defaults for future creations. Explicit creation options override
 them, including zero and false. Existing panes retain their policy through
@@ -586,8 +549,8 @@ keep fux's stored cell geometry. Neither guesses from locale or terminal name.
 The bounded comparison in `bench/examples/placement.rs` measures output bytes,
 thread CPU and paint latency; it does not measure transport or display latency.
 
-Client defaults load when `set`, `attach-defaults`, `list-keys`, `attach`, a launch or an
-observation wait without `timeout` needs them; ordinary queries and server
+Client defaults load when `set`, `attach-defaults`, `list-keys`, `attach` or a
+launch needs them; ordinary queries and server
 controls do not load them. Bundled
 `client-defaults.fux` reads this client's `$SHELL` once and chooses `/bin/sh`
 for an unset or empty value. A non-text value is reported and falls back as
@@ -604,12 +567,6 @@ str C-a prefix
 str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
 str terminal-clipboard false set
 
-# Optional: take these from whoever starts a pane; the default list is empty.
-str copy-environment list
-  str DISPLAY str KRB5CCNAME str SSH_AGENT_PID str SSH_ASKPASS
-  str SSH_AUTH_SOCK str SSH_CONNECTION str WAYLAND_DISPLAY str XAUTHORITY
-end set
-
 unbind-all                                        # optional: no keys at all, the screens' too
 define split-right me focused str horizontal axis split drop end   # a word of the config's
 str v str split-right bind
@@ -618,18 +575,6 @@ str 'r l' str 'me focused str right 1 move-border' bind  repeat   # C-b r l l l,
 str g str 'me focused str vertical axis str lazygit program split drop' bind
   str 'lazygit' label  str Tools group            # what the column shows, and under which heading
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
-
-# C-b y: the focused pane's history in your editor, in a split; `env`
-# gives the program the pane's id, and `"${FUX:-fux}"` is the server's fux,
-# on PATH or not; after a failure, Enter closes it
-define edit-history
-  me focused str vertical axis
-  str FUX_TARGET me focused env
-  str sh program str -c arg
-  str 'f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg
-  split drop
-end
-str y str edit-history bind  str 'edit history' label  str Panes group
 ```
 
 `fux help set` lists the settings: what each takes and where its bundled
@@ -683,9 +628,9 @@ out moves on: each split it moves takes the cells its two sides then have
 as its shares. A terminal's resize changes no share.
 
 A dump is executable launch intent. Replaying it starts new processes with
-new identities, using the saved launch arguments, environment patches,
+new identities, using the saved launch arguments,
 directories, names and layouts. It can repeat external side effects. It does
-not save process memory, terminal contents/history, paste buffers, client
+not save process memory, terminal contents/history, client
 views or journal entries. Replay is a sequence of requests: if a later one
 fails, earlier creations remain. Review the script before running it.
 
@@ -708,7 +653,7 @@ fux start && fux --file ~/session.fux # replay on a fresh server
 ```
 
 Detaching, a client crash, or socket EOF leaves the server's processes,
-pane screens/history, layouts, buffers and journal running. That attachment's
+pane screens/history, layouts and journal running. That attachment's
 view, navigation history, focus seats and overlays are discarded. Remaining
 clients can change pane sizing and capability hosts. With every client gone,
 programs still run and their output is parsed into bounded state; no terminal
@@ -731,9 +676,11 @@ status are then that binary's. Where that cannot be, the command fails with
 the server runs this same binary, or the program already did something
 outside fux's process (asked a server, started or stopped one, warned or
 read stdin), which running it again would do twice. A key's or a config's
-program never follows. The frozen Hello/Kill exchange lets
-`fux force-kill-server` explicitly stop an incompatible server and its
-panes; starting another does not resume them.
+program never follows. `kill` on its process stops an incompatible server
+and its panes, as it stops any: `kill "$(fux status str server_pid get)"`
+where the system says the server's process (Linux); elsewhere (macOS),
+find it as you find any process (`lsof -t SOCKET`), then `kill` it.
+Starting another does not resume them.
 A lost command reply leaves its outcome unknown: the server may already have
 created a process, killed a target or queued input. Repeating that request is
 not a safe way to discover whether the first one ran.
@@ -819,7 +766,7 @@ and width implementations.
   edge. The rest of the time your terminal selects text and scrolls as it
   always does; while a program has the mouse, most terminals select with
   Shift held. fux itself never acts on the mouse: no clicking to focus,
-  dragging borders or scrolling history (copy mode does that).
+  dragging borders or scrolling history (`C-b c` opens it in your editor).
 - **Keyboard.** If your terminal speaks the kitty keyboard protocol
   (Ghostty, kitty, WezTerm, foot, iTerm2), fux turns it on while attached,
   telling apart keys otherwise sent alike (Shift-Enter and Enter, Ctrl-I
@@ -917,10 +864,9 @@ and width implementations.
   The mode is reported permanently reset and setting it changes nothing,
   so a program reports in cells, as with a terminal without it.
 - **Hooks** (tmux's `set-hook`): run an ordinary program over `next-events`.
-  The library's `events-since` streams bounded runs with checkpoints, and
-  `copy-notices` demonstrates filtering event and origin. See
-  [the hook recipe](examples/hooks/program-copies.fux). Loss requires a new
-  snapshot or explicit failure; hooks do not run on the server.
+  The library's `events-since` streams bounded runs with checkpoints. Loss
+  requires a new snapshot or explicit failure; hooks do not run on the
+  server.
 - **Process survival after server failure**, or automatic session saving:
   replaying a saved `dump` creates new processes and recreates the layout.
 - **A format language** for output (tmux's `#{…}`): `json`, and `X str
@@ -957,8 +903,9 @@ Against mistakes, rather than against a program of yours that means harm:
 
 - `kill-server` from one of the server's own panes, or while a person's
   terminal is attached (headless clients do not count), is refused:
-  `force-kill-server` stops it anyway. `kill` takes a handle, never a
-  default, so an empty variable closes nothing.
+  `kill` on its process stops it anyway (`fux status`'s `server_pid`; on
+  macOS, which says none, `lsof -t SOCKET`). `kill` takes a
+  handle, never a default, so an empty variable closes nothing.
 - To keep an agent to panes of its own, give it a server of its own, a
   session apart from yours:
 

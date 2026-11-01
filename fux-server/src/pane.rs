@@ -418,13 +418,11 @@ pub enum Runs {
     Explicit(Launch),
 }
 
-/// How a program was started: its words, where, and the variables set for
-/// it.
+/// How a program was started: its words, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Launch {
     pub argv: fux_wire::command::Program,
     pub cwd: std::path::PathBuf,
-    pub env: fux_wire::command::EnvPatch,
 }
 
 impl Runs {
@@ -1690,7 +1688,6 @@ pub(crate) mod tests {
         Ok(Runs::Shell(Launch {
             argv: fux_wire::command::Program::new("/bin/sh".into(), Vec::new())?,
             cwd: "/".into(),
-            env: fux_wire::command::EnvPatch::default(),
         }))
     }
 
@@ -1849,8 +1846,8 @@ pub(crate) mod tests {
             crate::pane::tests::options(history)?,
             Instant::now(),
         )
-        .map(Lone::new)
         .map_err(Into::into)
+        .and_then(Lone::new)
     }
 
     /// A pane alone, for tests of it: what it tells goes in a journal of
@@ -1875,13 +1872,13 @@ pub(crate) mod tests {
     }
 
     impl Lone {
-        pub(crate) fn new(pane: Pane) -> Self {
-            let journal = Journal::default();
-            Self {
+        pub(crate) fn new(pane: Pane) -> Result<Self, Box<dyn std::error::Error>> {
+            let kept = fux_wire::command::JournalEntries::new(1 << 14).ok_or("journal")?;
+            Ok(Self {
                 pane,
-                journal,
+                journal: Journal::new(kept),
                 queued_input: BTreeSet::new(),
-            }
+            })
         }
         pub(crate) fn placed(&mut self) -> PaneMut<'_> {
             let at = (WsId::of(1), TabId::of(1));
@@ -2116,7 +2113,7 @@ pub(crate) mod tests {
             size,
             crate::pane::tests::options(0)?,
             Instant::now(),
-        )?);
+        )?)?;
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));
         frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");

@@ -1,6 +1,6 @@
 //! Checked fuxth values for local preferences and request options.
 use super::Fux;
-use fux_wire::command::{EnvName, Limit, Number, Program};
+use fux_wire::command::{Number, Program};
 use fuxth::Value;
 
 /// A local setting's type, read once as `set` is given it.
@@ -112,18 +112,6 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
     }
 }
 
-/// A wait's limit, in seconds.
-impl Reads for Limit {
-    fn takes() -> String {
-        format!("seconds, 0 to {}", u32::MAX)
-    }
-    fn read(value: &Value<Fux>) -> Result<Limit, Unread> {
-        let n = int(value)?;
-        let secs = u64::try_from(n).map_err(|_| format!("{n} s: a wait waits 0 s or more"))?;
-        Ok(Limit::read(secs)?)
-    }
-}
-
 /// `true` or `false`.
 impl Reads for bool {
     fn takes() -> String {
@@ -144,26 +132,6 @@ impl Reads for Program {
     }
     fn read(value: &Value<Fux>) -> Result<Program, Unread> {
         Ok(Program::from_argv(strings(value)?)?)
-    }
-}
-
-/// Variables' names: a list of strings.
-impl Reads for Vec<EnvName> {
-    fn takes() -> String {
-        "a list of variables' names".to_owned()
-    }
-    fn read(value: &Value<Fux>) -> Result<Vec<EnvName>, Unread> {
-        let (_, names) = checked(value)?;
-        // Each name parsed from the list's own string: copied once.
-        let mut seen = std::collections::BTreeSet::new();
-        names
-            .map(|name| {
-                if !seen.insert(name) {
-                    return Err(format!("{name}: repeated environment name").into());
-                }
-                name.parse().map_err(Unread::from)
-            })
-            .collect()
     }
 }
 

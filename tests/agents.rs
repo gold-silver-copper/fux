@@ -28,7 +28,7 @@ fn program<'a>(argv: &[&'a str]) -> Vec<&'a str> {
     words
 }
 
-/// A program's tab: `agent-opts`, then `before` (size, env, waits…), then
+/// A program's tab: `agent-opts`, then `before` (size, waits…), then
 /// the program, then `new-tab`; at 80 by 24 unless `before` gives a size,
 /// as no client is attached to lay it out on.
 fn launch<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
@@ -380,20 +380,10 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         let rc = dir.join(rc);
         std::fs::create_dir_all(rc.parent().ok_or("a directory")?).map_err(e)?;
         std::fs::write(&rc, format!("{}{}", later_hook(shell), marks(shell)?)).map_err(e)?;
-        let dir = dir.to_string_lossy().into_owned();
-        let words = [
-            "agent-opts",
-            "80",
-            "24",
-            "size",
-            "str",
-            home,
-            "str",
-            &dir,
-            "env",
-        ];
+        let home = format!("{home}={}", dir.to_string_lossy());
         let new = ["new-tab", "str", shell, "rename"];
-        server.ok(&[&words[..], &program(&[shell, "-i"]), &new].concat())?;
+        let program = program(&["env", &home, shell, "-i"]);
+        server.ok(&[&["agent-opts", "80", "24", "size"][..], &program, &new].concat())?;
         check(shell)?;
     }
     let plain = server.ok(&launch(&[], &["sh"]))?;
@@ -556,22 +546,12 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
         "client-capture"
     );
     eventually("a paint", || Ok(server.ok(&capture)?.contains("main")))?;
-    // Keys typed at it are a person's: the prefix and `c` open copy mode.
-    let keys = [
-        "str",
-        "c1",
-        "client",
-        "str",
-        "C-b",
-        "key",
-        "str",
-        "c",
-        "text",
-        "send-keys",
-    ];
-    server.ok(&keys)?;
-    eventually("copy mode", || Ok(server.ok(&capture)?.contains("COPY")))?;
-    server.words("str c1 client str q text send-keys drop")?;
+    // Keys typed at it are a person's: the prefix opens the column.
+    server.ok(&["str", "c1", "client", "str", "C-b", "key", "send-keys"])?;
+    eventually("the column", || {
+        Ok(server.ok(&capture)?.contains("split side by side"))
+    })?;
+    server.words("str c1 client str Escape key send-keys drop")?;
     let mut terminal = server.attach(10, 40)?;
     terminal.ready()?;
     let refused = server.fux(&["str", "c2", "client", "60", "12", "resize"])?;
@@ -656,8 +636,8 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
 fn programs_are_restarted_and_read_whole() -> Outcome {
     let server = Server::start("")?;
     let script = "echo before; seq 500; printf '\\033[?1049h'; echo \"full $V\"; read go";
-    let before = ["str", "V", "str", "a", "env", "40", "10", "size"];
-    let started = server.ok(&named("job", &before, &["sh", "-c", script]))?;
+    let before = ["40", "10", "size"];
+    let started = server.ok(&named("job", &before, &["env", "V=a", "sh", "-c", script]))?;
     let pane = id(&started);
     shows_after(&server, &started, "full a")?;
     let main = [
@@ -677,18 +657,11 @@ fn programs_are_restarted_and_read_whole() -> Outcome {
     let busy = server.fux(&["str", &pane, "pane", "respawn"])?;
     assert_eq!(busy.status, 1, "it runs: {}", busy.stderr);
     let again = [
-        "str",
-        "job",
-        "pane",
-        "kill-first",
-        "str",
-        "V",
-        "str",
-        "b",
-        "env",
-        "respawn",
+        &["str", "job", "pane", "kill-first"][..],
+        &program(&["env", "V=b", "sh", "-c", script]),
+        &["respawn"],
     ];
-    let again = server.ok(&again)?;
+    let again = server.ok(&again.concat())?;
     assert!(again.starts_with(&format!("{pane}:1.")), "{again}");
     shows_after(&server, &again, "full b")?;
     // A full-screen program's last screen, after it left it and exited.
@@ -1071,32 +1044,14 @@ fn respawn_keeps_a_given_name_matching_the_old_program() -> Outcome {
     Ok(())
 }
 
-/// `env` gives a program a pane, tab or workspace as fux writes it, so a
-/// key's program can act on the pane it came from.
-#[test]
-fn env_takes_a_pane_tab_or_workspace() -> Outcome {
-    let server = Server::start("")?;
-    let named = id(&server.ok(&named("ed", &[], &["sleep", "30"]))?);
-    let before = [
-        "str", "P", "%1", "env", "str", "T", "@1", "env", "str", "W", "+1", "env", "str", "N",
-        "str", "ed", "pane", "env",
-    ];
-    let script = "echo \"$P $T $W $N\"";
-    let pane = id(&server.ok(&launch(&before, &["sh", "-c", script]))?);
-    server.exits(&pane)?;
-    let capture = server.ok(&["str", &pane, "pane", "capture"])?;
-    assert_eq!(capture, format!("%1 @1 +1 {named}\n"));
-    Ok(())
-}
-
 /// A pane's `FUX` is the fux running it, so a key's program reaches fux
 /// with no `fux` on PATH.
 #[test]
 fn a_pane_gets_the_fux_running_it() -> Outcome {
     let server = Server::start("")?;
-    let before = ["str", "WANT", "str", fux(), "env"];
+    let want = format!("WANT={}", fux());
     let script = "PATH=/nonexistent; \"$FUX\" here capture >/dev/null && [ \"$FUX\" -ef \"$WANT\" ] && echo same";
-    let pane = id(&server.ok(&launch(&before, &["/bin/sh", "-c", script]))?);
+    let pane = id(&server.ok(&launch(&[], &["env", &want, "/bin/sh", "-c", script]))?);
     server.exits(&pane)?;
     let capture = server.ok(&["str", &pane, "pane", "capture"])?;
     assert_eq!(capture, "same\n");

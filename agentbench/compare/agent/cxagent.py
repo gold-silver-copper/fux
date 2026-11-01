@@ -335,7 +335,7 @@ def stop_all(tool, env, fux_bin, work, driver=None):
     (no zombie left). Never matches processes by name."""
     if driver is not None:
         driver.stop()
-    cmds = {"fux": [[fux_bin, "force-kill-server"]],
+    cmds = {"fux": [["sh", "-c", 'pid=$("$0" status str server_pid get) && kill "$pid"', fux_bin]],
             "tmux": [["tmux", "-L", "ab", "kill-server"]],
             "zellij": [["zellij", "kill-session", "ab"], ["zellij", "delete-session", "ab", "--force"]],
             "herdr": [["herdr", "--session", "ab", "server", "stop"]]}[tool]

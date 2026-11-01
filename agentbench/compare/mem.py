@@ -43,10 +43,9 @@ def measure(bin_):
     time.sleep(1)
     full = rss(pid)
     print(f"  {os.path.basename(bin_)}: {kept} lines kept")
-    run(bin_, e, "force-kill-server")
     if pid:
         try:
-            os.kill(pid, 9)
+            os.kill(pid, 15)
         except OSError:
             pass
     return base, full

@@ -55,14 +55,13 @@ pub enum Waiting {
 }
 
 impl Waiting {
-    /// A wait from `now`, timing out after `limit`, until a pane's counts
-    /// differ from those `watches` gives it.
-    pub fn new(watches: Watches, run: Run, now: Instant, limit: Duration) -> Waiting {
+    /// A wait from `now`, timing out after `limit` if it has one, until a
+    /// pane's counts differ from those `watches` gives it.
+    pub fn new(watches: Watches, run: Run, now: Instant, limit: Option<Duration>) -> Waiting {
         Waiting::Change(Watch {
             watches,
             run,
-            deadline: after(now, limit),
-            limit,
+            deadline: limit.map(|limit| (after(now, limit), limit)),
         })
     }
 
@@ -71,7 +70,7 @@ impl Waiting {
     pub fn due(&self) -> Option<Instant> {
         match self {
             Waiting::Events(read) => Some(read.deadline),
-            Waiting::Change(watch) => Some(watch.deadline),
+            Waiting::Change(watch) => watch.deadline.map(|(at, _)| at),
             Waiting::Respawn { .. } => None,
         }
     }
@@ -97,10 +96,10 @@ impl Waiting {
 pub struct Watch {
     watches: Watches,
     run: Run,
-    deadline: Instant,
-    /// How long it waits for a change before it answers a timeout (later
-    /// while a pane is mid-frame), supplied by the request.
-    limit: Duration,
+    /// When it answers a timeout (later while a pane is mid-frame), and
+    /// after how long, as the request says; with none, it waits until
+    /// something changes.
+    deadline: Option<(Instant, Duration)>,
 }
 
 impl Watch {
@@ -118,15 +117,16 @@ impl Watch {
             .collect();
         let framing =
             (self.watches.all().iter()).any(|(id, _)| pane(id).is_some_and(Pane::mid_frame));
-        let told = match told.is_empty() {
-            false => told,
-            true if now >= self.deadline && !framing => (self.watches.all().iter())
+        let due = self.deadline.filter(|(at, _)| now >= *at && !framing);
+        let told = match (told.is_empty(), due) {
+            (false, _) => told,
+            (true, Some((_, limit))) => (self.watches.all().iter())
                 .map(|(id, since)| PaneAnswer::TimedOut {
                     since: self.version(*id, *since),
-                    limit: self.limit,
+                    limit,
                 })
                 .collect(),
-            true => return None,
+            (true, None) => return None,
         };
         let answers = match (&self.watches, told.as_slice()) {
             (Watches::Pane(_), [one]) => PaneResults::One(one.clone()),
@@ -201,7 +201,7 @@ mod tests {
             size,
             crate::pane::tests::options(0)?,
             Instant::now(),
-        )?);
+        )?)?;
         let (since, run) = (pane.counts(), Run::now().ok_or("a clock")?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(crate::pane::tests::spends_the_budget(50, 200));

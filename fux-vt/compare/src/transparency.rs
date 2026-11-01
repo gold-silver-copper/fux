@@ -44,7 +44,6 @@ use crate::engines::pane;
 use crate::snapshot::{self, Diff, Field, Line, Snapshot};
 use fux_server::render::{self, Grid};
 use fux_server::session::{Outgoing, Session};
-use fux_server::view::ClientKind;
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::{Placement, Rect};
 use fux_wire::protocol::ToAttached;
@@ -249,6 +248,10 @@ impl Through {
             PathBuf::from("/nonexistent/fux-vt-compare.sock"),
             false,
             fux_wire::command::Run::now().ok_or("the clock is before 1970")?,
+            fux::script::default_state()
+                .map_err(|e| e.to_string())?
+                .preferences
+                .journal_entries,
         );
         // The client attaching starts its first shell, on its screen.
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
@@ -258,7 +261,6 @@ impl Through {
             .preferences;
         let client = session
             .attach_as(
-                ClientKind::Terminal,
                 fux_wire::protocol::Attach {
                     initial: Some(fux_wire::command::InitialWorkspace {
                         options: preferences.pane_options(),
@@ -268,7 +270,6 @@ impl Through {
                             Vec::new(),
                         )?),
                         cwd: std::env::current_dir().map_err(|e| e.to_string())?,
-                        env: fux_wire::command::EnvPatch::default(),
                     }),
                     ..fux_wire::protocol::Attach::of(size, preferences.presentation())
                 },
@@ -375,7 +376,6 @@ impl Through {
     /// the grids swap. Paints are not spaced 16 ms apart, as the server
     /// spaces them: one is made at every point compared.
     pub fn paint(&mut self) -> Result<(), String> {
-        self.session.hold_copies();
         for outgoing in std::mem::take(&mut self.session.outbox) {
             match outgoing {
                 Outgoing::To(client, ToAttached::Paint(bytes)) if client == self.client => {

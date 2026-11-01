@@ -14,12 +14,12 @@ use fux_wire::command::{
     self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
     PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
 };
-use fux_wire::id::{BufferId, ClientId, Ids, PaneId, TabId, WsId};
+use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
 use fux_wire::json::{Fields, Json};
 use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
 use fux_wire::words::joined;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 mod inspect;
@@ -146,13 +146,11 @@ pub(crate) struct Spot {
 /// starts in: none in a tab with no host yet (`Session::graphics`).
 type Starts = (Size, Option<fux_vt::CellSize>);
 
-/// A pane to make: what it starts, where, what it takes of its starter,
-/// and how it starts (`Starts`).
+/// A pane to make: what it starts, where, and how it starts (`Starts`).
 #[derive(Clone, Copy)]
 struct NewPane<'a> {
     start: &'a Start,
     cwd: &'a Path,
-    env: &'a command::EnvPatch,
     size: Size,
     cell: Option<fux_vt::CellSize>,
     options: command::PaneOptions,
@@ -162,14 +160,12 @@ impl<'a> NewPane<'a> {
     fn new(
         start: &'a Start,
         cwd: &'a Path,
-        env: &'a command::EnvPatch,
         options: command::PaneOptions,
         (size, cell): Starts,
     ) -> Self {
         Self {
             start,
             cwd,
-            env,
             options,
             size,
             cell,
@@ -289,8 +285,6 @@ pub struct Session {
     /// them, which events read.
     pub parts: Parts,
     pub views: BTreeMap<ClientId, View>,
-    /// Paste buffers, newest first.
-    pub buffers: VecDeque<(BufferId, String)>,
     /// The socket a started pane is told to reach its server by, if panes
     /// start real processes; tests of the state alone start none.
     launch: Option<PathBuf>,
@@ -396,11 +390,15 @@ fn failure(error: Error, origin: &Origin, session: &Session) -> Reply {
 }
 
 impl Session {
-    pub fn new(socket: PathBuf, launch: bool, run: command::Run) -> Self {
+    pub fn new(
+        socket: PathBuf,
+        launch: bool,
+        run: command::Run,
+        journal: command::JournalEntries,
+    ) -> Self {
         Self {
-            parts: Parts::default(),
+            parts: Parts::new(journal),
             views: BTreeMap::new(),
-            buffers: VecDeque::new(),
             launch: launch.then_some(socket),
             exe: std::env::current_exe().ok(),
             run,
@@ -434,13 +432,7 @@ impl Session {
                 "the caller's own directory is unknown; give an absolute cwd",
             ));
         }
-        let new = NewPane::new(
-            &initial.start,
-            &initial.cwd,
-            &initial.env,
-            initial.options,
-            (size, None),
-        );
+        let new = NewPane::new(&initial.start, &initial.cwd, initial.options, (size, None));
         self.create_workspace(initial.name.clone(), None, Fit::Clients(size), new, now)
             .map(drop)
     }
@@ -567,11 +559,11 @@ impl Session {
         self.parts.pane_mut(id).ok_or(Error::NoPane(id))
     }
 
-    /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`
-    /// in cells of `cell`, if panes start real processes: told of its
-    /// server (`FUX_PANE`, `FUX_SOCKET`, `FUX_SERVER`, and `FUX`, the fux
-    /// running it, unset if it cannot be had). The saved environment patch
-    /// applies first, and the server supplies authoritative identity last.
+    /// Starts `launch` as pane `id`'s program, in its `cwd` at `size` in
+    /// cells of `cell`, if panes start real processes: in the server's
+    /// environment, told of its server (`FUX_PANE`, `FUX_SOCKET`,
+    /// `FUX_SERVER`, and `FUX`, the fux running it, unset if it cannot be
+    /// had).
     fn spawn(
         &self,
         id: PaneId,
@@ -582,31 +574,24 @@ impl Session {
         let Some(socket) = &self.launch else {
             return Ok(None);
         };
-        let (argv, env) = (launch.argv.argv(), launch.env.as_slice());
-        let mut vars: Vec<_> = env
-            .iter()
-            .filter_map(|(k, v)| v.as_ref().map(|v| (k.as_str(), v.clone())))
-            .collect();
-        vars.extend([
+        let mut vars: Vec<(&str, std::ffi::OsString)> = vec![
             ("FUX_PANE", format!("{id}:{generation}").into()),
             ("FUX_SOCKET", socket.as_os_str().to_owned()),
             ("FUX_SERVER", self.run.to_string().into()),
-        ]);
+        ];
         vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
         // No `FUX` to give: not one the server was started with either.
-        let unset: Vec<String> = env
-            .iter()
-            .filter(|(_, v)| v.is_none())
-            .map(|(k, _)| k.clone())
-            .chain(self.exe.is_none().then(|| "FUX".to_owned()))
-            .collect();
-        let child = process::spawn(&argv, &launch.cwd, (&vars, &unset), size)
+        let unset: &[&str] = match self.exe {
+            Some(_) => &[],
+            None => &["FUX"],
+        };
+        let child = process::spawn(&launch.argv.argv(), &launch.cwd, (&vars, unset), size)
             .map_err(|m| fail(Raise::Start, m))?;
         Ok(Some(child))
     }
 
     /// Starts the program pane `id` ran again in it: its words, or `argv`
-    /// if given, where it ran, with what it was given and `env` set; first
+    /// if given, where it ran; first
     /// hanging up the one there with `kill`, else refused while it runs.
     /// What the old program left is read before the new one takes its
     /// place, its exit told if one waits on that, in as many turns as that
@@ -617,7 +602,6 @@ impl Session {
         &mut self,
         id: PaneId,
         kill: bool,
-        env: &command::EnvPatch,
         argv: Option<&command::Program>,
         now: Instant,
     ) -> Result<Reply, Error> {
@@ -641,10 +625,6 @@ impl Session {
         if let Some(argv) = argv {
             launch.argv = argv.clone();
         }
-        launch
-            .env
-            .overlay(env)
-            .map_err(|why| fail(Raise::Start, why))?;
         // The program it starts is told its host's cell.
         let graphics = self.graphics(id);
         let size = (pane.size(), graphics.cell());
@@ -799,14 +779,6 @@ impl Session {
             return Err(Error::NameTaken(name.to_owned()));
         }
         no_tab_named(self.parts.workspaces(), name, except)
-    }
-
-    /// Whether a client is in copy mode on pane `pane`: keys typed there
-    /// go to copy mode, not the program.
-    pub(crate) fn copying(&self, pane: PaneId) -> bool {
-        self.views
-            .values()
-            .any(|v| matches!(&v.mode, Mode::Copy(copy) if copy.pane == pane))
     }
 
     /// What `id`, written `text`, stands for as a `kind`: itself; a pane's
@@ -1189,7 +1161,6 @@ impl Session {
         let launch = pane::Launch {
             argv: start.argv().clone(),
             cwd: new.cwd.to_path_buf(),
-            env: new.env.clone(),
         };
         let runs = match start {
             Start::Shell(..) => Runs::Shell(launch.clone()),
@@ -1220,14 +1191,12 @@ impl Session {
         let workspace = workspace.map_err(bad_value)?;
         let state = fux::script::default_state().map_err(|e| fail(Raise::Config, e.to_string()))?;
         self.attach_as(
-            ClientKind::Terminal,
             Attach {
                 initial: workspace.is_none().then(|| command::InitialWorkspace {
                     name: None,
                     start: command::Start::Shell(state.preferences.shell.clone()),
                     options: state.preferences.pane_options(),
                     cwd: std::env::current_dir().unwrap_or_default(),
-                    env: command::EnvPatch::default(),
                 }),
                 target: workspace.map(command::AttachTarget::Workspace),
                 ..Attach::of(size, state.preferences.presentation())
@@ -1236,27 +1205,17 @@ impl Session {
         )
     }
 
-    /// A client of `kind` attaches as `attach` says: one that only watches
-    /// is one from the start, and sizes nothing.
-    pub fn attach_as(
-        &mut self,
-        kind: ClientKind,
-        attach: Attach,
-        now: Instant,
-    ) -> Result<ClientId, Error> {
+    /// A client attaches as `attach` says: one that only watches is one
+    /// from the start, and sizes nothing.
+    pub fn attach_as(&mut self, attach: Attach, now: Instant) -> Result<ClientId, Error> {
         let client = self.ids.clone().client()?;
         let previous = self.parts.actor(fux_wire::events::Actor::Client(client));
-        let result = self.attach_checked(kind, attach, now);
+        let result = self.attach_checked(attach, now);
         self.parts.actor(previous);
         result
     }
 
-    fn attach_checked(
-        &mut self,
-        kind: ClientKind,
-        attach: Attach,
-        now: Instant,
-    ) -> Result<ClientId, Error> {
+    fn attach_checked(&mut self, attach: Attach, now: Instant) -> Result<ClientId, Error> {
         self.check_run(attach.of)?;
         if attach.initial.is_some() && (attach.target.is_some() || attach.read_only) {
             return Err(fail(
@@ -1330,7 +1289,11 @@ impl Session {
         };
         let id = self.ids.client()?;
         let mut view = View::new(id, rows, cols, attach.presentation);
-        (view.kind, view.read_only) = (kind, attach.read_only);
+        view.kind = match attach.headless {
+            true => ClientKind::Headless,
+            false => ClientKind::Terminal,
+        };
+        view.read_only = attach.read_only;
         self.views.insert(id, view);
         self.parts.attach(id);
         self.parts.show(id, ws, spot);
@@ -1509,7 +1472,6 @@ impl Session {
         self.host_panes();
         self.tell_schemes();
         self.tell_lost();
-        self.hold_copies();
     }
 
     /// Each pane whose program was told other graphics than its host's
@@ -1538,52 +1500,8 @@ impl Session {
         }
     }
 
-    /// Output and sizing a pane can drop rows of its history: a copy mode
-    /// whose rows went ends. They are looked for only if the screen changed
-    /// since they were last found. Every change to workspaces, tabs, panes
-    /// and views does this as it is made; output, which changes none of
-    /// them, leaves it to the server's loop.
-    pub fn hold_copies(&mut self) {
-        for view in self.views.values_mut() {
-            let Mode::Copy(copy) = &mut view.mode else {
-                continue;
-            };
-            let Some(pane) = self.parts.panes().get(&copy.pane) else {
-                continue;
-            };
-            let screen = pane.screen();
-            let same = copy.respawns == pane.respawns;
-            if same && copy.held_at.is_some_and(|at| !screen.changed_since(at)) {
-                continue;
-            }
-            if copy.resolve(pane).is_some() {
-                copy.held_at = Some(screen.mark());
-            } else {
-                view.mode = Mode::Normal;
-                view.notify(
-                    if same {
-                        "copy mode ended: the history dropped the rows it held"
-                    } else {
-                        "copy mode ended: its pane respawned"
-                    },
-                    true,
-                );
-                let ended = ToAttached::Ended(view.opening);
-                self.outbox.push(Outgoing::To(view.id, ended));
-                let id = pane.id();
-                let at = self.parts.locate(id).map(|at| (at, id));
-                self.parts.journal_mut().push(crate::journal::Event::View {
-                    client: view.id,
-                    at,
-                    change: crate::journal::ViewChange::Screen,
-                });
-            }
-        }
-    }
-
-    /// Ends what a view shows if what it is about is gone: copy mode whose
-    /// pane closed or is no longer focused, a chooser about a pane, tab or
-    /// workspace that closed. Which opening it ended, if it did, which
+    /// Ends what a view shows if what it is about is gone: a chooser about
+    /// a pane, tab or workspace that closed. Which opening it ended, if it did, which
     /// its client is told (`ToAttached::Ended`), the mode being the client's.
     /// Forgets remembered places that closed or that a close made current.
     fn repair(&self, view: &mut View) -> Option<u64> {
@@ -1595,20 +1513,11 @@ impl Session {
         view.last_workspace = view
             .last_workspace
             .filter(|id| self.workspace(*id).is_some() && place.is_none_or(|at| at.ws != *id));
-        let focus = self.focused(view.id);
-        // Copy mode's rows are looked for once the panes are sized
-        // (`hold_copies`).
         let gone = match &view.mode {
-            Mode::Copy(copy) if !self.parts.panes().contains_key(&copy.pane) => {
-                "copy mode ended: its pane closed".to_owned()
-            }
-            Mode::Copy(copy) if Some(copy.pane) != focus => {
-                "copy mode ended: its pane is no longer focused".to_owned()
-            }
             Mode::Panel(Panel::List(List {
                 about: Some(about), ..
             })) if self.there(*about).is_err() => format!("closed: {} is gone", about),
-            Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return None,
+            Mode::Normal | Mode::Panel(_) => return None,
         };
         view.mode = Mode::Normal;
         view.notify(gone, true);
@@ -2072,25 +1981,13 @@ impl Session {
         // Program copies go to viewers of the tab, including zoomed views
         // and watchers, when this pane permits them. Invalid copies are
         // counted and reported.
-        let generation = pane.respawns;
         let (bell, copies) = pane.take_read();
         let changed_label = labelled.filter(|(was, _)| was != &*pane.label());
         if bell {
             self.ring(id, now);
         }
-        if !copies.is_empty() {
-            let previous = self
-                .parts
-                .actor(fux_wire::events::Actor::Program(id, generation));
-            for text in copies {
-                if let Err(why) = self.copied(text, Some(id), &viewers) {
-                    log!("{id}: copy refused: {why}");
-                    for &client in &viewers {
-                        self.notify_to(client, why.to_string(), true);
-                    }
-                }
-            }
-            self.parts.actor(previous);
+        for text in copies {
+            self.copied(&text, &viewers);
         }
         for view in self.views.values_mut() {
             if viewers.contains(&view.id)
@@ -2147,16 +2044,9 @@ impl Session {
         true
     }
 
-    /// `text`, copied, goes to the paste buffers and to each client in `to`
-    /// whose terminal delivery is on (OSC 52). An exhausted id counter
-    /// refuses the copy.
-    pub(crate) fn copied(
-        &mut self,
-        text: String,
-        pane: Option<PaneId>,
-        to: &[ClientId],
-    ) -> Result<(), Error> {
-        let id = self.ids.buffer(self.run)?;
+    /// `text`, copied, goes to each client in `to` whose terminal delivery
+    /// is on (OSC 52), and is kept nowhere.
+    pub(crate) fn copied(&mut self, text: &str, to: &[ClientId]) {
         let views = &self.views;
         let mut recipients = to
             .iter()
@@ -2167,7 +2057,7 @@ impl Session {
                     .is_some_and(|v| v.presentation.terminal_clipboard)
             })
             .peekable();
-        // Encoded once, before the text moves into the buffers.
+        // Encoded once, for every recipient.
         if recipients.peek().is_some() {
             let encoded = fux_wire::json::base64(text.as_bytes());
             let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
@@ -2176,23 +2066,6 @@ impl Session {
                     .map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
             );
         }
-        let at = pane.and_then(|p| self.locate(p).map(|at| (at, p)));
-        self.buffers.push_front((id, text));
-        self.parts
-            .journal_mut()
-            .push(crate::journal::Event::Copied { buffer: id, at });
-        self.buffers.truncate(BUFFER_LIMIT);
-        Ok(())
-    }
-
-    fn buffer(&self, buffer: command::Buffer) -> Result<&str, Error> {
-        let found = match buffer {
-            command::Buffer::Newest => self.buffers.front(),
-            command::Buffer::Id(id) => self.buffers.iter().find(|(held, _)| *held == id),
-        };
-        found
-            .map(|(_, text)| text.as_str())
-            .ok_or(Error::NoBuffer(buffer))
     }
 
     /// Everything the server shuts down: every pane is hung up.
@@ -2274,7 +2147,7 @@ impl Session {
         {
             return Err(fail(Raise::NoPane, "it holds no pane to wait on"));
         }
-        let limit = wait.timeout.duration();
+        let limit = wait.timeout.map(command::Limit::duration);
         Ok(self.answered(Waiting::new(watches, self.run, now, limit), now))
     }
 
@@ -2427,12 +2300,11 @@ impl Session {
                 name,
                 size,
                 cwd,
-                env,
                 start,
                 options,
             } => {
                 let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here)?;
-                let new = NewPane::new(start, &cwd, env, *options, sized);
+                let new = NewPane::new(start, &cwd, *options, sized);
                 let made = self.create_workspace(name.clone(), None, fit, new, now)?;
                 self.follow(here, made.ws, None);
                 Ok(acted(self.pane(made.pane)?.version(self.run)))
@@ -2442,7 +2314,6 @@ impl Session {
                 name,
                 size,
                 cwd,
-                env,
                 start,
                 options,
             } => {
@@ -2450,7 +2321,7 @@ impl Session {
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
-                let new = NewPane::new(start, &cwd, env, *options, sized);
+                let new = NewPane::new(start, &cwd, *options, sized);
                 // A workspace named that is not there is made, its first tab
                 // this one.
                 let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new, now)?;
@@ -2464,9 +2335,8 @@ impl Session {
             &Command::Respawn {
                 target,
                 kill,
-                ref env,
                 ref argv,
-            } => self.respawn(target, kill, env, argv.as_ref(), now),
+            } => self.respawn(target, kill, argv.as_ref(), now),
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
@@ -2510,13 +2380,12 @@ impl Session {
                 target,
                 ref start,
                 ref cwd,
-                ref env,
                 shares,
                 options,
             } => self.split(
                 target,
                 (axis, shares),
-                (start, env, options),
+                (start, options),
                 cwd.as_deref(),
                 origin,
                 now,
@@ -2564,8 +2433,7 @@ impl Session {
                         format!("{target}: {}", pane::UNMARKED),
                     ));
                 }
-                let copying = self.copying(pane.id());
-                let captured = crate::capture::pane(pane, self.run, history, view, copying)?;
+                let captured = crate::capture::pane(pane, self.run, history, view)?;
                 Ok(Body::Capture(Box::new(captured)).into())
             }
             &Command::Reorder { ref target, toward } => {
@@ -2594,28 +2462,6 @@ impl Session {
                     }
                 };
                 Ok(Body::Handles(ids).into())
-            }
-            &Command::ListBuffers => {
-                let metadata = |(id, text): &(BufferId, String)| {
-                    let preview: String = (text.chars())
-                        .map(|c| if c.is_control() { ' ' } else { c })
-                        .take(PREVIEW_MAX)
-                        .collect();
-                    Json::object(vec![
-                        ("id", Json::str(id.to_string())),
-                        ("bytes", Json::count(text.len())),
-                        ("preview", Json::str(preview)),
-                    ])
-                };
-                let list = self.buffers.iter().map(metadata).collect();
-                Ok(Body::Field(Json::Array(list)).into())
-            }
-            &Command::ShowBuffer { buffer } => self
-                .buffer(buffer)
-                .map(|text| Body::Field(Json::str(text)).into()),
-            &Command::PasteBuffer { buffer, target } => {
-                let paste = Input::Paste(self.buffer(buffer)?.to_owned());
-                self.send_keys(command::To::Now(AnyRef::Pane(target)), &[paste])
             }
             &Command::Client { client, ref action } => self.client(client, action, here, now),
         }
@@ -2648,7 +2494,7 @@ impl Session {
                 let pane = pane.map_or_else(String::new, |p| format!(" {p},"));
                 let message = format!(
                     "this runs in{pane} a pane of the server it would stop, with everything \
-                     else in it; force-kill-server stops it anyway"
+                     else in it; `kill` on status's server_pid stops it anyway"
                 );
                 return Err(fail(Raise::OwnServer, message));
             }
@@ -2660,8 +2506,9 @@ impl Session {
                     1 => "a person is".to_owned(),
                     n => format!("{n} people are"),
                 };
-                let message =
-                    format!("{who} attached to this server; force-kill-server stops it anyway");
+                let message = format!(
+                    "{who} attached to this server; `kill` on status's server_pid stops it anyway"
+                );
                 return Err(fail(Raise::PeopleAttached, message));
             }
         }
@@ -2806,7 +2653,7 @@ impl Session {
         &mut self,
         target: PaneId,
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
-        (start, env, options): (&Start, &command::EnvPatch, command::PaneOptions),
+        (start, options): (&Start, command::PaneOptions),
         dir: Option<&Path>,
         origin: &Origin,
         now: Instant,
@@ -2827,13 +2674,7 @@ impl Session {
         // nothing can then leave running.
         let (split, size) = self.split_size(target, (axis, shares), &followers)?;
         let mut ids = self.ids.clone();
-        let new = NewPane::new(
-            start,
-            &cwd,
-            env,
-            options,
-            (size, self.graphics(target).cell()),
-        );
+        let new = NewPane::new(start, &cwd, options, (size, self.graphics(target).cell()));
         let pane = self.new_pane(&mut ids, new, now)?;
         let new = pane.id();
         if let Err(pane) = self.parts.split(pane, split) {
@@ -3193,7 +3034,7 @@ impl Session {
         ];
         let mut fields = Vec::with_capacity(values.len());
         fields.extend(values);
-        fields.extend(crate::capture::state(p, self.copying(p.id()))?);
+        fields.extend(crate::capture::state(p)?);
         Ok(fields)
     }
 
@@ -3302,12 +3143,6 @@ fn left_turn(mut read: impl FnMut(&mut [u8]) -> Result<usize, fuxix::Errno>) -> 
         }
     }
 }
-
-/// The fixed number of shared paste buffers retained.
-pub const BUFFER_LIMIT: usize = 16;
-
-/// Characters kept in a paste buffer's metadata preview.
-pub const PREVIEW_MAX: usize = 50;
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
@@ -3567,13 +3402,9 @@ pub(crate) mod testing {
         }
         pub(crate) fn attach_client(
             &mut self,
-            kind: crate::view::ClientKind,
             attach: fux_wire::protocol::Attach,
         ) -> Result<ClientId, super::Error> {
-            self.attach_as(kind, attach, Instant::now())
-        }
-        pub(crate) fn close_now(&mut self, id: fux_wire::id::PaneId, why: Option<String>) {
-            self.close_pane(id, why, Instant::now())
+            self.attach_as(attach, Instant::now())
         }
         pub(crate) fn begin_now(
             &mut self,
@@ -3604,7 +3435,11 @@ pub(crate) mod testing {
         static RUN: std::sync::OnceLock<Option<fux_wire::command::Run>> =
             std::sync::OnceLock::new();
         let run = (*RUN.get_or_init(fux_wire::command::Run::now)).ok_or("no clock")?;
-        let mut session = Session::new("/nonexistent/fux.sock".into(), false, run);
+        let journal = fux::script::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences
+            .journal_entries;
+        let mut session = Session::new("/nonexistent/fux.sock".into(), false, run, journal);
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
         let initial = fux_wire::command::InitialWorkspace {
             options: fux::script::default_state()
@@ -3617,7 +3452,6 @@ pub(crate) mod testing {
                 Vec::new(),
             )?),
             cwd: std::env::current_dir().map_err(|e| e.to_string())?,
-            env: fux_wire::command::EnvPatch::default(),
         };
         session
             .start_now(size, &initial)
@@ -3715,7 +3549,7 @@ pub(crate) mod testing {
     }
 
     /// What the server sent clients, taken as their clients take it: a
-    /// program to run, keys typed, copy mode ended. The rest is left.
+    /// program to run, keys typed, a screen ended. The rest is left.
     pub(crate) fn deliver(session: &mut Session) {
         use fux_wire::protocol::ToAttached;
         let outbox = std::mem::take(&mut session.outbox);
@@ -4324,10 +4158,7 @@ mod tests {
                 }
             }
             if let Some(recipe) = snapshot.panes.first_mut().and_then(|p| p.recipe.as_mut()) {
-                recipe.env.push((
-                    "RAW".into(),
-                    Some(fux_wire::inspect::Path::Bytes(vec![255; 70_000])),
-                ));
+                recipe.initial_cwd = fux_wire::inspect::Path::Bytes(vec![255; 70_000]);
             }
             let bytes = fux_wire::wire::encode(&*snapshot);
             assert_eq!(
@@ -4511,8 +4342,7 @@ mod tests {
                     .presentation(),
             )
         };
-        s.attach_client(ClientKind::Terminal, attach)
-            .map_err(|e| e.to_string())
+        s.attach_client(attach).map_err(|e| e.to_string())
     }
 
     #[test]
@@ -4872,14 +4702,12 @@ mod tests {
             (T::Pane(PaneId::of(2)), PaneId::of(2)),
             (T::Workspace(WsRef::Name("second".into())), PaneId::of(3)),
         ] {
-            let client = s.attach_client(
-                ClientKind::Headless,
-                Attach {
-                    of: Some(s.run),
-                    target: Some(target),
-                    ..Attach::of(sized(24, 80)?, presentation.clone())
-                },
-            )?;
+            let client = s.attach_client(Attach {
+                of: Some(s.run),
+                headless: true,
+                target: Some(target),
+                ..Attach::of(sized(24, 80)?, presentation.clone())
+            })?;
             assert_eq!(s.focused(client), Some(pane));
             s.detach_client(client);
         }
@@ -4895,14 +4723,12 @@ mod tests {
             ),
         ] {
             assert!(
-                s.attach_client(
-                    ClientKind::Headless,
-                    Attach {
-                        of,
-                        target: Some(target),
-                        ..Attach::of(sized(24, 80)?, presentation.clone())
-                    }
-                )
+                s.attach_client(Attach {
+                    of,
+                    headless: true,
+                    target: Some(target),
+                    ..Attach::of(sized(24, 80)?, presentation.clone())
+                })
                 .is_err()
             );
             assert_eq!(s.ids, ids);
@@ -4917,6 +4743,7 @@ mod tests {
             "/nonexistent/fux.sock".into(),
             false,
             command::Run::now().ok_or("clock")?,
+            fux::script::default_state()?.preferences.journal_entries,
         );
         let size = sized(24, 80)?;
         let presentation = fux::script::default_state()?.preferences.presentation();
@@ -4925,10 +4752,12 @@ mod tests {
             name: None,
             start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
             cwd: "relative".into(),
-            env: command::EnvPatch::default(),
         };
         let ids = s.ids.clone();
-        let refused = s.attach_client(ClientKind::Headless, Attach::of(size, presentation.clone()));
+        let refused = s.attach_client(Attach {
+            headless: true,
+            ..Attach::of(size, presentation.clone())
+        });
         assert!(refused.is_err_and(|why| why.code() == Code::Start));
         for attach in [
             Attach {
@@ -4947,7 +4776,7 @@ mod tests {
                 ..Attach::of(size, presentation.clone())
             },
         ] {
-            assert!(s.attach_client(ClientKind::Terminal, attach).is_err());
+            assert!(s.attach_client(attach).is_err());
             assert_eq!(s.ids, ids);
             assert!(s.views.is_empty() && s.parts.panes().is_empty());
         }
@@ -4988,7 +4817,6 @@ mod tests {
                 vec!["-c".into(), "[ -z \"${FUX+x}\" ]".into()],
             )?,
             cwd: "/".into(),
-            env: command::EnvPatch::default(),
         };
         let child = s
             .spawn(PaneId::of(2), 0, &launch, (sized(24, 80)?, None))?
@@ -5065,123 +4893,15 @@ mod tests {
     }
 
     #[test]
-    fn buffer_reads_keep_every_byte() -> TestResult {
-        let mut s = started()?;
-        for text in ["hello\n\n", "", "\n", "a\r\n\0界\n"] {
-            s.copied(text.into(), None, &[])?;
-            assert_eq!(
-                output(&mut s, "newest buffer len")?,
-                format!("{}\n", text.chars().count())
-            );
-            assert_eq!(output(&mut s, "newest buffer")?, format!("{text}\n"));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn buffer_ids_survive_copies_and_refuse_after_eviction() -> TestResult {
-        let mut s = started()?;
-        s.copied("chosen\n\n".into(), None, &[])?;
-        let id = s.buffers.front().ok_or("no copy")?.0;
-        // An unsolicited program copy also shifts the ring.
-        s.out(PaneId::of(1), b"\x1b]52;c;bmV3\x07");
-        assert_eq!(output(&mut s, &format!("str {id} buffer"))?, "chosen\n\n\n");
-        assert_eq!(output(&mut s, "newest buffer")?, "new\n");
-        run(&mut s, &format!("%1 str {id} paste-buffer drop"))?;
-        assert_eq!(
-            s.parts
-                .pane_mut(PaneId::of(1))
-                .ok_or("no pane")?
-                .drain_input(),
-            b"chosen\r\r"
-        );
-        for _ in 0..16 {
-            s.copied("later".into(), None, &[])?;
-        }
-        assert_eq!(s.buffers.len(), 16);
-        for code in [
-            format!("str {id} buffer"),
-            format!("%1 str {id} paste-buffer"),
-        ] {
-            assert!(run(&mut s, &code).is_err_and(|e| e.starts_with("no_buffer:")));
-        }
-        assert!(
-            s.parts
-                .pane_mut(PaneId::of(1))
-                .ok_or("no pane")?
-                .drain_input()
-                .is_empty()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn buffer_ids_belong_to_one_server_run() -> TestResult {
-        let mut s = started()?;
-        s.copied("old".into(), None, &[])?;
-        let id = s.buffers.front().ok_or("no copy")?.0;
-        let mut other = started()?;
-        other.run = "0-0".parse().map_err(|()| "a run")?;
-        other.copied("new".into(), None, &[])?;
-        for code in [
-            format!("str {id} buffer"),
-            format!("%1 str {id} paste-buffer"),
-        ] {
-            assert!(
-                run(&mut other, &code)
-                    .is_err_and(|e| e.starts_with("bad_value:") && e.contains("server run"))
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn buffer_metadata_is_bounded_and_has_the_exact_length() -> TestResult {
-        let mut s = started()?;
-        let text = std::iter::repeat_n("界\n", 100).collect::<String>();
-        s.copied(text.clone(), None, &[])?;
-        let id = s.buffers.front().ok_or("no copy")?.0;
-        let expected = Json::Array(vec![Json::object(vec![
-            ("id", Json::str(id.to_string())),
-            ("bytes", Json::count(text.len())),
-            (
-                "preview",
-                Json::str(std::iter::repeat_n("界 ", 25).collect::<String>()),
-            ),
-        ])]);
-        assert_eq!(
-            output(&mut s, "buffers json")?,
-            format!("{}\n", expected.render())
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn buffer_id_exhaustion_copies_nothing() -> TestResult {
-        let (mut s, c) = attached(24, 80)?;
-        s.copied("kept".into(), None, &[])?;
-        let before = s.buffers.clone();
-        s.outbox.clear();
-        s.ids.exhaust_buffers();
-        assert!(
-            s.copied("refused".into(), None, &[c])
-                .is_err_and(|e| e.code() == Code::IdsExhausted)
-        );
-        assert_eq!(s.buffers, before);
-        assert!(s.outbox.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn a_buffer_paste_goes_in_whole_as_one_native_paste() -> TestResult {
+    fn a_paste_goes_in_whole_as_one_native_paste() -> TestResult {
         let mut s = started()?;
         s.out(PaneId::of(1), b"\x1b[?2004h");
         let text = format!(
             "{}\n\n",
             std::iter::repeat_n('x', 2 << 20).collect::<String>()
         );
-        s.copied(text.clone(), None, &[])?;
-        run(&mut s, "%1 newest paste-buffer drop")?;
+        let to = command::To::Now(AnyRef::Pane(PaneId::of(1)));
+        s.send_keys(to, &[Input::Paste(text.clone())])?;
         let queued = s
             .parts
             .pane_mut(PaneId::of(1))
@@ -5197,8 +4917,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "agent-opts 80 24 size str /bin/cat program new-tab")?;
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
-        s.copied("x".into(), None, &[])?;
-        let pasted = run(&mut s, "%2 newest paste-buffer");
+        let pasted = run(&mut s, "%2 str x paste send-keys");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
         Ok(())
     }
@@ -5349,7 +5068,6 @@ mod tests {
                 let runs = Runs::Explicit(pane::Launch {
                     argv: command::Program::new("/bin/sh".into(), Vec::new())?,
                     cwd: "/".into(),
-                    env: command::EnvPatch::default(),
                 });
                 let fresh = Pane::new(
                     id,
@@ -5428,10 +5146,13 @@ mod tests {
     fn a_frame_a_resize_reads_is_read_whole() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         let id = PaneId::of(1);
+        let copied = |s: &Session| {
+            (s.outbox.iter()).any(|o| matches!(o, Outgoing::To(to, ToAttached::Paint(b)) if *to == c && **b == *b"\x1b]52;c;aGk=\x07"))
+        };
         s.out(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07");
-        assert!(s.buffers.is_empty(), "held");
+        assert!(!copied(&s), "held");
         s.size_client(c, 30, 100)?;
-        assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("hi"));
+        assert!(copied(&s));
         assert!(!s.pane(id)?.bell, "rung");
         Ok(())
     }
@@ -5492,7 +5213,6 @@ mod tests {
             name: None,
             size: None,
             cwd: Some("/".into()),
-            env: fux_wire::command::EnvPatch::default(),
         };
         s.execute(&new_tab, &Origin::Cli(caller), Instant::now())?;
         let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
@@ -5610,7 +5330,6 @@ mod tests {
         Ok(Request::Do(Command::Respawn {
             target: id,
             kill: true,
-            env: command::EnvPatch::default(),
             argv: match argv.split_first() {
                 Some((p, args)) => Some(command::Program::new(
                     (*p).into(),
@@ -5884,7 +5603,6 @@ mod tests {
             let respawn = Request::Do(Command::Respawn {
                 target: id,
                 kill,
-                env: command::EnvPatch::default(),
                 argv: None,
             });
             let Begun::Waiting(mut waiting) = s.begin_now(respawn, &Origin::Cli(Caller::default()))
@@ -5997,13 +5715,7 @@ mod tests {
         s.input(c, b"\x1b[6;20;10t");
         let id = PaneId::of(2);
         s.launch = Some("/nonexistent/fux.sock".into());
-        (s.respawn(
-            id,
-            false,
-            &command::EnvPatch::default(),
-            None,
-            Instant::now(),
-        ))?;
+        (s.respawn(id, false, None, Instant::now()))?;
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let size = pane.size();
         let child = pane.set_process(Process::Absent);
@@ -6487,7 +6199,7 @@ mod tests {
 
     #[test]
     fn history_budget_only_changes_its_target() -> TestResult {
-        let (mut s, client) = attached(5, 20)?;
+        let (mut s, _) = attached(5, 20)?;
         s.out(
             PaneId::of(1),
             std::iter::repeat_n("line\r\n", 50)
@@ -6506,45 +6218,31 @@ mod tests {
         let other = s.pane(PaneId::of(2))?.history_bytes();
         run(&mut s, "str history-bytes 0 set")?;
         assert!(history(&s) > Some(2));
-        run(&mut s, "str c1 client %1 show str c1 client copy-mode")?;
-        s.input(client, b"t");
-        assert!(
-            s.views
-                .get(&client)
-                .is_some_and(|v| matches!(v.mode, Mode::Copy(_)))
-        );
         run(&mut s, "%1 112 history-budget")?;
-        assert!(
-            s.views
-                .get(&client)
-                .is_some_and(|v| matches!(v.mode, Mode::Normal))
-        );
-        assert!(
-            s.views
-                .get(&client)
-                .and_then(|v| v.notice.as_ref())
-                .is_some_and(|n| n.text.contains("dropped the rows"))
-        );
         assert_eq!(s.pane(PaneId::of(2))?.history_bytes(), other);
         assert_eq!(history(&s), Some(2));
         Ok(())
     }
 
     #[test]
-    fn a_programs_clipboard_write_is_a_copy() -> TestResult {
+    fn a_programs_clipboard_write_reaches_the_terminals() -> TestResult {
         let (mut s, client) = attached(5, 20)?;
         s.outbox.clear();
         s.out(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
-        assert_eq!(
-            s.buffers.front().map(|(_, text)| text.as_str()),
-            Some("foo")
-        );
-        let sent = |s: &Session| {
-            s.outbox
-                .iter()
-                .any(|o| matches!(o, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
+        let copies = |s: &Session| {
+            (s.outbox.iter())
+                .filter_map(|o| match o {
+                    Outgoing::To(c, ToAttached::Paint(b))
+                        if *c == client && b.starts_with(b"\x1b]52;c;") =>
+                    {
+                        Some(b.to_vec())
+                    }
+                    Outgoing::To(..) | Outgoing::Shutdown(_) => None,
+                })
+                .collect::<Vec<_>>()
         };
-        assert!(sent(&s));
+        assert_eq!(copies(&s), [b"\x1b]52;c;Zm9v\x07"]);
+        s.outbox.clear();
         // One longer than fux-vt keeps of a string copies nothing, said.
         let long = format!(
             "\x1b]52;c;{}\x07",
@@ -6557,10 +6255,7 @@ mod tests {
         }
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.error && n.text.contains("copies (OSC 52) not made (1)")));
-        assert_eq!(
-            s.buffers.front().map(|(_, text)| text.as_str()),
-            Some("foo")
-        );
+        assert!(copies(&s).is_empty());
         // In one read: each copy made, in order, and the refusal between them told.
         if let Some(view) = s.views.get_mut(&client) {
             view.notice = None;
@@ -6569,13 +6264,7 @@ mod tests {
             PaneId::of(1),
             b"\x1b]52;c;YQ==\x07\x1b]52;c;***\x07\x1b]52;c;Yg==\x07",
         );
-        let buffers: Vec<&str> = s
-            .buffers
-            .iter()
-            .take(3)
-            .map(|(_, text)| text.as_str())
-            .collect();
-        assert_eq!(buffers, ["b", "a", "foo"]);
+        assert_eq!(copies(&s), [b"\x1b]52;c;YQ==\x07", b"\x1b]52;c;Yg==\x07"]);
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
         // One in a tab no client shows is told once one does.
@@ -6602,8 +6291,7 @@ mod tests {
         )?;
         s.outbox.clear();
         s.out(PaneId::of(3), b"\x1b]52;c;YmFy\x07");
-        assert!(!sent(&s) && s.outbox.is_empty());
-        assert_eq!(s.buffers.front().map(|(_, text)| text.as_str()), Some("b"));
+        assert!(s.outbox.is_empty());
         Ok(())
     }
 
@@ -6656,10 +6344,7 @@ mod tests {
             cell_placement: false,
             ..fux::script::default_state()?.preferences.presentation()
         };
-        let client = s.attach_client(
-            ClientKind::Terminal,
-            Attach::of(sized(8, 40)?, presentation.clone()),
-        )?;
+        let client = s.attach_client(Attach::of(sized(8, 40)?, presentation.clone()))?;
         assert_eq!(
             s.views.get(&client).map(|v| v.presentation.clone()),
             Some(presentation)
@@ -6768,7 +6453,6 @@ mod tests {
         }
         s.outbox.clear();
         s.out(PaneId::of(1), b"\x1b]52;c;Zm9v\x07");
-        assert_eq!(s.buffers.len(), 1);
         let copies = |s: &Session| {
             s.outbox
                 .iter()
@@ -6783,14 +6467,12 @@ mod tests {
         assert_eq!(copies(&s), [b]);
         s.outbox.clear();
         s.out(PaneId::of(2), b"\x1b]52;c;YmFy\x07");
-        assert_eq!(s.buffers.len(), 1);
         assert!(copies(&s).is_empty());
-        // Manual copying always stores; it targets only the copying client.
-        s.copied("manual".into(), None, &[a])?;
-        assert_eq!(s.buffers.len(), 2);
+        // A copy goes only to a client whose terminal delivery is on.
+        s.copied("manual", &[a]);
         assert!(copies(&s).is_empty());
         s.apply(a, vec![Act::Presentation(presentation)]);
-        s.copied("mine".into(), None, &[a])?;
+        s.copied("mine", &[a]);
         assert_eq!(copies(&s), [a]);
         Ok(())
     }
@@ -6830,7 +6512,8 @@ mod tests {
     #[test]
     fn a_pane_is_made_only_at_a_size_known() -> TestResult {
         let run_id = fux_wire::command::Run::now().ok_or("no clock")?;
-        let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id);
+        let journal = fux::script::default_state()?.preferences.journal_entries;
+        let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id, journal);
         s.test_keymap = fux::script::default_state()?.draft();
         let refused = run(&mut s, "opts new-workspace").err().unwrap_or_default();
         assert!(
@@ -6954,7 +6637,7 @@ mod tests {
         let mut s = started()?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         let origin = Origin::Cli(Caller::default());
-        let timeout = command::Limit::read(30)?;
+        let timeout = Some(command::Limit::read(30)?);
         let wait = |target| {
             Request::Wait(command::Wait {
                 since: command::Since::Now(target),
@@ -7143,7 +6826,7 @@ mod tests {
         s.out(PaneId::of(1), &frame);
         let wait = Request::Wait(command::Wait {
             since: command::Since::Version(since),
-            timeout: command::Limit::read(0)?,
+            timeout: Some(command::Limit::read(0)?),
         });
         let Begun::Waiting(mut waiting) = s.begin_now(wait, &Origin::Cli(Caller::default())) else {
             return Err("a wait mid-frame answered at once".into());
@@ -7274,83 +6957,6 @@ mod tests {
             dirty(&s, one) && dirty(&s, two),
             "a bound split repaints every client"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn a_copy_selection_cannot_cross_a_respawn() -> TestResult {
-        use fux_wire::act::{Act, CopyAct, ScreenAct};
-        let (mut s, c) = attached(24, 80)?;
-        output_as(
-            &mut s,
-            Some(c),
-            "agent-opts str /bin/cat program str / cwd new-tab drop",
-        )?;
-        let pane = s.focused(c).ok_or("pane")?;
-        s.out(pane, b"old text");
-        s.input(c, b"\x02cv");
-        let view = s.views.get(&c).ok_or("view")?;
-        let opening = view.opening;
-        let Mode::Copy(copy) = &view.mode else {
-            return Err("copy mode".into());
-        };
-        let row = copy.cursor.0;
-        assert!(copy.selection.is_some());
-        run(&mut s, &format!("{pane} kill-first respawn"))?;
-        s.out(pane, b"new text");
-        assert!(
-            s.parts
-                .panes()
-                .get(&pane)
-                .ok_or("pane")?
-                .screen()
-                .row_by_id(row)
-                .is_some()
-        );
-        let view = s.views.get(&c).ok_or("view")?;
-        assert!(view.mode.is_normal());
-        assert!(
-            view.notice
-                .as_ref()
-                .is_some_and(|n| n.text.contains("respawned"))
-        );
-        s.apply(
-            c,
-            vec![Act::Screen {
-                opening,
-                act: ScreenAct::Copy(CopyAct::Yank),
-            }],
-        );
-        assert!(
-            s.buffers.is_empty(),
-            "the old selection cannot copy replacement text"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn copy_mode_ends_when_its_retained_rows_disappear() -> TestResult {
-        for resize in [false, true] {
-            let mut s = started()?;
-            run(&mut s, "%1 64 history-budget")?;
-            let client = s.attach(6, 20, None)?;
-            s.out(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
-            run(&mut s, "str c1 client copy-mode")?;
-            s.input(client, b"g");
-            if resize {
-                s.size_client(client, 3, 20)?;
-            } else {
-                s.out(PaneId::of(1), b"g\r\nh\r\ni\r\nj\r\n");
-                s.hold_copies();
-            }
-            let view = s.views.get(&client).ok_or("the view")?;
-            assert!(view.mode.is_normal());
-            assert!(
-                view.notice
-                    .as_ref()
-                    .is_some_and(|n| n.text.contains("dropped the rows"))
-            );
-        }
         Ok(())
     }
 
@@ -7504,12 +7110,6 @@ mod tests {
                 "opts",
                 "list str sh end shell-program",
                 "str cat program",
-                "new-tab",
-            ),
-            (
-                "opts",
-                "list end copy-environment",
-                "list end copy-environment",
                 "new-tab",
             ),
             ("opts", "0 history-bytes", "1 history-bytes", "new-tab"),
@@ -7826,8 +7426,6 @@ mod tests {
             assert!(option.contains("(use: a capture option, PANE "), "{option}");
             assert!(option.contains(&format!("; e.g. {shown})")), "{option}");
         }
-        let env = failed(&mut s, "opts str 1bad str v env new-tab");
-        assert!(env.contains("not first a digit"), "{env}");
         let split = failed(&mut s, "str 'two\nlines' fail");
         assert!(split.ends_with(r"two\nlines"), "{split}");
         let version = failed(&mut s, "str 1.2.3 changed wait");
@@ -7965,9 +7563,8 @@ mod tests {
         run(
             &mut source,
             &format!(
-                "opts str new-workspace in 150 40 size str {} cwd str DATA str {} env str OLD unset-env str /bin/cat program str '' arg str {} arg new-tab drop",
+                "opts str new-workspace in 150 40 size str {} cwd str /bin/cat program str '' arg str {} arg new-tab drop",
                 fux_wire::words::quote(&directory),
-                fux_wire::words::quote(value),
                 fux_wire::words::quote(value)
             ),
         )?;
@@ -8122,7 +7719,6 @@ mod tests {
             name: None,
             size: Some(fux_wire::command::Screen::new(24, 80)?),
             cwd: Some(dir.clone()),
-            env: fux_wire::command::EnvPatch::default(),
             start: command::Start::Program(command::Program::new("cat".into(), Vec::new())?),
             options: fux::script::default_state()?.preferences.pane_options(),
         };
@@ -8595,7 +8191,6 @@ mod journal_tests {
         let replacement = Command::Respawn {
             target: id,
             kill: false,
-            env: command::EnvPatch::default(),
             argv: None,
         };
         let begun = s.begin(
@@ -8642,38 +8237,6 @@ mod journal_tests {
         assert_eq!(s.parts.journal().current_actor(), Actor::Server);
         Ok(())
     }
-
-    #[test]
-    fn copies_reference_only_the_admitted_stable_buffer() -> TestResult {
-        let mut s = started()?;
-        let from = s.parts.journal().end(s.run);
-        s.output(PaneId::of(1), b"\x1b]52;c;aGVsbG8=\x07", Instant::now());
-        let buffer = s.buffers.front().ok_or("buffer")?.0;
-        let b = batch(&s, from)?;
-        let copies = named(&b, "copied");
-        assert_eq!(copies.len(), 1);
-        let copied = copies.first().ok_or("copy event")?;
-        assert_eq!(
-            copied.data.get("buffer"),
-            Some(&Json::str(buffer.to_string()))
-        );
-        assert!(copied.data.get("text").is_none());
-        assert_eq!(copied.origin, Actor::Program(PaneId::of(1), 0));
-        assert_eq!(
-            output(&mut s, &format!("str {from} 0 1 copy-notices"))?,
-            format!("{}\n", b.next)
-        );
-        run(
-            &mut s,
-            "agent-opts 80 24 size false program-clipboard str /bin/cat program new-tab drop",
-        )?;
-        let from = s.parts.journal().end(s.run);
-        s.output(PaneId::of(2), b"\x1b]52;c;bm8=\x07", Instant::now());
-        assert!(named(&batch(&s, from)?, "copied").is_empty());
-        assert_eq!(s.buffers.front().map(|(id, _)| *id), Some(buffer));
-        Ok(())
-    }
-
     #[test]
     fn library_streams_checkpoint_and_fail_before_effects_on_loss() -> TestResult {
         let mut s = started()?;
@@ -8692,7 +8255,8 @@ mod journal_tests {
             &format!("all str {from} 0 next-events str events get first str pane get kind"),
         )?;
         assert_eq!(kind, "pane\n");
-        for _ in 0..crate::journal::KEPT.saturating_add(1) {
+        let kept = fux::script::default_state()?.preferences.journal_entries;
+        for _ in 0..kept.get().saturating_add(1) {
             s.output(PaneId::of(1), b"\x07", Instant::now());
         }
         let failed = output(&mut s, &format!("all str {from} 0 1 events-since drop"));
@@ -8787,45 +8351,6 @@ mod journal_tests {
             assert!(view.dirty);
             assert_eq!(s.parts.journal().end(s.run), from);
         }
-        Ok(())
-    }
-
-    #[test]
-    fn copy_motion_and_notices_paint_without_invalidating_the_opening() -> TestResult {
-        let (mut s, client) = testing::attached(24, 80)?;
-        run(&mut s, &format!("str {client} client copy-mode"))?;
-        let from = s.parts.journal().end(s.run);
-        s.input(client, b"k");
-        assert!(
-            s.views
-                .get(&client)
-                .is_some_and(|view| matches!(view.mode, Mode::Copy(_)))
-        );
-        assert_eq!(s.parts.journal().end(s.run), from);
-        for (key, notice) in [
-            (b"n", Some(("no search yet", true))),
-            (b"n", Some(("no search yet", true))),
-            (b"k", None),
-        ] {
-            let from = s.parts.journal().end(s.run);
-            s.views.get_mut(&client).ok_or("view")?.dirty = false;
-            s.input(client, key);
-            let view = s.views.get(&client).ok_or("client")?;
-            assert!(matches!(view.mode, Mode::Copy(_)));
-            assert!(view.dirty);
-            assert_eq!(
-                view.notice.as_ref().map(|n| (n.text.as_str(), n.error)),
-                notice
-            );
-            for scope in [Scope::All, Scope::Client(client)] {
-                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
-                    .batch(s.parts.journal(), true)?;
-                assert!(b.events.is_empty(), "{notice:?}");
-            }
-        }
-        let from = s.parts.journal().end(s.run);
-        s.input(client, b"q");
-        assert_eq!(named(&batch(&s, from)?, "screen").len(), 1);
         Ok(())
     }
 }

@@ -4,13 +4,12 @@ answer[changed]: pane version status changed
 answer[closed]: pane status
 answer[ended]: pane version status changed exited signal
 answer[timed_out]: pane version status
-buffers[]: id bytes preview
 capture[client]: screen_rows screen_cols screen_cursor lines client
 capture[pane].cell: width height
 capture[pane].lost: copies_cut copies_not_text pictures memory
 capture[pane].pictures[]: row col rows cropped cols width height
 capture[pane].styles[][]: col len fg bg bold inverse hidden dim italic strikeout underline blink
-capture[pane]: screen_rows screen_cols screen_cursor lines styles pane version wrap_pending title program foreground_group foreground_leader launch_argv hung_up read_error exited signal alt_screen mouse mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines copy_mode command_running last_status bells notification truncated input_unread cwd argv above
+capture[pane]: screen_rows screen_cols screen_cursor lines styles pane version wrap_pending title program foreground_group foreground_leader launch_argv hung_up read_error exited signal alt_screen mouse mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_unread cwd argv above
 events.events[].origin[client]: kind client
 events.events[].origin[pane]: kind pane generation
 events.events[].origin[program]: kind pane generation
@@ -22,7 +21,6 @@ events.events[][bell]: event pane tab workspace origin next
 events.events[][closed]: event pane tab workspace origin next
 events.events[][closed]: event tab workspace origin next
 events.events[][closed]: event workspace origin next
-events.events[][copied]: event pane tab workspace buffer origin next
 events.events[][created]: event pane tab workspace origin next
 events.events[][created]: event tab workspace name origin next
 events.events[][created]: event workspace name origin next
@@ -56,7 +54,7 @@ snapshot.facts.clients[]: id kind terminal output read_only rows cols pane_rows 
 snapshot.facts.panes[].state.cell: width height
 snapshot.facts.panes[].state.lost: copies_cut copies_not_text pictures memory
 snapshot.facts.panes[].state.pictures[]: row col rows cropped cols width height
-snapshot.facts.panes[].state: title program foreground_group foreground_leader launch_argv hung_up read_error exited signal alt_screen mouse mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines copy_mode command_running last_status bells notification truncated input_unread cwd argv
+snapshot.facts.panes[].state: title program foreground_group foreground_leader launch_argv hung_up read_error exited signal alt_screen mouse mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_unread cwd argv
 snapshot.facts.panes[]: id tab name label title pid rows cols version state
 snapshot.facts.tabs[]: id workspace name label fit cols rows host nodes layout_revision
 snapshot.facts.workspaces[]: id name label tabs
@@ -65,13 +63,11 @@ snapshot.recipe.clients[].output: graphics underline_styles clipboard kitty_flag
 snapshot.recipe.clients[].terminal.cell_reported: width height
 snapshot.recipe.clients[].terminal: sixel_reported cell_reported underline_styles_reported kitty_flags_reported
 snapshot.recipe.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane zoom opening mode
-snapshot.recipe.panes[].launch.env[].value: encoding text
-snapshot.recipe.panes[].launch.env[]: name value
 snapshot.recipe.panes[].launch.initial_cwd: encoding text
 snapshot.recipe.panes[].launch.observed_cwd.path: encoding text
 snapshot.recipe.panes[].launch.observed_cwd[failed]: status operation errno
 snapshot.recipe.panes[].launch.observed_cwd[known]: status path
-snapshot.recipe.panes[].launch: choice argv env initial_cwd observed_cwd history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes
+snapshot.recipe.panes[].launch: choice argv initial_cwd observed_cwd history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes
 snapshot.recipe.panes[]: id tab name label title pid rows cols version launch
 snapshot.recipe.tabs[]: id workspace name label fit cols rows host nodes layout_revision
 snapshot.recipe.workspaces[]: id name label tabs

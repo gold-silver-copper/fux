@@ -227,7 +227,7 @@ fn greeted(
             sent.map(|()| theirs.version.to_owned())
         }
         (_, Err(error)) | (Err(error), Ok(())) => Err(error),
-        (Ok(Some(Greeting::Done(_)) | None), Ok(())) => Err(no_answer()),
+        (Ok(None), Ok(())) => Err(no_answer()),
     }
 }
 
@@ -297,8 +297,7 @@ impl Requests {
         Ok(Requests { stream, decoder })
     }
 
-    /// Sends one request and reads its reply in pieces. Launch
-    /// requests already contain their selected environment patch.
+    /// Sends one request and reads its reply in pieces.
     pub fn ask(&mut self, asked: &Asked) -> Result<Reply, Error> {
         wait_at_most(&self.stream, None);
 
@@ -339,17 +338,6 @@ pub fn context() -> Context {
         server: var("FUX_SERVER"),
         client: None,
         of: None,
-    }
-}
-
-/// Stops the server, whatever fux version it is.
-pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
-    let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
-    loop {
-        match read_frame(&mut stream, &mut decoder, Some(ANSWER))? {
-            Some(Greeting::Done(_)) | None => return Ok(()),
-            Some(Greeting::Hello(_) | Greeting::Exit(_)) => {}
-        }
     }
 }
 
@@ -505,13 +493,17 @@ pub fn answers(socket: &SocketPath) -> bool {
     UnixStream::connect(socket.path()).is_ok()
 }
 
-/// Starts a server in the background, in a new session with its log in
+/// Starts a server in the background, its journal keeping `journal`
+/// events, in a new session with its log in
 /// `fux.log` beside the socket, and waits for the line it writes once it
 /// listens (`server::READY`). Its stdout closing first means it failed, or
 /// found another server on the socket: one that answers, as a server that
 /// starts waits for the one starting before it (`socket::bind_socket`). A
 /// server that hangs before it listens holds the client too.
-pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
+pub fn start_server(
+    socket: &SocketPath,
+    journal: fux_wire::command::JournalEntries,
+) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
     socket::private_directory(socket, true)?;
     let log = socket.directory().join("fux.log");
@@ -520,6 +512,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     command
         .arg(crate::SERVE)
         .arg(socket.path())
+        .arg(journal.get().to_string())
         // A follow's mark is this command's, not its panes' (`follow`).
         .env_remove(FOLLOWED)
         .current_dir("/")
@@ -601,10 +594,7 @@ pub struct Attaching {
 impl Attaching {
     fn initial(&self) -> Result<fux_wire::command::InitialWorkspace, String> {
         let creation = &self.creation;
-        let (start, env) = creation.launch(
-            &self.state.preferences.shell,
-            &self.state.preferences.copy_environment,
-        )?;
+        let start = creation.launch(&self.state.preferences.shell)?;
         Ok(fux_wire::command::InitialWorkspace {
             name: creation.name.clone(),
             start,
@@ -618,7 +608,6 @@ impl Attaching {
                     None => invocation,
                 }
             },
-            env,
         })
     }
 }
@@ -853,7 +842,7 @@ impl Keyboard {
         acts
     }
 
-    /// A frame from the server: copy mode it ended, a program to run (a
+    /// A frame from the server: a screen it ended, a program to run (a
     /// screen asked of it from elsewhere), keys to take as typed
     /// (`send-keys` to it), the prefix then Esc among them stopping a
     /// program as typed ones do. Handle returned effects in order, as
@@ -928,7 +917,7 @@ impl Keyboard {
     /// watches opens none: it says why.
     fn open(&mut self, screen: Screen, acts: &mut Vec<Dispatch>) {
         if self.read_only {
-            let text = "watching only: no choosers, prompts or copy mode here".to_owned();
+            let text = "watching only: no choosers or prompts here".to_owned();
             acts.push(Dispatch::Send(Act::Notice { text, error: true }));
             return;
         }
@@ -1104,11 +1093,6 @@ pub fn attach(
     // A terminal's signals are caught once connected, so that ^C while
     // connecting still ends fux, and before it goes raw.
     let early = (!terminal).then(Signals::new).transpose()?;
-    let role = if terminal {
-        Role::Attach
-    } else {
-        Role::Headless
-    };
     // An untargeted writable attach carries the launch an empty server starts.
     // One unmade, or past the frame, is left out, said only on a refusal.
     let creates = attaching.target.is_none() && !attaching.read_only;
@@ -1116,11 +1100,12 @@ pub fn attach(
         Ok(initial) => (initial, None),
         Err(why) => (None, Some(why)),
     };
-    let (mut stream, mut decoder, _) = connect(socket, role)?;
+    let (mut stream, mut decoder, _) = connect(socket, Role::Attach)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
     let size = size.or_else(window_size).ok_or(Error::NoSize)?;
     let mut attach = Attach {
         of: attaching.of,
+        headless: !terminal,
         size,
         target: attaching.target.clone(),
         read_only: attaching.read_only,
@@ -2014,9 +1999,9 @@ mod tests {
     fn queued_programs_commit_the_whole_local_state() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         for code in [
-            "str C-a prefix str wait-seconds 2 set",
+            "str C-a prefix str history-bytes 2 set",
             "str F5 str ls bind-root str titles true set",
-            "str F6 str ls bind-root str wait-seconds 0 set str bell false set str Nope prefix",
+            "str F6 str ls bind-root str history-bytes 0 set str bell false set str Nope prefix",
         ] {
             assert!(program(&mut keyboard, Job::from(code)).is_empty());
         }
@@ -2035,7 +2020,7 @@ mod tests {
             ),
             ("C-a".into(), vec!["F5".into()])
         );
-        assert_eq!(state.preferences.wait.seconds(), 2);
+        assert_eq!(state.preferences.history_bytes.get(), 2);
         assert!(state.preferences.titles);
         assert!(state.preferences.bell);
         drop(state);
@@ -2048,11 +2033,16 @@ mod tests {
     #[test]
     fn a_screen_closes_when_its_keys_change() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
-        keyboard.open(Screen::Copy(None), &mut Vec::new());
+        let prompt = Screen::Prompt(fux_wire::callback::Prompt {
+            title: "rename".into(),
+            line: fux_wire::act::Line::new(String::new()),
+            action: None,
+        });
+        keyboard.open(prompt.clone(), &mut Vec::new());
         program(&mut keyboard, Job::from("str F5 str ls bind-root"));
         assert_eq!(all_ran(&mut keyboard)?, []);
-        assert_eq!(keyboard.screen.screen, Screen::Copy(None));
-        program(&mut keyboard, Job::from("str copy str g str top bind-in"));
+        assert_eq!(keyboard.screen.screen, prompt);
+        program(&mut keyboard, Job::from("str line str F2 str home bind-in"));
         let acts = all_ran(&mut keyboard)?;
         assert!(
             matches!(

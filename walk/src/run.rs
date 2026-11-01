@@ -471,7 +471,6 @@ impl Checker {
         let bar = rows.last().cloned().unwrap_or_default();
         if let Some(view) = view
             && client.cols >= 60
-            && !bar.starts_with(" COPY")
             && !bar.starts_with(" /")
             && !bar.starts_with(" ?")
         {

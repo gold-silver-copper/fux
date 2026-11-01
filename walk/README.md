@@ -59,8 +59,7 @@ Each step is a small random index resolved against the live `ls json`,
 recorded as the concrete step it became:
 
 - **keys:** default bindings, layers and repeat modes, each client with
-  the prefix its config gave it; overlays and copy mode driven by their
-  keys; command-prompt lines (fuxth the client runs), some wrong; a lone Esc,
+  the prefix its config gave it; overlays driven by their keys; command-prompt lines (fuxth the client runs), some wrong; a lone Esc,
   the doubled prefix, unbound, capital and Ctrl letters; a bracketed paste;
   plain typing; `C-b d`;
 - **commands:** fuxth programs from the whole vocabulary, with valid and

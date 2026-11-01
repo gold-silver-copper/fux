@@ -19,7 +19,6 @@ enum Spec {
     Paint(Vec<u8>),
     Exit(String),
     Part(Vec<u8>),
-    Done(u8),
 }
 
 /// The largest payload, as both define it.
@@ -52,10 +51,10 @@ fn byte(r: &mut Rng) -> u8 {
 }
 
 fn spec(r: &mut Rng, big: bool) -> Spec {
-    match r.below(14) {
+    match r.below(13) {
         0 => {
             let protocol = r.pick(&[0, 1, 2, u32::MAX]).copied().unwrap_or(1);
-            Spec::Hello(protocol, text(r), u8::try_from(r.below(3)).unwrap_or(0))
+            Spec::Hello(protocol, text(r), u8::try_from(r.below(2)).unwrap_or(0))
         }
         1 => Spec::Attach(
             u16::try_from(r.below(65_536)).unwrap_or(0),
@@ -70,8 +69,7 @@ fn spec(r: &mut Rng, big: bool) -> Spec {
         4 => Spec::Detach,
         5..=7 => Spec::Paint(bytes(r, big)),
         8 => Spec::Exit(text(r)),
-        9..=12 => Spec::Part(bytes(r, big)),
-        _ => Spec::Done(byte(r)),
+        _ => Spec::Part(bytes(r, big)),
     }
 }
 
@@ -231,8 +229,7 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
     use std::borrow::Cow;
     let role = |r: u8| match r {
         0 => Role::Attach,
-        1 => Role::Command,
-        _ => Role::Kill,
+        _ => Role::Command,
     };
     let error = |e| format!("{e:?}");
     match spec.clone() {
@@ -245,6 +242,7 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
         .map_err(error),
         Spec::Attach(rows, cols, read_only) => Attach {
             of: None,
+            headless: false,
             size: crate::size(rows, cols),
             target: None,
             read_only,
@@ -263,7 +261,6 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
         Spec::Paint(bytes) => ToAttached::Paint(Cow::Owned(bytes)).encode().map_err(error),
         Spec::Exit(reason) => Greeting::Exit(&reason).encode().map_err(error),
         Spec::Part(bytes) => ToCommand::Part(Cow::Owned(bytes)).encode().map_err(error),
-        Spec::Done(status) => Greeting::Done(status).encode().map_err(error),
     }
 }
 

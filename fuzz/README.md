@@ -99,7 +99,7 @@ the server; words that read files are not run). After every line:
 **`session`**: clients typing into a whole `Session` with no processes
 while fuxth programs arrive from the side. Each client reads its keys as
 its client does: by the screen it has open (`screens::Screen`: a
-chooser, prompt or copy mode), else through its bindings
+chooser or prompt), else through its bindings
 (`keymap::Held`, one keymap the clients share). It sends the session its
 actions, and runs its programs in-process as itself, asked as the tests
 ask (`script::testing::InProcess`: a wait answered as the session stands; a screen one opens, built with what the session answers, opens), as it does the programs the
@@ -108,7 +108,7 @@ session hands it (`ToAttached::Open`) and the keys sent to it
 client types (whole or in pieces), the Escape deadline, resizes, one to
 three clients attaching and detaching, a fixed list of programs (tabs,
 splits, overlays for a client, `bind`/`unbind`, `prefix`, `set`, `detach`,
-`paste-buffer`, `send-keys` to panes and clients and more), pane output, a
+`send-keys` to panes and clients and more), pane output, a
 shell exiting. Waits are not waited on, and words that read files are not
 run. After each, the target does what the server does (settles, acts on
 the outbox, takes queued pane input), then checks:
@@ -120,7 +120,7 @@ the outbox, takes queued pane input), then checks:
 - a key typed in a repeat mode is not sent on to the pane, and reaches no
   pane unless the binding it runs there sends keys or pastes;
 - a second session given every byte one at a time ends with the same `ls`,
-  modes, notices, screens, paste buffers, client configuration, keymap and
+  modes, notices, screens, client configuration, keymap and
   clients' keys and screens.
 
 **`fuxth_tokens`**: fuxth source, any bytes, split into tokens.

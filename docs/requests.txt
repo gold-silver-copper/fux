@@ -4,10 +4,10 @@ Request::Wait wait: Wait
 Request::NextEvents scope: inspect::Scope, from: Option<events::Cursor>, timeout: Limit
 Command::Inspect scope: inspect::Scope, projection: inspect::Projection
 Command::KillServer
-Command::NewWorkspace name: Option<String>, size: Size, cwd: Option<PathBuf>, env: EnvPatch, start: Start, options: PaneOptions
-Command::NewTab target: Option<WsRef>, name: Option<String>, size: Size, cwd: Option<PathBuf>, env: EnvPatch, start: Start, options: PaneOptions
-Command::Split axis: Axis, target: PaneId, start: Start, cwd: Option<PathBuf>, env: EnvPatch, shares: Option<(NonZeroU32, NonZeroU32)>, options: PaneOptions
-Command::Respawn target: PaneId, kill: bool, env: EnvPatch, argv: Option<Program>
+Command::NewWorkspace name: Option<String>, size: Size, cwd: Option<PathBuf>, start: Start, options: PaneOptions
+Command::NewTab target: Option<WsRef>, name: Option<String>, size: Size, cwd: Option<PathBuf>, start: Start, options: PaneOptions
+Command::Split axis: Axis, target: PaneId, start: Start, cwd: Option<PathBuf>, shares: Option<(NonZeroU32, NonZeroU32)>, options: PaneOptions
+Command::Respawn target: PaneId, kill: bool, argv: Option<Program>
 Command::Notify target: Option<AnyRef>, text: String
 Command::Resize what: Resized
 Command::SendMouse target: PaneId, mouse: Mouse, row: u16, col: u16
@@ -25,9 +25,6 @@ Command::CapturePane target: PaneId, history: Option<usize>, view: CaptureView
 Command::Reorder target: AnyRef, toward: Sibling
 Command::Resolve text: String, kind: Kind
 Command::Members target: AnyRef, members: Members
-Command::ListBuffers
-Command::ShowBuffer buffer: Buffer
-Command::PasteBuffer buffer: Buffer, target: PaneId
 Command::Client client: Option<ClientId>, action: ClientAction
 Scope::All
 Scope::Target target: AnyRef
@@ -41,7 +38,6 @@ Projection::Recipe
 Projection::Field field: String
 Screen size: fux_vt::Size
 Size rows: u16, cols: u16
-EnvPatch entries: Vec<(String, Option<std::ffi::OsString>)>
 Start::Shell argv: Program
 Start::Program argv: Program
 Program program: String, args: Vec<String>
@@ -102,9 +98,6 @@ Kind::Tab
 Kind::Workspace
 Members::Panes
 Members::Tabs
-Buffer::Newest
-Buffer::Id id: BufferId
-BufferId run: Run, number: u64
 ClientAction::Detach
 ClientAction::Capture
 ClientAction::Open screen: callback::Open
@@ -115,7 +108,6 @@ ClientAction::SelectTab pick: Pick<TabId>
 ClientAction::SelectWorkspace pick: Pick<WsRef>
 Open::List list: ListScreen
 Open::Prompt prompt: Prompt
-Open::Copy
 ListScreen title: String, items: Vec<Item>, current: Option<usize>, selected: usize, about: Option<(AnyRef, Option<command::Run>)>, action: Callback, client: Data
 Item label: String, payload: Data
 Data::Int v: i64
@@ -136,11 +128,11 @@ PanePick::Toward direction: Direction
 Pick::Step step: Sibling
 Pick::Last
 Pick::Id id: T
-Wait since: Since, timeout: Limit
+Wait since: Since, timeout: Option<Limit>
 Since::Now target: AnyRef
 Since::Version version: Version
 Cursor seq: Seq, run: Run
-Attach of: Option<command::Run>, size: fux_vt::Size, target: Option<command::AttachTarget>, read_only: bool, presentation: presentation::Presentation, initial: Option<command::InitialWorkspace>
+Attach of: Option<command::Run>, headless: bool, size: fux_vt::Size, target: Option<command::AttachTarget>, read_only: bool, presentation: presentation::Presentation, initial: Option<command::InitialWorkspace>
 AttachTarget::Workspace workspace: WsRef
 AttachTarget::Tab tab: TabId
 AttachTarget::Pane pane: PaneId
@@ -160,4 +152,4 @@ Field::Tabs
 Field::Pane
 Field::Slot index: u8
 Slots slots: Vec<(u8, String)>
-InitialWorkspace name: Option<String>, start: Start, options: PaneOptions, cwd: PathBuf, env: EnvPatch
+InitialWorkspace name: Option<String>, start: Start, options: PaneOptions, cwd: PathBuf

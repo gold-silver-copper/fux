@@ -186,8 +186,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
 
   The library stream prints NDJSON and checkpoints and ends after its
   explicit batch bound. Save the last successful checkpoint for the next
-  finite run. For hooks, use an
-  ordinary program such as [program-copies.fux](../examples/hooks/program-copies.fux),
+  finite run. For hooks, use an ordinary program over these batches,
   filtering the triggering event and state as well as known origin.
   Origins identify supplied client/pane/program context; an external CLI
   remains unknown. No exactly-once effects or infinite stream is promised.
@@ -269,11 +268,10 @@ panes as it begins and answers changes in watch order, not exit chronology.
   refused; `key-names` lists the vocabulary), `str T paste` (bracketed if the program
   asked), `str HEX bytes` (`1b5b41`), as much as one request (1 MiB) carries. A key
   N times is a loop: `%2 0 3 range each drop str Down key end
-  send-keys`. fuxth reads no files; the shell gives a file's text:
+  send-keys`. A file's text, whole, from stdin (`input`):
 
   ```sh
-  fux %2 str "$(cat FILE)" paste send-keys   # drops its last line ends; one argument's size at most (Linux: 32 memory pages)
-  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it, quoted for fuxth
+  fux %2 input paste send-keys < FILE
   ```
 - They are written together, in order, as the program's terminal takes
   them; an action answers once they are queued, not once the program
@@ -362,8 +360,7 @@ pane, the size may go: the tab is then laid out on that pane's tab). fux starts 
 are; a shell that sends OSC 133 marks (`C` as a command's output begins,
 `D;STATUS` as it ends, `A` at a prompt) counts the commands that end in
 its pane's version (`recipes`), gives `last_status`, lets `last-output`
-read a command's output alone and copy mode's `[` and `]` jump between
-prompts. fux reads marks from any program that sends them. Without marks
+read a command's output alone. fux reads marks from any program that sends them. Without marks
 the count stays, and `last-output` says there are none. A `D` with no `C`
 before it ends nothing: a line that runs nothing (an empty line; a
 syntax error in bash and zsh; a comment in bash) runs no command, so it
@@ -467,9 +464,9 @@ read-file`. `X warn` prints on stderr:
 
 ## servers: Servers, sizes and more
 
-- `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` are reserved pane
-  identity. Requesting them is refused: `bad_value` in `env`, `config` in
-  `copy-environment`. Other names, including `FUX_EXTRA`, remain allowed.
+- A pane's program takes the server's environment, plus `FUX`,
+  `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`. `env(1)` sets the rest:
+  `fux agent-opts 80 24 size str env program str PORT=8080 arg str ./app arg new-tab`.
 - Handle values returned by a server retain its run through lists, bindings,
   answers and request options; using one against another run is refused.
   A hand-written `%N`, `@N`, `+N` or `str cN client` means the selected server
@@ -499,7 +496,9 @@ read-file`. `X warn` prints on stderr:
   who wants your panes apart from theirs gives you a server of your own
   (`FUX_SOCKET=PATH fux start`), which they watch by attaching to it.
   `kill-server` from inside its own server is refused;
-  `force-kill-server` stops it. A command line against a server of another
+  `kill` on its process stops it: `kill "$(fux status str server_pid get)"`,
+  or on macOS, which says no `server_pid`, the pid `lsof -t SOCKET` gives.
+  A command line against a server of another
   fux protocol runs again with that server's own binary, saying so in one
   line on stderr; where that cannot be, it fails with `mismatch`, saying why.
 - Nothing is saved on its own: a server that stops, or crashes, takes its

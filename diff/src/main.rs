@@ -1,11 +1,10 @@
 //! `fux-diff`: fux run side by side with its last release. The same random
 //! inputs go to both, and everything each gives back is compared: layouts,
-//! frames, terminal screens, decoded input, copy mode, words, and fuxix's
+//! frames, terminal screens, decoded input, words, and fuxix's
 //! calls. Sessions, command lines and config files are not: since the
 //! command line and the config became fuxth, and keys moved to clients,
 //! the baseline's and the current ones take different inputs. For a change meant to leave
 //! behaviour as it was; any difference is reported with what led to it.
-mod copy;
 mod input;
 mod layout;
 mod protocol;
@@ -20,9 +19,8 @@ mod text;
 mod sides {
     pub use baseline;
     pub mod current {
-        pub use fux_server::copy;
         pub use fux_vt::keys::{self, decode, encode};
-        pub use fux_wire::{act, id, json, layout, words};
+        pub use fux_wire::{id, json, layout, words};
     }
 }
 
@@ -65,11 +63,6 @@ const AREAS: &[(&str, Run, &str)] = &[
         "input",
         input::run,
         "decoded client input with its Escape deadline, encoded keys and pastes, input queues",
-    ),
-    (
-        "copy",
-        copy::run,
-        "copy mode's searches and selections, and every error it can reach",
     ),
     (
         "text",

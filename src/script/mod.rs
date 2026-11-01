@@ -20,8 +20,7 @@ use fux_server::socket::SocketPath;
 use fux_wire::answer::{PaneAnswer, PaneResults};
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{
-    AnyRef, EnvName, Extent, HistoryBytes, Input, Kind, Limit, Program, Request, Run, Version,
-    WsRef,
+    AnyRef, Extent, HistoryBytes, Input, Kind, Limit, Program, Request, Run, Version, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::Axis;
@@ -156,7 +155,6 @@ pub struct Opts {
     pub name: Option<String>,
     pub size: fux_wire::command::Size,
     pub cwd: Option<std::path::PathBuf>,
-    pub env: fux_wire::command::EnvPatch,
     pub argv: Vec<String>,
     pub shell: Option<bool>,
     pub history_bytes: Option<HistoryBytes>,
@@ -164,7 +162,6 @@ pub struct Opts {
     pub alternate_scroll_lines: Option<fux_wire::command::ScrollLines>,
     pub picture_bytes: Option<fux_wire::command::PictureBytes>,
     pub program_clipboard: Option<bool>,
-    pub copy_environment: Option<Vec<EnvName>>,
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
@@ -203,11 +200,7 @@ impl Opts {
         Program::from_argv(std::mem::take(&mut self.argv))
     }
 
-    pub(crate) fn launch(
-        &self,
-        shell: &Program,
-        selection: &[EnvName],
-    ) -> Result<(fux_wire::command::Start, fux_wire::command::EnvPatch), String> {
+    pub(crate) fn launch(&self, shell: &Program) -> Result<fux_wire::command::Start, String> {
         // Checked while borrowed: the copy is one launch frame's scratch.
         let argv = if self.argv.is_empty() {
             shell.clone()
@@ -216,16 +209,10 @@ impl Opts {
         } else {
             return Err("program argv exceeds the launch frame limit".to_owned());
         };
-        let mut env = fux_wire::command::EnvPatch::selected(
-            self.copy_environment.as_deref().unwrap_or(selection),
-        )?;
-        env.overlay(&self.env)?;
-        let start = if self.shell == Some(false) {
-            fux_wire::command::Start::Program(argv)
-        } else {
-            fux_wire::command::Start::Shell(argv)
-        };
-        Ok((start, env))
+        Ok(match self.shell {
+            Some(false) => fux_wire::command::Start::Program(argv),
+            _ => fux_wire::command::Start::Shell(argv),
+        })
     }
 }
 
@@ -372,8 +359,6 @@ pub enum Local {
     Server(Choice),
     Start,
     Status,
-    /// Stop the server, whatever its version.
-    ForceKill,
     /// Open one of the client's own screens: a client running its keys'
     /// programs does (`client::Keyboard`); nothing else has one.
     Open(fux_wire::callback::Open),
@@ -1366,7 +1351,7 @@ fn local(
             // Watching or naming a run starts no replacement server.
             let socket = match *read_only || of.is_some() {
                 true => server.socket()?,
-                false => started(server)?,
+                false => started(server, committed.preferences.journal_entries)?,
             };
             if *read_only && !client::answers(&socket) {
                 let why = "no server answers: there is nothing to watch";
@@ -1384,9 +1369,13 @@ fn local(
             client::attach(&socket, attach, *size).map_err(|e| server.failed(e))?;
         }
         Local::Start => {
-            started(server)?;
+            let draft = draft.ok_or_else(|| {
+                Failed::new(Code::Config, "start needs this client's local state")
+            })?;
+            let journal = (draft.preferences.journal_entries())
+                .map_err(|why| Failed::new(Code::Config, why))?;
+            started(server, journal)?;
         }
-        Local::ForceKill => client::kill_server(&server.socket()?).map_err(client_failed)?,
         Local::Open(_) | Local::Shell(_) => return refuse_local(what),
         Local::Status => {
             let socket = server.socket()?;
@@ -1401,11 +1390,15 @@ fn local(
     Ok(Vec::new())
 }
 
-/// The server's socket, starting it in the background if none answers.
-fn started(server: &mut Server) -> Result<SocketPath, Failed> {
+/// The server's socket, starting it in the background if none answers,
+/// its journal keeping `journal` events.
+fn started(
+    server: &mut Server,
+    journal: fux_wire::command::JournalEntries,
+) -> Result<SocketPath, Failed> {
     let socket = server.socket()?;
     if !client::answers(&socket) {
-        client::start_server(&socket).map_err(client_failed)?;
+        client::start_server(&socket, journal).map_err(client_failed)?;
     }
     Ok(socket)
 }
@@ -1521,7 +1514,6 @@ impl Asks for ConfigOnly {
             | Local::Server(_)
             | Local::Start
             | Local::Status
-            | Local::ForceKill
             | Local::Open(_)
             | Local::Shell(_) => refuse_local(what),
         }
@@ -1537,7 +1529,6 @@ fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
         | Local::Server(_)
         | Local::Start
         | Local::Status
-        | Local::ForceKill
         | Local::Shell(_) => "runs from the command line only",
     };
     Err(Failed::new(Code::NotHere, why))
@@ -1745,13 +1736,17 @@ pub mod testing {
         rows: u16,
         cols: u16,
     ) -> Result<(fux_server::session::Session, fux_wire::id::ClientId), String> {
-        use fux_wire::command::{EnvPatch, InitialWorkspace, Run, Start};
+        use fux_wire::command::{InitialWorkspace, Run, Start};
         let run = Run::now().ok_or("no clock")?;
-        let mut session =
-            fux_server::session::Session::new("/nonexistent/fux.sock".into(), false, run);
         let preferences = super::default_state()
             .map_err(|e| e.to_string())?
             .preferences;
+        let mut session = fux_server::session::Session::new(
+            "/nonexistent/fux.sock".into(),
+            false,
+            run,
+            preferences.journal_entries,
+        );
         let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
         let attach = fux_wire::protocol::Attach {
             initial: Some(InitialWorkspace {
@@ -1759,13 +1754,11 @@ pub mod testing {
                 start: Start::Shell(preferences.shell.clone()),
                 options: preferences.pane_options(),
                 cwd: std::env::current_dir().map_err(|e| e.to_string())?,
-                env: EnvPatch::default(),
             }),
             ..fux_wire::protocol::Attach::of(size, preferences.presentation())
         };
-        let kind = fux_server::view::ClientKind::Terminal;
-        let client = (session.attach_as(kind, attach, std::time::Instant::now()))
-            .map_err(|e| e.to_string())?;
+        let client =
+            (session.attach_as(attach, std::time::Instant::now())).map_err(|e| e.to_string())?;
         Ok((session, client))
     }
 
@@ -2295,11 +2288,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn every_observation_wait_encodes_its_clients_limit() -> TestResult {
+    fn every_observation_wait_encodes_its_timeout_and_a_bare_one_none() -> TestResult {
         use super::*;
         use fux_wire::command::{AnyRef, Command, Request};
         use fux_wire::wire::Reader;
-        struct Record(Vec<u32>);
+        struct Record(Vec<Option<u32>>);
         impl Asks for Record {
             fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
                 let bytes = fux_wire::wire::encode(asked);
@@ -2307,7 +2300,7 @@ pub(crate) mod tests {
                     .whole()
                     .map_err(|e| Failed::new(Code::Usage, e.to_string()))?;
                 if let Request::Wait(wait) = decoded.request {
-                    self.0.push(wait.timeout.seconds());
+                    self.0.push(wait.timeout.map(Limit::seconds));
                     Err(Failed::new(Code::NoServer, "recorded"))
                 } else if let Request::Do(fux_wire::command::Command::Resolve { .. }) =
                     decoded.request
@@ -2328,18 +2321,13 @@ pub(crate) mod tests {
             }
         }
         let bundled = default_state()?;
-        let personal = run_config(source::text("personal", "str wait-seconds 2 set")?)?;
         for subject in [
             "%1",
             "str %1:0.0.0.0.0:1-2 changed",
             "%1 str Enter key send-keys",
         ] {
-            for (state, option, limit) in [
-                (&personal, "", 2),
-                (&bundled, "", 30),
-                (&personal, "0 timeout", 0),
-            ] {
-                let mut draft = state.draft();
+            for (option, limit) in [("", None), ("0 timeout", Some(0)), ("7 timeout", Some(7))] {
+                let mut draft = bundled.draft();
                 let mut out = io::sink();
                 let mut record = Record(Vec::new());
                 let failed = evaluate(

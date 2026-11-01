@@ -14,7 +14,7 @@ pub mod screens;
 pub mod script;
 
 use fux_server::{server, socket};
-use fux_wire::{code, json::Json, protocol};
+use fux_wire::{code, command, json::Json, protocol};
 use std::io::Write;
 use std::process::ExitCode;
 
@@ -56,7 +56,8 @@ pub fn main() -> ExitCode {
     ExitCode::from(status)
 }
 
-/// How a client starts a server, in the background: `fux __serve SOCKET`.
+/// How a client starts a server, in the background: `fux __serve SOCKET
+/// ENTRIES`, its journal keeping ENTRIES events (`journal-entries`).
 /// A client types it, the
 /// server leading a session of its own (`client::start_server`); no help
 /// lists it. A person can type it too: that server stays in the
@@ -69,14 +70,18 @@ fn serve(args: &[String]) -> ExitCode {
         let _ = writeln!(std::io::stderr(), "fux server: {message}");
         ExitCode::from(1)
     };
-    let Some(path) = args.first() else {
-        return fail("no socket".to_owned());
+    let [path, entries] = args else {
+        return fail("it takes a socket and the events its journal keeps".to_owned());
     };
     let socket = match socket::checked(path, "socket") {
         Ok(socket) => socket,
         Err(error) => return fail(error.to_string()),
     };
-    match server::serve(&socket) {
+    let journal = entries.parse().ok().and_then(command::JournalEntries::new);
+    let Some(journal) = journal else {
+        return fail(format!("{entries:?}: a journal keeps 1 event or more"));
+    };
+    match server::serve(&socket, journal) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(error.to_string()),
     }

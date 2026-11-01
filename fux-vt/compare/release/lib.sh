@@ -6,7 +6,7 @@
 # CARGO_TARGET_DIR, else target/); not FUX, which every fux pane has. Its
 # server is private: FUX_SOCKET, FUX_PANE, FUX_SERVER and TERM_PROGRAM
 # unset, a fresh 0700 XDG_RUNTIME_DIR under $work, and an explicit
-# FUX_SOCKET there; it is stopped with its own force-kill-server.
+# FUX_SOCKET there; it is stopped by `kill` on its `status`'s server_pid.
 # Xvfb and every xterm are stopped by their PIDs alone.
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
@@ -21,7 +21,7 @@ fux_started=
 
 stop() {
   if [[ -n $fux_started ]]; then
-    "$fux_bin" force-kill-server >/dev/null 2>&1 || true
+    kill "$("$fux_bin" status str server_pid get 2>/dev/null)" 2>/dev/null || true
   fi
   if [[ -n $xvfb_pid ]]; then
     kill "$xvfb_pid" 2>/dev/null || true

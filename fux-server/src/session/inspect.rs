@@ -72,7 +72,7 @@ impl Session {
                     }
                     let pane = self.parts.panes().get(id).ok_or(Error::NoPane(*id))?;
                     let state = if projection == Projection::Facts {
-                        let fields = crate::capture::state(pane, self.copying(*id))?;
+                        let fields = crate::capture::state(pane)?;
                         let fields = fields.into_iter().map(|(k, v)| (k.to_owned(), v));
                         Some(Json::Object(fields.collect()))
                     } else {
@@ -81,13 +81,9 @@ impl Session {
                     let recipe = if projection == Projection::Recipe {
                         let launch = pane.runs.launch();
                         let argv = launch.argv.iter().map(str::to_owned).collect();
-                        let env = (launch.env.as_slice().iter())
-                            .map(|(name, value)| (name.to_owned(), value.as_deref().map(path)))
-                            .collect();
                         Some(inspect::Recipe {
                             shell: matches!(pane.runs, crate::pane::Runs::Shell(_)),
                             argv,
-                            env,
                             initial_cwd: path(launch.cwd.as_os_str()),
                             observed_cwd: match self.dir_with(*id, &mut Memory)? {
                                 Ok(Some(dir)) => inspect::Directory::Known(path(dir.as_os_str())),
@@ -154,7 +150,6 @@ impl Session {
             let mode = match view.mode {
                 Mode::Normal => "normal",
                 Mode::Panel(_) => "panel",
-                Mode::Copy(_) => "copy",
             };
             let terminal = view.terminal.facts();
             let graphics = match view.terminal.graphics() {

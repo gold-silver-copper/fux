@@ -80,7 +80,6 @@ const SIDE: &[&str] = &[
     "str c1 client str next step-tab",
     "str c2 client str next step-workspace",
     "str c1 client str C-b key send-keys",
-    "str c1 client copy-mode",
     "str c2 client str c2 client focused choose-pane",
     "str c1 client choose-tab",
     "str c1 client str c1 client focused tab confirm-close",
@@ -107,7 +106,7 @@ const SIDE: &[&str] = &[
     "str program-clipboard true set",
     "str c1 client str hjkl text send-keys",
     "str c1 client detach",
-    "str %1 pane newest paste-buffer",
+    "str %1 pane str pasted paste send-keys",
     "str %1 pane str x key send-keys",
     "str %1 pane str C-b key send-keys",
     "str V str 'me focused str vertical axis split drop' bind",
@@ -143,7 +142,7 @@ const MOUSE_MODES: &[&[u8]] = &[
 ];
 
 /// Words that write to a pane: a repeating binding of one may.
-const WRITES: &[&str] = &["send-keys", "paste-buffer"];
+const WRITES: &[&str] = &["send-keys"];
 
 struct Bytes<'a>(&'a [u8]);
 impl<'a> Bytes<'a> {
@@ -179,12 +178,10 @@ fn size(rows: u8, cols: u8) -> (u16, u16) {
 const LOOPS: &[&str] = &["begin", "define"];
 
 /// What anyone can tell apart: the session's items, each client's mode,
-/// notice and screen, the paste buffers, and each
-/// client's keymap and keys.
+/// notice and screen, and each client's keymap and keys.
 type State = (
     String,
     Vec<(ClientId, String, Option<Grid>)>,
-    Vec<(fux_wire::id::BufferId, String)>,
     ClientState,
     Vec<(ClientId, fux::screens::Display)>,
 );
@@ -226,7 +223,8 @@ fn defaults() -> &'static ClientState {
 
 impl Run {
     fn new(rows: u16, cols: u16, run: fux_wire::command::Run, now: std::time::Instant) -> Run {
-        let s = Session::new("/nonexistent/fux.sock".into(), false, run);
+        let journal = defaults().preferences.journal_entries;
+        let s = Session::new("/nonexistent/fux.sock".into(), false, run, journal);
         // The client attaching starts its first shell, on its screen.
         let mut run = Run {
             s,
@@ -241,10 +239,8 @@ impl Run {
     }
 
     fn attach(&mut self, rows: u16, cols: u16) {
-        let kind = fux_server::view::ClientKind::Terminal;
         if let Ok(size) = fux_vt::Size::new(rows, cols)
             && let Ok(id) = self.s.attach_as(
-                kind,
                 fux_wire::protocol::Attach {
                     initial: Some(fux_wire::command::InitialWorkspace {
                         options: defaults().preferences.pane_options(),
@@ -253,7 +249,6 @@ impl Run {
                             defaults().preferences.shell.clone(),
                         ),
                         cwd: std::env::current_dir().unwrap_or_default(),
-                        env: fux_wire::command::EnvPatch::default(),
                     }),
                     ..fux_wire::protocol::Attach::of(size, defaults().preferences.presentation())
                 },
@@ -751,13 +746,7 @@ impl Run {
         let held = (self.keys.iter())
             .map(|(&c, keys)| (c, keys.screen.clone()))
             .collect();
-        (
-            ls,
-            screens,
-            self.s.buffers.iter().cloned().collect(),
-            self.keymap.clone(),
-            held,
-        )
+        (ls, screens, self.keymap.clone(), held)
     }
 }
 
@@ -766,10 +755,6 @@ fn mode_text(mode: &Mode) -> String {
     match mode {
         Mode::Normal => "normal".into(),
         Mode::Panel(panel) => format!("{panel:?}"),
-        Mode::Copy(copy) => format!(
-            "copy {} {:?} {:?} {:?}",
-            copy.pane, copy.top, copy.cursor, copy.typing
-        ),
     }
 }
 

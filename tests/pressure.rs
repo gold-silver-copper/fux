@@ -270,6 +270,7 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
         };
         let attach = Attach {
             of: None,
+            headless: false,
             size: sized(10, 40)?,
             target: None,
             read_only: false,

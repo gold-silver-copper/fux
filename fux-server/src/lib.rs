@@ -16,7 +16,6 @@ macro_rules! log {
 }
 
 pub mod capture;
-pub mod copy;
 mod input;
 pub mod journal;
 pub mod outer;
