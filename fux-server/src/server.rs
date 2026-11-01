@@ -2148,6 +2148,9 @@ mod tests {
         );
         attached.known = true;
         let now = Instant::now();
+        let journal = server.session.parts.journal();
+        let scope = fux_wire::inspect::Scope::All;
+        let mut reader = crate::journal::Reader::new(scope, journal, server.session.run, None)?;
         fux_vt::refuse_next(1);
         server.paint(0, now);
         let conn = server.conns.first().ok_or("connection")?;
@@ -2155,6 +2158,19 @@ mod tests {
         assert!(painted.is_empty(), "{painted:?}");
         assert!(exit.is_some_and(|why| why.contains("rendering c1")));
         assert!(matches!(conn.stage, Stage::Closing));
+        // Its client detached, saying so, once.
+        let batch = reader.batch(server.session.parts.journal(), true)?;
+        let detached: Vec<_> = (batch.events.iter())
+            .filter(|e| e.data.get("event") == Some(&fux_wire::json::Json::str("detached")))
+            .map(|e| {
+                (
+                    e.client,
+                    e.data.get("why").map(fux_wire::json::Json::render),
+                )
+            })
+            .collect();
+        let failed = Some(r#""failed""#.to_owned());
+        assert_eq!(detached, [(Some(ClientId::of(1)), failed)]);
         Ok(())
     }
 
@@ -2646,11 +2662,17 @@ mod tests {
         let (mut session, mut conn, _peer) = attached(now)?;
         let from = session.parts.journal().end(session.run);
         conn.enter(&mut session, Stage::Dead, now);
-        assert_eq!(read(&session, from)?, [r#""detached""disconnected""#]);
+        assert_eq!(
+            read(&session, from)?,
+            [r#""detached""disconnected""#, r#""laid_out""#]
+        );
         let (mut session, mut conn, _peer) = attached(now)?;
         let from = session.parts.journal().end(session.run);
         conn.exit(&mut session, Detach::Detached, "detached", now);
-        assert_eq!(read(&session, from)?, [r#""detached""detached""#]);
+        assert_eq!(
+            read(&session, from)?,
+            [r#""detached""detached""#, r#""laid_out""#]
+        );
         let (mut server, _peer) = server()?;
         let dir = fuxix::file::scratch()?.join(format!("fux-detach-{}", std::process::id()));
         let socket = crate::socket::checked(dir.join("s"), "test")?;
@@ -2662,7 +2684,11 @@ mod tests {
         server.stop("asked".into(), Actor::Outside, now);
         assert_eq!(
             read(&server.session, from)?,
-            [r#""detached""server_stopped""#, r#""stopped""#]
+            [
+                r#""detached""server_stopped""#,
+                r#""laid_out""#,
+                r#""stopped""#,
+            ]
         );
         Ok(())
     }

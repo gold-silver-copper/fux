@@ -133,6 +133,14 @@ pub struct Place {
 /// starts in: none in a tab with no host yet (`Session::graphics`).
 type Starts = (Size, Option<fux_vt::CellSize>);
 
+/// How a tab is laid out: its layout revision, the rows and columns it is
+/// laid out on, and its host.
+type Laid = (
+    Option<fux_wire::command::LayoutRevision>,
+    (u16, u16),
+    Option<ClientId>,
+);
+
 /// A pane to make: what it starts, where, and how it starts (`Starts`).
 #[derive(Clone, Copy)]
 struct NewPane<'a> {
@@ -296,6 +304,8 @@ pub struct Session {
     /// The tabs clients sized at the last settle: one of a size of its own
     /// none sizes now is laid out on that size again (`size_panes`).
     sized: Vec<TabId>,
+    /// How each tab was laid out at the last settle (`tell_laid_out`).
+    laid: BTreeMap<TabId, Laid>,
     ids: Ids,
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
@@ -384,6 +394,7 @@ impl Session {
             shown_sizes: Vec::new(),
             placed: Placement::default(),
             sized: Vec::new(),
+            laid: BTreeMap::new(),
             ids: Ids::default(),
             changes: 0,
             #[cfg(test)]
@@ -1557,6 +1568,7 @@ impl Session {
         for (&tab, &size) in &screens {
             self.parts.shown_on(tab, size.into());
         }
+        self.tell_laid_out();
         let mut dropped = std::mem::take(&mut self.sized);
         let fixed =
             |tab: &TabId| (self.tab(*tab)).is_some_and(|t| matches!(t.fit(), Fit::Fixed(_)));
@@ -1598,6 +1610,31 @@ impl Session {
         if resized {
             self.touch();
         }
+    }
+
+    /// Journals `laid_out` for each tab laid out otherwise than at the last
+    /// settle, at the same revision: on another size (the smallest screen
+    /// of the clients sizing it, else its fit's) or for another host. A
+    /// new revision was journaled as it was made, and a new tab is told
+    /// `created`.
+    fn tell_laid_out(&mut self) {
+        let laid: BTreeMap<TabId, Laid> = (self.parts.tabs_in(None).into_iter())
+            .map(|(_, tab)| {
+                let id = tab.id();
+                let fit = || (tab.fit().size().rows(), tab.fit().size().cols());
+                let size = self.smallest_screen(id).unwrap_or_else(fit);
+                (id, (tab.revision(self.run), size, self.host(Some(id))))
+            })
+            .collect();
+        let moved = |(id, now): (&TabId, &Laid)| {
+            let was = self.laid.get(id)?;
+            (was != now && was.0 == now.0).then_some(*id)
+        };
+        let moved: Vec<TabId> = laid.iter().filter_map(moved).collect();
+        for tab in moved {
+            self.parts.laid_out(tab);
+        }
+        self.laid = laid;
     }
 
     /// The rectangles, rows and columns, each pane of tab `tab` laid out as
@@ -7909,9 +7946,31 @@ mod tests {
     }
 
     /// Each change of a tab's layout journals `laid_out` once, at the
-    /// revision the tab then has.
+    /// revision the tab then has: one of its tree or fit, which makes a
+    /// new revision, or of the size it is laid out on or its host, which
+    /// keeps it.
     #[test]
     fn every_layout_change_journals_its_new_revision() -> TestResult {
+        /// `change` journals one `laid_out` of tab `@1`, at its revision.
+        fn laid_out(
+            s: &mut Session,
+            what: &str,
+            change: impl FnOnce(&mut Session) -> Result<(), String>,
+        ) -> TestResult {
+            let mut changed = Ok(());
+            let lines = told(s, |s| changed = change(s));
+            changed?;
+            let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+            let revision = revision.ok_or("a revision")?;
+            let laid_out = format!(
+                r#"{{"event":"laid_out","tab":"@1","workspace":"+1","layout_revision":"{revision}"}}"#
+            );
+            let laid: Vec<&str> = (lines.lines())
+                .filter(|l| l.contains(r#""event":"laid_out","tab":"@1""#))
+                .collect();
+            assert_eq!(laid, [laid_out.as_str()], "{what}");
+            Ok(())
+        }
         let mut s = started()?;
         let arrange = "@1 str topology snapshot str tabs get first let t \
             t str id get t str layout_revision get t str nodes get arrange";
@@ -7925,19 +7984,34 @@ mod tests {
             "%3 kill",
             "%2 str new-tab move",
         ] {
-            let mut ran = Ok(());
-            let lines = told(&mut s, |s| ran = run(s, code));
-            ran?;
-            let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
-            let revision = revision.ok_or("a revision")?;
-            let laid_out = format!(
-                r#"{{"event":"laid_out","tab":"@1","workspace":"+1","layout_revision":"{revision}"}}"#
-            );
-            let laid: Vec<&str> = (lines.lines())
-                .filter(|l| l.contains(r#""event":"laid_out""#))
-                .collect();
-            assert_eq!(laid, [laid_out.as_str()], "{code}");
+            laid_out(&mut s, code, |s| run(s, code))?;
         }
+        // Fixed at 90 by 30, it is laid out on the screens that show it.
+        let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        let attach = |s: &mut Session, rows, cols| {
+            s.attach(rows, cols, Some("+1")).map_err(|e| e.to_string())
+        };
+        let mut first = None;
+        laid_out(&mut s, "a client shows it", |s| {
+            first = Some(attach(s, 24, 80)?);
+            Ok(())
+        })?;
+        let first = first.ok_or("a client")?;
+        laid_out(&mut s, "its screen resized", |s| {
+            s.size_client(first, 30, 100)
+                .map(drop)
+                .map_err(|e| e.to_string())
+        })?;
+        let second = attach(&mut s, 30, 100)?;
+        laid_out(&mut s, "its host detached", |s| {
+            s.detach_client(first);
+            Ok(())
+        })?;
+        laid_out(&mut s, "its host shows another tab", |s| {
+            run(s, &format!("str {second} client str @2 tab show"))
+        })?;
+        let now = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        assert_eq!(now, revision, "laid out otherwise, not anew");
         Ok(())
     }
 

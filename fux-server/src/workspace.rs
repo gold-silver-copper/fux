@@ -1005,12 +1005,17 @@ impl Parts {
         Some(changed)
     }
 
-    pub(crate) fn typed(&mut self, id: TabId, client: ClientId, changed_host: bool) {
-        if let Some((ws, tab)) = tab_mut(&mut self.workspaces, id) {
+    pub(crate) fn typed(&mut self, id: TabId, client: ClientId) {
+        if let Some((_, tab)) = tab_mut(&mut self.workspaces, id) {
             tab.typist = Some(client);
-            if changed_host {
-                tab.laid_out(&mut self.journal, ws);
-            }
+        }
+    }
+
+    /// Journals `laid_out` for tab `id`, at its revision: it is laid out
+    /// otherwise, on another size or host, its layout as it was.
+    pub(crate) fn laid_out(&mut self, id: TabId) {
+        if let Some((ws, tab)) = tab_mut(&mut self.workspaces, id) {
+            tab.laid_out(&mut self.journal, ws);
         }
     }
 

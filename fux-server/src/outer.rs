@@ -361,8 +361,7 @@ impl Session {
             .filter(|tab| terminal && tab.typist != Some(client))
             .map(|tab| tab.id())
         {
-            let changed_host = self.host(Some(tab)) != Some(client);
-            self.parts.typed(tab, client, changed_host);
+            self.parts.typed(tab, client);
         }
     }
 

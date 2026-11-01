@@ -112,8 +112,9 @@ The axis is `horizontal` or `vertical`; shares are positive integers and
 children are indices in that same list. These values feed `arrange` directly. Every node is reachable once, with
 one leaf per pane. Layout depth does not consume record nesting. Each change of
 a tab's layout (a split, a close, a move or swap, `arrange`, a reshape, its fit
-or size) emits one `laid_out` event with its new `layout_revision`; a host change
-emits one at the same revision.
+or size) emits one `laid_out` event with its new `layout_revision`; one laid out
+on another size (the smallest screen of the clients sizing it, else its fit's) or
+for another host, its layout as it was, emits one at the same revision.
 
 Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
 and `version`. A name is given or null; a label is display text. Facts adds
@@ -371,7 +372,7 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `closed` | `why`: `killed` by a `kill` of it or of what holds it, `exited` for its shell's exit, or `emptied` as its last child left; closure invalidates membership/layout and repaired views |
 | `reordered` | changed tab/workspace order |
 | (any of these four, and `moved`, on a workspace) | `parent`: the workspace it is in, null at the top; a workspace's events reach the scopes of the workspaces holding it, and a move's those of the one it left |
-| `laid_out` | tab/workspace and its `layout_revision` after the change, null once exhausted: a split, close, move, swap, reshaping, a guarded `arrange`, its fit or size changed (a new revision), or its effective host (the same one); pane resizes can follow |
+| `laid_out` | tab/workspace and its `layout_revision` after the change, null once exhausted: a split, close, move, swap, reshaping, a guarded `arrange`, its fit or size changed (a new revision), or the size it is laid out on or its effective host, as a client shows, resizes, types, leaves or shows another tab (the same one); pane resizes can follow |
 | `moved` | a pane: `from_tab`, `from_workspace`; a workspace: its new `parent`; both old and new scopes receive it |
 | `attached` | `client`, its place, its `kind` (`terminal` or `headless`) and `read_only` |
 | `detached` | `client`, its last place if known, and `why`: `detached` when asked (its terminal or `detach`), `disconnected` when its connection closed or failed, `server_stopped` before the server's `stopped`, `failed` when the server could not paint it |
