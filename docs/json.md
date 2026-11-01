@@ -110,8 +110,11 @@ shared flat layout schema: the root is index zero, a leaf is a typed pane
 handle, and a split is `[AXIS, FIRST_SHARE, SECOND_SHARE, FIRST, SECOND]`.
 The axis is `horizontal` or `vertical`; shares are positive integers and
 children are indices in that same list. These values feed `arrange` directly. Every node is reachable once, with
-one leaf per pane. Layout depth does not consume record nesting. A successful `arrange` emits
-one `laid_out` event with the tab and workspace.
+one leaf per pane. Layout depth does not consume record nesting. Each change of
+a tab's layout (a split, a close, a move or swap, `arrange`, a reshape, its fit
+or size) emits one `laid_out` event with its new `layout_revision`; one whose panes
+are laid out at other sizes (by the clients' screens sizing it, else its fit) or
+for another host, its layout as it was, emits one at the same revision.
 
 Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
 and `version`. A name is given or null; a label is display text. Facts adds
@@ -364,21 +367,22 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 
 | `event` | Also |
 | --- | --- |
-| `created` | `name` on tab/workspace, null when unnamed; creation invalidates membership/layout |
+| `created` | `name` on tab/workspace, null when unnamed; a pane's `role`, `shell` (its exit closes it) or `program`; creation invalidates membership/layout |
 | `renamed` | `name` |
-| `closed` | closure invalidates membership/layout and repaired views |
+| `closed` | `why`: `killed` by a `kill` of it or of what holds it, `exited` for its shell's exit, or `emptied` as its last child left; closure invalidates membership/layout and repaired views |
 | `reordered` | changed tab/workspace order |
 | (any of these four, and `moved`, on a workspace) | `parent`: the workspace it is in, null at the top; a workspace's events reach the scopes of the workspaces holding it, and a move's those of the one it left |
-| `laid_out` | tab/workspace; same-tab swap, reshaping, a guarded `arrange`, fit or effective host changed; pane resizes can follow |
+| `laid_out` | tab/workspace and its `layout_revision` after the change, null once exhausted: a split, close, move, swap, reshaping, a guarded `arrange`, its fit or size changed (a new revision), or the size it is laid out on or its effective host, as a client shows, resizes, types, leaves or shows another tab (the same one); pane resizes can follow |
 | `moved` | a pane: `from_tab`, `from_workspace`; a workspace: its new `parent`; both old and new scopes receive it |
-| `attached`, `detached` | `client` and its last place if known |
+| `attached` | `client`, its place, its `kind` (`terminal` or `headless`) and `read_only` |
+| `detached` | `client`, its last place if known, and `why`: `detached` when asked (its terminal or `detach`), `disconnected` when its connection closed or failed, `server_stopped` before the server's `stopped`, `failed` when the server could not paint it |
 | `shown` | `client` and its place, each time it changes at any level (workspace, tab, focused pane, or a zoom of its tab): one at the place left, one at the place reached; includes automatic repair after a close |
 | `zoomed` | tab/workspace and its zoomed `pane`, null when it no longer has one: by `zoom`, a focus on another pane there, or the pane leaving |
-| `view_resized` | `client`; client size invalidated |
-| `screen` | `client`; fresh opening, close or mode ending invalidated |
+| `view_resized` | `client` and its terminal's new `cols`, `rows` |
+| `screen` | `client` and the `kind` of screen it now shows (`column`, `repeat`, `list` or `prompt`), null once none: a fresh opening, close or mode ending |
 | `history_budget` | pane's new `history_bytes` |
 | `history_cleared` | pane history invalidated |
-| `respawned` | generation changed; optional `input_unread`, the old program's input not written to its terminal |
+| `respawned` | the new program's `generation`; optional `input_unread`, the old program's input not written to its terminal |
 | `hung_up` | its program closed its terminal and runs on (`hung_up`) |
 | `read_failed` | `read_error`, the errno text of an unexpected PTY read failure |
 | `exited` | `exited` (null when lost) or `signal`; optional `input_unread`; a shell's pane then closes |

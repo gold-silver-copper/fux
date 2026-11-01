@@ -2,6 +2,7 @@
 //! macOS), one `poll` loop over the listening socket, a signal pipe, every
 //! client and every pane's PTY.
 use crate::after;
+use crate::journal::Detach;
 use crate::pane::{Pane, Process};
 use crate::process::Pid;
 use crate::render::{self, Grid};
@@ -368,14 +369,15 @@ impl Conn {
     }
 
     /// Moves the connection on to `next`. One that was attached has its
-    /// client detached and its terminal given its own cursor shape and
-    /// configured colour back; one that is dead stays so.
+    /// client detached, as disconnected unless it was detached for another
+    /// reason first (`exit`), and its terminal given its own cursor shape
+    /// and configured colour back; one that is dead stays so.
     fn enter(&mut self, session: &mut Session, next: Stage, now: Instant) {
         if matches!(self.stage, Stage::Dead) {
             return;
         }
         if let Stage::Attached(attached) = mem::replace(&mut self.stage, next) {
-            session.detach(attached.client, now);
+            session.detach(attached.client, Detach::Disconnected, now);
             // Cursor overrides are given back as the terminal's own;
             // one never set is left as it was.
             let mut cursor = Vec::new();
@@ -447,15 +449,25 @@ impl Conn {
         self.send(frame);
     }
 
+    /// Detaches the client attached here for `why`, and ends it, telling
+    /// it `text`.
+    fn exit(&mut self, session: &mut Session, why: Detach, text: &str, now: Instant) {
+        if let Some(attached) = self.attached() {
+            session.detach(attached.client, why, now);
+        }
+        self.end(session, &ToAttached::Exit(text), now);
+    }
+
     /// Sends the client attached here `frame`, an `Exit` as its last
-    /// frame. A paint is made only once the queue empties.
+    /// frame: the session's, which asked it to detach. A paint is made
+    /// only once the queue empties.
     fn tell(&mut self, session: &mut Session, frame: &ToAttached, now: Instant) {
         if self.attached().is_none() {
             return;
         }
         match frame {
             ToAttached::Paint(bytes) => Attached::paint(&mut self.out, bytes),
-            ToAttached::Exit(_) => self.end(session, frame, now),
+            ToAttached::Exit(text) => self.exit(session, Detach::Detached, text, now),
             ToAttached::Welcome(..)
             | ToAttached::Ended(_)
             | ToAttached::Open(_)
@@ -869,6 +881,16 @@ impl Server {
         log!("{reason}");
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(after(now, STOP_WAIT));
+        // Every client attached is detached for it before its entry, which
+        // is the journal's last.
+        let exit = format!("the fux server stopped: {reason}");
+        let was = self.session.parts.actor(actor);
+        for conn in &mut self.conns {
+            if conn.attached().is_some() {
+                conn.exit(&mut self.session, Detach::ServerStopped, &exit, now);
+            }
+        }
+        self.session.parts.actor(was);
         // The journal's last entry, which ends every pending read.
         let stopped = crate::journal::Event::Stopped(reason.clone());
         self.session.parts.journal_mut().push_from(stopped, actor);
@@ -876,14 +898,12 @@ impl Server {
         self.session.shutdown(now);
         // Every connection still open ends, so no command runs on what is
         // left of the session.
-        let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
             let session = &mut self.session;
             match conn.stage {
                 Stage::Hello => conn.end(session, &Greeting::Exit(&exit), now),
-                Stage::Attaching | Stage::Attached(_) => {
-                    conn.end(session, &ToAttached::Exit(&exit), now);
-                }
+                Stage::Attaching => conn.end(session, &ToAttached::Exit(&exit), now),
+                Stage::Attached(_) => {}
                 Stage::Command | Stage::Blocked(_) | Stage::Waiting(_) => {
                     conn.end(session, &ToCommand::Exit(&exit), now);
                 }
@@ -953,11 +973,8 @@ impl Server {
             &mut attached.placement,
             painted,
         ) {
-            conn.end(
-                session,
-                &ToAttached::Exit(&format!("rendering {client}: {error}")),
-                now,
-            );
+            let text = format!("rendering {client}: {error}");
+            conn.exit(session, Detach::Failed, &text, now);
             return;
         }
         if !before.is_empty() {
@@ -1287,7 +1304,7 @@ impl Server {
                     }
                     Some(AttachedFrame::Detach) => {
                         let actor = session.parts.actor(Actor::Client(attached.client));
-                        conn.end(session, &ToAttached::Exit("detached"), now);
+                        conn.exit(session, Detach::Detached, "detached", now);
                         session.parts.actor(actor);
                     }
                     None => return Ok(false),
@@ -1296,11 +1313,8 @@ impl Server {
                     if let Some(next) = attached.processed.checked_add(1) {
                         attached.processed = next;
                     } else {
-                        conn.end(
-                            session,
-                            &ToAttached::Exit("attached frame count exhausted"),
-                            now,
-                        );
+                        let text = "attached frame count exhausted";
+                        conn.exit(session, Detach::Failed, text, now);
                     }
                 }
             }
@@ -2134,6 +2148,9 @@ mod tests {
         );
         attached.known = true;
         let now = Instant::now();
+        let journal = server.session.parts.journal();
+        let scope = fux_wire::inspect::Scope::All;
+        let mut reader = crate::journal::Reader::new(scope, journal, server.session.run, None)?;
         fux_vt::refuse_next(1);
         server.paint(0, now);
         let conn = server.conns.first().ok_or("connection")?;
@@ -2141,6 +2158,19 @@ mod tests {
         assert!(painted.is_empty(), "{painted:?}");
         assert!(exit.is_some_and(|why| why.contains("rendering c1")));
         assert!(matches!(conn.stage, Stage::Closing));
+        // Its client detached, saying so, once.
+        let batch = reader.batch(server.session.parts.journal(), true)?;
+        let detached: Vec<_> = (batch.events.iter())
+            .filter(|e| e.data.get("event") == Some(&fux_wire::json::Json::str("detached")))
+            .map(|e| {
+                (
+                    e.client,
+                    e.data.get("why").map(fux_wire::json::Json::render),
+                )
+            })
+            .collect();
+        let failed = Some(r#""failed""#.to_owned());
+        assert_eq!(detached, [(Some(ClientId::of(1)), failed)]);
         Ok(())
     }
 
@@ -2604,6 +2634,62 @@ mod tests {
         assert!(conn.paint_due(&session).is_some());
         conn.out.push(b"the last frame");
         assert_eq!(conn.paint_due(&session), None, "one frame in flight");
+        Ok(())
+    }
+
+    /// A client detaches saying why: disconnected as its connection
+    /// ends, detached when it asks, and server_stopped as the server
+    /// stops, before the stop's entry, which is the journal's last.
+    #[test]
+    fn a_detach_says_why() -> Result<(), Box<dyn std::error::Error>> {
+        // Each event read from `from`, by name, and why if it says.
+        let read = |session: &Session, from| -> Result<Vec<String>, String> {
+            let journal = session.parts.journal();
+            let scope = fux_wire::inspect::Scope::All;
+            let mut reader = crate::journal::Reader::new(scope, journal, session.run, Some(from))?;
+            let said =
+                |e: &fux_wire::events::Item, key| e.data.get(key).map(fux_wire::json::Json::render);
+            Ok((reader.batch(journal, true)?.events.iter())
+                .map(|e| {
+                    [said(e, "event"), said(e, "why")]
+                        .into_iter()
+                        .flatten()
+                        .collect()
+                })
+                .collect())
+        };
+        let now = Instant::now();
+        let (mut session, mut conn, _peer) = attached(now)?;
+        let from = session.parts.journal().end(session.run);
+        conn.enter(&mut session, Stage::Dead, now);
+        assert_eq!(
+            read(&session, from)?,
+            [r#""detached""disconnected""#, r#""laid_out""#]
+        );
+        let (mut session, mut conn, _peer) = attached(now)?;
+        let from = session.parts.journal().end(session.run);
+        conn.exit(&mut session, Detach::Detached, "detached", now);
+        assert_eq!(
+            read(&session, from)?,
+            [r#""detached""detached""#, r#""laid_out""#]
+        );
+        let (mut server, _peer) = server()?;
+        let dir = fuxix::file::scratch()?.join(format!("fux-detach-{}", std::process::id()));
+        let socket = crate::socket::checked(dir.join("s"), "test")?;
+        server.phase = Phase::Serving {
+            listening: Listening::open(&socket)?,
+            resting: None,
+        };
+        let from = server.session.parts.journal().end(server.session.run);
+        server.stop("asked".into(), Actor::Outside, now);
+        assert_eq!(
+            read(&server.session, from)?,
+            [
+                r#""detached""server_stopped""#,
+                r#""laid_out""#,
+                r#""stopped""#,
+            ]
+        );
         Ok(())
     }
 

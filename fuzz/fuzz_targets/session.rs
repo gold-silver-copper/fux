@@ -273,7 +273,8 @@ impl Run {
     }
 
     fn detach(&mut self, client: ClientId) {
-        self.s.detach(client, self.now);
+        self.s
+            .detach(client, fux_server::journal::Detach::Detached, self.now);
         self.keys.remove(&client);
     }
 

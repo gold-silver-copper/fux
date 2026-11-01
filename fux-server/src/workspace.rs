@@ -11,7 +11,7 @@
 //! events tell is changed only here, by methods that journal the change
 //! as they make it, and by a pane's own, which a [`PaneMut`] gives the
 //! journal at the pane's place.
-use crate::journal::{Change, Event, Journal, PaneEvent, ViewChange};
+use crate::journal::{Change, Close, Event, Journal, PaneEvent, ViewChange};
 use crate::pane::{Pane, PaneMut};
 use fux_wire::command::{AnyRef, Sibling};
 use fux_wire::events::Actor;
@@ -424,8 +424,15 @@ impl Tab {
         })
     }
 
-    fn revised(&mut self) {
+    /// Its layout changed: a new revision, which it journals.
+    fn revised(&mut self, journal: &mut Journal, ws: WsId) {
         self.revision = self.revision.and_then(|n| n.checked_add(1));
+        self.laid_out(journal, ws);
+    }
+
+    /// Journals `laid_out`, at its revision.
+    fn laid_out(&self, journal: &mut Journal, ws: WsId) {
+        journal.push(Event::Layout((ws, self.id), self.revision));
     }
 
     pub fn fit(&self) -> Fit {
@@ -433,26 +440,26 @@ impl Tab {
     }
 
     /// Lays it out on what `fit` says from now on.
-    fn set_fit(&mut self, fit: Fit) {
+    fn set_fit(&mut self, journal: &mut Journal, ws: WsId, fit: Fit) {
         if self.fit != fit {
-            self.revised();
+            self.fit = fit;
+            self.changed = true;
+            self.revised(journal, ws);
         }
-        self.fit = fit;
-        self.changed = true;
     }
 
     /// Clients showing it lay it out on `size`, the smallest of their
     /// screens: laid out on clients' screens, that is its size while none
     /// does, if it shows every pane. A screen too small to is not: the tab
     /// keeps the last size that showed them all, which a dump makes it at.
-    pub(crate) fn shown_on(&mut self, size: fux_vt::Size) {
+    fn shown_on(&mut self, journal: &mut Journal, ws: WsId, size: fux_vt::Size) {
         let area = Fit::Clients(size).area();
         let shows_all = layout::shows_all(&self.root, area);
         if let (Fit::Clients(last), true) = (&mut self.fit, shows_all)
             && *last != size
         {
             *last = size;
-            self.revised();
+            self.revised(journal, ws);
         }
     }
 
@@ -518,7 +525,6 @@ impl Tab {
     ) -> R {
         let was = self.root.panes();
         let out = change(&mut self.root);
-        self.revised();
         self.changed = true;
         if self.zoomed.is_some_and(|z| !self.root.contains(z)) {
             self.zoom(journal, ws, None);
@@ -530,6 +536,7 @@ impl Tab {
                 .keep(&was, |p| root.contains(p), Some(root.first_pane()));
             seat.held &= !moved;
         }
+        self.revised(journal, ws);
         out
     }
 }
@@ -544,6 +551,15 @@ pub struct Parts {
     journal: Journal,
     /// Panes given input since the last sweep; at most one entry per pane.
     input: BTreeSet<PaneId>,
+}
+
+/// The workspaces a kill closes as it empties them: none (it kills a pane
+/// or a tab), those within one, or every one.
+#[derive(Clone, Copy)]
+pub(crate) enum Killing {
+    None,
+    Within(WsId),
+    All,
 }
 
 /// A split planned (`Parts::plan_split`): the layout tab `tab` had, and
@@ -989,22 +1005,24 @@ impl Parts {
         Some(changed)
     }
 
-    pub(crate) fn typed(&mut self, id: TabId, client: ClientId, changed_host: bool) {
-        if let Some((ws, tab)) = tab_mut(&mut self.workspaces, id) {
+    pub(crate) fn typed(&mut self, id: TabId, client: ClientId) {
+        if let Some((_, tab)) = tab_mut(&mut self.workspaces, id) {
             tab.typist = Some(client);
-            if changed_host {
-                self.journal.push(Event::Layout((ws, id)));
-            }
         }
     }
 
+    /// Journals `laid_out` for tab `id`, at its revision: it is laid out
+    /// otherwise, on another size or host, its layout as it was.
+    pub(crate) fn laid_out(&mut self, id: TabId) {
+        if let Some((ws, tab)) = tab_mut(&mut self.workspaces, id) {
+            tab.laid_out(&mut self.journal, ws);
+        }
+    }
+
+    /// Clients showing tab `id` lay it out on `size` (`Tab::shown_on`).
     pub(crate) fn shown_on(&mut self, id: TabId, size: fux_vt::Size) {
         if let Some((ws, tab)) = tab_mut(&mut self.workspaces, id) {
-            let before = tab.fit;
-            tab.shown_on(size);
-            if before != tab.fit {
-                self.journal.push(Event::Layout((ws, id)));
-            }
+            tab.shown_on(&mut self.journal, ws, size);
         }
     }
 
@@ -1022,10 +1040,7 @@ impl Parts {
     pub(crate) fn set_fit(&mut self, tab: TabId, fit: impl FnOnce(Fit) -> Fit) -> Option<()> {
         let (ws, tab) = tab_mut(&mut self.workspaces, tab)?;
         let fit = fit(tab.fit);
-        if tab.fit != fit {
-            tab.set_fit(fit);
-            self.journal.push(Event::Layout((ws, tab.id)));
-        }
+        tab.set_fit(&mut self.journal, ws, fit);
         Some(())
     }
 
@@ -1230,7 +1245,9 @@ impl Parts {
     /// `pane`, new, is in tab `at` of its workspace.
     fn placed(&mut self, at: (WsId, TabId), pane: Pane) {
         let id = pane.id();
-        self.journal.push(Event::Pane((at, id), PaneEvent::Created));
+        let shell = matches!(pane.runs, crate::pane::Runs::Shell(_));
+        let created = PaneEvent::Created { shell };
+        self.journal.push(Event::Pane((at, id), created));
         self.panes.insert(id, pane);
     }
 
@@ -1258,42 +1275,45 @@ impl Parts {
     pub(crate) fn split(&mut self, pane: Pane, split: Split) -> Result<(), Pane> {
         let Split { tab, was, root } = split;
         let planned = root.contains(pane.id()) && !was.contains(pane.id());
-        let Some((ws, t)) =
+        let Some((ws, _)) =
             tab_mut(&mut self.workspaces, tab).filter(|(_, t)| planned && t.root == was)
         else {
             return Err(pane);
         };
-        t.edit(&mut self.journal, ws, |r| *r = root);
         self.placed((ws, tab), pane);
+        if let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) {
+            t.edit(&mut self.journal, ws, |r| *r = root);
+        }
         Ok(())
     }
 
-    /// Takes pane `id` out of its tab: given back, closed. A tab its going
-    /// empties closes too, as does each workspace that leaves empty.
-    pub(crate) fn close_pane(&mut self, id: PaneId) -> Option<Pane> {
+    /// Takes pane `id` out of its tab: given back, closed, `why` says.
+    /// A tab its going empties closes too, as does each workspace that
+    /// leaves empty.
+    pub(crate) fn close_pane(&mut self, id: PaneId, why: Close) -> Option<Pane> {
         let at = self.locate(id)?;
         self.viewing(|parts| {
             let (_, tab) = tab_mut(&mut parts.workspaces, at.1)?;
-            let emptied = match tab.root.remove(id) {
-                Removed::Left(rest) => {
-                    tab.edit(&mut parts.journal, at.0, |root| *root = rest);
-                    false
-                }
-                Removed::Emptied => true,
+            let rest = match tab.root.remove(id) {
+                Removed::Left(rest) => Some(rest),
+                Removed::Emptied => None,
                 Removed::Absent => return None,
             };
-            parts.journal.push(Event::Pane((at, id), PaneEvent::Closed));
-            if emptied {
-                parts.drop_tab(at.1);
+            parts
+                .journal
+                .push(Event::Pane((at, id), PaneEvent::Closed(why)));
+            match rest {
+                Some(rest) => tab.edit(&mut parts.journal, at.0, |root| *root = rest),
+                None => parts.drop_tab(at.1, Close::Emptied, Killing::None),
             }
             parts.input.remove(&id);
             parts.panes.remove(&id)
         })
     }
 
-    /// Removes tab `tab` and gives back the panes in it, closed. Each
-    /// workspace it leaves empty goes too.
-    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Vec<Pane> {
+    /// Removes tab `tab`, killed as `killing` kills it, and gives back the
+    /// panes in it, closed. Each workspace it leaves empty goes too.
+    pub(crate) fn remove_tab(&mut self, tab: TabId, killing: Killing) -> Vec<Pane> {
         let Some((ws, t)) = self.tab(tab) else {
             return Vec::new();
         };
@@ -1301,19 +1321,21 @@ impl Parts {
         self.viewing(|parts| {
             for &pane in &panes {
                 parts.input.remove(&pane);
-                (parts.journal).push(Event::Pane(((ws, tab), pane), PaneEvent::Closed));
+                let closed = PaneEvent::Closed(Close::Killed);
+                (parts.journal).push(Event::Pane(((ws, tab), pane), closed));
             }
-            parts.drop_tab(tab);
+            parts.drop_tab(tab, Close::Killed, killing);
             (panes.into_iter())
                 .filter_map(|pane| parts.panes.remove(&pane))
                 .collect()
         })
     }
 
-    /// Takes tab `tab` out of its workspace, and each workspace that leaves
-    /// empty: each client shown one is shown the one it was shown before,
-    /// else the neighbour (`Stack::remove`).
-    fn drop_tab(&mut self, tab: TabId) {
+    /// Takes tab `tab` out of its workspace, closed `why`, and each
+    /// workspace that leaves empty, killed if `killing` kills it: each
+    /// client shown one is shown the one it was shown before, else the
+    /// neighbour (`Stack::remove`).
+    fn drop_tab(&mut self, tab: TabId, why: Close, killing: Killing) {
         let Some((ws, _)) = self.tab(tab) else {
             return;
         };
@@ -1322,23 +1344,30 @@ impl Parts {
         };
         w.children.remove(AnyRef::Tab(tab));
         let emptied = w.children.children.is_empty();
-        self.journal.push(Event::Tab((ws, tab), Change::Closed));
+        self.journal
+            .push(Event::Tab((ws, tab), Change::Closed(why)));
         if emptied {
-            self.drop_workspace(ws);
+            self.drop_workspace(ws, killing);
         }
     }
 
     /// Takes workspace `ws`, emptied, out of what holds it, closed, and so
-    /// each that holds it that it leaves empty.
-    fn drop_workspace(&mut self, ws: WsId) {
+    /// each that holds it that it leaves empty: killed if `killing` kills
+    /// it, else emptied.
+    fn drop_workspace(&mut self, ws: WsId, killing: Killing) {
         let mut emptied = Some(ws);
         while let Some(ws) = emptied {
             let Some(parent) = self.parent(ws) else {
                 return;
             };
+            let why = match killing {
+                Killing::All => Close::Killed,
+                Killing::Within(w) if self.within(ws, w) => Close::Killed,
+                Killing::Within(_) | Killing::None => Close::Emptied,
+            };
             self.take_workspace(ws);
             self.journal
-                .push(Event::Workspace((parent, ws), Change::Closed));
+                .push(Event::Workspace((parent, ws), Change::Closed(why)));
             self.journal.nest(ws, None);
             emptied = parent
                 .filter(|p| (self.workspace(*p)).is_some_and(|w| w.children.children.is_empty()));
@@ -1382,7 +1411,7 @@ impl Parts {
             if let Some(from) = from
                 && (parts.workspace(from)).is_some_and(|w| w.children.children.is_empty())
             {
-                parts.drop_workspace(from);
+                parts.drop_workspace(from, Killing::None);
             }
             Some(())
         })
@@ -1394,7 +1423,7 @@ impl Parts {
             .map(|(_, t)| t.id)
             .collect();
         tabs.into_iter()
-            .flat_map(|tab| self.remove_tab(tab))
+            .flat_map(|tab| self.remove_tab(tab, Killing::All))
             .collect()
     }
 
@@ -1432,9 +1461,7 @@ impl Parts {
                     tab.edit(&mut parts.journal, ws, |root| root.swap(a, b));
                 }
             }
-            parts.journal.push(Event::Layout(was_a));
             if was_a != was_b {
-                parts.journal.push(Event::Layout(was_b));
                 (parts.journal).push(Event::Pane((was_b, a), PaneEvent::Moved(was_a)));
                 (parts.journal).push(Event::Pane((was_a, b), PaneEvent::Moved(was_b)));
             }
@@ -1479,7 +1506,7 @@ impl Parts {
         (self.journal).push(Event::Pane((at, pane), PaneEvent::Moved(was)));
         match (rest, tab_mut(&mut self.workspaces, was.1)) {
             (Some(rest), Some((ws, from))) => from.edit(&mut self.journal, ws, |root| *root = rest),
-            (None, _) | (_, None) => self.drop_tab(was.1),
+            (None, _) | (_, None) => self.drop_tab(was.1, Close::Emptied, Killing::None),
         }
         Some(())
     }
@@ -1488,7 +1515,6 @@ impl Parts {
     pub(crate) fn arrange(&mut self, id: TabId, root: Tree) -> Option<()> {
         let (ws, tab) = tab_mut(&mut self.workspaces, id)?;
         tab.edit(&mut self.journal, ws, |old| *old = root);
-        self.journal.push(Event::Layout((ws, id)));
         Some(())
     }
 
@@ -1510,7 +1536,6 @@ impl Parts {
         }
         if root != tab.root {
             tab.edit(&mut self.journal, ws, |old| *old = root);
-            self.journal.push(Event::Layout((ws, id)));
         }
         Some(out)
     }
@@ -1541,7 +1566,7 @@ mod tests {
             .ok_or("pane")?
             .push_with(|_, bytes| bytes.extend_from_slice(b"key"));
         assert_eq!(session.parts.input, BTreeSet::from([two]));
-        session.parts.close_pane(two).ok_or("pane")?;
+        session.parts.close_pane(two, Close::Killed).ok_or("pane")?;
         assert!(
             session.parts.input.is_empty(),
             "closed panes leave no entries"
