@@ -1133,6 +1133,23 @@ mod tests {
         ))
     }
 
+    /// With one workspace at the top, the keys into a workspace in it and
+    /// out again come back where they started: out shows what the holding
+    /// workspace showed before.
+    #[test]
+    fn into_a_workspace_and_out_again_is_a_round_trip() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "opts +1 in str agent1 in 80 24 size new-tab")?;
+        let at = |s: &Session| s.place(c).map(|p| (p.ws, p.tab));
+        let start = at(&s);
+        s.input(c, &prefixed("wj"));
+        let agent1 = (fux_wire::id::WsId::of(2), fux_wire::id::TabId::of(2));
+        assert_eq!(at(&s), Some(agent1));
+        s.input(c, &prefixed("wk"));
+        assert_eq!(at(&s), start);
+        Ok(())
+    }
+
     /// Typing a default binding's keys does what running its program as the
     /// client does, and the program runs; a repeating one also enters its
     /// mode.
@@ -1167,14 +1184,13 @@ mod tests {
             assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
         }
         // Refused as the session stands: no pane that way, nothing before
-        // the first tab or workspace, none holding the first workspace,
-        // nothing but a shell to signal, and no readable nearby cwd in
+        // the first tab or workspace, nothing but a shell to signal, and no readable nearby cwd in
         // these processless panes.
         refused.sort();
         assert_eq!(
             refused,
             [
-                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wk", "wmh", "wn"
+                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wmh", "wn"
             ]
         );
         Ok(())
