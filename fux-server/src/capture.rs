@@ -13,33 +13,38 @@ use fux_wire::id::ClientId;
 use fux_wire::json::Json;
 use fux_wire::wire::Memory;
 
-/// What `since` reads a version's changed rows from: the screen's mark
-/// as it stood before each change, oldest first, by its revision (a
-/// version's `SCREEN`), fux-vt's rows each knowing the change that last
-/// touched it. Marks no row tells apart from the one before are dropped,
-/// so it keeps at most about three for each row the screen keeps.
+/// What `since` reads a version's changed rows from: each revision the
+/// screen had (a version's `SCREEN`), oldest first, with its mark as it
+/// began and as it last stood, fux-vt's rows each knowing the change that
+/// last touched them. One revision spans marks whose rows differ while the
+/// parser resumes work left over without reading a byte (REP's copies). A
+/// scroll, resize, reset, switch of screens or change to history moves
+/// rows where no mark says, so the revisions before it are forgotten.
+/// Marks no row tells apart are dropped, so it keeps at most about three
+/// for each row the screen keeps.
 #[derive(Debug, Default)]
 pub struct Since {
-    marks: Vec<(u64, Mark)>,
+    marks: Vec<(u64, Mark, Mark)>,
+    /// The revisions before it are forgotten.
+    from: u64,
     kept: usize,
 }
 
 impl Since {
     /// The screen as it is, about to change.
     pub fn note(&mut self, screen: &Screen) {
-        let revision = screen.revision();
-        if self.marks.last().is_some_and(|(at, _)| *at == revision) {
-            return;
+        let (revision, now) = (screen.revision(), screen.mark());
+        match self.marks.last_mut() {
+            Some((at, _, last)) if *at == revision => *last = now,
+            _ => self.marks.push((revision, now, now)),
         }
-        self.marks.push((revision, screen.mark()));
-        // Since a scroll, resize or switch of screens, every row is read
-        // again: the marks before it tell the same.
-        let before = self.full(screen);
-        if before > 1 {
+        let moved = (self.marks).partition_point(|(_, first, _)| screen.full_refresh_since(*first));
+        if let Some((at, ..)) = moved.checked_sub(1).and_then(|at| self.marks.get(at)) {
+            self.from = at.saturating_add(1);
             let mut at = 0usize;
             self.marks.retain(|_| {
                 at = at.saturating_add(1);
-                at == 1 || at > before
+                at > moved
             });
         }
         let rows = screen.rows().len();
@@ -48,25 +53,17 @@ impl Since {
         }
     }
 
-    /// How many marks every row is read again since.
-    fn full(&self, screen: &Screen) -> usize {
-        (self.marks).partition_point(|(_, mark)| screen.full_refresh_since(*mark))
-    }
-
-    /// Keeps the first mark, the first a full read is not needed since,
-    /// and after it each that some row changed since the one before but
-    /// not since it.
+    /// Keeps the first revision, and each with a row that changed since
+    /// the last mark of the one before it, up to its own last: a revision
+    /// dropped tells the same rows as the last mark of the one before.
     fn prune(&mut self, screen: &Screen) {
-        let full = self.full(screen);
         let mut keep = vec![false; self.marks.len()];
-        for at in [0, full] {
-            if let Some(keep) = keep.get_mut(at) {
-                *keep = true;
-            }
+        if let Some(keep) = keep.first_mut() {
+            *keep = true;
         }
-        if let Some(&(_, first)) = self.marks.get(full) {
+        if let Some(&(_, first, _)) = self.marks.first() {
             for row in screen.rows().filter(|row| row.changed_since(first)) {
-                let at = (self.marks).partition_point(|(_, mark)| row.changed_since(*mark));
+                let at = (self.marks).partition_point(|(.., last)| row.changed_since(*last));
                 if let Some(keep) = keep.get_mut(at) {
                     *keep = true;
                 }
@@ -77,34 +74,67 @@ impl Since {
         self.kept = self.marks.len();
     }
 
-    /// The screen's mark at `revision`, if it is known: as it is now, or
-    /// as it was before the change that took it past.
-    fn mark(&self, screen: &Screen, revision: u64) -> Option<Mark> {
-        let after = (self.marks).partition_point(|(at, _)| *at <= revision);
-        match after.checked_sub(1).and_then(|at| self.marks.get(at)) {
-            Some((at, mark)) if *at == revision => Some(*mark),
-            _ if revision == screen.revision() => Some(screen.mark()),
-            found => found.map(|(_, mark)| *mark),
+    /// The screen's mark at `revision`, or why no mark tells its rows: it
+    /// is forgotten, or it spans screens whose rows differ.
+    fn mark(&self, screen: &Screen, revision: u64) -> Result<Mark, &'static str> {
+        const MOVED: &str = "its rows moved since (a scroll, resize, reset, switch of screens or change to history), and fux can't say where";
+        let now = revision == screen.revision();
+        let after = (self.marks).partition_point(|(at, ..)| *at <= revision);
+        let (first, last) = match after.checked_sub(1).and_then(|at| self.marks.get(at)) {
+            _ if revision < self.from => return Err(MOVED),
+            Some(&(at, first, _)) if at == revision && now => (first, screen.mark()),
+            Some(&(at, first, last)) if at == revision => (first, last),
+            _ if now => (screen.mark(), screen.mark()),
+            Some(&(.., last)) => (last, last),
+            None => return Err(MOVED),
+        };
+        if screen.full_refresh_since(first) {
+            return Err(MOVED);
+        }
+        let differ = first != last
+            && (screen.rows()).any(|row| row.changed_since(first) && !row.changed_since(last));
+        match differ {
+            true => Err(
+                "it names screens whose rows differ, read while a repeat (REP) was still being drawn",
+            ),
+            false => Ok(first),
         }
     }
 }
 
 /// Whether a row changed since `since`, a version of `pane`: refused
-/// `stale` if it is another program's, whose screen is gone, or older
-/// than the changes kept.
+/// `stale` if it is another program's, whose screen is gone, or no mark
+/// tells its rows.
 fn changed_since(
     pane: &Pane,
     since: Version,
 ) -> Result<impl Fn(&Row<'_>) -> bool + Copy, fux_wire::code::Error> {
-    let screen = pane.screen();
     let stale = |why: &str| fail(Raise::Stale, format!("{since}: {why}; capture it whole"));
     if since.counts.respawns != pane.counts().respawns {
         return Err(stale("its program respawned since, on a new screen"));
     }
-    let mark = (pane.since().mark(screen, since.counts.screen))
-        .ok_or_else(|| stale("fux no longer knows what changed since"))?;
-    let full = screen.full_refresh_since(mark);
-    Ok(move |row: &Row<'_>| full || row.changed_since(mark))
+    let mark = (pane.since().mark(pane.screen(), since.counts.screen)).map_err(stale)?;
+    Ok(move |row: &Row<'_>| row.changed_since(mark))
+}
+
+/// For each row of `read`, whether a row of its line changed: the rows of
+/// a joined line go together.
+fn changed_lines<'a>(
+    read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
+    changed: impl Fn(&Row<'_>) -> bool,
+    view: CaptureView,
+) -> Vec<bool> {
+    let (mut keep, mut start, mut any) = (Vec::new(), 0, false);
+    for (row, _) in read {
+        any |= changed(&row);
+        keep.push(false);
+        if view.wrapped || !row.continues() {
+            keep.iter_mut().skip(start).for_each(|kept| *kept = any);
+            (start, any) = (keep.len(), false);
+        }
+    }
+    keep.iter_mut().skip(start).for_each(|kept| *kept = any);
+    keep
 }
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
@@ -140,6 +170,11 @@ pub fn pane(
         .0
         .skip(selection.start)
         .take(selection.len());
+    // Read `since`, the rows of the lines with a row that changed alone.
+    let keep = changed.map(|changed| changed_lines(read.clone(), changed, view));
+    let keep = keep.as_deref();
+    let read = (read.enumerate())
+        .filter(move |(at, _)| keep.is_none_or(|keep| keep.get(*at) == Some(&true)));
     let mut fields = vec![
         ("cursor", Json::str(journal.to_string())),
         ("title", Json::str(pane.title().as_str())),
@@ -150,7 +185,9 @@ pub fn pane(
     fields.push(("above", above.map_or(Json::Null, Json::count)));
     // Of the rows read: which go on in the next, as a joined capture joins
     // them, and the links on the columns read.
-    let wrapped = read.clone().map(|(row, _)| Json::Bool(row.continues()));
+    let wrapped = read
+        .clone()
+        .map(|(_, (row, _))| Json::Bool(row.continues()));
     fields.push(("wrapped_rows", Json::Array(wrapped.collect())));
     fields.push(("links", links(read.clone(), selection.start, view)));
     let of = Of::Pane {
@@ -158,42 +195,39 @@ pub fn pane(
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
         state: fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
     };
-    let since = changed.map(|changed| (selection.start, changed));
+    let since = keep.map(|_| selection.start);
     Ok(build(read, of, (screen.size().into(), cursor), view, since))
 }
 
-/// The capture of the rows `read`; given `since`, the number of the first
-/// and which rows changed, only the lines with a row that changed.
+/// The capture of the rows `read`, each with its place among them; read
+/// `since` a version, with the number of the first row they are counted
+/// from, each line's blank too and the row it begins on.
 fn build<'a>(
-    read: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)> + Clone,
+    read: impl Iterator<Item = (usize, (Row<'a>, std::ops::Range<usize>))> + Clone,
     of: Of,
     (size, cursor): ((u16, u16), Option<(u16, u16)>),
     view: CaptureView,
-    since: Option<(usize, impl Fn(&Row<'_>) -> bool)>,
+    since: Option<usize>,
 ) -> Captured {
     // A row starts a line unless the row before it continues on it.
     let joined = move |row: &Row<'_>| !view.wrapped && row.continues();
     let count = read
         .clone()
-        .scan(false, |into, (row, _)| {
+        .scan(false, |into, (_, (row, _))| {
             Some(!std::mem::replace(into, joined(&row)))
         })
         .filter(|starts| *starts)
         .count();
     let mut built = Builder::new(Vec::with_capacity(count));
-    built.since = since
-        .as_ref()
-        .map(|_| (Vec::with_capacity(count), 0, false));
+    built.since = since.is_some();
+    let mut numbers = Vec::with_capacity(if built.since { count } else { 0 });
     let (mut open, mut into) = (false, false);
-    for (index, (row, span)) in read.enumerate() {
+    for (at, (row, span)) in read {
         if open && !into {
             built.finish();
         }
-        if let (Some((_, first, any)), Some((_, changed))) = (&mut built.since, &since) {
-            if !into {
-                (*first, *any) = (index, false);
-            }
-            *any |= changed(&row);
+        if built.since && !into {
+            numbers.push(at);
         }
         (open, into) = (true, joined(&row));
         for (text, style) in cells_of(row, span, view) {
@@ -207,9 +241,8 @@ fn build<'a>(
         built.lines.push(Line::default());
     }
     let (lines, styles) = (built.lines, built.table.styles);
-    let first = since.map_or(0, |(first, _)| first);
-    let changed_rows = built.since.map(|(numbers, ..)| {
-        let row = |index: usize| u32::try_from(first.saturating_add(index)).unwrap_or(u32::MAX);
+    let changed_rows = since.map(|first| {
+        let row = |at: usize| u32::try_from(first.saturating_add(at)).unwrap_or(u32::MAX);
         numbers.into_iter().map(row).collect()
     });
     Captured {
@@ -221,9 +254,8 @@ fn build<'a>(
 /// A capture being built: its lines, the styles they name and its empty
 /// lines held back (dropped at the end unless `full`); and the line being read, in room reused from line to line:
 /// its text, its runs with their styles, and what trimming keeps of it,
-/// if any: its bytes, its runs, and its last run as kept. Read `since` a
-/// version, the index of each line's first row, and of the line being
-/// read, its first row and whether a row of it changed.
+/// if any: its bytes, its runs, and its last run as kept; and whether it
+/// is read `since` a version, which keeps blank lines too.
 struct Builder {
     lines: Vec<Line>,
     table: Table,
@@ -231,7 +263,7 @@ struct Builder {
     text: String,
     runs: Vec<(Attributes, Run)>,
     kept: Option<(usize, usize, Run)>,
-    since: Option<(Vec<usize>, usize, bool)>,
+    since: bool,
 }
 
 impl Builder {
@@ -243,7 +275,7 @@ impl Builder {
             text: String::new(),
             runs: Vec::new(),
             kept: None,
-            since: None,
+            since: false,
         }
     }
 
@@ -276,14 +308,8 @@ impl Builder {
     }
 
     /// Copy what trimming keeps of the line into exactly its room, then
-    /// empty it for the next. Read `since`, a line is kept only if a row
-    /// of it changed, blank or not.
+    /// empty it for the next.
     fn finish(&mut self) {
-        match &mut self.since {
-            Some((rows, first, true)) => rows.push(*first),
-            Some(_) => self.kept = None,
-            None => {}
-        }
         if let Some((bytes, runs, last)) = self.kept.take() {
             for _ in 0..std::mem::take(&mut self.empty) {
                 self.lines.push(Line::default());
@@ -300,9 +326,9 @@ impl Builder {
                 (run.bytes, run.cells) = (last.bytes, last.cells);
             }
             self.lines.push(kept);
-        } else if let Some((.., true)) = self.since {
+        } else if self.since {
             self.lines.push(Line::default());
-        } else if self.since.is_none() {
+        } else {
             self.empty = self.empty.saturating_add(1);
         }
         self.text.clear();
@@ -558,14 +584,16 @@ fn output_range(screen: &Screen) -> Json {
 
 /// The hyperlinks (OSC 8) on `rows` within the columns `view` takes of
 /// them, for `json`: a run of cells side by side in one link each, on the
-/// row `rows` counts from `first`, at the row's own column.
+/// row `rows` counts, each row's place among them from `first`, at the
+/// row's own column.
 fn links<'a>(
-    rows: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
+    rows: impl Iterator<Item = (usize, (Row<'a>, std::ops::Range<usize>))>,
     first: usize,
     view: CaptureView,
 ) -> Json {
     let mut runs: Vec<(usize, usize, usize, &fux_vt::Hyperlink)> = Vec::new();
-    for (index, (row, span)) in (first..).zip(rows).filter(|(_, (row, _))| row.has_links()) {
+    for (at, (row, span)) in rows.filter(|(_, (row, _))| row.has_links()) {
+        let index = first.saturating_add(at);
         for col in columns(row, span, view) {
             let Some(link) = row.link(col) else { continue };
             match runs.last_mut() {
@@ -1322,40 +1350,133 @@ mod tests {
         Ok(())
     }
 
+    /// A capture's text and rows, or its failure's code.
+    type Since = Result<(String, Vec<u32>), fux_wire::code::Code>;
+
+    /// A capture `since` a version.
+    fn since(
+        pane: &crate::pane::Pane,
+        since: fux_wire::command::Version,
+        wrapped: bool,
+    ) -> Result<Since, Box<dyn std::error::Error>> {
+        let view = CaptureView {
+            since: Some(since),
+            wrapped,
+            ..CaptureView::default()
+        };
+        Ok(
+            match super::pane(pane, journal()?, Some(usize::MAX), view) {
+                Ok(got) => Ok((got.text()?, got.changed_rows.ok_or("changed_rows")?)),
+                Err(error) => Err(error.code()),
+            },
+        )
+    }
+
     /// A capture `since` a version reads only the lines with a row that
-    /// changed after it, blank or not, each after its row; every row once
-    /// they moved (a scroll); and one of the pane's earlier changes, past
-    /// many kept and dropped since, as exactly as the last.
+    /// changed after it, blank or not, each after its row, and one of the
+    /// pane's earlier changes, past many kept and dropped since, as
+    /// exactly as the last.
     #[test]
     fn since_reads_only_the_rows_changed() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(5, 4, 1 << 20)?;
-        let journal = journal()?;
-        let since = |pane: &crate::pane::Pane, since| {
-            let view = CaptureView {
-                since: Some(since),
-                ..CaptureView::default()
-            };
-            let got = super::pane(pane, journal, Some(usize::MAX), view)?;
-            Ok::<_, Box<dyn std::error::Error>>((got.text()?, got.changed_rows))
-        };
+        let run = journal()?.run;
         pane.output(b"one\r\ntwo\r\nthree\r\nfour");
-        let first = pane.version(journal.run);
-        assert_eq!(since(&pane, first)?, (String::new(), Some(vec![])));
+        let first = pane.version(run);
+        assert_eq!(since(&pane, first, false)?, Ok((String::new(), vec![])));
         pane.output(b"\x1b[2;1H\x1b[2K\x1b[3;1Habcdefg");
-        let second = pane.version(journal.run);
+        let second = pane.version(run);
         assert_eq!(
-            since(&pane, first)?,
-            ("1:\n2:abcdefg".into(), Some(vec![1, 2]))
+            since(&pane, first, false)?,
+            Ok(("1:\n2:abcdefg".into(), vec![1, 2]))
         );
         for n in 0..200u8 {
             pane.output(format!("\x1b[5;1H{}", n % 10).as_bytes());
         }
-        assert_eq!(since(&pane, first)?.1, Some(vec![1, 2, 4]));
+        assert_eq!(
+            since(&pane, first, false)?.map(|(_, rows)| rows),
+            Ok(vec![1, 2, 4])
+        );
         // What it keeps to tell them stays within a few of the screen's rows.
         assert!(pane.since().marks.len() <= 20);
-        assert_eq!(since(&pane, second)?, ("4:9our".into(), Some(vec![4])));
-        pane.output(b"\r\nscrolled");
-        assert_eq!(since(&pane, second)?.1, Some(vec![0, 1, 2, 4, 5]));
+        assert_eq!(since(&pane, second, false)?, Ok(("4:9our".into(), vec![4])));
+        Ok(())
+    }
+
+    /// Rows moved where no mark says, by a scroll of the whole screen or
+    /// of a region of it: a version from before is refused `stale`, not
+    /// answered with rows that did not change; one from after reads on.
+    #[test]
+    fn since_refuses_rows_moved_where_no_mark_says() -> Result<(), Box<dyn std::error::Error>> {
+        let stale = fux_wire::code::Code::from(super::Raise::Stale);
+        let mut pane = pane(5, 10, 1 << 20)?;
+        let run = journal()?.run;
+        pane.output(b"HEADER\r\na\r\nb\r\nc\r\nFOOTER");
+        let before = pane.version(run);
+        pane.output(b"\x1b[2;4r\x1b[4;1H\n");
+        assert_eq!(since(&pane, before, true)?, Err(stale));
+        let after = pane.version(run);
+        pane.output(b"\x1b[4;1Hd");
+        assert_eq!(since(&pane, after, true)?, Ok(("3:d".into(), vec![3])));
+        pane.output(b"\x1b[r\x1b[5;1H\n");
+        assert_eq!(since(&pane, after, true)?, Err(stale));
+        Ok(())
+    }
+
+    /// A repeat (REP) drawn across the parser's work stops changes the
+    /// screen with no byte read: a version read between them names more
+    /// than one screen and is refused `stale`, never answered with rows
+    /// that did not change since; one read once it is drawn reads none,
+    /// and one from before reads the row it drew.
+    #[test]
+    fn since_refuses_a_version_read_mid_repeat() -> Result<(), Box<dyn std::error::Error>> {
+        let stale = fux_wire::code::Code::from(super::Raise::Stale);
+        let mut pane = pane(2, 4096, 0)?;
+        let run = journal()?.run;
+        let before = pane.version(run);
+        pane.output(b"\x1b[4hX\x1b[4000b");
+        let mut refused = 0usize;
+        while pane.has_unread() {
+            let fresh = pane.version(run);
+            match since(&pane, fresh, true)? {
+                Err(code) if code == stale => refused = refused.saturating_add(1),
+                answer => assert_eq!(answer, Ok((String::new(), vec![]))),
+            }
+            pane.read_unread();
+        }
+        assert!(refused > 0, "no version was read mid-repeat");
+        let drawn = pane.version(run);
+        assert_eq!(since(&pane, drawn, true)?, Ok((String::new(), vec![])));
+        assert_eq!(
+            since(&pane, before, true)?.map(|(_, rows)| rows),
+            Ok(vec![0])
+        );
+        Ok(())
+    }
+
+    /// A capture `since` a version says of the rows it reads alone: which
+    /// go on, and their links, at the rows `rows` counts; none when none
+    /// changed.
+    #[test]
+    fn a_since_capture_says_only_of_its_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(5, 4, 0)?;
+        let run = journal()?.run;
+        pane.output(b"\x1b]8;;https://a.test\x1b\\abcde\x1b]8;;\x1b\\");
+        let before = pane.version(run);
+        pane.output(b"\x1b[3;1HX\x1b[4;1H\x1b]8;;https://b.test\x1b\\L\x1b]8;;\x1b\\");
+        let tail = |version| {
+            let view = CaptureView {
+                since: Some(version),
+                wrapped: true,
+                ..CaptureView::default()
+            };
+            let json = json(&pane, None, view)?;
+            let from = json.find(r#""wrapped_rows""#).ok_or(json.clone())?;
+            Ok::<_, Box<dyn std::error::Error>>(json.get(from..).unwrap_or_default().to_owned())
+        };
+        let link = r#"{"row":3,"col":0,"len":1,"uri":"https://b.test"}"#;
+        let want = format!(r#""wrapped_rows":[false,false],"links":[{link}]}}"#);
+        assert_eq!(tail(before)?, want);
+        assert_eq!(tail(pane.version(run))?, r#""wrapped_rows":[],"links":[]}"#);
         Ok(())
     }
 

@@ -192,11 +192,15 @@ changing; the journal does not promise a complete stream of terminal replies.
 version of the pane, a blank one too, and adds `"changed_rows":[3,7]`
 after `lines`: the row each line begins on, numbered as `rows` counts
 rows (as text, each line is written after it, `3:text`, as `grep -n`
-writes lines). `version` is the version to read from next. After a
-scroll, a resize or a switch of screens every row holds another, and
-every line is read. A version of another server run, or another pane's,
-fails `bad_value`; one of the pane's earlier program, respawned since,
-fails `stale`, since its screen is gone: capture the pane whole.
+writes lines). `wrapped_rows` and `links` are of the rows of those lines
+alone. `version` is the version to read from next. A version of another
+server run, or another pane's, fails `bad_value`. It fails `stale`, and
+you capture the pane whole, where fux can't say which rows changed: the
+pane's program respawned since, on a new screen; its rows moved since,
+where no record says (a scroll, of the screen or of a region of it, a
+resize, a reset, a switch of screens or a change to history); or it was
+read while a repeat (REP) was still being drawn, so it names screens
+whose rows differ.
 
 `cursor` is the journal cursor read in the same server turn as `version`
 and the screen: `PANE str CURSOR events` from it starts reading the pane's
@@ -209,7 +213,7 @@ history not asked for (`null` for `last-output`; rows a `rows` range
 leaves out are not counted).
 
 `wrapped_rows` and `links` are of the rows the capture read, and only
-those. `wrapped_rows` holds each row's `true` where its line goes on in
+those (`since`: of the lines it reads). `wrapped_rows` holds each row's `true` where its line goes on in
 the next row (the rows a joined capture joins), in order: with
 `wrapped`, a row each of `lines`; joined, a `rows` range reads each line
 whole, so it may begin above the range. `links` holds a run of cells side

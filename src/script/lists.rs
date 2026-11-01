@@ -116,7 +116,7 @@ fn held(answer: &super::Answer) -> Vec<String> {
 ///   its terminal's facts (sixel, its cell's size) and its pane shown a
 ///   picture, styled text, a copy, a link and a marked command, a pane split with a variable set,
 ///   and each kind of directory a launch observes;
-/// - a capture of that pane, with styles, since it began, and of the
+/// - a capture of that pane, with styles, since the split, and of the
 ///   client;
 /// - held answers of every kind: an action's, a wait's that saw a change,
 ///   one that saw its program end, one whose pane closed, one timed out;
@@ -188,10 +188,19 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = record::snapshot(*s).map_err(|e| e.message)?;
         records(&format!("snapshot.{name}"), &snapshot, &mut lines);
     }
+    // Every style and a link again, written after the split resized the
+    // pane, for a capture since then.
+    let before = (session.parts.panes().get(&pane))
+        .ok_or("pane")?
+        .version(run);
+    let again = "\x1b[1;2;3;4;5;7;8;9;38;5;1;48;2;1;2;3mstyled\x1b[0m\r\n\
+                 \x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\r\n";
+    session.output(pane, again.as_bytes(), now);
+    let asks = &mut InProcess(&mut session);
     let held = [
         (
             "capture[pane]",
-            format!("%1 styles str %1:0.0.0.0.0:{run} since capture"),
+            format!("%1 styles str {before} since capture"),
         ),
         ("capture[client]", format!("str {client} client capture")),
     ];
