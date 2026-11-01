@@ -50,6 +50,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
 | `command_running` | a shell command runs (OSC 133 marks) |
 | `last_status` | the last shell command's status, else `null` |
+| `last_output` | where `last-output` reads, `{"start":[ROW,COL],"end":[ROW,COL]}`: from the last command's output start mark (OSC 133 C) up to its end mark (D), a running one's through its cursor's row; rows count from the screen's top, those above it (in history) negative. `null` where no command was marked, or its rows are gone (let go from history, or under the alternate screen) |
 | `bells` | bells and notifications rung since it started |
 | `notification` | the last notification's text, else `null`, without control characters |
 | `truncated` | which of `"title"` and `"notification"`, in that order, were cut, else `[]`: the fields above that the program sent more of than fux-vt keeps of a string (64 KiB), the rest dropped (`["notification"]`, `["title","notification"]`) |
@@ -171,12 +172,22 @@ changing; the journal does not promise a complete stream of terminal replies.
 ## `PANE capture json`
 
 ```json
-{"pane":"%1","screen_rows":23,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"],"wrap_pending":false,PANE FIELDS…,"above":0}
+{"pane":"%1","screen_rows":23,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"],"wrap_pending":false,PANE FIELDS…,"above":0,"wrapped_rows":[false,…],"links":[{"row":0,"col":2,"len":4,"uri":"https://…"}]}
 ```
 
 `above` is how many history rows are kept above the first row read:
 history not asked for (`null` for `last-output`; rows a `rows` range
 leaves out are not counted).
+
+`wrapped_rows` and `links` are of every row the capture reads from,
+numbered as `rows` counts them (the screen's rows, without `history`),
+whatever `rows` and `cols` take or `lines` join: so with `wrapped` alone,
+`lines` holds a row each, in that order. `wrapped_rows` holds a row's
+`true` where its line goes on in the next row: the rows a joined capture
+joins. `links` holds a run of cells side by side in one hyperlink (OSC 8)
+each, on row `row` from column `col` (a row's columns, counted from 0),
+`len` cells long, its target `uri`; a link that wraps has a run on each
+row. A link's text is what the screen shows; its `uri` is not.
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped`
 (each screen row a line). Blanks at a line's end are trimmed, but with

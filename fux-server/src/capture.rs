@@ -44,6 +44,12 @@ pub fn pane(
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     fields.push(("above", above.map_or(Json::Null, Json::count)));
+    // Every row it reads from, as `rows` counts them: which go on in the
+    // next, as a joined capture joins them, and the links on them.
+    let (rows, _) = rows_of(screen, history, view);
+    let wrapped = rows.clone().map(|(row, _)| Json::Bool(row.continues()));
+    fields.push(("wrapped_rows", Json::Array(wrapped.collect())));
+    fields.push(("links", links(rows)));
     let of = Of::Pane {
         version: pane.version(run),
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
@@ -391,6 +397,60 @@ fn last_output(screen: &Screen) -> Option<(std::ops::Range<usize>, std::ops::Ran
     ))
 }
 
+/// Where `last-output` reads, for `json`: from `start` up to `end`, each
+/// `[ROW,COL]`, its rows counted from the screen's top (above it, into
+/// history, negative), as pictures' are; a running command's through its
+/// cursor's row; `null` where it reads nothing.
+fn output_range(screen: &Screen) -> Json {
+    let Some((rows, cols, ended)) = last_output(screen) else {
+        return Json::Null;
+    };
+    let end = if ended {
+        cols.end
+    } else {
+        usize::from(screen.size().cols())
+    };
+    let top = i64::try_from(screen.history_len()).unwrap_or(i64::MAX);
+    let at = |row: usize, col: usize| {
+        let row = i64::try_from(row).unwrap_or(i64::MAX).saturating_sub(top);
+        Json::Array(vec![Json::Int(row), Json::count(col)])
+    };
+    Json::object(vec![
+        ("start", at(rows.start, cols.start)),
+        ("end", at(rows.end.saturating_sub(1), end)),
+    ])
+}
+
+/// The hyperlinks (OSC 8) on `rows` within their columns, for `json`: a
+/// run of cells side by side in one link each, `row` counting the rows.
+fn links<'a>(rows: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>) -> Json {
+    let mut runs: Vec<(usize, usize, usize, &fux_vt::Hyperlink)> = Vec::new();
+    for (index, (row, span)) in rows.enumerate().filter(|(_, (row, _))| row.has_links()) {
+        for col in span.start..span.end.min(row.len()) {
+            let Some(link) = row.link(col) else { continue };
+            match runs.last_mut() {
+                Some((at, start, len, last))
+                    if *at == index
+                        && last.key() == link.key()
+                        && start.saturating_add(*len) == col =>
+                {
+                    *len = len.saturating_add(1);
+                }
+                _ => runs.push((index, col, 1, link)),
+            }
+        }
+    }
+    let link = |(row, col, len, link): (usize, usize, usize, &fux_vt::Hyperlink)| {
+        Json::object(vec![
+            ("row", Json::count(row)),
+            ("col", Json::count(col)),
+            ("len", Json::count(len)),
+            ("uri", Json::str(link.uri())),
+        ])
+    };
+    Json::Array(runs.into_iter().map(link).collect())
+}
+
 /// What a client's terminal shows, row by row.
 pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
     let of = Of::Client(client);
@@ -533,6 +593,7 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
         ("history_lines", Json::count(screen.history_len())),
         ("command_running", Json::Bool(pane.command_running())),
         ("last_status", last_status.map_or(Json::Null, Json::int)),
+        ("last_output", output_range(screen)),
         ("bells", Json::uint(pane.alerts.rung)),
         (
             "notification",
@@ -608,6 +669,71 @@ mod tests {
             self.write_text(&mut text)?;
             Ok(text)
         }
+    }
+
+    /// A capture's JSON.
+    fn json(
+        pane: &crate::pane::Pane,
+        history: Option<usize>,
+        view: CaptureView,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let run = fux_wire::command::Run::now().ok_or("a clock")?;
+        let mut json = String::new();
+        super::pane(pane, run, history, view)?.write_json(&mut json)?;
+        Ok(json)
+    }
+
+    /// A capture says which of the rows it reads from go on in the next,
+    /// counted as `rows` counts them, whether it joins them or not.
+    #[test]
+    fn a_capture_says_which_rows_go_on() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(4, 5, 1 << 20)?;
+        pane.output(b"top\r\nabcdefghijklm\r\nend");
+        let views = [
+            CaptureView::default(),
+            CaptureView {
+                wrapped: true,
+                rows: Some((1, 2)),
+                ..CaptureView::default()
+            },
+        ];
+        for view in views {
+            let screen = json(&pane, None, view)?;
+            assert!(
+                screen.contains(r#""wrapped_rows":[true,true,false,false]"#),
+                "{screen}"
+            );
+        }
+        let all = json(&pane, Some(1), CaptureView::default())?;
+        assert!(
+            all.contains(r#""wrapped_rows":[false,true,true,false,false]"#),
+            "{all}"
+        );
+        Ok(())
+    }
+
+    /// Each link (OSC 8) is listed by the run of cells it covers on a row,
+    /// a wide glyph's two cells counted: one that wraps on a run on each
+    /// row, and links side by side apart.
+    #[test]
+    fn links_are_listed_by_their_cells() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(3, 10, 0)?;
+        let link = |uri: &str, text: &str| format!("\x1b]8;;{uri}\x1b\\{text}\x1b]8;;\x1b\\");
+        let output = format!(
+            "a {} b\r\n{}{}",
+            link("https://x.test/1", "li世"),
+            link("https://x.test/2", "0123456789ab"),
+            link("https://x.test/3", "z"),
+        );
+        pane.output(output.as_bytes());
+        let json = json(&pane, None, CaptureView::default())?;
+        assert!(
+            json.contains(
+                r#""links":[{"row":0,"col":2,"len":4,"uri":"https://x.test/1"},{"row":1,"col":0,"len":10,"uri":"https://x.test/2"},{"row":2,"col":0,"len":2,"uri":"https://x.test/2"},{"row":2,"col":2,"len":1,"uri":"https://x.test/3"}]"#
+            ),
+            "{json}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -917,7 +1043,7 @@ mod tests {
 
     /// An ended command's output is what lies between its marks: a prompt
     /// drawn after its end mark on the same row is not part of it. A
-    /// running one's is all of its rows so far.
+    /// running one's is all of its rows so far. Its range says so.
     #[test]
     fn last_output_ends_at_the_end_mark() -> Result<(), Box<dyn std::error::Error>> {
         let view = CaptureView {
@@ -938,6 +1064,16 @@ mod tests {
         )?
         .text()?;
         assert_eq!(text, "hello");
+        let range = |pane: &crate::pane::Pane| {
+            let json = json(pane, None, CaptureView::default())?;
+            let from = json.find(r#""last_output""#).ok_or(json.clone())?;
+            let to = json.find(r#","bells""#).ok_or(json.clone())?;
+            Ok::<_, Box<dyn std::error::Error>>(json.get(from..to).unwrap_or_default().to_owned())
+        };
+        assert_eq!(
+            range(&pane)?,
+            r#""last_output":{"start":[2,2],"end":[2,7]}"#
+        );
         // A running command's row is whole, its cursor at the start of it
         // too (a progress line it rewrites).
         pane.output(b"\r\n$ \x1b]133;C\x07step 1\r");
@@ -949,6 +1085,16 @@ mod tests {
         )?
         .text()?;
         assert_eq!(text, "step 1");
+        assert_eq!(
+            range(&pane)?,
+            r#""last_output":{"start":[2,2],"end":[2,20]}"#
+        );
+        // Scrolled into history, its rows count up from the screen's top.
+        pane.output(b"step 2\x1b]133;D;0\x07\r\n\r\n\r\n");
+        assert_eq!(
+            range(&pane)?,
+            r#""last_output":{"start":[-1,2],"end":[-1,6]}"#
+        );
         Ok(())
     }
 }
