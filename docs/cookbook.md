@@ -269,6 +269,22 @@ EOF
 fux require words.fux str shell pane str 42 screen-has
 ```
 
+## Read the dictionary
+
+A program's dictionary is data: `word` gives a word's record, where it
+came from (`core`, `fux`, `library`, or `run` for the program's own), its
+effect and help as declared, and the words that made it as they were read
+(`native` for a word in Rust); `dictionary` gives every word's, in the
+order they were defined. `see` writes what made a word, and `words` every
+name. None of them asks the server.
+
+```sh
+fux str line word str definition get
+[ "$(fux define double 2 mul end str double word str provenance get)" = run ]
+fux dictionary | jq -r 'select(.provenance == "fux") | .name' | wc -l
+fux define double 2 mul end see double
+```
+
 ## Run a fuxth program on its own
 
 `fuxth` runs a fuxth program without fux: a file, or the program on its
@@ -318,6 +334,40 @@ code str hello end is greeting greet
 code str goodbye end is greeting greet
 action-of greeting execute print
 EOF
+```
+
+## An outer interpreter in fuxth
+
+fuxth's own outer interpreter reads a word, finds it, and runs it, or
+compiles it while a definition is open unless it is immediate; a word that
+isn't one is a number. The same loop, written in fuxth from `next-word`,
+`find`, `immediate-word`, `compiling`, `execute`, `compile-call` and
+`literal`, reads the rest of its input itself, `define` and the immediate
+words included, until `next-word` finds none.
+
+```sh
+cat > interpret.fux <<'EOF'
+# s -- : run the word s names, or compile it into the definition open
+# unless it is immediate; else s is a number, given or compiled
+define interpret-word
+  dup find if
+    nip dup immediate-word compiling not or if execute else compile-call then
+  else
+    drop number compiling if postpone literal then
+  then
+end
+# -- : the rest of the input, a word at a time, to its end
+define interpret
+  begin str missing_token try next-word true catch drop false end while
+    interpret-word
+  end
+end
+EOF
+[ "$(echo 'include interpret.fux interpret define square dup mul end 7 square print' | fuxth)" = 49 ]
+printf '%s\n' 'include interpret.fux interpret' \
+  'define unless postpone not postpone if end immediate' \
+  'define check unless str no print then end' 'false check' > unless.fux
+[ "$(fuxth unless.fux)" = no ]
 ```
 
 ## Edit a file with fuxed

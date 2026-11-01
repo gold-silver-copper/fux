@@ -119,7 +119,8 @@ fn held(answer: &super::Answer) -> Vec<String> {
 /// - a capture of that pane, with styles, and of the client;
 /// - held answers of every kind: an action's, a wait's that saw a change,
 ///   one that saw its program end, one whose pane closed, one timed out;
-/// - `buffers`, `status`, and a batch of every kind of event.
+/// - `buffers`, `status`, a batch of every kind of event, a word's record
+///   and the dictionary's.
 #[test]
 fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     use super::testing::{InProcess, attached, evaluate};
@@ -186,6 +187,10 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         ("capture[pane]", "%1 styles capture".to_owned()),
         ("capture[client]", format!("str {client} client capture")),
     ];
+    let held = held.into_iter().chain([
+        ("word", "str dup word".to_owned()),
+        ("dictionary", "dictionary".to_owned()),
+    ]);
     for (path, code) in held {
         for value in evaluate(&code, None, asks, &mut Vec::new())? {
             records(path, &value, &mut lines);

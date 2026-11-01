@@ -188,6 +188,25 @@ mod tests {
     }
 
     #[test]
+    fn a_quoted_word_reads_back_as_it_was() -> Result<(), Error> {
+        let words = [
+            "plain",
+            "",
+            "two words",
+            "it's",
+            "a\"b",
+            "back\\slash",
+            "#x",
+            "tab\tx",
+        ];
+        for word in words {
+            let quoted = fuxth_core::quote(word);
+            assert_eq!(texts(&quoted)?, [word], "{quoted}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn arguments_stay_whole() {
         let tokens = arguments(&["str", "hello world", "# not a comment"]);
         let texts: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();

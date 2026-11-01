@@ -318,6 +318,8 @@ words! {
         Config ListKeys "list-keys" "--" "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux list-keys" [];
         Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
         Help Help "help" "--" "the words, under their headings" "fux help" [];
+        Help Word "word" "word -- record" "the dictionary's record of the word named so now: its name, provenance (core, fux, library, or run for this program's own), effect, documentation and definition (its words as read, or native)" "fux str dup word str definition get" [];
+        Help Dictionary "dictionary" "-- list" "a record of each word in this program's dictionary now, as word gives it, in the order they were defined" "fux dictionary | jq -r 'select(.provenance == \"run\") | .name'" [];
         Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
     }
     Opt {
@@ -515,7 +517,7 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
 }
 
 /// A value's JSON, as a string.
-fn json_text(value: &Value<Fux>) -> Value<Fux> {
+pub(super) fn json_text(value: &Value<Fux>) -> Value<Fux> {
     let mut text = String::new();
     // Writing to a `String` can't fail.
     _ = write_json_value(value, &mut text);
@@ -1277,8 +1279,9 @@ impl fuxth::Host for Host<'_> {
         self.files.resolve(path, from)
     }
 
-    fn read(&mut self, path: &std::path::Path) -> Result<String, String> {
-        self.files.read(path)
+    fn read(&mut self, path: &std::path::Path) -> Result<String, Failure> {
+        let unread = |why| Failure::new(fuxth::Code::Require, why);
+        self.files.read(path).map_err(unread)
     }
 
     fn call(
@@ -2006,6 +2009,8 @@ impl Host<'_> {
             Act::KeyNames => self.show(&format!("{}\n", fux_vt::keys::all_names().join(" "))),
             // -------------------------------------------------------- help
             Act::Help => self.show(&help::overview()),
+            Act::Word => Ok(Done::Later(Ask::Dictionary(Some(string(&next()?)?)))),
+            Act::Dictionary => Ok(Done::Later(Ask::Dictionary(None))),
             Act::Explain => {
                 let word = string(&next()?)?;
                 let text = help::explain(&word)

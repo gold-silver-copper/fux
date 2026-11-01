@@ -139,11 +139,11 @@ impl<A: AppValue> Machine<A> {
 
     /// Reads `text`, a library named `source`, to its end, and gives each
     /// of its definitions' help, which the comment on the line just above
-    /// its `define` says: `# EFFECT : ABOUT`. A definition without it is
-    /// refused, and the machine is as it was. A library is read on a
-    /// machine at rest, run as any program is, on `host` (the one its
-    /// programs run on, so the machine's code is made for one host), and
-    /// may not wait for it.
+    /// its `define` says: `# EFFECT : ABOUT`; the dictionary keeps it with
+    /// the definition (`Definition`). A definition without it is refused,
+    /// and the machine is as it was. A library is read on a machine at
+    /// rest, run as any program is, on `host` (the one its programs run on,
+    /// so the machine's code is made for one host), and may not wait for it.
     pub fn library<H: Host<Value = A>>(
         &mut self,
         source: &str,
@@ -170,10 +170,20 @@ impl<A: AppValue> Machine<A> {
                 Err(Error::new(Code::Contract, "a library stopped short", None))
             }
         });
-        if docs.is_err() {
-            *self = before;
+        match docs {
+            Ok(docs) => {
+                for doc in &docs {
+                    if let Some(entry) = self.names.get_mut(doc.name.as_str()) {
+                        entry.doc = Some(Rc::new(doc.clone()));
+                    }
+                }
+                Ok(docs)
+            }
+            Err(error) => {
+                *self = before;
+                Err(error)
+            }
         }
-        docs
     }
 
     /// The next word of the source on top, read and run (or compiled);
@@ -211,10 +221,11 @@ impl<A: AppValue> Machine<A> {
             self.given(Value::Int(n), true);
             return Ok(None);
         }
-        if let Some(Entry { xt, immediate }) = self.names.get(text) {
+        if let Some(Entry { xt, .. }) = self.names.get(text) {
             // A word of the core's that shapes the program runs here, in
             // no frame of its own.
-            if let (true, Some(Op::Builtin(word))) = (*immediate, xt.leaf()) {
+            let immediate = xt.immediate;
+            if let (true, Some(Op::Builtin(word))) = (immediate, xt.leaf()) {
                 // The core word itself, not a word of one step made of it.
                 self.read_here = *xt.name == *word.name();
                 let word = *word;
@@ -355,7 +366,8 @@ impl<A: AppValue> Machine<A> {
             Kind::Code => (self.source())
                 .filter(|_| self.read_here)
                 .map(|read| (read.id, read.next)),
-            Kind::Define(_) | Kind::Does | Kind::Temp => None,
+            Kind::Define(_) => self.made_from(),
+            Kind::Does | Kind::Temp => None,
         };
         self.building.push(Building {
             code: Steps::new(name),
@@ -677,31 +689,49 @@ impl<A: AppValue> Machine<A> {
         self.compiling = building.was_compiling;
         let mut code = building.code;
         code.locals = building.locals.len();
-        // The words read from its source between the `code` and the `end`
-        // the reader itself read there and ran, so `code` WORDS `end` read
-        // again does as they did; none if another word opened or closed it.
-        code.words = building.words.and_then(|(id, from)| {
-            let read = self
-                .source()
-                .filter(|read| read.id == id && self.read_here)?;
-            read.tokens
-                .get(from..read.next.checked_sub(1)?)
-                .map(Rc::from)
-        });
-        let code = self.version(code);
         let Kind::Define(name) = building.kind else {
+            // The words read from its source between the `code` and the
+            // `end` the reader itself read there and ran, so `code` WORDS
+            // `end` read again does as they did; none if another word
+            // opened or closed it.
+            code.words = (building.words)
+                .filter(|_| self.read_here)
+                .and_then(|(id, from)| self.read_since(id, from, 1));
+            let code = self.version(code);
             return self.given(Value::Xt(Xt(code)), false);
         };
+        let code = self.version(code);
         let at = self.position();
         if let (Some(made), Some(from), Some(to)) = (&mut self.made, building.from, at) {
             made.push((from, to));
         }
-        let entry = Entry {
-            xt: code,
-            immediate: false,
-        };
-        self.names.insert(Rc::clone(&name), entry);
+        let words = building
+            .words
+            .and_then(|(id, from)| self.read_since(id, from, 0));
+        self.define_word(Rc::clone(&name), code, words);
         self.latest = Some(name);
+    }
+
+    /// Where the words that make a word began, the name just read: the
+    /// source's id, and its word before the name (the defining word).
+    fn made_from(&self) -> Option<(u64, usize)> {
+        let read = self.source()?;
+        Some((read.id, read.next.checked_sub(2)?))
+    }
+
+    /// The words of the source `id`, the innermost being read, from `from`
+    /// up to the word read last, but for the `short` last of them.
+    fn read_since(&self, id: u64, from: usize, short: usize) -> Option<Rc<[Token]>> {
+        let read = self.source().filter(|read| read.id == id)?;
+        let to = read.next.checked_sub(short)?;
+        read.tokens.get(from..to).map(Rc::from)
+    }
+
+    /// The words that made a word, its name just read: the defining word
+    /// and the name, as read.
+    fn made_words(&self) -> Option<Rc<[Token]>> {
+        let (id, from) = self.made_from()?;
+        self.read_since(id, from, 0)
     }
 
     /// Where the word read last is in a library's tokens: the source read
@@ -739,21 +769,22 @@ impl<A: AppValue> Machine<A> {
     pub(crate) fn create(&mut self, word: Builtin, x: Option<Value<A>>) -> Result<(), Error> {
         let name = self.next_word(word, "a name")?;
         self.check_name(&name)?;
+        let words = self.made_words();
         let body = self.next_address()?;
         if matches!(word, Builtin::Variable | Builtin::Defer) {
             self.allot(1)?;
         }
         match x {
-            Some(x) => self.created(name.text, None, false, vec![(Op::Push(x), None)]),
+            Some(x) => self.created(name.text, None, (false, words), vec![(Op::Push(x), None)]),
             None if word == Builtin::Defer => {
                 let mut code = Steps::new(Rc::clone(&name.text));
                 code.action = Some(body);
                 code.push(Op::Push(Value::Addr(body)), None);
                 code.push(Op::Builtin(Builtin::Fetch), None);
                 code.push(Op::Builtin(Builtin::Execute), None);
-                self.named_word(name.text, code, false);
+                self.named_word(name.text, code, words);
             }
-            None => self.created(name.text, Some(body), false, Vec::new()),
+            None => self.created(name.text, Some(body), (false, words), Vec::new()),
         }
         Ok(())
     }
@@ -827,41 +858,48 @@ impl<A: AppValue> Machine<A> {
     #[inline(never)]
     pub(crate) fn does(&mut self, action: usize) -> Result<(), Error> {
         let latest = (self.latest.as_ref()).and_then(|name| self.names.get_key_value(name));
-        let made = latest.and_then(|(name, e)| Some((Rc::clone(name), e.xt.body?, e.immediate)));
-        let Some((name, body, immediate)) = made else {
+        let made = latest.and_then(|(name, e)| {
+            Some((
+                Rc::clone(name),
+                e.xt.body?,
+                (e.xt.immediate, e.words.clone()),
+            ))
+        });
+        let Some((name, body, made)) = made else {
             let why = "does gives the word create made last what it does, \
                        and the word defined last is none of create's";
             return Err(self.fail(Code::Type, why));
         };
         let slots = self.version_at(action).map_or(0, |code| code.locals);
         let call = vec![(Op::Call(action, slots), self.at())];
-        self.created(name, Some(body), immediate, call);
+        self.created(name, Some(body), made, call);
         self.leave_definition(self.frames.len());
         Ok(())
     }
 
-    /// `name` defined as the word defined last: it pushes `body`, if one,
-    /// for `body-of`, then takes `steps`.
+    /// `name` defined as the word defined last, immediate or not, made by
+    /// `words`: it pushes `body`, if one, for `body-of`, then takes `steps`.
     fn created(
         &mut self,
         name: Rc<str>,
         body: Option<Address>,
-        immediate: bool,
+        (immediate, words): (bool, Option<Rc<[Token]>>),
         steps: Vec<(Op<A>, Option<Token>)>,
     ) {
         let mut code = Steps::new(Rc::clone(&name));
         code.body = body;
+        code.immediate = immediate;
         let pushed = body.map(|body| (Op::Push(Value::Addr(body)), None));
         for (op, token) in pushed.into_iter().chain(steps) {
             code.push(op, token);
         }
-        self.named_word(name, code, immediate);
+        self.named_word(name, code, words);
     }
 
-    /// `name` defined as `code`, the word defined last.
-    fn named_word(&mut self, name: Rc<str>, code: Steps<A>, immediate: bool) {
+    /// `name` defined as `code`, made by `words`, the word defined last.
+    fn named_word(&mut self, name: Rc<str>, code: Steps<A>, words: Option<Rc<[Token]>>) {
         let xt = self.version(code);
-        self.names.insert(Rc::clone(&name), Entry { xt, immediate });
+        self.define_word(Rc::clone(&name), xt, words);
         self.latest = Some(name);
     }
 
@@ -917,11 +955,8 @@ impl<A: AppValue> Machine<A> {
                 let slot = self.globals.len();
                 self.globals.push(None);
                 let xt = self.one(&name.text, Op::GetGlobal(slot));
-                let entry = Entry {
-                    xt,
-                    immediate: false,
-                };
-                self.names.insert(name.text, entry);
+                let words = self.made_words();
+                self.define_word(name.text, xt, words);
                 slot
             }
         };
@@ -1008,7 +1043,7 @@ impl<A: AppValue> Machine<A> {
         self.compiled_only(Builtin::Postpone)?;
         let name = self.next_word(Builtin::Postpone, "a name")?;
         let entry = self.found(&name)?;
-        match entry.immediate {
+        match entry.xt.immediate {
             true => self.compile_word(&entry.xt),
             false => {
                 self.compile(Op::Compile(entry.xt));
@@ -1049,16 +1084,29 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    /// `immediate`.
+    /// `immediate`: the word defined last made again, immediate, as a
+    /// version of its own, so code compiled before keeps the one it was
+    /// compiled against.
     pub(crate) fn immediate(&mut self) -> Result<(), Error> {
-        let entry = (self.latest.as_ref()).and_then(|name| self.names.get_mut(name));
-        match entry {
-            Some(entry) => {
-                entry.immediate = true;
-                Ok(())
-            }
-            None => Err(self.fail(Code::BadName, "no word was defined yet")),
+        let latest = (self.latest.clone())
+            .and_then(|name| Some((Steps::clone(&self.names.get(&name)?.xt), name)));
+        let Some((mut steps, name)) = latest else {
+            return Err(self.fail(Code::BadName, "no word was defined yet"));
+        };
+        steps.immediate = true;
+        let xt = self.version(steps);
+        if let Some(entry) = self.names.get_mut(&name) {
+            entry.xt = xt;
         }
+        Ok(())
+    }
+
+    /// `see NAME`: what the dictionary says of NAME, written.
+    pub(crate) fn see<H: Host<Value = A>>(&mut self, host: &mut H) -> Result<(), Error> {
+        let name = self.next_word(Builtin::See, "a name")?;
+        self.found(&name)?;
+        let said = self.definition(&name.text).map(|d| d.to_string());
+        self.written(host, &said.unwrap_or_default())
     }
 
     /// `start-compiling`.
@@ -1103,7 +1151,9 @@ impl<A: AppValue> Machine<A> {
             }
             Some(_) | None => {}
         }
-        let text = host.read(&canonical).map_err(failed)?;
+        let text = host.read(&canonical).map_err(|f| {
+            Error::new(f.code, format!("{}: {}", path.text, f.message), at.as_ref())
+        })?;
         let place = at.map_or_else(|| path.place.to_string(), |t| t.place.to_string());
         let name = format!("{place} -> {}", canonical.display());
         let tokens = token::source(&name, &text)?;

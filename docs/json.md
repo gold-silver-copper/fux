@@ -442,3 +442,24 @@ against a server of another protocol runs again with that process's binary.
 With no server, `status` fails (`no_server`), saying the socket and whether
 a server that stopped left it there. Every server in fux's directory:
 `status json` on each socket there (`fux help servers`).
+
+## `word` and `dictionary`
+
+```json
+{"name":"dup","provenance":"library","effect":"a -- a a","documentation":"a copy of the top","definition":"define dup 0 pick end"}
+{"name":"split","provenance":"fux","effect":"subject -- answer","documentation":"split a pane along its required axis: a shell, or the program given","definition":"native"}
+{"name":"sq","provenance":"run","effect":null,"documentation":null,"definition":"define sq dup mul end"}
+```
+
+`str NAME word` gives the record of the word NAME names now in the
+program's own dictionary, read locally with no server; a name no word has
+fails `unknown_word`. `dictionary` gives a list of every word's record, the
+current definition of each name once, in the order they were defined: the
+core's, fux's, the libraries', then the program's own (a config's too).
+`provenance` is `core`, `fux`, `library`, or `run` for the program's own.
+`effect` and `documentation` are as declared, `null` for a word the program
+defined. `definition` is the words that made it as they were read, each
+quoted to be read back (`define … end`; for a word `create`, `variable`,
+`constant`, `defer`, `let` or a defining word made, that word and the
+name), then `immediate` if it is; `native` for a word in Rust. `see NAME`
+writes the same, after a comment saying where it was read.

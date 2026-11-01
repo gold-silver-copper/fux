@@ -85,11 +85,11 @@ impl Host for Toy {
         }
     }
 
-    fn read(&mut self, path: &Path) -> Result<String, String> {
+    fn read(&mut self, path: &Path) -> Result<String, Failure> {
         self.files
             .get(path)
             .cloned()
-            .ok_or_else(|| "gone".to_owned())
+            .ok_or_else(|| Failure::new(Code::Require, "gone"))
     }
 }
 
@@ -1154,6 +1154,9 @@ fn every_core_word_documents_its_effect_and_meaning() {
                         | Builtin::Constant
                         | Builtin::Defer
                         | Builtin::CompileCall
+                        | Builtin::See
+                        | Builtin::Words
+                        | Builtin::PrintStack
                 ),
             "{}",
             builtin.name()
@@ -1878,5 +1881,160 @@ fn does_gives_the_word_create_made_last_what_it_does() -> Result<(), Error> {
     );
     assert_eq!(code(run("define f does end define g end f")), Some("type"));
     assert_eq!(code(run("define f does end f")), Some("type"));
+    Ok(())
+}
+
+/// What `run_at` printed, joined.
+fn printed(text: &str) -> Result<String, Error> {
+    let mut host = Toy::default();
+    run_at(text, u64::MAX, &mut host)?;
+    Ok(host.printed.concat())
+}
+
+#[test]
+fn the_dictionary_has_each_word_once_in_the_order_defined() -> Result<(), Error> {
+    let mut machine = compile("define a 1 end define b 2 end define a 3 end 5 let v 6 let v")?;
+    assert_eq!(
+        machine.run(&mut Toy::default(), u64::MAX)?,
+        Outcome::Finished
+    );
+    let dictionary = machine.dictionary();
+    let names: Vec<&str> = dictionary.iter().map(|d| d.name).collect();
+    assert_eq!(
+        names.iter().rev().take(3).collect::<Vec<_>>(),
+        [&"v", &"a", &"b"]
+    );
+    let unique: std::collections::HashSet<&&str> = names.iter().collect();
+    assert_eq!(unique.len(), names.len(), "each name once");
+    // Where each came from, what it declares, and what made it.
+    let said = |name: &str| {
+        let d = machine.definition(name)?;
+        Some((d.origin, d.effect, d.about.is_some(), d.source()))
+    };
+    let made = |source: &str| Some(source.to_owned());
+    assert_eq!(
+        said("a"),
+        Some((Origin::Program, None, false, made("define a 3 end")))
+    );
+    assert_eq!(
+        said("v"),
+        Some((Origin::Program, None, false, made("let v")))
+    );
+    let dup = Some((
+        Origin::Library,
+        Some("a -- a a"),
+        true,
+        made("define dup 0 pick end"),
+    ));
+    assert_eq!(said("dup"), dup);
+    assert_eq!(
+        said("add"),
+        Some((Origin::Core, Some("n m -- n+m"), true, None))
+    );
+    assert_eq!(
+        said("ticket"),
+        Some((Origin::Host, Some("-- ticket"), false, None))
+    );
+    // `words` writes the same names, in the same order.
+    let words: Vec<String> = names.iter().map(|n| format!("{n}\n")).collect();
+    machine.read(token::source("t", "words")?, None);
+    let mut host = Toy::default();
+    machine.run(&mut host, u64::MAX)?;
+    assert_eq!(host.printed.concat(), words.concat());
+    Ok(())
+}
+
+#[test]
+fn see_writes_source_that_reads_back_as_the_same_definition() -> Result<(), Error> {
+    let defined = [
+        (
+            "greet",
+            "define greet str 'hello, world' print str \"it's\" print end",
+        ),
+        (
+            "unless",
+            "define unless postpone not postpone if end immediate",
+        ),
+        ("square", "define square dup\n  mul end"),
+    ];
+    for (name, program) in defined {
+        let said = printed(&format!("{program}\nsee {name}"))?;
+        let (comment, source) = said.split_once('\n').unwrap_or_default();
+        assert_eq!(comment, "# t:1", "{said}");
+        // Read back, it makes a word `see` says the same of.
+        let again = printed(&format!("{source}\nsee {name}"))?;
+        assert_eq!(again, format!("# t:1\n{source}"), "{name}");
+    }
+    // A word another made: the word that made it, and its name.
+    let made = "5 constant five define table create allot does swap add end 3 table slots";
+    let said = printed(&format!("{made} see five see slots"))?;
+    assert_eq!(said, "# t:1\nconstant five\n# t:1\ntable slots\n");
+    let native = printed("see add see if")?;
+    let core = "# add ( n m -- n+m ): native, the core's\n# if ( flag -- ): native, the core's, immediate\n";
+    assert_eq!(native, core);
+    assert_eq!(code(run("see nosuch")), Some("unknown_word"));
+    Ok(())
+}
+
+/// `immediate` makes the word defined last again, as a version of its own:
+/// an xt taken, and code compiled, before keep the one that isn't.
+#[test]
+fn immediate_makes_a_version_of_its_own_that_immediate_word_tells() -> Result<(), Error> {
+    let program = "define seven 7 end tick seven let before code seven end let calls
+        immediate tick seven immediate-word before immediate-word
+        tick if immediate-word code end immediate-word calls execute";
+    let left = [true, false, true, false].map(Value::Bool);
+    assert_eq!(run(program)?, [&left[..], &ints(&[7])[..]].concat());
+    Ok(())
+}
+
+#[test]
+fn print_stack_writes_what_depth_counts_and_leaves_it() -> Result<(), Error> {
+    let program = "1 str 'a b' print-stack list 2 print-stack end";
+    assert_eq!(printed(program)?, "1\na b\n2\n");
+    let left = run(program)?;
+    assert_eq!(left.len(), 3);
+    Ok(())
+}
+
+/// A host's read the user stopped fails `include` with the host's code, so
+/// a `try` catches it as that; one that doesn't read fails `require`.
+#[test]
+fn a_hosts_read_failure_keeps_its_code() -> Result<(), Error> {
+    #[derive(Default)]
+    struct Stopped(Toy);
+    impl Host for Stopped {
+        type Value = Ticket;
+        type Request = i64;
+        fn call(
+            &mut self,
+            word: usize,
+            args: Args<'_, Ticket>,
+            out: &mut Vec<Value<Ticket>>,
+        ) -> Result<Done<i64>, Failure> {
+            self.0.call(word, args, out)
+        }
+        fn write(&mut self, text: &str) -> Result<(), Failure> {
+            self.0.write(text)
+        }
+        fn resolve(&mut self, path: &str, _: Option<&Path>) -> Result<PathBuf, String> {
+            Ok(PathBuf::from(path))
+        }
+        fn read(&mut self, path: &Path) -> Result<String, Failure> {
+            match path.to_str() {
+                Some("stop") => Err(Failure::new(Code::Interrupt, "interrupted")),
+                _ => Err(Failure::new(Code::Require, "no such file")),
+            }
+        }
+    }
+    let ran = |text: &str| {
+        let mut machine = compile(text)?;
+        machine.run(&mut Stopped::default(), u64::MAX)?;
+        Ok::<_, Error>(machine.stack().to_vec())
+    };
+    let opt = "define opt str interrupt try tick include execute catch drop str caught end end";
+    let caught = ran(&format!("{opt} opt stop"))?;
+    assert_eq!(caught, [Value::str("caught")]);
+    assert_eq!(ran("include gone").map_err(|e| e.code), Err(Code::Require));
     Ok(())
 }

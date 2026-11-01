@@ -45,7 +45,6 @@ version = "0.36.0"
 dependencies = [
  "fux-vt",
  "fuxix",
- "fuxth",
  "fuxth-core",
 ]
 
