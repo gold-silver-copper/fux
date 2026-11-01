@@ -1844,7 +1844,7 @@ mod tests {
             }
             server.paint(0, Instant::now());
             // A notice a cell narrower than the screen covers its row.
-            let feedback = format!("{}feedback", "-".repeat(31));
+            let feedback = "-------------------------------feedback";
             server.session.notify_to(client, feedback, false);
             server.paint(0, Instant::now());
             let attached = server
