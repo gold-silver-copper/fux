@@ -1254,6 +1254,16 @@ fn marks_hold_constructs_open_while_compiling() -> Result<(), Error> {
     assert!(said(other).ends_with("the open block is define … end, of other code"));
     let kind = "define f stop-compiling dup kind start-compiling literal end f";
     assert_eq!(run(kind)?, strs(&["mark"]));
+    // A failure no try catches drops the code being compiled and its
+    // marks; the values stay.
+    for text in ["1 define x 2", "1 define x 2 frob end"] {
+        let mut machine = compile(text)?;
+        assert!(
+            machine.run(&mut Toy::default(), u64::MAX).is_err(),
+            "{text}"
+        );
+        assert_eq!(machine.stack(), ints(&[1]).as_slice(), "{text}");
+    }
     Ok(())
 }
 

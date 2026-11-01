@@ -456,10 +456,16 @@ impl<A: AppValue> Machine<A> {
     /// body began undone (its calls, sources, `let` frames, blocks, values
     /// and code being compiled), its message (or the value it carries) and
     /// code pushed, the handler next. Else the error no `try` caught, the
-    /// machine left where that error happened, for its host to say where.
+    /// machine left where that error happened, for its host to say where,
+    /// but for the code it was compiling.
     fn recover(&mut self, error: Error, carried: Option<Value<A>>) -> Result<(), Error> {
         let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&error.code));
         let Some(caught) = self.marks.iter().rposition(catches) else {
+            // Uncaught, the code being compiled means nothing: it and its
+            // marks go, and the values stay.
+            self.building.clear();
+            self.compiling = false;
+            self.stack.retain(|value| !matches!(value, Value::Mark(_)));
             return Err(error);
         };
         // Those inside it end with it.
