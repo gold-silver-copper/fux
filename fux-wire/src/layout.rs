@@ -585,32 +585,32 @@ impl Tree {
     /// The smallest length it can have along `axis`: a stack's, the
     /// largest of its children's, as each is laid out on all of it.
     fn min_len(&self, axis: Axis) -> u16 {
-        self.least().0.along(axis)
+        self.least(axis).0
     }
 
-    /// The smallest lengths it can have, and those of each split's
-    /// children along its axis, the last split in preorder first: worked
-    /// out from its leaves up.
-    fn least(&self) -> (Least, Vec<(u16, u16)>) {
+    /// Its smallest length along `axis`, and those of the children of
+    /// each split along it, the last split in preorder first: worked out
+    /// from its leaves up.
+    fn least(&self, axis: Axis) -> (u16, Vec<(u16, u16)>) {
         let nodes: Vec<&Tree> = self.walk(None).collect();
         // Each subtree's done whose parent is not yet, the latest last: a
         // node's children's are the last of them, its first child's last.
         let (mut done, mut splits) = (Vec::new(), Vec::new());
         for tree in nodes.into_iter().rev() {
             let at = done.len().saturating_sub(tree.children().count());
-            let children: &[Least] = done.get(at..).unwrap_or_default();
-            let axis = match tree {
-                Tree::Split(split) => Some(split.axis),
-                Tree::Pane(_) | Tree::Stack(_) => None,
-            };
-            if let (Some(axis), [second, first]) = (axis, children) {
-                splits.push((first.along(axis), second.along(axis)));
+            let children: &[u16] = done.get(at..).unwrap_or_default();
+            let along = matches!(tree, Tree::Split(split) if split.axis == axis);
+            if let (true, [second, first]) = (along, children) {
+                splits.push((*first, *second));
             }
-            let least = (children.iter().copied()).reduce(|a, b| a.with(b, axis));
+            let least = (children.iter().copied()).reduce(|a, b| match along {
+                true => a.saturating_add(1).saturating_add(b),
+                false => a.max(b),
+            });
             done.truncate(at);
-            done.push(least.unwrap_or(Least::PANE));
+            done.push(least.unwrap_or(MIN));
         }
-        (done.pop().unwrap_or(Least::PANE), splits)
+        (done.pop().unwrap_or(MIN), splits)
     }
 
     /// Puts `new` beside `target`, on `side` of it, along `axis`: the
@@ -998,40 +998,6 @@ impl std::fmt::Debug for Tree {
     }
 }
 
-/// The smallest length a tree can have along each axis.
-#[derive(Clone, Copy)]
-struct Least {
-    horizontal: u16,
-    vertical: u16,
-}
-
-impl Least {
-    const PANE: Least = Least {
-        horizontal: MIN,
-        vertical: MIN,
-    };
-
-    fn along(self, axis: Axis) -> u16 {
-        match axis {
-            Axis::Horizontal => self.horizontal,
-            Axis::Vertical => self.vertical,
-        }
-    }
-
-    /// Of two side by side along `axis`, a separator between; with none,
-    /// on one rectangle.
-    fn with(self, other: Least, axis: Option<Axis>) -> Least {
-        let len = |a: u16, b: u16, along: Axis| match axis == Some(along) {
-            true => a.saturating_add(1).saturating_add(b),
-            false => a.max(b),
-        };
-        Least {
-            horizontal: len(self.horizontal, other.horizontal, Axis::Horizontal),
-            vertical: len(self.vertical, other.vertical, Axis::Vertical),
-        }
-    }
-}
-
 impl Stack {
     /// Its children, in order.
     pub fn children(&self) -> impl DoubleEndedIterator<Item = &Tree> {
@@ -1154,7 +1120,7 @@ pub fn place_into(root: &Tree, area: Rect, client: Option<ClientId>, out: &mut P
 fn place_tree(root: &Tree, area: Rect, client: Option<ClientId>, out: &mut Placement) {
     // Every node is met in preorder, those not placed on an empty
     // rectangle, so that each split meets its own least here.
-    let mut least = root.least().1;
+    let (mut wide, mut tall) = (root.least(Axis::Horizontal).1, root.least(Axis::Vertical).1);
     enum Next<'a> {
         Place(&'a Tree, Rect),
         Line(Separator),
@@ -1172,6 +1138,10 @@ fn place_tree(root: &Tree, area: Rect, client: Option<ClientId>, out: &mut Place
             Tree::Pane(p) if !area.is_empty() => out.panes.push((*p, area)),
             Tree::Pane(_) => {}
             Tree::Split(split) => {
+                let least = match split.axis {
+                    Axis::Horizontal => &mut wide,
+                    Axis::Vertical => &mut tall,
+                };
                 let mins = least.pop().unwrap_or((MIN, MIN));
                 let [first, line, second] = split.parts(area, mins);
                 left.push(Next::Place(&split.second, second));
