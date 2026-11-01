@@ -165,9 +165,8 @@ panes as it begins and answers changes in watch order, not exit chronology.
   ```fux
   args first pane
   begin
-    wrapped marks capture dup string str '⟦Alpha⟧' contains
-    if true else changed 5 timeout wait false then
-  until
+    wrapped marks capture dup string str '⟦Alpha⟧' contains not
+  while changed 5 timeout wait end
   let seen seen string print seen version print
   ```
 - **Change that TUI's selection:** save as `select-next.fux`; pass the
@@ -177,9 +176,8 @@ panes as it begins and answers changes in watch order, not exit chronology.
   ```fux
   args first expect str Down key send-keys
   begin
-    wrapped marks capture dup string str '⟦Beta⟧' contains
-    if true else changed 5 timeout wait false then
-  until
+    wrapped marks capture dup string str '⟦Beta⟧' contains not
+  while changed 5 timeout wait end
   let seen seen string print seen version print
   ```
 - **What changes anywhere:** `SCOPE str CURSOR events` prints the scope's
@@ -281,8 +279,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
   `F5`, `C-c`, `M-s`, `S-Tab`; `Esc`, `Backspace`, `PgUp` too; a typo is
   refused; `key-names` lists the vocabulary), `str T paste` (bracketed if the program
   asked), `str HEX bytes` (`1b5b41`), of any length. A key
-  N times is a loop: `%2 0 3 range each drop str Down key end
-  send-keys`. A file's text, whole, from stdin (`input`):
+  N times is a loop: `%2 3 0 do str Down key loop send-keys`. A file's text, whole, from stdin (`input`):
 
   ```sh
   fux %2 input paste send-keys < FILE
@@ -435,8 +432,9 @@ request on its answer or handle: `new-tab dup str tests rename`, then
 `str tests pane`.
 
 `X let NAME` names a value, `define NAME … end` makes a word, `if … else …
-then` and `begin … until` decide and repeat, `list … end` gathers what its
-body leaves, `SEQ each … end` runs once per element, `CODES try … catch …
+then` and `begin … until` decide and repeat (`begin … FLAG while … end`
+tests first; `LIMIT FIRST do … loop` counts, `i` its index), `list … end`
+gathers what its body leaves, `SEQ each … end` runs once per element, `CODES try … catch …
 end` runs its handler instead of failing with one of CODES (`str timeout
 try %2 5 timeout wait catch … end`, `str all try` for any: its body
 starts with an empty stack; the handler, with the stack as at `try` and

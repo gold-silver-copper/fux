@@ -73,6 +73,10 @@ definition is compiled:
 | `X to NAME` | sets the `let` name NAME, a top-level value from inside a definition too |
 | `FLAG if … then`, `FLAG if … else … then` | one branch |
 | `begin … FLAG until` | the body, until FLAG is true |
+| `begin … FLAG while … end`, `begin … again` | while FLAG is true, the part after `while`, then from `begin` again; for ever (until `leave-definition` or a failure) |
+| `LIMIT FIRST do … loop`, `do … N loop-by` | the body for each index from FIRST up to before LIMIT, none when the two are equal (Forth's `?do`); `loop-by` moves the index N, and ends as it crosses from just under LIMIT to LIMIT, either way. `i` gives the index, `j` the loop around's, `leave` ends the loop. Its index lives apart from the return stack |
+| `X case V of … end … end` | the part after the first `V of` whose V equals X, X dropped; else the part before the last `end`, which drops the top value (X, unless that part moved it) |
+| `ahead … then` | a jump past the words up to `then` (a mark, as `if`'s is, which `swap` and `roll` move as Forth's `cs-roll` does) |
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |
 | `SEQ each … end` | the body once per element of a string or list, the element pushed; the body sees the whole stack |
 | `CODES try … catch … end` | the body, from an empty stack, its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`; `str all try` for every code a running word raises), what it began is undone (its calls, sources being read, blocks, code being compiled and values) and the handler runs instead, on the stack as it was at `try` and one **failure**: its code, its number in Forth's table of `throw` codes, its message and place, the value an application's failure may carry (`Machine::raise`'s `carried`), and the steps whose words had taken effect (`Machine::acted`). `throw` raises it again; a failure of another code goes through untouched, as does one in the handler |
@@ -84,7 +88,7 @@ definition is compiled:
 | `stop-compiling` | run the words read, until `start-compiling`, though a definition is open |
 | `include PATH`, `require PATH` | the file's words read here, through the host, relative to the file naming it; `require` reads a file once, and a cycle is an error |
 
-At the top level a construct (`if`, `begin`, `list`, `each`, `try`) is
+At the top level a construct (`if`, `begin`, `do`, `case`, `list`, `each`, `try`) is
 compiled into code of its own, which runs as soon as its last construct
 closes. While compiling, each open construct is a **mark** on the stack,
 which only its own code's words resolve; `end` closes the innermost.
@@ -95,6 +99,10 @@ which only its own code's words resolve; `end` closes the innermost.
 | `pick` | xn … x0 n -- xn … x0 xn | `0 pick` copies the top |
 | `roll` | xn … x0 n -- xn-1 … x0 xn | `1 roll` swaps |
 | `add sub mul div` | n m -- r | `add sub mul` wrap around |
+| `mul-div-mod` | n k d -- r q | n×k divided by d, the product exact (Forth's `*/mod`) |
+| `and or xor invert` | a b -- x / x -- x | logical on booleans, bitwise on integers |
+| `shift-left shift-right` | n u -- n | 0s come in; past 63 places, 0 |
+| `within` | x lo hi -- flag | lo ≤ x < hi, around the end of the integers when hi is below lo |
 | `lt` | a b -- flag | two integers, two strings (by character codes) or two lists (element by element) |
 | `eq` | a b -- flag | the same, of one kind; two xts, the same version of a word |
 | `len` | seq -- n | |
@@ -104,6 +112,10 @@ which only its own code's words resolve; `end` closes the innermost.
 | `push` | seq x -- seq | x at the end (to a string, x is a string) |
 | `put` | seq i x -- seq | element i replaced |
 | `char` | c -- s | the one-character string of a character's code |
+| `depth` | -- n | how many values the stack has (in a block that starts it empty, above its start) |
+| `to-return from-return copy-return` | x -- / -- x / -- x | the return stack: values only, never where a word returns to; a caught failure restores it |
+| `i j leave` | -- n / -- n / -- | in a `do` loop of the code running: its index, the outer loop's, end it now |
+| `digits-begin hold holds digits-end` | -- / c -- / s -- / n -- s | a number's text, built from its end (Forth's `<# hold holds #>`) |
 | `kind` | x -- name | `integer`, `boolean`, `string`, `list`, `xt`, or the host's |
 | `string` | x -- s | as `print` shows it: a list's elements with spaces |
 | `print`, `write`, `emit` | x -- / x -- / c -- | now: a line; text with no line end; a character |
@@ -118,8 +130,8 @@ which only its own code's words resolve; `end` closes the innermost.
 | `evaluate` | s -- | reads s as a source file is read, here; only where the host enables it |
 
 The standard library adds, among others: `dup swap over rot nip -rot
-2dup 2drop`, `true false not and or`, `gt le ge ne min max`, `mod negate abs
-even pow`, `is-int is-string is-list`, `empty cat glue first last pop
+2dup 2drop tuck dup-nonzero 2swap 2over`, `true false not`, `gt le ge ne
+min max`, `mod negate abs even pow div-mod mul-div`, `digit digits sign`, `is-int is-string is-list`, `empty cat glue first last pop
 shift remove range reverse index-of contains count sum largest smallest
 merge sort pack unpack`, `quote number join split-on fields lines trim
 starts-with is-space is-digit is-upper is-lower is-letter upper lower copies
