@@ -30,9 +30,9 @@ pub(crate) fn refusing() -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fault {
     /// The check's name.
-    pub check: &'static str,
+    pub(crate) check: &'static str,
     /// What was wrong, and where.
-    pub detail: String,
+    pub(crate) detail: String,
 }
 
 /// What the checker did: the checks that ran, the faults found, and the
@@ -72,18 +72,6 @@ impl Checked {
         self.faults.extend(other.faults);
         self.waiting.extend(other.waiting);
     }
-    /// The checks that ran, by name.
-    pub fn ran(&self) -> &[&'static str] {
-        &self.ran
-    }
-    /// The faults found.
-    pub fn faults(&self) -> &[Fault] {
-        &self.faults
-    }
-    /// The invariants not checked yet, each with what it waits on.
-    pub fn waiting(&self) -> &[(&'static str, &'static str)] {
-        &self.waiting
-    }
     /// Whether no check found a fault.
     pub fn is_clean(&self) -> bool {
         self.faults.is_empty()
@@ -91,6 +79,23 @@ impl Checked {
     /// The faults found by `check`.
     pub fn faults_of(&self, check: &str) -> impl Iterator<Item = &Fault> {
         self.faults.iter().filter(move |f| f.check == check)
+    }
+}
+
+/// What the checker's own tests read.
+#[cfg(test)]
+impl Checked {
+    /// The checks that ran, by name.
+    pub(crate) fn ran(&self) -> &[&'static str] {
+        &self.ran
+    }
+    /// The faults found.
+    pub(crate) fn faults(&self) -> &[Fault] {
+        &self.faults
+    }
+    /// The invariants not checked yet, each with what it waits on.
+    pub(crate) fn waiting(&self) -> &[(&'static str, &'static str)] {
+        &self.waiting
     }
 }
 

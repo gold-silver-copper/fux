@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 /// The most pixels across or down a picture may show, and keep: a 4K
 /// screen's.
-pub const MAX_SIDE: u32 = 4096;
+pub(crate) const MAX_SIDE: u32 = 4096;
 /// The most pixels a picture may keep in all, one a position of its grid,
 /// which bounds its memory.
-pub const MAX_PIXELS: usize = 4096 * 2160;
+pub(crate) const MAX_PIXELS: usize = 4096 * 2160;
 /// The pixel aspect ratio, tall to wide in hundredths, each macro parameter
 /// P1 selects (DEC STD 070, 7.1).
 const MACRO_ASPECT: [u32; 10] = [200, 200, 450, 300, 250, 200, 150, 130, 112, 100];
@@ -45,22 +45,6 @@ pub struct Picture {
 }
 
 impl Picture {
-    /// A picture `width` by `height` of the pixels `rgba`, if they are
-    /// exactly that many and each side is at most [`MAX_SIDE`]
-    /// (`THREATS.md` B07).
-    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Option<Self> {
-        fits_rgba(width, height, rgba.len()).then_some(Self {
-            width,
-            height,
-            across: width,
-            down: height,
-            aspect: (1, 1),
-            background: None,
-            ended: height.saturating_sub(1),
-            rgba: Arc::new(rgba),
-            covered: None,
-        })
-    }
     /// The square pixel row its last sixel band ends on: the vertical
     /// motion its data made, down from its top; a picture made whole, its
     /// last row.
@@ -80,7 +64,7 @@ impl Picture {
         self.rgba.capacity().saturating_add(self.covered_bytes())
     }
     /// The RGBA of the pixel at `x`, `y`, if it is in the picture.
-    pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.width || y >= self.height {
             return None;
         }
@@ -340,15 +324,6 @@ impl PartialEq for Picture {
 }
 
 impl Eq for Picture {}
-
-/// Whether `len` bytes are the pixels of a picture `width` by `height`,
-/// each side at most [`MAX_SIDE`].
-fn fits_rgba(width: u32, height: u32, len: usize) -> bool {
-    let bytes = (u64::from(width).checked_mul(u64::from(height)))
-        .and_then(|pixels| pixels.checked_mul(4))
-        .and_then(|bytes| usize::try_from(bytes).ok());
-    !(width > MAX_SIDE || height > MAX_SIDE) && bytes == Some(len)
-}
 
 /// Where grid position `x`, `y` shows in square pixels, at `aspect`: a
 /// position taller than wide takes as many rows, one wider as many columns.
@@ -1080,6 +1055,27 @@ fn sixels_run(out: &mut Vec<u8>, run: &mut (u8, u32), sixel: u8, n: u32) {
 mod tests {
     use super::*;
 
+    impl Picture {
+        /// A picture `width` by `height` of the pixels `rgba`, if they are
+        /// exactly that many.
+        pub(crate) fn new(width: u32, height: u32, rgba: Vec<u8>) -> Option<Self> {
+            let bytes = (u64::from(width).checked_mul(u64::from(height)))
+                .and_then(|pixels| pixels.checked_mul(4))
+                .and_then(|bytes| usize::try_from(bytes).ok());
+            (bytes == Some(rgba.len())).then(|| Self {
+                width,
+                height,
+                across: width,
+                down: height,
+                aspect: (1, 1),
+                background: None,
+                ended: height.saturating_sub(1),
+                rgba: Arc::new(rgba),
+                covered: None,
+            })
+        }
+    }
+
     fn decode(data: &[u8]) -> Option<Arc<Picture>> {
         // P1 9: square pixels; P2 1: pixels no sixel sets stay clear.
         let mut decoder = Decoder::new(9, 1, true);
@@ -1183,22 +1179,6 @@ mod tests {
         // blue's 1 (51, 20%).
         assert_eq!(pixel(3), Some([204, 84, 51, 255]));
         Ok(())
-    }
-
-    /// A picture is made only of exactly as many pixels as its size says,
-    /// each side at most `MAX_SIDE` (`THREATS.md` B07).
-    #[test]
-    fn a_picture_is_made_of_exactly_its_pixels() {
-        let pixels = |n: usize| vec![0u8; n];
-        assert!(Picture::new(3, 2, pixels(23)).is_none(), "a byte short");
-        assert!(Picture::new(3, 2, pixels(24)).is_some(), "exact");
-        assert!(Picture::new(3, 2, pixels(25)).is_none(), "a byte over");
-        assert!(Picture::new(4096, 1, pixels(4096 * 4)).is_some());
-        assert!(Picture::new(4097, 1, pixels(4097 * 4)).is_none());
-        assert!(Picture::new(1, 4096, pixels(4096 * 4)).is_some());
-        assert!(Picture::new(1, 4097, pixels(4097 * 4)).is_none());
-        assert!(Picture::new(u32::MAX, u32::MAX, vec![]).is_none());
-        assert!(Picture::new(0, 0, vec![]).is_some(), "empty");
     }
 
     /// The colour at the picture's top left, of `data`.

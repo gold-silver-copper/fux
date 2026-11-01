@@ -135,7 +135,7 @@ impl Rgb {
     /// A colour specification, as xterm reads a program's and fux reads a
     /// terminal's answer (see the module's documentation); `None` for one
     /// fux-vt does not read.
-    pub fn parse(spec: &[u8]) -> Option<Self> {
+    pub(crate) fn parse(spec: &[u8]) -> Option<Self> {
         let sixteen: [u16; 3] = if let Some(hex) = spec.strip_prefix(b"#") {
             // Three channels of 1 to 4 digits each, the digits the high bits.
             let n = hex.len() / 3;

@@ -4,7 +4,7 @@ What a program in a pane can make fux-vt do, and the numbers that hold
 it back: the threat model (1), every bound with its test (2), memory
 (3), work and the quota a call spends (4), and the
 checker's invariants (6). The code and tests cite it by row (B01 to
-B46 but B10 and B29, which are gone, and B34a) and by section number.
+B46 but B07, B10 and B29, which are gone, and B34a) and by section number.
 
 "The defaults" are fux's: a 50×200 screen (N = 10,000 cells, R = 50
 rows, C = 200 columns) and H = 8 MiB of history.
@@ -21,7 +21,7 @@ rows, C = 200 columns) and H = 8 MiB of history.
   pending wrap, wide glyphs, protection, both screens, styles,
   hyperlinks, prompt marks, OSC payloads, DECRQSS requests, sixel data,
   REP counts up to 65,535, and how long a sequence stays unfinished.
-- Not the timing: `process` has no clock, and the key decoder's
+- Not the timing: `process_until_stop` has no clock, and the key decoder's
   deadlines come from the host's calls.
 - Not host calls, hash keys or addresses. Replies never carry memory.
 
@@ -54,10 +54,9 @@ a picture's placement covers at most 683 rows, B05), the paste limit
 (`with_paste_limit`; `usize::MAX` removes it) and the `Feature`s, which
 set the OSC limit (B20).
 
-Each host call has its own bound per call: `resize` (B37), `row_by_id`
-and `index_of` (B40), `pictures()` (B09), `sixel::encode` (B08),
-`Picture::new` (B07), `Cells::new`, `Cells::resize` and
-`Cells::try_from_iter` (B39), `FrameScan::end` (B19),
+Each host call has its own bound per call: `resize` (B37), `row_index`
+(B40), `pictures()` (B09), `sixel::encode` (B08), `Cells::new` and
+`Cells::reset` (B39), `FrameScan::end` (B19),
 `ByteQueue::push_with` (B41). The host promises its own call rate, and
 that `push_with`'s closure only adds (B41 makes a broken promise
 harmless).
@@ -108,7 +107,7 @@ away; infallible allocation is no safety proof.
 | Clip | What fits is kept | B03, B04, B20 |
 | Evict | The oldest, or the hidden first, goes | B01, B02, B11, B15, B17, B27, B46 |
 | Drop to its end | A string past its limit is read to its end and dropped, alike however split | B20's rest, B21, B23, B25 |
-| Refuse | `Err` or `None`, and nothing changes | B07, B37, B38, B39 |
+| Refuse | `Err` or `None`, and nothing changes | B37, B38, B39 |
 | Skip work that changes nothing | Copies that can't change the result are skipped | B33, B34, B34a |
 
 ## 2 The bounds
@@ -148,7 +147,6 @@ B26 and B41 bound host-side objects or host calls.
 | B04 | Sixel decode work | ≤ 4,096 units per input byte; pixels are kept at grid resolution, the aspect applied when shown; a repeat past 4,096 counts 4,096 | — | `ESC P q "360;1` + `!4096~$` × 600 | `b04` |
 | B05 | A declared extent, and placement | An extent with nothing drawn allocates and paints nothing; covering the last cell row of the extent before, as each does, is B46's (70,656 B a picture at a 10×20 cell). Placement is one indivisible operation (4.2): its rows filled, ⌈height ÷ the cell's⌉, at most 683, each ≤ 3C + 6 (a unit, its fill, its line feed into history), ≤ 9,492 to cover the one before, and between margins one scroll of them; a host cell under 2×6 refused (`CellSize::new`) | — | 215 × `ESC P q "1;1;4096;2160 ESC \` in 4 KiB, P2 = 0, 1, 2; and portrait | `b05`; `a_declared_extent_keeps_no_pixels`, `a_picture_needs_a_host_cell_of_a_sixel_band_or_more` |
 | B06 | Pictures the host retains (host side) | An `Arc<Picture>` outlives eviction, outside the budget; a clone mid-picture ≤ steady + 2 × 53,084,160 B | — | A clone mid-picture; a lowered budget while the host holds one | `b06` |
-| B07 | `Picture::new` (host call) | `None` unless `rgba.len()` = w × h × 4 with no overflow and both sides ≤ 4096 | `None` | `u32::MAX` square with no pixels | `b07` |
 | B08 | `sixel::encode` (host call) | Output ≤ 12 B a crop pixel + 6 B a colour a band + colour definitions; work ≤ 3 a crop pixel. fux caches encodings per client, ≤ 16 MiB (`SIXEL_BYTES`) | — | A 2000×1000 256-colour checkerboard | `b08` |
 | B09 | `Screen::pictures()` (host call) | Work ≤ 128 × (⌊log2(history rows + 1)⌋ + 1 + R) + 64 + the rows its placements cover, a call | — | 8 MiB of empty history, 64 pictures; 64 pictures 4,096 pixels tall | `b09` |
 | B11 | The style table, in bytes | Its room past the screen's share (S(2N): 1,146,880 B a grid at 50×200) counts in history's bytes; a successor grid or a cloned parser's copy is charged at once | History's oldest rows go | 150,000 distinct direct backgrounds, 1 MiB of history | `b11`; `a_style_table_past_the_screens_share_takes_history_room` |
@@ -179,7 +177,7 @@ B26 and B41 bound host-side objects or host calls.
 | B36 | Scrolls inside a region | The region's slots turned once a sequence, the count clamped to the region; across the ring's end ≤ 4 an IL of two rows | — | `ESC[4095L` at 4095×1; IL across the ring's end | `b36` |
 | B37 | `resize` and reflow (host call) | Heap ≤ steady + another history term; work ≤ 6 × (history cells + screen cells + history rows) a call | A rejected resize changes nothing, synchronized output and the cluster being printed included | Full history, 200 → 199 → 200 columns; 65535×65535 | `b37`; `a_rejected_resize_leaves_synchronized_output_on`, `a_rejected_resize_leaves_a_grapheme_open` |
 | B38 | The screen's size | Rows × columns ≤ `MAX_CELLS` = 67,108,864; history ≤ `MAX_ROWS` rows | `Err(Capacity)`, nothing changed | 65535×65535 | `b38` |
-| B39 | `Cells::new`, `Cells::resize` and `Cells::try_from_iter` | Length ≤ `MAX_CELLS` | `Err(Capacity)`, the cells unchanged | `Cells::new(usize::MAX)` | `b39`; `cells_at_the_most_are_made` |
+| B39 | `Cells::new` and `Cells::reset` | Length ≤ `MAX_CELLS` | `Err(Capacity)`, the cells unchanged | `Cells::new(usize::MAX)` | `b39`; `cells_at_the_most_are_made` |
 | B40 | Row lookups by id (host call) | Work ≤ R + ⌊log2(history rows + 1)⌋ + 1 a call; the index's first 256 spans are free (20 KiB a grid), each past costs 80 B of history's budget | `None` for a row that is gone | 8 MiB of empty history; `x ESC[L CR LF` repeated | `b40`; `row_lookup.rs` |
 | B41 | `ByteQueue::push_with` (host call) | After the closure, what was taken ≤ the buffer's length | — | A closure that clears the vector, then a push | `b41` |
 | B42 | Small fixed state | Tab stops a byte a column; the palette about 1.3 KB; kitty stacks 32 entries | — | HTS at every column | `b42` |
@@ -397,7 +395,7 @@ the tests check instead.
   single width names rows kept, in order.
 - **20** Row versions ≤ the grid's version; structural ≤ version.
 - **20a** Row ids are unique across history and both screens, never
-  reused, and `row_by_id` finds exactly the row with that id.
+  reused, and `row_index` finds exactly the row with that id.
 - **21** After a trim: bytes ≤ the budget, rows ≤ `MAX_ROWS`, cells ≤
   `MAX_CELLS`; the ring has room for ≤ two chunks more than it keeps,
   each map for ≤ 4 × its length + 64.
@@ -413,16 +411,16 @@ the tests check instead.
 - **27** Pending wrap is set only by one of its setters. (Not checked:
   each setter's tests cover it.)
 - **28** After any operation, every screen position whose row id, cells,
-  wrap, links or prompt mark changed is reported by
-  `dirty_rows_since` or `full_refresh_since`,
-  and `changed_since` is true; `set_prompt` gives its row a new version,
-  so prompt marks count. (Tests: the fuzz targets' `common.rs`.)
-- **28a** `wrapped` on history's newest row continues into screen row 0,
-  and walking `above()` from any row ends. (Tests.)
+  wrap, links or prompt mark changed is newer than the mark
+  (`Row::changed_since`) or `full_refresh_since` says so, and the
+  screen's mark moved on; `set_prompt` gives its row a new version, so
+  prompt marks count. (Tests: the fuzz targets' `common.rs`.)
+- **28a** `continues` on history's newest row continues into screen row 0.
+  (Tests.)
 - **29** Whole and chunked feeding agree on modes, cursor shape,
   margins, palette, pictures and the inactive screen. (Tests:
   `tests/corpus/invariants.rs`.)
-- **30** ≤ 64 placements on both screens together; ids increase.
+- **30** ≤ 64 placements on both screens together.
 - **31** Kept pictures + the decoder + its transient ≤ the budget.
 - **32** A shown picture's cells hold `PLACEHOLDER`, inside its area, on
   its screen (but rows cropped off a top that keeps no history); its

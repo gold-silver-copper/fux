@@ -1,3 +1,4 @@
+use super::tables::UNICODE_VERSION;
 use super::*;
 use unicode_segmentation::UnicodeSegmentation;
 

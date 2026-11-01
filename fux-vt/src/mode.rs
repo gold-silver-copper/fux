@@ -24,7 +24,7 @@ macro_rules! modes {
 
         impl Mode {
             /// Every mode, in the order declared.
-            pub const ALL: [Self; [$(Self::$variant),*].len()] = [$(Self::$variant),*];
+            pub(crate) const ALL: [Self; [$(Self::$variant),*].len()] = [$(Self::$variant),*];
 
             /// The mode SM and RM (`private` false: IRM and LNM alone) or
             /// DECSET and DECRST name by `n`, with `options`: without
@@ -217,7 +217,7 @@ closed! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum ModeStatus {
         /// Its number in DECRPM.
-        pub fn number(self) -> u8;
+        pub(crate) fn number(self) -> u8;
         /// Not a mode the terminal knows (or 1048, an action).
         NotRecognized => 0,
         /// Set.

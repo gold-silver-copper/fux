@@ -73,19 +73,19 @@ mod screen;
 pub mod sixel;
 mod style;
 #[cfg(test)]
+mod test_feed;
+#[cfg(test)]
 #[expect(dead_code, reason = "each test uses different generator helpers")]
 mod test_rng;
 mod unicode;
 
 use std::{fmt, ops::Range};
 
-pub use cell::{
-    Attributes, Blink, CLUSTER_CAPACITY, CellRef, Cells, Color, Rgb, SgrForm, UnderlineStyle,
-};
+pub use cell::{Attributes, Blink, CellRef, Cells, Color, Rgb, SgrForm, UnderlineStyle};
 #[cfg(feature = "checks")]
 pub use check::{Checked, Fault, refuse_next};
 pub use geometry::Size;
-pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
+pub use link::Hyperlink;
 pub use mode::{Mode, ModeStatus};
 pub use parser::{
     Event, Feature, FrameScan, Identity, Kept, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink,
@@ -96,7 +96,7 @@ pub use screen::{
     MouseProtocolMode, PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
 };
 pub use style::Keyed;
-pub use unicode::{UNICODE_VERSION, char_width, clusters, continues_cluster, str_width};
+pub use unicode::{char_width, clusters, continues_cluster, str_width};
 
 /// The work this thread's calls into fux-vt have spent so far, in the
 /// budget's units (THREATS.md 4), for the bounds tests and fuzz targets to
@@ -270,39 +270,9 @@ impl fmt::Debug for Row<'_> {
 }
 
 impl<'a> Row<'a> {
-    /// Where the row is among those retained: 0 is history's oldest, and
-    /// the screen's top row is [`Screen::history_len`].
-    pub fn index(&self) -> usize {
-        self.index
-    }
-    /// The row above it, older; none above the oldest.
-    pub fn above(&self) -> Option<Self> {
-        self.grid.row_at(self.index.checked_sub(1)?)
-    }
     /// The row below it, newer; none below the screen's last.
-    pub fn below(&self) -> Option<Self> {
+    pub(crate) fn below(&self) -> Option<Self> {
         self.grid.row_at(self.index.checked_add(1)?)
-    }
-    /// The row `n` above it, or the oldest.
-    pub fn up(&self, n: usize) -> Self {
-        self.grid
-            .row_at(self.index.saturating_sub(n))
-            .unwrap_or(*self)
-    }
-    /// The row `n` below it, or the screen's last.
-    pub fn down(&self, n: usize) -> Self {
-        let last = self.grid.retained_len().saturating_sub(1);
-        self.grid
-            .row_at(self.index.saturating_add(n).min(last))
-            .unwrap_or(*self)
-    }
-    /// The window with the row at its top; for a row of the screen below
-    /// its top, where no window of the screen's height starts, the screen.
-    pub fn window(&self) -> Window<'a> {
-        Window {
-            grid: self.grid,
-            start: self.index.min(self.grid.history_len()),
-        }
     }
     /// The row's identity, kept through edits and scrolls, never reused.
     pub fn id(&self) -> RowId {
@@ -318,7 +288,7 @@ impl<'a> Row<'a> {
         self.version > mark.0
     }
     /// Whether the row is soft-wrapped: its line goes on in the next row.
-    pub fn wrapped(&self) -> bool {
+    pub(crate) fn wrapped(&self) -> bool {
         self.flags & history::WRAPPED != 0
     }
     /// Whether the row's line goes on in the row below: it is soft-wrapped
@@ -336,15 +306,15 @@ impl<'a> Row<'a> {
     pub fn len(&self) -> usize {
         self.width
     }
+    /// Whether the row has no cells.
+    pub fn is_empty(&self) -> bool {
+        self.width == 0
+    }
     /// Cells retained in storage. Cells after these, through [`Row::len`],
     /// are synthesized default blanks, so a trimmed hard-ended read can
     /// omit them without inspecting each blank.
     pub fn stored_len(&self) -> usize {
         self.cells.len().min(self.width)
-    }
-    /// Whether the row has no cells.
-    pub fn is_empty(&self) -> bool {
-        self.width == 0
     }
     /// Whether the row, soft-wrapped, ends in a spacer: the blank last
     /// column a wide glyph starting the next row did not fit in, which
@@ -398,14 +368,8 @@ impl<'a> Row<'a> {
     }
     /// Whether a prompt starts on the row (`OSC 133 ; A`). The mark follows
     /// the row through scroll and reflow; ED erasing the row removes it.
-    pub fn starts_prompt(&self) -> bool {
+    pub(crate) fn starts_prompt(&self) -> bool {
         self.flags & history::PROMPT != 0
-    }
-    /// Bytes of text the row keeps for clusters over 17 bytes, overwritten
-    /// ones included until compaction; at most [`Cells::text_limit`]. For
-    /// memory diagnostics.
-    pub fn text_len(&self) -> usize {
-        self.text.long_len()
     }
     /// The row's cells, left to right.
     pub fn cells(
@@ -422,32 +386,6 @@ impl<'a> Row<'a> {
             cell.read_as(text, last.1)
         })
     }
-    /// The glyphs of columns `from` through `to` as a copy takes them, with
-    /// their columns: wide glyphs whole, blanks as spaces, and the trailing
-    /// spacer (`ends_in_spacer`) left out.
-    pub fn copied(
-        &self,
-        from: usize,
-        to: usize,
-    ) -> impl Iterator<Item = (usize, &'a str)> + use<'a> {
-        let from = match self.stored(from) {
-            Some(cell) if cell.is_wide_continuation() => from.saturating_sub(1),
-            Some(_) | None => from,
-        };
-        let spacer = usize::from(self.ends_in_spacer());
-        let end = self.width.saturating_sub(spacer).min(to.saturating_add(1));
-        let glyphs = self.cells().enumerate().take(end).skip(from);
-        glyphs
-            .filter(|(_, cell)| !cell.is_wide_continuation())
-            .map(|(col, cell)| (col, cell.shown()))
-    }
-    /// The row's text: blanks and placeholders as spaces, trailing blanks
-    /// kept.
-    pub fn cells_text(&self) -> String {
-        (self.cells().filter(|c| !c.is_wide_continuation()))
-            .map(|c| c.shown())
-            .collect()
-    }
 }
 
 /// Input/resource errors. Failing size changes leave the old screen intact.
@@ -455,17 +393,11 @@ impl<'a> Row<'a> {
 pub enum Error {
     /// More rows or cells than a grid may hold, or an allocation that failed.
     Capacity,
-    /// A copy longer than its cell or byte limit.
-    CopyLimit,
-    /// A copy endpoint outside the window.
-    InvalidRange,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Capacity => "terminal allocation limit exceeded",
-            Self::CopyLimit => "copy cell or byte limit exceeded",
-            Self::InvalidRange => "copy range is outside the visible window",
         })
     }
 }
@@ -531,88 +463,6 @@ impl<'a> Window<'a> {
             return None;
         }
         self.grid.row_at(self.start.checked_add(usize::from(row))?)
-    }
-    /// Where `row` is in the window, if it shows there: never, for a row
-    /// of another grid (the other screen's, or another parser's). Both
-    /// borrow their grid, so the same address is the same grid.
-    pub fn place(&self, row: &Row<'_>) -> Option<u16> {
-        if !std::ptr::eq(self.grid, row.grid) {
-            return None;
-        }
-        let y = u16::try_from(row.index.checked_sub(self.start)?).ok()?;
-        (y < self.rows()).then_some(y)
-    }
-    /// The cell at `row`, `col` of the window; `None` past its edges, and for
-    /// a wide glyph whose second half the window's last column cuts off.
-    pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'a>> {
-        if col >= self.cols() {
-            return None;
-        }
-        let cell = self.row(row)?.cell(usize::from(col))?;
-        // A wide glyph's second half past the last column is clipped.
-        let clipped = cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols());
-        (!clipped).then_some(cell)
-    }
-    /// Whether row `row` of the window is soft-wrapped.
-    pub fn row_wrapped(&self, row: u16) -> bool {
-        self.row(row).is_some_and(|r| r.wrapped())
-    }
-    /// Inclusive endpoints, normalized to wide leaders. Limits are checked
-    /// before allocation and before every append; an oversized copy is refused.
-    pub fn text(
-        &self,
-        a: (u16, u16),
-        b: (u16, u16),
-        max_cells: usize,
-        max_bytes: usize,
-    ) -> Result<String, Error> {
-        if a.0.max(b.0) >= self.rows() || a.1.max(b.1) >= self.cols() {
-            return Err(Error::InvalidRange);
-        }
-        let (start, end) = (a.min(b), a.max(b));
-        // Exact: both points are in the window, so it has a last column.
-        let last = self.cols().saturating_sub(1);
-        let count = (start.0..=end.0)
-            .len()
-            .checked_mul(usize::from(self.cols()))
-            .ok_or(Error::CopyLimit)?;
-        if count > max_cells {
-            return Err(Error::CopyLimit);
-        }
-        let mut output = String::new();
-        for y in start.0..=end.0 {
-            let left = if y == start.0 { start.1 } else { 0 };
-            let right = if y == end.0 { end.1 } else { last };
-            let line_start = output.len();
-            let row = self.row(y).ok_or(Error::InvalidRange)?;
-            // Clipped wide glyphs and padding past a history row's width
-            // are display blanks and must not enter a soft-wrapped join.
-            let glyphs = row.copied(usize::from(left), usize::from(right));
-            let inside =
-                |(x, _): &(usize, &str)| u16::try_from(*x).is_ok_and(|x| self.cell(y, x).is_some());
-            for (_, text) in glyphs.filter(inside) {
-                if output
-                    .len()
-                    .checked_add(text.len())
-                    .is_none_or(|n| n > max_bytes)
-                {
-                    return Err(Error::CopyLimit);
-                }
-                output.push_str(text);
-            }
-            if y == end.0 || !row.wrapped() {
-                while output.len() > line_start && output.ends_with(' ') {
-                    output.pop();
-                }
-                if y != end.0 {
-                    if output.len() == max_bytes {
-                        return Err(Error::CopyLimit);
-                    }
-                    output.push('\n');
-                }
-            }
-        }
-        Ok(output)
     }
 }
 

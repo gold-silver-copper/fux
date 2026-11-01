@@ -196,7 +196,7 @@ impl crate::Screen {
 ///   `CSI < code ; column ; row M`, or `m` for a release, which names its
 ///   button, for any position; urxvt (1015) `CSI code ; column ; row M`, the
 ///   code plus 32 and a release unnamed (xterm 411's `EditorButton`).
-pub fn mouse_bytes(
+pub(crate) fn mouse_bytes(
     event: MouseEvent,
     mode: MouseProtocolMode,
     encoding: MouseProtocolEncoding,

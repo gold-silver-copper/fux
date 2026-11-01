@@ -1,4 +1,28 @@
 use super::*;
+use crate::test_feed::Refused;
+
+impl Screen {
+    /// The cell at `row`, `col` of the screen.
+    pub(crate) fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
+        self.grid().cell(row, col)
+    }
+    /// The text of the screen's row `row`, each cell's contents in turn.
+    pub(crate) fn row_text(&self, row: u16) -> String {
+        let row = self.grid().live_row(row);
+        row.iter()
+            .flat_map(|r| r.cells())
+            .map(|c| c.contents())
+            .collect()
+    }
+    /// The hyperlink of the cell at `row`, `col` of the screen.
+    pub(crate) fn link(&self, row: u16, col: u16) -> Option<&Hyperlink> {
+        self.grid().live_row(row)?.link(usize::from(col))
+    }
+    /// The cells both grids retain, screen and history.
+    pub(crate) fn storage_cells(&self) -> usize {
+        (self.primary.storage_cells()).saturating_add(self.alternate.storage_cells())
+    }
+}
 
 #[test]
 fn sgr_colour_parameters_name_the_sixteen_palette_colours() -> Result<(), Error> {
@@ -245,7 +269,7 @@ fn sweeping_the_styles_changes_nothing_a_reader_sees() -> Result<(), Error> {
                     && looks(&a.alternate) == looks(&b.alternate),
                 "step {step}"
             );
-            assert_eq!(a.attributes(), b.attributes(), "step {step}");
+            assert_eq!(a.attributes, b.attributes, "step {step}");
         }
     }
     Ok(())
@@ -276,11 +300,15 @@ fn styles_in_use_survive_the_sweeps_that_new_ones_bring() -> Result<(), Error> {
     let cells = u32::try_from(retained.saturating_mul(usize::from(cols))).unwrap_or(0);
     let mut n = glyphs.saturating_sub(cells);
     for i in 0..retained {
-        let row = grid.row_at(i).ok_or(Error::InvalidRange)?;
+        let row = grid.row_at(i).ok_or(Error::Capacity)?;
         for cell in row.cells() {
             let (r, g, b) = colour(n);
             assert_eq!(cell.contents(), "x", "glyph {n}");
-            assert_eq!(cell.bgcolor(), Color::Rgb([r, g, b].into()), "glyph {n}");
+            assert_eq!(
+                cell.attributes().background(),
+                Color::Rgb([r, g, b].into()),
+                "glyph {n}"
+            );
             n = n.saturating_add(1);
         }
     }
@@ -299,11 +327,7 @@ fn a_clear_moves_no_commands_output() -> Result<(), Error> {
         let begun = p.screen().commands().output_start;
         p.process(clear)?;
         p.process(b"AFTER\r\n\x1b]133;D;0\x07$ ")?;
-        let (from, _) = p
-            .screen()
-            .commands()
-            .last_output
-            .ok_or(Error::InvalidRange)?;
+        let (from, _) = p.screen().commands().last_output.ok_or(Error::Capacity)?;
         assert_eq!(Some(from), begun, "{clear:?}");
     }
     Ok(())
@@ -323,7 +347,7 @@ fn command_marks_follow_a_reflow() -> Result<(), Error> {
     // The glyph `back` columns before `mark`.
     let glyph = |p: &crate::Parser, mark: Option<CommandMark>, back: usize| {
         let mark = mark?;
-        let row = p.screen().row_by_id(mark.row)?;
+        let row = p.screen().rows().nth(p.screen().row_index(mark.row)?)?;
         let cell = row.cell(usize::from(mark.col).checked_sub(back)?)?;
         Some(cell.contents().to_owned())
     };
@@ -354,7 +378,7 @@ fn command_marks_on_left_out_glyphs_keep_their_output() -> Result<(), Error> {
         let mut p = crate::Parser::with_options(Size::of(4, 6), 1 << 16, options)?;
         p.process(output.as_bytes())?;
         p.resize(Size::of(4, 1))?;
-        let (from, to) = (p.screen().commands().last_output).ok_or(Error::InvalidRange)?;
+        let (from, to) = (p.screen().commands().last_output).ok_or(Error::Capacity)?;
         let at = |mark: CommandMark| (p.screen().row_index(mark.row), mark.col);
         assert_eq!(at(from), (Some(start.0), start.1), "{output:?}");
         assert_eq!(at(to), (Some(end.0), end.1), "{output:?}");
@@ -459,7 +483,7 @@ fn picture(width: u32, height: u32) -> Vec<u8> {
 
 /// The numbers of the pictures the screen shows.
 fn shown(p: &crate::Parser) -> Vec<u64> {
-    p.screen().pictures().map(|s| s.id).collect()
+    p.screen().numbered_pictures().map(|(id, _)| id).collect()
 }
 
 /// Past the budget, pictures no longer shown go first, then the oldest
@@ -606,7 +630,7 @@ fn a_picture_covers_only_the_pixels_it_lies_on() -> Result<(), Error> {
     };
     // The first picture's pixels still opaque, if it is shown.
     let left = |p: &crate::Parser| {
-        let first = p.screen().pictures().find(|s| s.id == 1);
+        let first = (p.screen().numbered_pictures()).find_map(|(id, s)| (id == 1).then_some(s));
         first.map(|s| {
             let pixels = (0..40).flat_map(|y| (0..20).map(move |x| (x, y)));
             pixels
@@ -727,7 +751,7 @@ fn a_declared_extent_keeps_no_pixels() -> Result<(), Error> {
         let mut p = pictured(Size::of(24, 80), 8 << 20)?;
         p.process(format!("\x1bP0;{p2}q\"1;1;4096;2160\x1b\\").as_bytes())?;
         assert_eq!(p.screen().picture_bytes(), 0, "P2 {p2}");
-        let shown = p.screen().pictures().next().ok_or(Error::InvalidRange)?;
+        let shown = p.screen().pictures().next().ok_or(Error::Capacity)?;
         let size = (shown.picture.width(), shown.picture.height());
         assert_eq!(size, (4096, 2160), "P2 {p2}");
         assert_eq!(shown.picture.pixel(4095, 2159), Some(pixel), "P2 {p2}");
@@ -802,10 +826,11 @@ fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
         let size = crate::CellSize::new(cell.0, cell.1);
         assert_eq!(size.is_some(), placed, "{cell:?}");
         p.set_host_graphics(size.map_or(crate::Graphics::Text, crate::Graphics::Sixel));
-        p.process(&picture(6, 12))?;
+        let mut refused = Refused::default();
+        p.process_with(&picture(6, 12), &mut refused)?;
         let shown = p.screen().pictures().next().map(|s| s.cell);
         assert_eq!(shown, placed.then_some(cell), "{cell:?}");
-        assert_eq!(p.pictures_refused(), u64::from(!placed), "{cell:?}");
+        assert_eq!(refused.0, u64::from(!placed), "{cell:?}");
     }
     Ok(())
 }
@@ -819,12 +844,13 @@ fn a_picture_refused_room_is_counted() -> Result<(), Error> {
     p.set_host_graphics(
         crate::CellSize::new(10, 20).map_or(crate::Graphics::Text, crate::Graphics::Sixel),
     );
-    p.process(b"\x1bP9q\x1b\\\x1bP9q~\x18")?;
-    assert_eq!(p.pictures_refused(), 0);
+    let mut refused = Refused::default();
+    p.process_with(b"\x1bP9q\x1b\\\x1bP9q~\x18", &mut refused)?;
+    assert_eq!(refused.0, 0);
     p.set_picture_bytes(0);
-    p.process(b"\x1bP9q~\x1b\\")?;
+    p.process_with(b"\x1bP9q~\x1b\\", &mut refused)?;
     assert_eq!(p.screen().pictures().count(), 0);
-    assert_eq!(p.pictures_refused(), 1);
+    assert_eq!(refused.0, 1);
     Ok(())
 }
 
@@ -835,10 +861,14 @@ fn a_picture_refused_room_is_counted() -> Result<(), Error> {
 fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
     let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
-    p.process(b"\x1bPq\x1b\\\x1bPq~\x18\x1bPq#1;2;100;0;0\x1b\\")?;
-    assert_eq!(p.pictures_refused(), 0);
-    p.process(b"\x1bPq~\x1b\\")?;
-    assert_eq!(p.pictures_refused(), 1);
+    let mut refused = Refused::default();
+    p.process_with(
+        b"\x1bPq\x1b\\\x1bPq~\x18\x1bPq#1;2;100;0;0\x1b\\",
+        &mut refused,
+    )?;
+    assert_eq!(refused.0, 0);
+    p.process_with(b"\x1bPq~\x1b\\", &mut refused)?;
+    assert_eq!(refused.0, 1);
     assert_eq!(p.screen().pictures().count(), 0);
     Ok(())
 }
@@ -849,19 +879,20 @@ fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
 #[test]
 fn a_picture_whose_host_went_as_it_was_read_is_counted() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
-    let cell = crate::CellSize::new(10, 20).ok_or(Error::InvalidRange)?;
+    let cell = crate::CellSize::new(10, 20).ok_or(Error::Capacity)?;
     for gone in [crate::Graphics::Text, crate::Graphics::Cell(cell)] {
         let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
         p.set_host_graphics(crate::Graphics::Sixel(cell));
         let bytes = picture(6, 12);
         let (begun, rest) = bytes
             .split_at_checked(bytes.len() / 2)
-            .ok_or(Error::InvalidRange)?;
-        p.process(begun)?;
+            .ok_or(Error::Capacity)?;
+        let mut refused = Refused::default();
+        p.process_with(begun, &mut refused)?;
         p.set_host_graphics(gone);
-        p.process(rest)?;
+        p.process_with(rest, &mut refused)?;
         assert_eq!(p.screen().pictures().count(), 0, "{gone:?}");
-        assert_eq!(p.pictures_refused(), 1, "{gone:?}");
+        assert_eq!(refused.0, 1, "{gone:?}");
     }
     Ok(())
 }
