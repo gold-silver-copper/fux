@@ -72,10 +72,16 @@ impl Journal {
             None => self.parents.remove(&ws),
         };
     }
-    /// The workspaces holding those `event` names, beyond them.
-    fn within_of(&self, event: &Event) -> Box<[WsId]> {
-        let parent = |ws: &WsId| self.parents.get(ws).copied();
-        let up = |ws: WsId| std::iter::successors(parent(&ws), parent).take(self.parents.len());
+    /// The workspaces nested as they are now, for journaling an event at a
+    /// place as it was before a change (`push_then`).
+    pub(crate) fn nesting(&self) -> BTreeMap<WsId, WsId> {
+        self.parents.clone()
+    }
+    /// The workspaces holding those `event` names, beyond them, nested as
+    /// `parents` says.
+    fn within_of(event: &Event, parents: &BTreeMap<WsId, WsId>) -> Vec<WsId> {
+        let parent = |ws: &WsId| parents.get(ws).copied();
+        let up = |ws: WsId| std::iter::successors(parent(&ws), parent).take(parents.len());
         let (_, _, ws) = event.ids();
         let from = match event {
             Event::Pane(_, PaneEvent::Moved((from, _))) => Some(*from),
@@ -105,6 +111,19 @@ impl Journal {
         self.push_from(event, self.actor);
     }
     pub(crate) fn push_from(&mut self, event: Event, actor: Actor) {
+        let within = Self::within_of(&event, &self.parents);
+        self.record(event, actor, within);
+    }
+    /// `event` at a place as the workspaces were nested `then`, and as they
+    /// are now too if `now`.
+    pub(crate) fn push_then(&mut self, event: Event, then: &BTreeMap<WsId, WsId>, now: bool) {
+        let mut within = Self::within_of(&event, then);
+        if now {
+            within.extend(Self::within_of(&event, &self.parents));
+        }
+        self.record(event, self.actor, within);
+    }
+    fn record(&mut self, event: Event, actor: Actor, within: Vec<WsId>) {
         let Some(next) = self.next.0.checked_add(1) else {
             self.exhausted = true;
             return;
@@ -117,9 +136,8 @@ impl Journal {
         {
             self.within.remove(&evicted.seq);
         }
-        let within = self.within_of(&event);
         if !within.is_empty() {
-            self.within.insert(seq, within);
+            self.within.insert(seq, within.into_boxed_slice());
         }
         self.entries.push_back(Entry { seq, event, actor });
     }

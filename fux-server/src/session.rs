@@ -4143,6 +4143,44 @@ mod tests {
         Ok(())
     }
 
+    /// A client leaving a workspace that moves out of a project, or one in
+    /// it that closes, is told left in the project and reached where it
+    /// is: the project's reader reads every `shown` the whole journal does.
+    #[test]
+    fn a_projects_reader_reads_its_clients_leaving_what_moves_or_closes() -> TestResult {
+        let (mut s, c) = attached(10, 40)?;
+        for path in ["proj", "proj in str agent1", "proj in str agent2", "other"] {
+            run(&mut s, &format!("opts str {path} in 80 24 size new-tab drop"))?;
+        }
+        let proj = AnyRef::Workspace(WsId::of(2));
+        let reader = |s: &Session, scope| {
+            crate::journal::Reader::new(scope, s.parts.journal(), s.run, None)
+        };
+        let (mut project, mut all) = (reader(&s, fux_wire::inspect::Scope::Target(proj))?, reader(&s, fux_wire::inspect::Scope::All)?);
+        run(&mut s, "str c1 client str agent1 workspace show str agent1 workspace str other workspace move")?;
+        run(&mut s, "str c1 client str agent2 workspace show str agent2 workspace kill")?;
+        let shown = |lines: String| -> Vec<String> {
+            (lines.lines().filter(|l| l.contains(r#""event":"shown""#)))
+                .map(str::to_owned)
+                .collect()
+        };
+        let (project, all) = (
+            shown(project.lines(s.parts.journal(), |t| s.holder(t)).0),
+            shown(all.lines(s.parts.journal(), |t| s.holder(t)).0),
+        );
+        assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(2)));
+        // Reached agent1; left it moved and reached proj; left proj for
+        // agent2, and left agent2 closed for proj. Only leaving +1 is not
+        // the project's.
+        let at = |lines: &[String]| -> Vec<String> {
+            let ws = |l: &String| l.split(r#""workspace":""#).nth(1)?.get(..2).map(str::to_owned);
+            lines.iter().filter_map(ws).collect()
+        };
+        assert_eq!(at(&project), ["+3", "+3", "+2", "+2", "+4", "+4", "+2"]);
+        assert_eq!(all.get(1..), Some(&project[..]), "{all:?}");
+        Ok(())
+    }
+
     /// An attach shows its target and what holds it with nothing shown
     /// before (D-112): no last, and a close goes to the next one.
     #[test]

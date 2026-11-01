@@ -813,9 +813,9 @@ impl Parts {
     /// another, and at the one it is at (none, with the last workspace
     /// gone).
     fn viewing<R>(&mut self, change: impl FnOnce(&mut Parts) -> R) -> R {
-        let before = self.places();
+        let (before, nesting) = (self.places(), self.journal.nesting());
         let out = change(self);
-        self.moved(before);
+        self.moved(before, &nesting);
         out
     }
 
@@ -833,8 +833,11 @@ impl Parts {
     }
 
     /// Journals `shown` for each client whose place, or current child in a
-    /// node there before and after (not one made or closed), is not as `before`.
-    fn moved(&mut self, before: BTreeMap<ClientId, Place>) {
+    /// node there before and after (not one made or closed), is not as
+    /// `before`: the place left in the workspaces as they were nested then
+    /// (`nesting`), the one reached as they are now, and one place that
+    /// stays in both.
+    fn moved(&mut self, before: BTreeMap<ClientId, Place>, nesting: &BTreeMap<WsId, WsId>) {
         let after = self.places();
         let clients: BTreeSet<ClientId> = before.keys().chain(after.keys()).copied().collect();
         let moved = |c: &ClientId| match (before.get(c), after.get(c)) {
@@ -847,9 +850,17 @@ impl Parts {
         for client in clients.into_iter().filter(moved) {
             let place = |of: &BTreeMap<ClientId, Place>| of.get(&client).and_then(|p| p.0);
             let (was, now) = (place(&before), place(&after));
-            for at in (was.filter(|was| Some(*was) != now).map(Some).into_iter()).chain([now]) {
-                let change = ViewChange::Shown;
-                self.journal.push(Event::View { client, at, change });
+            let shown = |at| Event::View {
+                client,
+                at,
+                change: ViewChange::Shown,
+            };
+            match was.filter(|was| Some(*was) != now) {
+                Some(was) => {
+                    self.journal.push_then(shown(Some(was)), nesting, false);
+                    self.journal.push(shown(now));
+                }
+                None => self.journal.push_then(shown(now), nesting, true),
             }
         }
     }
