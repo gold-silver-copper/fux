@@ -75,6 +75,7 @@ impl Sink for Record {
                 entry.push(b'N');
                 entry.extend_from_slice(text.bytes);
             }
+            Event::CommandStarted => entry.push(b'S'),
             Event::CommandEnded(status) => {
                 entry.push(b'E');
                 if let Some(status) = status {

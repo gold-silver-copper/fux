@@ -201,29 +201,48 @@ fn a_mark_after_a_full_row_is_past_its_last_column() -> Result {
     Ok(())
 }
 
-/// Each `D` that ends a running command, and an `N` that ends one, is an
-/// event with the status the shell gave, with `Feature::Events`: two
-/// commands ended in one piece of output are two events, in order.
+/// Each `C` that begins a command, each `D` that ends a running one and an
+/// `N` that ends one are events, with `Feature::Events`, in the order of
+/// the output with the others: the end with the status the shell gave.
 #[test]
-fn each_command_ended_is_an_event() -> Result {
+fn each_command_started_and_ended_is_an_event() -> Result {
     #[derive(Default)]
-    struct Ended(Vec<Option<i32>>);
-    impl Sink for Ended {
+    struct Heard(Vec<String>);
+    impl Sink for Heard {
         fn event(&mut self, event: Event<'_>) {
-            if let Event::CommandEnded(status) = event {
-                self.0.push(status);
-            }
+            self.0.push(match event {
+                Event::CommandStarted => "started".to_owned(),
+                Event::CommandEnded(status) => format!("ended:{status:?}"),
+                Event::Bell => "bell".to_owned(),
+                Event::Title(_)
+                | Event::IconName(_)
+                | Event::Notification(_)
+                | Event::Clipboard { .. }
+                | Event::ColorQuery { .. } => return,
+            });
         }
     }
     let options = MARKS.with(Feature::Events);
     let mut p = Parser::with_options(Size::new(8, 20)?, 10, options)?;
-    let mut ended = Ended::default();
-    let two = b"\x1b]133;C\x07a\r\n\x1b]133;D;1\x07\x1b]133;C\x07b\r\n\x1b]133;D;0\x07";
-    p.process_with(two, &mut ended)?;
-    assert_eq!(ended.0, [Some(1), Some(0)]);
-    // A `D` with none running ends nothing; an `N` ends one, with no status.
-    p.process_with(b"\x1b]133;D;3\x07\x1b]133;C\x07\x1b]133;N\x07", &mut ended)?;
-    assert_eq!(ended.0, [Some(1), Some(0), None]);
+    let mut heard = Heard::default();
+    let two = b"\x1b]133;C\x07\x07a\r\n\x1b]133;D;1\x07\x1b]133;C\x07b\r\n\x1b]133;D;0\x07";
+    p.process_with(two, &mut heard)?;
+    assert_eq!(
+        heard.0,
+        [
+            "started",
+            "bell",
+            "ended:Some(1)",
+            "started",
+            "ended:Some(0)"
+        ]
+    );
+    // A `D` with none running ends nothing, a `C` while one runs begins
+    // none, and an `N` ends one, with no status.
+    heard.0.clear();
+    let more = b"\x1b]133;D;3\x07\x1b]133;C\x07\x1b]133;C\x07\x1b]133;N\x07";
+    p.process_with(more, &mut heard)?;
+    assert_eq!(heard.0, ["started", "ended:None"]);
     Ok(())
 }
 

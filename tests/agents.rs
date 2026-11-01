@@ -1146,13 +1146,14 @@ fn the_docs_recipes_run_as_written() -> Outcome {
 }
 
 /// Keys to a program that closed its terminal but runs on are refused, as
-/// to one that exited: nothing reads them, and `hung_up` says so. Linux
-/// says it closed it (the terminal hangs up); macOS, where fux holds the
-/// terminal open, does not.
+/// to one that exited: nothing reads them, and `hung_up` says so, as the
+/// journal's one `hung_up` told. Linux says it closed it (the terminal
+/// hangs up); macOS, where fux holds the terminal open, does not.
 #[cfg(target_os = "linux")]
 #[test]
 fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
     let server = Server::start("")?;
+    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
     let closes = "exec >/dev/null 2>&1 <&-; sleep 30";
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", closes]))?);
     eventually("the keys refused", || {
@@ -1161,6 +1162,22 @@ fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
     })?;
     let hung_up = server.ok(&["str", &pane, "pane", "str", "hung_up", "get"])?;
     assert_eq!(hung_up, "true\n");
+    let events = server.ok(&[
+        "str",
+        &pane,
+        "pane",
+        "str",
+        cursor.trim(),
+        "0",
+        "next-events",
+    ])?;
+    let told: Vec<_> = (events.lines())
+        .filter(|line| line.starts_with(r#"{"event":"hung_up""#))
+        .collect();
+    assert!(
+        matches!(&told[..], [one] if one.contains(r#""origin":{"kind":"program""#)),
+        "{events}"
+    );
     Ok(())
 }
 

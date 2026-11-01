@@ -23,6 +23,7 @@ events.events[][bell]: event pane tab workspace origin seq next
 events.events[][closed]: event pane tab workspace origin seq next
 events.events[][closed]: event tab workspace origin seq next
 events.events[][closed]: event workspace origin seq next
+events.events[][command_started]: event pane tab workspace origin seq next
 events.events[][created]: event pane tab workspace origin seq next
 events.events[][created]: event tab workspace name origin seq next
 events.events[][created]: event workspace name origin seq next
@@ -32,9 +33,11 @@ events.events[][exited]: event pane tab workspace exited input_unread origin seq
 events.events[][exited]: event pane tab workspace signal input_unread origin seq next
 events.events[][history_budget]: event pane tab workspace history_bytes origin seq next
 events.events[][history_cleared]: event pane tab workspace origin seq next
+events.events[][hung_up]: event pane tab workspace origin seq next
 events.events[][laid_out]: event tab workspace origin seq next
 events.events[][moved]: event pane tab workspace from_tab from_workspace origin seq next
 events.events[][notification]: event pane tab workspace text truncated origin seq next
+events.events[][read_failed]: event pane tab workspace read_error origin seq next
 events.events[][renamed]: event pane tab workspace name origin seq next
 events.events[][renamed]: event tab workspace name origin seq next
 events.events[][renamed]: event workspace name origin seq next

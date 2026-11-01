@@ -1775,6 +1775,20 @@ impl Session {
     /// read at an exit's first word does not, as the server's own read
     /// may have just emptied it.
     fn read_left(&mut self, id: PaneId, empty_ends: bool, now: Instant) {
+        self.read_left_with(id, empty_ends, |fd, bytes| fuxix::io::read(fd, bytes), now);
+    }
+
+    /// `read_left`, reading its terminal with `read`. A read that fails is
+    /// journaled at the pane, from the program whose terminal it is, the
+    /// one respawned over or that left a writer too; only the pane's own
+    /// program stops being read for it.
+    fn read_left_with(
+        &mut self,
+        id: PaneId,
+        empty_ends: bool,
+        mut read: impl FnMut(&fuxix::pty::Master, &mut [u8]) -> Result<usize, fuxix::Errno>,
+        now: Instant,
+    ) {
         if !self.pane(id).is_ok_and(|p| p.draining) {
             return;
         }
@@ -1793,7 +1807,7 @@ impl Session {
         let own = old.is_none();
         let child = old.or_else(|| self.pane(id).ok().and_then(|p| p.process().child()));
         let (left, drain) = child.map_or((Vec::new(), Drain::Closed), |child| {
-            left_turn(|bytes| fuxix::io::read(&child.master, bytes))
+            left_turn(|bytes| read(&child.master, bytes))
         });
         if !left.is_empty() {
             self.output(id, &left, now);
@@ -1803,8 +1817,11 @@ impl Session {
             Drain::Empty if !empty_ends => return,
             Drain::Empty | Drain::Closed => {}
             Drain::Failed(error) => {
-                if own && let Ok(mut pane) = self.pane_mut(id) {
-                    pane.read_failed(error);
+                if let Ok(mut pane) = self.pane_mut(id) {
+                    match own {
+                        true => pane.read_failed(error),
+                        false => pane.tell_read_failed(error),
+                    }
                 }
             }
         }
@@ -6105,6 +6122,65 @@ mod tests {
             frozen,
             "still read in {drained} turns once the writing stopped"
         );
+        Ok(())
+    }
+
+    /// A drain's read that fails, of the terminal an exited program left a
+    /// writer on, is journaled with its errno, from that program's
+    /// generation; the pane stays as its exit left it.
+    #[test]
+    fn a_failed_read_of_a_terminal_left_behind_is_journaled() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "opts str agent in 80 24 size str /bin/true program new-tab",
+        )?;
+        let id = PaneId::of(2);
+        run(&mut s, "%2 respawn")?;
+        let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+        let pid = child.leader.pid();
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        s.end_program(id, Ended::Exited(0));
+        let left = s.leftover.contains_key(&id);
+        let from = s.parts.journal().end(s.run);
+        let fail = |_: &fuxix::pty::Master, _: &mut [u8]| Err(fuxix::Errno::INVAL);
+        s.read_left_with(id, true, fail, Instant::now());
+        let told = crate::journal::Reader::new(
+            fux_wire::inspect::Scope::All,
+            s.parts.journal(),
+            s.run,
+            Some(from),
+        )?
+        .batch(s.parts.journal(), true)?
+        .events;
+        let pane = s.pane(id)?;
+        let after = (
+            pane.respawns,
+            pane.process().exit_status(),
+            pane.read_error(),
+        );
+        let drained = !s.leftover.contains_key(&id);
+        let _ = fuxix::process::kill_group(pid, fuxix::process::Signal::Kill);
+        if let Some(child) = s.leftover.remove(&id) {
+            s.dying.push(Dying {
+                child,
+                deadline: Instant::now(),
+            });
+        }
+        reap(&mut s);
+        assert!(left, "no writer left on its terminal");
+        let failed = Json::object(vec![
+            ("event", Json::str("read_failed")),
+            ("read_error", Json::str(fuxix::Errno::INVAL.to_string())),
+        ]);
+        assert!(
+            matches!(&told[..], [one] if one.data == failed
+                && one.origin == fux_wire::events::Actor::Program(id, 1)),
+            "{told:?}"
+        );
+        assert_eq!(after, (1, Some(Ended::Exited(0)), None));
+        assert!(drained, "still read after its read failed");
         Ok(())
     }
 

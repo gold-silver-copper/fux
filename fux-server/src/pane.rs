@@ -253,8 +253,8 @@ impl Title {
 struct Sink<'a, 't> {
     /// The replies to one read, queued together after it.
     replies: Vec<u8>,
-    /// Where its bells, notifications, titles and commands' ends go: the
-    /// session's journal, in order.
+    /// Where its bells, notifications, titles and commands' starts and
+    /// ends go: the session's journal, in order.
     tell: &'a mut Teller<'t>,
     title: &'a mut Title,
     /// Set by a bell (BEL).
@@ -318,6 +318,7 @@ impl fux_vt::Sink for Sink<'_, '_> {
                         .ok_or(Uncopied::NotText),
                 });
             }
+            Event::CommandStarted => self.tell.tell(Told::CommandStarted),
             Event::CommandEnded(status) => self.tell.tell(Told::Done(status)),
             Event::IconName(_) => {}
         }
@@ -713,7 +714,16 @@ impl<'a> PaneMut<'a> {
         let result = self.pane.size_terminal();
         self.pane.terminal_sized(result);
     }
+    /// Reading a terminal of its program's failed so: told, whether it is
+    /// the terminal of the program it runs or one it left
+    /// (`Session::read_left`).
+    pub(crate) fn tell_read_failed(&mut self, error: fuxix::Errno) {
+        self.tell.tell(Told::ReadFailed(error));
+    }
+    /// Reading its program's terminal failed so: told, the program no
+    /// longer read, the cause kept.
     pub(crate) fn read_failed(&mut self, error: fuxix::Errno) {
+        self.tell_read_failed(error);
         self.pane.terminal_errors.1.get_or_insert(error);
         self.pane.read_error = Some(error);
         self.pane.process = match std::mem::replace(&mut self.pane.process, Process::Absent) {
@@ -841,7 +851,7 @@ impl<'a> PaneMut<'a> {
         }
     }
     pub fn stop_reading(&mut self) {
-        self.pane.stop_reading();
+        self.pane.stop_reading(&mut self.tell);
     }
     /// `n` bytes of its input were written to its terminal, as
     /// `write_input` writes them: for fux-diff's queue.
@@ -1146,7 +1156,7 @@ impl Pane {
     /// where a call of the parser did all the work one may, and at the end
     /// of the turn's [`SLICE`] (`Stop::Budget`). Returns how many bytes were read if it stopped,
     /// and why (`Stop::Begun` or `Stop::Budget`). What they did (a bell, a
-    /// title, a command's end) is journaled as it is read. Never inlined:
+    /// title, a command's start or end) is journaled as it is read. Never inlined:
     /// the parser's loop compiles tighter on its own.
     #[inline(never)]
     fn parse(
@@ -1606,11 +1616,15 @@ impl Pane {
     }
 
     /// The program's terminal hung up: it is read no more, and waits to be
-    /// reaped.
-    fn stop_reading(&mut self) {
+    /// reaped. Told as it stops being read.
+    fn stop_reading(&mut self, tell: &mut Teller<'_>) {
         self.process = match std::mem::replace(&mut self.process, Process::Absent) {
-            Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
+            Process::Reading(child) => {
+                tell.tell(Told::HungUp);
+                Process::HungUp(child)
+            }
             other @ (Process::Absent
+            | Process::HungUp(_)
             | Process::Exited(_)
             | Process::Respawning
             | Process::ReadFailed(..)) => other,
@@ -2435,32 +2449,40 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Each shell command that ends goes in the journal with its own
-    /// status, though several end in one read; and a bell and a title
-    /// with them, in order.
+    /// Each shell command that begins and ends goes in the journal, with
+    /// its own status, in the output's order with bells and titles, however
+    /// the output is split into reads: a C while one runs moves its start
+    /// and begins none.
     #[test]
-    fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Box<dyn std::error::Error>> {
-        let mut pane = pane(3, 30, 1 << 10)?;
-        let run = "1-0".parse().map_err(|()| "a run")?;
-        let mut stream =
-            crate::journal::Reader::new(fux_wire::inspect::Scope::All, &pane.journal, run, None)?;
-        pane.output(
-            b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
-        );
-        let (said, _) = stream.lines(&pane.journal, |_| None);
-        assert_eq!(
-            said,
-            concat!(
-                r#"{"event":"done","pane":"%1","tab":"@1","workspace":"+1","status":1}"#,
-                "\n",
-                r#"{"event":"bell","pane":"%1","tab":"@1","workspace":"+1"}"#,
-                "\n",
-                r#"{"event":"done","pane":"%1","tab":"@1","workspace":"+1","status":0}"#,
-                "\n",
-                r#"{"event":"title","pane":"%1","tab":"@1","workspace":"+1","title":"t"}"#,
-                "\n"
-            )
-        );
+    fn commands_begun_and_ended_are_journaled_in_the_outputs_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let output: &[u8] =
+            b"\x1b]133;C\x07\x07x\x1b]133;D;1\x07\x1b]133;C\x07\x1b]2;t\x07\x1b]133;C\x07";
+        let at = r#""pane":"%1","tab":"@1","workspace":"+1""#;
+        let started = format!(r#"{{"event":"command_started",{at}}}"#);
+        let lines = [
+            started.clone(),
+            format!(r#"{{"event":"bell",{at}}}"#),
+            format!(r#"{{"event":"done",{at},"status":1}}"#),
+            started,
+            format!(r#"{{"event":"title",{at},"title":"t"}}"#),
+        ];
+        let expected = lines.map(|line| line + "\n").concat();
+        for split in 0..=output.len() {
+            let mut pane = pane(3, 30, 1 << 10)?;
+            let run = "1-0".parse().map_err(|()| "a run")?;
+            let mut stream = crate::journal::Reader::new(
+                fux_wire::inspect::Scope::All,
+                &pane.journal,
+                run,
+                None,
+            )?;
+            let (first, second) = output.split_at_checked(split).ok_or("a split")?;
+            pane.output(first);
+            pane.output(second);
+            let (said, _) = stream.lines(&pane.journal, |_| None);
+            assert_eq!(said, expected, "split at {split}");
+        }
         Ok(())
     }
 }
