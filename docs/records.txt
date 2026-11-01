@@ -11,7 +11,7 @@ capture[pane].links[]: row col len uri
 capture[pane].lost: copies_cut copies_not_text pictures memory
 capture[pane].pictures[]: row col rows cropped cols width height
 capture[pane].styles[][]: col len fg bg bold inverse hidden dim italic strikeout underline blink
-capture[pane]: screen_rows screen_cols screen_cursor lines styles pane version wrap_pending cursor title foreground_group hung_up read_error exited signal alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output bells notification truncated input_queued input_unread above wrapped_rows links
+capture[pane]: screen_rows screen_cols screen_cursor lines styles changed_rows pane version wrap_pending cursor title foreground_group hung_up read_error exited signal alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output bells notification truncated input_queued input_unread above wrapped_rows links
 dictionary[]: name provenance effect documentation definition codes
 events.events[].origin[client]: kind client
 events.events[].origin[outside]: kind

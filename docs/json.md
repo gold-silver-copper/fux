@@ -188,6 +188,16 @@ changing; the journal does not promise a complete stream of terminal replies.
 {"pane":"%1","screen_rows":23,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"],"wrap_pending":false,"version":"…","cursor":"SEQ:RUN",PANE FIELDS…,"above":0,"wrapped_rows":[false,…],"links":[{"row":0,"col":2,"len":4,"uri":"https://…"}]}
 ```
 
+`VERSION since` reads only the lines with a row changed after that
+version of the pane, a blank one too, and adds `"changed_rows":[3,7]`
+after `lines`: the row each line begins on, numbered as `rows` counts
+rows (as text, each line is written after it, `3:text`, as `grep -n`
+writes lines). `version` is the version to read from next. After a
+scroll, a resize or a switch of screens every row holds another, and
+every line is read. A version of another server run, or another pane's,
+fails `bad_value`; one of the pane's earlier program, respawned since,
+fails `stale`, since its screen is gone: capture the pane whole.
+
 `cursor` is the journal cursor read in the same server turn as `version`
 and the screen: `PANE str CURSOR events` from it starts reading the pane's
 journal entries after the capture, none from before it (as from any cursor,
@@ -480,8 +490,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":67,
- "server_release":"0.36.0","server_protocol":67,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":68,
+ "server_release":"0.36.0","server_protocol":68,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

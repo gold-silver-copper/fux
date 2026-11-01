@@ -329,7 +329,7 @@ words! {
         Input SendKeys "send-keys" "target -- target" raises(Type Unused Usage asks) "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" raises(Type Range asks) "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
         Input Signal "signal" "subject name -- answer" raises(Type Unused asks) "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
-        Reading Capture "capture" "capture-source -- capture-source" raises(Type Unused asks) "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
+        Reading Capture "capture" "capture-source -- capture-source" raises(Type Unused asks) "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols Since];
         Reading Snapshot "snapshot" "snapshot-scope projection -- record" raises(Type asks) "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
         Reading Get "get" "readable field -- value" raises(Type NoField Range TooLong asks) "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
         Reading Json "json" "value -- string" raises(Unused) "value as JSON (an answer as its JSON); a failure as its fields, a failed wait's answer its value" "fux ls json" [];
@@ -406,6 +406,7 @@ words! {
         Reading LastOutput "last-output" "pane-builder -- pane-builder" raises(Type Unused) "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux %3 last-output capture";
         Reading Rows "rows" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to, clipped to available rows; joined lines touched whole (with wrapped, those rows alone)" "fux %3 0 4 rows capture";
         Reading Cols "cols" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";
+        Reading Since "since" "pane-builder seen -- pane-builder" raises(Type Unused) "capture: only the lines with a row changed since this version of the pane (a capture's, or as changed takes it), each after its row as rows counts it (3:text; json: changed_rows); every row after a scroll, resize or switch of screens; fails stale for an earlier program's" "V=$(fux %3 capture str version get); fux %3 str \"$V\" since capture";
     }
     Screen {
         Clients Choose "choose" "client title list list list callback --" raises(Type TooLong NotHere asks) "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end code 2drop end choose";
@@ -989,6 +990,7 @@ fn modify(
         Opt::LastOutput => built.view.source = Source::LastOutput,
         Opt::Rows => built.view.rows = Some(span(opt, next)?),
         Opt::Cols => built.view.cols = Some(span(opt, next)?),
+        Opt::Since => built.view.since = Some(version(&next()?)?),
         Opt::Key => {
             let word = string(&next()?)?;
             let press = word.parse().map_err(|_| {
@@ -2892,6 +2894,7 @@ mod tests {
                     }
                     Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
                     Opt::Rows | Opt::Cols => vec![Value::Int(0), Value::Int(1)],
+                    Opt::Since => vec![Value::str("%1:0.0.0.0.0:1-1")],
                     Opt::In => vec![Value::str("+1")],
                     Opt::Timeout | Opt::History => vec![Value::Int(0)],
                     Opt::Key => vec![Value::str("Enter")],

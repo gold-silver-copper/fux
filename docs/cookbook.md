@@ -189,6 +189,22 @@ E=$(fux str shell pane str "$C" events | jq -nr 'first(inputs) | .event') || [ $
 [ "$E" = input ]
 ```
 
+## Watch what changes on a screen
+
+`since` a version reads only the lines with a row changed after it, each
+after its row as `grep -n` writes lines; its JSON holds the rows as
+`changed_rows`, and the `version` to read from next. After a scroll, a
+resize or a switch of screens, every row has changed. A version of an
+earlier program, respawned since, fails `stale`: capture the pane whole.
+
+```sh
+V=$(fux str shell pane capture version)
+fux str shell pane str 'echo "watched: $((6*7))"' line
+fux str shell pane str 'watched: 42' 30 shows > /dev/null
+fux str shell pane str "$V" since capture | grep ':watched: 42$'
+fux str shell pane str "$V" since capture json | jq -c '{changed_rows, version}'
+```
+
 ## Keep a journal file
 
 The journal file is your redirect, written as long as the reader runs;

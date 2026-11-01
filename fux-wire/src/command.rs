@@ -440,6 +440,8 @@ wire! {
         pub rows: Option<(u16, u16)>,
         /// Columns `start..end`, from 0.
         pub cols: Option<(u16, u16)>,
+        /// Only the lines with a row changed since this version of the pane.
+        pub since: Option<Version>,
     }
 }
 

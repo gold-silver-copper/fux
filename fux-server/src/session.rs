@@ -2477,6 +2477,13 @@ impl Session {
                 history,
                 view,
             } => {
+                if let Some(since) = view.since {
+                    self.counts_since(since)?;
+                    if since.pane != target {
+                        let why = format!("{since} is {}'s version, not {target}'s", since.pane);
+                        return Err(fail(Raise::BadValue, why));
+                    }
+                }
                 let pane = self.pane(target)?;
                 if view.source == command::Source::LastOutput && !pane.marked() {
                     return Err(fail(

@@ -260,7 +260,9 @@ wire! {
     /// (its row and column, if it shows on the screen read), its lines,
     /// trimmed as its view asked, and the styles their runs name; and
     /// whether it was read with styles (its text shows them as SGR, its
-    /// JSON lists them) and marks.
+    /// JSON lists them) and marks. Read `since` a version, its lines are
+    /// those with a row changed since, and `changed_rows` holds the row
+    /// each begins on.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Captured {
         pub of: Of,
@@ -272,6 +274,7 @@ wire! {
         pub styles: Vec<Attributes>,
         pub styled: bool,
         pub marks: bool,
+        pub changed_rows: Option<Vec<u32>>,
     }
 }
 
@@ -451,6 +454,7 @@ impl Captured {
                 .collect(),
             styled: true,
             marks: false,
+            changed_rows: None,
         }
     }
 
@@ -463,9 +467,14 @@ impl Captured {
         let mut sgr = Vec::new();
         sgr.try_reserve_exact(self.text_scratch())
             .map_err(|_| std::fmt::Error)?;
+        let mut rows = self.changed_rows.iter().flatten();
         for (i, line) in self.lines.iter().enumerate() {
             if i > 0 {
                 out.write_char('\n')?;
+            }
+            // Read `since`, each line after its row, as `grep -n` writes it.
+            if let Some(row) = rows.next() {
+                write!(out, "{row}:")?;
             }
             self.write_line(out, line, self.styled, &mut sgr)?;
         }
@@ -503,6 +512,16 @@ impl Captured {
             out.write_char('"')?;
         }
         out.write_char(']')?;
+        if let Some(rows) = &self.changed_rows {
+            out.write_str(",\"changed_rows\":[")?;
+            for (i, row) in rows.iter().enumerate() {
+                if i > 0 {
+                    out.write_char(',')?;
+                }
+                write!(out, "{row}")?;
+            }
+            out.write_char(']')?;
+        }
         if let Of::Pane { wrap_pending, .. } = &self.of {
             write!(out, ",\"wrap_pending\":{wrap_pending}")?;
         }
