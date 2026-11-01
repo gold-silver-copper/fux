@@ -581,19 +581,11 @@ impl Reader {
             Ok(batch) => batch,
             Err(why) => return (why, false),
         };
-        let mut lines = String::new();
-        let json = batch.json();
-        let Some(Json::Array(events)) = json.get("events") else {
-            return ("event array".into(), false);
-        };
-        for mut event in events.clone() {
-            if let Json::Object(fields) = &mut event {
-                fields.retain(|(k, _)| k != "origin" && k != "next");
-            }
-            lines.push_str(&event.render());
-            lines.push('\n');
+        let gone = batch.status == Status::Gone;
+        match fux::script::testing::event_lines(batch, &["origin", "seq", "next"]) {
+            Ok(lines) => (lines, gone),
+            Err(why) => (why.message, false),
         }
-        (lines, batch.status == Status::Gone)
     }
 }
 

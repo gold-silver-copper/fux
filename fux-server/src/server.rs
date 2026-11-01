@@ -670,6 +670,11 @@ impl Server {
                 next = Some(next.map_or(at, |next: Instant| next.min(at)));
             }
         }
+        // A stop asked for since the last turn goes first: its entry is the
+        // last that the reads it ends must read.
+        if (self.session.outbox.iter()).any(|o| matches!(o, Outgoing::Shutdown(..))) {
+            self.deliver(now);
+        }
         changed |= self.answer_waits(now);
         let answered_at = self.session.parts.journal().end(self.session.run);
         let wrote = self.session.parts.write_input();
@@ -866,14 +871,7 @@ impl Server {
         // The journal's last entry, which ends every pending read.
         let stopped = crate::journal::Event::Stopped(reason.clone());
         self.session.parts.journal_mut().push_from(stopped, actor);
-        for conn in &mut self.conns {
-            if let Stage::Waiting(waiting) = &mut conn.stage
-                && let Waiting::Events(read) = &mut **waiting
-                && let Some(reply) = read.answer(&self.session, now)
-            {
-                conn.answer(&mut self.session, reply, now);
-            }
-        }
+        self.answer_waits(now);
         self.session.shutdown(now);
         // Every connection still open ends, so no command runs on what is
         // left of the session.
@@ -1598,6 +1596,78 @@ mod tests {
                 Some(Stage::Command)
             ),
             "delivery left the event read waiting"
+        );
+        Ok(())
+    }
+
+    /// A stop that a request itself asks for, killing the last pane, is
+    /// journaled before any read is answered: a read of everything, armed
+    /// at the end, gets the closes and the numbered `stopped` entry in one
+    /// batch, which ends it.
+    #[test]
+    fn a_stop_a_request_asks_for_ends_armed_reads_with_its_entry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peers, _) = ordered_fixture()?;
+        let now = Instant::now();
+        let dir = fuxix::file::scratch()?.join(format!("fux-stop-{}", std::process::id()));
+        let socket = crate::socket::checked(dir.join("s"), "test")?;
+        server.phase = Phase::Serving {
+            listening: Listening::open(&socket)?,
+            resting: None,
+        };
+        // No client attached, whose paint would deliver the stop first.
+        (server.conns.get_mut(1).ok_or("source")?).enter(&mut server.session, Stage::Dead, now);
+        server.session.outbox.clear();
+        let journal = server.session.parts.journal();
+        let end = journal.end(server.session.run);
+        let reader = crate::journal::Reader::new(
+            fux_wire::inspect::Scope::All,
+            journal,
+            server.session.run,
+            None,
+        )?;
+        server.conns.first_mut().ok_or("worker")?.stage =
+            Stage::Waiting(Box::new(Waiting::Events(crate::journal::Read::new(
+                reader,
+                after(now, Duration::from_secs(30)),
+            ))));
+        let kill = fux_wire::command::Command::Kill {
+            target: fux_wire::command::AnyRef::Pane(PaneId::of(1)),
+        };
+        let cli = Origin::Cli(Caller::default());
+        let Begun::Done(_) = server
+            .session
+            .begin(fux_wire::command::Request::Do(kill), &cli, now)
+        else {
+            return Err("the kill waited".into());
+        };
+        let _ = server.turn(now, &mut Vec::new());
+        let mut decoder = Decoder::default();
+        decoder.push(server.conns.first().ok_or("worker")?.out.as_slice());
+        let Some(ToCommand::Part(part)) = decoder.frame()? else {
+            return Err("the read was not answered".into());
+        };
+        let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+        let fux_wire::protocol::Response::Returned(fux_wire::protocol::Body::Events(batch)) =
+            reply.response
+        else {
+            return Err(format!("{reply:?}").into());
+        };
+        drop(server);
+        fs::remove_dir_all(dir)?;
+        let names: Vec<_> = (batch.events.iter())
+            .filter_map(|item| item.data.get("event"))
+            .collect();
+        let named = |name: &str| fux_wire::json::Json::str(name);
+        assert_eq!(names.first(), Some(&&named("closed")), "{names:?}");
+        assert_eq!(names.last(), Some(&&named("stopped")), "{names:?}");
+        let stopped = batch.events.last().ok_or("stopped")?;
+        assert_eq!(stopped.origin, fux_wire::events::Actor::Outside);
+        assert_eq!(batch.next, stopped.next);
+        assert!(stopped.next.seq > end.seq);
+        assert_eq!(
+            batch.status,
+            fux_wire::events::Status::Stopped("the last pane closed".into())
         );
         Ok(())
     }

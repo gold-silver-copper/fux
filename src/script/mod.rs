@@ -2090,6 +2090,37 @@ pub mod testing {
         }
         evaluate(code, None, &mut Once(Some(reply)), out)
     }
+
+    /// A batch's events as `next-events` prints them, a line each, but
+    /// for the fields named in `without`.
+    pub fn event_lines(
+        batch: fux_wire::events::Batch,
+        without: &[&str],
+    ) -> Result<String, fuxth::Failure> {
+        use fuxth::Value;
+        let not_a = |what| fuxth::Failure::new(fuxth::Code::Fail, what);
+        let Value::App(super::Fux::Record(record)) = super::record::events(batch)? else {
+            return Err(not_a("a batch's record"));
+        };
+        let Value::List(events) = record.get("events")? else {
+            return Err(not_a("a batch's events"));
+        };
+        let mut lines = String::new();
+        for event in events.items() {
+            let Value::App(super::Fux::Record(event)) = event else {
+                return Err(not_a("an event's record"));
+            };
+            let mut event = (**event).clone();
+            event
+                .fields
+                .retain(|(key, _)| !without.contains(&key.as_str()));
+            event
+                .write(&mut lines)
+                .map_err(|_| not_a("an event's text"))?;
+            lines.push('\n');
+        }
+        Ok(lines)
+    }
 }
 
 #[cfg(test)]

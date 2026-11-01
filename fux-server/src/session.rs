@@ -8337,11 +8337,7 @@ mod journal_tests {
             "history_budget",
             "history_cleared",
         ] {
-            assert!(
-                !named(&b, name).is_empty(),
-                "missing {name}: {}",
-                b.json().render()
-            );
+            assert!(!named(&b, name).is_empty(), "missing {name}: {b:?}");
         }
         let from = b.next;
         s.detach(client, Instant::now());
@@ -8481,8 +8477,7 @@ mod journal_tests {
                     .batch(s.parts.journal(), true)?;
                 assert!(
                     !named(&b, "shown").is_empty(),
-                    "departure from {scope:?}: {}",
-                    b.json().render()
+                    "departure from {scope:?}: {b:?}"
                 );
                 assert!(named(&b, "resized").is_empty());
             }
