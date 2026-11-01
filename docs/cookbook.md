@@ -173,6 +173,22 @@ fux all str "$C" events | jq -nc 'first(inputs | select(.event == "exited"))' ||
 An empty cursor starts now; to go on after a stop, pass the last line's
 `next`.
 
+## Read the screen, then follow what changes
+
+A capture holds `cursor`, the journal's cursor read with its screen:
+`events` from it starts reading the pane's journal entries after the
+capture, none from before (as from any cursor, entries evicted first are
+`missed`). A change only to the screen is no entry: it shows as a new
+version and in captures. Here the first event after the capture is the
+line typed after it.
+
+```sh
+C=$(fux str shell pane capture str cursor get)
+fux str shell pane str 'echo after' line
+E=$(fux str shell pane str "$C" events | jq -nr 'first(inputs) | .event') || [ $? -eq 141 ]
+[ "$E" = input ]
+```
+
 ## Keep a journal file
 
 The journal file is your redirect, written as long as the reader runs;
