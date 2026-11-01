@@ -58,6 +58,9 @@ range 1 try -24
 fail 1 try -2
 abort 1 try -1
 quit 1 try -56
+interrupt 1 try -28
+end_of_input 1 try -39
+unsupported 1 try -21
 thrown 1 try
 bad_codes 2 try
 too_long 1 try

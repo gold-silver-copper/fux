@@ -113,6 +113,14 @@ codes! {
     Abort "abort" -1,
     /// `quit`: the program stopped itself, as Forth's QUIT does.
     Quit "quit" -56,
+    /// A host's failure the standard numbers, as `throw` of its number
+    /// raises it too: the user interrupted the program (Ctrl-C, SIGINT).
+    Interrupt "interrupt" -28,
+    /// A host's: its input ended where a word waited for more. `-39
+    /// throw` raises `open_quote`, the first code of that number.
+    EndOfInput "end_of_input" -39,
+    /// A host's: an operation it can't do where it runs.
+    Unsupported "unsupported" -21,
     /// `throw` given a number no other code has: the failure holds it.
     Thrown "thrown",
     /// A `try`'s codes not a string written just before it, or naming a
