@@ -2357,6 +2357,7 @@ pub(crate) mod tests {
         let next = "1:1-0".parse().map_err(|()| "cursor")?;
         for (missed, written) in [(2, None), (0, Some(""))] {
             let batch = Batch {
+                first: next,
                 next,
                 missed,
                 status: Status::Timeout,

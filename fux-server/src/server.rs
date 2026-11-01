@@ -10,6 +10,7 @@ use crate::socket::{Endpoint, SocketPath};
 use crate::wait::Waiting;
 use fux_vt::bytes::ByteQueue;
 use fux_wire::code::Code;
+use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Placement;
 use fux_wire::protocol::{
@@ -640,7 +641,7 @@ impl Server {
                     }
                     Slot::Stops => {
                         crate::drain(self.stops.reader());
-                        self.stop("stopped by a signal".into(), now);
+                        self.stop("stopped by a signal".into(), Actor::Server, now);
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags, now),
                     Slot::Pane(id) => self.serve_pane(id, flags, now),
@@ -854,19 +855,22 @@ impl Server {
         );
     }
 
-    /// Stops the server, saying why.
-    fn stop(&mut self, reason: String, now: Instant) {
+    /// Stops the server, saying why, as `actor`.
+    fn stop(&mut self, reason: String, actor: Actor, now: Instant) {
         if let Phase::Stopping(_) = self.phase {
             return;
         }
         log!("{reason}");
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(after(now, STOP_WAIT));
+        // The journal's last entry, which ends every pending read.
+        let stopped = crate::journal::Event::Stopped(reason.clone());
+        self.session.parts.journal_mut().push_from(stopped, actor);
         for conn in &mut self.conns {
-            if let Stage::Waiting(waiting) = &conn.stage
-                && let Waiting::Events(read) = &**waiting
+            if let Stage::Waiting(waiting) = &mut conn.stage
+                && let Waiting::Events(read) = &mut **waiting
+                && let Some(reply) = read.answer(&self.session, now)
             {
-                let reply = read.stopped(&self.session, &reason);
                 conn.answer(&mut self.session, reply, now);
             }
         }
@@ -894,11 +898,11 @@ impl Server {
     fn deliver(&mut self, now: Instant) {
         self.send_frames(now);
         let (stops, rest) = (mem::take(&mut self.session.outbox).into_iter())
-            .partition(|o| matches!(o, Outgoing::Shutdown(_)));
+            .partition(|o| matches!(o, Outgoing::Shutdown(..)));
         self.session.outbox = rest;
         for stop in stops {
-            if let Outgoing::Shutdown(reason) = stop {
-                self.stop(reason, now);
+            if let Outgoing::Shutdown(reason, actor) = stop {
+                self.stop(reason, actor, now);
             }
         }
     }
@@ -908,7 +912,7 @@ impl Server {
     fn send_frames(&mut self, now: Instant) {
         for outgoing in mem::take(&mut self.session.outbox) {
             let (client, frame) = match outgoing {
-                Outgoing::Shutdown(_) => {
+                Outgoing::Shutdown(..) => {
                     self.session.outbox.push(outgoing);
                     continue;
                 }
@@ -1274,9 +1278,7 @@ impl Server {
                     Some(AttachedFrame::Resize(size)) => {
                         attached.known = false;
                         session.terminal_resized(attached.client);
-                        let actor = session
-                            .parts
-                            .actor(fux_wire::events::Actor::Client(attached.client));
+                        let actor = session.parts.actor(Actor::Client(attached.client));
                         let resized =
                             session.resize(attached.client, size.rows(), size.cols(), now);
                         session.parts.actor(actor);
@@ -1285,9 +1287,7 @@ impl Server {
                         }
                     }
                     Some(AttachedFrame::Detach) => {
-                        let actor = session
-                            .parts
-                            .actor(fux_wire::events::Actor::Client(attached.client));
+                        let actor = session.parts.actor(Actor::Client(attached.client));
                         conn.end(session, &ToAttached::Exit("detached"), now);
                         session.parts.actor(actor);
                     }
@@ -1420,10 +1420,7 @@ impl Server {
             within,
             cwd: Some(cwd),
         });
-        let actor = source.map_or_else(
-            || session.request_actor(&cli),
-            fux_wire::events::Actor::Client,
-        );
+        let actor = source.map_or_else(|| session.request_actor(&cli), Actor::Client);
         let origin = match client {
             Some(c) if !session.views.contains_key(&c) => {
                 let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));

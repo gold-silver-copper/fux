@@ -95,6 +95,9 @@ wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Batch {
         pub events: Vec<Item>,
+        /// The oldest entry the journal still holds, or `next` when it
+        /// holds none.
+        pub first: Cursor,
         pub next: Cursor,
         pub missed: u64,
         pub status: Status,
@@ -146,6 +149,7 @@ impl Batch {
             .collect();
         let mut fields = vec![
             ("events", Json::Array(events)),
+            ("first", Json::str(self.first.to_string())),
             ("next", Json::str(self.next.to_string())),
             ("missed", Json::uint(self.missed)),
             ("status", Json::str(self.status.name())),
