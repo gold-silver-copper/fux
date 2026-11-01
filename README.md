@@ -146,11 +146,11 @@ fux %3 str q text send-keys                       # press q: its version from be
   The rest of the language, its standard library, is written in fuxth;
   fux's own words (`ls`, `new-tab`, `send-keys` …) are fux's, not the
   language's.
-- A program is checked before it runs: a word given fewer values than the
-  stack surely holds, a value the core's words never take (`str a 1 add`,
-  `1 if`), or keys or options left that no word acts on (`%3 str x text`),
-  fails before any word acts. What can't be known before it runs (a
-  library word's values, a loop, a list's elements) is checked as it runs.
+- Each word checks its values as it runs: a word given too few, or one of a
+  kind it doesn't take (`str a 1 add`, `1 if`), fails there, after the words
+  before it have acted; keys or options left that no word acts on
+  (`%3 str x text`) fail the program's end. An unknown word or an unclosed
+  block is found before anything runs.
 - No word is a character a shell treats specially, so a program needs no
   quoting beyond the text you give `str`.
 
@@ -536,7 +536,7 @@ or automatic CLI config import. Required files are frozen with the client;
 reattach to read edits. Keys and prompts use the saved definitions and cannot
 load new files with `require`.
 
-The entire import graph is checked before any of it runs. Cycles fail with
+The entire import graph is read and compiled before any of it runs. Cycles fail with
 the source chain, file and line. Sources must be regular files, opened nonblocking; explicit stdin remains available with `-`.
 
 The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
@@ -597,10 +597,6 @@ prefix fallback. Key words such as `prefix`, `bind`, `unbind`, `label`,
 In action programs, pending client state commits before the next server or
 screen operation. A failed commit leaves earlier commits intact. Launches
 carry their own completed creation policy; setters send nothing.
-
-`fux str FILE str program check` compiles a file without running it.
-`fux str FILE str config check` also runs it locally to validate settings
-and bindings, regardless of the filename.
 
 ```sh
 # ~/.config/fux/config.fux

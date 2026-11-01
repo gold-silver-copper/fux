@@ -7,12 +7,10 @@
 //! stack, and stopping is just dropping it.
 use crate::Code;
 use crate::Failure;
-use crate::check::{ANY, INT, Kinds, LIST, SEQ, STR};
 use crate::compile::{Op, Program};
 use crate::error::{Error, Floor, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, Text, Value};
-use crate::vocabulary::through;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -100,15 +98,6 @@ pub enum Outcome<R> {
     Paused,
 }
 
-/// What an application word is to give: it is checked once it has, now
-/// or when the machine resumes. The stack's depth before it gave anything,
-/// the word, and the kinds it took.
-struct Given {
-    depth: usize,
-    word: usize,
-    taken: Vec<crate::check::Kinds>,
-}
-
 /// A call under way: which code (`None`, the top level), its next step, and
 /// where its `let` names start.
 #[derive(Clone, Copy, Debug)]
@@ -151,8 +140,6 @@ pub struct Machine<A> {
     iters: Vec<(Sequence<A>, usize)>,
     /// What application words give, kept between calls.
     out: Vec<Value<A>>,
-    /// A suspended application word: what it is to give.
-    pending: Option<Given>,
     /// Steps taken in all, through every run.
     steps: u64,
     /// The one-character ASCII strings made so far, by code.
@@ -183,7 +170,6 @@ impl<A: AppValue> Machine<A> {
             marks: Vec::new(),
             iters: Vec::new(),
             out: Vec::new(),
-            pending: None,
             steps: 0,
             chars: Vec::new(),
             codes: Vec::new(),
@@ -203,24 +189,12 @@ impl<A: AppValue> Machine<A> {
 
     /// Raises a suspended word's failure at it, as if the word had failed
     /// when called: a `try` around it that catches its code goes on at its
-    /// handler, when the machine runs again; else its error, said at the
-    /// word, ends the run.
-    pub fn raise(&mut self, failure: Failure) -> Result<(), Error> {
-        self.pending = None;
+    /// handler, when the machine runs again, which gets `carried` in place
+    /// of the message if the failure carries a value (a failed wait's
+    /// answer); else its error, said at the word, ends the run.
+    pub fn raise(&mut self, failure: Failure, carried: Option<Value<A>>) -> Result<(), Error> {
         let error = self.failed(failure);
-        self.recover(error, None)
-    }
-
-    /// `raise`, the failure carrying `value`: a `try`'s handler gets it in
-    /// place of the message (`Vocabulary::carries` says of which codes).
-    pub fn raise_with(&mut self, failure: Failure, value: Value<A>) -> Result<(), Error> {
-        self.program
-            .vocabulary
-            .check_carried(failure.code, &value)
-            .map_err(|message| self.fail(Code::Contract, message))?;
-        self.pending = None;
-        let error = self.failed(failure);
-        self.recover(error, Some(value))
+        self.recover(error, carried)
     }
 
     /// An application word's failure, said at the word, or the word it
@@ -344,9 +318,6 @@ impl<A: AppValue> Machine<A> {
         host: &mut H,
         budget: u64,
     ) -> Result<Outcome<H::Request>, Error> {
-        if let Some(given) = self.pending.take() {
-            self.given(given)?;
-        }
         let until = self.steps.saturating_add(budget);
         loop {
             match self.steps_until(host, until) {
@@ -389,8 +360,11 @@ impl<A: AppValue> Machine<A> {
             self.last = Some((depth, frame.code, frame.step));
             frame.step = frame.step.saturating_add(1);
             match op {
-                Op::Push(value) => self.push(value.clone()),
-                Op::Argument(value, _) => self.push(value.clone()),
+                // Cloned straight into the stack: through `push`, the value
+                // is written to a temporary in parts and read back whole,
+                // which the CPU can't forward (counting to a million: +7%
+                // cycles on fewer instructions).
+                Op::Push(value) => self.stack.extend_from_slice(std::slice::from_ref(value)),
                 Op::Builtin(builtin) => self.builtin(*builtin, host)?,
                 Op::PickN(n) => self.pick(*n)?,
                 Op::RollN(n) => self.roll(*n)?,
@@ -402,19 +376,6 @@ impl<A: AppValue> Machine<A> {
                 Op::Call(id) => {
                     let tail = returns_from(&code.ops, frame.step);
                     let caller = frame.via.unwrap_or((frame.code, frame.step));
-                    if let Some(inputs) =
-                        program.words.get(*id).and_then(|body| body.inputs.as_ref())
-                    {
-                        let from = self.depth(inputs.len())?;
-                        for (value, (kinds, said)) in self.stack.iter().skip(from).zip(inputs) {
-                            if !program.vocabulary.kind_of(value).may_be(*kinds) {
-                                return Err(self.fail(
-                                    Code::Type,
-                                    format!("takes {said}, not {}", value.kind()),
-                                ));
-                            }
-                        }
-                    }
                     // A call that is its caller's last step replaces it:
                     // the caller has nothing left to do, so a loop written
                     // as recursion runs in one frame.
@@ -525,15 +486,7 @@ impl<A: AppValue> Machine<A> {
         id: usize,
         host: &mut H,
     ) -> Result<Option<H::Request>, Error> {
-        let words = &self.program.vocabulary;
-        let from = self.depth(words.word(id).map_or(0, |w| w.takes.len()))?;
-        // The kinds it takes, for what it passes through.
-        let taken = self
-            .stack
-            .iter()
-            .skip(from)
-            .map(|v| words.kind_of(v))
-            .collect();
+        let from = self.depth(self.program.vocabulary.takes(id))?;
         let mut out = std::mem::take(&mut self.out);
         out.clear();
         let args = Args {
@@ -542,20 +495,12 @@ impl<A: AppValue> Machine<A> {
             at: from,
         };
         let done = host.call(id, args, &mut out).map_err(|f| self.failed(f))?;
-        let given = Given {
-            depth: self.stack.len(),
-            word: id,
-            taken,
-        };
         self.stack.append(&mut out);
         self.out = out;
         match done {
-            Done::Now => self.given(given).map(|()| None),
+            Done::Now => Ok(None),
             // What it gives comes with the host's answer.
-            Done::Later(request) => {
-                self.pending = Some(given);
-                Ok(Some(request))
-            }
+            Done::Later(request) => Ok(Some(request)),
         }
     }
 
@@ -570,47 +515,13 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
-    /// Whether an application word gave as many values as its vocabulary
-    /// says, of the kinds it says: the checker counted on it. Kept out of
-    /// `run`'s loop: inlined there, it made every program 2 to 5% slower
-    /// (fuxth's bench).
-    #[inline(never)]
-    fn given(&self, given: Given) -> Result<(), Error> {
-        let words = &self.program.vocabulary;
-        let gives = words.word(given.word).map_or(&[][..], |w| &w.gives);
-        let values = self.stack.get(given.depth..).unwrap_or_default();
-        if values.len() != gives.len() {
-            let message = format!(
-                "the application gave {} values, and its word says {}",
-                values.len(),
-                gives.len()
-            );
-            return Err(self.fail(Code::Contract, message));
-        }
-        for (value, (from, map)) in values.iter().zip(gives) {
-            let taken = from.and_then(|i| given.taken.get(i).copied());
-            let may = through(map, taken.unwrap_or(ANY));
-            let kind = words.kind_of(value);
-            if !kind.may_be(may) {
-                let (kind, may) = (words.describe(kind), words.describe(may));
-                let message = format!("the application gave {kind}, and its word says {may}");
-                return Err(self.fail(Code::Contract, message));
-            }
-        }
-        Ok(())
-    }
-
     /// At the program's end: a value left that must be used fails it.
     fn used(&self) -> Result<(), Error> {
         if self.program.empty && !self.stack.is_empty() {
             return Err(self.fail(Code::Unused, "a callback must leave an empty stack"));
         }
         let words = &self.program.vocabulary;
-        if let Some(why) = self
-            .stack
-            .iter()
-            .find_map(|v| words.unused(words.kind_of(v)))
-        {
+        if let Some(why) = self.stack.iter().find_map(|v| words.unused(v)) {
             return Err(self.fail(Code::Unused, why));
         }
         Ok(())
@@ -634,7 +545,7 @@ impl<A: AppValue> Machine<A> {
             Body::List => Floor::List,
             Body::Try { .. } => Floor::Try,
         });
-        let message = underflow("takes", n, &has.to_string(), inside);
+        let message = underflow(n, has, inside);
         Err(self.fail(Code::StackUnderflow, message))
     }
 
@@ -670,11 +581,9 @@ impl<A: AppValue> Machine<A> {
             .ok_or_else(|| self.fail(Code::Range, format!("index {n}, and it has {len}")))
     }
 
-    /// `word` given `got` in a place that takes `arg`'s kinds.
+    /// `got` given in a place that `wants` says what it takes.
     #[cold]
-    fn refused(&self, word: Builtin, arg: Arg, got: &str, app: bool) -> Error {
-        // A place that takes any value refuses none.
-        let wants = arg.wants.map(|wants| wants(word));
+    fn refused(&self, wants: Option<Wants>, got: &str, app: bool) -> Error {
         self.fail(
             Code::Type,
             wants.map_or_else(|| got.to_owned(), |wants| wants.not(got, app)),
@@ -915,25 +824,16 @@ impl<A: AppValue> Sequence<A> {
     }
 }
 
-/// What a built-in takes in one place, as the checker sees it: the kinds
-/// a value there may be, and what a value of another kind is told (none
-/// for a place that takes any value).
-#[derive(Clone, Copy)]
-pub(crate) struct Arg {
-    pub(crate) kinds: Kinds,
-    pub(crate) wants: Option<fn(Builtin) -> Wants>,
-}
-
-/// The kinds of value a built-in's place takes, each a marker: its `ARG`,
-/// for the checker, and `of`, which turns a value into what the word's
-/// body takes, or says what it is instead, for `ARG.wants` to tell.
+/// The kinds of value a built-in's place takes, each a marker: `of`, which
+/// turns a value into what the word's body takes, or says what it is
+/// instead, and `wants`, what a value of another kind is told (none for a
+/// place that takes any value).
 struct Any;
 
 impl Any {
-    const ARG: Arg = Arg {
-        kinds: ANY,
-        wants: None,
-    };
+    fn wants(_: Builtin) -> Option<Wants> {
+        None
+    }
 
     fn of<A>(value: Value<A>) -> Result<Value<A>, &'static str> {
         Ok(value)
@@ -944,10 +844,9 @@ impl Any {
 struct Int;
 
 impl Int {
-    const ARG: Arg = Arg {
-        kinds: INT,
-        wants: Some(Wants::Int),
-    };
+    fn wants(word: Builtin) -> Option<Wants> {
+        Some(Wants::Int(word))
+    }
 
     fn of<A: AppValue>(value: Value<A>) -> Result<i64, &'static str> {
         match value {
@@ -963,10 +862,9 @@ impl Int {
 struct Seq;
 
 impl Seq {
-    const ARG: Arg = Arg {
-        kinds: SEQ,
-        wants: Some(Wants::Seq),
-    };
+    fn wants(word: Builtin) -> Option<Wants> {
+        Some(Wants::Seq(word))
+    }
 
     fn of<A: AppValue>(value: Value<A>) -> Result<Sequence<A>, &'static str> {
         match value {
@@ -981,10 +879,9 @@ impl Seq {
 struct Joined;
 
 impl Joined {
-    const ARG: Arg = Arg {
-        kinds: LIST,
-        wants: Some(|_| Wants::Concat),
-    };
+    fn wants(_: Builtin) -> Option<Wants> {
+        Some(Wants::Concat)
+    }
 
     fn of<A: AppValue>(value: Value<A>) -> Result<Rc<List<A>>, &'static str> {
         match value {
@@ -996,14 +893,13 @@ impl Joined {
     }
 }
 
-/// A one-character string, as its character. The checker sees a string.
+/// A one-character string, as its character.
 struct Char;
 
 impl Char {
-    const ARG: Arg = Arg {
-        kinds: STR,
-        wants: Some(|_| Wants::Char),
-    };
+    fn wants(_: Builtin) -> Option<Wants> {
+        Some(Wants::Char)
+    }
 
     fn of<A: AppValue>(value: Value<A>) -> Result<char, &'static str> {
         match &value {
@@ -1023,17 +919,16 @@ impl Char {
 /// Expands rows `Variant "name" (arg: Marker, …) "effect" "about" { body }`
 /// to the enum `Builtin` of those variants: `Builtin::ALL` in that order;
 /// `name`, `effect` and `about`, each a match giving that row's column;
-/// `args`, its places' markers' `ARG`s, the deepest first (as many as it
-/// takes); and `Machine::builtin`, which runs one. It takes as many values
+/// and `Machine::builtin`, which runs one. It takes as many values
 /// as the row names (`take::<N>`; too few fail it), turns each into what its
 /// marker gives (a value of another kind fails the word), and runs the
 /// row's body with them bound to the row's names. In a body, `m` is the
 /// machine and `host` its host, as the macro's first line names them.
 ///
 /// `builtins! { m host; Len "len" (s: Seq) "seq -- n" "its length" { m.push(…) } }`
-/// gives `Builtin::Len`, named "len", whose `args` are `[Seq::ARG]`, and
-/// in `builtin` the arm `Builtin::Len => { let [s] = m.take()?; let s =
-/// Seq::of(s).map_err(…)?; { m.push(…) } }`.
+/// gives `Builtin::Len`, named "len", and in `builtin` the arm
+/// `Builtin::Len => { let [s] = m.take()?; let s = Seq::of(s).map_err(…)?;
+/// { m.push(…) } }`.
 macro_rules! builtins {
     ($m:ident $host:ident; $(
         $variant:ident $name:literal ($($arg:ident: $ty:ident),*) $effect:literal
@@ -1069,12 +964,11 @@ macro_rules! builtins {
                 }
             }
 
-            /// What it takes in each place, the deepest first: `pick` and
-            /// `roll` take a count, then as many values as it says (the
-            /// machine checks those).
-            pub(crate) fn args(self) -> &'static [Arg] {
+            /// How many values it takes, for its effect to be held to.
+            #[cfg(test)]
+            pub(crate) fn takes(self) -> usize {
                 match self {
-                    $(Builtin::$variant => &[$($ty::ARG),*],)*
+                    $(Builtin::$variant => [$(stringify!($arg)),*].len(),)*
                 }
             }
         }
@@ -1091,7 +985,7 @@ macro_rules! builtins {
                         let [$($arg),*] = $m.take()?;
                         $(let app = matches!($arg, Value::App(_));
                         let $arg = $ty::of($arg)
-                            .map_err(|got| $m.refused(word, $ty::ARG, got, app))?;)*
+                            .map_err(|got| $m.refused($ty::wants(word), got, app))?;)*
                         $body
                     })*
                 }

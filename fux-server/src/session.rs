@@ -7828,8 +7828,6 @@ mod tests {
         }
         let env = failed(&mut s, "opts str 1bad str v env new-tab");
         assert!(env.contains("not first a digit"), "{env}");
-        let missing = failed(&mut s, "str /no/such/file.fux str program check");
-        assert!(missing.contains("No such file"), "{missing}");
         let split = failed(&mut s, "str 'two\nlines' fail");
         assert!(split.ends_with(r"two\nlines"), "{split}");
         let version = failed(&mut s, "str 1.2.3 changed wait");

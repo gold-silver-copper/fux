@@ -139,7 +139,6 @@ pub enum Read {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Op<A> {
     Push(Value<A>),
-    Argument(Value<A>, crate::check::Kinds),
     Builtin(Builtin),
     /// `pick` with its count written just before it.
     PickN(usize),
@@ -155,8 +154,7 @@ pub(crate) enum Op<A> {
     SetLocal(usize),
     GetLocal(usize),
     /// A `let` name of the top level's, by its slot. Only the top level's
-    /// code holds one (a `let` in a definition is its own): the checker
-    /// keeps the top level's names and a definition's in one map.
+    /// code holds one (a `let` in a definition is its own).
     SetGlobal(usize),
     GetGlobal(usize),
     /// `list`: the stack from here is the list's.
@@ -184,7 +182,6 @@ pub(crate) struct Steps<A> {
     pub ops: Vec<Op<A>>,
     pub tokens: Vec<Token>,
     pub locals: usize,
-    pub inputs: Option<Vec<(crate::check::Kinds, String)>>,
 }
 
 impl<A> Steps<A> {
@@ -193,7 +190,6 @@ impl<A> Steps<A> {
             ops: Vec::new(),
             tokens: Vec::new(),
             locals: 0,
-            inputs: None,
         }
     }
     fn push(&mut self, op: Op<A>, token: &Token) {
@@ -221,15 +217,12 @@ impl<A> Steps<A> {
     /// call (`dup` is `0 pick`). Longer words stay calls, so a mistake in
     /// one is said as the whole word's, not one of its steps'.
     fn leaf(&self) -> bool {
-        if self.inputs.is_some() {
-            return false;
-        }
         let [op] = self.ops.as_slice() else {
             return false;
         };
         matches!(
             op,
-            Op::Push(_) | Op::Argument(..) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_)
+            Op::Push(_) | Op::Builtin(_) | Op::PickN(_) | Op::RollN(_)
         )
     }
 }
@@ -293,16 +286,14 @@ struct Current<A> {
 
 /// Compiles programs: sources added in order, all into one, then finished.
 /// A library's definitions first, then a script, say. A compiler with a
-/// library in, [`prepare`](Compiler::prepare)d, can be cloned for each
-/// program: its definitions and their checked summaries are shared, not
-/// copied. Library definitions are checked only when a program reaches them.
+/// library in can be cloned for each program: its definitions are shared,
+/// not copied.
 #[derive(Clone)]
 pub struct Compiler<A> {
     vocabulary: Rc<Vocabulary>,
     names: HashMap<Rc<str>, Entry>,
     main: Steps<A>,
     words: Vec<Rc<Steps<A>>>,
-    library: usize,
     globals: usize,
     open: Vec<Open>,
     current: Option<Current<A>>,
@@ -310,8 +301,6 @@ pub struct Compiler<A> {
     /// before, so a `pick` or `roll` after it may take it as its count, or
     /// a `try` as its codes.
     literal: bool,
-    /// What the checker has worked out of the definitions so far.
-    known: crate::check::Known,
     /// Calls to words not defined yet, each made by a definition (its
     /// index in `words`, or `None` while it is open) at a step: patched
     /// when the word is defined, an error if none is by the source's end.
@@ -331,38 +320,6 @@ pub struct Compiler<A> {
 }
 
 impl<A: Clone> Compiler<A> {
-    /// Constrains a library definition's inputs, deepest first, using the
-    /// vocabulary's kind names. Declare these before compiling callers.
-    /// Known disjoint kinds refuse before execution; uncertain inputs are
-    /// checked at runtime before the body. Results remain inferred.
-    pub fn inputs(&mut self, name: &str, kinds: &str) -> Result<(), Error> {
-        let Some(Entry::Word(id)) = self.names.get(name) else {
-            return Err(Error::new(
-                Code::Contract,
-                format!("{name}: no definition"),
-                None,
-            ));
-        };
-        let inputs = self.vocabulary.inputs(kinds)?;
-        let Some(body) = self.words.get_mut(*id) else {
-            return Err(Error::new(
-                Code::Contract,
-                format!("{name}: definition is still open"),
-                None,
-            ));
-        };
-        if body.inputs.is_some() {
-            return Err(Error::new(
-                Code::Contract,
-                format!("{name}: inputs declared already"),
-                None,
-            ));
-        }
-        Rc::make_mut(body).inputs = Some(inputs);
-        self.known = crate::check::Known::default();
-        Ok(())
-    }
-
     pub fn new(vocabulary: Vocabulary) -> Self {
         let mut names = HashMap::new();
         for (id, name) in vocabulary.names().enumerate() {
@@ -376,12 +333,10 @@ impl<A: Clone> Compiler<A> {
             names,
             main: Steps::new(),
             words: Vec::new(),
-            library: 0,
             globals: 0,
             open: Vec::new(),
             current: None,
             literal: false,
-            known: crate::check::Known::default(),
             forward: Vec::new(),
             defined: HashSet::new(),
             made: Vec::new(),
@@ -400,16 +355,12 @@ impl<A: Clone> Compiler<A> {
     }
 
     /// Adds an immutable host argument without reading any of its text as code.
-    pub fn argument(&mut self, value: Value<A>)
-    where
-        A: crate::value::AppValue,
-    {
+    pub fn argument(&mut self, value: Value<A>) {
         let token = Token {
             text: Rc::from("callback argument"),
             place: crate::token::Place::Argument(0),
         };
-        let kind = self.vocabulary.kind_of(&value);
-        self.main.push(Op::Argument(value, kind), &token);
+        self.main.push(Op::Push(value), &token);
     }
 
     /// Compiles `tokens`, a source, onto what was compiled before; if it
@@ -745,17 +696,9 @@ impl<A: Clone> Compiler<A> {
     /// each of its definitions' help, which the comment on the line just
     /// above its `define` says: `# EFFECT : ABOUT`. A definition without
     /// it is refused, and the compiler is as it was. A library is whole:
-    /// it opens no block another source closes, nor closes one. Libraries
-    /// must precede every user definition.
+    /// it opens no block another source closes, nor closes one.
     pub fn library(&mut self, source: &str, text: &str) -> Result<Vec<Doc>, Error> {
         self.source_complete()?;
-        if self.library != self.words.len() {
-            return Err(Error::new(
-                Code::Contract,
-                "a library goes before every user definition",
-                None,
-            ));
-        }
         let spans = crate::token::spans(source, text)?;
         let tokens: Vec<Token> = spans.iter().map(|(token, _)| token.clone()).collect();
         let before = self.clone();
@@ -768,33 +711,14 @@ impl<A: Clone> Compiler<A> {
         });
         if docs.is_err() {
             *self = before;
-        } else {
-            self.library = self.words.len();
-            self.known.separate_library();
         }
         docs
-    }
-
-    /// Checks user definitions and the library words they reach, once,
-    /// so that clones of this compiler don't check them again.
-    pub fn prepare(&mut self) {
-        if self.current.is_some() || !self.open.is_empty() {
-            return;
-        }
-        let program = Program {
-            main: Steps::new(),
-            empty: false,
-            words: self.words.clone(),
-            globals: self.globals,
-            vocabulary: Rc::clone(&self.vocabulary),
-        };
-        crate::check::definitions(&program, &mut self.known, self.library);
     }
 
     /// A compiler for a program of its own that sees these definitions:
     /// not the top level, nor its `let` names, whose values are not that
     /// program's. A definition reading one, itself or through a call, may
-    /// not be called there. Checked once, as `prepare` checks.
+    /// not be called there.
     pub fn definitions(&self) -> Self {
         let mut scope = self.clone();
         scope.main = Steps::new();
@@ -812,7 +736,6 @@ impl<A: Clone> Compiler<A> {
         {
             scope.closed.insert(id);
         }
-        scope.prepare();
         scope
     }
 
@@ -821,13 +744,13 @@ impl<A: Clone> Compiler<A> {
         self.finish_as(false)
     }
 
-    /// Checks a callback's result as well as its actual input kinds.
-    /// Uncertain results still require an empty-stack check at runtime.
+    /// The program, every block closed, as a callback: it must leave an
+    /// empty stack, or fails as it ends (`unused`).
     pub fn finish_callback(self) -> Result<Program<A>, Error> {
         self.finish_as(true)
     }
 
-    /// Whether all source blocks are closed, without checking an unknown input stack.
+    /// Whether all source blocks are closed.
     pub fn source_complete(&self) -> Result<(), Error> {
         match self.open.last() {
             Some(open) => Err(unclosed(open)),
@@ -837,15 +760,13 @@ impl<A: Clone> Compiler<A> {
 
     fn finish_as(self, empty: bool) -> Result<Program<A>, Error> {
         self.source_complete()?;
-        let program = Program {
+        Ok(Program {
             main: self.main,
             empty,
             words: self.words,
             globals: self.globals,
             vocabulary: self.vocabulary,
-        };
-        crate::check::check(&program, self.known, self.library)?;
-        Ok(program)
+        })
     }
 
     /// Whether `name` may be defined (`define`) or named (`let`): either

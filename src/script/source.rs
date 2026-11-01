@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn import_failures_name_the_chain_before_any_effect() -> TestResult {
+    fn import_failures_name_the_chain() -> TestResult {
         let f = Fixture::new()?;
         let root = f.write("main.fux", "str before print\nrequire child.fux")?;
         f.write("child.fux", "\nrequire main.fux")?;
@@ -189,12 +189,7 @@ mod tests {
         assert!(cycle.contains("main.fux:2 ->"), "{cycle}");
         assert!(cycle.contains("child.fux:2: require"), "{cycle}");
         assert!(cycle.contains("cycle"), "{cycle}");
-        for broken in [
-            "\nno-such-word",
-            "\nstr 'open",
-            "\n1 true add",
-            "\nrequire missing.fux",
-        ] {
+        for broken in ["\nno-such-word", "\nstr 'open", "\nrequire missing.fux"] {
             f.write("child.fux", broken)?;
             let error = file(&root)
                 .and_then(|image| crate::script::compile(&image.tokens()).map(drop))
@@ -204,6 +199,20 @@ mod tests {
             assert!(error.contains("main.fux:2 ->"), "{error}");
             assert!(error.contains("child.fux:2"), "{error}");
         }
+        // A word that fails as it runs names the chain too, after what ran
+        // before it took effect.
+        f.write("child.fux", "\n1 true add")?;
+        let image = file(&root)?;
+        let mut machine = crate::script::compile(&image.tokens()).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        let mut host =
+            crate::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
+        let error = machine.run(&mut host, 1000).err().ok_or("1 true add ran")?;
+        drop(host);
+        let error = crate::script::Failed::from(error).to_string();
+        assert!(error.contains("main.fux:2 ->"), "{error}");
+        assert!(error.contains("child.fux:2"), "{error}");
+        assert_eq!(String::from_utf8(out)?, "before\n");
         Ok(())
     }
 
