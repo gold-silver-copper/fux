@@ -84,7 +84,7 @@ held str clients get each str pane get print end
 `get` on a record, held action answer, or capture is local, even if the
 source pane has changed, respawned, or closed. A held answer's `pane`,
 `version`, `status`, and applicable change/exit fields come from that answer.
-A capture exposes its saved `pane` (or `client`), version, screen geometry,
+A capture exposes its saved `pane` (or `client`), version, journal cursor, screen geometry,
 lines, optional styles, and captured state fields such as `last_status`.
 An absent field still fails `no_field`; it never falls back to a live read.
 Use `ANSWER pane str name get` to request the live pane name explicitly.
@@ -185,8 +185,12 @@ changing; the journal does not promise a complete stream of terminal replies.
 ## `PANE capture json`
 
 ```json
-{"pane":"%1","screen_rows":23,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"],"wrap_pending":false,PANE FIELDS…,"above":0,"wrapped_rows":[false,…],"links":[{"row":0,"col":2,"len":4,"uri":"https://…"}]}
+{"pane":"%1","screen_rows":23,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"],"wrap_pending":false,"version":"…","cursor":"SEQ:RUN",PANE FIELDS…,"above":0,"wrapped_rows":[false,…],"links":[{"row":0,"col":2,"len":4,"uri":"https://…"}]}
 ```
+
+`cursor` is the journal cursor read in the same server turn as `version`
+and the screen: `PANE str CURSOR events` from it holds every journal entry
+after the capture and none from before it.
 
 `above` is how many history rows are kept above the first row read:
 history not asked for (`null` for `last-output`; rows a `rows` range
