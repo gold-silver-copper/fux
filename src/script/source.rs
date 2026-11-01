@@ -15,6 +15,15 @@ pub(super) fn read(path: &Path) -> io::Result<String> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "not UTF-8 text"))
 }
 
+/// The one identity of the file at `path`: its canonical path; or, for a
+/// file that has none (`<(…)`'s `/dev/fd/63`, a pipe), the path itself.
+pub(super) fn identity(path: &Path) -> io::Result<PathBuf> {
+    path.canonicalize().or_else(|error| match path.metadata() {
+        Ok(_) => Ok(path.to_owned()),
+        Err(_) => Err(error),
+    })
+}
+
 /// A config's sources: the file it was, and each file it read in, as it
 /// was named, from which file, the file it was, and its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,7 +38,7 @@ pub struct Frozen {
 impl Frozen {
     /// The file at `path`, read.
     pub(super) fn file(path: &Path) -> io::Result<Self> {
-        let path = path.canonicalize()?;
+        let path = identity(path)?;
         let text = read(&path)?;
         Ok(Self {
             name: path.display().to_string(),
@@ -120,7 +129,7 @@ impl Files {
             };
             base.join(named)
         };
-        let file = full.canonicalize().map_err(|e| e.to_string())?;
+        let file = identity(&full).map_err(|e| e.to_string())?;
         self.resolved
             .push((path.to_owned(), from.map(Path::to_owned), file.clone()));
         Ok(file)

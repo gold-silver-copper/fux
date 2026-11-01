@@ -231,7 +231,7 @@ fn core_evaluate() -> Result<(), fuxth::Error> {
     let mut words = Vocabulary::default();
     words.evaluate();
     let mut machine = Machine::new(words);
-    machine.library("stdlib.fux", STDLIB)?;
+    machine.library("stdlib.fux", STDLIB, &mut Toy::default())?;
     let program = "define ge1 str 123 end immediate ge1 evaluate
         str 'define ge3 456 end' evaluate ge3
         define ge4 str 'ge1 evaluate' evaluate end ge4";

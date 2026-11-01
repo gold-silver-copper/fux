@@ -161,7 +161,7 @@ thread_local! {
 
 fn library() -> Result<Machine<Nothing>, Error> {
     let mut machine = Machine::new(vocabulary());
-    machine.library("stdlib.fux", STDLIB)?;
+    machine.library("stdlib.fux", STDLIB, &mut Toy::default())?;
     let mut maybe = machine.clone();
     maybe.read(token::source("maybe.fux", MAYBE)?, None);
     match maybe.run(&mut Toy::default(), u64::MAX)? {

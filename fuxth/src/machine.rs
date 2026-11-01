@@ -267,7 +267,9 @@ pub(crate) enum Frame<A> {
         via: Option<(Rc<Steps<A>>, usize)>,
         locals: usize,
     },
-    Read(Read),
+    /// Boxed, so a call's frame, the one the step loop reads, is no
+    /// larger for it.
+    Read(Box<Read>),
 }
 
 /// An open block whose body starts with an empty stack: a `list`, or a
@@ -558,6 +560,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     #[cold]
+    #[inline(never)]
     pub(crate) fn fail(&self, code: Code, message: impl Into<String>) -> Error {
         Error::new(code, message, self.at().as_ref())
     }
@@ -639,9 +642,11 @@ impl<A: AppValue> Machine<A> {
                 let Some(Frame::Code { step, .. }) = self.frames.last_mut() else {
                     continue 'frames;
                 };
-                // Past its last step, code returns.
+                // Past its last step, code returns: its `let` names go.
                 let Some(op) = code.ops.get(*step) else {
-                    self.leave();
+                    if let Some(Frame::Code { locals, .. }) = self.frames.pop() {
+                        self.locals.truncate(locals);
+                    }
                     continue 'frames;
                 };
                 self.last = Some((depth, address, *step));
@@ -652,7 +657,7 @@ impl<A: AppValue> Machine<A> {
                     // value is written to a temporary in parts and read back
                     // whole, which the CPU can't forward (counting to a
                     // million: +7% cycles on fewer instructions).
-                    Op::Push(value) => self.stack.extend_from_slice(std::slice::from_ref(value)),
+                    Op::Push(value) => self.stack.push(value.clone()),
                     Op::Builtin(builtin) => {
                         self.builtin(*builtin, host)?;
                         if self.frames.len() != depth {
@@ -666,12 +671,15 @@ impl<A: AppValue> Machine<A> {
                             return Ok(Outcome::Suspended(request));
                         }
                     }
-                    Op::Call(called) => {
-                        self.call(Rc::clone(called), &code, after);
-                        continue 'frames;
-                    }
-                    Op::Recurse => {
-                        self.call(Rc::clone(&code), &code, after);
+                    Op::Call(_) | Op::Recurse => {
+                        // The code called, or the frame's own (`recurse`).
+                        let called = if let Op::Call(called) = op {
+                            called
+                        } else {
+                            &code
+                        };
+                        let called = Rc::clone(called);
+                        self.call(called, &code, after);
                         continue 'frames;
                     }
                     Op::Leave => {
@@ -764,16 +772,22 @@ impl<A: AppValue> Machine<A> {
     /// to do, so a loop written as recursion runs in one frame.
     fn call(&mut self, called: Rc<Steps<A>>, code: &Rc<Steps<A>>, step: usize) {
         let mut via = None;
-        if returns_from(&code.ops, step) {
-            if let Some(Frame::Code { via: was, .. }) = self.frames.last_mut() {
-                via = was.take().or_else(|| Some((Rc::clone(code), step)));
-            }
-            self.leave();
+        if returns_from(&code.ops, step)
+            && let Some(Frame::Code {
+                via: was, locals, ..
+            }) = self.frames.pop()
+        {
+            via = was.or_else(|| Some((Rc::clone(code), step)));
+            self.locals.truncate(locals);
         }
-        self.enter(called);
-        if let Some(Frame::Code { via: chain, .. }) = self.frames.last_mut() {
-            *chain = via;
-        }
+        let base = self.locals.len();
+        self.locals.resize(base.saturating_add(called.locals), None);
+        self.frames.push(Frame::Code {
+            code: called,
+            step: 0,
+            via,
+            locals: base,
+        });
     }
 
     /// The innermost code frame's `let` name in `slot`.
@@ -790,9 +804,10 @@ impl<A: AppValue> Machine<A> {
         self.named(value)
     }
 
-    /// Runs `xt` where it was asked for: a one-step word's step at once,
-    /// any other word in a frame of its own; an application word, if it
-    /// waits, gives what it waits for.
+    /// Runs `xt`, a word read: a value or an application word at once (the
+    /// latter giving what it waits for, if it does), any other in a frame
+    /// of its own. Only the step loop runs a word of the core's, so its
+    /// dispatch is inlined there.
     pub(crate) fn invoke<H: Host<Value = A>>(
         &mut self,
         xt: Rc<Steps<A>>,
@@ -800,56 +815,13 @@ impl<A: AppValue> Machine<A> {
     ) -> Result<Option<H::Request>, Error> {
         match xt.leaf() {
             Some(Op::App(id)) => self.app(*id, host),
-            _ => self.execute(xt, host).map(|()| None),
-        }
-    }
-
-    /// `execute`: a one-step word of the core's run at once (an xt of
-    /// `execute` takes the next one, in a loop, not a recursion); any other
-    /// in a frame of its own, the host's among them, as they may wait.
-    fn execute<H: Host<Value = A>>(
-        &mut self,
-        mut xt: Rc<Steps<A>>,
-        host: &mut H,
-    ) -> Result<(), Error> {
-        loop {
-            match xt.leaf() {
-                Some(Op::Builtin(Builtin::Execute)) => {
-                    let [x] = self.take()?;
-                    let app = matches!(x, Value::App(_));
-                    xt = Exec::of(x)
-                        .map_err(|got| self.refused(Exec::wants(Builtin::Execute), got, app))?;
-                }
-                Some(Op::Builtin(builtin)) => return self.builtin(*builtin, host),
-                Some(Op::Push(value)) => {
-                    self.push(value.clone());
-                    return Ok(());
-                }
-                Some(Op::PickN(n)) => return self.pick(*n),
-                Some(Op::RollN(n)) => return self.roll(*n),
-                Some(
-                    Op::App(_)
-                    | Op::GetGlobal(_)
-                    | Op::Call(_)
-                    | Op::Recurse
-                    | Op::Leave
-                    | Op::Compile(_)
-                    | Op::Jump(_)
-                    | Op::JumpUnless(_)
-                    | Op::SetLocal(_)
-                    | Op::GetLocal(_)
-                    | Op::SetGlobal(_)
-                    | Op::ListStart
-                    | Op::Gather
-                    | Op::EachStart
-                    | Op::EachNext(_)
-                    | Op::Try(..)
-                    | Op::Tried(_),
-                )
-                | None => {
-                    self.enter(xt);
-                    return Ok(());
-                }
+            Some(Op::Push(value)) => {
+                self.push(value.clone());
+                Ok(None)
+            }
+            _ => {
+                self.enter(xt);
+                Ok(None)
             }
         }
     }
@@ -918,22 +890,31 @@ impl<A: AppValue> Machine<A> {
 
     /// Where the top `n` values start, if the stack has them: inside a
     /// `list`, only those above where it began.
+    #[inline(always)]
     fn depth(&self, n: usize) -> Result<usize, Error> {
         let floor = self.marks.last().map_or(0, |(at, _)| *at);
         let has = self.stack.len().saturating_sub(floor);
         if has >= n {
             return Ok(self.stack.len().saturating_sub(n));
         }
+        Err(self.short(n, has))
+    }
+
+    /// Too few values: `n` taken, and `has` there. Out of line, so the
+    /// words that take values are inlined where they run.
+    #[cold]
+    #[inline(never)]
+    fn short(&self, n: usize, has: usize) -> Error {
         let inside = self.marks.last().map(|(_, body)| match body {
             Body::List(_) => Floor::List,
             Body::Try { .. } => Floor::Try,
         });
-        let message = underflow(n, has, inside);
-        Err(self.fail(Code::StackUnderflow, message))
+        self.fail(Code::StackUnderflow, underflow(n, has, inside))
     }
 
     pub(crate) fn pop(&mut self) -> Result<Value<A>, Error> {
-        let [value] = self.take()?;
+        self.depth(1)?;
+        let [value] = self.moved();
         Ok(value)
     }
 
@@ -977,15 +958,17 @@ impl<A: AppValue> Machine<A> {
         )
     }
 
-    /// A built-in's `N` values off the stack, the deepest first. Too few
-    /// are said as the word takes them, before any is taken.
+    /// A built-in's `N` values off the stack, the deepest first, once
+    /// `depth` found the stack has them (too few are said as the word
+    /// takes them, before any is taken): apart from that check, so the
+    /// values never go through its failure's result.
     #[inline]
-    fn take<const N: usize>(&mut self) -> Result<[Value<A>; N], Error> {
-        self.depth(N)?;
-        // The stack has them: none is the `false` put for one it lacks.
-        let mut taken = std::array::from_fn(|_| self.stack.pop().unwrap_or(Value::Bool(false)));
+    fn moved<const N: usize>(&mut self) -> [Value<A>; N] {
+        // None is the `false` put for one it lacks.
+        let mut taken =
+            std::array::from_fn(|_| self.stack.pop().unwrap_or_else(|| Value::Bool(false)));
         taken.reverse();
-        Ok(taken)
+        taken
     }
 
     /// `text` as a new string.
@@ -1351,10 +1334,17 @@ impl Joined {
     }
 }
 
+/// Runs `f` in a function of its own, never inlined where it is called.
+#[inline(never)]
+fn out_of_line<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
+
 /// Expands rows `Variant "name" [flag] (arg: Marker, …) "effect" "about"
 /// { body }` to the enum `Builtin` of those variants: `Builtin::ALL` in
 /// that order; `name`, `effect` and `about`, each a match giving that row's
-/// column; `immediate` and `hosted`, whether its row is flagged so; and
+/// column; `immediate` and `hosted`, whether its row is flagged so (a
+/// flagged row, `cold` too, runs out of line); and
 /// `Machine::builtin`, which runs one. It takes as many values as the row
 /// names (`take::<N>`; too few fail it), turns each into what its marker
 /// gives (a value of another kind fails the word), and runs the row's body
@@ -1369,6 +1359,11 @@ macro_rules! builtins {
     (@flag immediate immediate) => { true };
     (@flag hosted hosted) => { true };
     (@flag $want:ident $($got:ident)?) => { false };
+    // A flagged row runs out of the step loop's line: its words shape a
+    // program or are rare, and inlined they made the core's every step
+    // slower (the dispatch past what the loop inlines).
+    (@arm $arm:block) => { $arm };
+    (@arm $arm:block $flag:ident) => { out_of_line(move || $arm) };
     ($m:ident $host:ident; $(
         $variant:ident $name:literal $([$flag:ident])? ($($arg:ident: $ty:ident),*) $effect:literal
         $about:literal $body:block
@@ -1431,11 +1426,16 @@ macro_rules! builtins {
 
             /// The built-in `name` is, if one.
             pub fn named(name: &str) -> Option<Self> {
-                Self::ALL.into_iter().find(|b| b.name() == name)
+                match name {
+                    $($name => Some(Builtin::$variant),)*
+                    _ => None,
+                }
             }
         }
 
         impl<A: AppValue> Machine<A> {
+            /// Inlined in the step loop, its one caller.
+            #[inline(always)]
             pub(crate) fn builtin<H: Host<Value = A>>(
                 &mut self,
                 word: Builtin,
@@ -1443,13 +1443,14 @@ macro_rules! builtins {
             ) -> Result<(), Error> {
                 let $m = self;
                 match word {
-                    $(Builtin::$variant => {
-                        let [$($arg),*] = $m.take()?;
+                    $(Builtin::$variant => builtins!(@arm {
+                        $m.depth(<[&str]>::len(&[$(stringify!($arg)),*]))?;
+                        let [$($arg),*] = $m.moved();
                         $(let app = matches!($arg, Value::App(_));
                         let $arg = $ty::of($arg)
                             .map_err(|got| $m.refused($ty::wants(word), got, app))?;)*
                         $body
-                    })*
+                    } $($flag)?),)*
                 }
             }
         }
@@ -1566,11 +1567,11 @@ builtins! { m host;
         text.push('\n');
         m.written(host, &text)
     }
-    Write "write" (x: Any) "x --" "write x's text now, with no line end" {
+    Write "write" [cold] (x: Any) "x --" "write x's text now, with no line end" {
         let text = x.text().map_err(|f| m.fail(f.code, f.message))?;
         m.written(host, &text)
     }
-    Emit "emit" (n: Int) "c --" "write the character with code c now" {
+    Emit "emit" [cold] (n: Int) "c --" "write the character with code c now" {
         let c = u32::try_from(n).ok().and_then(char::from_u32);
         let c = c.ok_or_else(|| m.fail(Code::Range, format!("{n} is no character code")))?;
         m.written(host, c.encode_utf8(&mut [0; 4]))
@@ -1580,27 +1581,26 @@ builtins! { m host;
         let text = x.text().map_err(|f| m.fail(f.code, f.message))?;
         Err(m.fail(Code::Fail, text))
     }
-    Execute "execute" (xt: Exec) "xt --" "run the word xt is" {
-        m.execute(xt, host)
+    Execute "execute" [cold] (xt: Exec) "xt --" "run the word xt is" {
+        m.enter(xt);
+        Ok(())
     }
-    Find "find" (s: Str) "s -- xt true | s false"
+    Find "find" [cold] (s: Str) "s -- xt true | s false"
         "the word named s, as the dictionary has it now, and true; else s and false" {
         m.find(s);
         Ok(())
     }
-    NextWord "next-word" () "-- s" "the next word of the input, as written" {
-        let word = m.next_word(Builtin::NextWord, "a word")?;
-        m.push(Value::Str(Rc::new(Text::new(&*word.text))));
-        Ok(())
+    NextWord "next-word" [cold] () "-- s" "the next word of the input, as written" {
+        m.next_string()
     }
-    Immediate "immediate" () "--" "the word defined last runs even while a definition is compiled" {
+    Immediate "immediate" [cold] () "--" "the word defined last runs even while a definition is compiled" {
         m.immediate()
     }
-    Compiling "compiling" () "-- flag" "whether the words read are being compiled" {
+    Compiling "compiling" [cold] () "-- flag" "whether the words read are being compiled" {
         m.push(Value::Bool(m.compiling));
         Ok(())
     }
-    StartCompiling "start-compiling" () "--" "compile the words read again, into the definition open" {
+    StartCompiling "start-compiling" [cold] () "--" "compile the words read again, into the definition open" {
         m.start_compiling()
     }
     Evaluate "evaluate" [hosted] (s: Str) "s --"
@@ -1651,7 +1651,7 @@ builtins! { m host;
     }
     If "if" [immediate] () "flag --"
         "flag if … else … then: the first part if flag is true (or an integer not 0), else the second" {
-        m.open(crate::reader::Construct::If, &[Op::JumpUnless(0)])
+        m.open(crate::reader::Construct::If)
     }
     Else "else" [immediate] () "--" "flag if … else … then: the part run when flag is false" {
         m.otherwise()
@@ -1660,18 +1660,18 @@ builtins! { m host;
         m.then()
     }
     Begin "begin" [immediate] () "--" "begin … flag until: the body until flag is true" {
-        m.open(crate::reader::Construct::Begin, &[])
+        m.open(crate::reader::Construct::Begin)
     }
     Until "until" [immediate] () "flag --" "begin … flag until: closes it" {
         m.until()
     }
     List "list" [immediate] () "-- list"
         "list … end: a list of the values its body leaves; the body starts with an empty stack" {
-        m.open(crate::reader::Construct::List, &[Op::ListStart])
+        m.open(crate::reader::Construct::List)
     }
     Each "each" [immediate] () "seq --"
         "seq each … end: the body once per element, the element pushed (a string's are character codes)" {
-        m.open(crate::reader::Construct::Each, &[Op::EachStart, Op::EachNext(0)])
+        m.open(crate::reader::Construct::Each)
     }
     Try "try" [immediate] () "codes --"
         "codes try … catch … end: the body from an empty stack, its values left; if it fails with one of codes (str 'timeout closed' just before try), the handler instead, on the stack as it was at try and the failure's message (or the value it carries) and code" {

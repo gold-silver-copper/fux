@@ -54,7 +54,7 @@ fn run(path: &str) -> Result<Vec<String>, String> {
     // This in-memory embedding deliberately reads no required files.
     let mut machine = Machine::new(Vocabulary::default());
     machine
-        .library("stdlib.fux", STDLIB)
+        .library("stdlib.fux", STDLIB, &mut Bare)
         .map_err(|e| e.to_string())?;
     let tokens = token::source(path, &text).map_err(|e| e.to_string())?;
     machine.read(tokens, None);

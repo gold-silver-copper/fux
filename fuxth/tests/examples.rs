@@ -14,7 +14,7 @@ enum Ended {
 fn run(name: &str, text: &str) -> Ended {
     let mut machine = Machine::new(Vocabulary::default());
     let read = machine
-        .library("stdlib.fux", STDLIB)
+        .library("stdlib.fux", STDLIB, &mut Toy::default())
         .and_then(|_| token::source(name, text));
     match read {
         Ok(tokens) => machine.read(tokens, None),

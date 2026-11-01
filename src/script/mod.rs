@@ -641,8 +641,14 @@ thread_local! {
 pub fn libraries() -> Result<(Machine<Fux>, Rc<[fuxth::Doc]>), Failed> {
     let told = |error| told(error, false);
     let mut machine = Machine::new(vocabulary().map_err(told)?);
-    let mut docs = machine.library("stdlib.fux", fuxth::STDLIB).map_err(told)?;
-    docs.extend(machine.library("library.fux", LIBRARY).map_err(told)?);
+    let mut out = io::sink();
+    let mut host = Host::new(Context::default(), None, &mut out);
+    let mut docs = (machine.library("stdlib.fux", fuxth::STDLIB, &mut host)).map_err(told)?;
+    docs.extend(
+        machine
+            .library("library.fux", LIBRARY, &mut host)
+            .map_err(told)?,
+    );
     Ok((machine, docs.into()))
 }
 
@@ -1521,9 +1527,17 @@ pub fn main(
     });
     let rerun = argv.map(|argv| client::Rerun { argv, program });
     let mut machine = base(None).map_err(|failed| uncompiled(failed, again.as_ref()))?;
-    machine.read(tokens, path);
+    machine.read(tokens, path.clone());
     let mut state = Draft::default();
     let acted = Acted::default();
+    // A program file that may not read the same again (a pipe, `<(…)`)
+    // is not read again by the server's binary.
+    if path
+        .as_ref()
+        .is_some_and(|p| !p.metadata().is_ok_and(|m| m.is_file()))
+    {
+        acted.mark();
+    }
     let mut out = Watched {
         out,
         acted: acted.clone(),
@@ -1642,7 +1656,7 @@ fn program(args: &[String]) -> Result<Loaded, Failed> {
         }
         [flag, file, rest @ ..] if flag == "--file" => {
             let failed = |e: io::Error| read_failed(file, &e.to_string());
-            let path = std::path::Path::new(file).canonicalize().map_err(failed)?;
+            let path = source::identity(std::path::Path::new(file)).map_err(failed)?;
             let text = source::read(&path).map_err(failed)?;
             let tokens = token::source(&path.display().to_string(), &text)?;
             return Ok((tokens, Some(path), Given::File(rest.to_vec()), None));

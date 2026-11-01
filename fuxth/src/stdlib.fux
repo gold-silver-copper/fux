@@ -111,7 +111,7 @@ define reverse
   let s s len let i
   list
     s is-string if str '' then
-    begin i 0 gt if i 1 sub let i s is-string if s i i 1 add slice else s i at then false else true then until
+    begin i 0 gt if i 1 sub let i s i at s is-string if char then false else true then until
   end
   s is-string if concat then
 end

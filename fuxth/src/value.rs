@@ -32,10 +32,14 @@ fn bare(kind: &str) -> &str {
         .unwrap_or(kind)
 }
 
+/// Its tag a word of its own, so every value's payload starts at one
+/// place and a value is copied whole: copied in parts, as a `u8` tag puts
+/// a boolean beside it, a value read back whole waits on the parts (a
+/// store the CPU can't forward), which slowed every step.
 #[derive(Clone, Debug)]
+#[repr(u64)]
 pub enum Value<A> {
     Int(i64),
-    Bool(bool),
     Str(Rc<Text>),
     List(Rc<List<A>>),
     App(A),
@@ -44,6 +48,7 @@ pub enum Value<A> {
     /// An open construct, while a definition is compiled: only its own
     /// definition's words resolve it.
     Mark(Rc<Mark>),
+    Bool(bool),
 }
 
 /// An execution token: what `tick`, `find` and `code … end` give, and

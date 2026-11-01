@@ -96,7 +96,7 @@ impl Host for Toy {
 /// A machine with the standard library read.
 fn with_stdlib() -> Machine<Ticket> {
     let mut machine = Machine::new(vocabulary());
-    let read = machine.library("stdlib.fux", STDLIB);
+    let read = machine.library("stdlib.fux", STDLIB, &mut Toy::default());
     assert!(read.is_ok(), "the standard library reads: {read:?}");
     machine
 }
@@ -253,7 +253,7 @@ fn a_paused_loop_shows_its_own_step() -> Result<(), Error> {
             .last()
             .map(|t| format!("{}:{}", t.place, t.text));
         let in_loop = ["t:2:begin", "t:2:0", "t:2:1", "t:2:eq", "t:2:until"];
-        let at_print = budget <= 2;
+        let at_print = last.as_deref().is_some_and(|l| l.starts_with("t:1:"));
         assert!(
             at_print || last.as_deref().is_some_and(|l| in_loop.contains(&l)),
             "{budget}: {last:?}"
@@ -583,7 +583,9 @@ fn each_name_and_code_means_one_thing() {
 #[test]
 fn a_library_says_what_each_word_does() {
     let mut machine = Machine::<Ticket>::new(vocabulary());
-    let docs = machine.library("stdlib.fux", STDLIB).unwrap_or_default();
+    let docs = machine
+        .library("stdlib.fux", STDLIB, &mut Toy::default())
+        .unwrap_or_default();
     let defined = STDLIB.lines().filter(|l| l.starts_with("define ")).count();
     assert_eq!(docs.len(), defined);
     let doc = |name: &str| docs.iter().find(|d| d.name == name).cloned();
@@ -598,11 +600,17 @@ fn a_library_says_what_each_word_does() {
         )
     );
     let library = "# n -- m : doubled\ndefine double\n  dup add\nend\n";
-    let docs = machine.library("l", library).unwrap_or_default();
+    let docs = machine
+        .library("l", library, &mut Toy::default())
+        .unwrap_or_default();
     let code: Vec<&str> = docs.iter().map(|d| d.code.as_str()).collect();
     assert_eq!(code, ["define double\n  dup add\nend"]);
     // A comment after a token is that line's, not the definition's below.
-    let silent = machine.library("l", "# -- : one\n1 drop # -- : said\ndefine x end");
+    let silent = machine.library(
+        "l",
+        "# -- : one\n1 drop # -- : said\ndefine x end",
+        &mut Toy::default(),
+    );
     assert_eq!(silent.map_err(|e| e.to_string()).map(drop), Err(
         "contract: l:3: define: a library's definition says what it does on the line just above it: # EFFECT : ABOUT".to_owned()
     ));
@@ -613,15 +621,15 @@ fn a_library_says_what_each_word_does() {
     // A library is whole: it leaves no definition open, and is read on a
     // machine at rest.
     let mut machine = Machine::<Ticket>::new(vocabulary());
-    let open = machine.library("l", "# -- : open\ndefine open");
+    let open = machine.library("l", "# -- : open\ndefine open", &mut Toy::default());
     assert_eq!(open.map_err(|e| e.code), Err(Code::Unclosed));
-    let closing = machine.library("l", "# -- : fake\n1 2 end");
+    let closing = machine.library("l", "# -- : fake\n1 2 end", &mut Toy::default());
     assert_eq!(closing.map_err(|e| e.code), Err(Code::Unmatched));
     machine.read(
         token::source("t", "define actual").unwrap_or_default(),
         None,
     );
-    let busy = machine.library("l", "# -- : one\ndefine one 1 end");
+    let busy = machine.library("l", "# -- : one\ndefine one 1 end", &mut Toy::default());
     assert_eq!(busy.map_err(|e| e.code), Err(Code::Contract));
 }
 
@@ -1141,7 +1149,7 @@ fn evaluating() -> Vocabulary {
 /// `text` run as `run` runs it, `evaluate` enabled.
 fn evaluated(text: &str) -> Result<Vec<Value<Ticket>>, Error> {
     let mut machine = Machine::new(evaluating());
-    machine.library("stdlib.fux", STDLIB)?;
+    machine.library("stdlib.fux", STDLIB, &mut Toy::default())?;
     machine.read(token::source("t", text)?, None);
     loop {
         match machine.run(&mut Toy::default(), u64::MAX)? {

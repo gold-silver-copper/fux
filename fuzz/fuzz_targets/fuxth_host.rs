@@ -67,9 +67,9 @@ fn library() -> Result<Machine<Nothing>, Error> {
     let _ = words.raises(fuxth::Code::Host("not_a_number"));
     let _ = words.raises(fuxth::Code::Host("negative"));
     let mut machine = Machine::new(words);
-    machine.library("stdlib.fux", fuxth::STDLIB)?;
+    machine.library("stdlib.fux", fuxth::STDLIB, &mut Toy)?;
     let maybe = "# n -- [n] : n, if above 0\ndefine maybe dup 0 gt if else drop then end";
-    machine.library("maybe.fux", maybe)?;
+    machine.library("maybe.fux", maybe, &mut Toy)?;
     Ok(machine)
 }
 

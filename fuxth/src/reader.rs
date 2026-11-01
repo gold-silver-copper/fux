@@ -102,31 +102,6 @@ pub(crate) struct Building<A> {
     from: Option<usize>,
 }
 
-/// A host for a library, which defines words and runs none of its host's.
-struct Library<A>(std::marker::PhantomData<A>);
-
-impl<A: AppValue> Host for Library<A> {
-    type Value = A;
-    type Request = ();
-    fn call(
-        &mut self,
-        _: usize,
-        _: crate::Args<'_, A>,
-        _: &mut Vec<Value<A>>,
-    ) -> Result<crate::Done<()>, crate::Failure> {
-        Err(crate::Failure::new(
-            Code::Contract,
-            "a library defines words: it runs none of its host's",
-        ))
-    }
-    fn write(&mut self, _: &str) -> Result<(), crate::Failure> {
-        Err(crate::Failure::new(
-            Code::Contract,
-            "a library defines words: it writes nothing",
-        ))
-    }
-}
-
 impl<A: AppValue> Machine<A> {
     /// Reads `tokens` next, a source (the file `path`, if one), before
     /// what it was reading: the program, given to a machine at rest.
@@ -134,19 +109,26 @@ impl<A: AppValue> Machine<A> {
         if let Some(path) = &path {
             self.loaded.insert(path.clone(), false);
         }
-        self.frames.push(Frame::Read(Read {
+        self.frames.push(Frame::Read(Box::new(Read {
             tokens: tokens.into(),
             next: 0,
             path,
-        }));
+        })));
     }
 
     /// Reads `text`, a library named `source`, to its end, and gives each
     /// of its definitions' help, which the comment on the line just above
     /// its `define` says: `# EFFECT : ABOUT`. A definition without it is
     /// refused, and the machine is as it was. A library is read on a
-    /// machine at rest, and only defines words.
-    pub fn library(&mut self, source: &str, text: &str) -> Result<Vec<Doc>, Error> {
+    /// machine at rest, run as any program is, on `host` (the one its
+    /// programs run on, so the machine's code is made for one host), and
+    /// may not wait for it.
+    pub fn library<H: Host<Value = A>>(
+        &mut self,
+        source: &str,
+        text: &str,
+        host: &mut H,
+    ) -> Result<Vec<Doc>, Error> {
         if !self.frames.is_empty() || !self.building.is_empty() {
             let why = "a library is read on a machine at rest";
             return Err(Error::new(Code::Contract, why, None));
@@ -156,14 +138,14 @@ impl<A: AppValue> Machine<A> {
         let before = self.clone();
         self.made = Some(Vec::new());
         self.read(tokens, None);
-        let ran = self.run(&mut Library(std::marker::PhantomData), u64::MAX);
+        let ran = self.run(host, u64::MAX);
         let made = self.made.take().unwrap_or_default();
         let docs = ran.and_then(|outcome| match outcome {
             crate::Outcome::Finished => made
                 .iter()
                 .map(|&(from, to)| Doc::of(text, &spans, from, to))
                 .collect::<Result<Vec<Doc>, Error>>(),
-            crate::Outcome::Paused | crate::Outcome::Suspended(()) => {
+            crate::Outcome::Paused | crate::Outcome::Suspended(_) => {
                 Err(Error::new(Code::Contract, "a library stopped short", None))
             }
         });
@@ -176,6 +158,7 @@ impl<A: AppValue> Machine<A> {
     /// The next word of the source on top, read and run (or compiled);
     /// past its last, the source ends. What an application word it ran
     /// waits for, if it does.
+    #[inline(never)]
     pub(crate) fn read_word<H: Host<Value = A>>(
         &mut self,
         host: &mut H,
@@ -185,9 +168,8 @@ impl<A: AppValue> Machine<A> {
         };
         let Some(token) = read.take() else {
             self.read_last = read.last();
-            if let Some(Frame::Read(Read {
-                path: Some(path), ..
-            })) = self.frames.pop()
+            if let Some(Frame::Read(read)) = self.frames.pop()
+                && let Some(path) = read.path
             {
                 self.loaded.insert(path, true);
             }
@@ -241,12 +223,13 @@ impl<A: AppValue> Machine<A> {
 
     /// The next word of the innermost source, for `word`, which takes
     /// `what`.
+    #[inline(never)]
     pub(crate) fn next_word(&mut self, word: Builtin, what: &str) -> Result<Token, Error> {
         let read = self.frames.iter_mut().rev().find_map(|frame| match frame {
             Frame::Read(read) => Some(read),
             Frame::Code { .. } => None,
         });
-        match read.and_then(Read::take) {
+        match read.and_then(|read| read.take()) {
             Some(token) => Ok(token),
             None => Err(self.fail(
                 Code::MissingToken,
@@ -278,6 +261,7 @@ impl<A: AppValue> Machine<A> {
 
     /// A call to `xt` compiled: a one-step word's step copied in (`3 pick`
     /// one step, its count known).
+    #[inline(never)]
     pub(crate) fn compile_word(&mut self, xt: &Rc<Steps<A>>) -> Result<(), Error> {
         let Some(building) = self.building.last_mut().filter(|_| self.compiling) else {
             let why = format!("{} is compiled: it goes in a definition", xt.name);
@@ -342,18 +326,36 @@ impl<A: AppValue> Machine<A> {
         self.stack.push(Value::Mark(Rc::new(mark)));
     }
 
-    /// Opens `construct`, its steps `ops` compiled, in the code being
-    /// compiled, or, at the top level, in code of its own. Its mark is at
-    /// its last step, or where it begins.
-    pub(crate) fn open(&mut self, construct: Construct, ops: &[Op<A>]) -> Result<(), Error> {
+    /// Opens `construct` (`if`, `begin`, `list`, `each`) in the code being
+    /// compiled, or, at the top level, in code of its own: its first steps
+    /// compiled, and its mark at its last, or where it begins.
+    #[inline(never)]
+    pub(crate) fn open(&mut self, construct: Construct) -> Result<(), Error> {
+        let ops = match construct {
+            Construct::If => vec![Op::JumpUnless(0)],
+            Construct::List => vec![Op::ListStart],
+            Construct::Each => vec![Op::EachStart, Op::EachNext(0)],
+            Construct::Begin
+            | Construct::Define
+            | Construct::Code
+            | Construct::Else
+            | Construct::Try
+            | Construct::Catch => Vec::new(),
+        };
+        self.opened(construct, ops)
+    }
+
+    /// `construct` opened as `open` opens it, with its steps `ops`.
+    fn opened(&mut self, construct: Construct, ops: Vec<Op<A>>) -> Result<(), Error> {
         if !self.compiling {
             self.begin(Kind::Temp, Rc::from(""), None);
         }
+        let some = !ops.is_empty();
         for op in ops {
-            self.compile(op.clone());
+            self.compile(op);
         }
         let len = self.building.last().map_or(0, |b| b.code.len());
-        let at = len.saturating_sub(usize::from(!ops.is_empty()));
+        let at = len.saturating_sub(usize::from(some));
         let token = self.reading();
         self.mark(construct, at, token);
         Ok(())
@@ -406,6 +408,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `else`.
+    #[inline(never)]
     pub(crate) fn otherwise(&mut self) -> Result<(), Error> {
         let mark = self.close(&[Construct::If], "no if is open")?;
         let here = self.len();
@@ -417,6 +420,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `then`.
+    #[inline(never)]
     pub(crate) fn then(&mut self) -> Result<(), Error> {
         let mark = self.close(&[Construct::If, Construct::Else], "no if is open")?;
         let here = self.len();
@@ -426,6 +430,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `until`.
+    #[inline(never)]
     pub(crate) fn until(&mut self) -> Result<(), Error> {
         let mark = self.close(&[Construct::Begin], "no begin is open")?;
         self.compile(Op::JumpUnless(mark.at));
@@ -435,6 +440,7 @@ impl<A: AppValue> Machine<A> {
 
     /// `try`, its codes the string written just before it: compiled
     /// there, or, opening the top level's own code, pushed.
+    #[inline(never)]
     pub(crate) fn try_body(&mut self) -> Result<(), Error> {
         let written = match self.building.last_mut().filter(|_| self.compiling) {
             Some(b) => match b.code.ops.last() {
@@ -467,10 +473,11 @@ impl<A: AppValue> Machine<A> {
         if codes.is_empty() {
             return Err(self.fail(Code::BadCodes, "names no code to catch"));
         }
-        self.open(Construct::Try, &[Op::Try(0, Rc::new(codes))])
+        self.opened(Construct::Try, vec![Op::Try(0, Rc::new(codes))])
     }
 
     /// `catch`: said at its `try`, as an open block is.
+    #[inline(never)]
     pub(crate) fn catch(&mut self) -> Result<(), Error> {
         let mark = self.close(&[Construct::Try], "no try is open")?;
         let jump = self.len();
@@ -481,6 +488,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `end`.
+    #[inline(never)]
     pub(crate) fn end(&mut self) -> Result<(), Error> {
         use Construct::{Catch, Code as Coded, Define, Each, List};
         let none = "no block that end closes is open";
@@ -531,15 +539,21 @@ impl<A: AppValue> Machine<A> {
         self.latest = Some(name);
     }
 
-    /// Where the word read last is in a library's tokens.
+    /// Where the word read last is in a library's tokens: the source read
+    /// first, and no other being read.
     fn position(&self) -> Option<usize> {
-        match self.frames.as_slice() {
-            [Frame::Read(read)] => read.next.checked_sub(1),
+        let mut reads = self.frames.iter().filter_map(|frame| match frame {
+            Frame::Read(read) => Some(read),
+            Frame::Code { .. } => None,
+        });
+        match (self.frames.first(), reads.next(), reads.next()) {
+            (Some(Frame::Read(_)), Some(read), None) => read.next.checked_sub(1),
             _ => None,
         }
     }
 
     /// `define NAME`.
+    #[inline(never)]
     pub(crate) fn define(&mut self) -> Result<(), Error> {
         if self.compiling || !self.building.is_empty() {
             let why = "define goes at the top level, outside any definition or block";
@@ -555,6 +569,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `code`.
+    #[inline(never)]
     pub(crate) fn code(&mut self) -> Result<(), Error> {
         let at = self.reading();
         self.begin(Kind::Code, Rc::from(""), None);
@@ -581,6 +596,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `let NAME`.
+    #[inline(never)]
     pub(crate) fn let_name(&mut self) -> Result<(), Error> {
         // Its value first, so too few values are said at `let`.
         let value = match self.compiling {
@@ -621,6 +637,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `to NAME`.
+    #[inline(never)]
     pub(crate) fn set_name(&mut self) -> Result<(), Error> {
         let value = match self.compiling {
             true => None,
@@ -649,7 +666,16 @@ impl<A: AppValue> Machine<A> {
         Ok(())
     }
 
+    /// `next-word`.
+    #[inline(never)]
+    pub(crate) fn next_string(&mut self) -> Result<(), Error> {
+        let word = self.next_word(Builtin::NextWord, "a word")?;
+        self.push(Value::Str(Rc::new(Text::new(&*word.text))));
+        Ok(())
+    }
+
     /// `str WORD`.
+    #[inline(never)]
     pub(crate) fn string(&mut self) -> Result<(), Error> {
         let word = self.next_word(Builtin::Str, "a string")?;
         self.given(Value::Str(Rc::new(Text::new(&*word.text))), true);
@@ -668,6 +694,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `tick NAME`.
+    #[inline(never)]
     pub(crate) fn tick(&mut self) -> Result<(), Error> {
         let name = self.next_word(Builtin::Tick, "a name")?;
         let entry = self.found(&name)?;
@@ -687,6 +714,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `postpone NAME`.
+    #[inline(never)]
     pub(crate) fn postpone(&mut self) -> Result<(), Error> {
         self.compiled_only(Builtin::Postpone)?;
         let name = self.next_word(Builtin::Postpone, "a name")?;
@@ -701,6 +729,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `literal`.
+    #[inline(never)]
     pub(crate) fn literal(&mut self, value: Value<A>) -> Result<(), Error> {
         self.compiled_only(Builtin::Literal)?;
         self.compile(Op::Push(value));
@@ -708,6 +737,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `word`, compiled as `op`, in a definition or `code … end` only.
+    #[inline(never)]
     pub(crate) fn compile_only(&mut self, word: Builtin, op: Op<A>) -> Result<(), Error> {
         if self.compiling_locals().is_none() {
             let why = format!("{} goes in a definition", word.name());
@@ -718,6 +748,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `find`.
+    #[inline(never)]
     pub(crate) fn find(&mut self, name: Rc<Text>) {
         match self.names.get(&**name) {
             Some(entry) => {
@@ -733,6 +764,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `immediate`.
+    #[inline(never)]
     pub(crate) fn immediate(&mut self) -> Result<(), Error> {
         let entry = (self.latest.as_ref()).and_then(|name| self.names.get_mut(name));
         match entry {
@@ -745,6 +777,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `start-compiling`.
+    #[inline(never)]
     pub(crate) fn start_compiling(&mut self) -> Result<(), Error> {
         if self.building.is_empty() {
             let why = "start-compiling compiles into a definition, and none is open";
@@ -755,6 +788,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `evaluate`: `text` read next, as a file is.
+    #[inline(never)]
     pub(crate) fn evaluate(&mut self, text: &str) -> Result<(), Error> {
         let tokens = token::source("evaluate", text)?;
         self.read(tokens, None);
@@ -764,6 +798,7 @@ impl<A: AppValue> Machine<A> {
     /// `include PATH`, and `require PATH` (`once`): the file read next,
     /// through the host, relative to the file being read; required, a
     /// file read already is not read again, and one being read is a cycle.
+    #[inline(never)]
     pub(crate) fn include<H: Host<Value = A>>(
         &mut self,
         host: &mut H,

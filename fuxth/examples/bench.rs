@@ -13,7 +13,7 @@ impl AppValue for Nothing {
     }
 }
 
-/// One word, `tick` (-- 1), answered at once.
+/// One word, `beat` (-- 1), answered at once.
 struct Ticks;
 
 impl Host for Ticks {
@@ -47,7 +47,7 @@ const PROGRAMS: [(&str, &str); 8] = [
     ),
     (
         "a million host words",
-        "0 begin tick add dup 1000000 eq until",
+        "0 begin beat add dup 1000000 eq until",
     ),
     (
         "sort 20000 numbers",
@@ -74,9 +74,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for run in 0..runs {
             let compiling = Instant::now();
             let mut words = Vocabulary::default();
-            words.add("tick", "-- integer")?;
+            words.add("beat", "-- integer")?;
             let mut machine = Machine::new(words);
-            machine.library("stdlib.fux", STDLIB)?;
+            machine.library("stdlib.fux", STDLIB, &mut Ticks)?;
             machine.read(fuxth::token::source("bench", text)?, None);
             let compiled = compiling.elapsed();
             let started = Instant::now();
