@@ -32,7 +32,12 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
 | `alt_screen` | its program holds the full screen |
 | `mouse_mode` | the mouse reports its program asked for: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` for none |
+| `mouse_encoding` | how it asked for mouse reports to be spelled: `"default"` (coordinates as single bytes), `"utf8"` (1005), `"sgr"` (1006) or `"urxvt"` (1015) |
 | `bracketed_paste` | its program asked for bracketed paste |
+| `focus_events` | its program asked to be told when focus comes and goes (1004) |
+| `app_cursor` | cursor keys send their application sequences (DECCKM, `CSI ? 1 h`) |
+| `app_keypad` | the keypad sends its application sequences (DECKPAM, `ESC =`) |
+| `keyboard_flags` | the kitty keyboard protocol flags in force (`CSI > FLAGS u`), 0 for legacy keys |
 | `pictures` | the pictures it shows (sixel), oldest first, a newer one covering the pixels of an older one that its own lie on, each at cell `row`, `col`, over `rows` by `cols` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
 | `lost` | what fux let go of its program's since it started, each kind counted (`{"copies_cut":0,"copies_not_text":0,"pictures":0,"memory":0}`): `copies_cut` and `copies_not_text`, its copies (OSC 52) that copied nothing, longer than the 64 KiB a string may be, or not base64 (RFC 4648, padded or not) of UTF-8 text (none is counted for a pane created with `false program-clipboard`, which copies nothing); `pictures`, sixel pictures it drew that were not kept whole, each counted as it ends: begun while its host drew no sixel (its tab not shown, or its host draws no sixel or said no cell size), ended once it did not, lifted past a scroll region's top as it was placed, or cut: what it drew past what a picture may keep (4,096 pixels a side, 8,847,360 pixels in all, and the pictures' memory budget) was not kept, placed or not. One that drew nothing, or that CAN ended, is none; one placed whole and let go later, the oldest first as newer ones need the room, is not counted, as history let go is not; `memory`, times reading its output, or a resize, was refused memory (fux-vt's limits, `fux-vt/THREATS.md` 1.3), each losing only what it was for: history a resize let go counts too, and a size refused counts once until another size is asked or the pane keeps its own. A client showing it is told each kind, with how many, once a run of losses of that kind, which a success of the kind ends: a run of copies ends at a copy made; of pictures, at one placed whole; of memory, at a read of its output or a resize that refused none (a read: a frame and what follows it, or output once all of it is read); a program's end or a respawn starts every run anew |
 | `cell` | the size of a cell in pixels its program was last told, `{"width":9,"height":18}`: its tab's host's (`CSI 16 t`, asked again each time that terminal is resized, as a font zoom resizes it); `null` while it is told none (no terminal shows its tab, or its host said none): then it places no pictures |
@@ -48,6 +53,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `bells` | bells and notifications rung since it started |
 | `notification` | the last notification's text, else `null`, without control characters |
 | `truncated` | which of `"title"` and `"notification"`, in that order, were cut, else `[]`: the fields above that the program sent more of than fux-vt keeps of a string (64 KiB), the rest dropped (`["notification"]`, `["title","notification"]`) |
+| `input_queued` | bytes of input fux accepted for its program and has not yet written to its terminal |
 | `input_unread` | bytes of input fux queued for its program and had not yet written to its terminal as it ended, let go (till it is respawned), else 0. Input written to its terminal that the program never read is not counted: the system does not say |
 
 ## Snapshots and local records
