@@ -119,7 +119,8 @@ fux %3 str q text send-keys                       # press q: its version from be
   workspace; any other bare word is a word to run. `str WORD` pushes WORD as
   text, whatever it looks like: `str 'two words'`.
 - What is left at the end is printed, a value a line: a pane as `%3`, a tab
-  `@2`, a workspace `+1`, a client `c1`, a capture as its text, a record as JSON.
+  `@2`, a workspace `+1`, a client `c1`, a capture as its text, a record as
+  JSON, a list an item a line (a list in it as one line of JSON).
   `all str topology snapshot` holds one immutable hierarchy observation;
   `str panes get` on it reads locally and returns a list of records with typed IDs.
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
@@ -133,9 +134,12 @@ fux %3 str q text send-keys                       # press q: its version from be
   until its version differs from V, and answers what changed. fux never
   judges whether a program is done: [docs/agents.md](docs/agents.md) says
   what a version counts and has recipes (a text, quiet for N seconds, a
-  command's end, an exit). A failure prints `fux: CODE: MESSAGE` on stderr,
-  with the file, line and word, and exits 1; a wait exits 4 if the pane
-  closed, 124 if nothing changed in time.
+  command's end, an exit). A failure prints nothing more on stdout: it
+  says `fux: CODE: MESSAGE` on stderr, with the file, line and word, then
+  what was left, and exits 1; 2 for a mistake in the program (an unknown
+  word, a value of the wrong type, …); a wait exits 4 if the pane closed,
+  124 if nothing changed in time. A stdout whose reader went (`| head -1`)
+  ends fux quietly, 141, as `cat`.
 - A single argument is a whole program (`fux 'ls json'`), never a file,
   whatever it holds; `fux --file FILE ARGS…` runs a file, so a script can
   start with `#!/usr/bin/env -S fux --file`; and `fux -` runs what stdin
@@ -172,7 +176,7 @@ in order. `split` requires `str horizontal axis` (side by side) or
 `str vertical axis` (stacked). `resize-pane` takes a pane, cells or a
 percent, and `str horizontal` or `str vertical`. Mouse events are positional:
 `%2 str click 3 10 send-mouse`.
-`all events` streams a finite run of journal batches; `next-events` returns one batch.
+`all str CURSOR events` streams events as they come; `next-events` returns one batch.
 `new-tab` and `new-workspace` start a shell, or the program given (`program`, then each `arg`; a
 shell's line is `str sh program str -c arg str LINE arg`), whose pane stays
 once it exits. Asked from a key or prompt, they move its client to the new
@@ -480,8 +484,8 @@ VT220-class terminal.
 
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
 `pane capture json`, `client capture json`, an action's or a
-wait's answer (`… wait json`), `status json`; `all events` and `X events`
-stream NDJSON events and checkpoints, batch after batch. `SCOPE str CURSOR SECONDS next-events`
+wait's answer (`… wait json`), `status json`; `X str CURSOR events`
+streams NDJSON events, each with its `next`. `SCOPE str CURSOR SECONDS next-events`
 returns one record with `events`, exact `next`, `missed` and `status`. These shapes are part of fux's interface; `fux
 help json` lists every one ([docs/json.md](docs/json.md)).
 
@@ -863,10 +867,9 @@ and width implementations.
   cell the mouse is in, not the pixel within it, and fux makes none up.
   The mode is reported permanently reset and setting it changes nothing,
   so a program reports in cells, as with a terminal without it.
-- **Hooks** (tmux's `set-hook`): run an ordinary program over `next-events`.
-  The library's `events-since` streams bounded runs with checkpoints. Loss
-  requires a new snapshot or explicit failure; hooks do not run on the
-  server.
+- **Hooks** (tmux's `set-hook`): run an ordinary program over `X str
+  CURSOR events`, as over `journalctl -f`. Loss fails it, and needs a new
+  snapshot; hooks do not run on the server.
 - **Process survival after server failure**, or automatic session saving:
   replaying a saved `dump` creates new processes and recreates the layout.
 - **A format language** for output (tmux's `#{…}`): `json`, and `X str

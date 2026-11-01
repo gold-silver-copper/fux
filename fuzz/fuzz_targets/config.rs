@@ -508,7 +508,9 @@ fuzz_target!(|data: &[u8]| {
                 let mut machine = match fux::script::compile(&tokens) {
                     Ok(machine) => machine,
                     Err(failed) => {
-                        assert_eq!(failed.code.status().get(), 1, "{text:?}: {failed}");
+                        // A mistake in the program (2), or a refusal (1).
+                        let status = failed.code.status().get();
+                        assert!(matches!(status, 1 | 2), "{text:?}: {failed}");
                         assert!(!failed.code.name().is_empty(), "{text:?}: {failed}");
                         continue;
                     }

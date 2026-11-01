@@ -101,7 +101,12 @@ impl Server {
 
     /// The same, with at most `open_files` descriptors (`ulimit -n`).
     pub fn start_limited(config: &str, open_files: Option<u32>) -> Result<Server, String> {
-        Server::start_with(config, open_files, false, true).map(|(server, _)| server)
+        Server::start_with(config, open_files, false, true, &journal()?).map(|(server, _)| server)
+    }
+
+    /// The same, its journal keeping `entries` events.
+    pub fn start_journal(entries: u32) -> Result<Server, String> {
+        Server::start_with("", None, false, true, &entries.to_string()).map(|(server, _)| server)
     }
 
     /// A server that inherits a descriptor without close-on-exec, as one
@@ -110,12 +115,12 @@ impl Server {
     /// server. It is made while no other server can start, so only this one
     /// inherits it.
     pub fn start_inheriting(config: &str) -> Result<(Server, i32), String> {
-        let (server, held) = Server::start_with(config, None, true, true)?;
+        let (server, held) = Server::start_with(config, None, true, true, &journal()?)?;
         Ok((server, held.ok_or("a held descriptor")?))
     }
 
     pub fn empty() -> Result<Server, String> {
-        Server::start_with("", None, false, false).map(|(server, _)| server)
+        Server::start_with("", None, false, false, &journal()?).map(|(server, _)| server)
     }
 
     fn start_with(
@@ -123,6 +128,7 @@ impl Server {
         open_files: Option<u32>,
         inherit: bool,
         create: bool,
+        journal: &str,
     ) -> Result<(Server, Option<i32>), String> {
         let base = fuxix::file::scratch().map_err(e)?;
         let dir = base.join(format!(
@@ -165,7 +171,7 @@ impl Server {
             let child = command
                 .arg(fux::SERVE)
                 .arg(&socket)
-                .arg(journal()?)
+                .arg(journal)
                 .env("PS1", "$ ")
                 .env("SHELL", "/bin/sh")
                 .env("ENV", "/dev/null")

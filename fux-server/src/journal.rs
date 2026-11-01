@@ -709,7 +709,7 @@ mod tests {
     fn the_event_and_status_tables_match_the_finite_schema() -> TestResult {
         use std::collections::BTreeSet;
         let events = maximum_events('𐀀')?;
-        let mut names = BTreeSet::from(["ready".to_owned(), "missed".to_owned()]);
+        let mut names = BTreeSet::new();
         for event in events {
             // New variants must bring this schema fixture up to date.
             match &event {

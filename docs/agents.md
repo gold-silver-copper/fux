@@ -5,7 +5,8 @@ socket, `XDG_RUNTIME_DIR` (mode 0700) and `XDG_CONFIG_HOME`; a workspace
 alone is not isolation. `fux start` starts an empty server.
 
 Words run left to right. `str WORD` pushes text; %2 is a pane, @2 a tab,
-+1 a workspace. Options precede the action. Remaining values print.
++1 a workspace. Options precede the action. Remaining values print, a
+value a line (a list an item a line, a list in it as JSON).
 Outside fux, give new tabs a size and a workspace: `agent-opts`
 supplies `opts str agent in`.
 
@@ -55,8 +56,17 @@ changes, never readiness. `counts` reads RESPAWNS SCREEN BELLS DONE ENDED.
 `grows` accepts a pane (sampled first), version text, answer or pane capture,
 count index 1..4, nonnegative growth and seconds; it fails across respawn.
 Exit status and signal are distinct; unknown status stays unknown.
-CLI status: 0 success; 1 failure (`fux: CODE: MESSAGE`); 4 closed;
-124 unchanged or outer timeout. A transport failure may leave input queued.
+A failed run prints nothing more on stdout: stderr says `fux: CODE:
+MESSAGE`, then what was left. A transport failure may leave input queued.
+
+| fux exits | when |
+| --- | --- |
+| 0 | done, or what `N exit` gave |
+| 1 | refused: any other failure |
+| 2 | a mistake in the program: `usage`, `unknown_word`, `open_quote`, `missing_token`, `unmatched`, `unclosed`, `not_top_level`, `bad_codes`, `require`, `type`, `stack_underflow` |
+| 4 | `closed`: the pane waited on closed |
+| 124 | `timeout`: unchanged, or the shell's `timeout` |
+| 141 | stdout's reader went (`\| head -1`), as `cat`; nothing said |
 
 For several programs, save an `ls` cursor BEFORE launch and replay journal
 exits; stop on `missed`. This gives first recorded exit, never OS chronology
@@ -171,25 +181,28 @@ panes as it begins and answers changes in watch order, not exit chronology.
   until
   let seen seen string print seen version print
   ```
-- **What changes anywhere:** `all str CURSOR SECONDS next-events` returns
-  a record of ordered events, exact `next`, `missed`, and status.
-  Empty cursor starts now. Acquire the cursor before launching jobs to
-  observe their first recorded exit; group waits do not give exit chronology.
-  Fail or reconcile a fresh snapshot on `missed`; events invalidate state,
-  and do not replicate live OS facts. Timeout means no change was observed.
+- **What changes anywhere:** `SCOPE str CURSOR events` prints the scope's
+  events after CURSOR, one JSON object a line, each with its `next`, until
+  the scope is gone or the server stops, as `journalctl -f` does; an empty
+  cursor starts now. Bound it with `head -n`, `timeout` or `jq`, keep it
+  with `>> FILE` or `tee`, and restart from the last line's `next`.
+  Take the cursor before launching jobs to observe their first recorded
+  exit; group waits do not give exit chronology. Lost entries (`missed`)
+  fail it on stderr: resnapshot. Events invalidate state, and do not
+  replicate live OS facts. `all str CURSOR SECONDS next-events` returns one
+  batch: its events, exact `next`, `missed` and status (`json`); left at
+  the end, it prints its events alone, and fails on `missed`.
 
   ```sh
   C=$(fux all str '' 0 next-events str next get)
   # Launch jobs here, then replay from C, including exits already recorded.
-  fux all str "$C" 30 64 events-since drop
+  fux all str "$C" events | jq -nc 'first(inputs | select(.event == "exited"))'
   ```
 
-  The library stream prints NDJSON and checkpoints and ends after its
-  explicit batch bound. Save the last successful checkpoint for the next
-  finite run. For hooks, use an ordinary program over these batches,
-  filtering the triggering event and state as well as known origin.
-  Origins identify supplied client/pane/program context; an external CLI
-  remains unknown. No exactly-once effects or infinite stream is promised.
+  For hooks, use an ordinary program over this stream, filtering the
+  triggering event and state as well as known origin. Origins identify
+  supplied client/pane/program context; an external CLI remains unknown.
+  No exactly-once effects are promised.
 - **First recorded exit across jobs:** save this as `first-exit.py` and
   run `python3 -I first-exit.py` on the private socket. Take the cursor before
   launching, even if jobs might finish before subscription. Replay order
@@ -453,8 +466,9 @@ standard library, written in fuxth, does the rest (`fux help` lists it). A
 mistake every run would make (too few values, a string given to `add` or
 `if`, a request nothing acts on: its error names the word to end it with)
 fails before any word acts; otherwise the words before a failing one have
-already acted. A run exits 0, or with the status of the failure that
-stopped it, or the one `N exit` gives (0 to 255), what is left printed.
+already acted. A run exits 0, what is left printed; or the one `N exit`
+gives (0 to 255); or with the status of the failure that stopped it
+(above), stdout getting nothing more and stderr why, then what was left.
 `str NAME getenv` reads a local variable in config or CLI mode; an unset
 variable fails `unset_var`, never an empty string. From the command line
 alone, a script reads `args` (the strings after `--file FILE`), `input`
