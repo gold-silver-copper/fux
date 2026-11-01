@@ -267,7 +267,7 @@ define dump-recipe
     str 'list joins each held over contains if else drop then end' 10 char
     str '  names each held over contains workspaces 2 pick contains or if else drop then end end' 10 char
     str '# A tab named as the workspace it would make is refused (name_taken), whether that name is free or not.' 10 char
-    str 'dup len 0 gt if first let taken opts taken in taken name 80 24 size new-tab else drop then' 10 char
+    str 'dup len 0 gt if first let taken opts taken in taken name 80 24 size str / cwd new-tab else drop then' 10 char
     recipe str workspaces get each
       let ws true let opens
       recipe str tabs get each
