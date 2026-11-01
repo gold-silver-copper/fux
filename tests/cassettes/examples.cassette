@@ -3,7 +3,7 @@
 #   (`# expect:`, a line each) and exits with its status (`# status:`, else 0)
 # A workspace of its own keeps the server running when an example closes its
 # last pane.
-$ fux opts str hold name 80 24 size new-workspace >/dev/null
+$ fux opts str hold in 80 24 size new-tab >/dev/null
 $ bad=0
 > for f in "$REPO"/examples/*.fux; do
 >   fux --file "$f" >"$DIR/out"; status=$?

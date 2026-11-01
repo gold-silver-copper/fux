@@ -1,0 +1,35 @@
+# fux cassette 1
+# guards: two clients step through workspaces and tabs on their own, each
+#   with its own last, and a tab's zoom is the focus of every client shown
+#   it, each client's own coming back when it ends
+$ V=$(fux opts str one in str a name 80 24 size new-tab); P=${V%%:*}
+$ fux opts str one in str b name 80 24 size new-tab >/dev/null
+$ fux opts str two in 80 24 size new-tab >/dev/null
+$ clients() { fux ls str clients get len; }
+$ fux opts str one in 100 30 size attach >/dev/null &
+$ until [ "$(clients)" = 1 ]; do sleep 0.05; done
+$ fux opts str one in 60 20 size attach >/dev/null &
+$ until [ "$(clients)" = 2 ]; do sleep 0.05; done
+$ where() { for c in c1 c2; do echo "$c $(fux str $c client focused workspace str name get) $(fux str $c client focused tab str name get)"; done; }
+$ fux str c1 client str a tab str next step; fux str c2 client str one workspace str next step; where
+  = ca one b
+  = cb two null
+  ~ ca one b
+  ~ cb two null
+$ fux str c2 client str two workspace str last step; fux str c1 client str b tab str last step; where
+  = ca one a
+  = cb one a
+  ~ ca one a
+  ~ cb one a
+$ Q=$(fux $P str horizontal axis split); Q=${Q%%:*}; fux str c1 client $Q str left step; fux $Q zoom
+$ for c in c1 c2; do [ "$(fux str $c client focused)" = "$Q" ] && echo "$c focuses the zoomed pane"; done
+  = ca focuses the zoomed pane
+  = cb focuses the zoomed pane
+  ~ ca focuses the zoomed pane
+  ~ cb focuses the zoomed pane
+$ fux $Q zoom; [ "$(fux str c1 client focused)" = "$P" ] && [ "$(fux str c2 client focused)" = "$Q" ] && echo "each its own"
+  = each its own
+  ~ each its own
+$ fux $Q zoom; fux str c2 client $Q str left step; fux str a tab info str tabs get first str zoomed get
+  = null
+  ~ null

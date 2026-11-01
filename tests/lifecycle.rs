@@ -199,7 +199,16 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
         eventually("the first shell made", || {
             let mut creating = Command::new(FUX);
             creating
-                .args(["opts", "80", "24", "size", "new-workspace"])
+                .args([
+                    "opts",
+                    "str",
+                    "new-workspace",
+                    "in",
+                    "80",
+                    "24",
+                    "size",
+                    "new-tab",
+                ])
                 .current_dir(&dir)
                 .env("FUX_SOCKET", &socket)
                 .env_remove("FUX_PANE")

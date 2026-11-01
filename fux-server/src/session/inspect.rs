@@ -1,6 +1,6 @@
 use super::{Error, Session};
 use crate::view::{ClientKind, Mode};
-use crate::workspace::Fit;
+use crate::workspace::{Child, Fit};
 use fux_wire::command::AnyRef;
 use fux_wire::inspect::{self, Projection, Scope, Snapshot};
 use fux_wire::json::Json;
@@ -60,16 +60,15 @@ impl Session {
             }
             let tabs = ws.tabs().iter().map(|tab| tab.id()).collect();
             for tab in ws.tabs().iter().filter(selected) {
-                let tree = flatten(tab.root());
+                // A pane's tab as far as it is in scope: the pane alone.
+                let tree = match target {
+                    Some(AnyRef::Pane(pane)) => flatten(&Tree::Pane(pane)),
+                    Some(AnyRef::Tab(_) | AnyRef::Workspace(_)) | None => flatten(tab.root()),
+                };
                 for node in &tree {
                     let Node::Pane(id) = node else {
                         continue;
                     };
-                    if projection == Projection::Facts
-                        && matches!(target, Some(AnyRef::Pane(p)) if p != *id)
-                    {
-                        continue;
-                    }
                     let pane = self.parts.panes().get(id).ok_or(Error::NoPane(*id))?;
                     let (state, launch) = if projection == Projection::Topology {
                         (None, None)
@@ -140,9 +139,7 @@ impl Session {
                 Scope::Client(id) => id == view.id,
                 Scope::Target(AnyRef::Workspace(id)) => place.is_some_and(|p| p.ws == id),
                 Scope::Target(AnyRef::Tab(id)) => place.is_some_and(|p| p.tab == id),
-                Scope::Target(AnyRef::Pane(_)) => {
-                    place.is_some_and(|p| Some(p.tab) == selected_tab)
-                }
+                Scope::Target(AnyRef::Pane(id)) => place.is_some_and(|p| p.pane == id),
             };
             if !selected {
                 continue;
@@ -190,6 +187,7 @@ impl Session {
                 workspace: place.map(|p| p.ws),
                 tab: place.map(|p| p.tab),
                 pane: place.map(|p| p.pane),
+                seats: self.parts.seats(view.id),
                 opening: (!view.mode.is_normal()).then_some(view.opening),
                 mode: mode.to_owned(),
             };

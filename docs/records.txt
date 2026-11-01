@@ -30,7 +30,6 @@ events.events[][detached]: event pane tab workspace client origin next
 events.events[][done]: event pane tab workspace status origin next
 events.events[][exited]: event pane tab workspace exited input_unread origin next
 events.events[][exited]: event pane tab workspace signal input_unread origin next
-events.events[][focused]: event pane tab workspace client origin next
 events.events[][history_budget]: event pane tab workspace history_bytes origin next
 events.events[][history_cleared]: event pane tab workspace origin next
 events.events[][laid_out]: event tab workspace origin next
@@ -51,9 +50,10 @@ events.events[][zoomed]: event pane tab workspace origin next
 events.events[][zoomed]: event tab workspace pane origin next
 events: events next missed status reason
 snapshot.facts.clients[].output: graphics underline_styles clipboard kitty_flags_requested
+snapshot.facts.clients[].seats[]: in current last
 snapshot.facts.clients[].terminal.cell_reported: width height
 snapshot.facts.clients[].terminal: sixel_reported cell_reported underline_styles_reported kitty_flags_reported
-snapshot.facts.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane opening mode
+snapshot.facts.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane seats opening mode
 snapshot.facts.panes[].launch.cwd: encoding text
 snapshot.facts.panes[].launch: choice argv cwd
 snapshot.facts.panes[].state.cell: width height
@@ -66,9 +66,10 @@ snapshot.facts.tabs[]: id workspace name label fit cols rows host nodes layout_r
 snapshot.facts.workspaces[]: id name label tabs
 snapshot.facts: run cursor scope projection workspaces tabs panes clients
 snapshot.recipe.clients[].output: graphics underline_styles clipboard kitty_flags_requested
+snapshot.recipe.clients[].seats[]: in current last
 snapshot.recipe.clients[].terminal.cell_reported: width height
 snapshot.recipe.clients[].terminal: sixel_reported cell_reported underline_styles_reported kitty_flags_reported
-snapshot.recipe.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane opening mode
+snapshot.recipe.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane seats opening mode
 snapshot.recipe.panes[].cwd.path: encoding text
 snapshot.recipe.panes[].cwd[failed]: status operation errno
 snapshot.recipe.panes[].cwd[known]: status path
@@ -84,9 +85,10 @@ snapshot.recipe.tabs[]: id workspace name label fit cols rows host nodes layout_
 snapshot.recipe.workspaces[]: id name label tabs
 snapshot.recipe: run cursor scope projection workspaces tabs panes clients
 snapshot.topology.clients[].output: graphics underline_styles clipboard kitty_flags_requested
+snapshot.topology.clients[].seats[]: in current last
 snapshot.topology.clients[].terminal.cell_reported: width height
 snapshot.topology.clients[].terminal: sixel_reported cell_reported underline_styles_reported kitty_flags_reported
-snapshot.topology.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane opening mode
+snapshot.topology.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane seats opening mode
 snapshot.topology.panes[]: id tab name label title pid rows cols version
 snapshot.topology.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
 snapshot.topology.workspaces[]: id name label tabs

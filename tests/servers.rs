@@ -312,7 +312,7 @@ fn a_stream_from_ls_misses_nothing() -> Outcome {
     let cursor = (listing.split(r#""cursor":""#).nth(1))
         .and_then(|rest| rest.split('"').next())
         .ok_or(format!("no cursor in {listing}"))?;
-    server.words("opts str w name 80 24 size new-workspace")?;
+    server.words("opts str w in 80 24 size new-tab")?;
     let (mut events, next) = streaming(&server, &["all", "str", cursor, "events"])?;
     let told = next("");
     let _ = events.kill();
@@ -424,7 +424,7 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     assert_eq!(tabs, format!("{t2}\n{t1}\n"));
     // A place gone fails as it would for any word; another workspace
     // keeps the server up.
-    server.words("opts 80 24 size str keep name new-workspace")?;
+    server.words("opts 80 24 size str keep in new-tab")?;
     for (gone, code) in [
         (["str", b, "pane", "dup", "kill", "panes"], "no_pane"),
         (["str", t2, "tab", "dup", "kill", "tabs"], "no_tab"),
@@ -550,7 +550,7 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
 #[test]
 fn a_dump_makes_its_workspace_again() -> Outcome {
     let server = Server::start("")?;
-    let pane = server.words("opts 80 24 size str build name new-workspace")?;
+    let pane = server.words("opts 80 24 size str build in new-tab")?;
     let worker = server.ok(&[
         "str",
         first_word(&pane),
@@ -646,7 +646,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     source.ok(&["str", "tab-2", "pane", "str", "new-workspace", "move"])?;
     let dump = source.ok(&["all", "dump"])?;
     let server = Server::start("")?;
-    server.words("opts 80 24 size str workspace-2 name new-workspace")?;
+    server.words("opts 80 24 size str workspace-2 in new-tab")?;
     let file = server.dir.join("source.fux");
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&["--file", &file.to_string_lossy()])?;
@@ -895,7 +895,7 @@ fn addressing_a_client_does_not_claim_its_origin() -> Outcome {
     server.ok(&["%1 str horizontal axis split drop"])?;
     let cursor = server.ok(&["all str '' 0 next-events str next get"])?;
     server.ok(&[&format!("str {client} client %1 show")])?;
-    let origins = server.ok(&[&format!("all str {} 0 next-events str events get each let event event str event get str focused eq if event str origin get str kind get print then end", cursor.trim())])?;
+    let origins = server.ok(&[&format!("all str {} 0 next-events str events get each let event event str event get str shown eq if event str origin get str kind get print then end", cursor.trim())])?;
     assert!(!origins.trim().is_empty());
     assert!(origins.lines().all(|line| line == "outside"), "{origins}");
     Ok(())

@@ -67,7 +67,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
         ls.contains("+1 work2") && ls.contains("@1 code") && ls.contains("%1 editor"),
         "{ls}"
     );
-    server.words("opts 80 24 size str other name new-workspace")?;
+    server.words("opts 80 24 size str other in new-tab")?;
     let clash = server.fux(&["str", "other", "workspace", "str", "work2", "rename"])?;
     assert!(
         clash
@@ -127,7 +127,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.ok(&["str", "work2", "workspace", "kill"])?;
     let ls = server.ok(&["ls", "listing"])?;
     assert!(!ls.contains("work2") && ls.contains("other"), "{ls}");
-    server.words("opts 80 24 size str third name new-workspace")?;
+    server.words("opts 80 24 size str third in new-tab")?;
     server.ok(&["str", "@2", "tab", "kill"])?;
     let ls = server.ok(&["ls", "listing"])?;
     assert!(!ls.contains("other") && ls.contains("third"), "{ls}");
@@ -420,8 +420,8 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     let client = said(&["str", "c9", "client", "focused"])?;
     assert!(client.contains("no client c9"), "{client}");
-    // What a word takes, all of it: focus's every way, text's booleans.
-    let way = said(&["str", "c9", "client", "str", "sideways", "focus"])?;
+    // What a word takes, all of it: step's every way, text's booleans.
+    let way = said(&["str", "c9", "client", "%1", "str", "sideways", "step"])?;
     assert!(way.contains("up, down, next, previous or last"), "{way}");
     let text = said(&["%1", "opts", "80", "24", "size", "text"])?;
     assert!(text.contains("a string, a number or a boolean"), "{text}");
