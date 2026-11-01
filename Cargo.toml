@@ -1,5 +1,5 @@
 [workspace]
-members = ["fux-wire", "fux-server", "fux-vt", "fux-vt/peak", "fuxix", "fuxth", "fuxth/core"]
+members = ["fux-wire", "fux-server", "fux-vt", "fux-vt/peak", "fuxix", "fuxth", "fuxth/core", "fuxth-run"]
 exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench"]
 resolver = "3"
 
