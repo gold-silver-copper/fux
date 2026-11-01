@@ -105,7 +105,11 @@ impl Session {
                     }
                 }
                 if changed || view.mode.is_normal() {
-                    self.view_event(client, crate::journal::ViewChange::Screen);
+                    let opening = match &view.mode {
+                        Mode::Normal => None,
+                        Mode::Panel(panel) => Some(crate::journal::Opening::of(panel)),
+                    };
+                    self.view_event(client, crate::journal::ViewChange::Screen(opening));
                 }
             }
             Act::Notice { text, error } => self.notify_to(client, text, error),
@@ -135,7 +139,7 @@ impl Session {
         };
         view.dirty |= shown;
         if ended {
-            self.view_event(client, crate::journal::ViewChange::Screen);
+            self.view_event(client, crate::journal::ViewChange::Screen(None));
         }
         // Encoded as its program asked.
         let refused = self.type_in(client, |screen, out| {
@@ -412,21 +416,20 @@ mod tests {
         Ok(())
     }
 
+    /// Each says the kind of screen it leaves shown, none once it closes.
     #[test]
     fn openings_replacements_and_closes_invalidate_from_the_prior_cursor() -> Outcome {
         use crate::journal::Reader;
         use fux_wire::events::Actor;
         use fux_wire::inspect::Scope;
+        use fux_wire::json::Json;
         let (mut s, c) = session()?;
         s.out(PaneId::of(1), b"first\r\nlast");
-        for (opening, act, normal) in [
-            (1, ScreenAct::Show(Panel::Repeat("first".into())), false),
-            (
-                2,
-                ScreenAct::Show(Panel::Repeat("replacement".into())),
-                false,
-            ),
-            (2, ScreenAct::Hide, true),
+        let list = Panel::List(fux_wire::act::List::default());
+        for (opening, act, kind) in [
+            (1, ScreenAct::Show(Panel::Repeat("first".into())), "repeat"),
+            (2, ScreenAct::Show(list), "list"),
+            (2, ScreenAct::Hide, ""),
         ] {
             let from = s.parts.journal().end(s.run);
             s.apply(c, vec![Act::Screen { opening, act }]);
@@ -434,14 +437,13 @@ mod tests {
                 .batch(s.parts.journal(), true)?;
             assert_eq!(batch.events.len(), 1);
             let event = batch.events.first().ok_or("screen event")?;
-            assert_eq!(
-                event.data.get("event"),
-                Some(&fux_wire::json::Json::str("screen"))
-            );
+            assert_eq!(event.data.get("event"), Some(&Json::str("screen")));
+            let shown = (!kind.is_empty()).then(|| Json::str(kind));
+            assert_eq!(event.data.get("kind"), Some(&shown.unwrap_or(Json::Null)));
             assert_eq!(event.origin, Actor::Client(c));
             let view = s.views.get(&c).ok_or("view")?;
             assert_eq!(view.opening, opening);
-            assert_eq!(view.mode.is_normal(), normal);
+            assert_eq!(view.mode.is_normal(), kind.is_empty());
         }
         {
             let start = ScreenAct::Show(Panel::Repeat("key ends this".into()));
@@ -461,10 +463,9 @@ mod tests {
             let batch = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
                 .batch(s.parts.journal(), true)?;
             assert_eq!(batch.events.len(), 1);
-            assert_eq!(
-                batch.events.first().ok_or("ending")?.data.get("event"),
-                Some(&fux_wire::json::Json::str("screen"))
-            );
+            let ending = &batch.events.first().ok_or("ending")?.data;
+            assert_eq!(ending.get("event"), Some(&Json::str("screen")));
+            assert_eq!(ending.get("kind"), Some(&Json::Null));
             assert!(s.views.get(&c).ok_or("view")?.mode.is_normal());
         }
         Ok(())

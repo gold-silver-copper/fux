@@ -1,10 +1,11 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
+use crate::journal::{Detach, ViewChange};
 use crate::pane::{self, Pane, PaneMut, Process, Runs};
 use crate::process::{self, Child};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Waiting, Watches};
-use crate::workspace::{Child as _, Destination, Fit, Parts, Split, Tab, Workspace};
+use crate::workspace::{Child as _, Destination, Fit, Killing, Parts, Split, Tab, Workspace};
 use fux_vt::Size;
 use fux_vt::keys::Direction;
 use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
@@ -1298,6 +1299,10 @@ impl Session {
             false => ClientKind::Terminal,
         };
         view.read_only = attach.read_only;
+        let attached = ViewChange::Attached {
+            kind: view.kind,
+            read_only: view.read_only,
+        };
         // The pane it runs in, if any: the one whose program it descends
         // from, or whose session it is in, as the OS says (a parent between
         // them may have gone). A headless client shows on no terminal, so on
@@ -1317,15 +1322,16 @@ impl Session {
         view.runs_in = runs_in.map(|(id, _)| *id);
         self.views.insert(id, view);
         self.parts.attach(id, at);
-        self.view_event(id, crate::journal::ViewChange::Attached);
+        self.view_event(id, attached);
         self.ask(id, crate::outer::QUERIES);
         self.settle(now);
         Ok(id)
     }
 
-    pub fn detach(&mut self, id: ClientId, now: Instant) {
+    /// Client `id` detaches, for `why`.
+    pub fn detach(&mut self, id: ClientId, why: Detach, now: Instant) {
         if self.views.contains_key(&id) {
-            self.view_event(id, crate::journal::ViewChange::Detached);
+            self.view_event(id, ViewChange::Detached(why));
         }
         self.views.remove(&id);
         self.parts.forget(id);
@@ -1356,7 +1362,8 @@ impl Session {
         let Some(view) = view else { return Ok(false) };
         (view.rows, view.cols) = size;
         view.dirty = true;
-        self.view_event(id, crate::journal::ViewChange::Resized);
+        let (rows, cols) = size;
+        self.view_event(id, ViewChange::Resized { rows, cols });
         self.settle(now);
         Ok(true)
     }
@@ -1472,7 +1479,7 @@ impl Session {
         self.views = views;
         for ended in &ended {
             if let Outgoing::To(client, _) = ended {
-                self.view_event(*client, crate::journal::ViewChange::Screen);
+                self.view_event(*client, ViewChange::Screen(None));
             }
         }
         self.outbox.extend(ended);
@@ -1657,9 +1664,13 @@ impl Session {
         // closing empties takes its viewers elsewhere.
         let viewers = self.viewers(AnyRef::Pane(id));
         let mut notice = None;
-        if let Some(mut pane) = self.parts.close_pane(id) {
-            // Closed for its program's end (a reason given), or by fux.
-            let closed = why.is_none();
+        // Closed for its program's end (a reason given), or by fux.
+        let closed = why.is_none();
+        let close = match closed {
+            true => crate::journal::Close::Killed,
+            false => crate::journal::Close::Exited,
+        };
+        if let Some(mut pane) = self.parts.close_pane(id, close) {
             let failed = pane.has_terminal_errors();
             let status =
                 why.map(|why| format!("{} {why}", fux_wire::words::labelled(id, &pane.label())));
@@ -1684,10 +1695,11 @@ impl Session {
         }
     }
 
-    /// Removes a tab and whatever panes are in it (`Parts::remove_tab`).
-    fn remove_tab(&mut self, tab: TabId, now: Instant) {
+    /// Removes a tab and whatever panes are in it, killed as `killing`
+    /// kills it (`Parts::remove_tab`).
+    fn remove_tab(&mut self, tab: TabId, killing: Killing, now: Instant) {
         let viewers = self.viewers(AnyRef::Tab(tab));
-        for gone in self.parts.remove_tab(tab) {
+        for gone in self.parts.remove_tab(tab, killing) {
             self.end_pane(gone, true, &viewers, now);
         }
     }
@@ -2253,7 +2265,7 @@ impl Session {
         }
     }
 
-    pub(crate) fn view_event(&mut self, client: ClientId, change: crate::journal::ViewChange) {
+    pub(crate) fn view_event(&mut self, client: ClientId, change: ViewChange) {
         let at = self.place(client).map(|p| ((p.ws, p.tab), p.pane));
         self.parts
             .journal_mut()
@@ -2688,8 +2700,13 @@ impl Session {
             self.close_pane(pane, None, now);
             return Ok(());
         }
+        let killing = match scope {
+            None => Killing::All,
+            Some(AnyRef::Workspace(ws)) => Killing::Within(ws),
+            Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => Killing::None,
+        };
         for tab in self.tabs_of(scope)? {
-            self.remove_tab(tab, now);
+            self.remove_tab(tab, killing, now);
         }
         self.after_close(now);
         Ok(())
@@ -2763,7 +2780,7 @@ impl Session {
                 return Ok(PaneResults::Many(Vec::new()).into());
             }
             ClientAction::Detach => {
-                self.detach(client, now);
+                self.detach(client, Detach::Detached, now);
                 let exit = ToAttached::Exit("detached");
                 self.outbox.push(Outgoing::To(client, exit));
                 return Ok(Reply::default());
@@ -3350,7 +3367,7 @@ pub(crate) mod testing {
             self.settle(Instant::now())
         }
         pub(crate) fn detach_client(&mut self, id: ClientId) {
-            self.detach(id, Instant::now())
+            self.detach(id, crate::journal::Detach::Detached, Instant::now())
         }
         pub(crate) fn attach_client(
             &mut self,
@@ -4156,10 +4173,10 @@ mod tests {
         assert_eq!(
             closed,
             [
-                r#"{"event":"closed","pane":"%3","tab":"@3","workspace":"+5"}"#,
-                r#"{"event":"closed","tab":"@3","workspace":"+5"}"#,
-                r#"{"event":"closed","workspace":"+5","parent":"+4"}"#,
-                r#"{"event":"closed","workspace":"+4","parent":"+3"}"#,
+                r#"{"event":"closed","pane":"%3","tab":"@3","workspace":"+5","why":"killed"}"#,
+                r#"{"event":"closed","tab":"@3","workspace":"+5","why":"emptied"}"#,
+                r#"{"event":"closed","workspace":"+5","parent":"+4","why":"emptied"}"#,
+                r#"{"event":"closed","workspace":"+4","parent":"+3","why":"emptied"}"#,
                 "",
             ]
             .join("\n")
@@ -6059,7 +6076,7 @@ mod tests {
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
         assert!(
             lines.contains(
-                r#"{"event":"respawned","pane":"%2","tab":"@2","workspace":"+2","input_unread":2}"#
+                r#"{"event":"respawned","pane":"%2","tab":"@2","workspace":"+2","generation":2,"input_unread":2}"#
             ),
             "{lines}"
         );
@@ -7891,6 +7908,74 @@ mod tests {
         Ok(())
     }
 
+    /// Each change of a tab's layout journals `laid_out` once, at the
+    /// revision the tab then has.
+    #[test]
+    fn every_layout_change_journals_its_new_revision() -> TestResult {
+        let mut s = started()?;
+        let arrange = "@1 str topology snapshot str tabs get first let t \
+            t str id get t str layout_revision get t str nodes get arrange";
+        for code in [
+            "%1 str horizontal axis split drop",
+            "%1 %2 swap-with",
+            "%1 str right 3 move-border",
+            "@1 90 30 resize",
+            arrange,
+            "%1 str vertical axis split drop",
+            "%3 kill",
+            "%2 str new-tab move",
+        ] {
+            let mut ran = Ok(());
+            let lines = told(&mut s, |s| ran = run(s, code));
+            ran?;
+            let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+            let revision = revision.ok_or("a revision")?;
+            let laid_out = format!(
+                r#"{{"event":"laid_out","tab":"@1","workspace":"+1","layout_revision":"{revision}"}}"#
+            );
+            let laid: Vec<&str> = (lines.lines())
+                .filter(|l| l.contains(r#""event":"laid_out""#))
+                .collect();
+            assert_eq!(laid, [laid_out.as_str()], "{code}");
+        }
+        Ok(())
+    }
+
+    /// A kill closes what it kills as killed, and each workspace it
+    /// leaves empty that it does not kill as emptied.
+    #[test]
+    fn a_kill_closes_what_it_kills_and_empties_the_rest() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "opts str a in str b in 80 24 size new-tab drop")?;
+        run(&mut s, "opts +2 in 80 24 size new-tab drop")?;
+        let mut ran = Ok(());
+        let lines = told(&mut s, |s| ran = run(s, "+2 kill"));
+        ran?;
+        let closed: Vec<&str> = (lines.lines())
+            .filter(|l| l.contains(r#""event":"closed""#))
+            .collect();
+        assert_eq!(closed.len(), 6, "{lines}");
+        assert!(
+            closed.iter().all(|l| l.ends_with(r#""why":"killed"}"#)),
+            "{lines}"
+        );
+        run(&mut s, "opts str c in 80 24 size new-tab drop")?;
+        let mut ran = Ok(());
+        let lines = told(&mut s, |s| ran = run(s, "@4 kill"));
+        ran?;
+        assert_eq!(
+            lines,
+            [
+                r#"{"event":"closed","pane":"%4","tab":"@4","workspace":"+4","why":"killed"}"#,
+                r#"{"event":"closed","tab":"@4","workspace":"+4","why":"killed"}"#,
+                r#"{"event":"closed","workspace":"+4","parent":null,"why":"emptied"}"#,
+                "",
+            ]
+            .join("\n")
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_tab_made_with_a_name_is_told_made_with_it() -> TestResult {
         let mut s = started()?;
@@ -7905,7 +7990,7 @@ mod tests {
             concat!(
                 r#"{"event":"created","tab":"@2","workspace":"+1","name":"t"}"#,
                 "\n",
-                r#"{"event":"created","pane":"%2","tab":"@2","workspace":"+1"}"#,
+                r#"{"event":"created","pane":"%2","tab":"@2","workspace":"+1","role":"shell"}"#,
                 "\n"
             )
         );
@@ -7962,8 +8047,12 @@ mod tests {
             assert_eq!(
                 lines,
                 format!(
-                    "{prefix}{{\"event\":\"exited\",\"pane\":\"%2\",\"tab\":\"@1\",\"workspace\":\"+1\",{status}}}\n{}\n{}\n",
-                    r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1"}"#,
+                    "{prefix}{{\"event\":\"exited\",\"pane\":\"%2\",\"tab\":\"@1\",\"workspace\":\"+1\",{status}}}\n{}\n{}\n{}\n",
+                    r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1","why":"exited"}"#,
+                    format_args!(
+                        r#"{{"event":"laid_out","tab":"@1","workspace":"+1","layout_revision":"@1:2:{}"}}"#,
+                        s.run
+                    ),
                     r#"{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","cols":80,"rows":24}"#
                 )
             );
@@ -8609,7 +8698,7 @@ mod journal_tests {
             assert!(!named(&b, name).is_empty(), "missing {name}: {b:?}");
         }
         let from = b.next;
-        s.detach(client, Instant::now());
+        s.detach(client, Detach::Detached, Instant::now());
         assert_eq!(named(&batch(&s, from)?, "detached").len(), 1);
         Ok(())
     }

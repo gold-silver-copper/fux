@@ -1561,7 +1561,10 @@ impl Pane {
             Some(_) => Left::default(),
             None => Left { input },
         };
-        tell.tell(Told::Respawned(over));
+        tell.tell(Told::Respawned {
+            left: over,
+            generation: fresh.respawns,
+        });
         // Every field is explicit so additions require a respawn decision.
         let next = Self {
             id: self.id,

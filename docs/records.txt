@@ -18,16 +18,16 @@ events.events[].origin[outside]: kind
 events.events[].origin[pane]: kind pane generation
 events.events[].origin[program]: kind pane generation
 events.events[].origin[server]: kind
-events.events[][attached]: event pane tab workspace client origin seq next
+events.events[][attached]: event pane tab workspace client kind read_only origin seq next
 events.events[][bell]: event pane tab workspace origin seq next
-events.events[][closed]: event pane tab workspace origin seq next
-events.events[][closed]: event tab workspace origin seq next
-events.events[][closed]: event workspace parent origin seq next
+events.events[][closed]: event pane tab workspace why origin seq next
+events.events[][closed]: event tab workspace why origin seq next
+events.events[][closed]: event workspace parent why origin seq next
 events.events[][command_started]: event pane tab workspace origin seq next
-events.events[][created]: event pane tab workspace origin seq next
+events.events[][created]: event pane tab workspace role origin seq next
 events.events[][created]: event tab workspace name origin seq next
 events.events[][created]: event workspace parent name origin seq next
-events.events[][detached]: event pane tab workspace client origin seq next
+events.events[][detached]: event pane tab workspace client why origin seq next
 events.events[][done]: event pane tab workspace status origin seq next
 events.events[][exited]: event pane tab workspace exited input_unread origin seq next
 events.events[][exited]: event pane tab workspace signal input_unread origin seq next
@@ -36,7 +36,7 @@ events.events[][history_cleared]: event pane tab workspace origin seq next
 events.events[][hung_up]: event pane tab workspace origin seq next
 events.events[][input]: event pane tab workspace generation kind bytes expected origin seq next
 events.events[][input]: event pane tab workspace generation kind bytes origin seq next
-events.events[][laid_out]: event tab workspace origin seq next
+events.events[][laid_out]: event tab workspace layout_revision origin seq next
 events.events[][moved]: event pane tab workspace from_tab from_workspace origin seq next
 events.events[][moved]: event workspace parent origin seq next
 events.events[][notification]: event pane tab workspace text truncated origin seq next
@@ -47,13 +47,13 @@ events.events[][renamed]: event workspace parent name origin seq next
 events.events[][reordered]: event tab workspace origin seq next
 events.events[][reordered]: event workspace parent origin seq next
 events.events[][resized]: event pane tab workspace cols rows origin seq next
-events.events[][respawned]: event pane tab workspace input_unread origin seq next
-events.events[][screen]: event pane tab workspace client origin seq next
+events.events[][respawned]: event pane tab workspace generation input_unread origin seq next
+events.events[][screen]: event pane tab workspace client kind origin seq next
 events.events[][shown]: event pane tab workspace client origin seq next
 events.events[][signalled]: event pane tab workspace generation signal origin seq next
 events.events[][stopped]: event reason origin seq next
 events.events[][title]: event pane tab workspace title truncated origin seq next
-events.events[][view_resized]: event pane tab workspace client origin seq next
+events.events[][view_resized]: event pane tab workspace client cols rows origin seq next
 events.events[][zoomed]: event pane tab workspace origin seq next
 events.events[][zoomed]: event tab workspace pane origin seq next
 events: events first next missed status reason
