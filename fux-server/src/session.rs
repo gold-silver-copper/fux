@@ -1211,14 +1211,15 @@ impl Session {
             Some(command::AttachTarget::Workspace(workspace)) => {
                 (self.resolve_ws(workspace)?, None)
             }
+            // Its first pane focused, as every new seat is, or the
+            // zoomed one: a tab's zoom stays.
             Some(command::AttachTarget::Tab(tab)) => {
                 let ws = self.tab_workspace(*tab)?;
-                let pane = self.root(*tab).ok_or(Error::NoTab(*tab))?.first_pane();
                 (
                     ws,
                     Some(Spot {
                         tab: *tab,
-                        pane: Some(pane),
+                        pane: None,
                     }),
                 )
             }
@@ -5237,6 +5238,34 @@ mod tests {
         run(&mut s, "%3 kill")?;
         assert_eq!(zoomed(&s), None);
         assert_eq!(focused(&s), both(2));
+        Ok(())
+    }
+
+    #[test]
+    fn attaching_to_a_zoomed_tab_keeps_its_zoom() -> TestResult {
+        let (mut s, c1) = attached(24, 80)?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(&mut s, &format!("str {c1} client %1 show %2 zoom"))?;
+        let presentation = fux::script::default_state()?.preferences.presentation();
+        let size = sized(24, 80)?;
+        let mut clients = vec![c1];
+        let lines = told(&mut s, |s| {
+            for read_only in [false, true] {
+                let attach = Attach {
+                    target: Some(command::AttachTarget::Tab(TabId::of(1))),
+                    read_only,
+                    ..Attach::of(size, presentation.clone())
+                };
+                clients.extend(s.attach_as(attach, Instant::now()));
+            }
+        });
+        assert_eq!(clients.len(), 3, "{lines}");
+        assert!(!lines.contains("zoomed"), "{lines}");
+        let zoomed = s.tab(TabId::of(1)).and_then(Tab::zoomed);
+        assert_eq!(zoomed, Some(PaneId::of(2)));
+        for c in clients {
+            assert_eq!(s.focused(c), Some(PaneId::of(2)), "{c}");
+        }
         Ok(())
     }
 

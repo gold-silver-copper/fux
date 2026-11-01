@@ -1537,6 +1537,24 @@ mod tests {
     }
 
     #[test]
+    fn a_zoom_elsewhere_lets_go_of_a_button_held_in_the_focus() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "str %1 pane str horizontal axis split")?;
+        run(&mut s, "str c1 client str %1 pane show")?;
+        for pane in [1, 2] {
+            s.out(PaneId::of(pane), b"\x1b[?1002h\x1b[?1006h");
+        }
+        s.input(c, b"\x1b[<0;2;2M");
+        assert_eq!(queued(&mut s, 1), b"\x1b[<0;2;2M");
+        // Another's zoom moves its focus: the drag and the release past
+        // the bottom go to neither pane.
+        run(&mut s, "%2 zoom")?;
+        s.input(c, b"\x1b[<32;1;200M\x1b[<0;1;200m");
+        assert!(queued(&mut s, 1).is_empty() && queued(&mut s, 2).is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn the_mouse_is_reported_only_while_no_screen_of_the_clients_is_open() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane str horizontal axis split")?;

@@ -296,9 +296,13 @@ impl Tab {
     }
 
     /// Zooms `pane`, one of the tab's, or none, journaled if that changes
-    /// it.
+    /// it. A button held in a pane a client no longer focuses is let go.
     fn zoom(&mut self, journal: &mut Journal, ws: WsId, pane: Option<PaneId>) {
         if self.zoomed != pane {
+            for seat in self.seats.values_mut() {
+                let focus = |zoomed: Option<PaneId>| zoomed.unwrap_or(seat.focus);
+                seat.held &= focus(self.zoomed) == focus(pane);
+            }
             self.zoomed = pane;
             self.changed = true;
             journal.push(Event::Zoomed((ws, self.id), pane));
