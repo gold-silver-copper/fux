@@ -987,12 +987,12 @@ impl Server {
                 }
             }
         }
-        let overlay = render::bar_overlay(session, view, &attached.placement);
+        let cover = render::bar_cover(session, view, &attached.placement);
         attached.pane_pictures = pictures.clone();
         if !view.mode.is_normal() {
             pictures.clear();
-        } else if overlay {
-            render::clip_bar_pictures(view, &mut pictures);
+        } else if let Some(cover) = cover {
+            render::clip_bar_pictures(view, cover, &mut pictures);
         }
         for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
             attached.shown.forget_area(gone.area);
@@ -1753,16 +1753,17 @@ mod tests {
         let picture = std::sync::Arc::new(
             fux_vt::sixel::Picture::new(12, 24, vec![255; 12 * 24 * 4]).ok_or("picture")?,
         );
+        // Under the corner the notice will cover.
         let full = vec![
             render::Visible {
                 pane,
-                area: (8, 0, 2, 1),
+                area: (8, 35, 2, 1),
                 crop: (0, 0, 12, 24),
                 picture: std::sync::Arc::clone(&picture),
             },
             render::Visible {
                 pane,
-                area: (9, 1, 1, 1),
+                area: (9, 36, 1, 1),
                 crop: (0, 0, 12, 12),
                 picture,
             },
