@@ -108,9 +108,16 @@ impl<A> Steps<A> {
     /// Its one step, if it is one that runs where it is called and is
     /// copied in where it is compiled (`dup` is `0 pick`). Longer words
     /// stay calls, so a mistake in one is said as the whole word's, not one
-    /// of its steps'.
+    /// of its steps'. `i`, `j`, `leave` and `execute` act on the loop of
+    /// the frame they are in: only the core's own word is copied in, and a
+    /// definition of one is a call, as a longer one is.
     pub(crate) fn leaf(&self) -> Option<&Op<A>> {
         match self.ops.as_slice() {
+            [Op::Builtin(b @ (Builtin::I | Builtin::J | Builtin::Leave | Builtin::Execute))]
+                if *self.name != *b.name() =>
+            {
+                None
+            }
             [
                 op @ (Op::Push(_)
                 | Op::Builtin(_)

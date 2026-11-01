@@ -1403,9 +1403,18 @@ fn a_loop_words_xt_acts_in_the_loop_it_runs_in() -> Result<(), Error> {
     ] {
         assert_eq!(run(executed)?, run(direct)?, "{executed}");
     }
-    // A definition of its own still reaches no caller's loop.
-    let helper = "define f i 1 add end 3 0 do tick f execute loop";
-    assert_eq!(code(run(helper)), Some("not_top_level"));
+    // A definition reaches no caller's loop, one word long or longer,
+    // called or run by execute.
+    for word in ["i", "1 0 do j loop", "leave"] {
+        for body in [word.to_owned(), format!("{word} 0 drop")] {
+            for call in ["f", "tick f execute"] {
+                let text = format!("define f {body} end 2 0 do {call} loop");
+                assert_eq!(code(run(&text)), Some("not_top_level"), "{text}");
+            }
+        }
+    }
+    let through = "define run-it execute end 2 0 do tick i run-it loop";
+    assert_eq!(code(run(through)), Some("not_top_level"));
     Ok(())
 }
 
