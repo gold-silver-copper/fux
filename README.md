@@ -266,7 +266,9 @@ the tab or workspace it is in. To choose a member of a container, use
 `panes` or `tabs`; a container never stands for its only member.
 A name is given or absent: `get name` is `null` for an unnamed thing,
 which shows a label instead. A label never finds anything. Renaming one
-thing never renames another.
+thing never renames another. Workspaces, tabs and panes share one
+namespace: a name another of them has is refused (`name_taken`), so a
+name finds one thing.
 Inside a pane,
 `here` is that pane (`FUX_PANE`, below). In a key's program or the
 prompt's, `me` is the client whose key it is, and `me focused` its focused
@@ -636,8 +638,11 @@ pane a `let` name later lines use; `X dump` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
 given name (made if missing). An unnamed workspace is recreated as a fresh
 workspace. Only given pane, tab and workspace names are written; display
-labels are never saved as names. Close named tabs that would conflict
-before replay: `fux str dev workspace dump > dev.fux; fux --file dev.fux`. Each
+labels are never saved as names. A replay first checks every name it
+gives: one this server already has is refused (`name_taken`, naming what
+has it) before anything is made; a workspace of its name is joined. Close
+or rename what would conflict before replay:
+`fux str dev workspace dump > dev.fux; fux --file dev.fux`. Each
 tab is made at the size it has (`size`), which a server with no client
 needs; one that fits clients' screens fits them again after
 (`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
