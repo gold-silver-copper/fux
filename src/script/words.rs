@@ -342,7 +342,7 @@ words! {
         Changing Percent "percent" "n -- size" raises(Type Range) "n percent of the tab, for resize-pane" "fux %3 30 percent str horizontal resize-pane" [];
         Changing Arrange "arrange" "tab revision tree --" raises(Type Range asks) "replace the whole layout at a run-qualified structural revision" "fux @2 str REVISION list %3 end arrange" [];
         Changing MoveBorder "move-border" "pane way cells --" raises(Type Range asks) "move the pane's nearest border: left right up down" "fux %3 str left 5 move-border" [];
-        Changing Move "move" "pane where --" raises(Type asks) "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down" "fux %3 str new-tab move" [];
+        Changing Move "move" "subject where --" raises(Type asks) "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down; or a workspace into another, after what it holds, or to the top with all" "fux str agent1 workspace str proj workspace move" [];
         Changing SwapWith "swap-with" "pane counterpart --" raises(Type asks) "swap a pane with another pane or its neighbour: left right up down" "fux %3 %4 swap-with" [];
         Changing Reorder "reorder" "handle way --" raises(Type asks) "move one place: next or previous" "fux @2 str next reorder" [];
         Changing HistoryBudget "history-budget" "pane integer --" raises(Type Range asks) "change this pane's history budget in bytes; lowering evicts old rows" "fux %3 4194304 history-budget" [];
@@ -358,7 +358,7 @@ words! {
         Config AttachDefaults "attach-defaults" "attachable --" raises(Type Unused Config NotConfig) "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
         Config Set "set" "setting new --" raises(Type Config NotConfig) "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Reading Version "version" "pane-or-seen -- string" raises(Type asks) "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
-        Shell Args "args" "-- list" raises(NotHere) "the strings after fux --file FILE (none for any other program)" "fux args len" [];
+        Shell Args "args" "-- list" raises() "the strings after fux --file FILE (none for any other program)" "fux args len" [];
         Shell Input "input" "-- string" raises(Read NotHere) "the rest of stdin, as UTF-8 text; not when the program came from stdin" "ls | fux input lines len" [];
         Shell ReadFile "read-file" "path -- string" raises(Type Read NotHere) "a file's text, as UTF-8" "fux str notes.txt read-file lines len" [];
         Shell Getenv "getenv" "name -- string" raises(Type UnsetVar NotHere) "an environment variable's value; one not set fails unset_var" "fux str HOME getenv" [];
@@ -385,7 +385,7 @@ words! {
         Starting Arg "arg" "x text -- x" raises(Type Unused Usage) "an argument for the program" "fux opts str agent in 80 24 size str ./app program str -v arg new-tab";
         Starting Axis "axis" "x way -- x" raises(Type Unused) "horizontal (side by side) or vertical (stacked); split requires it" "fux %3 str horizontal axis split";
         Starting Shares "shares" "x n n -- x" raises(Type Unused Range) "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 str horizontal axis 2 1 shares split";
-        Starting In "in" "x workspace -- x" raises(Type Unused) "the workspace for new-tab, attach or attach-defaults; new-tab creates a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
+        Starting In "in" "x workspace -- x" raises(Type Unused) "the workspace for new-tab, attach or attach-defaults; again, one in the one before, for new-tab: it makes each from the first not there (a missing name, or a fresh unnamed one with str new-workspace in), the first at the top" "fux opts str proj in str agent1 in 80 24 size new-tab";
         Starting Watch "watch" "x -- x" raises(Type Unused) "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" raises(Type Unused) "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
         Waiting Changed "changed" "seen -- changed-request" raises(Type Unused) "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
@@ -914,7 +914,7 @@ fn modify(
     };
     if !matches!(
         opt,
-        Opt::Arg | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes
+        Opt::Arg | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes | Opt::In
     ) && built.given.iter().any(|given| given.slot() == opt.slot())
     {
         return Err(fail(
@@ -928,7 +928,7 @@ fn modify(
         Opt::Expect => built.on = Some(On::Seen(version(&next()?)?)),
         Opt::Name => built.name = Some(string(&next()?)?),
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
-        Opt::In => built.place = Some(workspace(&next()?)?),
+        Opt::In => built.place.push(workspace(&next()?)?),
         Opt::HistoryBytes => {
             built.history_bytes = Some(read::<HistoryBytes>(&next()?, Raise::Range)?);
         }
@@ -1099,18 +1099,21 @@ fn attach_options(
     use fux_wire::command::AttachTarget as T;
     let built = owned(modifying(value)?);
     unused(word, &built)?;
-    let target = match (&built.on, &built.place) {
-        (None, place) => place.clone().map(T::Workspace),
-        (Some(On::Target(target)), None) => Some(match target {
+    let target = match (&built.on, built.place.as_slice()) {
+        (_, [_, _, ..]) => {
+            return Err(fail(Raise::BadValue, "attach takes one workspace in"));
+        }
+        (None, place) => place.first().cloned().map(T::Workspace),
+        (Some(On::Target(target)), []) => Some(match target {
             AnyRef::Workspace(ws) => T::Workspace(WsRef::Id(*ws)),
             AnyRef::Tab(tab) => T::Tab(*tab),
             AnyRef::Pane(pane) => T::Pane(*pane),
         }),
-        (Some(On::Version(version)), None) => Some(T::Pane(version.pane)),
-        (Some(_), Some(_)) => {
+        (Some(On::Version(version)), []) => Some(T::Pane(version.pane)),
+        (Some(_), [_]) => {
             return Err(fail(Raise::BadValue, "attach takes no in with a subject"));
         }
-        (Some(_), None) => {
+        (Some(_), []) => {
             return Err(fail(
                 Raise::Type,
                 "attach needs a workspace, tab, pane or opts",
@@ -1846,8 +1849,14 @@ impl Host<'_> {
                 })
             }
             Act::Move => {
-                let target = pane(&next()?)?;
+                let subject = next()?;
+                let target = if let Value::App(Fux::Workspace(w, _)) = subject {
+                    AnyRef::Workspace(w)
+                } else {
+                    AnyRef::Pane(pane(&subject)?)
+                };
                 let to = match next()? {
+                    Value::App(Fux::All) => MoveTo::Top,
                     Value::App(Fux::Tab(t, _)) => MoveTo::Tab(t),
                     Value::App(Fux::Workspace(w, _)) => MoveTo::Workspace(WsRef::Id(w)),
                     Value::Str(s) if **s == *"new-tab" => MoveTo::NewTab,
@@ -1870,12 +1879,12 @@ impl Host<'_> {
                     | Value::Failure(_)
                     | Value::Addr(_)) => {
                         return Err(wrong(
-                            "a tab, workspace, new-tab, new-workspace or direction",
+                            "a tab, workspace, all, new-tab, new-workspace or direction",
                             &value,
                         ));
                     }
                 };
-                tell(Command::MovePane { target, to })
+                tell(Command::Move { target, to })
             }
             Act::SwapWith => {
                 let target = pane(&next()?)?;

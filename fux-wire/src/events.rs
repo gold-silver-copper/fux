@@ -70,6 +70,8 @@ wire! {
         pub pane: Option<PaneId>,
         pub tab: Option<TabId>,
         pub workspace: Option<WsId>,
+        /// A workspace's event: the workspace it is in, none at the top.
+        pub parent: Option<WsId>,
         pub client: Option<ClientId>,
         pub moved_from: Option<(WsId, TabId)>,
         pub origin: Actor,

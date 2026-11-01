@@ -210,18 +210,38 @@ timeout 2 fux str shell pane str 'never shown' 600 shows || [ $? -eq 124 ]
 fux opts str work in 80 24 size str timeout program str 2 arg str sleep arg str 600 arg new-tab 60 until-ended str exited get
 ```
 
+## A project with agent workspaces
+
+A workspace holds tabs and workspaces. `in` again names a workspace in the
+one before, made if it is not there, so each agent of a project gets a
+workspace of its own under it, and the bar shows the path, `work › agent1`.
+A word on the project covers the workspaces in it: its `events`, `panes`,
+`dump` and `kill` take in its agents, so a finished agent closes with one
+`kill`, and `move` puts a workspace in another, or with `all` at the top.
+
+```sh
+fux opts str work in str agent1 in 80 24 size str sh program new-tab > /dev/null
+fux opts str work in str agent2 in 80 24 size str sh program new-tab > /dev/null
+fux str work workspace panes len
+fux str agent2 workspace str parent get str name get
+fux str agent2 workspace kill
+```
+
 ## Save and restore a layout
 
 `dump` prints a fuxth program that makes the layout and its programs
 again (never what the processes held); `fux --file` runs it, here on a
-fresh server.
+fresh server, its workspaces in the workspace its first argument names
+(made if it is not there), else at the top. Saving, cloning and moving a
+project are that one mechanism.
 
 ```sh
 fux str work workspace dump > work.fux
 (
   export FUX_SOCKET="$PWD/copy/fux.sock"
   fux start
-  fux --file work.fux
+  fux --file work.fux home
+  fux str work workspace str parent get str name get
   kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
 )
 ```

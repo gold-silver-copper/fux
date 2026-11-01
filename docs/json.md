@@ -68,8 +68,10 @@ reported as lost. `ls` still returns a record, so `ls json` works.
 
 Every scope has the same envelope: `run`, `cursor`, `scope`, `projection`,
 `workspaces`, `tabs`, `panes`, and `clients`. The four collections are flat,
-in hierarchy order. Workspace `tabs` is an ordered list of tab handles;
-a tab's `workspace` and a pane's `tab` identify their parents. IDs in fuxth
+in hierarchy order: each workspace before the workspaces in it, and the tabs
+in the order they are shown. A workspace's `children` is an ordered list of
+its tab and workspace handles; a workspace's `parent`, a tab's `workspace`
+and a pane's `tab` identify their parents. IDs in fuxth
 are actual handles carrying this server run. JSON renders them as strings.
 An ordinary string that looks like `%3` remains a string.
 
@@ -93,8 +95,9 @@ Unsigned numbers above i64 fail `range`. There is no float or string-to-ID
 conversion. `X str FIELD get` on a live handle and `panes`/`tabs` remain native
 selective reads. `get id` and container membership return typed handles.
 
-Each workspace has `id`, `name`, `label`, and `tabs`. Its `tabs` is always the
-full ordered membership, including in a tab- or pane-scoped snapshot, whose
+Each workspace has `id`, `parent` (the workspace it is in, null at the top),
+`name`, `label`, and `children`, its tabs and workspaces. Its `children` is
+always the full ordered membership, including in a tab- or pane-scoped snapshot, whose
 `tabs` facts collection contains only the selected tab. Each tab fact has
 `id`, `workspace`, `name`, `label`, `fit` (`fixed` or `clients`), `cols`,
 `rows`, `nodes`, `layout_revision`, `host`, and `zoomed`: the pane that fills
@@ -127,8 +130,8 @@ Each client has `id`, `kind` (`terminal` or `headless`), `read_only`, physical
 `rows`/`cols`, `pane_rows`/`pane_cols`, optional `workspace`/`tab`/`pane`,
 `opening` (null without an open screen), and `mode`.
 
-All includes every root and view. Workspace includes its descendants and
-views showing it; tab includes its whole tab and parent workspace reference.
+All includes every root and view. Workspace includes its descendants, the
+workspaces in it at any depth with theirs, and views showing any of them; tab includes its whole tab and parent workspace reference.
 Pane facts includes only that pane's facts, with its tab topology and relevant
 views; pane topology/recipe includes its whole tab. Client includes that
 client and its current workspace closure. Missing explicit scopes fail.
@@ -365,8 +368,9 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `renamed` | `name` |
 | `closed` | closure invalidates membership/layout and repaired views |
 | `reordered` | changed tab/workspace order |
+| (any of these four, and `moved`, on a workspace) | `parent`: the workspace it is in, null at the top; a workspace's events reach the scopes of the workspaces holding it, and a move's those of the one it left |
 | `laid_out` | tab/workspace; same-tab swap, reshaping, a guarded `arrange`, fit or effective host changed; pane resizes can follow |
-| `moved` | `from_tab`, `from_workspace`; both old and new scopes receive it |
+| `moved` | a pane: `from_tab`, `from_workspace`; a workspace: its new `parent`; both old and new scopes receive it |
 | `attached`, `detached` | `client` and its last place if known |
 | `shown` | `client` and its place, each time it changes at any level (workspace, tab, focused pane, or a zoom of its tab): one at the place left, one at the place reached; includes automatic repair after a close |
 | `zoomed` | tab/workspace and its zoomed `pane`, null when it no longer has one: by `zoom`, a focus on another pane there, or the pane leaving |
@@ -456,8 +460,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":65,
- "server_release":"0.36.0","server_protocol":65,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":66,
+ "server_release":"0.36.0","server_protocol":66,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

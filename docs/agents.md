@@ -8,7 +8,7 @@ Words run left to right. `str WORD` pushes text; %2 is a pane, @2 a tab,
 +1 a workspace. Options precede the action. Remaining values print, a
 value a line (a list an item a line, a list in it as JSON).
 Outside fux, give new tabs a workspace and a size: `opts str agent in
-80 24 size`.
+80 24 size`. `in` again nests: `opts str proj in str agent1 in 80 24 size`.
 
 **Launch and wait for a prompt.** Run with `timeout 30 fux -` and this
 program on stdin; a banner alone is not the prompt:
@@ -38,8 +38,8 @@ str 42 5 shows let seen
 seen string print seen version print
 ```
 
-**Cleanup:** `fux str agent workspace kill` closes only that workspace on
-your private socket. Stop any subscriber or server you start by its PID.
+**Cleanup:** `fux str agent workspace kill` closes only that workspace,
+and the workspaces in it, on your private socket. Stop any subscriber or server you start by its PID.
 
 `shows` checks text presence; old text and input echo can match. Use a
 reply-only result (42 is absent from 6*7), shell end marks, or a TUI-specific
@@ -371,8 +371,9 @@ the next, `links` the hyperlinks (OSC 8) as `row`, `col`, `len` and `uri`,
 `start..end` ranges from 0, like `slice`; equal endpoints select nothing.
 A joined row range includes each whole logical line it touches; `wrapped`
 selects physical rows only.
-Every pane of a tab, a workspace or `all`, in layout order: `str agent
-workspace panes each capture print end`; `tabs` gives its tabs the same way.
+Every pane of a tab, a workspace (with the workspaces in it) or `all`, in
+layout order: `str agent workspace panes each capture print end`; `tabs`
+gives its tabs the same way.
 
 ## shells: Shells and their marks
 

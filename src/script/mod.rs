@@ -173,7 +173,8 @@ pub struct Opts {
     pub axis: Option<Axis>,
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
-    pub place: Option<WsRef>,
+    /// The workspaces `in` names, each in the one before.
+    pub place: Vec<WsRef>,
     pub kill: bool,
     /// Attaching only to watch (`watch`).
     pub watch: bool,
@@ -1703,8 +1704,12 @@ impl Asks for ConfigOnly {
 }
 
 /// A program that may not do what the client does itself: a config's or a
-/// key's.
+/// key's. No file gave it arguments: `args` is none, as for any program
+/// but a file's.
 fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
+    if let Local::Shell(Shell::Args) = what {
+        return Ok(vec![Value::List(Rc::new(fuxth::List::new(Vec::new())))]);
+    }
     let why = match what {
         Local::Open(_) => "a client's screen opens from its own keys or prompt",
         Local::Attach { .. } | Local::Start | Local::Status | Local::Shell(_) => {
@@ -2990,7 +2995,7 @@ pub(crate) mod tests {
 
     #[test]
     fn only_the_command_line_asks_its_process() -> Result<(), super::Failed> {
-        let words = ["args", "input", "str x read-file", "str x warn", "0 exit"];
+        let words = ["input", "str x read-file", "str x warn", "0 exit"];
         for code in words {
             let ran = super::run_quiet(&super::token::source("config", code)?, None, false);
             assert_eq!(

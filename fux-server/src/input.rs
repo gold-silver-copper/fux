@@ -355,7 +355,7 @@ mod tests {
 
     /// How many tabs the first workspace has.
     fn tabs(s: &Session) -> Option<usize> {
-        s.parts.workspaces().first().map(|w| w.tabs().len())
+        s.parts.workspaces().first().map(|w| w.tabs().count())
     }
 
     /// The prefix, then `keys`.
@@ -992,7 +992,6 @@ mod tests {
         let order: Vec<String> = (s.parts.workspaces().first())
             .map(|w| {
                 w.tabs()
-                    .iter()
                     .map(|t| crate::workspace::Child::id(t).to_string())
                     .collect()
             })
@@ -1102,14 +1101,15 @@ mod tests {
     }
 
     /// A session with room for every command to act: two workspaces, the
-    /// first with two tabs, its first with three panes, 1 | (2 / 3), the
-    /// client on %2.
+    /// first with two tabs and a workspace, its first tab with three panes,
+    /// 1 | (2 / 3), the client on %2.
     fn busy() -> Result<(Session, ClientId), String> {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str %2 pane str vertical axis split")?;
         run(&mut s, NEW_TAB)?;
         run(&mut s, "opts str new-workspace in 80 24 size new-tab")?;
+        run(&mut s, "opts +1 in str new-workspace in 80 24 size new-tab")?;
         run(&mut s, "str c1 client str %2 pane show")?;
         Ok((s, c))
     }
@@ -1131,6 +1131,40 @@ mod tests {
             notice(s, c),
             screen(s, c)
         ))
+    }
+
+    /// With one workspace at the top, the keys into a workspace in it and
+    /// out again come back where they started: out shows what the holding
+    /// workspace showed before.
+    #[test]
+    fn into_a_workspace_and_out_again_is_a_round_trip() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "opts +1 in str agent1 in 80 24 size new-tab")?;
+        let at = |s: &Session| s.place(c).map(|p| (p.ws, p.tab));
+        let start = at(&s);
+        s.input(c, &prefixed("wj"));
+        let agent1 = (fux_wire::id::WsId::of(2), fux_wire::id::TabId::of(2));
+        assert_eq!(at(&s), Some(agent1));
+        s.input(c, &prefixed("wk"));
+        assert_eq!(at(&s), start);
+        Ok(())
+    }
+
+    /// Out of a workspace at the top has nowhere to go: refused, the client
+    /// where it was, though it showed another top workspace before.
+    #[test]
+    fn out_of_a_workspace_at_the_top_is_refused() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "opts str proj in 80 24 size new-tab")?;
+        run(
+            &mut s,
+            "str c1 client str proj workspace show str c1 client %1 show",
+        )?;
+        let start = s.place(c).map(|p| (p.ws, p.tab));
+        s.input(c, &prefixed("wk"));
+        assert_eq!(s.place(c).map(|p| (p.ws, p.tab)), start);
+        assert!(notice(&s, c).contains("none holds it"), "{}", notice(&s, c));
+        Ok(())
     }
 
     /// Typing a default binding's keys does what running its program as the
@@ -1167,13 +1201,14 @@ mod tests {
             assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
         }
         // Refused as the session stands: no pane that way, nothing before
-        // the first tab or workspace, nothing but a shell to signal, and no
-        // readable nearby cwd in these processless panes.
+        // the first tab or workspace, none holding the first workspace,
+        // nothing but a shell to signal, and no readable nearby cwd in
+        // these processless panes.
         refused.sort();
         assert_eq!(
             refused,
             [
-                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wmh", "wn"
+                "ak", "c", "k", "l", "mk", "ml", "s", "tmh", "tn", "v", "wk", "wmh", "wn"
             ]
         );
         Ok(())
