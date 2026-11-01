@@ -326,14 +326,26 @@ impl Terminal {
 }
 
 impl Terminal {
-    /// Its status once it ends, within 10 seconds.
+    /// Its status once it ends, within 10 seconds. What it writes is read
+    /// meanwhile: macOS has a program's exit wait until its terminal's
+    /// output is read.
     fn ended(&mut self) -> Result<std::process::ExitStatus, String> {
         let deadline = after(Duration::from_secs(10));
         loop {
-            match self.child.try_wait().map_err(e)? {
-                Some(status) => return Ok(status),
-                None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-                None => return Err("it never ended".to_owned()),
+            if let Some(status) = self.child.try_wait().map_err(e)? {
+                return Ok(status);
+            }
+            if Instant::now() > deadline {
+                return Err(format!("it never ended: {:?}", self.seen));
+            }
+            let mut fds = [PollFd::new(&self.master, Events::IN)];
+            if poll(&mut fds, Some(Duration::from_millis(20))).map_err(e)? > 0 {
+                let mut buffer = [0; 4096];
+                // Ended, its terminal reads as closed.
+                if let Ok(n) = fuxix::io::read(&self.master, &mut buffer) {
+                    self.seen
+                        .push_str(&text(buffer.get(..n).unwrap_or_default()));
+                }
             }
         }
     }
