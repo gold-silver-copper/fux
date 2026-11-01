@@ -1,9 +1,9 @@
-str C-b prefix
 
 # fux's default keys: a config like yours, run before it. Your config may
-# rebind or unbind any of them, or start from none with `unbind-all`, and
-# change the prefix they follow with `prefix`. The column lists groups in
-# the order they first appear here, `Other` last.
+# rebind or unbind any of them, or start from none with `unbind-all`. Every
+# key here is in the map `C-b`, the prefix, holds; `str C-b str C-a
+# move-keys` moves them all to `C-a`. The column lists groups in the order
+# they first appear here, `Other` last.
 
 # -- client pane : the client whose key runs this, and the pane it focuses
 define me-focused me me focused end
@@ -12,64 +12,67 @@ define outer workspace dup str parent get kind str null eq if str 'none holds it
 # handle -- workspace : the first workspace in the handle's, a level in
 define inner workspace str children get let kids list kids each dup kind str workspace eq if else drop then end end dup len 0 eq if str 'none is in it' fail then first end
 
-str v code me focused str horizontal axis split drop end bind  str 'split side by side' label  str Panes group
-str s code me focused str vertical axis split drop end bind  str 'split stacked' label  str Panes group
-str x code me-focused confirm-close end bind  str 'close pane' label  str Panes group
-str z code me focused zoom end bind  str 'zoom or restore' label  str Panes group
-str c code me edit-history end bind  str 'history in the editor' label  str Panes group
+str 'C-b v' code me focused str horizontal axis split drop end bind  str 'split side by side' label  str Panes group
+str 'C-b s' code me focused str vertical axis split drop end bind  str 'split stacked' label  str Panes group
+str 'C-b x' code me-focused confirm-close end bind  str 'close pane' label  str Panes group
+str 'C-b z' code me focused zoom end bind  str 'zoom or restore' label  str Panes group
+str 'C-b c' code me edit-history end bind  str 'history in the editor' label  str Panes group
 
-str h code me-focused str left step end bind  str 'focus left' label  str Focus group
-str j code me-focused str down step end bind  str 'focus down' label  str Focus group
-str k code me-focused str up step end bind  str 'focus up' label  str Focus group
-str l code me-focused str right step end bind  str 'focus right' label  str Focus group
-str o code me-focused str next step end bind  str 'next pane' label  str Focus group
-str q code me-focused str last step end bind  str 'last pane' label  str Focus group
+str 'C-b h' code me-focused str left step end bind  str 'focus left' label  str Focus group
+str 'C-b j' code me-focused str down step end bind  str 'focus down' label  str Focus group
+str 'C-b k' code me-focused str up step end bind  str 'focus up' label  str Focus group
+str 'C-b l' code me-focused str right step end bind  str 'focus right' label  str Focus group
+str 'C-b o' code me-focused str next step end bind  str 'next pane' label  str Focus group
+str 'C-b q' code me-focused str last step end bind  str 'last pane' label  str Focus group
 
-str n code me-focused tab str next step end bind  str 'next tab' label  str Tabs group
-str b code me-focused tab str previous step end bind  str 'previous tab' label  str Tabs group
-str 't n' code opts new-tab drop end bind  str 'new tab' label  str Tabs group
-str 't h' code me-focused tab str previous step end bind  str 'previous tab' label  str Tabs group
-str 't l' code me-focused tab str next step end bind  str 'next tab' label  str Tabs group
-str 't g' code me-focused tab choose-among end bind  str 'choose a tab' label  str Tabs group
-str 't r' code me-focused tab rename-prompt end bind  str 'rename tab' label  str Tabs group
-str 't x' code me-focused tab confirm-close end bind  str 'close tab' label  str Tabs group
-str 't m h' code me focused tab str previous reorder end bind  str 'move tab earlier' label  str Reorder group  repeat
-str 't m l' code me focused tab str next reorder end bind  str 'move tab later' label  str Reorder group  repeat
+str 'C-b n' code me-focused tab str next step end bind  str 'next tab' label  str Tabs group
+str 'C-b b' code me-focused tab str previous step end bind  str 'previous tab' label  str Tabs group
+str 'C-b t n' code opts new-tab drop end bind  str 'new tab' label  str Tabs group
+str 'C-b t h' code me-focused tab str previous step end bind  str 'previous tab' label  str Tabs group
+str 'C-b t l' code me-focused tab str next step end bind  str 'next tab' label  str Tabs group
+str 'C-b t g' code me-focused tab choose-among end bind  str 'choose a tab' label  str Tabs group
+str 'C-b t r' code me-focused tab rename-prompt end bind  str 'rename tab' label  str Tabs group
+str 'C-b t x' code me-focused tab confirm-close end bind  str 'close tab' label  str Tabs group
+str 'C-b t m h' code me focused tab str previous reorder end bind  str 'move tab earlier' label  str Reorder group
+str 'C-b t m l' code me focused tab str next reorder end bind  str 'move tab later' label  str Reorder group
 
-str 'w n' code opts str new-workspace in new-tab drop end bind  str 'new workspace' label  str Workspaces group
-str 'w h' code me-focused workspace str previous step end bind  str 'previous workspace' label  str Workspaces group
-str 'w l' code me-focused workspace str next step end bind  str 'next workspace' label  str Workspaces group
-str 'w j' code me-focused inner show end bind  str 'into a workspace in it' label  str Workspaces group
-str 'w k' code me-focused outer end bind  str 'out of the workspace' label  str Workspaces group
-str 'w g' code me-focused workspace choose-among end bind  str 'choose a workspace' label  str Workspaces group
-str 'w r' code me-focused workspace rename-prompt end bind  str 'rename workspace' label  str Workspaces group
-str 'w x' code me-focused workspace confirm-close end bind  str 'close workspace' label  str Workspaces group
-str 'w m h' code me focused workspace str previous reorder end bind  str 'move workspace earlier' label  str Reorder group  repeat
-str 'w m l' code me focused workspace str next reorder end bind  str 'move workspace later' label  str Reorder group  repeat
+str 'C-b w n' code opts str new-workspace in new-tab drop end bind  str 'new workspace' label  str Workspaces group
+str 'C-b w h' code me-focused workspace str previous step end bind  str 'previous workspace' label  str Workspaces group
+str 'C-b w l' code me-focused workspace str next step end bind  str 'next workspace' label  str Workspaces group
+str 'C-b w j' code me-focused inner show end bind  str 'into a workspace in it' label  str Workspaces group
+str 'C-b w k' code me-focused outer end bind  str 'out of the workspace' label  str Workspaces group
+str 'C-b w g' code me-focused workspace choose-among end bind  str 'choose a workspace' label  str Workspaces group
+str 'C-b w r' code me-focused workspace rename-prompt end bind  str 'rename workspace' label  str Workspaces group
+str 'C-b w x' code me-focused workspace confirm-close end bind  str 'close workspace' label  str Workspaces group
+str 'C-b w m h' code me focused workspace str previous reorder end bind  str 'move workspace earlier' label  str Reorder group
+str 'C-b w m l' code me focused workspace str next reorder end bind  str 'move workspace later' label  str Reorder group
 
-str e code me command-prompt end bind  str 'command prompt' label  str Session group
-str d code me detach end bind  str detach label  str Session group
+str 'C-b e' code me command-prompt end bind  str 'command prompt' label  str Session group
+str 'C-b d' code me detach end bind  str detach label  str Session group
 
-str 'r h' code me focused str left 1 move-border end bind  str 'shrink or grow left' label  str Resize group  repeat
-str 'r j' code me focused str down 1 move-border end bind  str 'shrink or grow down' label  str Resize group  repeat
-str 'r k' code me focused str up 1 move-border end bind  str 'shrink or grow up' label  str Resize group  repeat
-str 'r l' code me focused str right 1 move-border end bind  str 'shrink or grow right' label  str Resize group  repeat
+str 'C-b r h' code me focused str left 1 move-border end bind  str 'shrink or grow left' label  str Resize group
+str 'C-b r j' code me focused str down 1 move-border end bind  str 'shrink or grow down' label  str Resize group
+str 'C-b r k' code me focused str up 1 move-border end bind  str 'shrink or grow up' label  str Resize group
+str 'C-b r l' code me focused str right 1 move-border end bind  str 'shrink or grow right' label  str Resize group
 
-str 'a r' code me-focused rename-prompt end bind  str 'rename pane' label  str 'Pane actions' group
-str 'a x' code me-focused confirm-close end bind  str 'close pane' label  str 'Pane actions' group
-str 'a k' code me focused str TERM signal drop end bind  str 'terminate the running command' label  str 'Pane actions' group
-str 'a s' code me-focused choose-pane end bind  str 'swap with…' label  str 'Pane actions' group
-str 'a t' code me-focused dup tab choose-move end bind  str 'move to tab…' label  str 'Pane actions' group
-str 'a n' code me focused str new-tab move end bind  str 'move to a new tab' label  str 'Pane actions' group
-str 'a w' code me-focused dup workspace choose-move end bind  str 'move to workspace…' label  str 'Pane actions' group
-str 'a W' code me focused str new-workspace move end bind  str 'move to a new workspace' label  str 'Pane actions' group
-str 'a m h' code me focused str previous reorder end bind  str 'move pane earlier' label  str Reorder group  repeat
-str 'a m l' code me focused str next reorder end bind  str 'move pane later' label  str Reorder group  repeat
+str 'C-b a r' code me-focused rename-prompt end bind  str 'rename pane' label  str 'Pane actions' group
+str 'C-b a x' code me-focused confirm-close end bind  str 'close pane' label  str 'Pane actions' group
+str 'C-b a k' code me focused str TERM signal drop end bind  str 'terminate the running command' label  str 'Pane actions' group
+str 'C-b a s' code me-focused choose-pane end bind  str 'swap with…' label  str 'Pane actions' group
+str 'C-b a t' code me-focused dup tab choose-move end bind  str 'move to tab…' label  str 'Pane actions' group
+str 'C-b a n' code me focused str new-tab move end bind  str 'move to a new tab' label  str 'Pane actions' group
+str 'C-b a w' code me-focused dup workspace choose-move end bind  str 'move to workspace…' label  str 'Pane actions' group
+str 'C-b a W' code me focused str new-workspace move end bind  str 'move to a new workspace' label  str 'Pane actions' group
+str 'C-b a m h' code me focused str previous reorder end bind  str 'move pane earlier' label  str Reorder group
+str 'C-b a m l' code me focused str next reorder end bind  str 'move pane later' label  str Reorder group
 
-str 'm h' code me focused str left move end bind  str 'move left' label  str Move group  repeat
-str 'm j' code me focused str down move end bind  str 'move down' label  str Move group  repeat
-str 'm k' code me focused str up move end bind  str 'move up' label  str Move group  repeat
-str 'm l' code me focused str right move end bind  str 'move right' label  str Move group  repeat
+str 'C-b m h' code me focused str left move end bind  str 'move left' label  str Move group
+str 'C-b m j' code me focused str down move end bind  str 'move down' label  str Move group
+str 'C-b m k' code me focused str up move end bind  str 'move up' label  str Move group
+str 'C-b m l' code me focused str right move end bind  str 'move right' label  str Move group
+
+# These maps repeat: after one of their keys, the next needs no prefix.
+str 'C-b t m' repeat  str 'C-b w m' repeat  str 'C-b r' repeat  str 'C-b a m' repeat  str 'C-b m' repeat
 
 # The keys of fux's own screens: `bind-in` gives a key one of its screen's
 # actions, and `label` names it in the screen's hints, the keys of one

@@ -320,8 +320,11 @@ fux kill-server
 
 Every key below follows the prefix, `C-b` by default, and is a lower-case
 letter but `a W`: case counts, so `C-b T` is not `C-b t`. The keys are your client's:
-each terminal attached has its own prefix and bindings, from its config, and
-the server knows none of them. A key that is not fux's reaches the focused
+each terminal attached has its own keymap, from its config, and the server
+knows none of it. A keymap maps each key to a binding or to another keymap,
+at any depth, as Emacs's prefix maps do: the prefix is a key of the root
+map, the one your client is in while it holds no keys, that holds the map
+of the keys below, and `C-b t` holds the tab keys in that one. A key that is not fux's reaches the focused
 pane as you typed it. So are fux's screens: the command column,
 choosers and prompts belong to your client, which
 switches between them at the key that does it, so a key typed fast is never
@@ -333,12 +336,13 @@ program to finish. Every request stays tied to that attachment and server
 run. This orders input admitted to a pane; it does not wait for the pane's
 program to read it or finish work.
 
-The prefix alone opens the **command column**, listing every binding, and
-those without the prefix last: arrows, PageUp/PageDown and Home/End move,
-Enter runs the selected one, a bound key runs its own, Esc closes; its moves
-by keys that are not letters are the choosers' (`str list … bind-in`). A key you
-bind is yours there, even one the column moves with; Esc always closes. The
-prefix again sends it to the pane.
+A key that holds a map opens the **command column**, headed by the keys
+typed so far and listing that map's keys: arrows, PageUp/PageDown and
+Home/End move, Enter runs the selected one, a bound key runs its own, Esc
+closes; its moves by keys that are not letters are the choosers'
+(`str list … bind-in`). A key you bind is yours there, even one the column
+moves with; Esc always closes. The prefix again, where its map binds it
+not, sends it to the pane.
 
 | Key | Runs | Does |
 | --- | --- | --- |
@@ -354,17 +358,17 @@ prefix again sends it to the pane.
 | `d` | `me detach` | detach this terminal |
 | `r`, then `h` `j` `k` `l` | `me focused str left 1 move-border` … | move a border one cell |
 | `m`, then `h` `j` `k` `l` | `me focused str left move` … | move the pane beside its neighbour |
-| `t`, `w` | tab and workspace layers | below |
+| `t`, `w` | tab and workspace maps | below |
 
-`r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
+`r` and `m` are maps that **repeat**: `h` `j` `k` `l` act again without the
 prefix until Esc or Enter (as `h` and `l` do after `a m`, `t m` and `w m`);
 the prefix ends the mode and opens the column; any other key ends it and
 is dropped, which the bar says.
 
-`a`, `t` and `w` are **layers**. `t` and `w` share their verbs: `n` new,
+`a`, `t` and `w` hold **maps** too. `t` and `w` share their verbs: `n` new,
 `h`/`l` previous and next, `g` choose, `r` rename, `x` close, and `m` then
-`h`/`l` to move it earlier or later, repeating. A layer is bindings like any
-other: `str 'a g' code … end bind` adds one to it, listed in the column beside
+`h`/`l` to move it earlier or later, repeating. A map is bindings like any
+other: `str 'C-b a g' code … end bind` adds one to it, listed in the column beside
 the defaults, and `unbind` takes one away. `f`, `g`, `i`, `u` and `y`
 are free for your own bindings. These keys are themselves a config, run
 before yours, in the words yours uses
@@ -379,7 +383,7 @@ or to the workspace it was shown last, with the tab it was shown there.
 Repeating `last` toggles the two. Showing the same one again or reordering
 it does not change what was last; closing it forgets it. With no last one,
 the step refuses. Detaching discards it all. For example, bind
-`str 't q' code me-focused tab str last step end bind` in your config.
+`str 'C-b t q' code me-focused tab str last step end bind` in your config.
 
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
   or panes. A chooser acts on the item it was opened for, even once
@@ -488,7 +492,7 @@ record (where it came from, its effect and help, and the words that made
 it) and `fux dictionary` every word's, in the order they were defined;
 `fux see NAME` writes what made it, and `fux words` every name.
 
-**Key names**, for `key`, `bind` and `prefix`, are tmux's (`C-x`, `M-x`,
+**Key names**, for `key`, `bind` and `move-keys`, are tmux's (`C-x`, `M-x`,
 `S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F35`, …) and any
 single character, which carries its own shift (`T` or `S-t`); common
 spellings (`Backspace`, `Esc`, `Return`, `Del`, `Ins`, `PgUp`, `PgDn`) are
@@ -613,7 +617,7 @@ controls do not load them. Bundled
 `client-defaults.fux` reads this client's `$SHELL` once and chooses `/bin/sh`
 for an unset or empty value. A non-text value is reported and falls back as
 that library specifies. Bundled `keys.fux` supplies `C-b`; there is no native
-prefix fallback. Key words such as `prefix`, `bind`, `unbind`, `label`,
+prefix fallback. Key words such as `bind`, `move-keys`, `unbind`, `label`,
 `group` and `repeat` refuse the CLI: use a config or an attached prompt.
 In action programs, pending client state commits before the next server or
 screen operation. A failed commit leaves earlier commits intact. Launches
@@ -621,18 +625,19 @@ carry their own completed creation policy; setters send nothing.
 
 ```sh
 # ~/.config/fux/config.fux
-str C-a prefix
+str C-b str C-a move-keys                         # the prefix, and every key after it, on C-a
 str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
 str terminal-clipboard false set
 
 unbind-all                                        # optional: no keys at all, the screens' too
 define split-right me focused str horizontal axis split drop end   # a word of the config's
-str v code split-right end bind
-str 't n' code opts new-tab drop end bind         # t is a layer: C-b t n
-str 'r l' code me focused str right 1 move-border end bind  repeat   # C-b r l l l, then Esc
-str g code me focused str vertical axis str lazygit program split drop end bind
+str 'C-a v' code split-right end bind
+str 'C-a t n' code opts new-tab drop end bind     # C-a and t hold maps: C-a t n
+str 'C-a r l' code me focused str right 1 move-border end bind
+str 'C-a r' repeat                                # C-a r l l l, then Esc
+str 'C-a g' code me focused str vertical axis str lazygit program split drop end bind
   str 'lazygit' label  str Tools group            # what the column shows, and under which heading
-str M-h code me-focused str left step end bind-root   # no prefix: Alt-h alone
+str M-h code me-focused str left step end bind    # in the root map: Alt-h alone
 ```
 
 `fux help set` lists the settings: what each takes and where its bundled
@@ -643,13 +648,20 @@ and again, from its words, each time its keys are typed, fresh, as your
 client (`me`); a string is refused. A binding uses the config's
 definitions made before it, as any code does, and the command prompt any
 of them; not its `let` names (a definition that reads one is refused
-there, with that reason). `bind` takes the keys after the prefix,
-space-separated (`str 't n'` makes `t` a layer); `bind-root` one key, with
-no prefix, which then never reaches any program: bind chords or function
-keys rather than letters. A key sequence is a binding or a layer, never
-both. Esc after the prefix always closes the column. `label`, `group` and
-`repeat` change the binding just made; the column lists groups in the order
-their keys were first bound, `Other` last (a key bound again keeps its place).
+there, with that reason). `bind` takes keys from the root map,
+space-separated: each but the last holds a map, made as needed
+(`str 'C-b t n'`). One key alone binds it in the root map, where it then
+never reaches any program: bind chords or function keys rather than
+letters. A key is a binding or a map, never both, and unbinding a map's
+last key unbinds the map. Esc in a map always closes the column.
+`move-keys` moves what keys run or hold to other keys (`str C-b str C-a
+move-keys` moves the prefix, with every key after it). `label` and `group`
+change the binding just made, and `repeat` makes the map its keys hold
+repeat; the column lists groups in the order their keys were first bound,
+`Other` last (a key bound again keeps its place). Another program reads a
+client's keys as data, from that client: `str c1 client keys` gives the
+keys it binds and the map it is in now, `str c1 client preferences` each
+preference's name, value and type (`docs/json.md`).
 
 The default keys are a config like yours, run before it, so anything one
 binding does, yours may: rebind a key, `unbind` it, or start from none
@@ -786,7 +798,7 @@ retry. A config that requires it, relative to itself, can bind one:
 
 ```fux
 require layouts.fux
-str 'a =' code me focused tab even-h end bind str 'panes side by side' label
+str 'C-b a =' code me focused tab even-h end bind str 'panes side by side' label
 ```
 
 A dump makes the layouts and launches again: each shell starts afresh in

@@ -1732,7 +1732,7 @@ fn list_panel(grid: &mut Grid, view: &View, list: &List) {
     surface(grid, view, &lines);
 }
 
-/// The command column: the bindings and layers of its layer, grouped, the
+/// The command column: the bindings and maps of its map, grouped, the
 /// selected one highlighted and those that cannot run now dimmed.
 fn column(grid: &mut Grid, view: &View, column: &fux_wire::act::Column) {
     let panel = view.presentation.styles.panel.attributes();
@@ -1746,12 +1746,12 @@ fn column(grid: &mut Grid, view: &View, column: &fux_wire::act::Column) {
     let mut heading = None;
     let mut selected_row = 0usize;
     for (index, entry) in column.entries.iter().enumerate() {
-        let group = (entry.root, entry.group.as_str());
+        let group = entry.group.as_str();
         if heading != Some(group) {
-            entries.push((group.1.into(), panel.with_bold(true)));
+            entries.push((group.into(), panel.with_bold(true)));
             heading = Some(group);
         }
-        let more = if entry.layer { "…" } else { "" };
+        let more = if entry.map { "…" } else { "" };
         let key = entry.key.to_string();
         let pad = usize::from(key_width.saturating_sub(width(&key)));
         let mut attrs = panel;
@@ -1767,7 +1767,7 @@ fn column(grid: &mut Grid, view: &View, column: &fux_wire::act::Column) {
     let body_room = panel_room(view.rows, usize::from(heading));
     let mut lines: Vec<Line<'_>> = Vec::new();
     if heading {
-        lines.push((column.title.as_str().into(), panel.with_bold(true)));
+        lines.push((column.keys.as_str().into(), panel.with_bold(true)));
     }
     windowed(
         &mut lines,
@@ -3069,7 +3069,7 @@ mod tests {
         output_as(
             &mut session,
             Some(client),
-            "str show-column false set str u code me focused str renamed rename end bind repeat",
+            "str show-column false set str 'C-b g u' code me focused str renamed rename end bind str 'C-b g' repeat",
         )?;
         session.input(client, b"\x02");
         let grid = compose(&session, client).ok_or("screen")?;
@@ -3091,7 +3091,7 @@ mod tests {
                 .get(&client)
                 .is_some_and(|v| v.mode.is_normal())
         );
-        session.input(client, b"\x02u");
+        session.input(client, b"\x02gu");
         assert_eq!(
             session
                 .parts

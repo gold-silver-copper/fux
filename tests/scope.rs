@@ -113,7 +113,7 @@ fn a_pipeline_keeps_its_group_when_its_leader_is_gone() -> Outcome {
 #[test]
 fn a_keyboard_worker_cannot_act_as_a_client_of_a_replacement_run() -> Outcome {
     let a = Server::start("")?;
-    let b = Server::start("str F5 code me focused kill end bind-root")?;
+    let b = Server::start("str F5 code me focused kill end bind")?;
     let mut client = b.attach(24, 80)?;
     client.ready()?;
     let id = client.id.as_deref().ok_or("an attached client id")?;

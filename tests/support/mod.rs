@@ -609,6 +609,10 @@ impl Client {
                         .dispatch(job, self.frames)
                         .map_err(e)?;
                 }
+                Dispatch::Answer(asked, value) => {
+                    self.frame(&AttachedFrame::Answer(asked, value))?;
+                    self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                }
             }
         }
         Ok(())
@@ -687,7 +691,8 @@ impl Client {
                 frame @ (ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)
-                | ToAttached::Keys(_)) => {
+                | ToAttached::Keys(_)
+                | ToAttached::Read(..)) => {
                     if let Some(keyboard) = &mut self.keyboard {
                         acts.extend(keyboard.frame(frame));
                     }

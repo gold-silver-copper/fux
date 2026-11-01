@@ -524,6 +524,33 @@ With no server, `status` fails (`no_server`), saying the socket and whether
 a server that stopped left it there. Every server in fux's directory:
 `status json` on each socket there (`fux help servers`).
 
+## A client's `keys` and `preferences`
+
+```json
+{"at":"C-b r","keymap":[{"kind":"map","keys":"C-b","repeat":false},
+ {"kind":"binding","keys":"C-b v","code":"me focused str horizontal axis split drop","label":"split side by side","group":"Panes"},
+ {"kind":"map","keys":"C-b r","repeat":true},
+ {"kind":"binding","keys":"C-b r h","code":"me focused str left 1 move-border","label":"shrink or grow left","group":"Resize"},
+ {"kind":"list","keys":"Enter","action":"choose","code":null,"label":"select"},
+ {"kind":"list","keys":"r","action":null,"code":"rename-prompt","label":"rename"}]}
+[{"name":"reflow","value":true,"type":"true or false"},
+ {"name":"bar","value":["off",["workspace","tabs"],["pane"],false],"type":"[top/bottom/off [left fields] [right fields] tab-numbers?]; …"}]
+```
+
+A client's keys and preferences are its own: the server keeps no copy,
+and relays `CLIENT keys` and `CLIENT preferences` to the client, which
+answers them (a client that detaches first fails `no_client`). `at` is the
+keys it has typed into the map it is in now: `""` at the root, `"C-b"` with
+the column open, `"C-b r"` in the resize repeat mode. `keymap` lists every
+key from the root, depth first, a map before the keys in it, so it is as
+deep as the keymap is: a `map` says whether it `repeat`s, a `binding` gives
+the `code` it runs (its words as written), its `label` and `group`. The
+screens' keys follow, of `kind` `list` or `line`: each its screen's
+`action`, or for a list's `bind-action` key its `code`, and its `label` or
+`null`. `list-keys` prints the same keys as config lines. `preferences`
+lists each preference's `name`, its `value` as `set` takes it, and its
+`type` as `fux help set` says it.
+
 ## `word` and `dictionary`
 
 ```json

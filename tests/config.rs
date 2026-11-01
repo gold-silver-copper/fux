@@ -9,7 +9,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     let server = Server::start("")?;
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
-        "str shell list str /no/such/leaked-shell end set\nstr C-a prefix\n",
+        "str shell list str /no/such/leaked-shell end set\nstr C-b str C-a move-keys\n",
     )
     .map_err(e)?;
     // With the bundled shell, this starts a shell and waits for its
@@ -36,7 +36,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     let stopped = stop_server(std::path::Path::new(socket));
     started?;
     stopped?;
-    assert!(server.ok(&["list-keys"])?.contains("str C-b prefix"));
+    assert!(server.ok(&["list-keys"])?.contains("str 'C-b d' code"));
     for args in [
         &["opts", "watch", "attach"][..],
         &["opts", "80", "10", "size", "attach"],
@@ -82,11 +82,11 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
 #[test]
 fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     let server = Server::start(
-        "str C-a prefix\n\
+        "str C-b str C-a move-keys\n\
          define split-below me focused str vertical axis split drop end\n\
-         str y code split-below end bind\n\
-         str h unbind\n\
-         str g code me focused str horizontal axis str sh program str -c arg str \"echo from-g; exec sh\" arg split drop end bind\n\
+         str 'C-a y' code split-below end bind\n\
+         str 'C-a h' unbind\n\
+         str 'C-a g' code me focused str horizontal axis str sh program str -c arg str \"echo from-g; exec sh\" arg split drop end bind\n\
          str Tools group\n",
     )?;
     let mut client = server.attach(24, 90)?;
@@ -116,7 +116,9 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
             .last()
             .is_some_and(|b| b.contains("C-a h is not bound"))
     })?;
-    client.wait("the column still open", |t| t.contains("Commands"))?;
+    client.wait("the column still open", |t| {
+        t.contains("split side by side")
+    })?;
     // A custom group is a heading in the column, after the built-in ones.
     client.keys("\x1b[F")?;
     client.wait("the Tools group", |t| t.contains("Tools"))?;
@@ -163,7 +165,7 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
         "set",
         "str",
         "Nope",
-        "prefix",
+        "unbind",
     ])?;
     assert_eq!(failed.status, 1);
     // A new shell program applies to new panes.
@@ -217,7 +219,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     assert!(!String::from_utf8_lossy(&b.painted).contains("\x1b]2;"));
     std::fs::write(
         directory.join("shared.fux"),
-        "str C-a prefix str titles true set \
+        "str C-b str C-a move-keys str titles true set \
          opts str missing in attach-defaults \
          define only-in-failed-config 41 end \
          %1 str horizontal axis split drop",
@@ -233,7 +235,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
     terminal.wait_for("a config changes only its own client state")?;
     terminal.type_bytes(b"\x02")?;
-    terminal.wait_for("Commands")?;
+    terminal.wait_for("split side by side")?;
     terminal.type_bytes(b"d")?;
     terminal.wait_exit()?;
     assert_eq!(server.panes()?.len(), 1);
@@ -256,12 +258,12 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
 fn a_bad_config_is_reported() -> Outcome {
     let server = Server::start("")?;
     let config = server.dir.join("config").join("fux").join("config.fux");
-    std::fs::write(&config, "str Nope prefix\n").map_err(e)?;
+    std::fs::write(&config, "str Nope str C-a move-keys\n").map_err(e)?;
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
-    terminal.wait_for("bad_binding: prefix:")?;
+    terminal.wait_for("bad_binding: move-keys:")?;
     // The defaults: C-b opens the column.
     terminal.type_bytes(b"\x02")?;
-    terminal.wait_for("Commands")?;
+    terminal.wait_for("split side by side")?;
     terminal.type_bytes(b"d")?;
     terminal.wait_exit()?;
     // An unknown word is found before anything runs, naming its line.
@@ -274,15 +276,17 @@ fn a_bad_config_is_reported() -> Outcome {
         failed.to_string().contains("config.fux:2: frobnicate"),
         "{failed}"
     );
-    std::fs::write(&config, "str C-a prefix\n").map_err(e)?;
+    std::fs::write(&config, "str C-b str C-a move-keys\n").map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
     // A binding sees the config's definitions made before it, as code
     // compiled there does; one not made yet is said at the binding's line,
     // before the binding is made.
-    let ok = "define sr me focused str horizontal axis split drop end\nstr v code sr end bind\n";
+    let ok =
+        "define sr me focused str horizontal axis split drop end\nstr 'C-b v' code sr end bind\n";
     std::fs::write(&config, ok).map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
-    let text = "str C-a prefix\nstr v code sr end bind\ndefine sr me focused zoom end\n";
+    let text =
+        "str C-b str C-a move-keys\nstr 'C-a v' code sr end bind\ndefine sr me focused zoom end\n";
     std::fs::write(&config, text).map_err(e)?;
     let failed = fux::script::run_file(&config)
         .err()
@@ -305,7 +309,7 @@ fn optional_config_reports_read_failures() -> Outcome {
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
     terminal.wait_for("$")?;
     terminal.type_bytes(b"\x02")?;
-    terminal.wait_for("Commands")?;
+    terminal.wait_for("split side by side")?;
     assert!(!String::from_utf8_lossy(&terminal.output).contains("read:"));
     terminal.type_bytes(b"d")?;
     terminal.wait_exit()?;
@@ -318,14 +322,14 @@ fn optional_config_reports_read_failures() -> Outcome {
             "directory" => std::fs::create_dir(&path).map_err(e)?,
             _ => std::fs::write(&path, [0xff]).map_err(e)?,
         }
-        assert!(server.ok(&["list-keys"])?.contains("prefix"));
+        assert!(server.ok(&["list-keys"])?.contains("'C-b d'"));
         let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
         terminal.wait_for("read:")?;
         if kind == "non-text" {
             terminal.wait_for("not UTF-8")?;
         }
         terminal.type_bytes(b"\x02")?;
-        terminal.wait_for("Commands")?;
+        terminal.wait_for("split side by side")?;
         terminal.type_bytes(b"d")?;
         terminal.wait_exit()?;
         if kind == "directory" {
@@ -366,7 +370,7 @@ fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
 fn the_config_words_examples_run_as_a_config() -> Outcome {
     let server = Server::start("")?;
     let config = server.dir.join("config.fux");
-    for word in ["bind", "bind-root", "prefix"] {
+    for word in ["bind", "move-keys", "repeat"] {
         let explained = server.ok(&["str", word, "explain"])?;
         let example = (explained.lines())
             .find_map(|line| line.split_once("; e.g. "))
@@ -458,26 +462,15 @@ fn launch_defaults_do_not_change_the_server() -> Outcome {
 fn key_words_refuse_the_command_line() -> Outcome {
     let server = Server::start("")?;
     for words in [
-        &["str", "C-a", "prefix"][..],
+        &["str", "C-b", "str", "C-a", "move-keys"][..],
         &["str", "q", "code", "me", "focused", "zoom", "end", "bind"],
-        &[
-            "str",
-            "F5",
-            "code",
-            "me",
-            "focused",
-            "zoom",
-            "end",
-            "bind-root",
-        ],
         &["str", "q", "unbind"],
-        &["str", "F5", "unbind-root"],
         &["unbind-all"],
         &["str", "copy", "str", "g", "str", "top", "bind-in"],
         &["str", "copy", "str", "v", "unbind-in"],
         &["str", "name", "label"],
         &["str", "name", "group"],
-        &["repeat"],
+        &["str", "C-b r", "repeat"],
     ] {
         let result = server.fux(words)?;
         assert_eq!(result.status, 1, "silent CLI key change: {words:?}");
@@ -530,7 +523,7 @@ fn non_text_shell_defaults_report_the_library_fallback() -> Outcome {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert!(String::from_utf8_lossy(&result.stdout).contains("str C-b prefix"));
+    assert!(String::from_utf8_lossy(&result.stdout).contains("str 'C-b d' code"));
     let diagnostic = String::from_utf8_lossy(&result.stderr);
     assert!(diagnostic.contains("SHELL"), "{diagnostic}");
     assert_eq!(diagnostic.lines().count(), 1, "{diagnostic}");
@@ -540,7 +533,7 @@ fn non_text_shell_defaults_report_the_library_fallback() -> Outcome {
 #[test]
 fn explicit_settings_survive_a_failed_attach_config() -> Outcome {
     let server = Server::start("")?;
-    std::fs::write(server.dir.join("config/fux/config.fux"), "str Nope prefix").map_err(e)?;
+    std::fs::write(server.dir.join("config/fux/config.fux"), "str Nope unbind").map_err(e)?;
     let mut terminal = Terminal::attach(
         &server,
         12,
@@ -630,8 +623,7 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
 /// A remote client action commits while its subsequent wait is still pending.
 #[test]
 fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outcome {
-    let server =
-        Server::start("str F5 code str titles true set %1 30 timeout wait drop end bind-root")?;
+    let server = Server::start("str F5 code str titles true set %1 30 timeout wait drop end bind")?;
     let mut a = server.attach(8, 60)?;
     let mut b = server.attach(8, 60)?;
     a.wait_for("$")?;
@@ -702,5 +694,81 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
     ] {
         assert_eq!(server.ok(&["%3", "str", field, "get"])?.trim(), value);
     }
+    Ok(())
+}
+
+/// Another program reads a client's keys and preferences from the client
+/// itself: a binding two maps deep, the map the client is in now, and a
+/// preference's name, value and type.
+#[test]
+fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
+    let server = Server::start(
+        "str 'C-b g u' code me focused zoom end bind  str 'C-b g' repeat\n\
+         str history-bytes 4096 set\n",
+    )?;
+    let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
+    terminal.wait_for("$")?;
+    let listing = server.ok(&["ls", "listing"])?;
+    let id = (listing.lines())
+        .find_map(|line| line.strip_prefix("client "))
+        .and_then(|line| line.split_whitespace().next())
+        .ok_or(format!("no client: {listing}"))?
+        .to_owned();
+    let read = |what: &str| server.ok(&["str", &id, "client", what, "json"]);
+    let keys = read("keys")?;
+    for said in [
+        r#"{"at":"","keymap":[{"kind":"map","keys":"C-b","repeat":false},"#,
+        r#"{"kind":"map","keys":"C-b g","repeat":true}"#,
+        r#"{"kind":"binding","keys":"C-b g u","code":"me focused zoom","label":"me focused zoom","group":"Other"}"#,
+        r#"{"kind":"line","keys":"Enter","action":"submit","code":null,"label":"accept"}"#,
+    ] {
+        assert!(keys.contains(said), "{said} in {keys}");
+    }
+    terminal.type_bytes(b"\x02g")?;
+    eventually("the client in the map C-b g", || {
+        Ok(read("keys")?.starts_with(r#"{"at":"C-b g","#))
+    })?;
+    let preferences = read("preferences")?;
+    let history =
+        r#"{"name":"history-bytes","value":4096,"type":"a number, 0 to 9223372036854775807"}"#;
+    assert!(preferences.contains(history), "{preferences}");
+    terminal.type_bytes(b"\x1b")?;
+    eventually("Escape leaving the map", || {
+        Ok(read("keys")?.starts_with(r#"{"at":"","#))
+    })?;
+    // A key bound, then read, in one program at its prompt: the read finds
+    // it, as pending keys are committed before the program asks anything.
+    // What it prints is joined as it runs, so the line typed never shows
+    // either answer.
+    terminal.type_bytes(b"\x02e")?;
+    terminal.wait_for("Enter accept")?;
+    terminal.type_bytes(
+        b"str 'C-b y' code me focused zoom end bind  \
+          me keys json str 'C-b y' contains if str fresh else str stale then \
+          str read-back- swap cat print\r",
+    )?;
+    let mut said = String::new();
+    eventually("the program's answer", || {
+        terminal.pump();
+        let shown = format!(
+            "{}{}",
+            terminal.text(),
+            String::from_utf8_lossy(&terminal.output)
+        );
+        said = ["read-back-fresh", "read-back-stale"]
+            .into_iter()
+            .find(|answer| shown.contains(answer))
+            .unwrap_or_default()
+            .to_owned();
+        Ok(!said.is_empty())
+    })?;
+    assert_eq!(
+        said, "read-back-fresh",
+        "the read found the keys before the bind"
+    );
+    terminal.type_bytes(b"\x02d")?;
+    terminal.wait_exit()?;
+    let gone = server.fux(&["str", &id, "client", "keys"])?;
+    assert!(gone.stderr.contains("no_client"), "{}", gone.stderr);
     Ok(())
 }

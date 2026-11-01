@@ -1,28 +1,73 @@
 #![no_main]
 //! Input: lines, against one client's keymap, from the defaults.
 //! - A line starting with 0xff is a config statement: its next byte picks
-//!   `bind`, `bind-root`, `unbind`, `unbind-root`, `unbind-all`, `prefix`,
-//!   `label`, `group` or `repeat`, and each byte after picks a word for its
-//!   next slot. It is written as fuxth, and run as a config is.
+//!   `bind`, `unbind`, `unbind-all`, `move-keys`, `label`, `group` or
+//!   `repeat`, and each byte after picks a word for its next slot. It is
+//!   written as fuxth, and run as a config is.
 //! - A line starting with 0xfe is keys typed at the client: its next byte
 //!   says whether the client only watches (its top bit), and each byte
 //!   after picks a key for `Held::press`.
 //! - Any other line is fuxth source: split into tokens, and run
 //!   as a config for a bounded number of steps, up to its first request
 //!   for the server.
-use fux::keymap::{Binding, Held, Keymap, Layer, Node};
+use fux::keymap::{Binding, Entry, Held, Keymap, Map};
 use fux::screens::Effect;
 use fux::script::{Bound, Fux, Host};
 use fux_vt::keys::{KeyPress, Keystroke};
 use fuxth::{Machine, Outcome};
 use libfuzzer_sys::fuzz_target;
 
-/// Keys for bindings, one or several: letters in both cases, named keys,
-/// chords, Escape, the default prefix, and words that are no key.
+/// Keys for bindings, one or several from the root: letters in both
+/// cases, named keys, chords, Escape, the default prefix and keys after
+/// it, and words that are no key.
 const KEYS: &[&str] = &[
-    "a", "g", "h", "l", "m", "n", "r", "t", "w", "z", "G", "M", "N", "T", "C-a", "Left", ":", "1",
-    "é", "", "S-t", "s-g", "M-S-x", "C-S-a", "Escape", "Esc", "M-Escape", "C-b", "Enter", "F5",
-    "Up", "Nope", "g n", "t m h", "r", "t n", "y l", "y h", "  ", "a Escape", "g Nope",
+    "a",
+    "g",
+    "h",
+    "l",
+    "m",
+    "n",
+    "r",
+    "t",
+    "w",
+    "z",
+    "G",
+    "M",
+    "N",
+    "T",
+    "C-a",
+    "Left",
+    ":",
+    "1",
+    "é",
+    "",
+    "S-t",
+    "s-g",
+    "M-S-x",
+    "C-S-a",
+    "Escape",
+    "Esc",
+    "M-Escape",
+    "C-b",
+    "Enter",
+    "F5",
+    "Up",
+    "Nope",
+    "g n",
+    "C-b g n",
+    "C-b t m h",
+    "C-b t m",
+    "C-b r",
+    "C-b t n",
+    "C-b y l",
+    "C-b y h",
+    "C-b y",
+    "  ",
+    "C-b a Escape",
+    "C-b g Nope",
+    "C-a g",
+    "C-b C-b",
+    "C-b t",
 ];
 /// Code to bind, written between `code` and `end`, and whether it
 /// compiles there: words the config's dictionary has, and some it does
@@ -77,41 +122,33 @@ fn quote(word: &str) -> String {
 /// A config statement, picked: the word, and the strings it takes.
 #[derive(Clone, Debug)]
 enum Statement {
-    Bind {
-        keys: String,
-        code: String,
-        root: bool,
-    },
-    Unbind {
-        keys: String,
-        root: bool,
-    },
+    Bind { keys: String, code: String },
+    Unbind(String),
     UnbindAll,
-    Prefix(String),
+    MoveKeys { from: String, to: String },
     Label(String),
     Group(String),
-    Repeat,
+    Repeat(String),
 }
 
 impl Statement {
     fn picked(kind: u8, picks: &[u8]) -> Statement {
         let mut picks = picks.iter().copied();
         let mut next = || picks.next().unwrap_or(0);
-        match kind % 9 {
+        match kind % 8 {
             0 | 1 => Statement::Bind {
                 keys: pick(KEYS, next()).to_owned(),
                 code: CODES[usize::from(next()) % CODES.len()].0.to_owned(),
-                root: kind % 9 == 1,
             },
-            2 | 3 => Statement::Unbind {
-                keys: pick(KEYS, next()).to_owned(),
-                root: kind % 9 == 3,
+            2 => Statement::Unbind(pick(KEYS, next()).to_owned()),
+            3 => Statement::UnbindAll,
+            4 => Statement::MoveKeys {
+                from: pick(KEYS, next()).to_owned(),
+                to: pick(KEYS, next()).to_owned(),
             },
-            4 => Statement::UnbindAll,
-            5 => Statement::Prefix(pick(KEYS, next()).to_owned()),
-            6 => Statement::Label(pick(TEXTS, next()).to_owned()),
-            7 => Statement::Group(pick(TEXTS, next()).to_owned()),
-            _ => Statement::Repeat,
+            5 => Statement::Label(pick(TEXTS, next()).to_owned()),
+            6 => Statement::Group(pick(TEXTS, next()).to_owned()),
+            _ => Statement::Repeat(pick(KEYS, next()).to_owned()),
         }
     }
 
@@ -119,58 +156,69 @@ impl Statement {
     fn fuxth(&self) -> String {
         let str = |s: &str| format!("str {}", quote(s));
         match self {
-            Statement::Bind { keys, code, root } => {
-                let word = if *root { "bind-root" } else { "bind" };
-                format!("{} code {code} end {word}", str(keys))
-            }
-            Statement::Unbind { keys, root } => {
-                let word = if *root { "unbind-root" } else { "unbind" };
-                format!("{} {word}", str(keys))
-            }
+            Statement::Bind { keys, code } => format!("{} code {code} end bind", str(keys)),
+            Statement::Unbind(keys) => format!("{} unbind", str(keys)),
             Statement::UnbindAll => "unbind-all".to_owned(),
-            Statement::Prefix(key) => format!("{} prefix", str(key)),
+            Statement::MoveKeys { from, to } => format!("{} {} move-keys", str(from), str(to)),
             Statement::Label(text) => format!("{} label", str(text)),
             Statement::Group(text) => format!("{} group", str(text)),
-            Statement::Repeat => "repeat".to_owned(),
+            Statement::Repeat(keys) => format!("{} repeat", str(keys)),
         }
     }
 }
 
-/// A binding after the prefix as the README describes it.
-#[derive(Clone, Debug, PartialEq)]
-struct Model {
-    keys: Vec<KeyPress>,
-    binding: Binding,
-    repeat: bool,
-}
-
-/// The client's keys as a model: its prefix, its bindings after the prefix
-/// and without it, and the binding `label`, `group` and `repeat` change.
+/// The client's keys as the README describes them, flat: each binding by
+/// its keys from the root, the maps that repeat by theirs, and the binding
+/// `label` and `group` change.
 #[derive(Clone, Debug)]
 struct Models {
-    prefix: Option<KeyPress>,
-    prefixed: Vec<Model>,
-    root: Vec<(KeyPress, Binding)>,
+    bound: Vec<(Vec<KeyPress>, Binding)>,
+    repeats: Vec<Vec<KeyPress>>,
     last: Option<Bound>,
+}
+
+/// Whether one of two key sequences starts the other, but they differ: a
+/// key would be both a binding and a map.
+fn overlap(a: &[KeyPress], b: &[KeyPress]) -> bool {
+    a.len() != b.len() && (a.starts_with(b) || b.starts_with(a))
+}
+
+fn escape(k: &KeyPress) -> bool {
+    k.key == fux_vt::keys::Key::Escape && !k.mods.ctrl && !k.mods.alt
 }
 
 impl Models {
     /// What `keymap` holds, as a model.
     fn of(keymap: &Keymap, last: Option<Bound>) -> Models {
-        Models {
-            prefix: keymap.prefix,
-            prefixed: models_of(&keymap.bindings),
-            root: keymap.root.clone(),
+        let mut models = Models {
+            bound: Vec::new(),
+            repeats: Vec::new(),
             last,
+        };
+        for (keys, entry) in keymap.root.all() {
+            match entry {
+                Entry::Run(binding) => models.bound.push((keys, binding.clone())),
+                Entry::Map(map) if map.repeat => models.repeats.push(keys),
+                Entry::Map(_) => {}
+            }
         }
+        models
+    }
+
+    /// Forgets the repeat of each map no binding is in any more.
+    fn tidy(&mut self) {
+        let bound = &self.bound;
+        (self.repeats).retain(|map| {
+            bound
+                .iter()
+                .any(|(keys, _)| keys.len() > map.len() && keys.starts_with(map))
+        });
     }
 
     /// Applies `statement`: whether it was accepted.
     fn apply(&mut self, statement: &Statement) -> bool {
-        let escape =
-            |k: &KeyPress| k.key == fux_vt::keys::Key::Escape && !k.mods.ctrl && !k.mods.alt;
         match statement {
-            Statement::Bind { keys, code, root } => {
+            Statement::Bind { keys, code } => {
                 // The code is compiled as it is bound, from the words
                 // between code and end.
                 let Some(code) = compiled(code) else {
@@ -179,91 +227,96 @@ impl Models {
                 let Ok(keys) = fux::keymap::keys(keys) else {
                     return false;
                 };
-                if *root {
-                    let ([key], false) = (keys.as_slice(), keys.first().copied() == self.prefix)
-                    else {
-                        return false;
-                    };
-                    let binding = Binding {
-                        label: code.text(),
-                        code,
-                        group: "Without the prefix".to_owned(),
-                    };
-                    match self.root.iter_mut().find(|(k, _)| k == key) {
-                        Some((_, old)) => *old = binding,
-                        None => self.root.push((*key, binding)),
-                    }
-                    self.last = Some(Bound::Root(*key));
-                    return true;
-                }
-                // A sequence is a binding or a layer, never both; and
-                // Escape after the prefix closes the column.
-                let conflict = self.prefixed.iter().any(|b| {
-                    b.keys.len() != keys.len()
-                        && (b.keys.starts_with(&keys) || keys.starts_with(&b.keys))
-                });
-                if conflict || keys.iter().any(escape) {
+                // A key is a binding or a map, never both; and Escape
+                // leaves a map.
+                let conflict = self.bound.iter().any(|(b, _)| overlap(b, &keys));
+                if conflict || keys.iter().skip(1).any(escape) {
                     return false;
                 }
-                let new = Model {
-                    keys: keys.clone(),
-                    binding: Binding {
-                        label: code.text(),
-                        code,
-                        group: "Other".to_owned(),
-                    },
-                    repeat: false,
+                let new = Binding {
+                    label: code.text(),
+                    code,
+                    group: "Other".to_owned(),
                 };
-                match self.prefixed.iter_mut().find(|b| b.keys == keys) {
-                    Some(old) => *old = new,
-                    None => self.prefixed.push(new),
+                match self.bound.iter_mut().find(|(b, _)| *b == keys) {
+                    Some((_, old)) => *old = new,
+                    None => self.bound.push((keys.clone(), new)),
                 }
-                self.last = Some(Bound::Prefix(keys));
+                self.last = Some(Bound::Keys(keys));
                 true
             }
-            Statement::Unbind { keys, root: true } => {
-                let Ok(key) = fux::keymap::key(keys) else {
-                    return false;
-                };
-                let before = self.root.len();
-                self.root.retain(|(k, _)| *k != key);
-                self.root.len() < before
-            }
-            Statement::Unbind { keys, root: false } => {
+            Statement::Unbind(keys) => {
                 let Ok(keys) = fux::keymap::keys(keys) else {
                     return false;
                 };
-                let before = self.prefixed.len();
-                self.prefixed.retain(|b| !b.keys.starts_with(&keys));
-                self.prefixed.len() < before
+                let before = self.bound.len();
+                self.bound.retain(|(b, _)| !b.starts_with(&keys));
+                self.tidy();
+                self.bound.len() < before
             }
             Statement::UnbindAll => {
-                self.prefixed.clear();
-                self.root.clear();
+                self.bound.clear();
+                self.repeats.clear();
                 true
             }
-            Statement::Prefix(key) => {
-                let Ok(key) = fux::keymap::key(key) else {
+            Statement::MoveKeys { from, to } => {
+                let (Ok(from), Ok(to)) = (fux::keymap::keys(from), fux::keymap::keys(to)) else {
                     return false;
                 };
-                if self.root.iter().any(|(k, _)| *k == key) {
+                if to.starts_with(&from) || to.iter().skip(1).any(escape) {
                     return false;
                 }
-                self.prefix = Some(key);
+                let mut moved = self.clone();
+                let under = |keys: &Vec<KeyPress>| keys.starts_with(&from);
+                let taken: Vec<_> = moved
+                    .bound
+                    .iter()
+                    .filter(|(b, _)| under(b))
+                    .cloned()
+                    .collect();
+                if taken.is_empty() {
+                    return false;
+                }
+                let repeats: Vec<_> = moved.repeats.iter().filter(|r| under(r)).cloned().collect();
+                moved.bound.retain(|(b, _)| !under(b));
+                moved.tidy();
+                moved.repeats.retain(|r| !under(r));
+                let to_it = |keys: &[KeyPress]| -> Vec<KeyPress> {
+                    to.iter()
+                        .chain(keys.get(from.len()..).unwrap_or_default())
+                        .copied()
+                        .collect()
+                };
+                // What `to` holds: a binding there is replaced; a map, or
+                // a binding that starts `to`, refuses.
+                let held = moved
+                    .bound
+                    .iter()
+                    .any(|(b, _)| b.len() > to.len() && b.starts_with(&to));
+                let started = moved
+                    .bound
+                    .iter()
+                    .any(|(b, _)| b.len() < to.len() && to.starts_with(b));
+                if held || started {
+                    return false;
+                }
+                moved.bound.retain(|(b, _)| *b != to);
+                moved.tidy();
+                moved
+                    .bound
+                    .extend(taken.iter().map(|(b, binding)| (to_it(b), binding.clone())));
+                moved.repeats.extend(repeats.iter().map(|r| to_it(r)));
+                *self = moved;
                 true
             }
             Statement::Label(text) | Statement::Group(text) => {
                 let label = matches!(statement, Statement::Label(_));
                 let binding = match &self.last {
-                    None => None,
-                    Some(Bound::Root(key)) => (self.root.iter_mut())
-                        .find(|(k, _)| k == key)
-                        .map(|(_, b)| b),
-                    Some(Bound::Prefix(keys)) => (self.prefixed.iter_mut())
-                        .find(|b| b.keys == *keys)
-                        .map(|b| &mut b.binding),
+                    Some(Bound::Keys(keys)) => (self.bound.iter_mut())
+                        .find(|(b, _)| b == keys)
+                        .map(|(_, binding)| binding),
                     // The fuzz writes no screen's keys.
-                    Some(Bound::In(..)) => None,
+                    Some(Bound::In(..)) | None => None,
                 };
                 let Some(binding) = binding else {
                     return false;
@@ -274,42 +327,31 @@ impl Models {
                 }
                 true
             }
-            Statement::Repeat => {
-                let Some(Bound::Prefix(keys)) = &self.last else {
+            Statement::Repeat(keys) => {
+                let Ok(keys) = fux::keymap::keys(keys) else {
                     return false;
                 };
-                match self.prefixed.iter_mut().find(|b| b.keys == *keys) {
-                    Some(b) => {
-                        b.repeat = true;
-                        true
-                    }
-                    None => false,
+                let map = self
+                    .bound
+                    .iter()
+                    .any(|(b, _)| b.len() > keys.len() && b.starts_with(&keys));
+                if map && !self.repeats.contains(&keys) {
+                    self.repeats.push(keys);
                 }
+                map
             }
         }
     }
 
-    /// Whether `keymap` holds what the model does: the bindings after the
-    /// prefix in any order (a layer lists its keys together), those
-    /// without it in the order bound.
+    /// Whether `keymap` holds what the model does, in any order (a map
+    /// lists its keys together).
     fn agree(&self, keymap: &Keymap) -> bool {
-        let all = models_of(&keymap.bindings);
-        keymap.prefix == self.prefix
-            && keymap.root == self.root
-            && all.len() == self.prefixed.len()
-            && self.prefixed.iter().all(|m| all.contains(m))
+        let held = Models::of(keymap, None);
+        held.bound.len() == self.bound.len()
+            && self.bound.iter().all(|b| held.bound.contains(b))
+            && held.repeats.len() == self.repeats.len()
+            && self.repeats.iter().all(|r| held.repeats.contains(r))
     }
-}
-
-/// The bindings after the prefix as models, depth first.
-fn models_of(layer: &Layer) -> Vec<Model> {
-    (layer.all().into_iter())
-        .map(|(keys, binding, repeat)| Model {
-            keys,
-            binding: binding.clone(),
-            repeat,
-        })
-        .collect()
 }
 
 /// The code value `code … end` makes of `code`, if it compiles.
@@ -322,34 +364,35 @@ fn compiled(code: &str) -> Option<fux_wire::callback::Code> {
     Some(fux_wire::callback::Code { words })
 }
 
-/// The rules every keymap keeps that its types do not: no empty layer, no
-/// Escape after the prefix, no binding of the prefix without it nor of one
-/// key twice; and every layer's column shows.
+/// The rules every keymap keeps that its types do not: no empty map held
+/// by a key, no Escape in a map, no key bound twice in one; and every map's
+/// column shows.
 fn check_keymap(keymap: &Keymap) {
-    fn check_layer(keymap: &Keymap, path: &mut Vec<KeyPress>, layer: &Layer) {
-        let column = keymap.column(path, usize::MAX);
-        let column = column.unwrap_or_else(|| panic!("no column for {path:?}"));
-        assert!(column.selected < column.entries.len().max(1));
-        for (key, node) in layer.iter() {
-            if let Node::Layer(inner) = node {
-                assert!(inner.first().is_some(), "an empty layer at {path:?} {key}");
+    fn check_map(keymap: &Keymap, path: &mut Vec<KeyPress>, map: &Map) {
+        if !path.is_empty() {
+            let column = keymap.column(path, usize::MAX);
+            let column = column.unwrap_or_else(|| panic!("no column for {path:?}"));
+            assert!(column.selected < column.entries.len().max(1));
+            assert!(!column.entries.is_empty(), "an empty map at {path:?}");
+        }
+        let keys: Vec<(Vec<KeyPress>, &Entry)> = map.all();
+        for (i, (keys_i, _)) in keys.iter().enumerate() {
+            let again = keys.iter().skip(i + 1).any(|(o, _)| o == keys_i);
+            assert!(!again, "two bindings of {keys_i:?} under {path:?}");
+            assert!(
+                !keys_i.iter().skip(usize::from(path.is_empty())).any(escape),
+                "Escape bound in a map: {path:?} {keys_i:?}"
+            );
+        }
+        for (keys, entry) in keys {
+            if let ([key], Entry::Map(inner)) = (keys.as_slice(), entry) {
                 path.push(*key);
-                check_layer(keymap, path, inner);
+                check_map(keymap, path, inner);
                 path.pop();
             }
         }
     }
-    check_layer(keymap, &mut Vec::new(), &keymap.bindings);
-    for (keys, _, _) in keymap.bindings.all() {
-        let escape =
-            |k: &KeyPress| k.key == fux_vt::keys::Key::Escape && !k.mods.ctrl && !k.mods.alt;
-        assert!(!keys.iter().any(escape), "Escape bound: {keys:?}");
-    }
-    for (i, (key, _)) in keymap.root.iter().enumerate() {
-        assert_ne!(Some(*key), keymap.prefix, "the prefix bound without itself");
-        let again = keymap.root.iter().skip(i + 1).any(|(o, _)| o == key);
-        assert!(!again, "two bindings of {key:?}");
-    }
+    check_map(keymap, &mut Vec::new(), &keymap.root);
 }
 
 /// The defaults, built once.
@@ -401,9 +444,11 @@ impl Client {
         let held_before = self.held.clone();
         let stroke = Keystroke::from(press);
         let steps = self.held.press(&self.keymap, stroke, read_only);
-        let codes: Vec<&fux_wire::callback::Code> = (self.keymap.bindings.all().into_iter())
-            .map(|(_, b, _)| &b.code)
-            .chain(self.keymap.root.iter().map(|(_, b)| &b.code))
+        let codes: Vec<&fux_wire::callback::Code> = (self.keymap.root.all().into_iter())
+            .filter_map(|(_, entry)| match entry {
+                Entry::Run(binding) => Some(&binding.code),
+                Entry::Map(_) => None,
+            })
             .collect();
         for step in &steps {
             if let Effect::Run(fux::screens::Job { program, .. }) = step {
@@ -418,20 +463,19 @@ impl Client {
             }
         }
         if !read_only && held_before == Held::Normal {
-            let root = self.keymap.root.iter().find(|(k, _)| *k == press);
-            let expected = if Some(press) == self.keymap.prefix {
-                let column = self.keymap.column(&[], 0);
-                vec![Effect::Open(fux_wire::act::Panel::Column(
-                    column.unwrap_or_default(),
-                ))]
-            } else if let Some((_, binding)) = root {
-                vec![Effect::Run(binding.code.clone().into())]
-            } else {
-                vec![Effect::Send(fux_wire::act::Act::Key(stroke))]
+            let expected = match self.keymap.root.get(press) {
+                Some(Entry::Map(_)) => {
+                    let column = self.keymap.column(&[press], 0);
+                    vec![Effect::Open(fux_wire::act::Panel::Column(
+                        column.unwrap_or_default(),
+                    ))]
+                }
+                Some(Entry::Run(binding)) => vec![Effect::Run(binding.code.clone().into())],
+                None => vec![Effect::Send(fux_wire::act::Act::Key(stroke))],
             };
             assert_eq!(steps, expected, "{press} typed");
         }
-        if matches!(self.held, Held::Normal | Held::Prefixed) {
+        if matches!(self.held, Held::Normal | Held::Prefixed(_)) {
             self.stale = false;
         }
         if self.stale {
@@ -445,9 +489,9 @@ impl Client {
             }
             Held::Repeat { path } => assert!(
                 self.keymap.repeat_bar(path).is_some(),
-                "repeating {path:?}, which holds no repeating binding"
+                "repeating {path:?}, which is no map that repeats"
             ),
-            Held::Normal | Held::Prefixed => {}
+            Held::Normal | Held::Prefixed(_) => {}
         }
     }
 }

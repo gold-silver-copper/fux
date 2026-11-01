@@ -1,7 +1,12 @@
-//! A client's keys: its prefix and bindings, the command column and repeat
-//! modes it shows, and the tables that turn its keys into the actions of
-//! fux's own screens. All of it in the client: the server is sent typed
-//! actions, and keys only as literal input to a pane.
+//! A client's keys: its keymap, the command column and repeat modes it
+//! shows, and the tables that turn its keys into the actions of fux's own
+//! screens. All of it in the client: the server is sent typed actions, and
+//! keys only as literal input to a pane.
+//!
+//! A keymap maps each of its keys to a binding or to another keymap, at any
+//! depth, as Emacs's prefix maps do. The root map is the one a client is in
+//! while no keys are held: its prefix, `C-b`, is a key there that holds the
+//! map of fux's commands, and `C-b t` holds the tab commands in that one.
 //!
 //! A binding runs fuxth: its code value is compiled and run by the client,
 //! fresh, each time its keys are typed, the client itself its `me`. The default
@@ -12,6 +17,7 @@ use fux_vt::keys::{Key, KeyPress, Keystroke, Modifiers};
 use fux_wire::act::ScreenAct;
 use fux_wire::act::{Act, Column, ColumnEntry, Edit, Hint, LineAct, ListAct, Move, Panel};
 use fux_wire::callback::Code;
+use fux_wire::json::Json;
 use fux_wire::words::quote;
 
 /// What a key runs: a code value, what the column says it does, and the
@@ -24,136 +30,127 @@ pub struct Binding {
 }
 
 impl Binding {
-    /// What `bind` makes of `code`, or `bind-root` if `root`: labelled with
-    /// its words, in its word's group.
-    pub fn new(code: Code, root: bool) -> Self {
+    /// What `bind` makes of `code`: labelled with its words, in the group
+    /// listed last.
+    pub fn new(code: Code) -> Self {
         Self {
             label: code.text(),
             code,
-            group: Self::group_of(root).to_owned(),
+            group: OTHER_GROUP.to_owned(),
         }
     }
 
-    /// The group `bind` gives, or `bind-root` if `root`.
-    fn group_of(root: bool) -> &'static str {
-        if root { ROOT_GROUP } else { OTHER_GROUP }
-    }
-
-    /// The config line that binds `keys` to it, after the prefix or, if
-    /// `root`, without it: its label and group too, unless they are what
-    /// that word gives.
-    fn line(&self, keys: &str, root: bool) -> String {
-        let word = if root { "bind-root" } else { "bind" };
-        let mut line = format!("str {} code {} end {word}", quote(keys), self.code.text());
+    /// The config line that binds `keys` to it: its label and group too,
+    /// unless they are what `bind` gives.
+    fn line(&self, keys: &str) -> String {
+        let mut line = format!("str {} code {} end bind", quote(keys), self.code.text());
         if self.label != self.code.text() {
             line += &format!("  str {} label", quote(&self.label));
         }
-        if self.group != Self::group_of(root) {
+        if self.group != OTHER_GROUP {
             line += &format!("  str {} group", quote(&self.group));
         }
         line
     }
 }
 
-/// What a key of a layer does: runs a binding, or opens a layer of more
-/// keys (`t n` is `n` in the layer `t`). Never both.
+/// What a key of a map does: runs a binding, or holds another map of more
+/// keys (`C-b t n` is `n` in the map `t` holds in the map `C-b` holds).
+/// Never both.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Node {
-    /// With `repeat`, its layer stays after it runs: its keys repeat
-    /// without the prefix until Esc.
-    Run {
-        binding: Binding,
-        repeat: bool,
-    },
-    Layer(Layer),
+pub enum Entry {
+    Run(Binding),
+    Map(Map),
 }
 
-/// The keys typed after the prefix, or after a layer's keys, each bound
-/// once, in the order first bound. Escape is never one: it closes the
-/// column.
+/// A keymap: its keys, each bound once, in the order first bound. One that
+/// `repeat`s stays the client's map after a key of it runs, until Esc. A
+/// map held by a key is never empty: unbinding its last key unbinds it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Layer(Vec<(KeyPress, Node)>);
+pub struct Map {
+    keys: Vec<(KeyPress, Entry)>,
+    pub repeat: bool,
+}
 
-impl Layer {
-    pub fn iter(&self) -> std::slice::Iter<'_, (KeyPress, Node)> {
-        self.0.iter()
+impl Map {
+    pub fn get(&self, key: KeyPress) -> Option<&Entry> {
+        self.keys.iter().find(|(k, _)| *k == key).map(|(_, e)| e)
     }
-    pub fn get(&self, key: KeyPress) -> Option<&Node> {
-        self.0.iter().find(|(k, _)| *k == key).map(|(_, node)| node)
-    }
-    /// The layer at `path` below this one; this one if `path` is empty.
-    pub fn layer(&self, path: &[KeyPress]) -> Option<&Layer> {
+
+    /// The map at `path` below this one; this one if `path` is empty.
+    pub fn map(&self, path: &[KeyPress]) -> Option<&Map> {
         match path.split_first() {
             None => Some(self),
             Some((key, rest)) => match self.get(*key)? {
-                Node::Layer(layer) => layer.layer(rest),
-                Node::Run { .. } => None,
+                Entry::Map(map) => map.map(rest),
+                Entry::Run(_) => None,
             },
         }
     }
-    /// Every binding in it and its layers, depth first: their keys, and
-    /// whether they repeat.
-    pub fn all(&self) -> Vec<(Vec<KeyPress>, &Binding, bool)> {
+
+    /// What `path` below this map is.
+    fn entry_mut(&mut self, path: &[KeyPress]) -> Option<&mut Entry> {
+        let (key, rest) = path.split_first()?;
+        let entry = (self.keys.iter_mut()).find(|(k, _)| k == key)?;
+        match (&mut entry.1, rest.is_empty()) {
+            (entry, true) => Some(entry),
+            (Entry::Map(map), false) => map.entry_mut(rest),
+            (Entry::Run(_), false) => None,
+        }
+    }
+
+    /// Every key below it, depth first, a map before its keys: their keys
+    /// from here, and what each is.
+    pub fn all(&self) -> Vec<(Vec<KeyPress>, &Entry)> {
         let mut all = Vec::new();
-        for (key, node) in &self.0 {
-            let below = match node {
-                Node::Run { binding, repeat } => vec![(Vec::new(), binding, *repeat)],
-                Node::Layer(layer) => layer.all(),
-            };
-            all.extend(
-                (below.into_iter())
-                    .map(|(keys, b, r)| ([*key].into_iter().chain(keys).collect(), b, r)),
-            );
+        for (key, entry) in &self.keys {
+            all.push((vec![*key], entry));
+            if let Entry::Map(map) = entry {
+                let below = map.all().into_iter();
+                all.extend(below.map(|(keys, e)| ([*key].into_iter().chain(keys).collect(), e)));
+            }
         }
         all
     }
-    /// What `keys` below this layer are.
-    fn node_mut(&mut self, keys: &[KeyPress]) -> Option<&mut Node> {
-        let (key, rest) = keys.split_first()?;
-        let node = self
-            .0
-            .iter_mut()
-            .find(|(k, _)| k == key)
-            .map(|(_, node)| node)?;
-        match (node, rest.is_empty()) {
-            (node, true) => Some(node),
-            (Node::Layer(layer), false) => layer.node_mut(rest),
-            (Node::Run { .. }, false) => None,
-        }
+
+    /// Its first binding, depth first, whose group titles it.
+    fn first(&self) -> Option<&Binding> {
+        self.all().into_iter().find_map(|(_, entry)| match entry {
+            Entry::Run(binding) => Some(binding),
+            Entry::Map(_) => None,
+        })
     }
 
-    /// Its first binding, depth first, whose group is its title.
-    pub fn first(&self) -> Option<&Binding> {
-        self.all().into_iter().next().map(|(_, b, _)| b)
-    }
-
-    /// Binds the `rest` of `keys` below this layer to `run`, replacing what
-    /// they ran. Keys that are a layer, or that start with keys that run a
-    /// binding, are refused.
-    fn bind(&mut self, keys: &[KeyPress], rest: &[KeyPress], run: Node) -> Result<(), String> {
+    /// Puts `entry` at the `rest` of `keys` below this map, replacing the
+    /// binding there, the maps it needs made. Keys that hold a map, or that
+    /// start with keys that run a binding, are refused.
+    fn put(&mut self, keys: &[KeyPress], rest: &[KeyPress], entry: Entry) -> Result<(), String> {
         let Some((key, after)) = rest.split_first() else {
-            return Err("bind needs keys".to_owned());
+            return Err("no keys given".to_owned());
         };
-        let Some((_, node)) = self.0.iter_mut().find(|(k, _)| k == key) else {
-            let mut layer = Layer::default();
-            let node = match after.is_empty() {
-                true => run,
-                false => layer.bind(keys, after, run).map(|()| Node::Layer(layer))?,
+        let Some((_, there)) = self.keys.iter_mut().find(|(k, _)| k == key) else {
+            let entry = match after.is_empty() {
+                true => entry,
+                false => {
+                    let mut map = Map::default();
+                    map.put(keys, after, entry)?;
+                    Entry::Map(map)
+                }
             };
-            self.0.push((*key, node));
+            self.keys.push((*key, entry));
             return Ok(());
         };
-        match (node, after.is_empty()) {
-            (Node::Layer(layer), false) => layer.bind(keys, after, run),
-            (Node::Layer(_), true) => Err(format!(
-                "{} is a layer of more keys; unbind it first",
+        match (there, after.is_empty()) {
+            (Entry::Map(map), false) => map.put(keys, after, entry),
+            (Entry::Map(_), true) => Err(format!(
+                "{} holds a map of more keys; unbind it first",
                 keys_text(keys)
             )),
-            (node @ Node::Run { .. }, true) => {
-                *node = run;
+            (there @ Entry::Run(_), true) => {
+                *there = entry;
                 Ok(())
             }
-            (Node::Run { binding, .. }, false) => Err(format!(
+            (Entry::Run(binding), false) => Err(format!(
                 "{} runs {}, so it cannot start {}; unbind it first",
                 keys_text(keys.strip_suffix(after).unwrap_or(keys)),
                 binding.label,
@@ -162,27 +159,23 @@ impl Layer {
         }
     }
 
-    /// Unbinds `keys`: a binding, or a whole layer. Whether they were bound.
-    fn unbind(&mut self, keys: &[KeyPress]) -> bool {
-        let Some((key, rest)) = keys.split_first() else {
-            return false;
+    /// Takes what `keys` below this map run or hold, unbinding a map it
+    /// leaves empty.
+    fn take(&mut self, keys: &[KeyPress]) -> Option<Entry> {
+        let (key, rest) = keys.split_first()?;
+        let entry = &mut self.keys.iter_mut().find(|(k, _)| k == key)?.1;
+        let taken = match (entry, rest.is_empty()) {
+            (entry, true) => std::mem::replace(entry, Entry::Map(Map::default())),
+            (Entry::Map(map), false) => map.take(rest)?,
+            (Entry::Run(_), false) => return None,
         };
-        let gone = match self.0.iter_mut().find(|(k, _)| k == key) {
-            Some(_) if rest.is_empty() => true,
-            Some((_, Node::Layer(layer))) => match layer.unbind(rest) {
-                true => layer.0.is_empty(),
-                false => return false,
-            },
-            Some((_, Node::Run { .. })) | None => return false,
-        };
-        if gone {
-            self.0.retain(|(k, _)| k != key);
-        }
-        true
+        // What was taken goes, and a map it left empty.
+        (self.keys).retain(|(_, e)| !matches!(e, Entry::Map(map) if map.keys.is_empty()));
+        Some(taken)
     }
 }
 
-/// Keys as they are written: `t n`.
+/// Keys as they are written: `C-b t n`.
 pub fn keys_text(keys: &[KeyPress]) -> String {
     keys.iter()
         .map(KeyPress::to_string)
@@ -196,7 +189,7 @@ pub fn key(word: &str) -> Result<KeyPress, String> {
     (word.parse()).map_err(|_| format!("{word:?} is no key's name"))
 }
 
-/// Keys from their names, separated by spaces: `t n`.
+/// Keys from their names, separated by spaces: `C-b t n`.
 pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
     let keys: Vec<KeyPress> = words
         .split_whitespace()
@@ -207,123 +200,104 @@ pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
         .ok_or_else(|| "no keys given".to_owned())
 }
 
-/// A client's prefix and bindings; empty until bundled fuxth supplies them.
+/// A client's keymap and its screens' keys; empty until bundled fuxth
+/// supplies them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Keymap {
-    pub prefix: Option<KeyPress>,
-    pub bindings: Layer,
-    /// Keys bound without the prefix, in the order bound; never the prefix.
-    pub root: Vec<(KeyPress, Binding)>,
+    /// The map the client is in while no keys are held.
+    pub root: Map,
     /// The keys of fux's own screens.
     pub modes: Modes,
 }
 
-/// The group of bindings without the prefix that gave none.
-const ROOT_GROUP: &str = "Without the prefix";
-
-/// The group of bindings after the prefix that gave none, listed last.
+/// The group of bindings that gave none, listed last.
 const OTHER_GROUP: &str = "Other";
 
 impl Keymap {
-    /// Binds `keys` after the prefix to `binding`.
-    pub fn bind(
-        &mut self,
-        keys: &[KeyPress],
-        binding: Binding,
-        repeat: bool,
-    ) -> Result<(), String> {
-        if keys.iter().any(|k| k.plain_key() == Some(Key::Escape)) {
-            return Err("Escape after the prefix closes the column; it cannot be bound".to_owned());
-        }
-        self.bindings
-            .bind(keys, keys, Node::Run { binding, repeat })
+    /// Binds `keys` from the root to `binding`.
+    pub fn bind(&mut self, keys: &[KeyPress], binding: Binding) -> Result<(), String> {
+        self.put(keys, Entry::Run(binding))
     }
 
-    /// Binds `key`, without the prefix, to `binding`.
-    pub fn bind_root(&mut self, key: KeyPress, binding: Binding) -> Result<(), String> {
-        if Some(key) == self.prefix {
-            return Err(format!(
-                "{key} is the prefix; it cannot be bound without it"
-            ));
+    /// Puts `entry` at `keys`, or refuses and changes nothing.
+    fn put(&mut self, keys: &[KeyPress], entry: Entry) -> Result<(), String> {
+        let escape = |k: &KeyPress| k.plain_key() == Some(Key::Escape);
+        if keys.iter().skip(1).any(escape) {
+            return Err("Escape leaves a map of keys; it cannot be bound in one".to_owned());
         }
-        match self.root.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, existing)) => *existing = binding,
-            None => self.root.push((key, binding)),
-        }
-        Ok(())
+        self.root.put(keys, keys, entry)
     }
 
-    /// The binding of `key` without the prefix.
-    fn root_binding(&self, key: KeyPress) -> Option<&Binding> {
-        self.root.iter().find(|(k, _)| *k == key).map(|(_, b)| b)
-    }
-
+    /// Unbinds `keys`: a binding, or a whole map.
     pub fn unbind(&mut self, keys: &[KeyPress]) -> Result<(), String> {
-        let unbound = self.bindings.unbind(keys);
+        let unbound = self.root.take(keys).is_some();
         unbound
             .then_some(())
             .ok_or_else(|| format!("{} is not bound", keys_text(keys)))
     }
 
-    pub fn unbind_root(&mut self, key: KeyPress) -> Result<(), String> {
-        let before = self.root.len();
-        self.root.retain(|(k, _)| *k != key);
-        let unbound = self.root.len() != before;
-        unbound
-            .then_some(())
-            .ok_or_else(|| format!("{key} is not bound without the prefix"))
-    }
-
-    pub fn unbind_all(&mut self) {
-        self.bindings = Layer::default();
-        self.root.clear();
-        self.modes = Modes::default();
-    }
-
-    /// The binding `keys` after the prefix run.
-    pub fn binding_mut(&mut self, keys: &[KeyPress]) -> Option<&mut Binding> {
-        match self.bindings.node_mut(keys)? {
-            Node::Run { binding, .. } => Some(binding),
-            Node::Layer(_) => None,
+    /// What `from` runs or holds, `to` does instead, and `from` nothing:
+    /// `str C-b str C-a move-keys` moves the prefix. All or nothing.
+    pub fn move_keys(&mut self, from: &[KeyPress], to: &[KeyPress]) -> Result<(), String> {
+        if to.starts_with(from) {
+            return Err(format!("{} is in {}", keys_text(to), keys_text(from)));
         }
-    }
-
-    /// The binding `keys` run repeats: its layer stays until Esc.
-    pub fn set_repeat(&mut self, keys: &[KeyPress]) -> Result<(), String> {
-        match self.bindings.node_mut(keys) {
-            Some(Node::Run { repeat, .. }) => {
-                *repeat = true;
-                Ok(())
-            }
-            Some(Node::Layer(_)) | None => Err(format!("{} runs nothing", keys_text(keys))),
-        }
-    }
-
-    /// Sets the prefix: refused if a key bound without it is the one.
-    pub fn set_prefix(&mut self, key: KeyPress) -> Result<(), String> {
-        if self.root_binding(key).is_some() {
-            return Err(format!(
-                "{key} is bound without the prefix; unbind it first"
-            ));
-        }
-        self.prefix = Some(key);
+        let mut moved = self.clone();
+        let entry =
+            (moved.root.take(from)).ok_or_else(|| format!("{} is not bound", keys_text(from)))?;
+        moved.put(to, entry)?;
+        *self = moved;
         Ok(())
     }
 
-    /// The column for the layer at `path`, `selected` chosen: its entries
+    pub fn unbind_all(&mut self) {
+        *self = Keymap::default();
+    }
+
+    /// The binding `keys` run.
+    pub fn binding_mut(&mut self, keys: &[KeyPress]) -> Option<&mut Binding> {
+        match self.root.entry_mut(keys)? {
+            Entry::Run(binding) => Some(binding),
+            Entry::Map(_) => None,
+        }
+    }
+
+    /// The map `keys` hold repeats: it stays after a key of it runs, until
+    /// Esc.
+    pub fn set_repeat(&mut self, keys: &[KeyPress]) -> Result<(), String> {
+        match self.root.entry_mut(keys) {
+            Some(Entry::Map(map)) => {
+                map.repeat = true;
+                Ok(())
+            }
+            Some(Entry::Run(_)) | None => Err(format!("{} holds no map", keys_text(keys))),
+        }
+    }
+
+    /// The first key of the root that holds a map: the prefix, which a
+    /// client that only watches detaches with.
+    fn prefix(&self) -> Option<KeyPress> {
+        (self.root.keys.iter())
+            .find_map(|(key, entry)| matches!(entry, Entry::Map(_)).then_some(*key))
+    }
+
+    /// Whether `key` holds a map at the root, as the prefix does.
+    pub fn leads(&self, key: KeyPress) -> bool {
+        matches!(self.root.get(key), Some(Entry::Map(_)))
+    }
+
+    /// The column for the map at `path`, `selected` chosen: its entries
     /// grouped, groups in the order their keys were first bound and `Other`
-    /// last; right after the prefix, the bindings without it follow.
+    /// last.
     pub fn column(&self, path: &[KeyPress], selected: usize) -> Option<Column> {
-        let layer = self.bindings.layer(path)?;
-        let mut entries: Vec<ColumnEntry> = (layer.iter())
-            .filter_map(|(key, node)| {
-                // A layer is titled, and listed, by its first binding's
+        let map = self.root.map(path)?;
+        let mut entries: Vec<ColumnEntry> = (map.keys.iter())
+            .filter_map(|(key, entry)| {
+                // A map is titled, and listed, by its first binding's
                 // group: `t` is `Tabs…`.
-                let (label, group, layer) = match node {
-                    Node::Run { binding, .. } => {
-                        (binding.label.clone(), binding.group.clone(), false)
-                    }
-                    Node::Layer(inner) => {
+                let (label, group, map) = match entry {
+                    Entry::Run(binding) => (binding.label.clone(), binding.group.clone(), false),
+                    Entry::Map(inner) => {
                         let group = inner.first()?.group.clone();
                         (group.clone(), group, true)
                     }
@@ -332,117 +306,123 @@ impl Keymap {
                     key: *key,
                     label,
                     group,
-                    layer,
-                    root: false,
+                    map,
                 })
             })
             .collect();
-        if path.is_empty() {
-            entries.extend(self.root.iter().map(|(key, binding)| ColumnEntry {
-                key: *key,
-                label: binding.label.clone(),
-                group: binding.group.clone(),
-                layer: false,
-                root: true,
-            }));
-        }
-        let mut groups: Vec<(bool, String)> = Vec::new();
+        let mut groups: Vec<String> = Vec::new();
         for entry in &entries {
-            let group = (entry.root, entry.group.clone());
-            if !groups.contains(&group) && group != (false, OTHER_GROUP.to_owned()) {
-                groups.push(group);
+            if !groups.contains(&entry.group) && entry.group != OTHER_GROUP {
+                groups.push(entry.group.clone());
             }
         }
-        groups.push((false, OTHER_GROUP.to_owned()));
-        entries.sort_by_key(|e| {
-            let group = groups
-                .iter()
-                .position(|(r, g)| *r == e.root && *g == e.group);
-            (e.root, group)
-        });
-        let keys = keys_text(
-            &self
-                .prefix
-                .into_iter()
-                .chain(path.iter().copied())
-                .collect::<Vec<_>>(),
-        );
-        let title = match path.is_empty() {
-            true => "Commands".to_owned(),
-            false => format!("{keys}: {}", layer.first().map_or("", |b| b.group.as_str())),
-        };
+        groups.push(OTHER_GROUP.to_owned());
+        entries.sort_by_key(|e| groups.iter().position(|g| *g == e.group));
         let selected = selected.min(entries.len().saturating_sub(1));
         Some(Column {
-            title,
-            keys,
+            keys: keys_text(path),
             entries,
             selected,
         })
     }
 
-    /// A repeat mode's bar for the layer at `path`, if a binding there
-    /// repeats: `RESIZE  h j k l · Esc`.
+    /// A repeat mode's bar for the map at `path`, if it repeats and binds
+    /// keys: `RESIZE  h j k l · Esc`.
     pub fn repeat_bar(&self, path: &[KeyPress]) -> Option<String> {
-        let layer = self.bindings.layer(path)?;
-        // The keys that repeat, titled by the first one's group.
+        let map = self.root.map(path).filter(|map| map.repeat)?;
+        // Its keys that run, titled by the first one's group.
         let mut keys = Vec::new();
         let mut title = None;
-        for (key, node) in layer.iter() {
-            if let Node::Run {
-                binding,
-                repeat: true,
-            } = node
-            {
+        for (key, entry) in &map.keys {
+            if let Entry::Run(binding) = entry {
                 keys.push(key.to_string());
                 title.get_or_insert(binding.group.as_str());
             }
         }
-        let title = title?;
         Some(format!(
             "{}  {} · Esc",
-            title.to_uppercase(),
+            title?.to_uppercase(),
             keys.join(" ")
         ))
     }
 
     /// Every binding, as `list-keys` shows them: config lines that make
-    /// them again. Not the config's definitions, which a binding may call.
+    /// them again, the maps that repeat said after them. Not the config's
+    /// definitions, which a binding may call.
     pub fn describe(&self) -> String {
-        let prefix = self
-            .prefix
-            .map(|p| format!("str {} prefix\n", quote(&p.to_string())))
-            .unwrap_or_default();
-        let bound = (self.bindings.all().into_iter()).map(|(keys, binding, repeat)| {
-            let repeat = if repeat { "  repeat" } else { "" };
-            format!("{}{repeat}\n", binding.line(&keys_text(&keys), false))
+        let all = self.root.all();
+        let bound = all.iter().filter_map(|(keys, entry)| match entry {
+            Entry::Run(binding) => Some(format!("{}\n", binding.line(&keys_text(keys)))),
+            Entry::Map(_) => None,
         });
-        let root = (self.root.iter())
-            .map(|(key, binding)| format!("{}\n", binding.line(&key.to_string(), true)));
-        std::iter::once(format!("unbind-all\n{prefix}"))
+        let repeats = all.iter().filter_map(|(keys, entry)| match entry {
+            Entry::Map(map) if map.repeat => {
+                Some(format!("str {} repeat\n", quote(&keys_text(keys))))
+            }
+            Entry::Run(_) | Entry::Map(_) => None,
+        });
+        std::iter::once("unbind-all\n".to_owned())
             .chain(bound)
-            .chain(root)
+            .chain(repeats)
             .chain([self.modes.lines()])
             .collect()
     }
+
+    /// The `keys` record: the keys a client holding `at` has typed into
+    /// the map it is in, and every key it binds, depth first, each map
+    /// before its keys, then its screens' keys: a list, not a tree, so its
+    /// depth is the keymap's own.
+    pub fn record(&self, at: &[KeyPress]) -> Json {
+        let text = |keys: &[KeyPress]| Json::str(keys_text(keys));
+        let mut keymap: Vec<Json> = (self.root.all().into_iter())
+            .map(|(keys, entry)| match entry {
+                Entry::Run(binding) => Json::object(vec![
+                    ("kind", Json::str("binding")),
+                    ("keys", text(&keys)),
+                    ("code", Json::str(binding.code.text())),
+                    ("label", Json::str(&binding.label)),
+                    ("group", Json::str(&binding.group)),
+                ]),
+                Entry::Map(map) => Json::object(vec![
+                    ("kind", Json::str("map")),
+                    ("keys", text(&keys)),
+                    ("repeat", Json::Bool(map.repeat)),
+                ]),
+            })
+            .collect();
+        keymap.extend(self.modes.record());
+        Json::object(vec![("at", text(at)), ("keymap", Json::Array(keymap))])
+    }
 }
 
-/// What the client's keys are in the middle of, of its own.
+/// What the client's keys are in the middle of, of its own: the map it is
+/// in, held at the keys typed into it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Held {
+    /// At the root.
     #[default]
     Normal,
-    /// The column is shown, on the layer at `path`.
+    /// The column is shown, of the map at `path`.
     Column {
         path: Vec<KeyPress>,
         selected: usize,
     },
-    /// A repeat mode, of the layer at `path`.
+    /// A repeat mode: the map at `path` repeats, and a key of it ran.
     Repeat { path: Vec<KeyPress> },
-    /// A client that only watches typed its prefix.
-    Prefixed,
+    /// A client that only watches typed a key that holds a map.
+    Prefixed(KeyPress),
 }
 
 impl Held {
+    /// The keys typed into the map the client is in.
+    pub fn at(&self) -> &[KeyPress] {
+        match self {
+            Held::Normal => &[],
+            Held::Column { path, .. } | Held::Repeat { path } => path,
+            Held::Prefixed(key) => std::slice::from_ref(key),
+        }
+    }
+
     /// A key typed at the client's terminal while none of its screens is
     /// open (`crate::screens`): what it leads to. `read_only`: it only
     /// watches, and the prefix then `d` detaches it.
@@ -452,21 +432,17 @@ impl Held {
             return self.watching(keymap, press);
         }
         match std::mem::take(self) {
-            Held::Normal | Held::Prefixed => {
-                if Some(press) == keymap.prefix {
-                    return self.open(keymap, Vec::new(), 0);
-                }
-                match keymap.root_binding(press) {
-                    Some(binding) => vec![Effect::Run(binding.code.clone().into())],
-                    None => vec![Effect::Send(Act::Key(stroke))],
-                }
-            }
+            Held::Normal | Held::Prefixed(_) => match keymap.root.get(press) {
+                Some(Entry::Run(binding)) => vec![Effect::Run(binding.code.clone().into())],
+                Some(Entry::Map(_)) => self.open(keymap, vec![press], 0),
+                None => vec![Effect::Send(Act::Key(stroke))],
+            },
             Held::Column { path, selected } => self.in_column(keymap, path, selected, stroke),
             Held::Repeat { path } => self.repeating(keymap, path, press),
         }
     }
 
-    /// The column for the layer at `path`, shown.
+    /// The column for the map at `path`, shown.
     fn open(&mut self, keymap: &Keymap, path: Vec<KeyPress>, selected: usize) -> Vec<Effect> {
         match self.column(keymap, path, selected) {
             Some(panel) => vec![Effect::Open(panel)],
@@ -481,15 +457,14 @@ impl Held {
         Some(Panel::Column(column))
     }
 
-    /// The keys in `path` and `press` typed: its binding runs, entering its
-    /// layer's repeat mode if it repeats; or its layer opens; or, unbound,
+    /// `press` typed in the map at `path`: its binding runs, a repeat mode
+    /// starting if the map repeats; or the map it holds opens; or, unbound,
     /// the column stays, saying so.
     fn follow(&mut self, keymap: &Keymap, path: Vec<KeyPress>, press: KeyPress) -> Vec<Effect> {
-        let layer = keymap.bindings.layer(&path);
-        match layer.and_then(|l| l.get(press)) {
-            Some(Node::Run { binding, repeat }) => {
-                let bar = repeat.then(|| keymap.repeat_bar(&path)).flatten();
-                let shown = match bar {
+        let map = keymap.root.map(&path);
+        match map.and_then(|m| m.get(press)) {
+            Some(Entry::Run(binding)) => {
+                let shown = match keymap.repeat_bar(&path) {
                     Some(bar) => {
                         *self = Held::Repeat { path };
                         Effect::Open(Panel::Repeat(bar))
@@ -501,7 +476,7 @@ impl Held {
                 };
                 vec![shown, Effect::Run(binding.code.clone().into())]
             }
-            Some(Node::Layer(_)) => {
+            Some(Entry::Map(_)) => {
                 let mut deeper = path;
                 deeper.push(press);
                 self.open(keymap, deeper, 0)
@@ -510,10 +485,7 @@ impl Held {
                 let mut keys = path.clone();
                 keys.push(press);
                 *self = Held::Column { path, selected: 0 };
-                let text = format!(
-                    "{} is not bound",
-                    keys_text(&keymap.prefix.into_iter().chain(keys).collect::<Vec<_>>())
-                );
+                let text = format!("{} is not bound", keys_text(&keys));
                 vec![Effect::Send(Act::Notice { text, error: true })]
             }
         }
@@ -530,15 +502,12 @@ impl Held {
         if press.plain_key() == Some(Key::Escape) {
             return vec![HIDE];
         }
-        if keymap
-            .bindings
-            .layer(&path)
-            .is_some_and(|l| l.get(press).is_some())
-        {
+        let map = keymap.root.map(&path);
+        if map.is_some_and(|m| m.get(press).is_some()) {
             return self.follow(keymap, path, press);
         }
-        if Some(press) == keymap.prefix {
-            // The prefix, at any depth, goes to the pane.
+        if path.first() == Some(&press) {
+            // The key that led here, unbound in it, goes to the pane.
             return vec![HIDE, Effect::Send(Act::Key(stroke))];
         }
         let count = keymap.column(&path, 0).map_or(0, |c| c.entries.len());
@@ -555,17 +524,10 @@ impl Held {
         if press.key == Key::Enter && press.mods == Modifiers::NONE {
             let chosen = keymap.column(&path, selected).and_then(|c| {
                 let entry = c.entries.into_iter().nth(c.selected)?;
-                Some((entry.key, entry.root))
+                Some(entry.key)
             });
             return match chosen {
-                // A key bound without the prefix, listed after the rest.
-                Some((press, true)) => {
-                    let code = keymap.root_binding(press).map(|b| b.code.clone());
-                    std::iter::once(HIDE)
-                        .chain(code.map(|c| Effect::Run(c.into())))
-                        .collect()
-                }
-                Some((key, false)) => self.follow(keymap, path, key),
+                Some(key) => self.follow(keymap, path, key),
                 None => vec![HIDE],
             };
         }
@@ -573,33 +535,28 @@ impl Held {
     }
 
     fn repeating(&mut self, keymap: &Keymap, path: Vec<KeyPress>, press: KeyPress) -> Vec<Effect> {
-        if Some(press) == keymap.prefix {
-            return self.open(keymap, Vec::new(), 0);
+        let bound = keymap.root.map(&path).and_then(|m| m.get(press));
+        if bound.is_none() && path.first() == Some(&press) {
+            // The key that led here opens its column again.
+            return self.open(keymap, vec![press], 0);
         }
-        let bound = keymap.bindings.layer(&path).and_then(|l| l.get(press));
         let plain = !press.mods.ctrl && !press.mods.alt;
         let leaves = press.key == Key::Escape || (press.key == Key::Enter && bound.is_none());
         if plain && leaves {
             return vec![HIDE];
         }
         match bound {
-            Some(Node::Run {
-                binding,
-                repeat: true,
-            }) => {
+            Some(Entry::Run(binding)) => {
                 let code = binding.code.clone();
                 *self = Held::Repeat { path };
                 vec![Effect::Run(code.into())]
             }
-            // A key of the layer that does not repeat runs once, and ends
-            // the mode.
-            Some(Node::Run {
-                binding,
-                repeat: false,
-            }) => {
-                vec![HIDE, Effect::Run(binding.code.clone().into())]
+            Some(Entry::Map(_)) => {
+                let mut deeper = path;
+                deeper.push(press);
+                self.open(keymap, deeper, 0)
             }
-            Some(Node::Layer(_)) | None => {
+            None => {
                 let text = format!("{press} is not one of this mode's keys");
                 vec![HIDE, Effect::Send(Act::Notice { text, error: false })]
             }
@@ -607,13 +564,13 @@ impl Held {
     }
 
     fn watching(&mut self, keymap: &Keymap, press: KeyPress) -> Vec<Effect> {
-        let prefixed = std::mem::take(self) == Held::Prefixed;
+        let prefixed = matches!(std::mem::take(self), Held::Prefixed(_));
         if prefixed && press == KeyPress::char('d') {
             let detach = ["me", "detach"].map(String::from).into();
             return vec![Effect::Run(Code { words: detach }.into())];
         }
-        if !prefixed && Some(press) == keymap.prefix {
-            *self = Held::Prefixed;
+        if !prefixed && keymap.leads(press) {
+            *self = Held::Prefixed(press);
             return Vec::new();
         }
         vec![Effect::Send(watching(keymap))]
@@ -623,7 +580,7 @@ impl Held {
 /// What a client that only watches is told of a key or paste it takes no
 /// further: its own way out.
 pub fn watching(keymap: &Keymap) -> Act {
-    let text = keymap.prefix.map_or_else(
+    let text = keymap.prefix().map_or_else(
         || "watching only".to_owned(),
         |p| format!("watching only: {p} d detaches"),
     );
@@ -658,11 +615,22 @@ impl Modes {
         }
     }
 
+    fn tables(&self) -> impl Iterator<Item = (&'static str, &dyn Bindable)> {
+        let tables: [&dyn Bindable; 2] = [&self.list, &self.line];
+        (Modal::ALL.iter().map(|(name, _)| *name)).zip(tables)
+    }
+
     /// Every key, as config lines that bind it again.
     fn lines(&self) -> String {
-        let tables: [&dyn Bindable; 2] = [&self.list, &self.line];
-        (Modal::ALL.iter().zip(tables))
-            .map(|((name, _), table)| table.lines(name))
+        self.tables()
+            .map(|(name, table)| table.lines(name))
+            .collect()
+    }
+
+    /// Every key, as the `keys` record lists them.
+    fn record(&self) -> Vec<Json> {
+        self.tables()
+            .flat_map(|(name, table)| table.record(name))
             .collect()
     }
 }
@@ -762,6 +730,9 @@ pub trait Bindable {
     fn label(&mut self, key: KeyPress) -> Option<&mut Option<String>>;
     /// Its keys as config lines, for the screen named `modal`.
     fn lines(&self, modal: &str) -> String;
+    /// Its keys as the `keys` record lists them: each of `kind` the screen
+    /// named `modal`, with its action's name or its code.
+    fn record(&self, modal: &'static str) -> Vec<Json>;
 }
 
 impl<A: Named> Bindable for Table<A> {
@@ -811,6 +782,24 @@ impl<A: Named> Bindable for Table<A> {
             }
         };
         self.0.iter().map(line).collect()
+    }
+
+    fn record(&self, modal: &'static str) -> Vec<Json> {
+        let text = |text: Option<String>| text.map_or(Json::Null, Json::String);
+        let entry = |(key, act, label): &(KeyPress, A, Option<String>)| {
+            let code = act.source().map(Code::text);
+            Json::object(vec![
+                ("kind", Json::str(modal)),
+                ("keys", Json::str(key.to_string())),
+                (
+                    "action",
+                    text(code.is_none().then(|| act.name().to_owned())),
+                ),
+                ("code", text(code)),
+                ("label", text(label.clone())),
+            ])
+        };
+        self.0.iter().map(entry).collect()
     }
 }
 
@@ -925,10 +914,8 @@ mod tests {
     #[test]
     fn the_defaults_bind_and_list_in_groups() -> Result<(), String> {
         let keymap = defaults()?;
-        let mut groups: Vec<String> = (keymap.column(&[], 0).ok_or("a column")?.entries)
-            .into_iter()
-            .map(|e| e.group)
-            .collect();
+        let column = keymap.column(&keys("C-b")?, 0).ok_or("a column")?;
+        let mut groups: Vec<String> = column.entries.into_iter().map(|e| e.group).collect();
         groups.dedup();
         let order = [
             "Panes",
@@ -942,7 +929,7 @@ mod tests {
         ];
         assert_eq!(groups, order, "in the order keys.fux binds them");
         assert_eq!(
-            keymap.repeat_bar(&keys("r")?).as_deref(),
+            keymap.repeat_bar(&keys("C-b r")?).as_deref(),
             Some("RESIZE  h j k l · Esc")
         );
         Ok(())
@@ -971,21 +958,27 @@ mod tests {
         Ok(())
     }
 
+    /// A map holds maps at any depth: a key in one that repeats runs and
+    /// stays in it, the keys typed into it held, until Escape.
     #[test]
-    fn a_repeat_mode_keeps_its_layer_until_escape() -> Result<(), String> {
-        let keymap = defaults()?;
+    fn a_map_two_deep_repeats_until_escape() -> Result<(), String> {
+        let mut keymap = defaults()?;
+        let zoom = || Binding::new(crate::testing::code("me focused zoom"));
+        keymap.bind(&keys("C-b y u i")?, zoom())?;
+        keymap.set_repeat(&keys("C-b y u")?)?;
         let mut held = Held::default();
-        for name in ["C-b", "r", "h"] {
+        for name in ["C-b", "y", "u"] {
             held.press(&keymap, stroke(name)?, false);
         }
-        assert!(matches!(held, Held::Repeat { .. }));
-        let steps = held.press(&keymap, stroke("l")?, false);
-        assert_eq!(
-            steps,
-            [Effect::Run(
-                crate::testing::code("me focused str right 1 move-border").into()
-            )]
-        );
+        assert_eq!(held.at(), keys("C-b y u")?);
+        for _ in 0..2 {
+            let steps = held.press(&keymap, stroke("i")?, false);
+            assert!(
+                steps.contains(&Effect::Run(zoom().code.into())),
+                "{steps:?}"
+            );
+            assert!(matches!(held, Held::Repeat { .. }));
+        }
         held.press(&keymap, stroke("Escape")?, false);
         assert_eq!(held, Held::Normal);
         Ok(())
@@ -1010,21 +1003,21 @@ mod tests {
     }
 
     /// The column's own keys move its selection within its bindings; a
-    /// letter is a binding's, and Enter runs the selected one, the keys
-    /// bound without the prefix listed last.
+    /// letter is a binding's, and Enter runs the selected one, the group
+    /// `Other` listed last.
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
         let mut keymap = defaults()?;
-        keymap.bind_root(
-            key("M-t")?,
-            Binding::new(crate::testing::code("opts new-tab drop"), true),
-        )?;
-        let entries = keymap.column(&[], 0).map(|c| c.entries).unwrap_or_default();
+        let new_tab = || crate::testing::code("opts new-tab drop");
+        keymap.bind(&keys("C-b y")?, Binding::new(new_tab()))?;
+        let prefix = keys("C-b")?;
+        let entries = keymap
+            .column(&prefix, 0)
+            .map(|c| c.entries)
+            .unwrap_or_default();
         let last = entries.len().saturating_sub(1);
         assert!(
-            entries
-                .last()
-                .is_some_and(|e| e.root && e.group == ROOT_GROUP),
+            entries.last().is_some_and(|e| e.group == OTHER_GROUP),
             "{entries:?}"
         );
         assert_eq!(
@@ -1063,7 +1056,7 @@ mod tests {
             press("Enter")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(crate::testing::code("opts new-tab drop").into())
+                Effect::Run(new_tab().into())
             ]
         );
         press("C-b")?;
@@ -1078,28 +1071,56 @@ mod tests {
     }
 
     #[test]
-    fn list_keys_shows_sequences_repeats_and_keys_without_the_prefix() -> Result<(), String> {
+    fn list_keys_shows_maps_their_repeats_and_keys_at_the_root() -> Result<(), String> {
         let mut keymap = Keymap::default();
-        keymap.bind(
-            &keys("g n")?,
-            Binding::new(crate::testing::code("opts new-tab drop"), false),
-            false,
-        )?;
-        keymap.bind(
-            &keys("y l")?,
-            Binding::new(
-                crate::testing::code("me focused str right 1 move-border"),
-                false,
-            ),
-            true,
-        )?;
-        keymap.bind_root(
-            key("M-t")?,
-            Binding::new(crate::testing::code("me focused zoom"), true),
-        )?;
+        let bind = |keymap: &mut Keymap, keys_text: &str, code: &str| {
+            keymap.bind(&keys(keys_text)?, Binding::new(crate::testing::code(code)))
+        };
+        bind(&mut keymap, "C-b g n", "opts new-tab drop")?;
+        bind(&mut keymap, "C-b y l", "me focused str right 1 move-border")?;
+        keymap.set_repeat(&keys("C-b y")?)?;
+        bind(&mut keymap, "M-t", "me focused zoom")?;
         assert_eq!(
             keymap.describe(),
-            "unbind-all\nstr 'g n' code opts new-tab drop end bind\nstr 'y l' code me focused str right 1 move-border end bind  repeat\nstr M-t code me focused zoom end bind-root\n"
+            "unbind-all\nstr 'C-b g n' code opts new-tab drop end bind\nstr 'C-b y l' code me focused str right 1 move-border end bind\nstr M-t code me focused zoom end bind\nstr 'C-b y' repeat\n"
+        );
+        Ok(())
+    }
+
+    /// A key is a binding or a map, never both, and moving keys moves a
+    /// map whole, or refuses and changes nothing.
+    #[test]
+    fn keys_bind_a_binding_or_a_map_and_move_whole() -> Result<(), String> {
+        let mut keymap = defaults()?;
+        let zoom = || Binding::new(crate::testing::code("me focused zoom"));
+        assert!(
+            keymap.bind(&keys("C-b t")?, zoom()).is_err(),
+            "t holds a map"
+        );
+        assert!(
+            keymap.bind(&keys("C-b z q")?, zoom()).is_err(),
+            "z runs a binding"
+        );
+        assert!(keymap.bind(&keys("C-b t Escape")?, zoom()).is_err());
+        let before = keymap.clone();
+        assert!(keymap.move_keys(&keys("C-b")?, &keys("C-b q")?).is_err());
+        assert!(keymap.move_keys(&keys("C-b")?, &keys("C-b z")?).is_err());
+        assert!(keymap.move_keys(&keys("C-a")?, &keys("C-b z")?).is_err());
+        assert_eq!(keymap, before);
+        keymap.move_keys(&keys("C-b")?, &keys("C-a")?)?;
+        assert_eq!(
+            keymap.column(&keys("C-a")?, 0),
+            before.column(&keys("C-b")?, 0).map(|c| Column {
+                keys: "C-a".into(),
+                ..c
+            })
+        );
+        assert!(keymap.root.get(key("C-b")?).is_none());
+        keymap.unbind(&keys("C-a t m h")?)?;
+        keymap.unbind(&keys("C-a t m l")?)?;
+        assert!(
+            keymap.root.map(&keys("C-a t m")?).is_none(),
+            "an emptied map goes"
         );
         Ok(())
     }
