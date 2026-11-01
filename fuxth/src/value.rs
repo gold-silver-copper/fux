@@ -59,7 +59,7 @@ pub enum Value<A> {
 /// `throw` codes (its code's, or the one `throw` was given), the value it
 /// carries (a failed wait's answer), the steps whose words had taken
 /// effect before it (`Machine::acted`), and the calls under way where it
-/// happened (`Machine::calls`).
+/// happened (`Machine::calls`), if catching it ended some.
 #[derive(Clone, Debug)]
 pub struct Thrown<A> {
     pub error: Error,

@@ -574,11 +574,6 @@ impl<A: AppValue> Machine<A> {
             }
             return Err(thrown.error);
         };
-        // Where it happened, before the calls there end; one raised again
-        // keeps where it first did.
-        if thrown.calls.is_empty() {
-            thrown.calls = self.calls().collect();
-        }
         // Those inside it end with it.
         self.marks.truncate(caught.saturating_add(1));
         let Some((
@@ -595,6 +590,11 @@ impl<A: AppValue> Machine<A> {
         else {
             return Err(thrown.error);
         };
+        // Where it happened, if calls end as it is caught (else they are
+        // under way still); one raised again keeps where it first did.
+        if thrown.calls.is_empty() && self.frames.len() > frames {
+            thrown.calls = self.calls().collect();
+        }
         while self.frames.len() > frames {
             self.leave();
         }
