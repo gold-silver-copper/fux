@@ -4150,15 +4150,26 @@ mod tests {
     fn a_projects_reader_reads_its_clients_leaving_what_moves_or_closes() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
         for path in ["proj", "proj in str agent1", "proj in str agent2", "other"] {
-            run(&mut s, &format!("opts str {path} in 80 24 size new-tab drop"))?;
+            run(
+                &mut s,
+                &format!("opts str {path} in 80 24 size new-tab drop"),
+            )?;
         }
         let proj = AnyRef::Workspace(WsId::of(2));
-        let reader = |s: &Session, scope| {
-            crate::journal::Reader::new(scope, s.parts.journal(), s.run, None)
-        };
-        let (mut project, mut all) = (reader(&s, fux_wire::inspect::Scope::Target(proj))?, reader(&s, fux_wire::inspect::Scope::All)?);
-        run(&mut s, "str c1 client str agent1 workspace show str agent1 workspace str other workspace move")?;
-        run(&mut s, "str c1 client str agent2 workspace show str agent2 workspace kill")?;
+        let reader =
+            |s: &Session, scope| crate::journal::Reader::new(scope, s.parts.journal(), s.run, None);
+        let (mut project, mut all) = (
+            reader(&s, fux_wire::inspect::Scope::Target(proj))?,
+            reader(&s, fux_wire::inspect::Scope::All)?,
+        );
+        run(
+            &mut s,
+            "str c1 client str agent1 workspace show str agent1 workspace str other workspace move",
+        )?;
+        run(
+            &mut s,
+            "str c1 client str agent2 workspace show str agent2 workspace kill",
+        )?;
         let shown = |lines: String| -> Vec<String> {
             (lines.lines().filter(|l| l.contains(r#""event":"shown""#)))
                 .map(str::to_owned)
@@ -4173,7 +4184,12 @@ mod tests {
         // agent2, and left agent2 closed for proj. Only leaving +1 is not
         // the project's.
         let at = |lines: &[String]| -> Vec<String> {
-            let ws = |l: &String| l.split(r#""workspace":""#).nth(1)?.get(..2).map(str::to_owned);
+            let ws = |l: &String| {
+                l.split(r#""workspace":""#)
+                    .nth(1)?
+                    .get(..2)
+                    .map(str::to_owned)
+            };
             lines.iter().filter_map(ws).collect()
         };
         assert_eq!(at(&project), ["+3", "+3", "+2", "+2", "+4", "+4", "+2"]);

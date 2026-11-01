@@ -634,13 +634,21 @@ fn a_nested_dump_replays_under_another_workspace() -> Outcome {
     server.words(&format!(
         "opts 80 24 size str agent1 in str deep in {sleep}"
     ))?;
-    // Each workspace's name and the one it is in, and each tab's name, its
-    // workspace's and its layout, panes as p.
+    // A tab after a workspace, in each.
+    server.words(&format!(
+        "opts 80 24 size str agent1 in str after name {sleep}"
+    ))?;
+    server.words(&format!(
+        "opts 80 24 size str proj in str last name {sleep}"
+    ))?;
+    // Each workspace's name, the one it is in and its children in order,
+    // and each tab's name, its workspace's and its layout, panes as p.
     let shape = || {
         server.ok(&["str proj workspace str topology snapshot let s
             s str workspaces get each let w
               list w str name get str ' in ' w str parent get
                 dup kind str null eq if drop str top else str name get then
+                str ':' w str children get each let c str ' ' c kind str = c str name get string end
               end glue print
             end
             s str tabs get each let t
@@ -655,7 +663,15 @@ fn a_nested_dump_replays_under_another_workspace() -> Outcome {
     server.ok(&["str", "proj", "workspace", "kill"])?;
     server.ok(&["--file", &file.to_string_lossy(), "home"])?;
     assert_eq!(shape()?, before.replacen("proj in top", "proj in home", 1));
-    assert!(before.starts_with("proj in top\nagent1 in proj\ndeep in agent1\nagent2 in proj\n"));
+    assert!(
+        before.starts_with(
+            "proj in top: tab=top workspace=agent1 workspace=agent2 tab=last\n\
+             agent1 in proj: tab=null workspace=deep tab=after\n\
+             deep in agent1: tab=null\n\
+             agent2 in proj: tab=a2\n"
+        ),
+        "{before}"
+    );
     assert!(
         before.contains("a2 in agent2 [[\"vertical\",2,1,1,2],\"p\",\"p\"]"),
         "{before}"
