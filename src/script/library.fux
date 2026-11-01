@@ -349,51 +349,22 @@ end
 # panes -- tree : balanced tiles, alternating axes, room shared by pane count
 define tiled-of str horizontal true 0 layout-of end
 
-# The caller must resnapshot or explicitly fail its task; filtered losses count too.
-# record -- record : refuse journal loss before any consumer effects
-define events-checked
-  let batch
-  batch str missed get 0 gt if
-    list str '{"event":"missed","count":' batch str missed get string
-      str ',"next":' batch str next get json str '}' end glue print
-    str 'journal entries missed; resnapshot before continuing' fail
-  then
-  batch
-end
 # Timeout is an observation outcome, never evidence that a program is ready.
-# record -- : print one admitted batch as NDJSON, then its exact checkpoint
-define events-print
-  events-checked let batch
-  batch str events get each json print end
-  list str '{"event":' batch str status get json str ',"next":'
-    batch str next get json str ',"reason":' batch str reason get json str '}' end glue print
-end
-# event-scope cursor secs n -- string : a stream of n batches, or (0) till it ends; empty cursor starts now
-define events-since
-  let batches let seconds let cursor let scope
-  batches 0 lt if str 'events takes 0 batches or more' fail then
-  seconds 0 lt if str 'events takes 0 seconds or more' fail then
-  scope cursor 0 next-events events-checked let batch
-  cursor str '' eq if batch str next get let cursor then
-  list str '{"event":"ready","from":' cursor json str '}' end glue print
-  batch events-print
-  batch str next get let cursor
-  batch str status get dup str gone eq swap str stopped eq or let ended
-  1 let taken
+# Each wait is an hour at most, then asked again from where it got to.
+# event-scope cursor -- : its events, a JSON object a line, each with its next, till the scope is gone or the server stops; empty cursor starts now; loss fails
+define events
+  let cursor let scope
   begin
-    ended taken batches eq or dup not if
-      scope cursor seconds next-events events-checked let batch
-      batch str next get let cursor
-      batch events-print
-      batch str status get dup str gone eq swap str stopped eq or let ended
-      taken 1 add let taken
+    scope cursor 3600 next-events let batch
+    batch str missed get 0 gt if
+      list batch str missed get string
+        str ' journal entries missed; resnapshot before continuing' end glue fail
     then
+    batch str events get each json print end
+    batch str next get let cursor
+    batch str status get dup str gone eq swap str stopped eq or
   until
-  cursor
 end
-# For restartable consumers use events-since and retain its returned cursor.
-# event-scope -- : till the stream ends, 30 seconds per wait; every batch prints its checkpoint
-define events str '' 30 0 events-since drop end
 
 # tab -- tab revision list : one topology observation's tab, revision and panes in tree order
 define layout-current

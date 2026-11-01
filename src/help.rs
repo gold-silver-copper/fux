@@ -58,7 +58,8 @@ usage: fux                     attach, starting a server if none runs
 
 Words run left to right, each taking what the words before it left: a
 number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
-WORD` pushes WORD as text. What is left is printed. What a word that acts
+WORD` pushes WORD as text. What is left is printed, a value a line (a
+list an item a line, a list in it as JSON). What a word that acts
 takes (options, keys, what to read) goes on the pane before it (`%2 str y
 text send-keys`, `%2 all-history capture`); only
 {from_opts} start from opts (`opts str jobs in str make
@@ -69,8 +70,16 @@ up. An action answers at once,
 with its pane's version from before it acted, one word
 (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until its
 version differs from V, for as long as that takes unless `SECS timeout`
-bounds it, answering `timeout`. A failure prints
-`fux: CODE: MESSAGE` on stderr.
+bounds it, answering `timeout`. A failure prints nothing more on stdout:
+`fux: CODE: MESSAGE` on stderr, then what was left. Exit statuses:
+  0    done, or what `N exit` gave
+  1    refused: anything else that failed
+  2    a mistake in the program: usage, unknown_word, open_quote,
+       missing_token, unmatched, unclosed, not_top_level, bad_codes,
+       require, type, stack_underflow
+  4    closed: the pane waited on closed
+  124  timeout: a wait's limit came first
+  141  stdout's reader went (a closed pipe), said nowhere
 Driving programs from a script or an agent: `fux help agents`; one word:
 `fux help WORD`.
 ",

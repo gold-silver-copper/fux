@@ -249,7 +249,7 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     );
     let still = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
     assert_eq!(still.status, 124, "{}{}", still.stdout, still.stderr);
-    assert!(still.stdout.ends_with(" timeout\n"), "{}", still.stdout);
+    assert!(still.stderr.ends_with(" timeout\n"), "{}", still.stderr);
     let bad = server.fux(&["str", "0.1.2.0.0", "changed", "wait"])?;
     assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
     // Counts this pane never had (a program started more often, or more
@@ -790,13 +790,13 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     assert_eq!(timed.status, 124, "{}", timed.stderr);
     for pane in [&one, &two] {
         let line = timed
-            .stdout
+            .stderr
             .lines()
             .find(|l| l.starts_with(&format!("{pane}:")));
         assert!(
             line.is_some_and(|l| l.ends_with(" timeout")),
             "{}",
-            timed.stdout
+            timed.stderr
         );
     }
     // A tab's action's answer holds no one pane's version, though it has
@@ -985,23 +985,32 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     Ok(())
 }
 
-/// A failed wait answers as text, whatever follows it, and says why on
-/// one line of stderr; nothing after it runs.
+/// A failed wait prints nothing, whatever follows it: stderr says why on
+/// one line, then its answer as text; nothing after it runs.
 #[test]
-fn a_failed_wait_answers_as_text() -> Outcome {
+fn a_failed_wait_answers_as_text_on_stderr() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&launch(&[], &["sleep", "30"]))?);
     let p = ["str", pane.as_str(), "pane"];
+    let told = |out: &Output| {
+        let lines: Vec<_> = out.stderr.lines().collect();
+        out.status == 124
+            && out.stdout.is_empty()
+            && matches!(&lines[..], [why, answer] if why.starts_with("fux: timeout: ")
+                && answer.starts_with(&format!("{pane}:")) && answer.ends_with(" timeout"))
+    };
     let out = server.fux(&[&p[..], &["1", "timeout", "wait", "json"]].concat())?;
-    assert_eq!(out.status, 124, "{}", out.stderr);
-    assert!(out.stdout.starts_with(&format!("{pane}:")) && out.stdout.ends_with(" timeout\n"));
-    assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
-    assert!(out.stderr.starts_with("fux: timeout: "), "{}", out.stderr);
+    assert!(told(&out), "{}: {}{}", out.status, out.stdout, out.stderr);
     // The same when the wait is a defined word's last step.
     let wait = [&["define", "w"], &p[..], &["1", "timeout", "wait", "end"]];
     let again = server.fux(&[&wait.concat()[..], &["w", "json"]].concat())?;
-    assert_eq!(again.status, 124, "{}", again.stderr);
-    assert!(again.stdout.ends_with(" timeout\n"), "{}", again.stdout);
+    assert!(
+        told(&again),
+        "{}: {}{}",
+        again.status,
+        again.stdout,
+        again.stderr
+    );
     Ok(())
 }
 

@@ -186,7 +186,7 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
         &["str", "nonsense", "1", "set"],
     ] {
         let out = server.fux(args)?;
-        assert_eq!(out.status, 1, "{args:?}: {}", out.stderr);
+        assert_ne!(out.status, 0, "{args:?}: {}", out.stderr);
     }
     Ok(())
 }

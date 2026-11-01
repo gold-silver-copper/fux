@@ -237,7 +237,7 @@ mod runner {
                 ),
                 call(
                     &["str", &v, "expect", "send-keys"],
-                    1,
+                    2,
                     "fux: usage: send-keys",
                 ),
             ];

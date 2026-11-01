@@ -251,22 +251,27 @@ frozen once its terminal is drained.
 A wait that fails (124 nothing changed, 4 its pane closed) answers too,
 with its status: `{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":124}`,
 the version it is still at; `{"pane":"%3","status":4}`, its pane closed.
-Uncaught, it ends the program with that status and says why on stderr, one
-line, `fux: CODE: MESSAGE`, its answer printed first, as text, after the
-answers of the words before it; nothing after it runs. Caught by `try`,
+Uncaught, it ends the program with that status, stdout getting nothing
+more, and says why on stderr, one line, `fux: CODE: MESSAGE`, then the
+answers of the words before it and its own, as text; nothing after it runs. Caught by `try`,
 the handler gets its answer in place of the message, under the code:
 `str timeout try %3 5 timeout wait catch drop end json` prints it, and
 `wait` on it waits again from the version it is still at. A wait on a
 tab's or a workspace's panes answers each that changed, the first failing
 status naming the whole.
 
-## `next-events` and library event streams
+## `next-events` and `events`
 
-`SCOPE str CURSOR SECONDS next-events` returns one immutable record:
+`SCOPE str CURSOR SECONDS next-events` returns one immutable record; its
+`json`, and its fields with `get`, are all of it:
 
 ```json
 {"events":[{"event":"bell","pane":"%3","tab":"@2","workspace":"+2","origin":{"kind":"program","pane":"%3","generation":0},"next":"42:7-1f"}],"next":"42:7-1f","missed":0,"status":"continuing","reason":null}
 ```
+
+Left at a command line's end, it prints its events alone, a JSON object a
+line (none: nothing); one with `missed` above 0 is refused there, on
+stderr (`fail`, exit 1).
 
 The scope is a pane, tab, workspace, client, or `all`. An empty cursor starts
 at the journal's current end; otherwise use `SEQ:RUN`, from a snapshot's
@@ -359,25 +364,27 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `notification` | `text`, optional `truncated` |
 | `title` | `title`, optional `truncated` |
 | `resized` | pane `cols`, `rows` |
-| `ready`, `missed` | library stream markers only: armed cursor, or explicit lost-entry count |
 
-`all events` is a library program: batches until the stream ends, waiting at
-most 30 seconds each.
-`SCOPE str CURSOR SECONDS BATCHES events-since` takes a count of batches (0:
-until the stream ends) and returns its final cursor. The initial immediate arming/replay read counts
-toward that bound; SECONDS applies to later waits. It prints NDJSON: an armed `ready` with `from`,
-then events and a checkpoint marker after every batch (its status as `event`,
-`next`, `reason`). Loss prints `missed` with its count/cursor and fails before
-consumer effects. Keep the last successful checkpoint to restart; effects
-are not exactly once. A gone scope ends the library stream successfully; `gone` is data, not a raised error.
-A hook is an ordinary client program over those same batches, filtering
-both event and origin, with explicit source; it never runs on the server.
+`SCOPE str CURSOR events` is a library program over `next-events`, as
+`journalctl -f --after-cursor`: it prints the scope's events after CURSOR
+(an empty one starts now), one JSON object a line, each with its `next`,
+until the scope is gone (its close the last line, when retained) or the
+server stops. A timeout prints nothing; it waits again. Its consumer
+bounds it (`head -n`, `timeout`, `jq 'first(…)'`) and keeps it (`>> FILE`,
+`tee`), and restarts from the last line's `next`: `missed` then counts the
+entries evicted since, including nonmatches. Loss fails it (`fail`, on
+stderr) before it prints a later event; resnapshot. Effects are not
+exactly once. A hook is an ordinary client program over that stream,
+filtering both event and origin, with explicit source; it never runs on
+the server.
 
 ## Errors
 
 A failure is one line on stderr, `fux: CODE: MESSAGE`, the message naming
-the file, line and word it came from. Its exit status is 1, or a
-wait's own (above). CODE stays; every one fux gives
+the file, line and word it came from. Its exit status is 2 for a mistake in
+the program itself (`usage`, `require`, `open_quote`, `unknown_word`,
+`missing_token`, `not_top_level`, `unmatched`, `unclosed`,
+`stack_underflow`, `type`, `bad_codes`), a wait's own (above), else 1. CODE stays; every one fux gives
 (`fux-wire/src/code.rs` says what each means):
 
 - reaching a server: `no_server`, `mismatch`, `client`;

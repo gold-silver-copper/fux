@@ -11,6 +11,9 @@ use std::num::NonZeroU8;
 /// The exit statuses, a meaning each, besides 0: what was asked came.
 /// Any failure but these.
 const FAILED: NonZeroU8 = NonZeroU8::MIN;
+/// A mistake in the program itself, as other programs exit on a usage
+/// error.
+const PROGRAM: NonZeroU8 = NonZeroU8::MIN.saturating_add(1);
 /// The pane waited on closed.
 const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
 /// The time limit came first: as `timeout(1)`.
@@ -20,8 +23,9 @@ const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
 /// Variant "name", Closed "closed" CLOSED, … }` expands to the enum `Code`
 /// of those variants and `Lang`, the language's own codes; `Code::ALL`,
 /// fux's own in order; `Code::status`, each one's exit status: the one its
-/// row names (`Code::Closed => CLOSED`), else `FAILED`, as for the
-/// language's; `Code::raised`, whether a word a program runs can fail with
+/// row names (`Code::Closed => CLOSED`), else `FAILED`; the language's,
+/// `PROGRAM` for a mistake in the program (`in_program`), else `FAILED`;
+/// `Code::raised`, whether a word a program runs can fail with
 /// it, so a `try` may catch it: not for a `run_loop` one, which only the
 /// loop running the program gives; a language's code if fuxth's words
 /// raise it, or fux's (`raises`); `Raise`, what a word's `fail` takes: the
@@ -54,6 +58,7 @@ macro_rules! codes {
             pub fn status(self) -> NonZeroU8 {
                 match self {
                     $(Code::$variant => codes!(@status $($status)?),)*
+                    Code::Lang(LangCode(code)) if in_program(code) => PROGRAM,
                     $(Code::$looped)|* | Code::Lang(_) => FAILED,
                 }
             }
@@ -151,7 +156,7 @@ codes! {
     /// A value out of what a word takes.
     BadValue "bad_value",
     /// A command used wrongly.
-    Usage "usage",
+    Usage "usage" PROGRAM,
     // What a command meets.
     /// A program that exited or closed its terminal, or none the pane's
     /// while it respawns; or its terminal reads failed: nothing takes input there.
@@ -251,6 +256,26 @@ impl std::str::FromStr for Code {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LangCode(fuxth_core::Code);
 
+/// Whether the language's `code` is a mistake in the program itself: its
+/// text, as compiling finds it, or a word given too few values or one of
+/// the wrong kind.
+fn in_program(code: fuxth_core::Code) -> bool {
+    use fuxth_core::Code as Lang;
+    matches!(
+        code,
+        Lang::Require
+            | Lang::OpenQuote
+            | Lang::UnknownWord
+            | Lang::MissingToken
+            | Lang::Unmatched
+            | Lang::Unclosed
+            | Lang::NotTopLevel
+            | Lang::BadCodes
+            | Lang::Type
+            | Lang::StackUnderflow
+    )
+}
+
 impl Code {
     /// The language's code as fux names it, found by its name among them
     /// all: a host's (every host code is one of fux's own, given by
@@ -263,7 +288,8 @@ impl Code {
     }
 }
 
-/// Why a command, or attaching a client, failed: exit status 1.
+/// Why a command, or attaching a client, failed: its code says its exit
+/// status.
 #[derive(Debug)]
 pub enum Error {
     // What a command names, or its context gives, that is not there.

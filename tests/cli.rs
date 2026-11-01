@@ -88,7 +88,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     // Swap toward a neighbour uses the same atomic backend as a counterpart.
     server.ok(&["str", "%2", "pane", "str", "horizontal", "axis", "split"])?;
     server.ok(&["%2", "str", "right", "swap-with"])?;
-    assert_eq!(server.ok(&["%2", "tab", "panes"])?.trim(), "%3 %2");
+    assert_eq!(server.ok(&["%2", "tab", "panes"])?, "%3\n%2\n");
     server.ok(&["%2", "%3", "swap-with"])?;
     let refused = server.fux(&["%2", "str", "new-tabb", "move"])?;
     assert_eq!(refused.status, 1, "{}", refused.stderr);
@@ -185,17 +185,18 @@ fn send_keys_and_signal() -> Outcome {
     Ok(())
 }
 
-/// A word's error names its code and exits 1; a wait's failure keeps its
-/// status; what is left on the stack is printed, a value a line, bottom
-/// first; `json` turns an answer into JSON.
+/// A word's error names its code and exits 2 for a mistake in the program;
+/// a wait's failure keeps its status, its stdout empty; what is left on the
+/// stack is printed, a value a line, bottom first; `json` turns an answer
+/// into JSON.
 #[test]
 fn errors_statuses_and_what_is_left() -> Outcome {
     let server = Server::start("")?;
     let typed = server.fux(&["3", "pane"])?;
-    assert_eq!(typed.status, 1);
+    assert_eq!(typed.status, 2);
     assert!(typed.stderr.starts_with("fux: type: "), "{}", typed.stderr);
     let unknown = server.fux(&["frobnicate"])?;
-    assert_eq!(unknown.status, 1);
+    assert_eq!(unknown.status, 2);
     assert!(
         unknown.stderr.starts_with("fux: unknown_word: ") && unknown.stderr.contains("fux help"),
         "{}",
@@ -247,16 +248,18 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         timed_out.stderr
     );
-    // What the words before a failing wait left is printed first, then its
-    // pane's answer, and why on one line of stderr.
+    // A failing wait prints nothing: on stderr, why, then what the words
+    // before it left and its pane's answer.
     let failed = server.fux(&["str", "before", "%1", "1", "timeout", "wait"])?;
     assert_eq!(failed.status, 124, "{}", failed.stderr);
+    assert_eq!(failed.stdout, "");
+    let told: Vec<_> = failed.stderr.lines().collect();
     assert!(
-        failed.stdout.starts_with("before\n%1:") && failed.stdout.ends_with(" timeout\n"),
+        matches!(&told[..], [why, "before", answer]
+            if why.starts_with("fux: timeout: ") && answer.starts_with("%1:") && answer.ends_with(" timeout")),
         "{}",
-        failed.stdout
+        failed.stderr
     );
-    assert_eq!(failed.stderr.lines().count(), 1, "{}", failed.stderr);
     // A try naming the timeout goes on after it: the wait's answer goes
     // with the body's values, its code is left.
     let caught = server.fux(&[
@@ -336,9 +339,19 @@ fn errors_statuses_and_what_is_left() -> Outcome {
 #[test]
 fn mistakes_name_what_the_program_wrote() -> Outcome {
     let server = Server::start("")?;
+    // Each fails with its code's status: 2 for a mistake in the program.
     let said = |args: &[&str]| -> Result<String, String> {
         let ran = server.fux(args)?;
-        assert_eq!(ran.status, 1, "{args:?}: {}", ran.stdout);
+        let code = (ran.stderr.strip_prefix("fux: "))
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(code, _)| code.parse::<fux_wire::code::Code>().ok())
+            .ok_or_else(|| format!("{args:?}: {}", ran.stderr))?;
+        assert_eq!(
+            ran.status,
+            i32::from(code.status().get()),
+            "{args:?}: {}",
+            ran.stdout
+        );
         Ok(ran.stderr)
     };
     // What its kinds can't show before it runs (a list's element) fails
@@ -495,7 +508,7 @@ fn a_script_runs_as_the_shell_runs_it() -> Outcome {
     );
     let path = greet.to_string_lossy();
     let named = server.fux(&[&path, "ann"])?;
-    assert_eq!(named.status, 1);
+    assert_eq!(named.status, 2);
     assert!(named.stderr.contains("unknown_word"), "{}", named.stderr);
     assert!(named.stdout.is_empty(), "{}", named.stdout);
     Ok(())
@@ -599,7 +612,7 @@ fn an_argument_that_is_not_text_is_refused() -> Outcome {
         .output()
         .map_err(e)?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.starts_with("fux: usage: "), "{stderr}");
     Ok(())
 }
@@ -644,10 +657,134 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
         !server.ok(&["ls", "listing"])?.contains("%2"),
         "new-tab ran after help failed"
     );
-    let mut events = full()?.args(["all", "events"]).spawn().map_err(e)?;
+    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
+    server.ok(&["%1", "str", "told", "rename"])?;
+    let mut events = (full()?.args(["all", "str", cursor.trim(), "events"]))
+        .spawn()
+        .map_err(e)?;
     eventually("events to end", || {
         Ok(events.try_wait().map_err(e)?.is_some())
     })?;
+    Ok(())
+}
+
+/// A stdout whose reader goes (`| head -1`) ends fux quietly, with 141 as
+/// a shell gives `cat` that SIGPIPE ended: a stream of events waiting for
+/// the next, as a program printing.
+#[test]
+fn a_closed_pipe_ends_fux_quietly() -> Outcome {
+    use std::io::{BufRead, BufReader};
+    let server = Server::start("")?;
+    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
+    server.ok(&["%1", "str", "told", "rename"])?;
+    let printing = "0 begin str line print 1 add dup 1000000 eq until";
+    for args in [&["all", "str", cursor.trim(), "events"][..], &[printing]] {
+        let mut fux = std::process::Command::new(fux())
+            .args(args)
+            .env("FUX_SOCKET", &server.socket)
+            .env_remove("FUX_PANE")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(e)?;
+        let mut first = String::new();
+        let stdout = fux.stdout.take().ok_or("no stdout")?;
+        BufReader::new(stdout).read_line(&mut first).map_err(e)?;
+        eventually("fux to end", || Ok(fux.try_wait().map_err(e)?.is_some()))?;
+        let ended = fux.wait_with_output().map_err(e)?;
+        assert!(!first.is_empty(), "{args:?}");
+        assert_eq!(ended.status.code(), Some(141), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&ended.stderr), "", "{args:?}");
+    }
+    Ok(())
+}
+
+/// An action acts though stdout's reader is already gone: the closed pipe
+/// is met as its answer is written (141), never before it asks. A wait or
+/// stream meets it as it waits, caught or not.
+#[test]
+fn an_action_acts_though_stdout_is_closed() -> Outcome {
+    let server = Server::start("")?;
+    let closed = |args: &[&str]| -> Result<std::process::Output, String> {
+        let (reader, writer) = std::io::pipe().map_err(e)?;
+        drop(reader);
+        std::process::Command::new(fux())
+            .args(args)
+            .env("FUX_SOCKET", &server.socket)
+            .env_remove("FUX_PANE")
+            .stdout(writer)
+            .output()
+            .map_err(e)
+    };
+    let renamed = closed(&["%1", "str", "renamed", "rename"])?;
+    assert_eq!(renamed.status.code(), Some(0));
+    assert_eq!(server.ok(&["str", "renamed", "pane"])?, "%1\n");
+    let launch = [
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "sh",
+        "program",
+        "new-tab",
+    ];
+    let made = closed(&launch)?;
+    assert_eq!(made.status.code(), Some(141));
+    assert_eq!(
+        server.ok(&["str", "agent", "workspace", "panes", "len"])?,
+        "1\n"
+    );
+    let caught = "str output try all str '' events catch 2drop end";
+    let stream = closed(&[caught])?;
+    assert_eq!(stream.status.code(), Some(141));
+    assert_eq!(String::from_utf8_lossy(&stream.stderr), "");
+    Ok(())
+}
+
+/// A batch `next-events` leaves prints as its events, a JSON object a line:
+/// nothing when none came; `json` gives all of it.
+#[test]
+fn a_batch_left_prints_its_events() -> Outcome {
+    let server = Server::start("")?;
+    let idle = server.fux(&["all", "str", "", "0", "next-events"])?;
+    assert_eq!((idle.status, idle.stdout.as_str()), (0, ""));
+    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
+    server.ok(&["%1", "str", "told", "rename"])?;
+    let read = ["all", "str", cursor.trim(), "0", "next-events"];
+    let events = server.ok(&read)?;
+    assert!(
+        matches!(&events.lines().collect::<Vec<_>>()[..], [one]
+            if one.starts_with(r#"{"event":"renamed""#) && one.contains(r#""next":""#)),
+        "{events}"
+    );
+    let whole = server.ok(&[&read[..], &["json"]].concat())?;
+    assert!(whole.starts_with(r#"{"events":[{"#) && whole.contains(r#""missed":0"#));
+    Ok(())
+}
+
+/// A failure's report tells every value left, a batch that missed entries
+/// whole among them, and stdout nothing: the action after the batch is told.
+#[test]
+fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
+    let server = Server::start_journal(2)?;
+    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
+    for name in ["a", "b", "c", "d"] {
+        server.ok(&["%1", "str", name, "rename"])?;
+    }
+    let lost = ["all", "str", cursor.trim(), "0", "next-events"];
+    let keys = ["%1", "str", "x", "text", "send-keys", "str", "boom", "fail"];
+    let failed = server.fux(&[&lost[..], &keys].concat())?;
+    assert_eq!(failed.status, 1, "{}", failed.stderr);
+    assert_eq!(failed.stdout, "");
+    let told: Vec<_> = failed.stderr.lines().collect();
+    assert!(
+        matches!(&told[..], [why, batch, answer]
+            if why.starts_with("fux: fail: ") && batch.contains(r#""missed":2"#)
+                && answer.starts_with("%1:")),
+        "{}",
+        failed.stderr
+    );
     Ok(())
 }
 

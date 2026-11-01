@@ -674,6 +674,8 @@ pub struct Server {
     stop: Option<Stop>,
     /// Whether a server of another protocol is followed.
     follow: Follow,
+    /// A command line's: set once its stdout's reader is gone.
+    out: Option<Rc<std::cell::Cell<bool>>>,
 }
 
 /// Whether a run follows a server of another protocol: runs its command
@@ -705,19 +707,34 @@ impl Acted {
     }
 }
 
-/// A command line's stdout, which marks its program acted.
+/// A command line's stdout, where all it prints goes: which marks its
+/// program acted, and notes its reader gone (a closed pipe).
 struct Watched<'a> {
     out: &'a mut dyn Write,
     acted: Acted,
+    closed: Rc<std::cell::Cell<bool>>,
+}
+
+impl Watched<'_> {
+    fn noted<T>(&self, wrote: io::Result<T>) -> io::Result<T> {
+        if let Err(error) = &wrote
+            && error.kind() == io::ErrorKind::BrokenPipe
+        {
+            self.closed.set(true);
+        }
+        wrote
+    }
 }
 
 impl Write for Watched<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.acted.mark();
-        self.out.write(bytes)
+        let wrote = self.out.write(bytes);
+        self.noted(wrote)
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.out.flush()
+        let flushed = self.out.flush();
+        self.noted(flushed)
     }
 }
 
@@ -889,7 +906,7 @@ impl Asks for Server {
         }
         let reply = match self.stop.as_ref().is_some_and(Stop::stopped) {
             true => Err(cancelled()),
-            false => requests.ask(asked).map_err(client_failed),
+            false => (requests.ask(asked, self.out.as_deref())).map_err(client_failed),
         };
         // Let go of before the flag is read: a stop from then on cannot
         // shut what is kept.
@@ -1136,7 +1153,7 @@ pub fn run(
 
 /// Raises a failed reply's failure at the word. A pane's answer's
 /// failure (`PaneAnswer::FAILURES`) carries its answer, which a `try` that catches it gets for its
-/// message; uncaught, the answer is left, printed before why it failed.
+/// message; uncaught, the answer is left, told on stderr before why it failed.
 /// Any other fails alone: no other failure answers.
 fn raised(
     machine: &mut Machine<Fux>,
@@ -1153,7 +1170,7 @@ fn raised(
     match machine.raise(failure, Some(answer.clone())) {
         Ok(()) => Ok(()),
         Err(error) => {
-            // Only the original uncaught wait failure prints its answer.
+            // Only the original uncaught wait failure tells its answer.
             if error.code == code.into() {
                 machine.push(answer);
             }
@@ -1507,7 +1524,8 @@ fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a
-/// line. Its exit status (0, or what `exit` gave), or why it failed. With
+/// line (`written`). Its exit status (0, what `exit` gave, or `PIPE`), or
+/// why it failed, which it has told on stderr, with what was left. With
 /// `argv`, the process's whole command line, a server of another protocol
 /// is followed: the process runs it again with the server's binary
 /// (`client::follow`); with none, as in tests, never.
@@ -1515,6 +1533,45 @@ pub fn main(
     args: &[String],
     argv: Option<Vec<std::ffi::OsString>>,
     out: &mut dyn Write,
+) -> Result<u8, Failed> {
+    let acted = Acted::default();
+    let closed = Rc::new(std::cell::Cell::new(false));
+    let mut out = Watched {
+        out,
+        acted: acted.clone(),
+        closed: closed.clone(),
+    };
+    let mut left = Vec::new();
+    match ran(args, argv, &mut out, acted, &mut left) {
+        // Its reader gone, fux ends quietly, whatever the program did then,
+        // failed or caught it and went on.
+        _ if closed.get() => Ok(PIPE),
+        // stdout holds only what the program printed. Why it failed goes to
+        // stderr, then what the words before the failure left, their
+        // answers; nowhere is left to say that stderr failed.
+        Err(failed) => {
+            let mut err = io::stderr();
+            let _ = writeln!(err, "fux: {failed}");
+            let _ = printed(&left, &mut err, Batch::Whole);
+            Err(failed)
+        }
+        ran => ran,
+    }
+}
+
+/// The status a shell gives `cat` that SIGPIPE ended, which fux ends with
+/// once its stdout's reader is gone (`fux all str '' events | head -1`): so
+/// a pipeline under `set -o pipefail` tells a program cut short from one
+/// that finished, as with `cat`.
+const PIPE: u8 = 128 + 13;
+
+/// `main`'s run, its output going to `out`; failed, what was left in `left`.
+fn ran(
+    args: &[String],
+    argv: Option<Vec<std::ffi::OsString>>,
+    out: &mut Watched<'_>,
+    acted: Acted,
+    left: &mut Vec<Value<Fux>>,
 ) -> Result<u8, Failed> {
     if matches!(args, [flag] if matches!(flag.as_str(), "--version" | "-V")) {
         writeln!(out, "{}", fux_wire::protocol::Build::OURS).map_err(output_failed)?;
@@ -1529,7 +1586,6 @@ pub fn main(
     let mut machine = base(None).map_err(|failed| uncompiled(failed, again.as_ref()))?;
     machine.read(tokens, path.clone());
     let mut state = Draft::default();
-    let acted = Acted::default();
     // A program file that may not read the same again (a pipe, `<(…)`)
     // is not read again by the server's binary.
     if path
@@ -1538,17 +1594,15 @@ pub fn main(
     {
         acted.mark();
     }
-    let mut out = Watched {
-        out,
-        acted: acted.clone(),
-    };
-    let mut host = Host::cli(client::context(), &mut state, &mut out);
+    let closed = out.closed.clone();
+    let mut host = Host::cli(client::context(), &mut state, out);
     let mut cli = Cli {
         server: Server {
             follow: rerun.map_or(Follow::Never, |rerun| Follow::Command {
                 rerun,
                 acted: acted.clone(),
             }),
+            out: Some(closed),
             ..Server::default()
         },
         from,
@@ -1562,25 +1616,33 @@ pub fn main(
         true if !cli.acted.marked() => uncompiled(failed, again.as_ref()),
         true | false => failed,
     });
-    // What the words before a failure left is printed too: their answers.
-    // The run's failure, if it failed, came first, and is the one told.
-    let stack = match &ran {
-        Ok(stack) => stack.as_slice(),
-        Err(_) => machine.stack(),
-    };
-    let mut out = io::BufWriter::with_capacity(64 << 10, &mut *host.out);
-    let printed = (stack.iter())
-        // Empty pane outcomes and captures print no blank line;
-        // options or a request, nothing.
-        .filter(|value| {
-            !matches!(value, Value::App(Fux::Answer(a, _)) if a.is_empty())
-                && !matches!(value, Value::App(Fux::Opts(_)))
-        })
-        .try_for_each(|value| written(&mut out, value))
-        .and_then(|()| out.flush().map_err(output_failed));
-    ran?;
-    printed?;
-    Ok(cli.status.unwrap_or(0))
+    match ran {
+        Ok(stack) => {
+            printed(&stack, host.out, Batch::Events)?;
+            Ok(cli.status.unwrap_or(0))
+        }
+        Err(failed) => {
+            *left = machine.stack().to_vec();
+            Err(failed)
+        }
+    }
+}
+
+/// How a `next-events` batch left on the stack is written.
+#[derive(Clone, Copy)]
+enum Batch {
+    /// On stdout: its events alone, refused if it missed entries.
+    Events,
+    /// In a failure's report on stderr: its whole record, never refused,
+    /// so what comes after it is told too.
+    Whole,
+}
+
+/// Writes what a run left, a value a line.
+fn printed(stack: &[Value<Fux>], out: &mut dyn Write, batch: Batch) -> Result<(), Failed> {
+    let mut out = io::BufWriter::with_capacity(64 << 10, out);
+    (stack.iter()).try_for_each(|value| written(&mut out, value, batch))?;
+    out.flush().map_err(output_failed)
 }
 
 /// A command line this fux cannot read, `failed`, which the server's may:
@@ -1610,8 +1672,34 @@ fn output_failed(error: io::Error) -> Failed {
     Failed::new(Code::Output, format!("writing the output: {error}"))
 }
 
-/// Writes a value's text without holding a second whole copy.
-fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
+/// Writes a value left on the stack, without holding a second whole copy:
+/// a list an item a line, a list in it as one line of JSON; a `next-events`
+/// batch as `batch` says. An empty string, list, capture or answer of no
+/// panes writes nothing, and options or a request nothing; an empty string
+/// in a list is a blank line.
+fn written(out: &mut dyn Write, value: &Value<Fux>, batch: Batch) -> Result<(), Failed> {
+    match value {
+        Value::List(list) => list.items().iter().try_for_each(|item| line(out, item)),
+        Value::Str(text) if text.is_empty() => Ok(()),
+        Value::App(Fux::Answer(answer, _)) if answer.is_empty() => Ok(()),
+        Value::App(Fux::Opts(_)) => Ok(()),
+        Value::App(Fux::Record(record)) if matches!(batch, Batch::Events) => {
+            match (record.printed_events()).map_err(|f| Failed::new(Code::of(f.code), f.message))? {
+                Some(events) => written(out, &events, batch),
+                None => line(out, value),
+            }
+        }
+        Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_) => line(out, value),
+    }
+}
+
+/// Writes one item and its line end: its text, or a list's JSON.
+fn line(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
     struct Out<'a>(&'a mut dyn Write, Option<io::Error>);
     impl std::fmt::Write for Out<'_> {
         fn write_str(&mut self, text: &str) -> std::fmt::Result {
@@ -1622,20 +1710,25 @@ fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
         }
     }
     let mut stream = Out(out, None);
-    let wrote = value.write_text(&mut stream);
+    let wrote = match value {
+        Value::List(_) => words::write_json_value(value, &mut stream)
+            .map_err(|_| Failed::new(Code::Output, "the text could not be written")),
+        Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_) => {
+            (value.write_text(&mut stream)).map_err(|f| Failed::new(Code::of(f.code), f.message))
+        }
+    };
     if let Some(error) = stream.1 {
         return Err(output_failed(error));
     }
-    wrote.map_err(|f| Failed::new(Code::of(f.code), f.message))?;
+    wrote?;
     writeln!(out).map_err(output_failed)
 }
 
-/// The program `args` give, its file, where it came from, and its text if
-/// that was stdin, which it has then read: none attaches; `-` is stdin;
-/// `--file FILE ARGS…` a file, any that reads, the arguments after it its
-/// own (`#!/usr/bin/env -S fux --file`); help as other programs give it;
-/// any other one argument a whole program, as a shell passes `fux 'ls
-/// json'`, never a file, whatever it holds; else each is a word.
 /// A program as `program` gives it: its words, its file, where it came
 /// from, and its text if it was stdin's.
 type Loaded = (
@@ -1645,6 +1738,12 @@ type Loaded = (
     Option<String>,
 );
 
+/// The program `args` give, its file, where it came from, and its text if
+/// that was stdin, which it has then read: none attaches; `-` is stdin;
+/// `--file FILE ARGS…` a file, any that reads, the arguments after it its
+/// own (`#!/usr/bin/env -S fux --file`); help as other programs give it;
+/// any other one argument a whole program, as a shell passes `fux 'ls
+/// json'`, never a file, whatever it holds; else each is a word.
 fn program(args: &[String]) -> Result<Loaded, Failed> {
     let words = match args {
         [] => token::arguments(&["default-attach"]),
@@ -2021,11 +2120,73 @@ pub(crate) mod tests {
         allocator.reset_peak();
         {
             let mut out = std::io::BufWriter::with_capacity(64 << 10, &mut sink);
-            super::written(&mut out, &text)?;
+            super::written(&mut out, &text, super::Batch::Events)?;
             out.flush()?;
         }
         assert_eq!(sink.0, (2 << 20) + 1);
         assert!(allocator.peak().saturating_sub(base) <= 64 << 10);
+        Ok(())
+    }
+
+    /// What a run leaves prints a value a line, and a list an item a line:
+    /// a list in it as a line of JSON, an empty string in it a blank line;
+    /// an empty string or list prints nothing.
+    #[test]
+    fn a_list_left_prints_an_item_a_line() -> TestResult {
+        let mut out = Vec::new();
+        let program = "list 1 str '' list 2 str x end end str '' list end 3";
+        assert_eq!(super::main(&[program.into()], None, &mut out)?, 0);
+        assert_eq!(String::from_utf8(out)?, "1\n\n[2,\"x\"]\n3\n");
+        Ok(())
+    }
+
+    /// A closed pipe a program caught still ends it with `PIPE`.
+    #[test]
+    fn a_caught_closed_pipe_still_ends_quietly() -> TestResult {
+        struct Closed;
+        impl std::io::Write for Closed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let program = "str output try str x print catch 2drop end";
+        assert_eq!(
+            super::main(&[program.into()], None, &mut Closed)?,
+            super::PIPE
+        );
+        Ok(())
+    }
+
+    /// A batch that missed entries is refused as it is printed, and nothing
+    /// of it written; one with none is its events alone.
+    #[test]
+    fn a_batch_left_that_missed_entries_is_refused() -> TestResult {
+        use fux_wire::events::{Batch, Status};
+        let next = "1:1-0".parse().map_err(|()| "cursor")?;
+        for (missed, written) in [(2, None), (0, Some(""))] {
+            let batch = Batch {
+                next,
+                missed,
+                status: Status::Timeout,
+                events: Vec::new(),
+            };
+            let mut out = Vec::new();
+            let printed = super::written(
+                &mut out,
+                &super::record::events(batch).map_err(|f| f.message)?,
+                super::Batch::Events,
+            );
+            let said = printed.map_err(|f| f.to_string());
+            match written {
+                Some(text) => assert_eq!(String::from_utf8(out)?, text),
+                None => assert!(
+                    out.is_empty() && said.is_err_and(|e| e.contains("2 journal entries missed")),
+                ),
+            }
+        }
         Ok(())
     }
 
