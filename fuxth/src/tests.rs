@@ -1065,6 +1065,8 @@ fn every_core_word_documents_its_effect_and_meaning() {
                         | Builtin::Fill
                         | Builtin::CopyCells
                         | Builtin::Create
+                        | Builtin::Variable
+                        | Builtin::Constant
                 ),
             "{}",
             builtin.name()

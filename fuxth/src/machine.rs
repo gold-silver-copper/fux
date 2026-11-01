@@ -97,7 +97,8 @@ impl<A> Steps<A> {
             | Op::EachNext(target)
             | Op::Tried(target)
             | Op::Try(target, _)
-            | Op::Do(target),
+            | Op::Do(target)
+            | Op::Does(target),
         ) = self.ops.get_mut(at)
         {
             *target = to;
@@ -174,8 +175,7 @@ impl<A> Steps<A> {
                 | Op::Do(_)
                 | Op::Loop(_)
                 | Op::LoopBy(_)
-                | Op::Does
-                | Op::Resume(..) => {}
+                | Op::Does(_) => {}
             }
         }
     }
@@ -234,12 +234,9 @@ pub(crate) enum Op<A> {
     Loop(usize),
     /// `loop-by`: takes how far the index moves, as `loop` moves it by 1.
     LoopBy(usize),
-    /// `does`: the word `create` made last runs the rest of the code, and
-    /// the frame returns.
-    Does,
-    /// Runs the code at the index from the step given, in a frame of its
-    /// own: what `does` gave a word.
-    Resume(usize, usize),
+    /// `does`: the word `create` made last calls the code at the index
+    /// given (what followed `does`), and the frame returns.
+    Does(usize),
 }
 
 /// Whether the code returns from step `at` doing nothing more: it is past
@@ -920,22 +917,12 @@ impl<A: AppValue> Machine<A> {
                         self.call(called, code, index, after);
                         continue 'frames;
                     }
-                    Op::Resume(called, from) => {
-                        let slots = self.version_at(*called).map_or(0, |c| c.locals);
-                        self.call((*called, slots), code, index, after);
-                        self.jump(*from);
+                    Op::Leave => {
+                        self.leave_definition(depth);
                         continue 'frames;
                     }
-                    Op::Leave | Op::Does => {
-                        if let Op::Does = op {
-                            self.does(index, after)?;
-                        }
-                        self.iters.retain(|(.., frames)| *frames < depth);
-                        self.loops.retain(|l| l.frames < depth);
-                        while self.marks.last().is_some_and(|(_, b)| b.frames() >= depth) {
-                            self.marks.pop();
-                        }
-                        self.leave();
+                    Op::Does(action) => {
+                        self.does(*action)?;
                         continue 'frames;
                     }
                     Op::Compile(xt) => self.compile_word(xt)?,
@@ -1022,6 +1009,16 @@ impl<A: AppValue> Machine<A> {
                 }
             }
         }
+    }
+
+    /// Returns from the frame `depth` deep, its loops and blocks left.
+    pub(crate) fn leave_definition(&mut self, depth: usize) {
+        self.iters.retain(|(.., frames)| *frames < depth);
+        self.loops.retain(|l| l.frames < depth);
+        while self.marks.last().is_some_and(|(_, b)| b.frames() >= depth) {
+            self.marks.pop();
+        }
+        self.leave();
     }
 
     /// Calls `called` from `code`, whose next step is `step`. A call that
@@ -1557,7 +1554,7 @@ impl<A: AppValue> Machine<A> {
 
     /// `allot`: `n` empty cells added, or, `n` below 0, the last -`n` given
     /// back.
-    fn allot(&mut self, n: i64) -> Result<(), Error> {
+    pub(crate) fn allot(&mut self, n: i64) -> Result<(), Error> {
         let has = self.space.len();
         if let Ok(n) = usize::try_from(n) {
             self.grow(n)?;
@@ -1570,6 +1567,39 @@ impl<A: AppValue> Machine<A> {
             return Err(self.fail(Code::Range, why));
         };
         self.space.truncate(left);
+        Ok(())
+    }
+
+    /// `add` or `sub` (`word`) of what isn't two integers: an address
+    /// moved by an integer, or two addresses subtracted. Out of the step
+    /// loop's line, so the integers' arithmetic is no slower for it.
+    #[cold]
+    #[inline(never)]
+    fn address_arithmetic(&mut self, word: Builtin, a: Number, b: Number) -> Result<(), Error> {
+        let sub = word == Builtin::Sub;
+        let value = match (a, b) {
+            (Number::Addr(at), Number::Int(n)) if sub => {
+                self.moved_by(at, i128::from(n).saturating_neg())?
+            }
+            (Number::Addr(at), Number::Int(n)) | (Number::Int(n), Number::Addr(at)) if !sub => {
+                self.moved_by(at, n.into())?
+            }
+            (Number::Addr(a), Number::Addr(b)) if sub => Value::Int(a.cells_from(b)),
+            (Number::Int(a), Number::Int(b)) => Value::Int(match sub {
+                true => a.wrapping_sub(b),
+                false => a.wrapping_add(b),
+            }),
+            (Number::Int(_) | Number::Addr(_), Number::Int(_) | Number::Addr(_)) => {
+                let why = match sub {
+                    true => "sub takes an address from an address, not from an integer",
+                    false => {
+                        "add takes two integers, or an address and an integer, not two addresses"
+                    }
+                };
+                return Err(self.fail(Code::Type, why));
+            }
+        };
+        self.push(value);
         Ok(())
     }
 
@@ -2032,32 +2062,19 @@ builtins! { m host;
     }
     Add "add" (a: Num, b: Num) "n m -- n+m"
         "integer arithmetic, past 64 bits wrapping around; an address plus n is the address n cells on" {
-        let sum = match (a, b) {
-            (Number::Int(a), Number::Int(b)) => Value::Int(a.wrapping_add(b)),
-            (Number::Addr(at), Number::Int(n)) | (Number::Int(n), Number::Addr(at)) => {
-                m.moved_by(at, n.into())?
-            }
-            (Number::Addr(_), Number::Addr(_)) => {
-                let why = "add takes two integers, or an address and an integer, not two addresses";
-                return Err(m.fail(Code::Type, why));
-            }
-        };
-        m.push(sum);
-        Ok(())
+        if let (Number::Int(a), Number::Int(b)) = (&a, &b) {
+            m.push(Value::Int(a.wrapping_add(*b)));
+            return Ok(());
+        }
+        m.address_arithmetic(Builtin::Add, a, b)
     }
     Sub "sub" (a: Num, b: Num) "n m -- n-m"
         "integer arithmetic, past 64 bits wrapping around; an address minus n is the address n cells back, and two addresses subtract to how many cells apart they are" {
-        let difference = match (a, b) {
-            (Number::Int(a), Number::Int(b)) => Value::Int(a.wrapping_sub(b)),
-            (Number::Addr(at), Number::Int(n)) => m.moved_by(at, i128::from(n).saturating_neg())?,
-            (Number::Addr(a), Number::Addr(b)) => Value::Int(a.cells_from(b)),
-            (Number::Int(_), Number::Addr(_)) => {
-                let why = "sub takes an address from an address, not from an integer";
-                return Err(m.fail(Code::Type, why));
-            }
-        };
-        m.push(difference);
-        Ok(())
+        if let (Number::Int(a), Number::Int(b)) = (&a, &b) {
+            m.push(Value::Int(a.wrapping_sub(*b)));
+            return Ok(());
+        }
+        m.address_arithmetic(Builtin::Sub, a, b)
     }
     Mul "mul" (a: Int, b: Int) "n m -- n*m" "integer arithmetic; past 64 bits it wraps around" {
         m.push(Value::Int(a.wrapping_mul(b)));
@@ -2314,7 +2331,12 @@ builtins! { m host;
     }
     Create "create" [cold] () "--"
         "create NAME: a word that gives the address where the data space goes on, for the data stored after (store-next, allot)"
-        { m.create() }
+        { m.create(Builtin::Create) }
+    Variable "variable" [cold] () "--"
+        "variable NAME: a word that gives the address of a cell of its own, empty until a value is stored there"
+        { m.create(Builtin::Variable) }
+    Constant "constant" [cold] (x: Any) "x --" "x constant NAME: a word that gives x"
+        { m.constant(x) }
     BodyOf "body-of" [cold] (xt: Exec) "xt -- addr" "the address the word create made, xt, gives" {
         let at = xt.body.ok_or_else(|| {
             let why = "body-of takes the xt of a word create made, and this is none";
@@ -2371,7 +2393,7 @@ builtins! { m host;
         { m.compile_only(Builtin::LeaveDefinition, Op::Leave) }
     Does "does" [immediate] () "--"
         "in a definition: return from it, the word create made last running the rest of the definition from then on, its address pushed first"
-        { m.compile_only(Builtin::Does, Op::Does) }
+        { m.does_part() }
     If "if" [immediate] () "flag --"
         "flag if … else … then: the first part if flag is true (or an integer not 0), else the second"
         { m.open(crate::reader::Construct::If) }

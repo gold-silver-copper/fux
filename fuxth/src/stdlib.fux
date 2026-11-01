@@ -66,15 +66,11 @@ define div-mod 2dup mod -rot div end
 # n k d -- q : n times k divided by d, the product kept exact
 define mul-div mul-div-mod nip end
 
-# ---- The data space (the core has next-address, allot, store-next, fetch, store, fill, copy-cells, create, does and body-of)
+# ---- The data space (the core has next-address, allot, store-next, fetch, store, fill, copy-cells, create, does, body-of, variable and constant)
 # n addr -- : n added to the value stored at addr
 define add-store dup fetch rot add swap store end
 # addr u -- : 0 stored in the u cells from addr
 define erase 0 fill end
-# -- : variable NAME: a word that gives the address of a cell of its own, empty until a value is stored there
-define variable create 1 allot end
-# x -- : x constant NAME: a word that gives x
-define constant create store-next does fetch end
 # -- addr : the address of the base number reads and digit writes in, 10 to begin with
 define base stop-compiling next-address 10 store-next start-compiling literal end
 # -- : numbers read and written in base 10 from then on
@@ -198,7 +194,7 @@ define quote
   end glue
 end
 # n -- n : n's last digit in base (after 9, A to Z) put before the text digits-end gives, and n div base
-define digit base fetch let b dup b mod abs dup 9 gt if 55 else 48 then add hold b div end
+define digit base fetch let b dup b mod abs str 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ swap at hold b div end
 # n -- 0 : n's digits in base put before the text digits-end gives, one at least
 define digits
   base fetch 2 37 within not if str 'base is from 2 to 36' fail then
@@ -253,6 +249,10 @@ define is-upper let n n 65 ge n 90 le and end
 define is-lower let n n 97 ge n 122 le and end
 # c -- flag : whether a character is a letter A-Z or a-z
 define is-letter let c c is-upper c is-lower or end
+# s -- s : a-z made A-Z
+define upper let s list s each let c c is-lower if c 32 sub else c then char end end glue end
+# s -- s : A-Z made a-z
+define lower let s list s each let c c is-upper if c 32 add else c then char end end glue end
 # s -- n : the integer s writes in base (after 9, A to Z or a to z), a - first or not
 define number
   let s
@@ -262,17 +262,11 @@ define number
   negative if 1 else 0 then let from
   from s len eq if str 'no digits' fail then
   0 s from s len slice each
-    let c
-    c is-digit if c 48 sub else c is-upper if c 55 sub else c is-lower if c 87 sub else -1 then then then
-    let d
+    let c str 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ c char upper index-of let d
     d 0 lt d b ge or if list str 'not a digit:' c char end string fail then
     b mul negative if d sub else d add then
   end
 end
-# s -- s : a-z made A-Z
-define upper let s list s each let c c is-lower if c 32 sub else c then char end end glue end
-# s -- s : A-Z made a-z
-define lower let s list s each let c c is-upper if c 32 add else c then char end end glue end
 # s n -- s : s n times over
 define copies let n let s str '' n 0 max 0 do s push loop end
 # x width fill -- s : x's text, with fill (a non-empty string) put before it, cut to fit, until it is width long
