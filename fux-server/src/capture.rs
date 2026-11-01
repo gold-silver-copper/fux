@@ -44,12 +44,11 @@ pub fn pane(
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     fields.push(("above", above.map_or(Json::Null, Json::count)));
-    // Every row it reads from, as `rows` counts them: which go on in the
-    // next, as a joined capture joins them, and the links on them.
-    let (rows, _) = rows_of(screen, history, view);
-    let wrapped = rows.clone().map(|(row, _)| Json::Bool(row.continues()));
+    // Of the rows read: which go on in the next, as a joined capture joins
+    // them, and the links on the columns read.
+    let wrapped = read.clone().map(|(row, _)| Json::Bool(row.continues()));
     fields.push(("wrapped_rows", Json::Array(wrapped.collect())));
-    fields.push(("links", links(rows)));
+    fields.push(("links", links(read.clone(), selection.start, view)));
     let of = Of::Pane {
         version: pane.version(run),
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
@@ -344,24 +343,20 @@ fn rows_of(
         Source::Main => screen.main_rows(),
         Source::Alternate => screen.alternate_rows(),
     };
-    let (range, columns, ended, above) = if view.source == Source::LastOutput {
-        let (range, columns, ended) = last_output(screen).unwrap_or((0..0, 0..0, true));
-        (range, columns, ended, None)
+    let (range, columns, above) = if view.source == Source::LastOutput {
+        let (range, columns) = last_output(screen).unwrap_or((0..0, 0..0));
+        (range, columns, None)
     } else {
         let keep = usize::from(screen.size().rows()).saturating_add(history.unwrap_or(0));
         let skip = rows.len().saturating_sub(keep);
-        (skip..rows.len(), 0..usize::MAX, false, Some(skip))
+        (skip..rows.len(), 0..usize::MAX, Some(skip))
     };
     let rows = rows.skip(range.start).take(range.len());
     let count = rows.len();
     let read = rows.enumerate().filter_map(move |(i, row)| {
         let from = if i == 0 { columns.start } else { 0 };
-        let to = if i.saturating_add(1) == count && ended {
-            if i == 0 && from >= columns.end {
-                0
-            } else {
-                columns.end
-            }
+        let to = if i.saturating_add(1) == count {
+            columns.end
         } else {
             usize::MAX
         };
@@ -370,9 +365,11 @@ fn rows_of(
     (read, above)
 }
 
-/// The physical rows and columns between a command's marks, or its cursor
-/// while running. A start lost to history eviction begins at what is kept.
-fn last_output(screen: &Screen) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>, bool)> {
+/// The physical rows between a command's marks, or its cursor while
+/// running, and the columns of the first and last of them, each within its
+/// row's width (a resize may leave a mark past it): a running command's
+/// last row whole. A start lost to history eviction begins at what is kept.
+fn last_output(screen: &Screen) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
     let commands = screen.commands();
     let (row, col) = screen.cursor_position();
     let cursor = screen
@@ -390,25 +387,26 @@ fn last_output(screen: &Screen) -> Option<(std::ops::Range<usize>, std::ops::Ran
         Some(_) => (screen.history_len().min(last), left),
         None => (0, left),
     };
+    let width = |index| screen.rows().nth(index).map_or(0, |row| row.len());
+    let last_width = width(last);
+    let end = if ended {
+        usize::from(end.col).min(last_width)
+    } else {
+        last_width
+    };
     Some((
         first..last.saturating_add(1),
-        usize::from(start.col)..usize::from(end.col),
-        ended,
+        usize::from(start.col).min(width(first))..end,
     ))
 }
 
 /// Where `last-output` reads, for `json`: from `start` up to `end`, each
 /// `[ROW,COL]`, its rows counted from the screen's top (above it, into
-/// history, negative), as pictures' are; a running command's through its
-/// cursor's row; `null` where no command was marked or its rows are gone.
+/// history, negative), as pictures' are; `null` where no command was
+/// marked or its rows are gone.
 fn output_range(screen: &Screen) -> Json {
-    let Some((rows, cols, ended)) = last_output(screen) else {
+    let Some((rows, cols)) = last_output(screen) else {
         return Json::Null;
-    };
-    let end = if ended {
-        cols.end
-    } else {
-        usize::from(screen.size().cols())
     };
     let top = i64::try_from(screen.history_len()).unwrap_or(i64::MAX);
     let at = |row: usize, col: usize| {
@@ -417,16 +415,21 @@ fn output_range(screen: &Screen) -> Json {
     };
     Json::object(vec![
         ("start", at(rows.start, cols.start)),
-        ("end", at(rows.end.saturating_sub(1), end)),
+        ("end", at(rows.end.saturating_sub(1), cols.end)),
     ])
 }
 
-/// The hyperlinks (OSC 8) on `rows` within their columns, for `json`: a
-/// run of cells side by side in one link each, `row` counting the rows.
-fn links<'a>(rows: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>) -> Json {
+/// The hyperlinks (OSC 8) on `rows` within the columns `view` takes of
+/// them, for `json`: a run of cells side by side in one link each, on the
+/// row `rows` counts from `first`, at the row's own column.
+fn links<'a>(
+    rows: impl Iterator<Item = (Row<'a>, std::ops::Range<usize>)>,
+    first: usize,
+    view: CaptureView,
+) -> Json {
     let mut runs: Vec<(usize, usize, usize, &fux_vt::Hyperlink)> = Vec::new();
-    for (index, (row, span)) in rows.enumerate().filter(|(_, (row, _))| row.has_links()) {
-        for col in span.start..span.end.min(row.len()) {
+    for (index, (row, span)) in (first..).zip(rows).filter(|(_, (row, _))| row.has_links()) {
+        for col in columns(row, span, view) {
             let Some(link) = row.link(col) else { continue };
             match runs.last_mut() {
                 Some((at, start, len, last))
@@ -683,32 +686,65 @@ mod tests {
         Ok(json)
     }
 
-    /// A capture says which of the rows it reads from go on in the next,
-    /// counted as `rows` counts them, whether it joins them or not.
+    /// A capture says which of the rows it read go on in the next, joined
+    /// or not: a joined range reads whole lines, `wrapped` the rows asked.
     #[test]
     fn a_capture_says_which_rows_go_on() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(4, 5, 1 << 20)?;
         pane.output(b"top\r\nabcdefghijklm\r\nend");
-        let views = [
-            CaptureView::default(),
-            CaptureView {
-                wrapped: true,
-                rows: Some((1, 2)),
+        let wrapped_rows = |history, rows, wrapped| {
+            let view = CaptureView {
+                rows,
+                wrapped,
                 ..CaptureView::default()
-            },
-        ];
-        for view in views {
-            let screen = json(&pane, None, view)?;
-            assert!(
-                screen.contains(r#""wrapped_rows":[true,true,false,false]"#),
-                "{screen}"
-            );
-        }
-        let all = json(&pane, Some(1), CaptureView::default())?;
-        assert!(
-            all.contains(r#""wrapped_rows":[false,true,true,false,false]"#),
-            "{all}"
+            };
+            let json = json(&pane, history, view)?;
+            let from = json.find(r#""wrapped_rows""#).ok_or(json.clone())?;
+            let to = json.find(r#","links""#).ok_or(json.clone())?;
+            Ok::<_, Box<dyn std::error::Error>>(json.get(from..to).unwrap_or_default().to_owned())
+        };
+        let list = |list: &str| format!(r#""wrapped_rows":[{list}]"#);
+        assert_eq!(
+            wrapped_rows(None, None, false)?,
+            list("true,true,false,false")
         );
+        assert_eq!(
+            wrapped_rows(Some(1), None, true)?,
+            list("false,true,true,false,false")
+        );
+        assert_eq!(
+            wrapped_rows(None, Some((1, 2)), false)?,
+            list("true,true,false")
+        );
+        assert_eq!(wrapped_rows(None, Some((1, 2)), true)?, list("true"));
+        Ok(())
+    }
+
+    /// An empty or one-row selection of a long history reads no other
+    /// row: its metadata is of the rows selected alone.
+    #[test]
+    fn a_narrow_capture_reads_its_rows_alone() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(3, 10, 1 << 20)?;
+        let link = "\x1b]8;;https://x.test\x1b\\link\x1b]8;;\x1b\\\r\n";
+        for _ in 0..1000 {
+            pane.output(link.as_bytes());
+        }
+        assert!(pane.screen().history_len() > 900);
+        for (rows, want) in [((0, 0), ""), ((0, 1), "false")] {
+            let view = CaptureView {
+                rows: Some(rows),
+                wrapped: true,
+                ..CaptureView::default()
+            };
+            let json = json(&pane, Some(usize::MAX), view)?;
+            let links = if want.is_empty() {
+                ""
+            } else {
+                r#"{"row":0,"col":0,"len":4,"uri":"https://x.test"}"#
+            };
+            let tail = format!(r#""wrapped_rows":[{want}],"links":[{links}]}}"#);
+            assert!(json.ends_with(&tail), "{json}");
+        }
         Ok(())
     }
 
@@ -730,6 +766,20 @@ mod tests {
         assert!(
             json.contains(
                 r#""links":[{"row":0,"col":2,"len":4,"uri":"https://x.test/1"},{"row":1,"col":0,"len":10,"uri":"https://x.test/2"},{"row":2,"col":0,"len":2,"uri":"https://x.test/2"},{"row":2,"col":2,"len":1,"uri":"https://x.test/3"}]"#
+            ),
+            "{json}"
+        );
+        // Those of the rows and columns taken, where the screen has them.
+        let taken = CaptureView {
+            rows: Some((1, 3)),
+            cols: Some((1, 3)),
+            wrapped: true,
+            ..CaptureView::default()
+        };
+        let json = super::tests::json(&pane, None, taken)?;
+        assert!(
+            json.contains(
+                r#""links":[{"row":1,"col":1,"len":2,"uri":"https://x.test/2"},{"row":2,"col":1,"len":1,"uri":"https://x.test/2"},{"row":2,"col":2,"len":1,"uri":"https://x.test/3"}]"#
             ),
             "{json}"
         );
@@ -1095,6 +1145,51 @@ mod tests {
             range(&pane)?,
             r#""last_output":{"start":[-1,2],"end":[-1,6]}"#
         );
+        Ok(())
+    }
+
+    /// A resize that leaves a command's marks past its rows' width reads
+    /// its output to that width, running or ended, and its range says so:
+    /// empty, never ending before it starts.
+    #[test]
+    fn a_narrowed_last_output_ends_within_its_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let view = CaptureView {
+            source: fux_wire::command::Source::LastOutput,
+            ..CaptureView::default()
+        };
+        let past = r#"{"start":[0,5],"end":[0,5]}"#;
+        for (output, ended, want, read) in [
+            ("0123456789\x1b]133;C\x07x", false, past, ""),
+            ("0123456789\x1b]133;C\x07xy\x1b]133;D;0\x07", true, past, ""),
+            (
+                "abc\x1b]133;C\x07defghij",
+                false,
+                r#"{"start":[0,3],"end":[0,5]}"#,
+                "de",
+            ),
+        ] {
+            let mut options = crate::pane::tests::options(0)?;
+            options.reflow = false;
+            let size = fux_vt::Size::new(3, 20)?;
+            let shell = crate::pane::tests::shell()?;
+            let id = fux_wire::id::PaneId::of(1);
+            let now = std::time::Instant::now();
+            let made = crate::pane::Pane::new(id, None, shell, size, options, now);
+            let mut pane = crate::pane::tests::Lone::new(made?)?;
+            pane.output(output.as_bytes());
+            pane.resize(fux_vt::Size::new(3, 5)?);
+            assert_eq!(pane.command_running(), !ended);
+            let json = json(&pane, None, CaptureView::default())?;
+            assert!(json.contains(&format!(r#""last_output":{want}"#)), "{json}");
+            let text = super::pane(
+                &pane,
+                fux_wire::command::Run::now().ok_or("a clock")?,
+                None,
+                view,
+            )?
+            .text()?;
+            assert_eq!(text, read, "{output:?}");
+        }
         Ok(())
     }
 }
