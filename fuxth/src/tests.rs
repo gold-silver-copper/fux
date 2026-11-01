@@ -864,18 +864,15 @@ fn throw_raises_a_failure_or_a_number() -> Result<(), Error> {
     assert_eq!(code(run("5 throw")), Some("thrown"));
     // It keeps the calls that were under way where it happened, for its
     // host to place it by, not those where it is raised again.
-    let rethrown =
-        run("define f 1 0 div end define g throw end\nstr all try\nf catch\ng end").err();
-    let calls = rethrown.map(|e| {
-        e.calls
-            .iter()
-            .map(|t| format!("{}:{}", t.place, t.text))
-            .collect::<Vec<_>>()
-    });
+    let text = "define f 1 0 div end define g throw end\nstr all try\nf catch\ng end";
+    let mut machine = compile(text)?;
+    let ran = machine.run(&mut Toy::default(), u64::MAX).err();
+    assert_eq!(ran.map(|e| e.code), Some(Code::DivByZero));
+    let calls: Vec<String> = (machine.failed_calls())
+        .map(|t| format!("{}:{}", t.place, t.text))
+        .collect();
     assert!(
-        calls
-            .as_ref()
-            .is_some_and(|c| c.ends_with(&["t:3:f".to_owned(), "t:1:div".to_owned()])),
+        calls.ends_with(&["t:3:f".to_owned(), "t:1:div".to_owned()]),
         "{calls:?}"
     );
     Ok(())

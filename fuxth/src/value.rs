@@ -57,14 +57,16 @@ pub enum Value<A> {
 /// A failure as a value: what a `try`'s handler gets, and `throw` raises
 /// again. Its code and where it happened, its number in Forth's table of
 /// `throw` codes (its code's, or the one `throw` was given), the value it
-/// carries (a failed wait's answer), and the steps whose words had taken
-/// effect before it (`Machine::acted`).
+/// carries (a failed wait's answer), the steps whose words had taken
+/// effect before it (`Machine::acted`), and the calls under way where it
+/// happened (`Machine::calls`).
 #[derive(Clone, Debug)]
 pub struct Thrown<A> {
     pub error: Error,
     pub number: Option<i64>,
     pub carried: Option<Value<A>>,
     pub actions: Vec<Token>,
+    pub calls: Vec<Token>,
 }
 
 /// An execution token: what `tick`, `find` and `code … end` give, and
@@ -294,7 +296,8 @@ impl<A: PartialEq> PartialEq for Value<A> {
                 (Self::Xt(a), Self::Xt(b)) if a == b => {}
                 (Self::Mark(a), Self::Mark(b)) if Rc::ptr_eq(a, b) => {}
                 (Self::Failure(a), Self::Failure(b))
-                    if a.error == b.error && a.number == b.number && a.actions == b.actions =>
+                    if (&a.error, a.number, &a.actions, &a.calls)
+                        == (&b.error, b.number, &b.actions, &b.calls) =>
                 {
                     match (&a.carried, &b.carried) {
                         (Some(a), Some(b)) => pairs.push((a, b)),

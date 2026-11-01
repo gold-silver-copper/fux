@@ -6,15 +6,13 @@ use crate::token::{Place, Token};
 use std::rc::Rc;
 
 /// A failure, with where it happened: the token's place and text, when
-/// there is one; and, once a `try` caught it, the calls that were under way
-/// there (`Machine::calls`), which `throw` passes on with it.
+/// there is one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     pub code: Code,
     pub message: String,
     pub place: Option<Place>,
     pub word: Option<Rc<str>>,
-    pub calls: Vec<Token>,
 }
 
 impl Error {
@@ -25,7 +23,6 @@ impl Error {
             message: message.into(),
             place: at.map(|t| t.place.clone()),
             word: at.map(|t| Rc::clone(&t.text)),
-            calls: Vec::new(),
         }
     }
 

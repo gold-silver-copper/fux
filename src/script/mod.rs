@@ -1303,12 +1303,8 @@ fn pushed(
 /// the message, and how the program's word is used.
 /// A failure raised again is placed by the calls where it first happened.
 fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
-    let calls = std::mem::take(&mut error.calls);
-    let program = |t: &Token| !bundled(&t.place);
-    let step = (error.place.as_ref().is_some_and(bundled)).then(|| match calls.is_empty() {
-        true => machine.calls().rev().find(program),
-        false => calls.into_iter().rev().find(program),
-    });
+    let step = (error.place.as_ref().is_some_and(bundled))
+        .then(|| machine.failed_calls().rev().find(|t| !bundled(&t.place)));
     let Some(step) = step.flatten() else {
         return telling(error);
     };
