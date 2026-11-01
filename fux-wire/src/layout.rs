@@ -893,15 +893,6 @@ impl Tree {
             })),
         }
     }
-
-    /// What is its own, without its children.
-    fn own(&self) -> Own<'_> {
-        match self {
-            Tree::Pane(p) => Own::Pane(*p),
-            Tree::Split(split) => Own::Split(split.axis, split.shares),
-            Tree::Stack(stack) => Own::Stack(stack.len(), &stack.shown),
-        }
-    }
 }
 
 /// A tree's nodes in preorder, walked with a stack of its own.
@@ -935,15 +926,6 @@ impl<'a> Iterator for Walk<'a> {
         }
         Some(tree)
     }
-}
-
-/// A node of a tree, without its children: two trees whose nodes in
-/// preorder are alike are alike.
-#[derive(Debug, PartialEq)]
-enum Own<'a> {
-    Pane(PaneId),
-    Split(Axis, Shares),
-    Stack(usize, &'a BTreeMap<ClientId, Shown<usize>>),
 }
 
 impl Clone for Tree {
@@ -984,17 +966,23 @@ impl Drop for Tree {
 
 impl PartialEq for Tree {
     fn eq(&self, other: &Tree) -> bool {
-        (self.walk(None).map(Tree::own)).eq(other.walk(None).map(Tree::own))
+        let ((a, a_stacks), (b, b_stacks)) = (self.flat(), other.flat());
+        let b_shown = b_stacks.iter().map(|(_, s)| &s.shown);
+        a == b && a_stacks.iter().map(|(_, s)| &s.shown).eq(b_shown)
     }
 }
 
 impl Eq for Tree {}
 
 impl std::fmt::Debug for Tree {
-    /// Its nodes in preorder, each without its children.
+    /// Its nodes, flat, and what each client is shown at each stack.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let nodes = self.walk(None).map(Tree::own);
-        f.debug_list().entries(nodes).finish()
+        let (nodes, stacks) = self.flat();
+        let shown: Vec<_> = (stacks.iter()).map(|(at, s)| (at, &s.shown)).collect();
+        f.debug_struct("Tree")
+            .field("nodes", &nodes)
+            .field("shown", &shown)
+            .finish()
     }
 }
 
