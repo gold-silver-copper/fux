@@ -1535,10 +1535,11 @@ impl<A: AppValue> Machine<A> {
     fn cells(&mut self, at: Address, n: usize) -> Result<&mut [Option<Value<A>>], Error> {
         let has = self.space.len();
         let Some(end) = at.0.checked_add(n).filter(|end| *end <= has) else {
-            let why = format!(
-                "{n} from address {}, and the data space has {has} cells",
-                at.0
-            );
+            let what = match n {
+                1 => format!("address {}", at.0),
+                _ => format!("{n} cells from address {}", at.0),
+            };
+            let why = format!("{what}, and the data space has {has} cells");
             return Err(self.fail(Code::InvalidAddress, why));
         };
         Ok(self.space.get_mut(at.0..end).unwrap_or_default())
