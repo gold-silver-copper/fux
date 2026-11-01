@@ -1704,7 +1704,9 @@ fn line(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
     let wrote = match value {
         Value::List(_) => words::write_json_value(value, &mut stream)
             .map_err(|_| Failed::new(Code::Output, "the text could not be written")),
-        _ => (value.write_text(&mut stream)).map_err(|f| Failed::new(Code::of(f.code), f.message)),
+        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => {
+            (value.write_text(&mut stream)).map_err(|f| Failed::new(Code::of(f.code), f.message))
+        }
     };
     if let Some(error) = stream.1 {
         return Err(output_failed(error));
