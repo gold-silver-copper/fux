@@ -153,22 +153,34 @@ fn run(
 fn every_recipe_in_the_cookbook_runs() -> Outcome {
     let blocks = blocks(COOKBOOK)?;
     assert!(blocks.len() >= 10, "{} blocks", blocks.len());
-    runs(blocks, &["-e", "-o", "pipefail"])
+    for skipped in runs(blocks, &["-e", "-o", "pipefail"])? {
+        eprintln!("{skipped}");
+    }
+    Ok(())
 }
 
 #[test]
 fn every_command_on_the_agent_page_runs() -> Outcome {
-    runs(blocks(agent_page())?, &["-e"])
+    for skipped in runs(blocks(agent_page())?, &["-e"])? {
+        eprintln!("{skipped}");
+    }
+    Ok(())
 }
 
 #[test]
 fn every_command_in_the_readme_runs() -> Outcome {
-    runs(blocks(README)?, &["-e"])
+    for skipped in runs(blocks(README)?, &["-e"])? {
+        eprintln!("{skipped}");
+    }
+    Ok(())
 }
 
 /// Runs `blocks` in order on a private server: each `sh` one by a shell
-/// with `set`, each `fux` one as a config.
-fn runs(blocks: Vec<(&'static str, &'static str, String)>, set: &[&str]) -> Outcome {
+/// with `set`, each `fux` one as a config. What it skipped, saying why.
+fn runs(
+    blocks: Vec<(&'static str, &'static str, String)>,
+    set: &[&str],
+) -> Result<Vec<String>, String> {
     let server = Server::start("")?;
     let dir = server.dir.join("recipes");
     std::fs::create_dir_all(&dir).map_err(e)?;
@@ -178,13 +190,15 @@ fn runs(blocks: Vec<(&'static str, &'static str, String)>, set: &[&str]) -> Outc
         std::os::unix::fs::symlink(checkout, dir.join(name)).map_err(e)?;
     }
     let _started = Started(dir.clone());
-    let sh = shell()?;
+    let (sh, mut skipped) = (shell()?, Vec::new());
     for (i, (heading, lang, block)) in blocks.into_iter().enumerate() {
         match lang {
             "sh" => {
                 let named = block.split(|c: char| !c.is_alphanumeric());
                 if let Some(missing) = named.into_iter().find(|w| NEEDS.contains(w) && !found(w)) {
-                    eprintln!("skipped {heading:?}: it needs {missing}, which is missing");
+                    skipped.push(format!(
+                        "skipped {heading:?}: it needs {missing}, which is missing"
+                    ));
                     continue;
                 }
                 let (status, said) = run(sh, set, &server, &dir, i, &block)?;
@@ -199,5 +213,5 @@ fn runs(blocks: Vec<(&'static str, &'static str, String)>, set: &[&str]) -> Outc
             _ => return Err(format!("{heading}: a {lang:?} block, which nothing runs")),
         }
     }
-    Ok(())
+    Ok(skipped)
 }
