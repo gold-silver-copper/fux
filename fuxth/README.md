@@ -172,6 +172,8 @@ use fuxth::{Code, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabula
 let mut words = Vocabulary::default();
 let ask = words.add("ask", "n -- ticket")?;       // takes one value, gives a ticket
 words.raises(Code::Host("refused"))?;            // a failure of its words, for `try`
+words.fails(|_| Some(vec![Code::Host("refused")])); // all its words fail with
+words.writes(&[]);                               // its write and text never fail
 let mut machine = Machine::new(words);
 machine.library("stdlib.fux", STDLIB)?;
 machine.read(token::source("script.fux", "3 ask")?, None);
@@ -207,7 +209,13 @@ what a word asked took effect, the host says so (`machine.acted(step)`):
 every failure from then on lists that step, once (`Thrown::actions`, and
 `machine.actions()` for one no `try` caught). The
 codes of its words' failures are the vocabulary's (`raises`), for a `try` to
-name. `write(text)` writes. `resolve` and `read` give `include` and
+name; the codes each word fails with (`fails`), and writing text
+(`writes`), are known once the host declares them. `machine.codes(word)`
+says what a word can fail with as it runs: the core's as each declares it,
+a definition's from its steps and calls, less what a `try` around them
+catches; unknown for one that runs code it is given (`execute`,
+`evaluate`, `include`, a word `defer` made) or raises a failure it is given
+(`throw`), and one that calls either. `write(text)` writes. `resolve` and `read` give `include` and
 `require` their files: a host that reads none keeps the defaults, which
 refuse.
 

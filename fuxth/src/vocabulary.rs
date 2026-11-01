@@ -14,6 +14,9 @@ struct Word {
     takes: usize,
 }
 
+/// The codes word `id` fails with, if its host declares them.
+pub type Fails = fn(usize) -> Option<Vec<Code>>;
+
 /// The application's words, the codes of its failures, and the kinds of
 /// its values that must be used, each with what one left over is told.
 /// Each name means one thing: a second word called as another word is (the
@@ -24,6 +27,8 @@ pub struct Vocabulary {
     words: Vec<Word>,
     unused: Vec<(String, String)>,
     codes: Vec<Code>,
+    writes: Option<Vec<Code>>,
+    fails: Option<Fails>,
     literals: Option<fn(&str) -> Option<&'static str>>,
     evaluates: bool,
 }
@@ -69,6 +74,19 @@ impl Vocabulary {
             takes: before.split_whitespace().count(),
         });
         Ok(self.words.len().saturating_sub(1))
+    }
+
+    /// The codes each word fails with (and `stack_underflow`, given too
+    /// few values), by id, worked out when asked: none, unknown, for one it
+    /// declares none for, as for every word until this is given.
+    pub fn fails(&mut self, codes: Fails) {
+        self.fails = Some(codes);
+    }
+
+    /// Writing text fails only with `codes`: the host's `write`, and the
+    /// text of its values. Unknown until declared.
+    pub fn writes(&mut self, codes: &[Code]) {
+        self.writes = Some(codes.to_vec());
     }
 
     /// A code the application's words may fail with, which a `try` may
@@ -145,6 +163,21 @@ impl Vocabulary {
     /// What word `id` does to the stack, as it was added.
     pub(crate) fn effect(&self, id: usize) -> Option<&str> {
         self.words.get(id).map(|w| w.effect.as_str())
+    }
+
+    /// The codes word `id` fails with, if declared.
+    pub(crate) fn codes(&self, id: usize) -> Option<Vec<Code>> {
+        (self.fails?)(id)
+    }
+
+    /// The codes writing text fails with, if declared.
+    pub(crate) fn written(&self) -> Option<&[Code]> {
+        self.writes.as_deref()
+    }
+
+    /// The codes the application's words raise, as declared.
+    pub(crate) fn declared(&self) -> &[Code] {
+        &self.codes
     }
 
     /// The words' names, by id.

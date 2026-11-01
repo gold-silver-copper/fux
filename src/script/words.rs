@@ -19,8 +19,9 @@ use fuxth::{Done, Failure, Value};
 use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
 
-/// `words! { Heading…; Act { Heading Variant "name" "effect" "about"
-/// "example" [After: Opt…]; … } Family { … "example"; … } … }` expands to
+/// `words! { Heading…; Act { Heading Variant "name" "effect" raises(Code…
+/// asks) "about" "example" [After: Opt…]; … } Family { … "example"; … } …
+/// }` expands to
 /// `Group`, the headings of `help` in its order, each named as its
 /// variant; an enum of each family's words (the family is how the word
 /// runs: `Opt` builds options or a request, `Screen` opens a client's
@@ -28,7 +29,8 @@ use std::ops::RangeInclusive;
 /// family; `Word::ALL`, every word, family by family, the acting words
 /// last, so that in `help` a heading's options come before the words that
 /// take them (each word's id in the vocabulary is its place here); `Word::row`, its
-/// facts: its name, stack effect, help line, heading and an example; and
+/// facts: its name, stack effect, the codes it fails with (`asks`, those
+/// asking a request does), help line, heading and an example; and
 /// `Act::takes`, the options an acting word takes and what they go after,
 /// which each of its rows says (`[]` for none).
 macro_rules! words {
@@ -40,6 +42,18 @@ macro_rules! words {
             after: After::$after,
             options: &[$(Opt::$opt),*],
         })
+    };
+    (@raises [$($code:ident)*] $asks:literal) => {
+        Raises {
+            codes: &[$(Raise::$code),*],
+            asks: $asks,
+        }
+    };
+    (@raises [$($code:ident)*] $asks:literal asks $($rest:ident)*) => {
+        words!(@raises [$($code)*] true $($rest)*)
+    };
+    (@raises [$($code:ident)*] $asks:literal $next:ident $($rest:ident)*) => {
+        words!(@raises [$($code)* $next] $asks $($rest)*)
     };
     (@family $family:ident $($variant:ident)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,11 +73,12 @@ macro_rules! words {
     };
     ($($heading:ident)*;
     Act {
-        $($a_group:ident $act:ident $a_name:literal $a_effect:literal $a_about:literal $a_example:literal
-            [$($takes:tt)*];)*
+        $($a_group:ident $act:ident $a_name:literal $a_effect:literal raises($($a_raise:ident)*)
+            $a_about:literal $a_example:literal [$($takes:tt)*];)*
     }
     $($family:ident {
-        $($group:ident $variant:ident $name:literal $effect:literal $about:literal $example:literal;)*
+        $($group:ident $variant:ident $name:literal $effect:literal raises($($raise:ident)*)
+            $about:literal $example:literal;)*
     })*) => {
         /// A word's heading in `help`.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -100,6 +115,7 @@ macro_rules! words {
                     $($(Word::$family($family::$variant) => &Row {
                         name: $name,
                         effect: $effect,
+                        raises: words!(@raises [] false $($raise)*),
                         about: $about,
                         group: Group::$group,
                         example: $example,
@@ -107,6 +123,7 @@ macro_rules! words {
                     $(Word::Act(Act::$act) => &Row {
                         name: $a_name,
                         effect: $a_effect,
+                        raises: words!(@raises [] false $($a_raise)*),
                         about: $a_about,
                         group: Group::$a_group,
                         example: $a_example,
@@ -133,10 +150,45 @@ pub struct Row {
     /// `x secs -- x`. fuxth reads it, for how many values the word takes
     /// and gives, and their kinds.
     pub effect: &'static str,
+    pub raises: Raises,
     pub about: &'static str,
     pub group: Group,
     /// It in use, as a command line (or a config's line).
     pub example: &'static str,
+}
+
+/// The codes a word fails with as it runs: its own, and, if it `asks`,
+/// those asking a request fails with (`Code::asked`); one that takes values
+/// fails `stack_underflow` given too few, and `bad_value` given handles of
+/// different server runs, besides.
+pub struct Raises {
+    pub codes: &'static [Raise],
+    pub asks: bool,
+}
+
+impl Word {
+    /// The codes it fails with, as `Raises` says, each once.
+    pub fn codes(self) -> Vec<fuxth::Code> {
+        let row = self.row();
+        let takes = row
+            .effect
+            .split_once("--")
+            .is_some_and(|(t, _)| !t.trim().is_empty());
+        let taking = [Raise::StackUnderflow, Raise::BadValue]
+            .into_iter()
+            .filter(|_| takes);
+        let own = (row.raises.codes.iter().copied())
+            .chain(taking)
+            .map(Code::from);
+        let asked = Code::all().filter(|code| row.raises.asks && code.asked());
+        let mut codes = Vec::new();
+        for code in own.chain(asked).map(fuxth::Code::from) {
+            if !codes.contains(&code) {
+                codes.push(code);
+            }
+        }
+        codes
+    }
 }
 
 /// The options a word takes, and what they go after.
@@ -258,120 +310,120 @@ pub const NAMES: &[(&str, &str)] = &[
 words! {
     Finding Starting Waiting Input Reading Changing Clients Server Shell Config Help;
     Act {
-        Finding Pane "pane" "ref -- pane" "the pane ref names: its given name, %N, a pane, an answer or a version" "fux str web pane capture" [];
-        Finding Tab "tab" "ref -- tab" "the tab ref names: its name, @N, or a pane's tab" "fux %3 tab str logs rename" [];
-        Finding Workspace "workspace" "ref -- workspace" "the workspace ref names: its name, +N, or a pane's or tab's workspace" "fux str agent workspace kill" [];
-        Finding Here "here" "-- pane" "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
-        Finding Client "client" "name -- client" "a client by its id, c2" "fux str c1 client detach" [];
-        Finding Me "me" "-- client" "the client whose key or prompt runs this" "str z code me focused zoom end bind" [];
-        Finding Panes "panes" "scope -- list" "the panes in a pane (itself), a tab, a workspace or all, in layout order" "fux str agent workspace panes each capture print end" [];
-        Finding Tabs "tabs" "scope -- list" "the tabs in a tab (itself), a workspace or all, in order; a pane holds none" "fux str agent workspace tabs each str name get print end" [];
-        Finding All "all" "-- all" "the whole session, for the words that take a scope: info, panes, tabs, kill, notify, events and dump" "fux all info" [];
-        Finding Focused "focused" "client -- pane" "the pane a client focuses: its tab's zoomed one while it has one" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program new-tab" [];
-        Starting Split "split" "subject -- answer" "split a pane along its required axis: a shell, or the program given" "fux %3 str vertical axis split" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
-        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch, in the workspace in names (made if it is not there; str new-workspace in makes an unnamed one), else the caller's" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
-        Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (new-tab, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Program Arg];
-        Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
-        Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
-        Input SendMouse "send-mouse" "pane action row col -- answer" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
-        Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
-        Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
-        Reading Snapshot "snapshot" "snapshot-scope projection -- record" "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
-        Reading Get "get" "readable field -- value" "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
-        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failure as its fields, a failed wait's answer its value" "fux ls json" [];
-        Reading NextEvents "next-events" "event-scope cursor secs -- record" "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux all str '' 0 next-events json" [];
-        Changing Kill "kill" "scope --" "close a pane, tab or workspace, or all of them, without asking" "fux %3 kill" [];
-        Changing Rename "rename" "handle text --" "rename a pane, tab or workspace, to a name no other one has" "fux %3 str editor rename" [];
-        Changing Notify "notify" "scope text --" "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
-        Changing Resize "resize" "sized cols rows --" "a tab layout or headless client size, each at least 1, as large as a screen's grid holds; a pane selects its tab" "fux @2 120 40 resize" [];
-        Changing ResizeAuto "resize-auto" "handle --" "a tab laid out on a client's screen again (at its size until one shows it)" "fux @2 resize-auto" [];
-        Changing ResizePane "resize-pane" "pane extent way --" "a pane's horizontal or vertical extent: cells, or a percent" "fux %3 30 percent str horizontal resize-pane" [];
-        Changing Percent "percent" "n -- size" "n percent of the tab, for resize-pane" "fux %3 30 percent str horizontal resize-pane" [];
-        Changing Arrange "arrange" "tab revision tree --" "replace the whole layout at a run-qualified structural revision" "fux @2 str REVISION list %3 end arrange" [];
-        Changing MoveBorder "move-border" "pane way cells --" "move the pane's nearest border: left right up down" "fux %3 str left 5 move-border" [];
-        Changing Move "move" "pane where --" "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down" "fux %3 str new-tab move" [];
-        Changing SwapWith "swap-with" "pane counterpart --" "swap a pane with another pane or its neighbour: left right up down" "fux %3 %4 swap-with" [];
-        Changing Reorder "reorder" "handle way --" "move one place: next or previous" "fux @2 str next reorder" [];
-        Changing HistoryBudget "history-budget" "pane integer --" "change this pane's history budget in bytes; lowering evicts old rows" "fux %3 4194304 history-budget" [];
-        Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
-        Changing Zoom "zoom" "pane --" "fill its tab with the pane on every screen showing it, or restore the tab if it does" "fux %3 zoom" [];
-        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux runs opts attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach (or bare fux, which runs opts attach)" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
-        Clients Show "show" "client handle --" "show a client a pane, tab or workspace, and each that holds it" "fux str c1 client %3 show" [];
-        Clients Step "step" "client handle way --" "show a client the next, previous or last shown of the handle's siblings, or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux str c1 client @2 str next step" [];
-        Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
-        Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
-        Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
-        Server KillServer "kill-server" "--" "stop the server: not from its own panes, nor with people attached" "FUX_SOCKET=$PWD/test.sock fux kill-server" [];
-        Config AttachDefaults "attach-defaults" "attachable --" "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
-        Config Set "set" "setting new --" "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
-        Reading Version "version" "pane-or-seen -- string" "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
-        Shell Args "args" "-- list" "the strings after fux --file FILE (none for any other program)" "fux args len" [];
-        Shell Input "input" "-- string" "the rest of stdin, as UTF-8 text; not when the program came from stdin" "ls | fux input lines len" [];
-        Shell ReadFile "read-file" "path -- string" "a file's text, as UTF-8" "fux str notes.txt read-file lines len" [];
-        Shell Getenv "getenv" "name -- string" "an environment variable's value; one not set fails unset_var" "fux str HOME getenv" [];
-        Shell Warn "warn" "value --" "print a value on stderr, a line" "fux str 'no tests found' warn 2 exit" [];
-        Shell Exit "exit" "n --" "end the program now, what is left printed, with exit status n, 0 to 255" "fux str 'no tests found' warn 2 exit" [];
-        Config ListKeys "list-keys" "--" "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux list-keys" [];
-        Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
-        Help Help "help" "--" "the words, under their headings" "fux help" [];
-        Help Word "word" "word -- record" "the dictionary's record of the word named so now: its name, provenance (core, fux, library, or run for this program's own), effect, documentation and definition (its words as read, or native)" "fux str dup word str definition get" [];
-        Help Dictionary "dictionary" "-- list" "a record of each word in this program's dictionary now, as word gives it, in the order they were defined" "fux dictionary | jq -r 'select(.provenance == \"run\") | .name'" [];
-        Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
+        Finding Pane "pane" "ref -- pane" raises(Type NoTarget asks) "the pane ref names: its given name, %N, a pane, an answer or a version" "fux str web pane capture" [];
+        Finding Tab "tab" "ref -- tab" raises(Type NoTarget asks) "the tab ref names: its name, @N, or a pane's tab" "fux %3 tab str logs rename" [];
+        Finding Workspace "workspace" "ref -- workspace" raises(Type NoTarget asks) "the workspace ref names: its name, +N, or a pane's or tab's workspace" "fux str agent workspace kill" [];
+        Finding Here "here" "-- pane" raises(asks) "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
+        Finding Client "client" "name -- client" raises(Type) "a client by its id, c2" "fux str c1 client detach" [];
+        Finding Me "me" "-- client" raises(NotHere) "the client whose key or prompt runs this" "str z code me focused zoom end bind" [];
+        Finding Panes "panes" "scope -- list" raises(Type asks) "the panes in a pane (itself), a tab, a workspace or all, in layout order" "fux str agent workspace panes each capture print end" [];
+        Finding Tabs "tabs" "scope -- list" raises(Type asks) "the tabs in a tab (itself), a workspace or all, in order; a pane holds none" "fux str agent workspace tabs each str name get print end" [];
+        Finding All "all" "-- all" raises() "the whole session, for the words that take a scope: info, panes, tabs, kill, notify, events and dump" "fux all info" [];
+        Finding Focused "focused" "client -- pane" raises(Type asks) "the pane a client focuses: its tab's zoomed one while it has one" "fux str c1 client focused capture" [];
+        Starting Opts "opts" "-- opts" raises() "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program new-tab" [];
+        Starting Split "split" "subject -- answer" raises(Type Unused Usage Config asks) "split a pane along its required axis: a shell, or the program given" "fux %3 str vertical axis split" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
+        Starting NewTab "new-tab" "opts -- answer" raises(Type Unused Config asks) "a tab with the client's shell or explicit launch, in the workspace in names (made if it is not there; str new-workspace in makes an unnamed one), else the caller's" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
+        Starting Respawn "respawn" "subject -- answer" raises(Type Unused asks) "start again in its pane the program it was given (new-tab, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Program Arg];
+        Waiting Wait "wait" "place -- place" raises(Type Unused asks) "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
+        Input SendKeys "send-keys" "target -- target" raises(Type Unused Usage asks) "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
+        Input SendMouse "send-mouse" "pane action row col -- answer" raises(Type Range asks) "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
+        Input Signal "signal" "subject name -- answer" raises(Type Unused asks) "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
+        Reading Capture "capture" "capture-source -- capture-source" raises(Type Unused asks) "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
+        Reading Snapshot "snapshot" "snapshot-scope projection -- record" raises(Type asks) "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
+        Reading Get "get" "readable field -- value" raises(Type NoField Range TooLong asks) "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
+        Reading Json "json" "value -- string" raises(Unused) "value as JSON (an answer as its JSON); a failure as its fields, a failed wait's answer its value" "fux ls json" [];
+        Reading NextEvents "next-events" "event-scope cursor secs -- record" raises(Type Range asks) "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux all str '' 0 next-events json" [];
+        Changing Kill "kill" "scope --" raises(Type asks) "close a pane, tab or workspace, or all of them, without asking" "fux %3 kill" [];
+        Changing Rename "rename" "handle text --" raises(Type asks) "rename a pane, tab or workspace, to a name no other one has" "fux %3 str editor rename" [];
+        Changing Notify "notify" "scope text --" raises(Type asks) "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
+        Changing Resize "resize" "sized cols rows --" raises(Type Size asks) "a tab layout or headless client size, each at least 1, as large as a screen's grid holds; a pane selects its tab" "fux @2 120 40 resize" [];
+        Changing ResizeAuto "resize-auto" "handle --" raises(Type asks) "a tab laid out on a client's screen again (at its size until one shows it)" "fux @2 resize-auto" [];
+        Changing ResizePane "resize-pane" "pane extent way --" raises(Type Range asks) "a pane's horizontal or vertical extent: cells, or a percent" "fux %3 30 percent str horizontal resize-pane" [];
+        Changing Percent "percent" "n -- size" raises(Type Range) "n percent of the tab, for resize-pane" "fux %3 30 percent str horizontal resize-pane" [];
+        Changing Arrange "arrange" "tab revision tree --" raises(Type Range asks) "replace the whole layout at a run-qualified structural revision" "fux @2 str REVISION list %3 end arrange" [];
+        Changing MoveBorder "move-border" "pane way cells --" raises(Type Range asks) "move the pane's nearest border: left right up down" "fux %3 str left 5 move-border" [];
+        Changing Move "move" "pane where --" raises(Type asks) "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down" "fux %3 str new-tab move" [];
+        Changing SwapWith "swap-with" "pane counterpart --" raises(Type asks) "swap a pane with another pane or its neighbour: left right up down" "fux %3 %4 swap-with" [];
+        Changing Reorder "reorder" "handle way --" raises(Type asks) "move one place: next or previous" "fux @2 str next reorder" [];
+        Changing HistoryBudget "history-budget" "pane integer --" raises(Type Range asks) "change this pane's history budget in bytes; lowering evicts old rows" "fux %3 4194304 history-budget" [];
+        Changing ClearHistory "clear-history" "pane --" raises(Type asks) "drop the pane's history" "fux %3 clear-history" [];
+        Changing Zoom "zoom" "pane --" raises(Type asks) "fill its tab with the pane on every screen showing it, or restore the tab if it does" "fux %3 zoom" [];
+        Clients Attach "attach" "attachable --" raises(Type Unused Nested NotHere asks) "show the server in this terminal (bare fux runs opts attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach (or bare fux, which runs opts attach)" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
+        Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it" "fux str c1 client %3 show" [];
+        Clients Step "step" "client handle way --" raises(Type asks) "show a client the next, previous or last shown of the handle's siblings, or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux str c1 client @2 str next step" [];
+        Clients Detach "detach" "client --" raises(Type asks) "detach a client" "fux str c1 client detach" [];
+        Server Start "start" "--" raises(NotHere asks) "start the server in the background, if none answers" "fux start" [];
+        Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
+        Server KillServer "kill-server" "--" raises(asks) "stop the server: not from its own panes, nor with people attached" "FUX_SOCKET=$PWD/test.sock fux kill-server" [];
+        Config AttachDefaults "attach-defaults" "attachable --" raises(Type Unused Config NotConfig) "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
+        Config Set "set" "setting new --" raises(Type Config NotConfig) "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
+        Reading Version "version" "pane-or-seen -- string" raises(Type asks) "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
+        Shell Args "args" "-- list" raises(NotHere) "the strings after fux --file FILE (none for any other program)" "fux args len" [];
+        Shell Input "input" "-- string" raises(Read NotHere) "the rest of stdin, as UTF-8 text; not when the program came from stdin" "ls | fux input lines len" [];
+        Shell ReadFile "read-file" "path -- string" raises(Type Read NotHere) "a file's text, as UTF-8" "fux str notes.txt read-file lines len" [];
+        Shell Getenv "getenv" "name -- string" raises(Type UnsetVar NotHere) "an environment variable's value; one not set fails unset_var" "fux str HOME getenv" [];
+        Shell Warn "warn" "value --" raises(Output NotHere) "print a value on stderr, a line" "fux str 'no tests found' warn 2 exit" [];
+        Shell Exit "exit" "n --" raises(Type Range NotHere) "end the program now, what is left printed, with exit status n, 0 to 255" "fux str 'no tests found' warn 2 exit" [];
+        Config ListKeys "list-keys" "--" raises(Config Output) "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux list-keys" [];
+        Config KeyNames "key-names" "--" raises(Output) "the names keys go by" "fux key-names" [];
+        Help Help "help" "--" raises(Output) "the words, under their headings" "fux help" [];
+        Help Word "word" "word -- record" raises(Type UnknownWord) "the dictionary's record of the word named so now: its name, provenance (core, fux, library, or run for this program's own), effect, documentation, definition (its words as read, or native) and codes (what it can fail with as it runs, or null where unknown)" "fux str dup word str definition get" [];
+        Help Dictionary "dictionary" "-- list" raises() "a record of each word in this program's dictionary now, as word gives it, in the order they were defined" "fux dictionary | jq -r 'select(.provenance == \"run\") | .name'" [];
+        Help Explain "explain" "word --" raises(Type UnknownWord Output) "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
     }
     Opt {
-        Starting Name "name" "x name -- x" "the given name: new-tab's tab" "fux opts str agent in str web name 80 24 size str ./app program new-tab";
-        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts str agent in 80 24 size str ./app program new-tab";
-        Starting Cwd "cwd" "x dir -- x" "where it starts" "fux opts str agent in str /srv cwd 80 24 size str ./app program new-tab";
-        Starting Program "program" "x path -- x" "the program to start, in place of a shell; its pane stays once it exits" "fux opts str agent in 80 24 size str ./app program new-tab";
-        Starting HistoryBytes "history-bytes" "x integer -- x" "history budget for the new pane, in bytes" "fux opts str agent in 0 history-bytes str /bin/cat program new-tab";
-        Starting Reflow "reflow" "x boolean -- x" "whether the new pane rewraps primary-screen lines on resize" "fux opts str agent in false reflow str /bin/cat program new-tab";
-        Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" "arrows per alternate-screen wheel action (0 to 32767)" "fux opts str agent in 3 alternate-scroll-lines str /bin/cat program new-tab";
-        Starting PictureBytes "picture-bytes" "x integer -- x" "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux opts str agent in 0 picture-bytes str /bin/cat program new-tab";
-        Starting ProgramClipboard "program-clipboard" "x boolean -- x" "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux opts str agent in false program-clipboard str /bin/cat program new-tab";
-        Starting ShellProgram "shell-program" "x list -- x" "the checked argv list to start with shell role; its exit closes the pane" "fux opts 80 24 size list str /bin/sh end shell-program new-tab";
-        Starting Arg "arg" "x text -- x" "an argument for the program" "fux opts str agent in 80 24 size str ./app program str -v arg new-tab";
-        Starting Axis "axis" "x way -- x" "horizontal (side by side) or vertical (stacked); split requires it" "fux %3 str horizontal axis split";
-        Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 str horizontal axis 2 1 shares split";
-        Starting In "in" "x workspace -- x" "the workspace for new-tab, attach or attach-defaults; new-tab creates a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
-        Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
-        Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
-        Waiting Changed "changed" "seen -- changed-request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
-        Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout; with none, until something changes" "fux %3 300 timeout wait";
-        Input Expect "expect" "seen -- expected-request" "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux %3 capture let seen seen string str '[y/N]' contains if seen expect str y text send-keys drop then";
-        Input Text "text" "x text -- x" "text, typed" "fux %3 str 'ls -l' text str Enter key send-keys";
-        Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
-        Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
-        Input Bytes "bytes" "x hex -- x" "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
-        Reading History "history" "pane-builder lines -- pane-builder" "capture: lines of history first (all-history: all of it)" "fux %3 100 history capture";
-        Reading Wrapped "wrapped" "pane-builder -- pane-builder" "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
-        Reading Full "full" "pane-builder -- pane-builder" "capture: every row and cell, untrimmed" "fux %3 full capture";
-        Reading Styles "styles" "pane-builder -- pane-builder" "capture: colours and attributes" "fux %3 styles capture";
-        Reading Marks "marks" "pane-builder -- pane-builder" "capture: highlighted text (reverse video, or a background colour) as ⟦this⟧" "fux %3 marks capture";
-        Reading MainScreen "main-screen" "pane-builder -- pane-builder" "capture: what was printed before a program took the screen" "fux %3 main-screen capture";
-        Reading AltScreen "alt-screen" "pane-builder -- pane-builder" "capture: the full screen a program drew last" "fux %3 alt-screen capture";
-        Reading LastOutput "last-output" "pane-builder -- pane-builder" "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux %3 last-output capture";
-        Reading Rows "rows" "pane-builder from to -- pane-builder" "capture: half-open from..to, clipped to available rows; joined lines touched whole (with wrapped, those rows alone)" "fux %3 0 4 rows capture";
-        Reading Cols "cols" "pane-builder from to -- pane-builder" "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";
+        Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux opts str agent in str web name 80 24 size str ./app program new-tab";
+        Starting Size "size" "x cols rows -- x" raises(Type Unused Size) "what its tab is laid out on while no client shows it, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts str agent in 80 24 size str ./app program new-tab";
+        Starting Cwd "cwd" "x dir -- x" raises(Type Unused) "where it starts" "fux opts str agent in str /srv cwd 80 24 size str ./app program new-tab";
+        Starting Program "program" "x path -- x" raises(Type Unused) "the program to start, in place of a shell; its pane stays once it exits" "fux opts str agent in 80 24 size str ./app program new-tab";
+        Starting HistoryBytes "history-bytes" "x integer -- x" raises(Type Unused Range) "history budget for the new pane, in bytes" "fux opts str agent in 0 history-bytes str /bin/cat program new-tab";
+        Starting Reflow "reflow" "x boolean -- x" raises(Type Unused) "whether the new pane rewraps primary-screen lines on resize" "fux opts str agent in false reflow str /bin/cat program new-tab";
+        Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" raises(Type Unused Range) "arrows per alternate-screen wheel action (0 to 32767)" "fux opts str agent in 3 alternate-scroll-lines str /bin/cat program new-tab";
+        Starting PictureBytes "picture-bytes" "x integer -- x" raises(Type Unused Range) "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux opts str agent in 0 picture-bytes str /bin/cat program new-tab";
+        Starting ProgramClipboard "program-clipboard" "x boolean -- x" raises(Type Unused) "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux opts str agent in false program-clipboard str /bin/cat program new-tab";
+        Starting ShellProgram "shell-program" "x list -- x" raises(Type Unused) "the checked argv list to start with shell role; its exit closes the pane" "fux opts 80 24 size list str /bin/sh end shell-program new-tab";
+        Starting Arg "arg" "x text -- x" raises(Type Unused Usage) "an argument for the program" "fux opts str agent in 80 24 size str ./app program str -v arg new-tab";
+        Starting Axis "axis" "x way -- x" raises(Type Unused) "horizontal (side by side) or vertical (stacked); split requires it" "fux %3 str horizontal axis split";
+        Starting Shares "shares" "x n n -- x" raises(Type Unused Range) "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 str horizontal axis 2 1 shares split";
+        Starting In "in" "x workspace -- x" raises(Type Unused) "the workspace for new-tab, attach or attach-defaults; new-tab creates a missing name, or a fresh unnamed workspace with str new-workspace in" "fux opts str agent in 80 24 size new-tab";
+        Starting Watch "watch" "x -- x" raises(Type Unused) "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
+        Starting KillFirst "kill-first" "x -- x" raises(Type Unused) "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
+        Waiting Changed "changed" "seen -- changed-request" raises(Type Unused) "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
+        Waiting Timeout "timeout" "x secs -- x" raises(Type Unused Range) "how long a wait waits for a change before it answers timeout; with none, until something changes" "fux %3 300 timeout wait";
+        Input Expect "expect" "seen -- expected-request" raises(Type Unused) "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux %3 capture let seen seen string str '[y/N]' contains if seen expect str y text send-keys drop then";
+        Input Text "text" "x text -- x" raises(Type Unused) "text, typed" "fux %3 str 'ls -l' text str Enter key send-keys";
+        Input Key "key" "x key -- x" raises(Type Unused NotAKey) "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
+        Input Paste "paste" "x text -- x" raises(Type Unused) "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
+        Input Bytes "bytes" "x hex -- x" raises(Type Unused) "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
+        Reading History "history" "pane-builder lines -- pane-builder" raises(Type Unused Range) "capture: lines of history first (all-history: all of it)" "fux %3 100 history capture";
+        Reading Wrapped "wrapped" "pane-builder -- pane-builder" raises(Type Unused) "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
+        Reading Full "full" "pane-builder -- pane-builder" raises(Type Unused) "capture: every row and cell, untrimmed" "fux %3 full capture";
+        Reading Styles "styles" "pane-builder -- pane-builder" raises(Type Unused) "capture: colours and attributes" "fux %3 styles capture";
+        Reading Marks "marks" "pane-builder -- pane-builder" raises(Type Unused) "capture: highlighted text (reverse video, or a background colour) as ⟦this⟧" "fux %3 marks capture";
+        Reading MainScreen "main-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: what was printed before a program took the screen" "fux %3 main-screen capture";
+        Reading AltScreen "alt-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: the full screen a program drew last" "fux %3 alt-screen capture";
+        Reading LastOutput "last-output" "pane-builder -- pane-builder" raises(Type Unused) "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux %3 last-output capture";
+        Reading Rows "rows" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to, clipped to available rows; joined lines touched whole (with wrapped, those rows alone)" "fux %3 0 4 rows capture";
+        Reading Cols "cols" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";
     }
     Screen {
-        Clients Choose "choose" "client title list list list callback --" "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end code 2drop end choose";
-        Clients Prompt "prompt" "client name text callback --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs code @2 swap rename end prompt";
-        Clients CommandPrompt "command-prompt" "client --" "a prompt for fuxth" "fux str c1 client command-prompt";
+        Clients Choose "choose" "client title list list list callback --" raises(Type TooLong NotHere asks) "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end code 2drop end choose";
+        Clients Prompt "prompt" "client name text callback --" raises(Type TooLong NotHere asks) "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs code @2 swap rename end prompt";
+        Clients CommandPrompt "command-prompt" "client --" raises(Type NotHere asks) "a prompt for fuxth" "fux str c1 client command-prompt";
     }
     Keys {
-        Config Prefix "prefix" "key --" "this client's prefix (config)" "str C-a prefix";
-        Config Bind "bind" "keys code --" "keys after the prefix run code (config)" "str 'g v' code me focused str horizontal axis split drop end bind";
-        Config BindRoot "bind-root" "key code --" "a key without the prefix runs code (config)" "str M-n code me me focused tab str next step end bind-root";
-        Config Label "label" "text --" "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' code me focused str horizontal axis split drop end bind str 'split right' label";
-        Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' code me focused str horizontal axis split drop end bind str panes group";
-        Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H code me focused str left 2 move-border end bind repeat";
-        Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
-        Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
-        Config BindAction "bind-action" "key code --" "a list's key runs code, receiving client payload; Escape cannot be bound" "str r code rename-prompt end bind-action str rename label";
-        Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "str list str g str first bind-in str first label";
-        Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str list str g unbind-in";
-        Config UnbindAll "unbind-all" "--" "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
+        Config Prefix "prefix" "key --" raises(Type NotConfig BadBinding) "this client's prefix (config)" "str C-a prefix";
+        Config Bind "bind" "keys code --" raises(Type NotConfig BadBinding) "keys after the prefix run code (config)" "str 'g v' code me focused str horizontal axis split drop end bind";
+        Config BindRoot "bind-root" "key code --" raises(Type NotConfig BadBinding) "a key without the prefix runs code (config)" "str M-n code me me focused tab str next step end bind-root";
+        Config Label "label" "text --" raises(Type NotConfig BadBinding) "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' code me focused str horizontal axis split drop end bind str 'split right' label";
+        Config Group "group" "name --" raises(Type NotConfig BadBinding) "the column's heading for the last binding" "str 'g v' code me focused str horizontal axis split drop end bind str panes group";
+        Config Repeat "repeat" "--" raises(NotConfig BadBinding) "the last binding's layer repeats until Esc" "str H code me focused str left 2 move-border end bind repeat";
+        Config Unbind "unbind" "keys --" raises(Type NotConfig BadBinding) "keys after the prefix run nothing" "str 'g v' unbind";
+        Config UnbindRoot "unbind-root" "key --" raises(Type NotConfig BadBinding) "a key without the prefix runs nothing" "str M-n unbind-root";
+        Config BindAction "bind-action" "key code --" raises(Type NotConfig BadBinding) "a list's key runs code, receiving client payload; Escape cannot be bound" "str r code rename-prompt end bind-action str rename label";
+        Config BindIn "bind-in" "screen key action --" raises(Type NotConfig BadBinding) "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "str list str g str first bind-in str first label";
+        Config UnbindIn "unbind-in" "screen key --" raises(Type NotConfig BadBinding) "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str list str g unbind-in";
+        Config UnbindAll "unbind-all" "--" raises(NotConfig) "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
     }
 }
 
@@ -2846,6 +2898,79 @@ mod tests {
                 assert_eq!(Fux::Opts(actual).name(), kind, "{target:?} {opt}");
             }
         }
+        Ok(())
+    }
+
+    /// Each word, given stacks of every kind of value (a sample, the same
+    /// each run), fails only with a code its row declares.
+    #[test]
+    fn every_word_fails_only_with_the_codes_it_declares() -> TestResult {
+        use fux_wire::id::{ClientId, TabId, WsId};
+        let opts = std::rc::Rc::new(Opts::default());
+        let on_pane = Opts {
+            on: Some(On::Target(AnyRef::Pane(PaneId::of(1)))),
+            ..Opts::default()
+        };
+        let values = [
+            Value::Int(0),
+            Value::Int(-1),
+            Value::Int(80),
+            Value::str(""),
+            Value::str("x"),
+            Value::str("next"),
+            Value::Bool(true),
+            Value::List(Rc::new(fuxth::List::new(Vec::new()))),
+            Value::List(Rc::new(fuxth::List::new(vec![Value::str("a")]))),
+            Value::App(Fux::Pane(PaneId::of(1), None)),
+            Value::App(Fux::Tab(TabId::of(1), None)),
+            Value::App(Fux::Workspace(WsId::of(1), None)),
+            Value::App(Fux::Client(ClientId::of(1), None)),
+            Value::App(Fux::All),
+            Value::App(Fux::Null),
+            Value::App(Fux::Opts(opts)),
+            Value::App(Fux::Opts(Rc::new(on_pane))),
+            Value::App(Fux::Extent(Extent::Cells(3))),
+        ];
+        let mut draft = crate::script::default_state()?.draft();
+        let mut seed = 1u64;
+        let mut wrong = Vec::new();
+        for &word in Word::ALL {
+            let codes = word.codes();
+            let takes = word
+                .row()
+                .effect
+                .split_once("--")
+                .map_or(0, |(t, _)| t.split_whitespace().count());
+            for _ in 0..500 {
+                let mut stack = Vec::new();
+                for _ in 0..takes {
+                    seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let at = usize::try_from(seed >> 33).unwrap_or(0) % values.len();
+                    stack.extend(values.get(at).cloned());
+                }
+                let mut sink = Vec::new();
+                let mut host = Host::new(
+                    fux_wire::protocol::Context::default(),
+                    Some(&mut draft),
+                    &mut sink,
+                );
+                let mut stack = stack.into_iter();
+                let mut next = || (stack.next()).ok_or_else(|| fail(Raise::StackUnderflow, "test"));
+                if let Err(failure) = host.dispatch(word, &mut next, &mut Vec::new())
+                    && !codes.contains(&failure.code)
+                {
+                    wrong.push(format!(
+                        "{word:?}: {}: {}",
+                        failure.code.name(),
+                        failure.message
+                    ));
+                }
+            }
+        }
+        wrong.dedup();
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         Ok(())
     }
 }

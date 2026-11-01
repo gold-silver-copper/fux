@@ -447,9 +447,9 @@ a server that stopped left it there. Every server in fux's directory:
 ## `word` and `dictionary`
 
 ```json
-{"name":"dup","provenance":"library","effect":"a -- a a","documentation":"a copy of the top","definition":"define dup 0 pick end","codes":null}
-{"name":"split","provenance":"fux","effect":"subject -- answer","documentation":"split a pane along its required axis: a shell, or the program given","definition":"native","codes":null}
-{"name":"sq","provenance":"run","effect":null,"documentation":null,"definition":"define sq dup mul end","codes":null}
+{"name":"dup","provenance":"library","effect":"a -- a a","documentation":"a copy of the top","definition":"define dup 0 pick end","codes":["stack_underflow"]}
+{"name":"percent","provenance":"fux","effect":"n -- size","documentation":"n percent of the tab, for resize-pane","definition":"native","codes":["stack_underflow","type","range","bad_value"]}
+{"name":"sq","provenance":"run","effect":null,"documentation":null,"definition":"define sq dup mul end","codes":["stack_underflow","type"]}
 ```
 
 `str NAME word` gives the record of the word NAME names now in the
@@ -468,7 +468,16 @@ the reader read and ran (that word, or a defining word of the program's),
 to its name; a value its maker took from the stack isn't among them, so
 `constant k` alone doesn't make `k` again. `definition` is `native` for a
 word in Rust, and `null` for one whose words its source couldn't keep.
-`codes` is `null` for every word: unknown, since no word declares the
-codes it fails with yet (a `try` names them as `docs/codes.txt` lists).
+`codes` is what the word can fail with as it runs, each code once, as a
+`try` names them (`docs/codes.txt`). The core's words and fux's declare
+theirs, each beside its effect, and a word that shapes the program (`if`,
+`each`, `of`) adds what the steps it compiles fail with; a word of fux's that asks the server lists
+every code asking a request can fail with (the server's answers, and the
+client's own as it asks). A definition's are those of its steps and the
+words it calls, but those a `try` around them catches. `codes` is `null`,
+unknown, for a word that runs code it is given (`execute`, `include`,
+`require`, a word `defer` made) or raises a failure it is given
+(`throw`), and for a definition that calls one. A mistake found compiling
+or at a program's end (`unclosed`) is no word's.
 `see NAME` writes the definition, after a comment saying where it was
 read, or says its source is unknown.

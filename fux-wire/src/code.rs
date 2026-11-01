@@ -18,16 +18,18 @@ const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
 /// The time limit came first: as `timeout(1)`.
 const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
 
-/// `codes! { raises [Lang…]; run_loop [Variant "name", …]; /// doc
-/// Variant "name", Closed "closed" CLOSED, … }` expands to the enum `Code`
-/// of those variants and `Lang`, the language's own codes; `Code::ALL`,
-/// fux's own in order; `Code::status`, each one's exit status: the one its
-/// row names (`Code::Closed => CLOSED`), else `FAILED`; the language's,
-/// `PROGRAM` for a mistake in the program (`in_program`), else `FAILED`;
-/// `Code::raised`, whether a word a program runs can fail with
+/// `codes! { raises [Lang…]; asked [Lang…]; run_loop [Variant "name", …];
+/// /// doc Variant "name", Closed "closed" [asked] CLOSED, … }` expands to
+/// the enum `Code` of those variants and `Lang`, the language's own codes;
+/// `Code::ALL`, fux's own in order; `Code::status`, each one's exit status:
+/// the one its row names (`Code::Closed => CLOSED`), else `FAILED`; the
+/// language's, `PROGRAM` for a mistake in the program (`in_program`), else
+/// `FAILED`; `Code::raised`, whether a word a program runs can fail with
 /// it, so a `try` may catch it: not for a `run_loop` one, which only the
 /// loop running the program gives; a language's code if fuxth's words
-/// raise it, or fux's (`raises`); `Raise`, what a word's `fail` takes: the
+/// raise it, or fux's (`raises`); `Code::asked`, whether asking a request
+/// can fail with it: a row marked `[asked]`, a language's code `asked`
+/// lists; `Raise`, what a word's `fail` takes: the
 /// rows' codes and `raises`'s, never a `run_loop` one; and
 /// `fuxth_core::Code::from`, each one as the language takes it (one of fux's as
 /// `Host`, by its name).
@@ -38,9 +40,16 @@ macro_rules! codes {
     (@status $status:ident) => {
         $status
     };
+    (@asked) => {
+        false
+    };
+    (@asked asked) => {
+        true
+    };
     (raises [$($lang:ident),*];
+    asked [$($asked_lang:ident),*];
     run_loop [$($(#[$loop_doc:meta])* $looped:ident $loop_name:literal,)*];
-    $($(#[$doc:meta])* $variant:ident $name:literal $($status:ident)?,)*) => {
+    $($(#[$doc:meta])* $variant:ident $name:literal $([$asked:ident])? $($status:ident)?,)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Code {
             $($(#[$doc])* $variant,)*
@@ -68,6 +77,17 @@ macro_rules! codes {
                     $(Code::$variant)|* => true,
                     $(Code::$looped)|* => false,
                     Code::Lang(LangCode(code)) => code.raised() || Raise::LANG.contains(&code),
+                }
+            }
+
+            /// Whether asking a request can fail with it: the server's
+            /// answer, or the client's own as it asks (its connection, its
+            /// config, where it runs), or as it reads the answer.
+            pub fn asked(self) -> bool {
+                match self {
+                    $(Code::$variant => codes!(@asked $($asked)?),)*
+                    $(Code::$looped)|* => false,
+                    Code::Lang(LangCode(code)) => [$(fuxth_core::Code::$asked_lang),*].contains(&code),
                 }
             }
         }
@@ -117,6 +137,9 @@ codes! {
     // `unknown_word`, `explain`'s word that is none; `bad_name`, a name a
     // pane, tab or workspace cannot have.
     raises [Type, Range, StackUnderflow, TooLong, Unused, UnknownWord, BadName, Memory, IdsExhausted];
+    // The language's codes asking a request can fail with: the server's
+    // (`fail`, journal entries a batch missed) and reading its answer.
+    asked [Range, TooLong, BadName, Memory, IdsExhausted, Fail];
     // What only the loop running a program gives, never a word: no `try`
     // catches it.
     run_loop [
@@ -125,54 +148,54 @@ codes! {
     ];
     // Where a client finds its server.
     /// No server runs at the socket.
-    NoServer "no_server",
+    NoServer "no_server" [asked],
     /// The client and the server speak different protocols.
-    Mismatch "mismatch",
+    Mismatch "mismatch" [asked],
     /// The client could not do its part: its socket, its terminal.
-    Client "client",
+    Client "client" [asked],
     // What a command names.
     /// A pane named is not there.
-    NoPane "no_pane",
+    NoPane "no_pane" [asked],
     /// A tab named is not there.
-    NoTab "no_tab",
+    NoTab "no_tab" [asked],
     /// A workspace named is not there; or a client that only watches
     /// attaches to a server that holds none.
-    NoWorkspace "no_workspace",
+    NoWorkspace "no_workspace" [asked],
     /// A client named is not there.
-    NoClient "no_client",
+    NoClient "no_client" [asked],
     /// Nothing to act on was named, and the caller has none.
-    NoTarget "no_target",
+    NoTarget "no_target" [asked],
     /// `FUX_PANE` is another run's, has no `FUX_SERVER`, or names an old program generation.
-    StrayPane "stray_pane",
+    StrayPane "stray_pane" [asked],
     /// A field `get` names that the object has not.
-    NoField "no_field",
+    NoField "no_field" [asked],
     /// No pane, tab or workspace that way, or before or after it.
-    NothingThere "nothing_there",
+    NothingThere "nothing_there" [asked],
     /// A name taken by another pane, tab or workspace.
-    NameTaken "name_taken",
+    NameTaken "name_taken" [asked],
     /// A value out of what a word takes.
-    BadValue "bad_value",
+    BadValue "bad_value" [asked],
     /// A command used wrongly.
-    Usage "usage" PROGRAM,
+    Usage "usage" [asked] PROGRAM,
     // What a command meets.
     /// A program that exited or closed its terminal, or none the pane's
     /// while it respawns; or its terminal reads failed: nothing takes input there.
-    NotRunning "not_running",
+    NotRunning "not_running" [asked],
     /// A program still running, which a respawn would not end; or a
     /// respawn of the pane still under way.
-    StillRunning "still_running",
+    StillRunning "still_running" [asked],
     /// A respawn of a pane that was started with no program.
-    NotRun "not_run",
+    NotRun "not_run" [asked],
     /// The pane only has its shell, which `signal` does not signal.
-    OnlyShell "only_shell",
+    OnlyShell "only_shell" [asked],
     /// A pane or tab no longer at the version or layout revision given:
     /// it changed since it was seen, and nothing was sent or arranged.
-    Stale "stale",
+    Stale "stale" [asked],
     /// A pane where no shell command was marked (OSC 133), for what needs
     /// one (`last-output`).
-    NoMarks "no_marks",
+    NoMarks "no_marks" [asked],
     /// A program that could not start.
-    Start "start",
+    Start "start" [asked],
     /// A size no pane or tab can have: a screen of no rows or columns, or
     /// past what a grid holds (`attach`, its terminal resized, the word
     /// `size`), or with
@@ -181,30 +204,30 @@ codes! {
     /// screen that sizes panes and no tab; a pane's
     /// `resize-pane` the layout cannot give; a tab resized, a
     /// split or a pane moved where its tab's panes would not all show.
-    Size "size",
+    Size "size" [asked],
     /// A mouse event the pane's program does not ask for.
-    Mouse "mouse",
+    Mouse "mouse" [asked],
     /// A signal that could not be sent.
-    Signal "signal",
+    Signal "signal" [asked],
     /// A client with a terminal, which sets its own size.
-    NotHeadless "not_headless",
+    NotHeadless "not_headless" [asked],
     /// `kill-server` from one of the server's own panes.
-    OwnServer "own_server",
+    OwnServer "own_server" [asked],
     /// `kill-server` with people attached, not forced.
-    PeopleAttached "people_attached",
+    PeopleAttached "people_attached" [asked],
     // How a wait ends.
     /// A wait's limit came first.
-    Timeout "timeout" TIMED_OUT,
+    Timeout "timeout" [asked] TIMED_OUT,
     /// The pane waited on closed.
-    Closed "closed" CLOSED,
+    Closed "closed" [asked] CLOSED,
     // A program of words.
     /// A word run where its context is missing: a command-line word in a
     /// key or config, or `me` outside a key or prompt.
-    NotHere "not_here",
+    NotHere "not_here" [asked],
     /// A word a config file may not hold.
-    NotConfig "not_config",
+    NotConfig "not_config" [asked],
     /// The config file or a setting refused.
-    Config "config",
+    Config "config" [asked],
     /// A key binding that cannot be made.
     BadBinding "bad_binding",
     /// A file that could not be read, or stdin.
@@ -212,7 +235,7 @@ codes! {
     /// An environment variable `getenv` names that is not set.
     UnsetVar "unset_var",
     /// Output that could not be written.
-    Output "output",
+    Output "output" [asked],
     /// A word that may not run inside another's run.
     Nested "nested",
     /// A key name no key has.

@@ -590,6 +590,8 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for word in Word::ALL {
         vocabulary.add(word.row().name, word.row().effect)?;
     }
+    vocabulary.fails(|id| Some(Word::ALL.get(id)?.codes()));
+    vocabulary.writes(&[Code::Output.into()]);
     for code in Code::all().filter(|c| c.raised()) {
         vocabulary.raises(code.into())?;
     }
@@ -1298,12 +1300,17 @@ fn steps(
 /// The record of the word `name` names in `machine`'s dictionary now, or,
 /// with no name, a list of each word's, in the order they were defined.
 fn dictionary(machine: &Machine<Fux>, name: Option<&str>) -> Result<Vec<Value<Fux>>, Failed> {
+    let mut known = fuxth::Known::default();
+    let mut word = |definition: &fuxth::Definition<'_>| {
+        let codes = machine.codes(definition, &mut known);
+        record::word(definition, codes.as_deref())
+    };
     let Some(name) = name else {
-        let records = machine.dictionary().iter().map(record::word).collect();
+        let records = machine.dictionary().iter().map(&mut word).collect();
         return Ok(vec![Value::List(Rc::new(fuxth::List::new(records)))]);
     };
     match machine.definition(name) {
-        Some(definition) => Ok(vec![record::word(&definition)]),
+        Some(definition) => Ok(vec![word(&definition)]),
         None => Err(Failed::new(
             Raise::UnknownWord,
             format!("{name:?}: no such word"),
@@ -2541,8 +2548,9 @@ pub(crate) mod tests {
     /// A version's counts are decimal, as the server writes them, whatever
     /// base the program reads its own numbers in.
     /// `word` and `dictionary` read the program's own dictionary, with
-    /// no server: a word's record says where it came from, what it declares
-    /// and what made it, and the program's words come last, each once.
+    /// no server: a word's record says where it came from, what it declares,
+    /// what made it and what it can fail with, and the program's words come
+    /// last, each once.
     #[test]
     fn the_dictionary_is_the_programs_own_as_records() -> TestResult {
         use super::*;
@@ -2562,24 +2570,28 @@ pub(crate) mod tests {
         };
         let record = |name: &str, provenance: &str, effect: &str, about: &str, definition: &str| {
             format!(
-                "{{\"name\":\"{name}\",\"provenance\":\"{provenance}\",\"effect\":{effect},\"documentation\":{about},\"definition\":\"{definition}\",\"codes\":null}}"
+                "{{\"name\":\"{name}\",\"provenance\":\"{provenance}\",\"effect\":{effect},\"documentation\":{about},\"definition\":\"{definition}\",\"codes\":"
             )
         };
-        assert_eq!(*sq, record("sq", "run", "null", "null", "define sq 0 end"));
+        let sq_now = record("sq", "run", "null", "null", "define sq 0 end") + "[]}";
+        assert_eq!(*sq, sq_now);
         let a = "\"a copy of the top\"";
         assert_eq!(
             *dup,
             record("dup", "library", "\"a -- a a\"", a, "define dup 0 pick end")
+                + "[\"stack_underflow\"]}"
         );
         assert!(split.contains("\"provenance\":\"fux\",\"effect\":\"subject -- answer\",\"documentation\":\"split a pane"), "{split}");
         assert!(add.contains("\"provenance\":\"core\""), "{add}");
         assert!(
-            add.ends_with("\"definition\":\"native\",\"codes\":null}"),
+            add.ends_with(
+                "\"definition\":\"native\",\"codes\":[\"stack_underflow\",\"type\",\"invalid_address\"]}"
+            ),
             "{add}"
         );
         assert!(
             dictionary.ends_with(&format!(
-                ",{},{sq}]",
+                ",{}[\"stack_underflow\",\"type\"]}},{sq}]",
                 record("sq2", "run", "null", "null", "define sq2 sq end")
             )),
             "{dictionary}"
