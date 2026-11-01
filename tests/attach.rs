@@ -866,7 +866,10 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     // macOS names some other terminal, and Linux none.)
     let server = Server::start("")?;
     let pane = server.ok(&[
-        "agent-opts",
+        "opts",
+        "str",
+        "agent",
+        "in",
         "80",
         "24",
         "size",

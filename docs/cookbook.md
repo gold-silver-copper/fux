@@ -226,6 +226,22 @@ fux str work workspace dump > work.fux
 )
 ```
 
+## Words from a recipe file
+
+Words only some programs want are recipe files, in a checkout of fux at
+`recipes/`, which a program loads with `require` (relative to the file
+or directory that names it) or runs with `fux --file`: `layouts.fux`'s
+presets arrange a tab's panes, `agent.fux`'s `agent-opts` places new
+tabs in workspace `agent`, and `confirm.fux`'s `confirm` asks before an
+action (the next recipe binds it).
+
+```sh
+fux str shell pane str horizontal axis str sh program split > /dev/null
+fux require recipes/layouts.fux str shell pane tab even-h
+fux require recipes/agent.fux agent-opts 80 24 size str true program new-tab 60 until-ended str exited get
+fux str agent workspace kill
+```
+
 ## Key bindings and config
 
 The config is fuxth that each terminal runs as it attaches;
@@ -242,6 +258,15 @@ str C-a prefix
 str e code me edit-history end bind  str 'history in the editor' label
 define split-right me focused str horizontal axis split drop end
 str v code split-right end bind
+```
+
+A config's `require` reads beside it: this one, beside a copy of fux's
+`recipes`, asks before `C-b X` terminates the focused pane's command.
+
+```fux
+# ~/.config/fux/config.fux
+require recipes/confirm.fux
+str X code me str 'terminate its command?' list list me focused end code str TERM signal drop end end confirm end bind
 ```
 
 ## The bar on a row of its own

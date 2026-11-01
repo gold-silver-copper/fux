@@ -127,7 +127,8 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
         refused.stderr
     );
     // From one of its own panes, kill-server is refused as well.
-    let sh = server.words("agent-opts 80 24 size str sh program new-tab dup str sh rename")?;
+    let sh =
+        server.words("opts str agent in 80 24 size str sh program new-tab dup str sh rename")?;
     let sh = first_word(&sh);
     let line = format!("'{FUX}' kill-server; echo status=$?");
     let sent = server.ok(&[
@@ -247,7 +248,10 @@ fn events_tell_what_happens() -> Outcome {
     let (mut events, next) = streaming(&server, &["all", "str", cursor.trim(), "events"])?;
     let told = (|| {
         let pane = server.ok(&[
-            "agent-opts",
+            "opts",
+            "str",
+            "agent",
+            "in",
             "80",
             "24",
             "size",
@@ -337,7 +341,9 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
         "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg",
     ];
     let a = server.ok(&[
-        &["agent-opts", "80", "24", "size", "str", "a", "name"][..],
+        &[
+            "opts", "str", "agent", "in", "80", "24", "size", "str", "a", "name",
+        ][..],
         &bash,
         &["new-tab"],
     ]
@@ -379,14 +385,7 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
 fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     let server = Server::start("")?;
     let run = [
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "cat",
-        "program",
-        "new-tab",
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "cat", "program", "new-tab",
     ];
     let a = server.ok(&run)?;
     let a = first_word(&a);
@@ -651,7 +650,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
     let source = Server::start("")?;
     source.words(
-        "agent-opts 80 24 size str cat program new-tab dup str first rename str new-workspace move",
+        "opts str agent in 80 24 size str cat program new-tab dup str first rename str new-workspace move",
     )?;
     source.words("str first pane str horizontal axis str cat program split str second rename")?;
     source.words(
@@ -812,7 +811,7 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
         let cwd = fux_wire::words::quote(directory.to_str().ok_or("cwd text")?);
         let answer = server.ok(&[&format!(
-            "agent-opts 80 24 size str {cwd} cwd {argv} new-tab"
+            "opts str agent in 80 24 size str {cwd} cwd {argv} new-tab"
         )])?;
         let pane = answer.trim().split(':').next().ok_or("pane")?;
         // It prints once it changed directory.
@@ -845,7 +844,7 @@ fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
     let observed = fux_wire::words::quote(child.to_str().ok_or("child text")?);
     let body = fux_wire::words::quote("cd \"$1\" && printf 'shell-directory\\n' && exec /bin/cat");
     let answer = server.ok(&[&format!(
-        "agent-opts 80 24 size str {cwd} cwd list str /bin/sh str -c str {body} str shell str {observed} end shell-program new-tab"
+        "opts str agent in 80 24 size str {cwd} cwd list str /bin/sh str -c str {body} str shell str {observed} end shell-program new-tab"
     )])?;
     let pane = answer.trim().split(':').next().ok_or("pane")?;
     let in_child = format!("str '{}' cwd", child.display());

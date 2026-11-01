@@ -593,7 +593,7 @@ class Fux(Driver):
     # ------------------------------------------------- the rest
 
     def spawn(self, argv, size=None, name=None):
-        words = ["agent-opts"]
+        words = ["opts", "str", "agent", "in"]
         # fux makes no size up, and no client is attached here: with none
         # asked for, tmux's size for a session no client shows, 80 by 24.
         cols, rows = size or (80, 24)

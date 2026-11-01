@@ -138,9 +138,11 @@ fn every_recipe_in_the_cookbook_runs() -> Outcome {
     let server = Server::start("")?;
     let dir = server.dir.join("recipes");
     std::fs::create_dir_all(&dir).map_err(e)?;
-    // fuxed's recipe names the editor where a checkout of fux has it.
-    let fuxed = concat!(env!("CARGO_MANIFEST_DIR"), "/fuxed");
-    std::os::unix::fs::symlink(fuxed, dir.join("fuxed")).map_err(e)?;
+    // Recipes name fuxed and the recipe files where a checkout of fux has them.
+    for name in ["fuxed", "recipes"] {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+        std::os::unix::fs::symlink(checkout, dir.join(name)).map_err(e)?;
+    }
     let _started = Started(dir.clone());
     let sh = shell()?;
     let blocks = blocks()?;

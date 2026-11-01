@@ -1,18 +1,13 @@
 # fux's bundled words, written in fuxth: every program may use them.
-# `explain NAME` says what each does.
+# `explain NAME` says what each does. A helper is hidden once the words
+# that use it are defined (`hide`), so no program finds it by name.
 
-# -- : attach, naming a first workspace main when the server is empty
-define default-attach opts attach end
 # pane text -- answer : type text into a pane, nothing pressed after it; answers as send-keys does
 define type text send-keys end
 # pane name -- answer : press a key in a pane: Enter, C-c, Up; answers as send-keys does
 define press key send-keys end
 # pane text -- answer : in a shell: type a line and press Enter; answers as send-keys does
 define line text str Enter key send-keys end
-# -- opts : launch options explicitly placing new tabs in workspace agent
-define agent-opts opts str agent in end
-# -- answer : a tab with a shell, in workspace agent, on the size of the tab fux runs in (from outside fux: opts 80 24 size str agent in new-tab)
-define shell agent-opts new-tab end
 # x kinds about -- x : x, if its kind is one of kinds (names between spaces); else fails, saying it takes about
 define assert-kind
   let about fields over kind contains not if
@@ -99,25 +94,15 @@ define rename-prompt
   list list it end code rename end end
   prompt
 end
-# client title callback -- : a question: a chooser with one row, Yes; choosing it runs the callback, code … end or [captured arguments,code … end], on its captured arguments alone; the title is choose's, text (a number or boolean: string it first) or [text,subject handle], closing when the subject goes
-define confirm
-  let action let question let c
-  action is-list if action len 2 eq else false then if action unpack else empty action then
-  let run let captured
-  # Choosing Yes gives the client and the row too: dropped, it runs.
-  run kind str xt eq if list captured run push code 2drop execute end end else action then
-  let callback
-  c question list list true str Yes end end empty list 0 end callback choose
-end
-# client handle -- : close it, once confirmed
+# client handle -- : close it, once confirmed: a chooser with one row, Yes, which the client and the row are given to as well
 define confirm-close
   dup kind str answer eq if pane then let it
   it str label get let caption
   list str 'close ' it kind str ' ' it string
     caption it string eq not if str ' ' caption then str ?
   end glue
-  list list it end code kill end end
-  confirm
+  list list true str Yes end end empty list 0 end
+  list list it end code 2drop kill end end choose
 end
 
 # -- record : one facts observation of all workspaces, tabs, panes and clients
@@ -187,27 +172,24 @@ define dump-first
   swap let nodes
   begin nodes swap at dup is-list while 3 at end
 end
-# launch -- path : shells prefer observed cwd; programs always keep launch cwd
+# pane-record -- path : a shell starts again where it is now, when that is known; else, as a program always does, where it was started
 define dump-cwd
-  let launch launch str initial_cwd get let cwd
+  let p p str launch get let launch launch str cwd get
   launch str choice get str shell eq if
-    launch str observed_cwd get let observed
-    observed kind str null ne if observed str status get str known eq if
-      observed str path get let cwd
-    then then
+    p str cwd get let now
+    now kind str null ne if now str status get str known eq if drop now str path get then then
   then
-  cwd
 end
 # pane-record -- source : warnings for unknown directories and non-text directories
 define dump-warnings
-  let p p str launch get let launch
+  let p
   list
-    launch str choice get str shell eq if
-      launch str observed_cwd get dup kind str null eq
+    p str launch get str choice get str shell eq if
+      p str cwd get dup kind str null eq
       if drop true else str status get str known ne then
       if str '# ' p str id get string str ': its current directory is unknown, so it starts in its launch directory' 10 char then
     then
-    launch dump-cwd let cwd
+    p dump-cwd let cwd
     cwd str encoding get str utf8 ne if
       str '# ' p str id get string str ': directory bytes (hex) ' cwd str text get
       str ' are not UTF-8 text; it starts where this runs' 10 char
@@ -223,16 +205,16 @@ define dump-name
 end
 # pane-record prefix action -- source : one complete creation, including its saved options and launch role
 define dump-create
-  let action let prefix let p p str launch get let launch
+  let action let prefix let p p str launch get let launch p str state get let state
   list
     p dump-warnings
     prefix
-    launch str history_bytes get string str ' history-bytes '
-    launch str reflow get string str ' reflow '
-    launch str alternate_scroll_lines get string str ' alternate-scroll-lines '
-    launch str picture_bytes get string str ' picture-bytes '
-    launch str program_clipboard get string str ' program-clipboard '
-    launch dump-cwd let cwd
+    state str history_bytes get string str ' history-bytes '
+    state str reflow get string str ' reflow '
+    state str alternate_scroll_lines get string str ' alternate-scroll-lines '
+    state str picture_bytes get string str ' picture-bytes '
+    state str program_clipboard get string str ' program-clipboard '
+    p dump-cwd let cwd
     cwd str encoding get str utf8 eq if cwd str text get dump-text str 'cwd ' then
     launch str choice get str shell eq if
       str 'list ' launch str argv get each dump-text end str 'end shell-program '
@@ -299,41 +281,8 @@ define dump
   str 'pane tab workspace answer closed-answer all' str 'a pane, tab, workspace or all' assert-kind
   str recipe snapshot dump-recipe string
 end
-
-# way -- way : a checked layout axis, independent of how many panes there are
-define layout-axis
-  dup str horizontal eq over str vertical eq or not
-  if str 'layout axis must be horizontal or vertical' fail then
-end
-# Empty input is an error; list/step/weight bounds apply before arrange submits anything.
-# panes way alternate start -- tree : balanced flat nodes with absolute child indices; leaves share room by pane count
-define layout-of
-  let start let alternate layout-axis let way let ps
-  ps len let n
-  n 0 eq if str 'a layout needs at least one pane' fail then
-  n 1 eq if list ps first end else
-    n 2 div let a n a sub let b
-    alternate if
-      way str horizontal eq if str vertical else str horizontal then
-    else way then let next-way
-    list list way a b start 1 add start a 2 mul add end end
-    ps 0 a slice next-way alternate start 1 add recurse cat
-    ps a n slice next-way alternate start a 2 mul add recurse cat
-  then
-end
-# panes way -- tree : balanced equal-share row or column, rejecting empty input
-define even-of false 0 layout-of end
-# panes way cross -- tree : first pane takes two shares, the rest one, evenly along cross
-define main-of
-  layout-axis let cross layout-axis let way let ps
-  ps len 0 eq if str 'a layout needs at least one pane' fail then
-  ps len 1 eq if list ps first end else
-    list list way 2 1 1 2 end ps first end
-    ps 1 ps len slice cross false 2 layout-of cat
-  then
-end
-# panes -- tree : balanced tiles, alternating axes, room shared by pane count
-define tiled-of str horizontal true 0 layout-of end
+hide dump-text hide dump-id hide dump-first hide dump-cwd hide dump-warnings
+hide dump-name hide dump-create hide dump-recipe
 
 # Timeout is an observation outcome, never evidence that a program is ready.
 # Each wait is an hour at most, then asked again from where it got to.
@@ -351,24 +300,6 @@ define events
     batch str status get dup str gone eq swap str stopped eq or
   until
 end
-
-# tab -- tab revision list : one topology observation's tab, revision and panes in tree order
-define layout-current
-  str tab str 'a tab' assert-kind str topology snapshot let observed
-  observed str tabs get first let tab
-  tab str id get tab str layout_revision get
-  list observed str panes get each str id get end end
-end
-# tab -- : arrange its current panes side by side, with equal shares
-define even-h layout-current str horizontal even-of arrange end
-# tab -- : arrange its current panes above one another, with equal shares
-define even-v layout-current str vertical even-of arrange end
-# tab -- : first current pane above an equal-share row, taking two shares against its one
-define main-h layout-current str vertical str horizontal main-of arrange end
-# tab -- : first current pane beside an equal-share column, taking two shares against its one
-define main-v layout-current str horizontal str vertical main-of arrange end
-# tab -- : arrange its current panes in balanced tiles, alternating axes
-define tiled layout-current tiled-of arrange end
 
 # records id -- record : an exact held identity; absence refuses before opening
 define chooser-find
@@ -447,3 +378,4 @@ define choose-pane
   c list list str 'swap ' source string str ' with' end glue source end rows
   list end list 0 end list list source end code nip swap-with end end choose
 end
+hide chooser-row hide chooser-find hide chooser-container-row hide chooser-index hide chooser-selected

@@ -13,7 +13,7 @@ panes an array of their objects). Rows and columns count from 0; times are milli
 
 ## A pane
 
-`ls json` gives each pane its identity and size, with process fields under `state`; `PANE capture json` gives them too, but
+`ls json` gives each pane its identity and size, with process fields under `state` and what it was started as under `launch` (below); `PANE capture json` gives the identity and `state` fields too, but
 for `id`, `name`, `label` and `pid` (it says `pane`):
 
 | Field | Value |
@@ -26,14 +26,12 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `pid` | its program's process, `null` once it exited, and while a respawn of it is under way |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
 | `foreground_group` | the terminal's observed foreground process group id `G`, or `null` if unknown; its leader may have exited while other members still run. The OS says what it runs: `ps -o comm=,args= -p G`, `/proc/G/cmdline`, `readlink /proc/G/cwd` and `pgrep -a -g G` (every member) on Linux; `ps -o`, `lsof -a -p G -d cwd -Fn` and `pgrep -lf -g G` on macOS. Each is a separate read that may race with the group changing |
-| `launch_argv` | the checked arguments of its saved launch, for both shell and program roles |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `read_error` | an unexpected PTY read failure as errno text, or `null`: a failed reader is no longer polled and refuses keys; the cause stays after exit until respawn |
 | `exited` | the status its program exited with (a pane started with a program, not a shell), else `null` |
 | `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
 | `alt_screen` | its program holds the full screen |
-| `mouse` | its program asked for mouse reports |
-| `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` |
+| `mouse_mode` | the mouse reports its program asked for: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` for none |
 | `bracketed_paste` | its program asked for bracketed paste |
 | `pictures` | the pictures it shows (sixel), oldest first, a newer one covering the pixels of an older one that its own lie on, each at cell `row`, `col`, over `rows` by `cols` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
 | `lost` | what fux let go of its program's since it started, each kind counted (`{"copies_cut":0,"copies_not_text":0,"pictures":0,"memory":0}`): `copies_cut` and `copies_not_text`, its copies (OSC 52) that copied nothing, longer than the 64 KiB a string may be, or not base64 (RFC 4648, padded or not) of UTF-8 text (none is counted for a pane created with `false program-clipboard`, which copies nothing); `pictures`, sixel pictures it drew that were not kept whole, each counted as it ends: begun while its host drew no sixel (its tab not shown, or its host draws no sixel or said no cell size), ended once it did not, lifted past a scroll region's top as it was placed, or cut: what it drew past what a picture may keep (4,096 pixels a side, 8,847,360 pixels in all, and the pictures' memory budget) was not kept, placed or not. One that drew nothing, or that CAN ended, is none; one placed whole and let go later, the oldest first as newer ones need the room, is not counted, as history let go is not; `memory`, times reading its output, or a resize, was refused memory (fux-vt's limits, `fux-vt/THREATS.md` 1.3), each losing only what it was for: history a resize let go counts too, and a size refused counts once until another size is asked or the pane keeps its own. A client showing it is told each kind, with how many, once a run of losses of that kind, which a success of the kind ends: a run of copies ends at a copy made; of pictures, at one placed whole; of memory, at a read of its output or a resize that refused none (a read: a frame and what follows it, or output once all of it is read); a program's end or a respawn starts every run anew |
@@ -105,16 +103,16 @@ one `laid_out` event with the tab and workspace.
 
 Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
 and `version`. A name is given or null; a label is display text. Facts adds
-`state`, containing the process/terminal fields above. Topology uses only
-retained state and performs no process metadata queries. Recipe adds `launch`:
-`choice` (`shell` or `program`), ordered `argv`, `initial_cwd`,
-`observed_cwd`, `history_bytes`, `program_clipboard`, `reflow`, `alternate_scroll_lines`, and
-`picture_bytes`. Both launch choices
-retain their original inputs. OS text uses `{encoding: utf8, text: ...}` or
-`{encoding: hex, text: ...}` for exact non-UTF-8 bytes. Observed cwd is null
-when unknown, `{status: known, path: ...}`, or
-`{status: failed, operation: cwd, errno: N}`. Replay launches new processes;
-these are launch inputs, not saved process memory.
+`state`, containing the process/terminal fields above but `title`, and
+`launch`, what it was started as: `choice` (`shell` or `program`), ordered
+`argv` and `cwd`, both choices' original inputs. Topology uses only
+retained state and performs no process metadata queries. Recipe adds `cwd`,
+where the pane's program is now, which `dump` starts a shell in: null when
+unknown, `{status: known, path: ...}`, or
+`{status: failed, operation: cwd, errno: N}`. OS text uses
+`{encoding: utf8, text: ...}` or `{encoding: hex, text: ...}` for exact
+non-UTF-8 bytes. Replay launches new processes; these are launch inputs,
+not saved process memory.
 
 Each client has `id`, `kind` (`terminal` or `headless`), `read_only`, physical
 `rows`/`cols`, `pane_rows`/`pane_cols`, optional `workspace`/`tab`/`pane`,
@@ -429,8 +427,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":61,
- "server_release":"0.36.0","server_protocol":61,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":62,
+ "server_release":"0.36.0","server_protocol":62,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

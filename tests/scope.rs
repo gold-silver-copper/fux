@@ -9,8 +9,8 @@ use support::*;
 fn another_runs_handles_are_refused_before_mutating() -> Outcome {
     let a = Server::start("")?;
     let b = Server::start("")?;
-    let theirs = a.words("agent-opts 80 24 size str cat program new-tab")?;
-    b.words("agent-opts 80 24 size str cat program new-tab")?;
+    let theirs = a.words("opts str agent in 80 24 size str cat program new-tab")?;
+    b.words("opts str agent in 80 24 size str cat program new-tab")?;
     for action in [
         "expect str forbidden text send-keys",
         "pane kill",
@@ -46,20 +46,8 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
         pid.display()
     );
     server.ok(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        &script,
-        "arg",
-        "new-tab",
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "str", "-c",
+        "arg", "str", &script, "arg", "new-tab",
     ])?;
     let descendant = pid_in(&pid)?;
     let _reap = Reap(vec![descendant]);
