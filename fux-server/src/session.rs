@@ -2484,7 +2484,8 @@ impl Session {
                         format!("{target}: {}", pane::UNMARKED),
                     ));
                 }
-                let captured = crate::capture::pane(pane, self.run, history, view)?;
+                let cursor = self.parts.journal().end(self.run);
+                let captured = crate::capture::pane(pane, cursor, history, view)?;
                 Ok(Body::Capture(Box::new(captured)).into())
             }
             &Command::Reorder { ref target, toward } => {
@@ -8953,6 +8954,22 @@ mod journal_tests {
             .iter()
             .filter(|e| e.data.get("event") == Some(&Json::str(name)))
             .collect()
+    }
+
+    /// A capture's `cursor` is the journal's end as it reads the screen:
+    /// `events` from it holds each change after the read, none before.
+    #[test]
+    fn events_from_a_captures_cursor_follow_its_read() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "%1 str before text send-keys")?;
+        let cursor = output(&mut s, "%1 capture str cursor get")?;
+        let cursor = cursor.trim().parse().map_err(|()| cursor.clone())?;
+        assert_eq!(cursor, s.parts.journal().end(s.run));
+        run(&mut s, "%1 str after text send-keys")?;
+        let after = batch(&s, cursor)?;
+        assert_eq!(after.events.len(), 1, "{after:?}");
+        assert_eq!(named(&after, "input").len(), 1, "{after:?}");
+        Ok(())
     }
 
     /// A client's reader is told every change of its current child: one

@@ -1324,7 +1324,7 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
         let pane = s.parts.panes().get(&id).ok_or("no pane")?;
         let capture = fux_server::capture::pane(
             pane,
-            s.run,
+            s.parts.journal().end(s.run),
             Some(usize::MAX),
             command::CaptureView::default(),
         )

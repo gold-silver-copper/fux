@@ -13,10 +13,12 @@ use fux_wire::json::Json;
 use fux_wire::wire::Memory;
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
-/// once with its version and state (`state`).
+/// once with its version, the `journal`'s cursor and state (`state`):
+/// `events` from that cursor reads the pane's journal entries after this
+/// read; a change only to the screen shows in versions and captures.
 pub fn pane(
     pane: &Pane,
-    run: fux_wire::command::Run,
+    journal: fux_wire::events::Cursor,
     history: Option<usize>,
     view: CaptureView,
 ) -> Result<Captured, fux_wire::code::Error> {
@@ -39,7 +41,10 @@ pub fn pane(
         .0
         .skip(selection.start)
         .take(selection.len());
-    let mut fields = vec![("title", Json::str(pane.title().as_str()))];
+    let mut fields = vec![
+        ("cursor", Json::str(journal.to_string())),
+        ("title", Json::str(pane.title().as_str())),
+    ];
     fields.extend(state(pane)?);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
@@ -50,7 +55,7 @@ pub fn pane(
     fields.push(("wrapped_rows", Json::Array(wrapped.collect())));
     fields.push(("links", links(read.clone(), selection.start, view)));
     let of = Of::Pane {
-        version: pane.version(run),
+        version: pane.version(journal.run),
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
         state: fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
     };
@@ -662,6 +667,13 @@ mod tests {
     use crate::pane::tests::pane;
     use fux_wire::command::CaptureView;
 
+    /// The journal's cursor at its start, in a run of now.
+    fn journal() -> Result<fux_wire::events::Cursor, &'static str> {
+        let run = fux_wire::command::Run::now().ok_or("a clock")?;
+        let seq = fux_wire::events::Seq(0);
+        Ok(fux_wire::events::Cursor { seq, run })
+    }
+
     /// A capture as printed.
     trait Printed {
         fn text(&self) -> Result<String, std::fmt::Error>;
@@ -680,9 +692,9 @@ mod tests {
         history: Option<usize>,
         view: CaptureView,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let run = fux_wire::command::Run::now().ok_or("a clock")?;
+        let journal = journal()?;
         let mut json = String::new();
-        super::pane(pane, run, history, view)?.write_json(&mut json)?;
+        super::pane(pane, journal, history, view)?.write_json(&mut json)?;
         Ok(json)
     }
 
@@ -803,16 +815,11 @@ mod tests {
             pane.read_unread();
         }
         assert!(pane.screen().history_len().saturating_mul(200) > 16 << 20);
-        let capture = super::pane(
-            &pane,
-            fux_wire::command::Run::now().ok_or("clock")?,
-            Some(usize::MAX),
-            CaptureView::default(),
-        )?;
+        let capture = super::pane(&pane, journal()?, Some(usize::MAX), CaptureView::default())?;
         assert!(capture.lines.len() > 80_000);
         let full = super::pane(
             &pane,
-            fux_wire::command::Run::now().ok_or("clock")?,
+            journal()?,
             Some(100_000),
             CaptureView {
                 full: true,
@@ -851,13 +858,7 @@ mod tests {
         let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
             let mut pane = pane(3, 5, 0)?;
             pane.output(output.as_bytes());
-            Ok(super::pane(
-                &pane,
-                fux_wire::command::Run::now().ok_or("a clock")?,
-                None,
-                join,
-            )?
-            .text()?)
+            Ok(super::pane(&pane, journal()?, None, join)?.text()?)
         };
         // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
         let first = |output| {
@@ -877,14 +878,14 @@ mod tests {
     fn rows_inside_a_wrapped_line_take_it_whole() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(6, 5, 0)?;
         pane.output(b"top\r\nabcdefghijklm\r\nend");
-        let run = fux_wire::command::Run::now().ok_or("a clock")?;
+        let journal = journal()?;
         let capture = |rows, wrapped| -> Result<String, Box<dyn std::error::Error>> {
             let view = CaptureView {
                 rows: Some(rows),
                 wrapped,
                 ..CaptureView::default()
             };
-            Ok(super::pane(&pane, run, None, view)?.text()?)
+            Ok(super::pane(&pane, journal, None, view)?.text()?)
         };
         assert_eq!(capture((2, 3), false)?, "abcdefghijklm");
         assert_eq!(capture((0, 2), false)?, "top\nabcdefghijklm");
@@ -912,13 +913,7 @@ mod tests {
         let mut pane = pane(3, 5, 0)?;
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
-        let text = super::pane(
-            &pane,
-            fux_wire::command::Run::now().ok_or("a clock")?,
-            None,
-            view,
-        )?
-        .text()?;
+        let text = super::pane(&pane, journal()?, None, view)?.text()?;
         assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
@@ -932,7 +927,7 @@ mod tests {
             "\x1b[31mabcde世\x1b[m\r\nx\x1b[4m  \x1b[m\r\ny\x1b[41m  \x1b[31;49m  \x1b[m"
                 .as_bytes(),
         );
-        let run = fux_wire::command::Run::now().ok_or("a clock")?;
+        let journal = journal()?;
         for flags in 0..16 {
             let view = CaptureView {
                 styles: flags & 1 != 0,
@@ -941,7 +936,7 @@ mod tests {
                 wrapped: flags & 8 != 0,
                 ..CaptureView::default()
             };
-            let got = super::pane(&pane, run, None, view)?;
+            let got = super::pane(&pane, journal, None, view)?;
             let styled = view.styles || view.marks;
             let actual: Vec<(String, u32)> = got
                 .lines
@@ -1004,8 +999,8 @@ mod tests {
             marks: true,
             ..CaptureView::default()
         };
-        let run = fux_wire::command::Run::now().ok_or("a clock")?;
-        let got = super::pane(&pane, run, None, marks)?;
+        let journal = journal()?;
+        let got = super::pane(&pane, journal, None, marks)?;
         assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
             got.lines
@@ -1033,8 +1028,8 @@ mod tests {
             marks: true,
             ..CaptureView::default()
         };
-        let run = fux_wire::command::Run::now().ok_or("a clock")?;
-        let got = super::pane(&pane, run, None, marks)?;
+        let journal = journal()?;
+        let got = super::pane(&pane, journal, None, marks)?;
         let colour = |n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default);
         assert_eq!(got.styles, (0..20).map(colour).collect::<Vec<_>>());
         let line = got.lines.first().ok_or("a line")?;
@@ -1079,9 +1074,9 @@ mod tests {
             styles: true,
             ..CaptureView::default()
         };
-        let run = fux_wire::command::Run::now().ok_or("a clock")?;
+        let journal = journal()?;
         let body =
-            fux_wire::protocol::Body::Capture(Box::new(super::pane(&pane, run, None, view)?));
+            fux_wire::protocol::Body::Capture(Box::new(super::pane(&pane, journal, None, view)?));
         assert_eq!(
             Reader::new(&encode(&body)).whole::<fux_wire::protocol::Body>()?,
             body
@@ -1106,13 +1101,7 @@ mod tests {
         }
         assert!(pane.screen().history_len() > 0);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
-        let text = super::pane(
-            &pane,
-            fux_wire::command::Run::now().ok_or("a clock")?,
-            None,
-            view,
-        )?
-        .text()?;
+        let text = super::pane(&pane, journal()?, None, view)?.text()?;
         assert_eq!(text, "hello");
         let range = |pane: &crate::pane::Pane| {
             let json = json(pane, None, CaptureView::default())?;
@@ -1127,13 +1116,7 @@ mod tests {
         // A running command's row is whole, its cursor at the start of it
         // too (a progress line it rewrites).
         pane.output(b"\r\n$ \x1b]133;C\x07step 1\r");
-        let text = super::pane(
-            &pane,
-            fux_wire::command::Run::now().ok_or("a clock")?,
-            None,
-            view,
-        )?
-        .text()?;
+        let text = super::pane(&pane, journal()?, None, view)?.text()?;
         assert_eq!(text, "step 1");
         assert_eq!(
             range(&pane)?,
@@ -1181,13 +1164,7 @@ mod tests {
             assert_eq!(pane.command_running(), !ended);
             let json = json(&pane, None, CaptureView::default())?;
             assert!(json.contains(&format!(r#""last_output":{want}"#)), "{json}");
-            let text = super::pane(
-                &pane,
-                fux_wire::command::Run::now().ok_or("a clock")?,
-                None,
-                view,
-            )?
-            .text()?;
+            let text = super::pane(&pane, journal()?, None, view)?.text()?;
             assert_eq!(text, read, "{output:?}");
         }
         Ok(())
@@ -1207,13 +1184,7 @@ mod tests {
         let json = json(&pane, None, CaptureView::default())?;
         let want = r#""last_output":{"start":[0,2],"end":[1,9]}"#;
         assert!(json.contains(want), "{json}");
-        let text = super::pane(
-            &pane,
-            fux_wire::command::Run::now().ok_or("a clock")?,
-            None,
-            view,
-        )?
-        .text()?;
+        let text = super::pane(&pane, journal()?, None, view)?.text()?;
         assert_eq!(text, "abcdefghijklmnopLINKED");
         Ok(())
     }
