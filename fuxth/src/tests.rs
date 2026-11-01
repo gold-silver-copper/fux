@@ -632,7 +632,7 @@ fn a_library_says_what_each_word_does() {
     let hidden = machine.run(&mut Toy::default(), u64::MAX);
     assert_eq!(hidden.map_err(|e| e.code), Err(Code::UnknownWord));
     machine.clear();
-    assert_eq!(code(run("hide nosuch")), Some("unknown_word"));
+    assert_eq!(run("hide nosuch").map_err(|e| e.code), Err(Code::UnknownWord));
     // A comment after a token is that line's, not the definition's below.
     let silent = machine.library(
         "l",
