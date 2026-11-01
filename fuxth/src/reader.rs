@@ -22,12 +22,14 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-/// A source being read: its words, the next one, and its file.
+/// A source being read: its words, the next one, its file, and which
+/// source given the machine it is.
 #[derive(Clone, Debug)]
 pub(crate) struct Read {
     tokens: Rc<[Token]>,
-    next: usize,
+    pub(crate) next: usize,
     pub(crate) path: Option<PathBuf>,
+    pub(crate) id: u64,
 }
 
 impl Read {
@@ -109,10 +111,12 @@ impl<A: AppValue> Machine<A> {
         if let Some(path) = &path {
             self.loaded.insert(path.clone(), false);
         }
+        self.sources = self.sources.saturating_add(1);
         self.frames.push(Frame::Read(Box::new(Read {
             tokens: tokens.into(),
             next: 0,
             path,
+            id: self.sources,
         })));
     }
 

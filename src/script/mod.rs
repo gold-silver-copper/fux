@@ -450,12 +450,14 @@ impl<'a> Host<'a> {
     }
 }
 
-/// A run's failure: its code, cause, and source when known.
+/// A run's failure: its code, cause, source when known, and the steps
+/// that had taken effect before it (D-25).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
     pub code: Code,
     pub message: String,
     pub place: Option<token::Place>,
+    pub actions: Vec<Token>,
 }
 
 impl Failed {
@@ -465,15 +467,42 @@ impl Failed {
             code: code.into(),
             message: message.into(),
             place: None,
+            actions: Vec::new(),
         }
     }
-    /// The cause before its source, for a notice with limited room.
+
+    /// The failure of a run on `machine`, with the steps that took effect
+    /// on it.
+    fn after(self, machine: &Machine<Fux>) -> Failed {
+        Failed {
+            actions: machine.actions().cloned().collect(),
+            ..self
+        }
+    }
+
+    /// The cause before its source, for a notice with limited room, then
+    /// the steps that had taken effect.
     pub fn notice(&self) -> String {
         let message = match &self.place {
             Some(place) => format!("{} ({place})", self.message),
             None => self.message.clone(),
         };
-        Failed::new(self.code, message).to_string()
+        let mut notice = Failed::new(self.code, message).to_string();
+        for (i, step) in self.actions.iter().enumerate() {
+            let said = if i == 0 {
+                "; already took effect:"
+            } else {
+                ","
+            };
+            notice.push_str(&format!("{said} {}: {}", step.place, step.text));
+        }
+        notice
+    }
+
+    /// Each step that had taken effect, a line each, as stderr says it.
+    fn taken(&self) -> impl Iterator<Item = String> + '_ {
+        let said = |step: &Token| format!("already took effect: {}: {}", step.place, step.text);
+        self.actions.iter().map(said)
     }
 
     /// The source followed by the cause, for command-line diagnostics.
@@ -544,9 +573,8 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     }
     let place = error.place.take();
     Failed {
-        code: Code::of(error.code),
-        message: error.located(),
         place,
+        ..Failed::new(Code::of(error.code), error.located())
     }
 }
 
@@ -1095,8 +1123,19 @@ const SLICE: u64 = 100_000;
 
 /// Runs `machine` to its end, asking `asks` what its words ask; its stack
 /// at the end. It fails once `stop` is, if given; else it runs till it
-/// ends, or till the user or the OS stops it.
+/// ends, or till the user or the OS stops it. Its failure holds the steps
+/// that had taken effect.
 pub fn run(
+    machine: &mut Machine<Fux>,
+    host: &mut Host<'_>,
+    asks: &mut dyn Asks,
+    stop: Option<&Stop>,
+) -> Result<Vec<Value<Fux>>, Failed> {
+    steps(machine, host, asks, stop).map_err(|failed| failed.after(machine))
+}
+
+/// `run`'s steps.
+fn steps(
     machine: &mut Machine<Fux>,
     host: &mut Host<'_>,
     asks: &mut dyn Asks,
@@ -1159,7 +1198,9 @@ pub fn run(
                 // An exit the host took ends the run here, as it stands.
                 match (&what, &values) {
                     (Local::Shell(Shell::Exit(_)), Ok(_)) => return Ok(machine.stack().to_vec()),
-                    (Local::Attach { .. } | Local::Open(_), Ok(_)) => took_effect(machine),
+                    (Local::Attach { .. } | Local::Open(_) | Local::Start, Ok(_)) => {
+                        took_effect(machine)
+                    }
                     _ => {}
                 }
                 pushed(machine, values)?
@@ -1192,10 +1233,7 @@ fn acts(request: &Request) -> bool {
 /// The word the machine waited at took effect: listed, at the program's
 /// step that ran it, with the failures after it.
 fn took_effect(machine: &mut Machine<Fux>) {
-    let step = machine.calls().rev().find(|t| !bundled(&t.place));
-    if let Some(step) = step {
-        machine.acted(step);
-    }
+    machine.acted(|t| bundled(&t.place));
 }
 
 /// Whether `place` is in the prelude's or the library's source.
@@ -1258,9 +1296,14 @@ fn pushed(
 /// failed: one inside a word of the prelude's or library's is placed at
 /// the program's step that called it, with the bundled word's own step in
 /// the message, and how the program's word is used.
+/// A failure raised again is placed by the calls where it first happened.
 fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
-    let step = (error.place.as_ref().is_some_and(bundled))
-        .then(|| machine.calls().rev().find(|t| !bundled(&t.place)));
+    let calls = std::mem::take(&mut error.calls);
+    let program = |t: &Token| !bundled(&t.place);
+    let step = (error.place.as_ref().is_some_and(bundled)).then(|| match calls.is_empty() {
+        true => machine.calls().rev().find(program),
+        false => calls.into_iter().rev().find(program),
+    });
     let Some(step) = step.flatten() else {
         return telling(error);
     };
@@ -1590,8 +1633,8 @@ pub fn main(
         acted: acted.clone(),
         closed: closed.clone(),
     };
-    let (mut left, mut taken) = (Vec::new(), Vec::new());
-    match ran(args, argv, &mut out, acted, (&mut left, &mut taken)) {
+    let mut left = Vec::new();
+    match ran(args, argv, &mut out, acted, &mut left) {
         // Its reader gone, fux ends quietly, whatever the program did then,
         // failed or caught it and went on.
         _ if closed.get() => Ok(PIPE),
@@ -1602,12 +1645,8 @@ pub fn main(
         Err(failed) => {
             let mut err = io::stderr();
             let _ = writeln!(err, "fux: {failed}");
-            for step in taken {
-                let _ = writeln!(
-                    err,
-                    "fux: already took effect: {}: {}",
-                    step.place, step.text
-                );
+            for step in failed.taken() {
+                let _ = writeln!(err, "fux: {step}");
             }
             let _ = printed(&left, &mut err, Batch::Whole);
             Err(failed)
@@ -1622,14 +1661,13 @@ pub fn main(
 /// that finished, as with `cat`.
 const PIPE: u8 = 128 + 13;
 
-/// `main`'s run, its output going to `out`; failed, what was left in
-/// `left`, and the steps that had taken effect in `taken`.
+/// `main`'s run, its output going to `out`; failed, what was left in `left`.
 fn ran(
     args: &[String],
     argv: Option<Vec<std::ffi::OsString>>,
     out: &mut Watched<'_>,
     acted: Acted,
-    (left, taken): (&mut Vec<Value<Fux>>, &mut Vec<Token>),
+    left: &mut Vec<Value<Fux>>,
 ) -> Result<u8, Failed> {
     if matches!(args, [flag] if matches!(flag.as_str(), "--version" | "-V")) {
         writeln!(out, "{}", fux_wire::protocol::Build::OURS).map_err(output_failed)?;
@@ -1678,13 +1716,13 @@ fn ran(
         true | false => failed,
     });
     match ran {
-        Ok(stack) => {
-            printed(&stack, host.out, Batch::Events)?;
-            Ok(cli.status.unwrap_or(0))
-        }
+        // Its output failing, the run still took its steps.
+        Ok(stack) => match printed(&stack, host.out, Batch::Events) {
+            Ok(()) => Ok(cli.status.unwrap_or(0)),
+            Err(failed) => Err(failed.after(&machine)),
+        },
         Err(failed) => {
             *left = machine.stack().to_vec();
-            *taken = machine.actions().to_vec();
             Err(failed)
         }
     }
