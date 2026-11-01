@@ -336,7 +336,8 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
     );
     // Its parent gone before it attaches, it is in the pane's session but
     // descends from no pane: a background job keeps the terminal as stdin
-    // only when told to.
+    // only when told to. macOS's poll can't wait on /dev/tty, which the
+    // client refuses.
     let orphaned = format!("( ( sleep 1; {attach} </dev/tty ) & ); sleep 120");
     for program in [attach.to_owned(), behind, orphaned] {
         let server = Server::start("")?;
@@ -361,6 +362,10 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
         ];
         let pane = server.ok(&launch)?;
         let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
+        if cfg!(target_os = "macos") && program.contains("/dev/tty") {
+            server.shows(&pane, "can't be waited on")?;
+            continue;
+        }
         server.shows(&pane, "this client")?;
         let still = || -> Result<bool, String> {
             let before = server.version(&pane)?;

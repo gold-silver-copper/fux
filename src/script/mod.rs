@@ -1378,6 +1378,9 @@ fn local(
             if size.is_none() && !client::on_one_terminal() {
                 return Err(client_failed(client::Error::NotATerminal));
             }
+            if size.is_none() && !client::waitable() {
+                return Err(client_failed(client::Error::Unwaitable));
+            }
             if size.is_none() && client::window_size().is_none() {
                 return Err(client_failed(client::Error::NoSize));
             }

@@ -66,6 +66,8 @@ pub enum Error {
     },
     Protocol(fux_wire::protocol::Error),
     NotATerminal,
+    /// The terminal on stdin can't be waited on (`waitable`).
+    Unwaitable,
     /// The terminal says no size (`TIOCGWINSZ`), or 0 rows or columns.
     NoSize,
     /// What a request streamed could not be written out.
@@ -85,6 +87,7 @@ impl Error {
             | Error::Refused(_)
             | Error::Protocol(_)
             | Error::NotATerminal
+            | Error::Unwaitable
             | Error::NoSize
             | Error::Failed(_) => Code::Client,
         }
@@ -116,6 +119,11 @@ impl std::fmt::Display for Error {
             Error::NotATerminal => {
                 f.write_str("attaching needs a terminal on stdin and stdout, the same one")
             }
+            Error::Unwaitable => f.write_str(
+                "the terminal on stdin can't be waited on for keys (macOS's poll says POLLNVAL \
+                 of /dev/tty): give stdin as the terminal's own device, /dev/ and what \
+                 `ps -o tty= -p $$` says",
+            ),
             Error::NoSize => f.write_str(
                 "the terminal on stdin says no size (0 rows or columns), which fux would have to make up; \
                  give it one (`stty rows 24 cols 80`)",
@@ -619,6 +627,18 @@ pub(crate) fn on_one_terminal() -> bool {
         && (device(io::stdin().as_fd()).is_some_and(|d| device(io::stdout().as_fd()) == Some(d))
             || fuxix::terminal::controls_session(io::stdin())
                 && fuxix::terminal::controls_session(io::stdout()))
+}
+
+/// Whether the terminal on stdin can be waited on for keys: macOS's poll
+/// says POLLNVAL of `/dev/tty`, never that a key is there, so the client,
+/// reading each time it is told, would wait in the read for a key.
+pub(crate) fn waitable() -> bool {
+    let stdin = io::stdin();
+    let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
+    fuxix::poll::poll(&mut fds, Some(Duration::ZERO)).is_ok()
+        && fds
+            .iter()
+            .all(|fd| !fd.revents().intersects(PollFlags::NVAL))
 }
 
 /// How a client attaches: to which workspace, whether it only watches, its
