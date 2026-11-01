@@ -9,8 +9,8 @@
 use crate::Code;
 use crate::Failure;
 use crate::error::{Error, Floor, Wants, underflow};
-use crate::reader::{Building, Read};
-use crate::token::Token;
+use crate::reader::{Building, Doc, Read};
+use crate::token::{Source, Token, Words};
 use crate::value::{Address, AppValue, List, Text, Thrown, Value, Xt};
 use crate::vocabulary::Vocabulary;
 use std::cmp::Ordering;
@@ -50,19 +50,25 @@ pub trait Host {
         Err("this host reads no source files".to_owned())
     }
 
-    /// The text of the file `resolve` gave.
-    fn read(&mut self, path: &Path) -> Result<String, String> {
+    /// The text of the file `resolve` gave; else its failure, which
+    /// `include` and `require` fail with: `require` for a file that won't
+    /// read, or another code (`interrupt`, for a read the user stopped).
+    fn read(&mut self, path: &Path) -> Result<String, Failure> {
         let _ = path;
-        Err("this host reads no source files".to_owned())
+        Err(Failure::new(
+            Code::Require,
+            "this host reads no source files",
+        ))
     }
 }
 
 /// Code: steps, each with the token it came from (none for a word of the
 /// core's or the host's own), how many `let` names of its own it keeps,
 /// the name it was defined with, a version of a machine's, where the
-/// machine keeps it (`Machine::version`); a word `create` made, where its
-/// data starts (`body-of`); a word `defer` made, the cell its action is in
-/// (`is`, `action-of`); and `code … end`'s, the words between, as read.
+/// machine keeps it (`Machine::version`); whether it runs even while a
+/// definition is compiled; a word `create` made, where its data starts
+/// (`body-of`); a word `defer` made, the cell its action is in (`is`,
+/// `action-of`); and `code … end`'s, the words between, as read.
 #[derive(Clone, Debug)]
 pub(crate) struct Steps<A> {
     pub(crate) ops: Vec<Op<A>>,
@@ -70,9 +76,10 @@ pub(crate) struct Steps<A> {
     pub(crate) locals: usize,
     pub(crate) name: Rc<str>,
     pub(crate) index: usize,
+    pub(crate) immediate: bool,
     pub(crate) body: Option<Address>,
     pub(crate) action: Option<Address>,
-    pub(crate) words: Option<Rc<[Token]>>,
+    pub(crate) words: Option<Words>,
 }
 
 impl<A> Steps<A> {
@@ -83,6 +90,7 @@ impl<A> Steps<A> {
             locals: 0,
             name,
             index: 0,
+            immediate: false,
             body: None,
             action: None,
             words: None,
@@ -369,12 +377,86 @@ impl Body {
     }
 }
 
-/// A word in the dictionary: its code, and whether it runs even while a
-/// definition is compiled.
+/// A word in the dictionary: its code; which definition it is, in the
+/// order they were made; where it came from; the words that made it, as
+/// read (none for the core's and the host's); and a library's help for it.
 #[derive(Clone, Debug)]
 pub(crate) struct Entry<A> {
     pub(crate) xt: Rc<Steps<A>>,
-    pub(crate) immediate: bool,
+    order: u64,
+    origin: Origin,
+    pub(crate) words: Option<Source>,
+    pub(crate) doc: Option<Rc<Doc>>,
+}
+
+/// Where a word of the dictionary came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// The core's, in Rust.
+    Core,
+    /// The application's (its `Vocabulary`), in Rust.
+    Host,
+    /// A library read with `Machine::library`.
+    Library,
+    /// The program's: defined by what the machine was given to read.
+    Program,
+}
+
+/// A word of the dictionary as it is now, as `see` and `words` say it: its
+/// name; where it came from; whether it runs even while a definition is
+/// compiled; what it does to the stack and what it does, as the core, the
+/// host (its effect) or a library's comment declare them (a program's
+/// own declare neither); and the words that made it, as read (`source`).
+#[derive(Clone, Copy, Debug)]
+pub struct Definition<'a> {
+    pub name: &'a str,
+    pub origin: Origin,
+    pub immediate: bool,
+    pub effect: Option<&'a str>,
+    pub about: Option<&'a str>,
+    words: Option<&'a Source>,
+}
+
+impl Definition<'_> {
+    /// Whether it is Rust, the core's or the host's, and has no source.
+    pub fn native(&self) -> bool {
+        matches!(self.origin, Origin::Core | Origin::Host)
+    }
+
+    /// The words that made it, as read, each quoted to be read back, a
+    /// blank apart, then `immediate` if it is: none for a word in Rust, nor
+    /// for one whose words a source it was read from couldn't keep.
+    pub fn source(&self) -> Option<String> {
+        let words = self.words?.tokens();
+        let mut text = (words.map(|word| fuxth_core::quote(&word.text)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if self.immediate {
+            text.push_str(" immediate");
+        }
+        Some(text)
+    }
+}
+
+/// As `see` writes it: a comment saying where it was read, then its
+/// source; a word in Rust, a comment saying what it does to the stack;
+/// one whose source is unknown, a comment saying so.
+impl std::fmt::Display for Definition<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let place = self.words.and_then(|words| words.tokens().next());
+        if let (Some(source), Some(first)) = (self.source(), place) {
+            return write!(f, "# {}\n{source}\n", first.place);
+        }
+        let immediate = if self.immediate { ", immediate" } else { "" };
+        let (name, effect) = (self.name, self.effect.unwrap_or_default());
+        match self.origin {
+            Origin::Core => writeln!(f, "# {name} ( {effect} ): native, the core's{immediate}"),
+            Origin::Host => writeln!(f, "# {name} ( {effect} ): native, the host's{immediate}"),
+            Origin::Library | Origin::Program => {
+                writeln!(f, "# {name}: its source is unknown{immediate}")
+            }
+        }
+    }
 }
 
 /// A machine: its dictionary and what it is running.
@@ -390,6 +472,8 @@ pub struct Machine<A> {
     /// Each name's word, the latest version: code compiled before keeps
     /// the version it was compiled against.
     pub(crate) names: HashMap<Rc<str>, Entry<A>>,
+    /// How many definitions were made, which orders each.
+    defined: u64,
     /// The name defined last, which `immediate` marks.
     pub(crate) latest: Option<Rc<str>>,
     pub(crate) globals: Vec<Option<Value<A>>>,
@@ -463,6 +547,7 @@ impl<A: AppValue> Machine<A> {
             versions: Rc::new(Vec::new()),
             fresh: Vec::new(),
             names: HashMap::with_capacity(Builtin::ALL.len().saturating_add(words)),
+            defined: 0,
             latest: None,
             globals: Vec::new(),
             building: Vec::new(),
@@ -496,20 +581,15 @@ impl<A: AppValue> Machine<A> {
             if builtin.hosted() && !vocabulary.evaluates() {
                 continue;
             }
-            let xt = machine.one(builtin.name(), Op::Builtin(builtin));
-            let entry = Entry {
-                xt,
-                immediate: builtin.immediate(),
-            };
-            machine.names.insert(Rc::from(builtin.name()), entry);
+            let mut steps = Steps::new(Rc::from(builtin.name()));
+            steps.immediate = builtin.immediate();
+            steps.push(Op::Builtin(builtin), None);
+            let xt = machine.version(steps);
+            machine.insert(Rc::clone(&xt.name), xt, Origin::Core, None);
         }
         for (id, name) in vocabulary.names().enumerate() {
             let xt = machine.one(name, Op::App(id));
-            let entry = Entry {
-                xt,
-                immediate: false,
-            };
-            machine.names.insert(Rc::from(name), entry);
+            machine.insert(Rc::from(name), xt, Origin::Host, None);
         }
         machine.merge();
         machine
@@ -521,6 +601,63 @@ impl<A: AppValue> Machine<A> {
         let steps = Rc::new(steps);
         self.fresh.push(Rc::clone(&steps));
         steps
+    }
+
+    /// `xt` defined as `name`, made by `words` (as read), the latest
+    /// definition: a program's, or, while one is read, a library's.
+    pub(crate) fn define_word(&mut self, name: Rc<str>, xt: Rc<Steps<A>>, words: Option<Source>) {
+        let origin = match self.made {
+            Some(_) => Origin::Library,
+            None => Origin::Program,
+        };
+        self.insert(name, xt, origin, words);
+    }
+
+    fn insert(&mut self, name: Rc<str>, xt: Rc<Steps<A>>, origin: Origin, words: Option<Source>) {
+        self.defined = self.defined.saturating_add(1);
+        let entry = Entry {
+            xt,
+            order: self.defined,
+            origin,
+            words,
+            doc: None,
+        };
+        self.names.insert(name, entry);
+    }
+
+    /// The word `name` names now.
+    pub fn definition(&self, name: &str) -> Option<Definition<'_>> {
+        let (name, entry) = self.names.get_key_value(name)?;
+        Some(self.described(name, entry))
+    }
+
+    /// Every word the dictionary has now, each name's latest, in the order
+    /// they were defined.
+    pub fn dictionary(&self) -> Vec<Definition<'_>> {
+        let mut entries: Vec<_> = self.names.iter().collect();
+        entries.sort_by_key(|(_, entry)| entry.order);
+        (entries.into_iter())
+            .map(|(name, entry)| self.described(name, entry))
+            .collect()
+    }
+
+    fn described<'a>(&'a self, name: &'a str, entry: &'a Entry<A>) -> Definition<'a> {
+        let doc = entry.doc.as_deref();
+        let mut said = (doc.map(|d| &*d.effect), doc.map(|d| &*d.about));
+        if let (Origin::Core, Some(Op::Builtin(b))) = (entry.origin, entry.xt.leaf()) {
+            said = (Some(b.effect()), Some(b.about()));
+        } else if let (Origin::Host, Some(Op::App(id))) = (entry.origin, entry.xt.leaf()) {
+            said = (self.vocabulary.effect(*id), None);
+        }
+        let (effect, about) = said;
+        Definition {
+            name,
+            origin: entry.origin,
+            immediate: entry.xt.immediate,
+            effect,
+            about,
+            words: entry.words.as_ref(),
+        }
     }
 
     /// A word that is one step, of the core's, the host's or a `let`.
@@ -809,6 +946,7 @@ impl<A: AppValue> Machine<A> {
         match self.frames.pop() {
             Some(Frame::Code { locals, .. }) => self.locals.truncate(locals),
             Some(Frame::Read(read)) => {
+                self.source_left(&read);
                 if let Some(path) = read.path {
                     self.loaded.remove(&path);
                 }
@@ -1541,7 +1679,11 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// Writes `text` through the host, said at the word.
-    fn written<H: Host<Value = A>>(&self, host: &mut H, text: &str) -> Result<(), Error> {
+    pub(crate) fn written<H: Host<Value = A>>(
+        &self,
+        host: &mut H,
+        text: &str,
+    ) -> Result<(), Error> {
         host.write(text).map_err(|f| self.fail(f.code, f.message))
     }
 
@@ -2495,6 +2637,32 @@ builtins! { m host;
             m.index_of(&xt)?;
             m.compile_call(&xt)
         }
+    ImmediateWord "immediate-word" [cold] (xt: Exec) "xt -- flag"
+        "whether xt is a word that runs even while a definition is compiled (immediate)" {
+        m.push(Value::Bool(xt.immediate));
+        Ok(())
+    }
+    See "see" [cold] () "--"
+        "see NAME: write the words that made NAME, as read, after where they were read: a define … end reads back as the same word, a word another made shows its maker and name; of a word in Rust, what it does to the stack"
+        { m.see(host) }
+    Words "words" [cold] () "--" "write every word's name, a line each, in the order they were defined" {
+        let mut text = String::new();
+        for definition in m.dictionary() {
+            text.push_str(definition.name);
+            text.push('\n');
+        }
+        m.written(host, &text)
+    }
+    PrintStack "print-stack" [cold] () "--"
+        "write the values depth counts, a line each as print writes them, the deepest first, leaving them" {
+        let floor = m.marks.last().map_or(0, |(at, _)| *at);
+        let mut text = String::new();
+        for value in m.stack.get(floor..).unwrap_or_default() {
+            value.write_text(&mut text).map_err(|f| m.fail(f.code, f.message))?;
+            text.push('\n');
+        }
+        m.written(host, &text)
+    }
     Evaluate "evaluate" [hosted] (s: Str) "s --"
         "read s as a source file is read, and run it here" { m.evaluate(&s) }
     StopCompiling "stop-compiling" [immediate] () "--"

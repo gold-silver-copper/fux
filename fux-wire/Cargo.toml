@@ -17,9 +17,5 @@ fux-vt = { path = "../fux-vt", version = "0.15.0" }
 fuxix = { path = "../fuxix", version = "0.8.0" }
 fuxth-core = { path = "../fuxth/core", version = "0.7.0" }
 
-[dev-dependencies]
-# `words`' quoting is read back by fuxth's own reader.
-fuxth = { path = "../fuxth" }
-
 [lints]
 workspace = true

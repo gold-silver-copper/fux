@@ -32,6 +32,58 @@ pub struct Token {
     pub place: Place,
 }
 
+/// Words of a source as it was read: a run of its tokens, shared with it,
+/// so keeping them copies none.
+#[derive(Clone, Debug)]
+pub(crate) struct Words {
+    tokens: Rc<[Token]>,
+    from: u32,
+    to: u32,
+}
+
+impl Words {
+    /// The words `range` of `tokens`, if it has them: none past the 2^32
+    /// words a run says, so a dictionary's entries stay small to copy.
+    pub(crate) fn of(tokens: &Rc<[Token]>, range: Range<usize>) -> Option<Words> {
+        tokens.get(range.clone())?;
+        let (from, to) = (
+            u32::try_from(range.start).ok()?,
+            u32::try_from(range.end).ok()?,
+        );
+        let tokens = Rc::clone(tokens);
+        Some(Words { tokens, from, to })
+    }
+
+    pub(crate) fn tokens(&self) -> &[Token] {
+        let at = |n: u32| usize::try_from(n).unwrap_or(usize::MAX);
+        self.tokens
+            .get(at(self.from)..at(self.to))
+            .unwrap_or_default()
+    }
+}
+
+/// The words that made a word, as read: the runs read from other sources
+/// before, if any (a definition begun in one `evaluate`d line and ended in
+/// the next), then a run of one source's.
+#[derive(Clone, Debug)]
+pub(crate) struct Source {
+    before: Option<Rc<[Words]>>,
+    last: Words,
+}
+
+impl Source {
+    /// `before`, then `last`, in the order read.
+    pub(crate) fn of(before: Vec<Words>, last: Words) -> Source {
+        let before = (!before.is_empty()).then(|| before.into());
+        Source { before, last }
+    }
+
+    pub(crate) fn tokens(&self) -> impl Iterator<Item = &Token> {
+        let before = self.before.iter().flat_map(|runs| runs.iter());
+        before.flat_map(Words::tokens).chain(self.last.tokens())
+    }
+}
+
 /// Command-line arguments, each one token, never split again.
 pub fn arguments<S: AsRef<str>>(args: &[S]) -> Vec<Token> {
     (args.iter().zip(1u32..))
@@ -184,6 +236,25 @@ mod tests {
         let tokens = source("t", "\"one\ntwo\" three")?;
         let lines: Vec<String> = tokens.iter().map(|t| t.place.to_string()).collect();
         assert_eq!(lines, ["t:1", "t:2"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_quoted_word_reads_back_as_it_was() -> Result<(), Error> {
+        let words = [
+            "plain",
+            "",
+            "two words",
+            "it's",
+            "a\"b",
+            "back\\slash",
+            "#x",
+            "tab\tx",
+        ];
+        for word in words {
+            let quoted = fuxth_core::quote(word);
+            assert_eq!(texts(&quoted)?, [word], "{quoted}");
+        }
         Ok(())
     }
 

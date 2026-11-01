@@ -448,7 +448,11 @@ that send them, for bash, zsh and fish, to put in your own startup files
 ## Words
 
 `fux help` lists every word, by what it does, with what each takes and
-leaves; `fux help WORD` says one at length.
+leaves; `fux help WORD` says one at length. The program's own dictionary,
+its own definitions included, is data: `fux str NAME word` gives a word's
+record (where it came from, its effect and help, and the words that made
+it) and `fux dictionary` every word's, in the order they were defined;
+`fux see NAME` writes what made it, and `fux words` every name.
 
 **Key names**, for `key`, `bind` and `prefix`, are tmux's (`C-x`, `M-x`,
 `S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F35`, …) and any

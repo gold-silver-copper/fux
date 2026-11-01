@@ -140,8 +140,10 @@ which only its own code's words resolve; `end` closes the innermost.
 | `abort`, `quit` | -- | `-1 throw`, `-56 throw` |
 | `execute` | xt -- | runs the word |
 | `find` | s -- xt true / s false | the word named s now |
+| `immediate-word` | xt -- flag | whether the word xt is runs while compiling (Forth's `find` gives 1 for one) |
 | `next-word` | -- s | the next word of the input, for a word that reads one |
-| `immediate` | -- | the word defined last runs while compiling |
+| `immediate` | -- | the word defined last runs while compiling: made again as a version of its own, so an xt taken before stays as it was |
+| `see NAME`, `words`, `print-stack` | -- | write what made NAME (a comment saying where it was read, then its words as read from every source that gave them, quoted to be read back: a `define … end` reads back as the same word, and a word another made shows the word that made it, which the reader read and ran, up to its name; of a word in Rust, its effect); every word's name, a line each, oldest first; the values `depth` counts, a line each, deepest first, left as they are (Forth's `see words .s`) |
 | `compiling`, `start-compiling` | -- flag / -- | whether words are compiled; compile again |
 | `compile-call` | xt -- | a call to xt compiled into the definition open, though its words are run (Forth's `compile,`) |
 | `evaluate` | s -- | reads s as a source file is read, here; only where the host enables it |
@@ -220,7 +222,13 @@ copied in where it is compiled, so a mistake in it is placed at the call.
 
 For help, [`Builtin`] is the core's words: `ALL`, `name()`, `named(name)`,
 `effect()`, `about()`, and whether each is `immediate()` or `hosted()`
-(`evaluate`). A list's values are `List::items()`, read only.
+(`evaluate`). A list's values are `List::items()`, read only. The
+dictionary as it is now is `Machine::dictionary()`, each name's current
+word once, in the order they were defined, and `Machine::definition(name)`
+one: a [`Definition`] says its [`Origin`] (the core, the host, a library or
+the program), whether it is immediate, its effect and help as the core,
+the host or a library declare them, and the words that made it, as read
+(`source()` quotes them to be read back), as `see` writes it.
 
 ## Tested
 

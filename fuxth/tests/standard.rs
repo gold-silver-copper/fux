@@ -158,9 +158,10 @@ fn core_flags() {
 /// ' EXECUTE FIND IMMEDIATE LITERAL POSTPONE STATE [ ] :NONAME RECURSE
 /// EXIT VALUE TO CHAR [CHAR], as `tick execute find immediate literal
 /// postpone compiling stop-compiling start-compiling code … end recurse
-/// leave-definition let to first`. Deviations: `find` gives true for an
-/// immediate word too (Forth gives 1 or -1); `compiling` gives a boolean;
-/// GI6 leaves its numbers counting down, as it has no return stack yet.
+/// leave-definition let to first`. Deviations: `find` gives true for any
+/// word, and `immediate-word` says whether it is immediate (Forth's `find`
+/// gives 1 or -1); `compiling` gives a boolean; GI6 leaves its numbers
+/// counting down, as it has no return stack yet.
 #[test]
 fn core_dictionary_and_compiling() {
     let gt = "define gt1 123 end define gt2 tick gt1 end immediate
@@ -173,12 +174,12 @@ fn core_dictionary_and_compiling() {
         ("gt2 execute", &[V::Int(123)]),
         // T{ GT1STRING FIND -> ' GT1 -1 }T  T{ GT2STRING FIND -> ' GT2 1 }T
         (
-            "str gt1 find swap tick gt1 eq",
-            &[V::Bool(true), V::Bool(true)],
+            "str gt1 find swap dup tick gt1 eq swap immediate-word",
+            &[V::Bool(true), V::Bool(true), V::Bool(false)],
         ),
         (
-            "str gt2 find swap tick gt2 eq",
-            &[V::Bool(true), V::Bool(true)],
+            "str gt2 find swap dup tick gt2 eq swap immediate-word",
+            &[V::Bool(true), V::Bool(true), V::Bool(true)],
         ),
         // T{ : GT3 GT2 LITERAL ; -> }T  T{ GT3 -> ' GT1 }T
         (
@@ -224,6 +225,34 @@ fn core_dictionary_and_compiling() {
         let program = format!("{gt}{program}");
         assert_eq!(fuxth(&program, u64::MAX), mixed(left), "{program}");
     }
+}
+
+/// The Programming-Tools word set's .S SEE WORDS, as `print-stack see
+/// words`. The standard leaves what they write to each system, and its
+/// tests check only that .S leaves the stack as it was. fuxth's write a
+/// line each: .S a value, deepest first; SEE a comment saying where the
+/// word was read, then its words as read; WORDS a name, oldest first.
+#[test]
+fn tools_print_stack_see_words() {
+    let printed = |program: &str| match fuxth(program, u64::MAX) {
+        Ended::Left(printed, left) => (printed.concat(), left),
+        other @ (Ended::Failed(..) | Ended::Refused(..) | Ended::Endless) => {
+            (format!("{other:?}"), Vec::new())
+        }
+    };
+    // T{ 1 2 3 .S -> 1 2 3 }T
+    let (said, left) = printed("1 2 3 print-stack");
+    assert_eq!(
+        (said.as_str(), left),
+        ("1\n2\n3\n", [1, 2, 3].map(V::Int).to_vec())
+    );
+    let (said, _) = printed("define gs1 str 'a b' print end see gs1");
+    assert_eq!(said, "# program:1\ndefine gs1 str 'a b' print end\n");
+    let (said, _) = printed("define gw1 end words");
+    assert!(
+        said.ends_with("\ngw1\n") && said.starts_with("drop\n"),
+        "{said}"
+    );
 }
 
 /// EVALUATE, where the host enables it: T{ GE1 EVALUATE -> 123 }T, and a

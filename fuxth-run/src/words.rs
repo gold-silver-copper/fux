@@ -232,17 +232,19 @@ impl Host for Runner {
         identity(&full).map_err(|e| e.to_string())
     }
 
-    /// The file's text. Stopped by Ctrl-C or a signal, `include` fails,
-    /// and the signal is raised at the next check.
-    fn read(&mut self, path: &Path) -> Result<String, String> {
-        self.input.file(path).unwrap_or_else(|stop| {
-            let why = match &stop {
-                Stop::Failed(failure) => failure.message.clone(),
-                Stop::Signal(signal) => format!("SIG{}", signal.name()),
-            };
-            self.input.defer(stop);
-            Err(why)
-        })
+    /// The file's text. Stopped by Ctrl-C, `include` fails `interrupt`, which
+    /// a `try` may catch; by an ending signal, it fails, and the signal is
+    /// raised at the next check.
+    fn read(&mut self, path: &Path) -> Result<String, Failure> {
+        let unread = |why| Failure::new(Code::Require, why);
+        match self.input.file(path) {
+            Ok(read) => read.map_err(unread),
+            Err(Stop::Failed(failure)) => Err(failure),
+            Err(Stop::Signal(signal)) => {
+                self.input.defer(Stop::Signal(signal));
+                Err(unread(format!("SIG{}", signal.name())))
+            }
+        }
     }
 }
 

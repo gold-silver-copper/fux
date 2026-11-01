@@ -239,15 +239,19 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
     assert!(made.map_err(e)?.success());
     std::fs::write(dir.join("read.fux"), "str data read-file").map_err(e)?;
     std::fs::write(dir.join("include.fux"), "include source").map_err(e)?;
+    let caught =
+        "define opt str interrupt try tick include execute catch drop str caught print end end
+        opt source";
+    std::fs::write(dir.join("caught.fux"), caught).map_err(e)?;
     // A writer that holds `data` open and writes nothing.
     let mut writer = Command::new("sh")
         .args(["-c", "exec sleep 30 > data"])
         .current_dir(&dir)
         .spawn()
         .map_err(e)?;
-    // A source with no writer at all, a file read that waits on one, and
-    // an include of a source with none.
-    for args in [["source"], ["read.fux"], ["include.fux"]] {
+    // A source with no writer at all, a file read that waits on one, an
+    // include of a source with none, and one in a try that catches it.
+    for args in [["source"], ["read.fux"], ["include.fux"], ["caught.fux"]] {
         let child = Command::new(FUXTH)
             .args(args)
             .current_dir(&dir)
@@ -259,6 +263,11 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
         std::thread::sleep(Duration::from_millis(300));
         fuxix::process::kill(pid, fuxix::process::Signal::Int).map_err(e)?;
         let ran = child.wait_with_output().map_err(e)?;
+        if args == ["caught.fux"] {
+            assert_eq!(text(&ran.stdout), "caught\n", "{}", text(&ran.stderr));
+            assert_eq!(ran.status.code(), Some(0));
+            continue;
+        }
         assert!(
             text(&ran.stderr).starts_with("fuxth: interrupt: "),
             "{args:?}: {}",
@@ -435,6 +444,11 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
         ("define square dup", "1 2 compiled"),
         ("mul end", "1 2 ok"),
         ("square", "1 4 ok"),
+        // A definition over two lines keeps its words.
+        (
+            "see square",
+            "# evaluate:1\r\ndefine square dup mul end\r\n1 4 ok",
+        ),
         ("str 'two", ""),
         ("words'", "1 4 two\r\nwords ok"),
         (

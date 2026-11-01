@@ -336,6 +336,9 @@ pub enum Ask {
     /// Something the client itself does that takes over (attaching), or
     /// talks to no server (`status`).
     Local(Local),
+    /// The program's own dictionary's records: the word a name names
+    /// (`word`), or every word (`dictionary`).
+    Dictionary(Option<String>),
 }
 
 /// The keys of a binding just made.
@@ -719,16 +722,19 @@ fn configured_machine(config: &Config, mut machine: Machine<Fux>) -> Result<Mach
 
 thread_local! {
     /// The libraries, read once a thread, and their help.
-    static READY: Result<(Machine<Fux>, Rc<[fuxth::Doc]>), Failed> = libraries();
+    static READY: Result<(Machine<Fux>, Docs), Failed> = libraries();
     /// The last config's, as `configured_machine` made it.
     static CONFIGURED: std::cell::RefCell<Option<(Config, Machine<Fux>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
+/// The libraries' definitions' help, as fuxth read it.
+pub type Docs = Rc<[Rc<fuxth::Doc>]>;
+
 /// The client's libraries, read; the bench counts this initialization
 /// cold. Its mistake is told without a word's usage, which would read
 /// `READY` as it is made.
-pub fn libraries() -> Result<(Machine<Fux>, Rc<[fuxth::Doc]>), Failed> {
+pub fn libraries() -> Result<(Machine<Fux>, Docs), Failed> {
     let told = |error| told(error, false);
     let mut machine = Machine::new(vocabulary().map_err(told)?);
     let mut out = io::sink();
@@ -745,7 +751,7 @@ pub fn libraries() -> Result<(Machine<Fux>, Rc<[fuxth::Doc]>), Failed> {
 /// The standard library's and fux's library's words, as help says them.
 /// Libraries that fail to read leave none, but no help asks then: every
 /// program, `help` too, fails first with why.
-pub fn docs() -> Rc<[fuxth::Doc]> {
+pub fn docs() -> Docs {
     READY.with(|ready| {
         ready
             .as_ref()
@@ -1260,7 +1266,27 @@ fn steps(
                 }
                 pushed(machine, values)?
             }
+            Outcome::Suspended(Ask::Dictionary(name)) => {
+                let records = dictionary(machine, name.as_deref());
+                pushed(machine, records)?
+            }
         }
+    }
+}
+
+/// The record of the word `name` names in `machine`'s dictionary now, or,
+/// with no name, a list of each word's, in the order they were defined.
+fn dictionary(machine: &Machine<Fux>, name: Option<&str>) -> Result<Vec<Value<Fux>>, Failed> {
+    let Some(name) = name else {
+        let records = machine.dictionary().iter().map(record::word).collect();
+        return Ok(vec![Value::List(Rc::new(fuxth::List::new(records)))]);
+    };
+    match machine.definition(name) {
+        Some(definition) => Ok(vec![record::word(&definition)]),
+        None => Err(Failed::new(
+            Raise::UnknownWord,
+            format!("{name:?}: no such word"),
+        )),
     }
 }
 
@@ -2494,6 +2520,56 @@ pub(crate) mod tests {
 
     /// A version's counts are decimal, as the server writes them, whatever
     /// base the program reads its own numbers in.
+    /// `word` and `dictionary` read the program's own dictionary, with
+    /// no server: a word's record says where it came from, what it declares
+    /// and what made it, and the program's words come last, each once.
+    #[test]
+    fn the_dictionary_is_the_programs_own_as_records() -> TestResult {
+        use super::*;
+        let code = "define sq dup mul end define sq2 sq end define sq 0 end
+            str sq word str dup word str split word str add word dictionary";
+        let mut machine = compile(&fuxth::token::source("cli", code)?)?;
+        let mut out = Vec::new();
+        let mut host = Host::new(Context::default(), None, &mut out);
+        let left = run(&mut machine, &mut host, &mut ConfigOnly::default(), None)?;
+        let json: Vec<String> = left
+            .iter()
+            .map(|v| words::json_text(v).text())
+            .collect::<Result<_, _>>()
+            .map_err(|f| f.message)?;
+        let [sq, dup, split, add, dictionary] = json.as_slice() else {
+            return Err(format!("{json:?}").into());
+        };
+        let record = |name: &str, provenance: &str, effect: &str, about: &str, definition: &str| {
+            format!(
+                "{{\"name\":\"{name}\",\"provenance\":\"{provenance}\",\"effect\":{effect},\"documentation\":{about},\"definition\":\"{definition}\",\"codes\":null}}"
+            )
+        };
+        assert_eq!(*sq, record("sq", "run", "null", "null", "define sq 0 end"));
+        let a = "\"a copy of the top\"";
+        assert_eq!(
+            *dup,
+            record("dup", "library", "\"a -- a a\"", a, "define dup 0 pick end")
+        );
+        assert!(split.contains("\"provenance\":\"fux\",\"effect\":\"subject -- answer\",\"documentation\":\"split a pane"), "{split}");
+        assert!(add.contains("\"provenance\":\"core\""), "{add}");
+        assert!(
+            add.ends_with("\"definition\":\"native\",\"codes\":null}"),
+            "{add}"
+        );
+        assert!(
+            dictionary.ends_with(&format!(
+                ",{},{sq}]",
+                record("sq2", "run", "null", "null", "define sq2 sq end")
+            )),
+            "{dictionary}"
+        );
+        let mut machine = compile(&fuxth::token::source("cli", "str nosuch word")?)?;
+        let failed = run(&mut machine, &mut host, &mut ConfigOnly::default(), None).err();
+        assert_eq!(failed.map(|f| f.code), Some(Code::from(Raise::UnknownWord)));
+        Ok(())
+    }
+
     #[test]
     fn counts_read_a_version_in_decimal_whatever_the_base() -> TestResult {
         use super::*;

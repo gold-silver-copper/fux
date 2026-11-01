@@ -108,6 +108,8 @@ exit ( n -- )
 list-keys ( -- )
 key-names ( -- )
 help ( -- )
+word ( word -- record )
+dictionary ( -- list )
 explain ( word -- )
 ## the libraries' words, written in fuxth
 dup ( a -- a a )
@@ -303,6 +305,10 @@ immediate ( -- )
 compiling ( -- flag )
 start-compiling ( -- )
 compile-call ( xt -- )
+immediate-word ( xt -- flag )
+see ( -- )
+words ( -- )
+print-stack ( -- )
 stop-compiling ( -- ) immediate
 str ( -- s ) immediate
 define ( -- ) immediate
