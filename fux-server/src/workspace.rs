@@ -96,10 +96,6 @@ impl<C: Child> Stack<C> {
         self.children.iter().find(|c| c.id() == id)
     }
 
-    fn get_mut(&mut self, id: C::Id) -> Option<&mut C> {
-        self.children.iter_mut().find(|c| c.id() == id)
-    }
-
     /// What `client` is shown here.
     pub fn shown(&self, client: ClientId) -> Option<Shown<C::Id>> {
         self.shown.get(&client).copied()
@@ -588,26 +584,28 @@ fn path(workspaces: &Stack<Workspace>, id: WsId) -> Vec<WsId> {
 
 /// Workspace `id` of `workspaces`, at any depth, to change.
 fn ws_mut(workspaces: &mut Stack<Workspace>, id: WsId) -> Option<&mut Workspace> {
-    let path = path(workspaces, id);
-    let (first, rest) = path.split_first()?;
-    let mut ws = workspaces.get_mut(*first)?;
-    for id in rest {
-        ws = match ws.children.get_mut(AnyRef::Workspace(*id))? {
-            Node::Workspace(inner) => inner,
-            Node::Tab(_) => return None,
-        };
+    fn find(ws: &mut Workspace, id: WsId) -> Option<&mut Workspace> {
+        if ws.id == id {
+            return Some(ws);
+        }
+        (ws.children.children.iter_mut()).find_map(|child| match child {
+            Node::Workspace(inner) => find(inner, id),
+            Node::Tab(_) => None,
+        })
     }
-    Some(ws)
+    workspaces.children.iter_mut().find_map(|ws| find(ws, id))
 }
 
 /// Tab `id` of `workspaces`, to change, and its workspace's id.
 fn tab_mut(workspaces: &mut Stack<Workspace>, id: TabId) -> Option<(WsId, &mut Tab)> {
-    let mut tabs = workspaces.children.iter();
-    let (ws, _) = tabs.find_map(|w| w.find_tab(&mut |t| t.id == id))?;
-    match ws_mut(workspaces, ws)?.children.get_mut(AnyRef::Tab(id))? {
-        Node::Tab(tab) => Some((ws, tab)),
-        Node::Workspace(_) => None,
+    fn find(ws: &mut Workspace, id: TabId) -> Option<(WsId, &mut Tab)> {
+        let at = ws.id;
+        (ws.children.children.iter_mut()).find_map(|child| match child {
+            Node::Tab(tab) => (tab.id == id).then_some((at, tab)),
+            Node::Workspace(inner) => find(inner, id),
+        })
     }
+    workspaces.children.iter_mut().find_map(|ws| find(ws, id))
 }
 
 /// Names `old` `new`, journaled as `renamed` makes it if it is another
@@ -630,16 +628,23 @@ type Place = (
     BTreeMap<Option<AnyRef>, AnyRef>,
 );
 
-/// Where `client` is: the workspaces it is shown, down to the one holding
-/// the tab it is shown, and the pane it focuses in it.
-fn place_of(workspaces: &Stack<Workspace>, client: ClientId) -> Option<crate::journal::PaneAt> {
+/// The tab `client` is shown, following what it is shown from the top,
+/// and the workspace that holds it.
+fn shown(workspaces: &Stack<Workspace>, client: ClientId) -> Option<(&Workspace, &Tab)> {
     let mut ws = workspaces.current(client)?;
     loop {
         match ws.children.current(client)? {
             Node::Workspace(inner) => ws = inner,
-            Node::Tab(tab) => return Some(((ws.id, tab.id), tab.focus(client)?)),
+            Node::Tab(tab) => return Some((ws, tab)),
         }
     }
+}
+
+/// Where `client` is: the workspace holding the tab it is shown, the tab,
+/// and the pane it focuses in it.
+fn place_of(workspaces: &Stack<Workspace>, client: ClientId) -> Option<crate::journal::PaneAt> {
+    let (ws, tab) = shown(workspaces, client)?;
+    Some(((ws.id, tab.id), tab.focus(client)?))
 }
 
 impl Parts {
@@ -752,6 +757,11 @@ impl Parts {
     /// Where `client` is (`place_of`).
     pub fn place(&self, client: ClientId) -> Option<crate::journal::PaneAt> {
         place_of(&self.workspaces, client)
+    }
+
+    /// The tab `client` is shown, and the workspace that holds it.
+    pub fn shown(&self, client: ClientId) -> Option<(&Workspace, &Tab)> {
+        shown(&self.workspaces, client)
     }
 
     /// Tab `id`, to change what events do not tell: its bell marks, its

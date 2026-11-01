@@ -445,11 +445,11 @@ impl Session {
     }
     /// The workspace client `client` shows that holds the tab it shows.
     pub fn shown_workspace(&self, client: ClientId) -> Option<&Workspace> {
-        self.workspace(self.place(client)?.ws)
+        self.parts.shown(client).map(|(ws, _)| ws)
     }
     /// The tab client `client` shows.
     pub fn shown_tab(&self, client: ClientId) -> Option<&Tab> {
-        self.tab(self.place(client)?.tab)
+        self.parts.shown(client).map(|(_, tab)| tab)
     }
     pub(crate) fn shown_tab_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
         let tab = self.shown_tab(client)?.id();
