@@ -19,6 +19,7 @@ pub enum Data {
     Null,
     Handle(AnyRef, Option<Run>),
     Client(ClientId, Option<Run>),
+    Code(Code),
 }
 
 /// How deep a callback's lists and records may nest on the wire: decoding
@@ -41,6 +42,7 @@ impl Data {
             6 => Self::Handle(AnyRef::get(r)?, Option::get(r)?),
             7 => Self::Client(ClientId::get(r)?, Option::get(r)?),
             8 => Self::All,
+            9 => Self::Code(Code::get(r)?),
             tag => return Err(Error::Tag("callback value", tag)),
         })
     }
@@ -57,6 +59,7 @@ crate::wire::shaped!(enum Data {
     Handle(v: AnyRef, run: Option<Run>),
     Client(v: ClientId, run: Option<Run>),
     All,
+    Code(v: Code),
 });
 
 impl Wire for Data {
@@ -95,6 +98,10 @@ impl Wire for Data {
                 v.put(out);
                 run.put(out);
             }
+            Self::Code(v) => {
+                out.push(9);
+                v.put(out);
+            }
         }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -103,29 +110,42 @@ impl Wire for Data {
 }
 
 wire! {
-    /// Explicit executable source and its inert, typed captured arguments.
+    /// A code value (`code … end`), as it goes on the wire: the words
+    /// between, as read, which the receiving client compiles in its own
+    /// dictionary. Only a program's own source makes one, never a string.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Code {
+        pub words: Vec<String>,
+    }
+}
+
+impl Code {
+    /// Its words as written: each quoted as fuxth reads it back.
+    pub fn text(&self) -> String {
+        let words: Vec<String> = self.words.iter().map(|w| crate::words::quote(w)).collect();
+        words.join(" ")
+    }
+}
+
+wire! {
+    /// A code value and its inert, typed captured arguments.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Callback {
-        pub code: String,
+        pub code: Code,
         pub args: Vec<Data>,
     }
 }
 
-impl From<String> for Callback {
-    fn from(code: String) -> Self {
+impl From<Code> for Callback {
+    fn from(code: Code) -> Self {
         Self {
             code,
             args: Vec::new(),
         }
     }
 }
-impl From<&str> for Callback {
-    fn from(code: &str) -> Self {
-        code.to_owned().into()
-    }
-}
 
-/// A typed screen request; only Callback.code is executable source.
+/// A typed screen request; only its code values are executable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Open {
     List(ListScreen),

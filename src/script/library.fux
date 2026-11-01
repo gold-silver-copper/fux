@@ -96,20 +96,18 @@ define rename-prompt
   dup kind str answer eq if pane then let it
   list str 'rename ' it kind str ' ' it string end glue
   it str name get dup kind str string eq not if drop str '' then
-  list list it end str rename end
+  list list it end code rename end end
   prompt
 end
-# client title callback -- : a question: a chooser with one row, Yes; choosing it runs the callback as choose runs one, the client and row dropped first; the title is choose's, text (a number or boolean: string it first) or [text,subject handle], closing when the subject goes
+# client title callback -- : a question: a chooser with one row, Yes; choosing it runs the callback, code … end or [captured arguments,code … end], on its captured arguments alone; the title is choose's, text (a number or boolean: string it first) or [text,subject handle], closing when the subject goes
 define confirm
   let action let question let c
-  action is-string if empty action else
-    action is-list if action len else 0 then 2 ne
-    if str 'a callback is source text or [captured arguments,source text]' fail then
-    action unpack
-  then
-  let source let captured
-  c question list list true str Yes end end empty list 0 end
-  list captured str '2drop ' source cat end choose
+  action is-list if action len 2 eq else false then if action unpack else empty action then
+  let run let captured
+  # Choosing Yes gives the client and the row too: dropped, it runs.
+  run kind str xt eq if list captured run push code 2drop execute end end else action then
+  let callback
+  c question list list true str Yes end end empty list 0 end callback choose
 end
 # client handle -- : close it, once confirmed
 define confirm-close
@@ -118,7 +116,7 @@ define confirm-close
   list str 'close ' it kind str ' ' it string
     caption it string eq not if str ' ' caption then str ?
   end glue
-  list list it end str kill end
+  list list it end code kill end end
   confirm
 end
 
@@ -406,7 +404,7 @@ define choose-tab
     dup str workspace get place str workspace get eq if s swap chooser-container-row else drop then
   end end let rows
   rows place str tab get chooser-index let current
-  c str tabs rows current rows current chooser-selected str show choose
+  c str tabs rows current rows current chooser-selected code show end choose
 end
 # client -- : choose a workspace from one topology observation
 define choose-workspace
@@ -414,7 +412,7 @@ define choose-workspace
   s str clients get c chooser-find let place
   list s str workspaces get each s swap chooser-container-row end end let rows
   rows place str workspace get chooser-index let current
-  c str workspaces rows current rows current chooser-selected str show choose
+  c str workspaces rows current rows current chooser-selected code show end choose
 end
 # client pane -- : choose a destination tab from one topology observation
 define choose-tab-for
@@ -426,7 +424,7 @@ define choose-tab-for
   end end let rows
   rows place str tab get chooser-index let current
   c list list str 'move ' source string str ' to tab' end glue source end rows
-  current rows current chooser-selected list list source end str 'nip move' end choose
+  current rows current chooser-selected list list source end code nip move end end choose
 end
 # client pane -- : choose a destination workspace from one topology observation
 define choose-workspace-for
@@ -436,7 +434,7 @@ define choose-workspace-for
   list s str workspaces get each s swap chooser-container-row end end let rows
   rows place str workspace get chooser-index let current
   c list list str 'move ' source string str ' to workspace' end glue source end rows
-  current rows current chooser-selected list list source end str 'nip move' end choose
+  current rows current chooser-selected list list source end code nip move end end choose
 end
 # client pane -- : choose another pane in its tab, from one topology observation
 define choose-pane
@@ -447,5 +445,5 @@ define choose-pane
   end end let rows
   rows len 0 eq if str 'only one pane in the source tab' fail then
   c list list str 'swap ' source string str ' with' end glue source end rows
-  list end list 0 end list list source end str 'nip swap-with' end choose
+  list end list 0 end list list source end code nip swap-with end end choose
 end

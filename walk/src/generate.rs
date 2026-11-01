@@ -93,7 +93,7 @@ const PROMPT: &[&str] = &[
     "nonsense\r",
     "str %99 pane kill\r",
     "me me focused tab rename-prompt\r",
-    "str 'g l' str 'me focused str right 1 move-border' bind repeat\r",
+    "str 'g l' code me focused str right 1 move-border end bind repeat\r",
 ];
 
 /// Sizes a client's terminal is resized to: tiny, one row, one column,

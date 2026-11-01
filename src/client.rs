@@ -1080,6 +1080,7 @@ fn run_job(
         context: context.clone(),
         opened: None,
         on_commit: Some(&mut publish),
+        stop: Some(stop),
     };
     let mut result = (|| {
         stop.check()?;
@@ -1088,10 +1089,11 @@ fn run_job(
                 open.clone(),
                 Some(&changed),
                 &context,
+                Some(stop),
             )?);
             return Ok(Vec::new());
         }
-        let mut machine = job.machine(config.as_ref())?;
+        let mut machine = job.machine(config.as_ref(), Some(stop))?;
         let mut host = script::Host::job(context.clone(), &mut changed, &mut out);
         script::run(&mut machine, &mut host, &mut asks, Some(stop))
     })();
@@ -1891,7 +1893,7 @@ mod tests {
         let mut state = script::default_state().map_err(|e| e.to_string())?;
         state.keys.bind_root(
             KeyPress::char('y'),
-            crate::keymap::Binding::new("str done".into(), true),
+            crate::keymap::Binding::new(crate::testing::code("str done"), true),
         )?;
         let mut typed = vec![b'a'; 3000];
         typed.extend_from_slice(b"yx");
@@ -2079,8 +2081,8 @@ mod tests {
         let mut keyboard = keyboard(false)?;
         for code in [
             "str C-a prefix str history-bytes 2 set",
-            "str F5 str ls bind-root str titles true set",
-            "str F6 str ls bind-root str history-bytes 0 set str bell false set str Nope prefix",
+            "str F5 code ls end bind-root str titles true set",
+            "str F6 code ls end bind-root str history-bytes 0 set str bell false set str Nope prefix",
         ] {
             assert!(program(&mut keyboard, Job::from(code)).is_empty());
         }
@@ -2118,7 +2120,7 @@ mod tests {
             action: None,
         });
         keyboard.open(prompt.clone(), &mut Vec::new());
-        program(&mut keyboard, Job::from("str F5 str ls bind-root"));
+        program(&mut keyboard, Job::from("str F5 code ls end bind-root"));
         assert_eq!(all_ran(&mut keyboard)?, []);
         assert_eq!(keyboard.screen.screen, prompt);
         program(&mut keyboard, Job::from("str line str F2 str home bind-in"));
@@ -2183,7 +2185,7 @@ mod tests {
     fn a_stop_is_the_same_however_the_reads_split() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
         let mut state = script::default_state().map_err(|e| e.to_string())?;
-        let forever = crate::keymap::Binding::new("begin false until".into(), true);
+        let forever = crate::keymap::Binding::new(crate::testing::code("begin false until"), true);
         state.keys.bind_root(KeyPress::char('y'), forever)?;
         let typed = b"y\x02\x1b[27ux";
         for split in 0..=typed.len() {

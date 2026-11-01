@@ -2,12 +2,12 @@
 str shell list str /bin/sh end set
 str C-a prefix
 
-str 'g n' str 'opts new-tab drop' bind str Tools group # trailing
-str 'y l' str 'me focused str right 1 move-border' bind str Grow group repeat
-str M-t str 'me zoom' bind-root str 'zoom it' label
-str C-a str 'me zoom' bind-root
+str 'g n' code opts new-tab drop end bind str Tools group # trailing
+str 'y l' code me focused str right 1 move-border end bind str Grow group repeat
+str M-t code me zoom end bind-root str 'zoom it' label
+str C-a code me zoom end bind-root
 str Nope prefix
-str 'g' str 'me zoom' bind
+str 'g' code me zoom end bind
 str 't n m' unbind
 define split-wide me focused str horizontal axis split drop end
 begin 1 until

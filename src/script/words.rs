@@ -223,7 +223,8 @@ pub const KINDS: [(&str, &str, Option<&str>); 20] = [
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str)] = &[
     ("title", "a title or [title,subject handle]"),
-    ("callback", "source text or [captured arguments,source text]"),
+    ("callback", "code … end, or [captured arguments,code … end]"),
+    ("code", "code … end, a code value"),
     ("revision", "a run-qualified layout revision"),
     ("tree", "a flat layout node list"),
     ("closed-outcome", "a closed pane or collection answer"),
@@ -262,7 +263,7 @@ words! {
         Finding Workspace "workspace" "ref -- workspace" "the workspace ref names: its name, +N, or a pane's or tab's workspace" "fux str agent workspace kill" [];
         Finding Here "here" "-- pane" "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
         Finding Client "client" "name -- client" "a client by its id, c2" "fux str c1 client str left focus" [];
-        Finding Me "me" "-- client" "the client whose key or prompt runs this" "str z str 'me zoom' bind" [];
+        Finding Me "me" "-- client" "the client whose key or prompt runs this" "str z code me zoom end bind" [];
         Finding Panes "panes" "handle -- list" "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
         Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding All "all" "-- all" "the whole session, for info, notify, events and dump" "fux all info" [];
@@ -355,20 +356,20 @@ words! {
         Reading Cols "cols" "pane-builder from to -- pane-builder" "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";
     }
     Screen {
-        Clients Choose "choose" "client title list list list callback --" "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end str 'drop drop' choose";
-        Clients Prompt "prompt" "client name text callback --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
+        Clients Choose "choose" "client title list list list callback --" "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end code 2drop end choose";
+        Clients Prompt "prompt" "client name text callback --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs code @2 swap rename end prompt";
         Clients CommandPrompt "command-prompt" "client --" "a prompt for fuxth" "fux str c1 client command-prompt";
     }
     Keys {
         Config Prefix "prefix" "key --" "this client's prefix (config)" "str C-a prefix";
-        Config Bind "bind" "keys code --" "keys after the prefix run fuxth (config)" "str 'g v' str 'me focused str horizontal axis split drop' bind";
-        Config BindRoot "bind-root" "key code --" "a key without the prefix runs fuxth (config)" "str M-n str 'me str next step-tab' bind-root";
-        Config Label "label" "text --" "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' str 'me focused str horizontal axis split drop' bind str 'split right' label";
-        Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' str 'me focused str horizontal axis split drop' bind str panes group";
-        Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H str 'me focused str left 2 move-border' bind repeat";
+        Config Bind "bind" "keys code --" "keys after the prefix run code (config)" "str 'g v' code me focused str horizontal axis split drop end bind";
+        Config BindRoot "bind-root" "key code --" "a key without the prefix runs code (config)" "str M-n code me str next step-tab end bind-root";
+        Config Label "label" "text --" "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' code me focused str horizontal axis split drop end bind str 'split right' label";
+        Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' code me focused str horizontal axis split drop end bind str panes group";
+        Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H code me focused str left 2 move-border end bind repeat";
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
         Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
-        Config BindAction "bind-action" "key code --" "an explicit executable list callback, receiving client payload; Escape cannot be bound" "str r str rename-prompt bind-action str rename label";
+        Config BindAction "bind-action" "key code --" "a list's key runs code, receiving client payload; Escape cannot be bound" "str r code rename-prompt end bind-action str rename label";
         Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "str list str g str first bind-in str first label";
         Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str list str g unbind-in";
         Config UnbindAll "unbind-all" "--" "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
@@ -2015,16 +2016,6 @@ impl Host<'_> {
     }
 }
 
-/// `job`'s words, split as its keys or screen will read them: a quote left
-/// open said as `what`'s, of `code`. Its words are found as they run.
-fn checked(job: &crate::screens::Job, code: Raise, what: &str) -> Result<(), Failure> {
-    job.tokens().map(drop).map_err(|e| {
-        let mut failed = fail(code, format!("{}, in {what}", e.message));
-        failed.word = e.word;
-        failed
-    })
-}
-
 /// The binding just made, `bound`, which `label` and `group` change.
 fn just_made<'k>(
     keymap: &'k mut crate::keymap::Keymap,
@@ -2167,11 +2158,12 @@ impl Host<'_> {
         }
     }
 
-    /// Source is explicit; captured values never pass through a tokenizer.
+    /// A callback: a code value, or one with the values it is given first
+    /// (`[captured arguments, code … end]`), never a string.
     fn action(&mut self, value: &Value<Fux>) -> Result<fux_wire::callback::Callback, Failure> {
         let (code, args) = match value {
-            Value::Str(_) => (string(value)?, Vec::new()),
-            // What the pair holds, checked as such: its source's own
+            Value::Xt(_) => (super::callback::code(value)?, Vec::new()),
+            // What the pair holds, checked as such: its code's own
             // requirement is told.
             Value::List(v) => self.held(match v.items() {
                 [Value::List(args), code] => (|| {
@@ -2179,21 +2171,24 @@ impl Host<'_> {
                     for arg in args.items() {
                         out.push(super::callback::data(arg)?);
                     }
-                    Ok((string(code)?, out))
+                    Ok((super::callback::code(code)?, out))
                 })(),
                 _ => Err(fail(
                     Raise::BadValue,
-                    "a callback is source text or [captured arguments,source text]",
+                    "a callback is code … end or [captured arguments,code … end]",
                 )),
             })?,
             Value::Int(_)
             | Value::Bool(_)
+            | Value::Str(_)
             | Value::App(_)
-            | Value::Xt(_)
             | Value::Mark(_)
             | Value::Failure(_)
             | Value::Addr(_) => {
-                return Err(wrong("a callback", value));
+                return Err(wrong(
+                    "code … end or [captured arguments,code … end]",
+                    value,
+                ));
             }
         };
         Ok(fux_wire::callback::Callback { code, args })
@@ -2224,11 +2219,7 @@ impl Host<'_> {
             }
             Keys::Bind | Keys::BindRoot => {
                 let keys_text = string(&next()?)?;
-                let code = string(&next()?)?;
-                // Split now, rather than each time its keys are typed.
-                let job = code.as_str().into();
-                let what = format!("the binding for {keys_text}");
-                checked(&job, Raise::BadBinding, &what)?;
+                let code = super::callback::code(&next()?)?;
                 let keymap = &mut state.keys;
                 let binding = crate::keymap::Binding::new(code, keys == Keys::BindRoot);
                 let pressed = crate::keymap::keys(&keys_text).map_err(refused)?;
@@ -2254,12 +2245,7 @@ impl Host<'_> {
             }
             Keys::BindAction => {
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
-                let action = fux_wire::callback::Callback {
-                    code: string(&next()?)?,
-                    args: Vec::new(),
-                };
-                fuxth::token::source("list action", &action.code)
-                    .map_err(|e| refused(e.message))?;
+                let action = super::callback::code(&next()?)?.into();
                 let keymap = &mut state.keys;
                 keymap
                     .modes
@@ -2541,6 +2527,32 @@ mod tests {
 
     /// A value of a kind a word doesn't take is refused with what the word's
     /// effect, as help says it, names in that place: all of what it takes.
+    /// A code value that `code` WORDS `end` wouldn't make again, as one a
+    /// word of the program's own opened or closed, runs, but is never sent
+    /// as its words.
+    #[test]
+    fn a_code_value_its_words_would_not_make_again_is_refused() -> TestResult {
+        let words = "define seal 7 postpone literal postpone print postpone end end immediate
+            define prefixed-code next-word drop
+              postpone code 7 postpone literal postpone print end immediate ";
+        for code in ["code seal", "prefixed-code code end"] {
+            let (failed, _, printed) = offline(&format!("{words}{code} execute"))?;
+            let ran = (failed.map(|f| f.to_string()), printed);
+            assert_eq!(ran, (None, "7\n".to_owned()), "{code}");
+            for program in [
+                format!("str F5 {code} bind-root"),
+                format!("str c1 client str T str s {code} prompt"),
+            ] {
+                let failed = offline(&format!("{words}{program}"))?.0;
+                let said = failed.map(|f| f.to_string()).unwrap_or_default();
+                let refused =
+                    said.starts_with("bad_value:") && said.contains("can't go as its words");
+                assert!(refused, "{program}: {said}");
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn a_refusal_names_all_the_word_takes() -> TestResult {
         let mut wrong = Vec::new();
@@ -2578,17 +2590,33 @@ mod tests {
         // What a value holds keeps its own requirement: a row's label, a
         // split's axis.
         for program in [
-            "str c1 client str Title list list str payload list end end end list end list 0 end str 2drop choose",
+            "str c1 client str Title list list str payload list end end end list end list 0 end code 2drop end choose",
             "@1 str @1:0:1-2 list list list end 1 1 1 2 end end arrange",
-            // A callback's source in its [captured arguments,source] pair.
-            "str c1 client str T list end list end list end list list end list end end choose",
-            "str c1 client str T str s list list end list end end prompt",
         ] {
             let failed = offline(program)?
                 .0
                 .map(|f| f.to_string())
                 .unwrap_or_default();
             if !failed.starts_with("type:") || !failed.contains("takes a string, not a list") {
+                wrong.push(format!("{program}: {failed}"));
+            }
+        }
+        // A callback's code in its [captured arguments,code] pair, and a
+        // callback or binding given a string, which is never code.
+        for program in [
+            "str c1 client str T list end list end list end list list end list end end choose",
+            "str c1 client str T str s list list end list end end prompt",
+            "str c1 client str T str s str 'str x print' prompt",
+            "str c1 client str T list end list end list end str 2drop choose",
+            "str v str 'me zoom' bind",
+            "str F5 str ls bind-root",
+            "str r str rename-prompt bind-action",
+        ] {
+            let failed = offline(program)?
+                .0
+                .map(|f| f.to_string())
+                .unwrap_or_default();
+            if !failed.starts_with("type:") || !failed.contains("code … end") {
                 wrong.push(format!("{program}: {failed}"));
             }
         }

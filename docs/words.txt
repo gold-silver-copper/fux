@@ -295,12 +295,14 @@ execute ( xt -- )
 create ( -- )
 variable ( -- )
 constant ( x -- )
+defer ( -- )
 body-of ( xt -- addr )
 find ( s -- xt true | s false )
 next-word ( -- s )
 immediate ( -- )
 compiling ( -- flag )
 start-compiling ( -- )
+compile-call ( xt -- )
 stop-compiling ( -- ) immediate
 str ( -- s ) immediate
 define ( -- ) immediate
@@ -309,6 +311,8 @@ code ( -- xt ) immediate
 let ( x -- ) immediate
 to ( x -- ) immediate
 tick ( -- xt ) immediate
+is ( xt -- ) immediate
+action-of ( -- xt ) immediate
 postpone ( -- ) immediate
 literal ( x -- ) immediate
 recurse ( -- ) immediate

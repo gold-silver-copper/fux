@@ -136,6 +136,13 @@ impl<A> Xt<A> {
     pub fn name(&self) -> &str {
         &self.0.name
     }
+
+    /// The words `code … end` read between, as read, so `code` WORDS
+    /// `end` read again compiles them again: none for any other word's,
+    /// nor for code opened or closed by another word.
+    pub fn words(&self) -> Option<&[Token]> {
+        self.0.words.as_deref()
+    }
 }
 
 /// A construct open while compiling: what opened it, in which definition,

@@ -106,7 +106,8 @@ pub(crate) enum Kind {
 /// it is, how many of its marks are open, whether words were compiled
 /// before it began, whether its last step is a number or `str` written
 /// just before (so a `pick` or `roll` after it may take it as its count,
-/// or a `try` as its codes), and, in a library, where its `define` is.
+/// or a `try` as its codes), in a library, where its `define` is, and, a
+/// `code … end`'s, the source it is read from (by id) and where in it.
 #[derive(Clone, Debug)]
 pub(crate) struct Building<A> {
     code: Steps<A>,
@@ -117,6 +118,7 @@ pub(crate) struct Building<A> {
     was_compiling: bool,
     literal: bool,
     from: Option<usize>,
+    words: Option<(u64, usize)>,
 }
 
 impl<A: AppValue> Machine<A> {
@@ -213,8 +215,12 @@ impl<A: AppValue> Machine<A> {
             // A word of the core's that shapes the program runs here, in
             // no frame of its own.
             if let (true, Some(Op::Builtin(word))) = (*immediate, xt.leaf()) {
+                // The core word itself, not a word of one step made of it.
+                self.read_here = *xt.name == *word.name();
                 let word = *word;
-                return self.builtin(word, host).map(|()| None);
+                let ran = self.builtin(word, host);
+                self.read_here = false;
+                return ran.map(|()| None);
             }
             let xt = Rc::clone(xt);
             if self.compiling && !immediate {
@@ -262,6 +268,14 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
+    /// The source being read, the innermost.
+    fn source(&self) -> Option<&Read> {
+        self.frames.iter().rev().find_map(|frame| match frame {
+            Frame::Read(read) => Some(&**read),
+            Frame::Code { .. } => None,
+        })
+    }
+
     /// `op` compiled into the code being compiled, said at the word read.
     fn compile(&mut self, op: Op<A>) {
         let token = self.reading();
@@ -289,6 +303,16 @@ impl<A: AppValue> Machine<A> {
     pub(crate) fn compile_word(&mut self, xt: &Rc<Steps<A>>) -> Result<(), Error> {
         if !self.compiling || self.building.is_empty() {
             let why = format!("{} is compiled: it goes in a definition", xt.name);
+            return Err(self.fail(Code::NotTopLevel, why));
+        }
+        self.compile_call(xt)
+    }
+
+    /// `compile-call`: a call to `xt` compiled into the code open, though
+    /// its words are run (`stop-compiling`), as `compile_word` compiles it.
+    pub(crate) fn compile_call(&mut self, xt: &Rc<Steps<A>>) -> Result<(), Error> {
+        if self.building.is_empty() {
+            let why = "compile-call compiles into a definition, and none is open";
             return Err(self.fail(Code::NotTopLevel, why));
         }
         let call = match xt.leaf() {
@@ -327,6 +351,12 @@ impl<A: AppValue> Machine<A> {
     /// Begins code that becomes `kind`, compiled from here on.
     fn begin(&mut self, kind: Kind, name: Rc<str>, from: Option<usize>) {
         self.begun = self.begun.saturating_add(1);
+        let words = match kind {
+            Kind::Code => (self.source())
+                .filter(|_| self.read_here)
+                .map(|read| (read.id, read.next)),
+            Kind::Define(_) | Kind::Does | Kind::Temp => None,
+        };
         self.building.push(Building {
             code: Steps::new(name),
             locals: HashMap::new(),
@@ -336,6 +366,7 @@ impl<A: AppValue> Machine<A> {
             was_compiling: self.compiling,
             literal: false,
             from,
+            words,
         });
         self.compiling = true;
     }
@@ -646,6 +677,17 @@ impl<A: AppValue> Machine<A> {
         self.compiling = building.was_compiling;
         let mut code = building.code;
         code.locals = building.locals.len();
+        // The words read from its source between the `code` and the `end`
+        // the reader itself read there and ran, so `code` WORDS `end` read
+        // again does as they did; none if another word opened or closed it.
+        code.words = building.words.and_then(|(id, from)| {
+            let read = self
+                .source()
+                .filter(|read| read.id == id && self.read_here)?;
+            read.tokens
+                .get(from..read.next.checked_sub(1)?)
+                .map(Rc::from)
+        });
         let code = self.version(code);
         let Kind::Define(name) = building.kind else {
             return self.given(Value::Xt(Xt(code)), false);
@@ -692,17 +734,58 @@ impl<A: AppValue> Machine<A> {
 
     /// `create NAME`: a word that pushes where the data space goes on;
     /// `variable NAME`, one with a cell of its own there; `x constant
-    /// NAME`, one that pushes x, copied in where it is compiled.
+    /// NAME`, one that pushes x, copied in where it is compiled; `defer
+    /// NAME`, one that runs the xt in a cell of its own (`is`).
     pub(crate) fn create(&mut self, word: Builtin, x: Option<Value<A>>) -> Result<(), Error> {
         let name = self.next_word(word, "a name")?;
         self.check_name(&name)?;
         let body = self.next_address()?;
-        if word == Builtin::Variable {
+        if matches!(word, Builtin::Variable | Builtin::Defer) {
             self.allot(1)?;
         }
         match x {
             Some(x) => self.created(name.text, None, false, vec![(Op::Push(x), None)]),
+            None if word == Builtin::Defer => {
+                let mut code = Steps::new(Rc::clone(&name.text));
+                code.action = Some(body);
+                code.push(Op::Push(Value::Addr(body)), None);
+                code.push(Op::Builtin(Builtin::Fetch), None);
+                code.push(Op::Builtin(Builtin::Execute), None);
+                self.named_word(name.text, code, false);
+            }
             None => self.created(name.text, Some(body), false, Vec::new()),
+        }
+        Ok(())
+    }
+
+    /// `xt is NAME` and `action-of NAME`, `word`: the cell the action of
+    /// NAME, a word `defer` made, is in, stored in or read (`op`), now or,
+    /// compiling, as the code runs.
+    pub(crate) fn action(&mut self, word: Builtin, op: Builtin) -> Result<(), Error> {
+        let xt = (op == Builtin::Store)
+            .then(|| self.value())
+            .transpose()?
+            .flatten();
+        let name = self.next_word(word, "a word defer made")?;
+        let cell = self.found(&name)?.xt.action.ok_or_else(|| {
+            let why = format!("{} takes a word defer made, and this is none", word.name());
+            Error::new(Code::BadName, why, Some(&name))
+        })?;
+        if self.compiling {
+            self.compile(Op::Push(Value::Addr(cell)));
+            self.compile(Op::Builtin(op));
+            return Ok(());
+        }
+        if let Some(xt) = xt {
+            self.cells(cell, 1)?.fill(Some(xt));
+            return Ok(());
+        }
+        match self.cells(cell, 1)?.first().cloned().flatten() {
+            Some(xt) => self.push(xt),
+            None => {
+                let why = format!("{} is given no xt yet: xt is {0}", name.text);
+                return Err(self.fail(Code::Unset, why));
+            }
         }
         Ok(())
     }
@@ -772,6 +855,11 @@ impl<A: AppValue> Machine<A> {
         for (op, token) in pushed.into_iter().chain(steps) {
             code.push(op, token);
         }
+        self.named_word(name, code, immediate);
+    }
+
+    /// `name` defined as `code`, the word defined last.
+    fn named_word(&mut self, name: Rc<str>, code: Steps<A>, immediate: bool) {
         let xt = self.version(code);
         self.names.insert(Rc::clone(&name), Entry { xt, immediate });
         self.latest = Some(name);

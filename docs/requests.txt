@@ -119,7 +119,9 @@ Data::Null
 Data::Handle v: AnyRef, run: Option<Run>
 Data::Client v: ClientId, run: Option<Run>
 Data::All
-Callback code: String, args: Vec<Data>
+Data::Code v: Code
+Code words: Vec<String>
+Callback code: Code, args: Vec<Data>
 Prompt title: String, line: String, action: Option<Callback>
 PanePick::Step step: Sibling
 PanePick::Id id: PaneId

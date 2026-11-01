@@ -103,7 +103,10 @@ define scroll
   row top lt if row to top then
   row top h add ge if row h sub 1 add to top then
 end
-define status-text
+# The status row's text: deferred, so `code … end is status-text` at M-x
+# changes it from the next key on, though draw was compiled before.
+defer status-text
+define status
   prompting if str 'M-x ' input cat else
     list
       filename
@@ -113,6 +116,7 @@ define status-text
     end str '  ' join
   then
 end
+tick status is status-text
 define draw
   screen-size let cols let rows
   rows 1 sub 1 max let h
