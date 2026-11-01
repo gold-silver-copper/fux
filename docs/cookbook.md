@@ -4,8 +4,7 @@ Short recipes for what agents and people do with fux. Each is a heading,
 what it's for, and a block to copy. The `sh` blocks run as they stand, top
 to bottom, each in a shell of its own with `set -e -o pipefail`, against
 the server `FUX_SOCKET` names: the second recipe makes the shell named
-`shell` that later ones type into (the lines they type are POSIX `sh`),
-and the last closes everything they made. A command expected to fail says
+`shell` that later ones type into, and the last closes everything they made. A command expected to fail says
 the exit status it expects, `|| [ $? -eq N ]`. A test runs every recipe,
 so a recipe here is one this fux runs.
 
@@ -40,11 +39,13 @@ apart from anyone else's; stop it with `kill`.
 
 ## A shell to type into
 
-A new tab in workspace `work`, its pane named `shell`. From outside fux a
-new tab needs a size; run inside a fux pane, it takes that pane's tab's.
+A new tab in workspace `work` running `sh`, its pane named `shell`: the
+later recipes type POSIX `sh` into it, whatever your `$SHELL` is (leave
+out `str sh program` for that one). From outside fux a new tab needs a
+size; run inside a fux pane, it takes that pane's tab's.
 
 ```sh
-fux opts str work in 80 24 size new-tab str shell rename
+fux opts str work in 80 24 size str sh program new-tab str shell rename
 ```
 
 ## Run a program and wait for it to end
