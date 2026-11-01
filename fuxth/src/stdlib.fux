@@ -66,7 +66,23 @@ define div-mod 2dup mod -rot div end
 # n k d -- q : n times k divided by d, the product kept exact
 define mul-div mul-div-mod nip end
 
-# ---- Kinds (kind gives integer, boolean, string, list, or the host's kind)
+# ---- The data space (the core has next-address, allot, store-next, fetch, store, fill, copy-cells, create, does and body-of)
+# n addr -- : n added to the value stored at addr
+define add-store dup fetch rot add swap store end
+# addr u -- : 0 stored in the u cells from addr
+define erase 0 fill end
+# -- : variable NAME: a word that gives the address of a cell of its own, empty until a value is stored there
+define variable create 1 allot end
+# x -- : x constant NAME: a word that gives x
+define constant create store-next does fetch end
+# -- addr : the address of the base number reads and digit writes in, 10 to begin with
+define base stop-compiling next-address 10 store-next start-compiling literal end
+# -- : numbers read and written in base 10 from then on
+define decimal 10 base store end
+# -- : numbers read and written in base 16 from then on
+define hex 16 base store end
+
+# ---- Kinds (kind gives integer, boolean, string, list, address, xt, or the host's kind)
 # x -- flag : whether x is an integer
 define is-int kind str integer eq end
 # x -- flag : whether x is a string
@@ -181,23 +197,13 @@ define quote
     str "'"
   end glue
 end
-# s -- n : the integer s writes in decimal, a - first or not
-define number
-  let s
-  s len 0 eq if str 'the string is empty' fail then
-  s first 45 eq let negative
-  negative if 1 else 0 then let from
-  from s len eq if str 'no digits' fail then
-  0 s from s len slice each
-    let c c 48 sub let d
-    d 0 lt d 9 gt or if list str 'not a digit:' c char end string fail then
-    10 mul negative if d sub else d add then
-  end
+# n -- n : n's last digit in base (after 9, A to Z) put before the text digits-end gives, and n div base
+define digit base fetch let b dup b mod abs dup 9 gt if 55 else 48 then add hold b div end
+# n -- 0 : n's digits in base put before the text digits-end gives, one at least
+define digits
+  base fetch 2 37 within not if str 'base is from 2 to 36' fail then
+  begin digit dup 0 eq until
 end
-# n -- n : n's last decimal digit put before the text digits-end gives, and n div 10
-define digit dup 10 mod abs 48 add hold 10 div end
-# n -- 0 : n's decimal digits put before the text digits-end gives, one at least
-define digits begin digit dup 0 eq until end
 # n -- : a minus put before the text digits-end gives, if n is below 0
 define sign 0 lt if 45 hold then end
 # list sep -- s : the elements' text, with sep between
@@ -247,6 +253,22 @@ define is-upper let n n 65 ge n 90 le and end
 define is-lower let n n 97 ge n 122 le and end
 # c -- flag : whether a character is a letter A-Z or a-z
 define is-letter let c c is-upper c is-lower or end
+# s -- n : the integer s writes in base (after 9, A to Z or a to z), a - first or not
+define number
+  let s
+  s len 0 eq if str 'the string is empty' fail then
+  base fetch let b
+  s first 45 eq let negative
+  negative if 1 else 0 then let from
+  from s len eq if str 'no digits' fail then
+  0 s from s len slice each
+    let c
+    c is-digit if c 48 sub else c is-upper if c 55 sub else c is-lower if c 87 sub else -1 then then then
+    let d
+    d 0 lt d b ge or if list str 'not a digit:' c char end string fail then
+    b mul negative if d sub else d add then
+  end
+end
 # s -- s : a-z made A-Z
 define upper let s list s each let c c is-lower if c 32 sub else c then char end end glue end
 # s -- s : A-Z made a-z
@@ -255,10 +277,10 @@ define lower let s list s each let c c is-upper if c 32 add else c then char end
 define copies let n let s str '' n 0 max 0 do s push loop end
 # x width fill -- s : x's text, with fill (a non-empty string) put before it, cut to fit, until it is width long
 define pad
-  let fill let width string let s
-  fill len 0 eq if str 'the fill is empty' fail then
+  let padding let width string let s
+  padding len 0 eq if str 'the fill is empty' fail then
   width s len sub let n
   n 0 gt if
-    fill n fill len div 1 add copies 0 n slice s cat
+    padding n padding len div 1 add copies 0 n slice s cat
   else s then
 end
