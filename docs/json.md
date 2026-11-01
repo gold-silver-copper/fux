@@ -112,8 +112,8 @@ The axis is `horizontal` or `vertical`; shares are positive integers and
 children are indices in that same list. These values feed `arrange` directly. Every node is reachable once, with
 one leaf per pane. Layout depth does not consume record nesting. Each change of
 a tab's layout (a split, a close, a move or swap, `arrange`, a reshape, its fit
-or size) emits one `laid_out` event with its new `layout_revision`; one laid out
-on another size (the smallest screen of the clients sizing it, else its fit's) or
+or size) emits one `laid_out` event with its new `layout_revision`; one whose panes
+are laid out at other sizes (by the clients' screens sizing it, else its fit) or
 for another host, its layout as it was, emits one at the same revision.
 
 Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,

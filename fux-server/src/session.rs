@@ -133,11 +133,11 @@ pub struct Place {
 /// starts in: none in a tab with no host yet (`Session::graphics`).
 type Starts = (Size, Option<fux_vt::CellSize>);
 
-/// How a tab is laid out: its layout revision, the rows and columns it is
-/// laid out on, and its host.
+/// How a tab is laid out: its layout revision, the size each of its panes
+/// is laid out at, and its host.
 type Laid = (
     Option<fux_wire::command::LayoutRevision>,
-    (u16, u16),
+    Vec<(PaneId, Size)>,
     Option<ClientId>,
 );
 
@@ -1568,7 +1568,6 @@ impl Session {
         for (&tab, &size) in &screens {
             self.parts.shown_on(tab, size.into());
         }
-        self.tell_laid_out();
         let mut dropped = std::mem::take(&mut self.sized);
         let fixed =
             |tab: &TabId| (self.tab(*tab)).is_some_and(|t| matches!(t.fit(), Fit::Fixed(_)));
@@ -1585,20 +1584,20 @@ impl Session {
         self.placed = placed;
         // A pane's rectangles side by side, for the smallest.
         sizes.sort_unstable_by_key(|(pane, _)| *pane);
-        let mut resized = false;
-        for shown in sizes.chunk_by(|a, b| a.0 == b.0) {
-            let Some(&(id, first)) = shown.first() else {
-                continue;
-            };
+        let smallest = sizes.chunk_by(|a, b| a.0 == b.0).filter_map(|shown| {
+            let &(id, first) = shown.first()?;
             let (rows, cols) = shown.iter().fold(first, |(rows, cols), (_, (h, w))| {
                 (rows.min(*h), cols.min(*w))
             });
+            Some((id, Size::new(rows, cols).ok()?))
+        });
+        let smallest: BTreeMap<PaneId, Size> = smallest.collect();
+        self.tell_laid_out(&smallest);
+        let mut resized = false;
+        for (id, size) in smallest {
             // A frame it holds is read as it resizes, as every read of
             // its output is (`read_with`): its terminal's facts given it,
             // its bells and copies taken.
-            let Ok(size) = Size::new(rows, cols) else {
-                continue;
-            };
             if self.pane(id).is_ok_and(|p| p.size() != size) {
                 self.read_with(id, |pane| pane.resize(size, now), now);
                 resized = true;
@@ -1613,17 +1612,23 @@ impl Session {
     }
 
     /// Journals `laid_out` for each tab laid out otherwise than at the last
-    /// settle, at the same revision: on another size (the smallest screen
-    /// of the clients sizing it, else its fit's) or for another host. A
-    /// new revision was journaled as it was made, and a new tab is told
+    /// settle, at the same revision: a pane of it at another size (`sized`,
+    /// as this settle sizes them, else as it is), or another host. A new
+    /// revision was journaled as it was made, and a new tab is told
     /// `created`.
-    fn tell_laid_out(&mut self) {
+    fn tell_laid_out(&mut self, sized: &BTreeMap<PaneId, Size>) {
+        let size = |pane: PaneId| {
+            sized
+                .get(&pane)
+                .copied()
+                .or(self.pane(pane).ok().map(Pane::size))
+        };
         let laid: BTreeMap<TabId, Laid> = (self.parts.tabs_in(None).into_iter())
             .map(|(_, tab)| {
                 let id = tab.id();
-                let fit = || (tab.fit().size().rows(), tab.fit().size().cols());
-                let size = self.smallest_screen(id).unwrap_or_else(fit);
-                (id, (tab.revision(self.run), size, self.host(Some(id))))
+                let panes = tab.root().panes().into_iter();
+                let sizes = panes.filter_map(|p| Some((p, size(p)?))).collect();
+                (id, (tab.revision(self.run), sizes, self.host(Some(id))))
             })
             .collect();
         let moved = |(id, now): (&TabId, &Laid)| {
@@ -8010,6 +8015,21 @@ mod tests {
         laid_out(&mut s, "its host shows another tab", |s| {
             run(s, &format!("str {second} client str @2 tab show"))
         })?;
+        let now = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        assert_eq!(now, revision, "laid out otherwise, not anew");
+        // A pane a screen too small to show it leaves is sized by another
+        // alone, its smallest screen as it was.
+        let mut s = started()?;
+        run(&mut s, "@1 80 24 resize %1 str horizontal axis split drop")?;
+        attach(&mut s, 24, 2)?;
+        let large = attach(&mut s, 24, 80)?;
+        let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
+        let cols = |s: &Session| s.pane(PaneId::of(2)).map(|p| p.size().cols());
+        let before = cols(&s)?;
+        laid_out(&mut s, "the screen that shows it alone resized", |s| {
+            (s.size_client(large, 24, 100).map(drop)).map_err(|e| e.to_string())
+        })?;
+        assert!(cols(&s)? > before, "sized by the larger screen");
         let now = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
         assert_eq!(now, revision, "laid out otherwise, not anew");
         Ok(())
