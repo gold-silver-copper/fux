@@ -6,8 +6,7 @@
 //! (n -- [n]), defined after the standard library, gives n back only above
 //! 0, a value given only sometimes.
 use fuxth::{
-    AppValue, Args, Compiler, Done, Error, Failure, Host, Machine, Outcome, Place, Value,
-    Vocabulary, token,
+    AppValue, Args, Done, Error, Failure, Host, Machine, Outcome, Place, Value, Vocabulary, token,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -40,7 +39,7 @@ impl Host for Toy {
         }
     }
 
-    fn print(&mut self, _line: &str) -> Result<(), Failure> {
+    fn write(&mut self, _text: &str) -> Result<(), Failure> {
         Ok(())
     }
 }
@@ -49,37 +48,36 @@ impl Host for Toy {
 /// user would stop it.
 pub const STEPS: u64 = 100_000;
 
-/// `text` compiled after the standard library. No filesystem loader is
-/// supplied: `require` is refused, so fuzz input never opens a path.
-pub fn compile(text: &str) -> Result<fuxth::Program<Nothing>, Error> {
-    let mut compiler = READY.with(Clone::clone)?;
-    compiler.add(&token::source("fuzz", text)?)?;
-    compiler.finish()
+/// A machine with `text` to read after the standard library. The host
+/// reads no files: `require` is refused, so fuzz input never opens a path.
+pub fn compile(text: &str) -> Result<Machine<Nothing>, Error> {
+    let mut machine = READY.with(Clone::clone)?;
+    machine.read(token::source("fuzz", text)?, None);
+    Ok(machine)
 }
 
 thread_local! {
-    /// The standard library, compiled once.
-    static READY: Result<Compiler<Nothing>, Error> = library();
+    /// The standard library, read once.
+    static READY: Result<Machine<Nothing>, Error> = library();
 }
 
-fn library() -> Result<Compiler<Nothing>, Error> {
+fn library() -> Result<Machine<Nothing>, Error> {
     let mut words = Vocabulary::default();
     let _ = words.add("ask", "any -- integer");
     let _ = words.raises(fuxth::Code::Host("not_a_number"));
     let _ = words.raises(fuxth::Code::Host("negative"));
-    let mut compiler = Compiler::new(words);
-    compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
-    let maybe = "define maybe dup 0 gt if else drop then end";
-    compiler.add(&token::source("maybe.fux", maybe)?)?;
-    Ok(compiler)
+    let mut machine = Machine::new(words);
+    machine.library("stdlib.fux", fuxth::STDLIB, &mut Toy)?;
+    let maybe = "# n -- [n] : n, if above 0\ndefine maybe dup 0 gt if else drop then end";
+    machine.library("maybe.fux", maybe, &mut Toy)?;
+    Ok(machine)
 }
 
 /// How a run ended: what it left, or its error; `None` past `STEPS`.
 pub fn run(
-    program: fuxth::Program<Nothing>,
+    mut machine: Machine<Nothing>,
     budget: u64,
 ) -> Option<Result<Vec<Value<Nothing>>, Error>> {
-    let mut machine = Machine::new(program);
     let budget = budget.clamp(1, STEPS);
     let mut taken = 0u64;
     while taken < STEPS {

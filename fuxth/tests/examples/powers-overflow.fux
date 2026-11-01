@@ -1,4 +1,5 @@
-# 2 to the 63 is one past the largest integer.
-# fails: overflow
-define power dup 0 eq if 2drop 1 else over swap 1 sub power mul then end
+# 2 to the 63 is one past the largest integer: it wraps around to the
+# smallest.
+# expect: -9223372036854775808
+define power dup 0 eq if 2drop 1 else over swap 1 sub recurse mul then end
 2 63 power

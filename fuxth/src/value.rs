@@ -1,7 +1,11 @@
-//! Values on the stack: integers, booleans, strings, lists, and the
-//! application's own.
+//! Values on the stack: integers, booleans, strings, lists, execution
+//! tokens, the marks of constructs being compiled, and the application's
+//! own.
 use crate::Code;
 use crate::Failure;
+use crate::machine::Steps;
+use crate::reader::Construct;
+use crate::token::Token;
 use std::rc::Rc;
 
 /// An application's own values: what it puts on the stack (a handle, a
@@ -28,13 +32,52 @@ fn bare(kind: &str) -> &str {
         .unwrap_or(kind)
 }
 
+/// Its tag a word of its own, so every value's payload starts at one
+/// place and a value is copied whole: copied in parts, as a `u8` tag puts
+/// a boolean beside it, a value read back whole waits on the parts (a
+/// store the CPU can't forward), which slowed every step.
 #[derive(Clone, Debug)]
+#[repr(u64)]
 pub enum Value<A> {
     Int(i64),
-    Bool(bool),
     Str(Rc<Text>),
     List(Rc<List<A>>),
     App(A),
+    /// An execution token: a word's code, which `execute` runs.
+    Xt(Xt<A>),
+    /// An open construct, while a definition is compiled: only its own
+    /// definition's words resolve it.
+    Mark(Rc<Mark>),
+    Bool(bool),
+}
+
+/// An execution token: what `tick`, `find` and `code … end` give, and
+/// `execute` runs. Two are equal when they are the same word's, the same
+/// version of it.
+#[derive(Clone, Debug)]
+pub struct Xt<A>(pub(crate) Rc<Steps<A>>);
+
+impl<A> PartialEq for Xt<A> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl<A> Xt<A> {
+    /// The name it was defined with: empty for `code … end`'s.
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+}
+
+/// A construct open while compiling: what opened it, in which definition,
+/// at which of its steps, and where in the source.
+#[derive(Debug)]
+pub struct Mark {
+    pub(crate) construct: Construct,
+    pub(crate) of: u64,
+    pub(crate) at: usize,
+    pub(crate) token: Option<Token>,
 }
 
 /// How many characters apart a string's marks are.
@@ -160,17 +203,31 @@ impl<A: PartialEq> PartialEq for List<A> {
     }
 }
 
-/// The lists in it are let go one after another, not as a recursion, so a
-/// list nested however deep never overflows the stack.
+/// The lists and code in it are let go one after another, not as a
+/// recursion, so values nested however deep never overflow the stack.
 impl<A> Drop for List<A> {
     fn drop(&mut self) {
-        let mut items = std::mem::take(&mut self.items);
-        while let Some(item) = items.pop() {
-            if let Value::List(list) = item
-                && let Ok(mut list) = Rc::try_unwrap(list)
-            {
-                items.append(&mut list.items);
+        release(std::mem::take(&mut self.items));
+    }
+}
+
+/// Lets `values` go, and what each held that nothing else holds: lists'
+/// items, and code's values (a list in code in a list…), from a stack of
+/// its own, not as a recursion.
+pub(crate) fn release<A>(mut values: Vec<Value<A>>) {
+    while let Some(value) = values.pop() {
+        match value {
+            Value::List(list) => {
+                if let Ok(mut list) = Rc::try_unwrap(list) {
+                    values.append(&mut list.items);
+                }
             }
+            Value::Xt(Xt(code)) => {
+                if let Ok(mut code) = Rc::try_unwrap(code) {
+                    code.held(&mut values);
+                }
+            }
+            Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) | Value::Mark(_) => {}
         }
     }
 }
@@ -213,7 +270,18 @@ impl<A: PartialEq> PartialEq for Value<A> {
                 (Self::Bool(a), Self::Bool(b)) if a == b => {}
                 (Self::Str(a), Self::Str(b)) if a == b => {}
                 (Self::App(a), Self::App(b)) if a == b => {}
-                (Self::Int(_) | Self::Bool(_) | Self::Str(_) | Self::List(_) | Self::App(_), _) => {
+                (Self::Xt(a), Self::Xt(b)) if a == b => {}
+                (Self::Mark(a), Self::Mark(b)) if Rc::ptr_eq(a, b) => {}
+                (
+                    Self::Int(_)
+                    | Self::Bool(_)
+                    | Self::Str(_)
+                    | Self::List(_)
+                    | Self::App(_)
+                    | Self::Xt(_)
+                    | Self::Mark(_),
+                    _,
+                ) => {
                     return false;
                 }
             }
@@ -231,6 +299,8 @@ impl<A: AppValue> Value<A> {
             Self::Bool(_) => "a boolean",
             Self::Str(_) => "a string",
             Self::List(_) => "a list",
+            Self::Xt(_) => "an xt",
+            Self::Mark(_) => "a mark",
         }
     }
 
@@ -239,7 +309,12 @@ impl<A: AppValue> Value<A> {
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::App(a) => a.name(),
-            Self::Int(_) | Self::Bool(_) | Self::Str(_) | Self::List(_) => bare(self.kind()),
+            Self::Int(_)
+            | Self::Bool(_)
+            | Self::Str(_)
+            | Self::List(_)
+            | Self::Xt(_)
+            | Self::Mark(_) => bare(self.kind()),
         }
     }
 
@@ -263,6 +338,10 @@ impl<A: AppValue> Value<A> {
                 Self::Str(text) => out.write_str(text).map_err(|_| unwritten())?,
                 Self::List(list) => lists.push((list.items.iter(), false)),
                 Self::App(app) => app.write_text(out)?,
+                Self::Xt(xt) => write!(out, "(xt {})", xt.name()).map_err(|_| unwritten())?,
+                Self::Mark(mark) => {
+                    write!(out, "(mark {})", mark.construct.name()).map_err(|_| unwritten())?
+                }
             }
             // The next item of the innermost list under way.
             value = loop {

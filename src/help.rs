@@ -89,23 +89,25 @@ Driving programs from a script or an agent: `fux help agents`; one word:
 `fux help WORD`; recipes to copy: `fux help cookbook`.
 ",
     );
-    // The language's parsing words and core, as fuxth says them: a block's
-    // words once, never broken across lines.
-    let mut shapes: Vec<String> = Vec::new();
-    for (shape, _) in fuxth::Parsing::ALL.map(fuxth::Parsing::syntax) {
-        let unbroken = shape.replace(' ', "\u{a0}");
-        if !shapes.contains(&unbroken) {
-            shapes.push(unbroken);
-        }
-    }
-    let core = fuxth::Builtin::ALL.map(fuxth::Builtin::name).join(" ");
+    // The language's core, as fuxth says it: the words that shape a
+    // program first.
+    let core = |immediate: bool| {
+        let core = fuxth::Builtin::ALL.into_iter().filter(|b| !b.hosted());
+        let core = core
+            .filter(|b| b.immediate() == immediate)
+            .map(fuxth::Builtin::name);
+        core.collect::<Vec<_>>().join(" ")
+    };
     let language = format!(
-        "The language: {}; the core's words {core}; and the libraries below, written in \
-         fuxth. Each word checks its values as it runs, and fails there if it has too \
-         few or one of a kind it doesn't take; the words before it have already acted.",
-        shapes.join(", ")
+        "The language: the words that shape a program, {}, which run as they are \
+         read; the core's other words {}; and the libraries below, written in \
+         fuxth. A word is found as it is read, a definition from its end on. Each \
+         word checks its values as it runs, and fails there if it has too few or \
+         one of a kind it doesn't take; the words before it have already acted.",
+        core(true),
+        core(false)
     );
-    let words = language.split(' ').map(|w| w.replace('\u{a0}', " "));
+    let words = language.split(' ').map(str::to_owned);
     out.push_str(&wrapped(words, "\n", 74));
     out.push_str(
         "
@@ -212,15 +214,16 @@ fn word(name: &str) -> Option<String> {
             "{name}  ( {effect} )\n\n{about}.\nWritten in fuxth:\n\n  {code}\n"
         ));
     }
-    if let Some(builtin) = fuxth::Builtin::named(name) {
-        return Some(format!(
-            "{name}  ( {} )\n\n{}. One of the core's words.\n",
-            builtin.effect(),
-            builtin.about()
-        ));
-    }
-    let (shape, about) = fuxth::Parsing::named(name)?.syntax();
-    Some(format!("{name}  {shape}: {about}\n"))
+    let builtin = fuxth::Builtin::named(name).filter(|b| !b.hosted())?;
+    let runs = match builtin.immediate() {
+        true => " It runs as it is read, even while a definition is compiled.",
+        false => "",
+    };
+    Some(format!(
+        "{name}  ( {} )\n\n{}. One of the core's words.{runs}\n",
+        builtin.effect(),
+        builtin.about()
+    ))
 }
 
 /// Local settings and their bundled initialization source.
@@ -324,7 +327,7 @@ mod tests {
         assert!(docs.len() >= 5);
         // A word defined over several lines shows all of them.
         let range = explain("range").unwrap_or_default();
-        assert!(range.contains("  define range\n    let to\n"), "{range}");
+        assert!(range.contains("  define range\n    let limit\n"), "{range}");
         assert!(range.ends_with("\n  end\n"), "{range}");
         for doc in docs.iter() {
             assert!(explain(&doc.name).is_some(), "{}", doc.name);

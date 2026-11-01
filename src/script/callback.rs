@@ -66,7 +66,9 @@ fn data_within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
             Data::Handle(fux_wire::command::AnyRef::Workspace(*w), *run)
         }
         Value::App(Fux::Client(c, run)) => Data::Client(*c, *run),
-        Value::App(Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..)) => {
+        Value::App(Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..))
+        | Value::Xt(_)
+        | Value::Mark(_) => {
             return Err(fail());
         }
     })
@@ -123,8 +125,7 @@ pub fn admit(
                 return Err(refused("a list needs its receiving client"));
             };
             l.client = Data::Client(client, context.of);
-            let tokens = fuxth::token::source("callback", &l.action.code)?;
-            super::callback_source(config, &tokens)?;
+            fuxth::token::source("callback", &l.action.code)?;
             let mut of = context.of;
             for arg in &l.action.args {
                 runs(arg, &mut of).map_err(super::callback_failed)?;
@@ -230,10 +231,10 @@ mod tests {
             )],
         };
         let mut state = crate::script::default_state()?.draft();
-        state.config = Some(std::sync::Arc::new(crate::script::source::text(
+        state.config = Some(std::sync::Arc::new(crate::script::source::Frozen::text(
             "receiver",
             "define receiver-only nip str value get json print end",
-        )?));
+        )));
         let spec = list(payload, "receiver-only");
         use fux_wire::protocol::{Decoder, Frame, ToAttached};
         let encoded = ToAttached::Open(spec).encode();
@@ -242,7 +243,6 @@ mod tests {
         let Some(ToAttached::Open(spec)) = decoder.frame::<ToAttached>()? else {
             return Err("typed screen relay".into());
         };
-        assert!(admit(spec.clone(), None, &context).is_err());
         let Screen::List(screen) = admit(spec, Some(&state), &context)? else {
             return Err("list".into());
         };

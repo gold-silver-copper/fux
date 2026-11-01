@@ -8,7 +8,7 @@ define encode
       i s len lt if
         s i at let c 0 let n
         begin i s len lt if s i at c eq else false then dup if i 1 add let i n 1 add let n then not until
-        n string c
+        n string c char
         false
       else true then
     until

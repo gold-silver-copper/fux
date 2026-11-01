@@ -678,7 +678,7 @@ mod tests {
     fn an_action_is_checked_as_its_screen_opens() -> Outcome {
         let (mut s, c) = session()?;
         for (action, said) in [
-            ("str nosuch".to_owned(), "no such word"),
+            ("str \"'nosuch\"".to_owned(), "never closed"),
             (
                 "list empty str drop str drop end".to_owned(),
                 "a callback is",
@@ -1285,8 +1285,7 @@ mod tests {
         for bad in [
             "str list str R str confirm-close bind-in",
             "str list str R str rename bind-in",
-            "str R str nosuch bind-action",
-            "str R str if bind-action",
+            "str R str \"'nosuch\" bind-action",
             "str Escape str 2drop bind-action",
         ] {
             assert!(output_as(&mut s, Some(c), bad).is_err(), "{bad}");

@@ -72,8 +72,8 @@ pub(crate) enum Wants {
     PushText,
     /// What is put into a string.
     PutText,
-    /// What `code` takes.
-    Char,
+    /// What the word takes, said.
+    Takes(Builtin, &'static str),
 }
 
 impl Wants {
@@ -82,7 +82,9 @@ impl Wants {
     /// `app` if what was found is a value of the application's alone.
     pub(crate) fn not(self, got: impl std::fmt::Display, app: bool) -> String {
         let said = match self {
-            Self::Flag => return format!("takes a boolean (from eq or lt), not {got}"),
+            Self::Flag => {
+                return format!("takes a boolean (from eq or lt) or an integer, not {got}");
+            }
             Self::Int(word) => return format!("{} takes an integer, not {got}", word.name()),
             Self::Concat => {
                 return format!("concat takes a list of strings or of lists, not {got}");
@@ -94,7 +96,7 @@ impl Wants {
             }
             Self::PushText => format!("push onto a string takes a string, not {got}"),
             Self::PutText => format!("put into a string takes a string, not {got}"),
-            Self::Char => format!("code takes a one-character string, not {got}"),
+            Self::Takes(word, what) => format!("{} takes {what}, not {got}", word.name()),
         };
         // An application's value where text is taken: the word that makes
         // it text.

@@ -2,7 +2,7 @@
 # expect: 1 1 120 2432902008176640000 3628800
 
 # n -- n!
-define fact dup 1 gt if dup 1 sub fact mul else drop 1 then end
+define fact dup 1 gt if dup 1 sub recurse mul else drop 1 then end
 
 # n -- n!, counting down with the product under the counter
 define fact-loop 1 swap begin dup 1 gt if swap over mul swap 1 sub false else true then until drop end

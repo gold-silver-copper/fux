@@ -4,8 +4,8 @@
 # m n -- A(m, n)
 define ack
   over 0 eq if nip 1 add else
-  dup 0 eq if drop 1 sub 1 ack else
-  over 1 sub -rot 1 sub ack ack then then
+  dup 0 eq if drop 1 sub 1 recurse else
+  over 1 sub -rot 1 sub recurse recurse then then
 end
 
 0 0 ack

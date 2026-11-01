@@ -64,7 +64,7 @@ define is-string kind str string eq end
 # x -- flag : whether x is a list
 define is-list kind str list eq end
 
-# ---- Sequences: strings and lists alike (a string's elements are one-character strings)
+# ---- Sequences: strings and lists alike (a string's elements are its characters' codes)
 # seq -- x1 … xn : every element onto the stack, the first deepest
 define unpack each end end
 # -- list : the empty list
@@ -97,8 +97,8 @@ define remove
 end
 # from to -- list : from, from+1, …, to-1 (empty when to is at most from)
 define range
-  let to
-  empty swap begin dup to lt if swap over push swap 1 add false else true then until drop
+  let limit
+  empty swap begin dup limit lt if swap over push swap 1 add false else true then until drop
 end
 # n e -- n^e : n to the power e, e at least 0
 define pow
@@ -108,12 +108,12 @@ define pow
 end
 # seq -- seq : the elements in the opposite order
 define reverse
-  let s s len let i
+  let s s len let i s is-string let text
   list
-    s is-string if str '' then
-    begin i 0 gt if i 1 sub let i s i at false else true then until
+    text if str '' then
+    begin i 0 gt if i 1 sub let i s i at text if char then false else true then until
   end
-  s is-string if concat then
+  text if concat then
 end
 # seq x -- i : where x first is (in a string, x may be a longer string), or -1
 define index-of
@@ -160,11 +160,11 @@ define sort-list
   let s
   s len 2 lt if s else
     s len 2 div let h
-    s 0 h slice sort-list s h s len slice sort-list merge
+    s 0 h slice recurse s h s len slice recurse merge
   then
 end
 # seq -- seq : sorted with lt, smallest first (to sort by a key, sort lists that start with it)
-define sort dup is-string if let s list s unpack end sort-list glue else sort-list then end
+define sort dup is-string if let s list list s unpack end sort-list each char end end glue else sort-list then end
 # x1 … xn n -- list : the top n values as a list, the deepest first
 define pack
   let n
@@ -177,7 +177,7 @@ end
 define quote
   let s
   list str "'"
-    s each dup str "'" eq if drop str "'\\''" then end
+    s each dup 39 eq if drop str "'\\''" else char then end
     str "'"
   end glue
 end
@@ -185,12 +185,12 @@ end
 define number
   let s
   s len 0 eq if str 'the string is empty' fail then
-  s first str - eq let negative
+  s first 45 eq let negative
   negative if 1 else 0 then let from
   from s len eq if str 'no digits' fail then
   0 s from s len slice each
-    let c c code 48 sub let d
-    d 0 lt d 9 gt or if list str 'not a digit:' c end string fail then
+    let c c 48 sub let d
+    d 0 lt d 9 gt or if list str 'not a digit:' c char end string fail then
     10 mul negative if d sub else d add then
   end
 end
@@ -204,16 +204,17 @@ end
 define split-on
   let sep let s
   sep len 1 ne if str 'the separator must be one character' fail then
+  sep first let c
   list
     0 let from 0 let i
-    s each sep eq if s from i slice i 1 add let from then i 1 add let i end
+    s each c eq if s from i slice i 1 add let from then i 1 add let i end
     s from i slice
   end
 end
-# c -- flag : whether a one-character string is a space, tab or line end
-define is-space let c c str ' ' eq c 9 char eq or c 10 char eq or c 13 char eq or end
-# s -- list : the words of s: runs of characters other than spaces, tabs and line ends
-define words
+# c -- flag : whether a character is a space, tab or line end
+define is-space let c c 32 eq c 9 eq or c 10 eq or c 13 eq or end
+# s -- list : the fields of s: runs of characters other than spaces, tabs and line ends
+define fields
   let s
   list
     0 let from 0 let i
@@ -232,18 +233,18 @@ define trim
 end
 # s p -- flag : whether s starts with p
 define starts-with let p let s s len p len lt if false else s 0 p len slice p eq then end
-# c -- flag : whether a one-character string is a digit 0-9
-define is-digit code let n n 48 ge n 57 le and end
-# c -- flag : whether a one-character string is A-Z
-define is-upper code let n n 65 ge n 90 le and end
-# c -- flag : whether a one-character string is a-z
-define is-lower code let n n 97 ge n 122 le and end
-# c -- flag : whether a one-character string is a letter A-Z or a-z
+# c -- flag : whether a character is a digit 0-9
+define is-digit let n n 48 ge n 57 le and end
+# c -- flag : whether a character is A-Z
+define is-upper let n n 65 ge n 90 le and end
+# c -- flag : whether a character is a-z
+define is-lower let n n 97 ge n 122 le and end
+# c -- flag : whether a character is a letter A-Z or a-z
 define is-letter let c c is-upper c is-lower or end
 # s -- s : a-z made A-Z
-define upper let s list s each let c c is-lower if c code 32 sub char else c then end end glue end
+define upper let s list s each let c c is-lower if c 32 sub else c then char end end glue end
 # s -- s : A-Z made a-z
-define lower let s list s each let c c is-upper if c code 32 add char else c then end end glue end
+define lower let s list s each let c c is-upper if c 32 add else c then char end end glue end
 # s n -- s : s n times over
 define copies
   let n let s
