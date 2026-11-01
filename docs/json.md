@@ -23,6 +23,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `label` | display text: its given name, else title, launch program basename, or id; never a lookup name |
 | `title` | what the program set (OSC 0 or 2), else `""`, without control characters |
 | `rows`, `cols` | its size |
+| `row`, `col` | where it is in its tab, laid out on the tab's effective size; `null` where it has no place |
 | `pid` | its program's process, `null` once it exited, and while a respawn of it is under way |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
 | `foreground_group` | the terminal's observed foreground process group id `G`, or `null` if unknown; its leader may have exited while other members still run. The OS says what it runs: `ps -o comm=,args= -p G`, `/proc/G/cmdline`, `readlink /proc/G/cwd` and `pgrep -a -g G` (every member) on Linux; `ps -o`, `lsof -a -p G -d cwd -Fn` and `pgrep -lf -g G` on macOS. Each is a separate read that may race with the group changing |
@@ -114,12 +115,11 @@ its whole rectangle, of which each client is shown one. The axis is
 indices in that same list. These values feed `arrange` directly. Every node is reachable once, with
 one leaf per pane. Layout depth does not consume record nesting. Each change of
 a tab's layout (a split, a close, a move or swap, `arrange`, a reshape, its fit
-or size) emits one `laid_out` event with its new `layout_revision`; one whose panes
-are laid out at other sizes (by the clients' screens sizing it, else its fit) or
-for another host, its layout as it was, emits one at the same revision.
+or size, the clients' screens giving it another) emits one `laid_out` event with its new
+`layout_revision`; one with another host, its layout as it was, emits one at the same revision.
 
 Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
-and `version`. A name is given or null; a label is display text. Facts adds
+`row`, `col` and `version`. A name is given or null; a label is display text. Facts adds
 `state`, containing the process/terminal fields above but `title`, and
 `launch`, what it was started as: `choice` (`shell` or `program`), ordered
 `argv` and `cwd`, both choices' original inputs. Topology uses only
@@ -495,8 +495,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":68,
- "server_release":"0.36.0","server_protocol":68,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":69,
+ "server_release":"0.36.0","server_protocol":69,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

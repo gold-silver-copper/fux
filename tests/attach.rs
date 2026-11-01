@@ -382,6 +382,7 @@ fn a_headless_client_in_its_own_pane_keeps_its_capture_and_sizing() -> Outcome {
     ];
     let pane = server.ok(&launch)?;
     let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
+    server.ok(&[&pane, "resize-auto"])?;
     server.shows(&pane, "c1")?;
     eventually("the tab sized by the client", || {
         Ok(server

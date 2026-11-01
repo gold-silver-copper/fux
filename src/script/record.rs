@@ -379,7 +379,9 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
             ("id", id(AnyRef::Pane(p.id),run)), ("tab", id(AnyRef::Tab(p.tab),run)),
             ("name", b.optional(p.name.as_deref())?), ("label", b.text(&p.label)?), ("title", b.text(&p.title)?),
             ("pid", p.pid.map(number).unwrap_or_else(|| Ok(null()))?),
-            ("rows", number(p.rows)?), ("cols", number(p.cols)?), ("version", b.text(&p.version.to_string())?),
+            ("rows", number(p.rows)?), ("cols", number(p.cols)?),
+            ("row", p.row.map(number).unwrap_or_else(|| Ok(null()))?), ("col", p.col.map(number).unwrap_or_else(|| Ok(null()))?),
+            ("version", b.text(&p.version.to_string())?),
         ];
         let mut fields = Vec::with_capacity(base.len().saturating_add(3));
         for (key, value) in base { fields.push((key.to_owned(), value)); }

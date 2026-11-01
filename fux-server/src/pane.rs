@@ -565,8 +565,8 @@ pub struct Pane {
     name: Option<String>,
     /// Set by the program with OSC 0 or 2, which says so.
     title: Title,
-    /// Its screen's size is the PTY's: the smallest rectangle any client
-    /// shows the pane in. What it reads and is resized to goes through the
+    /// Its screen's size is the PTY's: its place in its tab laid out on
+    /// the tab's effective size (`Session::effective`). What it reads and is resized to goes through the
     /// pane, which says what events tell of it.
     parser: fux_vt::Parser,
     /// What `since` reads a version's changed rows from: the screen noted

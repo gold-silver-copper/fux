@@ -549,14 +549,14 @@ read-file`. `X warn` prints on stderr:
   `opts str work in attach-defaults` is a local preference; explicit attach
   operands win. A fresh typing client loads config edits; existing clients
   keep their frozen configuration.
-- A tab no client shows, or only clients that watch, is laid out on its
-  `size`; `TAB 40 12 resize` changes it, `resize-auto` gives it back to a
-  client's screen, `PANE 95 percent str horizontal resize-pane` sizes a pane in its tab. A
+- A tab is laid out once, on its effective size: one given a `size`
+  (`TAB 40 12 resize`) always on that; else (`resize-auto`) on the smallest
+  screen of the clients showing it, watchers left out, while every pane fits there, else on the last size that did.
+  `PANE 95 percent str horizontal resize-pane` sizes a pane in its tab; its `row` and `col` say where it is. A
   size that cannot be had is refused (`size`, as is a screen past what a
   grid holds, from `COLS ROWS size` or the server), and nothing changes; so is a split
-  or a move that would hide a pane on the tab's own size or on a screen
-  showing it (but one that sizes nothing: that only watches, or has no
-  room below a bar row).
+  or a move that would hide a pane on that size. A larger screen shows the
+  tab at the top left, the rest blank.
 - To keep what a program writes, run it under `script` in its pane, so it
   still writes to a terminal (a pipe, as with `tee`, changes what it
   writes): `opts str agent in str script program str -q arg str -e arg str -f arg str

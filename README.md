@@ -678,9 +678,8 @@ needs; one that fits clients' screens fits them again after
 (`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
 split keeps two thirds of its room, the new one takes a third), so the
 layout comes back as it was, at every size. A split
-or a move that would hide a pane, on its tab's size or on the screen of a
-client showing it (but one that sizes nothing: that only watches, or has
-no room below its bar), is refused: whatever there
+or a move that would hide a pane on its tab's effective size (`fux help
+agents`) is refused: whatever there
 is can be made again. Each split holds its two shares exactly, never
 rounded. A close gives the closed pane's room to its sibling in their
 split, every other share as it was. Moving a border changes only the panes

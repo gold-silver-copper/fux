@@ -71,6 +71,9 @@ wire! {
         pub title: String,
         pub rows: u16,
         pub cols: u16,
+        /// Where it is in its tab, as it is sized; none if it has no place.
+        pub row: Option<u16>,
+        pub col: Option<u16>,
         pub version: Version,
         pub pid: Option<i32>,
         pub state: Option<Json>,

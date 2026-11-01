@@ -213,7 +213,8 @@ impl Server {
             return Ok((server, held));
         }
         // A server starts with nothing in it; the tests' first shell, %1 in
-        // workspace main, is 80 by 24, in the server's home.
+        // workspace main, is 80 by 24, in the server's home, its tab sized
+        // by the clients showing it once one does.
         let home = server.dir.to_string_lossy().into_owned();
         let first = [
             "opts", "str", "main", "in", "80", "24", "size", "str", &home, "cwd",
@@ -237,6 +238,9 @@ impl Server {
             clipboard,
             "program-clipboard",
             "new-tab",
+            "drop",
+            "@1",
+            "resize-auto",
         ]);
         server.ok(&[&first[..], launch.as_slice()].concat())?;
         Ok((server, held))
