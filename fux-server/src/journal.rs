@@ -145,8 +145,6 @@ impl Teller<'_> {
 pub enum Event {
     Pane(PaneAt, PaneEvent),
     Tab((WsId, TabId), Change),
-    /// One complete tab layout replacement.
-    Arranged((WsId, TabId)),
     Workspace(WsId, Change),
     /// A tab's tree or fit changed. Consumers take a new snapshot.
     Layout((WsId, TabId)),
@@ -281,9 +279,7 @@ impl Event {
     fn ids(&self) -> (Option<PaneId>, Option<TabId>, Option<WsId>) {
         match self {
             Event::Pane(((ws, tab), pane), _) => (Some(*pane), Some(*tab), Some(*ws)),
-            Event::Tab((ws, tab), _) | Event::Arranged((ws, tab)) | Event::Layout((ws, tab)) => {
-                (None, Some(*tab), Some(*ws))
-            }
+            Event::Tab((ws, tab), _) | Event::Layout((ws, tab)) => (None, Some(*tab), Some(*ws)),
             Event::Workspace(ws, _) => (None, None, Some(*ws)),
             Event::View { at, .. } => at.map_or((None, None, None), |((ws, tab), pane)| {
                 (Some(pane), Some(tab), Some(ws))
@@ -300,7 +296,6 @@ impl Event {
             Event::Pane(..)
             | Event::Tab(..)
             | Event::Workspace(..)
-            | Event::Arranged(..)
             | Event::Layout(..)
             | Event::View { .. } => None,
         }
@@ -309,7 +304,6 @@ impl Event {
     fn json(&self) -> Json {
         let (name, fields) = match self {
             Event::Pane(_, what) => what.said(),
-            Event::Arranged(_) => ("arranged", Vec::new()),
             Event::Layout(_) => ("laid_out", Vec::new()),
             Event::View { change, .. } => (change.name(), Vec::new()),
             Event::Tab(_, change) | Event::Workspace(_, change) => change.said(),
@@ -340,7 +334,6 @@ pub fn every_kind(
         Event::Pane(at, PaneEvent::Created),
         Event::Pane(at, PaneEvent::Closed),
         Event::Pane(at, PaneEvent::Moved(at.0)),
-        Event::Arranged(at.0),
         Event::Layout(at.0),
     ];
     for change in [
@@ -503,11 +496,9 @@ impl Reader {
                 let (pane, tab, workspace) = entry.event.ids();
                 let client = match entry.event {
                     Event::View { client, .. } => Some(client),
-                    Event::Pane(..)
-                    | Event::Tab(..)
-                    | Event::Arranged(_)
-                    | Event::Workspace(..)
-                    | Event::Layout(_) => None,
+                    Event::Pane(..) | Event::Tab(..) | Event::Workspace(..) | Event::Layout(_) => {
+                        None
+                    }
                 };
                 let moved_from = if let Event::Pane(_, PaneEvent::Moved(from)) = entry.event {
                     Some(from)
@@ -693,7 +684,6 @@ mod tests {
                 }
                 Event::Pane(..)
                 | Event::Tab(..)
-                | Event::Arranged(_)
                 | Event::Workspace(..)
                 | Event::Layout(_)
                 | Event::View { .. } => None,
@@ -750,7 +740,6 @@ mod tests {
                         | ViewChange::Screen,
                     ..
                 }
-                | Event::Arranged(_)
                 | Event::Layout(_) => {}
             }
             let json = event.json();

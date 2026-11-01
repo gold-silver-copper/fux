@@ -15,7 +15,6 @@ events.events[].origin[outside]: kind
 events.events[].origin[pane]: kind pane generation
 events.events[].origin[program]: kind pane generation
 events.events[].origin[server]: kind
-events.events[][arranged]: event tab workspace origin next
 events.events[][attached]: event pane tab workspace client origin next
 events.events[][bell]: event pane tab workspace origin next
 events.events[][closed]: event pane tab workspace origin next

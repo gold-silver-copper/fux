@@ -101,7 +101,7 @@ handle, and a split is `[AXIS, FIRST_SHARE, SECOND_SHARE, FIRST, SECOND]`.
 The axis is `horizontal` or `vertical`; shares are positive integers and
 children are indices in that same list. These values feed `arrange` directly. Every node is reachable once, with
 one leaf per pane. Layout depth does not consume record nesting. A successful `arrange` emits
-one `arranged` event with the tab and workspace.
+one `laid_out` event with the tab and workspace.
 
 Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
 and `version`. A name is given or null; a label is display text. Facts adds
@@ -345,8 +345,7 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `renamed` | `name` |
 | `closed` | closure invalidates membership/layout and repaired views |
 | `reordered` | changed tab/workspace order |
-| `laid_out` | tab/workspace; same-tab swap, reshaping, fit or effective host changed |
-| `arranged` | one guarded complete layout replacement; pane resizes can follow |
+| `laid_out` | tab/workspace; same-tab swap, reshaping, a guarded `arrange`, fit or effective host changed; pane resizes can follow |
 | `moved` | `from_tab`, `from_workspace`; both old and new scopes receive it |
 | `attached`, `detached` | `client` and its last place if known |
 | `shown`, `focused`, `zoomed` | `client` and the affected place; departures invalidate both places; includes automatic repair |

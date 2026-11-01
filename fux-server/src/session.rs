@@ -4501,7 +4501,7 @@ mod tests {
         let events = told(&mut s, |s| result = run(s, &command));
         result?;
         assert_eq!(
-            events.matches("\"event\":\"arranged\"").count(),
+            events.matches("\"event\":\"laid_out\"").count(),
             1,
             "{events}"
         );

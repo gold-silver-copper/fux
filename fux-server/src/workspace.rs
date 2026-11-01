@@ -923,7 +923,7 @@ impl Parts {
     pub(crate) fn arrange(&mut self, id: TabId, root: Tree) -> Option<()> {
         let (ws, tab) = tab_mut(&mut self.workspaces, id)?;
         tab.edit(&mut self.journal, ws, |old| *old = root);
-        self.journal.push(Event::Arranged((ws, id)));
+        self.journal.push(Event::Layout((ws, id)));
         Some(())
     }
 
