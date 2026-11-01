@@ -433,8 +433,9 @@ mod tests {
         Ok(())
     }
 
-    /// A callback is admitted on its source, and its words check their
-    /// actual arguments as it runs, as does its end: it leaves nothing.
+    /// A callback is admitted once its code compiles, and its words check
+    /// their actual arguments as it runs, as does its end: it leaves
+    /// nothing.
     #[test]
     fn callbacks_fail_on_actual_kinds_and_values_left_as_they_run() -> TestResult {
         let context = context()?;

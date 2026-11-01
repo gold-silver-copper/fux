@@ -315,7 +315,9 @@ fn models_of(layer: &Layer) -> Vec<Model> {
 /// The code value `code … end` makes of `code`, if it compiles.
 fn compiled(code: &str) -> Option<fux_wire::callback::Code> {
     let (_, compiles) = CODES.iter().find(|(c, _)| *c == code)?;
-    let tokens = fuxth::token::source("binding", code).ok().filter(|_| *compiles)?;
+    let tokens = fuxth::token::source("binding", code)
+        .ok()
+        .filter(|_| *compiles)?;
     let words = tokens.iter().map(|t| t.text.to_string()).collect();
     Some(fux_wire::callback::Code { words })
 }

@@ -17,7 +17,7 @@ use std::num::NonZeroUsize;
 
 use fux::client_state::ClientState;
 use fux::keymap::Held;
-use fux::screens::{Dispatch, Job, Screen};
+use fux::screens::{Dispatch, Job, Program, Screen};
 use fux::script::testing::InProcess;
 use fux::script::{AsClient, Host, run};
 use fux_server::outer;
@@ -177,6 +177,18 @@ fn size(rows: u8, cols: u8) -> (u16, u16) {
 /// might never end: fux leaves stopping one to its user.
 const LOOPS: &[&str] = &["begin", "define"];
 
+/// The words `job` runs: a line's, as the client splits it; a code
+/// value's own.
+fn words(job: &Job) -> Result<Vec<String>, fuxth::Error> {
+    match &job.program {
+        Program::Line(line) => {
+            let tokens = fuxth::token::source("key", line)?;
+            Ok(tokens.iter().map(|t| t.text.to_string()).collect())
+        }
+        Program::Code(code) => Ok(code.words.clone()),
+    }
+}
+
 /// What anyone can tell apart: the session's items, each client's mode,
 /// notice and screen, and each client's keymap and keys.
 type State = (
@@ -299,8 +311,8 @@ impl Run {
             Some(_) => failed.notice(),
             None => failed.to_string(),
         };
-        let tokens = job.tokens().map_err(|e| told(e.into()))?;
-        if tokens.iter().any(|t| LOOPS.contains(&&*t.text)) {
+        let words = words(job).map_err(|e| told(e.into()))?;
+        if words.iter().any(|w| LOOPS.contains(&w.as_str())) {
             return Err("reads a file, or may not end".to_owned());
         }
         let mut machine = job.machine(self.keymap.config.as_ref()).map_err(told)?;
@@ -658,7 +670,8 @@ impl Run {
                 }
                 Dispatch::Fence => {}
                 Dispatch::Run(job) => {
-                    writes |= WRITES.iter().any(|w| job.code.contains(w));
+                    let said = words(&job).unwrap_or_default();
+                    writes |= said.iter().any(|w| WRITES.contains(&w.as_str()));
                     self.run_as(client, &job);
                 }
             }

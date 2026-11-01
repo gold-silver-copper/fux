@@ -2016,9 +2016,6 @@ impl Host<'_> {
     }
 }
 
-/// `job`'s words, split as its keys or screen will read them: a quote left
-/// open said as `what`'s, of `code`. Its words are found as they run.
-
 /// The binding just made, `bound`, which `label` and `group` change.
 fn just_made<'k>(
     keymap: &'k mut crate::keymap::Keymap,
