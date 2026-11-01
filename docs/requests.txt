@@ -132,7 +132,7 @@ Wait since: Since, timeout: Option<Limit>
 Since::Now target: AnyRef
 Since::Version version: Version
 Cursor seq: Seq, run: Run
-Attach of: Option<command::Run>, headless: bool, size: fux_vt::Size, target: Option<command::AttachTarget>, read_only: bool, presentation: presentation::Presentation, initial: Option<command::InitialWorkspace>
+Attach of: Option<command::Run>, headless: bool, size: fux_vt::Size, target: Option<command::AttachTarget>, read_only: bool, presentation: presentation::Presentation, initial: Option<command::InitialWorkspace>, ancestry: Vec<u32>
 AttachTarget::Workspace workspace: WsRef
 AttachTarget::Tab tab: TabId
 AttachTarget::Pane pane: PaneId
