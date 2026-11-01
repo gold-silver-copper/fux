@@ -593,7 +593,9 @@ fn a_library_says_what_each_word_does() {
     let defined = STDLIB.lines().filter(|l| l.starts_with("define ")).count();
     assert_eq!(docs.len(), defined);
     let doc = |name: &str| docs.iter().find(|d| d.name == name).cloned();
-    let dup = doc("dup").map(|d| (d.effect, d.about, d.code));
+    let dup = doc("dup")
+        .map(|d| Doc::clone(&d))
+        .map(|d| (d.effect, d.about, d.code));
     let dup = dup.unwrap_or_default();
     assert_eq!(
         dup,

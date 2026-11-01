@@ -15,7 +15,7 @@
 use crate::Code;
 use crate::error::Error;
 use crate::machine::{Builtin, Entry, Frame, Host, Machine, Op, Steps};
-use crate::token::{self, Token};
+use crate::token::{self, Token, Words};
 use crate::value::{Address, AppValue, Mark, Text, Value, Xt};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -149,7 +149,7 @@ impl<A: AppValue> Machine<A> {
         source: &str,
         text: &str,
         host: &mut H,
-    ) -> Result<Vec<Doc>, Error> {
+    ) -> Result<Vec<Rc<Doc>>, Error> {
         if !self.frames.is_empty() || !self.building.is_empty() {
             let why = "a library is read on a machine at rest";
             return Err(Error::new(Code::Contract, why, None));
@@ -172,9 +172,10 @@ impl<A: AppValue> Machine<A> {
         });
         match docs {
             Ok(docs) => {
+                let docs: Vec<Rc<Doc>> = docs.into_iter().map(Rc::new).collect();
                 for doc in &docs {
                     if let Some(entry) = self.names.get_mut(doc.name.as_str()) {
-                        entry.doc = Some(Rc::new(doc.clone()));
+                        entry.doc = Some(Rc::clone(doc));
                     }
                 }
                 Ok(docs)
@@ -721,15 +722,14 @@ impl<A: AppValue> Machine<A> {
 
     /// The words of the source `id`, the innermost being read, from `from`
     /// up to the word read last, but for the `short` last of them.
-    fn read_since(&self, id: u64, from: usize, short: usize) -> Option<Rc<[Token]>> {
+    fn read_since(&self, id: u64, from: usize, short: usize) -> Option<Words> {
         let read = self.source().filter(|read| read.id == id)?;
-        let to = read.next.checked_sub(short)?;
-        read.tokens.get(from..to).map(Rc::from)
+        Words::of(&read.tokens, from..read.next.checked_sub(short)?)
     }
 
     /// The words that made a word, its name just read: the defining word
     /// and the name, as read.
-    fn made_words(&self) -> Option<Rc<[Token]>> {
+    fn made_words(&self) -> Option<Words> {
         let (id, from) = self.made_from()?;
         self.read_since(id, from, 0)
     }
@@ -883,7 +883,7 @@ impl<A: AppValue> Machine<A> {
         &mut self,
         name: Rc<str>,
         body: Option<Address>,
-        (immediate, words): (bool, Option<Rc<[Token]>>),
+        (immediate, words): (bool, Option<Words>),
         steps: Vec<(Op<A>, Option<Token>)>,
     ) {
         let mut code = Steps::new(Rc::clone(&name));
@@ -897,7 +897,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// `name` defined as `code`, made by `words`, the word defined last.
-    fn named_word(&mut self, name: Rc<str>, code: Steps<A>, words: Option<Rc<[Token]>>) {
+    fn named_word(&mut self, name: Rc<str>, code: Steps<A>, words: Option<Words>) {
         let xt = self.version(code);
         self.define_word(Rc::clone(&name), xt, words);
         self.latest = Some(name);

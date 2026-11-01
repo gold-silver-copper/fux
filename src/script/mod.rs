@@ -722,16 +722,19 @@ fn configured_machine(config: &Config, mut machine: Machine<Fux>) -> Result<Mach
 
 thread_local! {
     /// The libraries, read once a thread, and their help.
-    static READY: Result<(Machine<Fux>, Rc<[fuxth::Doc]>), Failed> = libraries();
+    static READY: Result<(Machine<Fux>, Docs), Failed> = libraries();
     /// The last config's, as `configured_machine` made it.
     static CONFIGURED: std::cell::RefCell<Option<(Config, Machine<Fux>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
+/// The libraries' definitions' help, as fuxth read it.
+pub type Docs = Rc<[Rc<fuxth::Doc>]>;
+
 /// The client's libraries, read; the bench counts this initialization
 /// cold. Its mistake is told without a word's usage, which would read
 /// `READY` as it is made.
-pub fn libraries() -> Result<(Machine<Fux>, Rc<[fuxth::Doc]>), Failed> {
+pub fn libraries() -> Result<(Machine<Fux>, Docs), Failed> {
     let told = |error| told(error, false);
     let mut machine = Machine::new(vocabulary().map_err(told)?);
     let mut out = io::sink();
@@ -748,7 +751,7 @@ pub fn libraries() -> Result<(Machine<Fux>, Rc<[fuxth::Doc]>), Failed> {
 /// The standard library's and fux's library's words, as help says them.
 /// Libraries that fail to read leave none, but no help asks then: every
 /// program, `help` too, fails first with why.
-pub fn docs() -> Rc<[fuxth::Doc]> {
+pub fn docs() -> Docs {
     READY.with(|ready| {
         ready
             .as_ref()

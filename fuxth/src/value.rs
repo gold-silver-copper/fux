@@ -141,7 +141,7 @@ impl<A> Xt<A> {
     /// `end` read again compiles them again: none for any other word's,
     /// nor for code opened or closed by another word.
     pub fn words(&self) -> Option<&[Token]> {
-        self.0.words.as_deref()
+        self.0.words.as_ref().map(crate::token::Words::tokens)
     }
 }
 

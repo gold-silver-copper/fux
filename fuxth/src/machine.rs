@@ -10,7 +10,7 @@ use crate::Code;
 use crate::Failure;
 use crate::error::{Error, Floor, Wants, underflow};
 use crate::reader::{Building, Doc, Read};
-use crate::token::Token;
+use crate::token::{Token, Words};
 use crate::value::{Address, AppValue, List, Text, Thrown, Value, Xt};
 use crate::vocabulary::Vocabulary;
 use std::cmp::Ordering;
@@ -79,7 +79,7 @@ pub(crate) struct Steps<A> {
     pub(crate) immediate: bool,
     pub(crate) body: Option<Address>,
     pub(crate) action: Option<Address>,
-    pub(crate) words: Option<Rc<[Token]>>,
+    pub(crate) words: Option<Words>,
 }
 
 impl<A> Steps<A> {
@@ -385,7 +385,7 @@ pub(crate) struct Entry<A> {
     pub(crate) xt: Rc<Steps<A>>,
     order: u64,
     origin: Origin,
-    pub(crate) words: Option<Rc<[Token]>>,
+    pub(crate) words: Option<Words>,
     pub(crate) doc: Option<Rc<Doc>>,
 }
 
@@ -442,9 +442,10 @@ impl std::fmt::Display for Definition<'_> {
         if let (Some(source), Some(first)) = (self.source(), place) {
             return write!(f, "# {}\n{source}\n", first.place);
         }
-        let whose = match self.origin {
-            Origin::Core => "the core's",
-            Origin::Host | Origin::Library | Origin::Program => "the host's",
+        let whose = if self.origin == Origin::Core {
+            "the core's"
+        } else {
+            "the host's"
         };
         let immediate = if self.immediate { ", immediate" } else { "" };
         let effect = self.effect.unwrap_or_default();
@@ -602,12 +603,7 @@ impl<A: AppValue> Machine<A> {
 
     /// `xt` defined as `name`, made by `words` (as read), the latest
     /// definition: a program's, or, while one is read, a library's.
-    pub(crate) fn define_word(
-        &mut self,
-        name: Rc<str>,
-        xt: Rc<Steps<A>>,
-        words: Option<Rc<[Token]>>,
-    ) {
+    pub(crate) fn define_word(&mut self, name: Rc<str>, xt: Rc<Steps<A>>, words: Option<Words>) {
         let origin = match self.made {
             Some(_) => Origin::Library,
             None => Origin::Program,
@@ -615,13 +611,7 @@ impl<A: AppValue> Machine<A> {
         self.insert(name, xt, origin, words);
     }
 
-    fn insert(
-        &mut self,
-        name: Rc<str>,
-        xt: Rc<Steps<A>>,
-        origin: Origin,
-        words: Option<Rc<[Token]>>,
-    ) {
+    fn insert(&mut self, name: Rc<str>, xt: Rc<Steps<A>>, origin: Origin, words: Option<Words>) {
         self.defined = self.defined.saturating_add(1);
         let entry = Entry {
             xt,
@@ -664,7 +654,7 @@ impl<A: AppValue> Machine<A> {
             immediate: entry.xt.immediate,
             effect,
             about,
-            words: entry.words.as_deref(),
+            words: entry.words.as_ref().map(Words::tokens),
         }
     }
 

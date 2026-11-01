@@ -32,6 +32,27 @@ pub struct Token {
     pub place: Place,
 }
 
+/// Words of a source as it was read: a run of its tokens, shared with it,
+/// so keeping them copies none.
+#[derive(Clone, Debug)]
+pub(crate) struct Words {
+    tokens: Rc<[Token]>,
+    range: Range<usize>,
+}
+
+impl Words {
+    /// The words `range` of `tokens`, if it has them.
+    pub(crate) fn of(tokens: &Rc<[Token]>, range: Range<usize>) -> Option<Words> {
+        tokens.get(range.clone())?;
+        let tokens = Rc::clone(tokens);
+        Some(Words { tokens, range })
+    }
+
+    pub(crate) fn tokens(&self) -> &[Token] {
+        self.tokens.get(self.range.clone()).unwrap_or_default()
+    }
+}
+
 /// Command-line arguments, each one token, never split again.
 pub fn arguments<S: AsRef<str>>(args: &[S]) -> Vec<Token> {
     (args.iter().zip(1u32..))
