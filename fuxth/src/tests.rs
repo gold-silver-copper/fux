@@ -1372,6 +1372,40 @@ fn a_caught_failure_undoes_the_loops_and_return_stack_its_body_began() -> Result
     assert_eq!(run(loops)?, ints(&[0, 1, 2]));
     let returns = "7 to-return str all try 1 to-return 1 0 div catch drop end from-return";
     assert_eq!(run(returns)?, ints(&[7]));
+    // A body takes nothing from below where it began: consumed, or
+    // consumed and replaced, the 7 is still there after the catch.
+    for body in [
+        "from-return drop 1 0 div",
+        "from-return drop 99 to-return 1 0 div",
+        "from-return 1 0 div to-return",
+    ] {
+        let text = format!("7 to-return str all try {body} catch drop end from-return");
+        assert_eq!(run(&text)?, ints(&[7]), "{text}");
+    }
+    let below = "7 to-return str div_by_zero try copy-return catch drop end";
+    assert_eq!(code(run(below)), Some("stack_underflow"));
+    Ok(())
+}
+
+#[test]
+fn a_loop_words_xt_acts_in_the_loop_it_runs_in() -> Result<(), Error> {
+    for (direct, executed) in [
+        ("3 0 do i loop", "3 0 do tick i execute loop"),
+        (
+            "2 0 do 1 0 do j loop loop",
+            "2 0 do 1 0 do tick j execute loop loop",
+        ),
+        (
+            "3 0 do i leave loop 5",
+            "3 0 do i tick leave execute loop 5",
+        ),
+        ("3 0 do i loop", "3 0 do tick i tick execute execute loop"),
+    ] {
+        assert_eq!(run(executed)?, run(direct)?, "{executed}");
+    }
+    // A definition of its own still reaches no caller's loop.
+    let helper = "define f i 1 add end 3 0 do tick f execute loop";
+    assert_eq!(code(run(helper)), Some("not_top_level"));
     Ok(())
 }
 

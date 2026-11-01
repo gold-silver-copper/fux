@@ -113,7 +113,7 @@ which only its own code's words resolve; `end` closes the innermost.
 | `put` | seq i x -- seq | element i replaced |
 | `char` | c -- s | the one-character string of a character's code |
 | `depth` | -- n | how many values the stack has (in a block that starts it empty, above its start) |
-| `to-return from-return copy-return` | x -- / -- x / -- x | the return stack: values only, never where a word returns to; a caught failure restores it |
+| `to-return from-return copy-return` | x -- / -- x / -- x | the return stack: values only, never where a word returns to; a `try`'s body takes none from below where it began, so a caught failure restores it |
 | `i j leave` | -- n / -- n / -- | in a `do` loop of the code running: its index, the outer loop's, end it now |
 | `digits-begin hold holds digits-end` | -- / c -- / s -- / n -- s | a number's text, built from its end (Forth's `<# hold holds #>`) |
 | `kind` | x -- name | `integer`, `boolean`, `string`, `list`, `xt`, or the host's |

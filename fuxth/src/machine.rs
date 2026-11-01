@@ -1070,7 +1070,7 @@ impl<A: AppValue> Machine<A> {
     /// The `nth` innermost `do` loop of the code running (0 for the
     /// innermost), for `word`, which goes in that many loops and one.
     fn running_loop(&self, nth: usize, word: Builtin) -> Result<Loop, Error> {
-        let depth = self.frames.len();
+        let depth = self.running_depth();
         let mut ours = self.loops.iter().rev().take_while(|l| l.frames == depth);
         ours.nth(nth).copied().ok_or_else(|| {
             let what = if nth == 0 {
@@ -1082,15 +1082,55 @@ impl<A: AppValue> Machine<A> {
         })
     }
 
+    /// How many frames deep the code running is: a core word's xt run by
+    /// `execute` runs in a frame of its own, over its caller's, and acts
+    /// in the caller's, as compiled there it would.
+    fn running_depth(&self) -> usize {
+        let dispatched = |frame: &Frame| match frame {
+            Frame::Code { code, .. } => {
+                let leaf = self.version_at(*code).and_then(|code| code.leaf());
+                matches!(leaf, Some(Op::Builtin(_)))
+            }
+            Frame::Read(_) => false,
+        };
+        let above = self
+            .frames
+            .iter()
+            .rev()
+            .take_while(|f| dispatched(f))
+            .count();
+        self.frames.len().saturating_sub(above)
+    }
+
     /// `leave`: the innermost loop ended, and the `each` loops and blocks
-    /// begun in it, and on past its end.
+    /// begun in it, and on past its end, in the frame that runs it.
     fn leave_loop(&mut self) -> Result<(), Error> {
         let running = self.running_loop(0, Builtin::Leave)?;
+        while self.frames.len() > running.frames {
+            self.leave();
+        }
         self.loops.pop();
         self.iters.truncate(running.iters);
         self.marks.truncate(running.marks);
         self.jump(running.exit);
         Ok(())
+    }
+
+    /// Refused unless the return stack has a value: in a `try`'s body,
+    /// one put there in the body, as a caught failure keeps those below.
+    fn returned(&self) -> Result<(), Error> {
+        let floor = self.marks.iter().rev().find_map(|(_, body)| match body {
+            Body::Try { returns, .. } => Some(*returns),
+            Body::List(_) => None,
+        });
+        if self.returns.len() > floor.unwrap_or(0) {
+            return Ok(());
+        }
+        let why = match floor {
+            Some(_) => "the return stack has nothing put there inside this try … catch",
+            None => "the return stack is empty",
+        };
+        Err(self.fail(Code::StackUnderflow, why))
     }
 
     /// The innermost code frame's `let` name in `slot`.
@@ -1980,15 +2020,15 @@ builtins! { m host;
         Ok(())
     }
     FromReturn "from-return" [cold] () "-- x" "the return stack's top value moved back" {
+        m.returned()?;
         let x = m.returns.pop();
-        let x = x.ok_or_else(|| m.fail(Code::StackUnderflow, "the return stack is empty"))?;
-        m.push(x);
+        m.stack.extend(x);
         Ok(())
     }
     CopyReturn "copy-return" [cold] () "-- x" "a copy of the return stack's top value" {
+        m.returned()?;
         let x = m.returns.last().cloned();
-        let x = x.ok_or_else(|| m.fail(Code::StackUnderflow, "the return stack is empty"))?;
-        m.push(x);
+        m.stack.extend(x);
         Ok(())
     }
     I "i" [cold] () "-- n" "in a do … loop: its index" {
