@@ -28,13 +28,15 @@ define 2swap 3 roll 3 roll end
 # a b c d -- a b c d a b : copies of the pair under the top two
 define 2over 3 pick 3 pick end
 
-# ---- Booleans (and, or, xor and invert are the core's)
+# ---- Booleans (and, or and xor are the core's)
 # -- true : the boolean true
 define true 0 0 eq end
 # -- false : the boolean false
 define false 0 1 eq end
 # flag -- flag : the other boolean
 define not if false else true then end
+# x -- x : the other boolean; of an integer, every bit flipped
+define invert dup kind str integer eq if -1 else true then xor end
 
 # ---- Comparing (lt compares two integers, two strings or two lists)
 # a b -- flag : whether a comes after b

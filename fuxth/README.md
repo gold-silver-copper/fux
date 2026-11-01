@@ -100,7 +100,7 @@ which only its own code's words resolve; `end` closes the innermost.
 | `roll` | xn … x0 n -- xn-1 … x0 xn | `1 roll` swaps |
 | `add sub mul div` | n m -- r | `add sub mul` wrap around |
 | `mul-div-mod` | n k d -- r q | n×k divided by d, the product exact (Forth's `*/mod`) |
-| `and or xor invert` | a b -- x / x -- x | logical on booleans, bitwise on integers |
+| `and or xor` | a b -- x | logical on booleans, bitwise on integers (the library's `invert` too) |
 | `shift-left shift-right` | n u -- n | 0s come in; past 63 places, 0 |
 | `within` | x lo hi -- flag | lo ≤ x < hi, around the end of the integers when hi is below lo |
 | `lt` | a b -- flag | two integers, two strings (by character codes) or two lists (element by element) |
@@ -130,10 +130,11 @@ which only its own code's words resolve; `end` closes the innermost.
 | `evaluate` | s -- | reads s as a source file is read, here; only where the host enables it |
 
 The standard library adds, among others: `dup swap over rot nip -rot
-2dup 2drop tuck dup-nonzero 2swap 2over`, `true false not`, `gt le ge ne
-min max`, `mod negate abs even pow div-mod mul-div`, `digit digits sign`, `is-int is-string is-list`, `empty cat glue first last pop
-shift remove range reverse index-of contains count sum largest smallest
-merge sort pack unpack`, `quote number join split-on fields lines trim
+2dup 2drop tuck dup-nonzero 2swap 2over`, `true false not invert`, `gt le
+ge ne min max`, `mod negate abs even pow div-mod mul-div`, `is-int
+is-string is-list`, `empty cat glue first last pop shift remove range
+reverse index-of contains count sum largest smallest merge sort pack
+unpack`, `quote number digit digits sign join split-on fields lines trim
 starts-with is-space is-digit is-upper is-lower is-letter upper lower copies
 pad`.
 

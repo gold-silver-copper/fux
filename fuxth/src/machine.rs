@@ -1883,24 +1883,6 @@ builtins! { m host;
         "whether one is true and the other not; of two integers, the bits set in one only" {
         m.logic(Builtin::Xor, (a, b), |a, b| a ^ b, |a, b| a ^ b)
     }
-    Invert "invert" [cold] (x: Any) "x -- x" "the other boolean; of an integer, every bit flipped" {
-        let flipped = match x {
-            Value::Bool(b) => Value::Bool(!b),
-            Value::Int(n) => Value::Int(!n),
-            other @ (Value::Str(_)
-            | Value::List(_)
-            | Value::App(_)
-            | Value::Xt(_)
-            | Value::Mark(_)
-            | Value::Failure(_)) => {
-                let app = matches!(other, Value::App(_));
-                let wants = Wants::Takes(Builtin::Invert, "a boolean or an integer");
-                return Err(m.refused(Some(wants), other.kind(), app));
-            }
-        };
-        m.push(flipped);
-        Ok(())
-    }
     ShiftLeft "shift-left" [cold] (n: Int, u: Int) "n u -- n"
         "n's bits moved u places up, 0s coming in (past 63 places, 0)" {
         let u = u32::try_from(m.count(Builtin::ShiftLeft, u)?).unwrap_or(u32::MAX);
