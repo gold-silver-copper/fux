@@ -249,8 +249,7 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
                 .presentation(),
         }
         .encode(),
-        Spec::Resize(rows, cols) => AttachedFrame::Resize(crate::size(rows, cols))
-            .encode(),
+        Spec::Resize(rows, cols) => AttachedFrame::Resize(crate::size(rows, cols)).encode(),
         Spec::Detach => AttachedFrame::Detach.encode(),
         Spec::Paint(bytes) => ToAttached::Paint(Cow::Owned(bytes)).encode(),
         Spec::Exit(reason) => Greeting::Exit(&reason).encode(),
