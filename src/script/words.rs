@@ -2133,7 +2133,7 @@ impl Host<'_> {
                 if selected.is_none() && !items.is_empty() {
                     return Err(fail(Raise::BadValue, "nonempty rows need a selected index"));
                 }
-                let action = Self::action(&next()?)?;
+                let action = self.action(&next()?)?;
                 Open::List(fux_wire::callback::ListScreen {
                     title,
                     items,
@@ -2161,7 +2161,7 @@ impl Host<'_> {
                     false => line.edit(&fux_wire::act::Edit::Insert(start)),
                 };
                 typed.map_err(|why| fail(Raise::BadValue, why))?;
-                let action = Some(Self::action(&next()?)?);
+                let action = Some(self.action(&next()?)?);
                 Open::Prompt(fux_wire::callback::Prompt {
                     title,
                     line,
@@ -2176,24 +2176,24 @@ impl Host<'_> {
     }
 
     /// Source is explicit; captured values never pass through a tokenizer.
-    fn action(value: &Value<Fux>) -> Result<fux_wire::callback::Callback, Failure> {
+    fn action(&mut self, value: &Value<Fux>) -> Result<fux_wire::callback::Callback, Failure> {
         let (code, args) = match value {
             Value::Str(_) => (string(value)?, Vec::new()),
-            Value::List(v) => match v.items() {
-                [Value::List(args), code] => {
+            // What the pair holds, checked as such: its source's own
+            // requirement is told.
+            Value::List(v) => self.held(match v.items() {
+                [Value::List(args), code] => (|| {
                     let mut out = Vec::with_capacity(args.items().len());
                     for arg in args.items() {
                         out.push(super::callback::data(arg)?);
                     }
-                    (string(code)?, out)
-                }
-                _ => {
-                    return Err(fail(
-                        Raise::BadValue,
-                        "a callback is source text or [captured arguments,source text]",
-                    ));
-                }
-            },
+                    Ok((string(code)?, out))
+                })(),
+                _ => Err(fail(
+                    Raise::BadValue,
+                    "a callback is source text or [captured arguments,source text]",
+                )),
+            })?,
             Value::Int(_) | Value::Bool(_) | Value::App(_) => {
                 return Err(wrong("a callback", value));
             }
@@ -2256,8 +2256,10 @@ impl Host<'_> {
             }
             Keys::BindAction => {
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
-                let code = string(&next()?)?;
-                let action = Self::action(&Value::str(code))?;
+                let action = fux_wire::callback::Callback {
+                    code: string(&next()?)?,
+                    args: Vec::new(),
+                };
                 let tokens = fuxth::token::source("list action", &action.code)
                     .map_err(|e| refused(e.message))?;
                 super::callback_source(state.config.as_ref(), &tokens)
@@ -2556,6 +2558,12 @@ mod tests {
             ("str x 80 24 resize", "resize", 0, "headless client"),
             ("5 str name get", "get", 0, "held observation"),
             ("5 str facts snapshot", "snapshot", 0, "snapshot scope"),
+            (
+                "str c1 client str T str s 5 prompt",
+                "prompt",
+                3,
+                "captured arguments",
+            ),
         ] {
             let effect = Word::named(word)
                 .map(|w| w.row().effect)
@@ -2579,6 +2587,9 @@ mod tests {
         for program in [
             "str c1 client str Title list list str payload list end end end list end list 0 end str 2drop choose",
             "@1 str @1:0:1-2 list list list end 1 1 1 2 end end arrange",
+            // A callback's source in its [captured arguments,source] pair.
+            "str c1 client str T list end list end list end list list end list end end choose",
+            "str c1 client str T str s list list end list end end prompt",
         ] {
             let failed = offline(program)?
                 .0
