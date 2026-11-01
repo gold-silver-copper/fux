@@ -183,7 +183,9 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
             fux_server::capture::directory(Ok(Some(std::ffi::OsStr::from_bytes(&[0xff])))),
             fux_server::capture::directory(Err(2)),
         ];
-        let cwds = (s.panes.iter_mut()).flat_map(|p| &mut p.facts).filter(|(k, _)| k == "cwd");
+        let cwds = (s.panes.iter_mut())
+            .flat_map(|p| &mut p.facts)
+            .filter(|(k, _)| k == "cwd");
         for ((_, cwd), observed) in cwds.zip(observed) {
             *cwd = observed;
         }

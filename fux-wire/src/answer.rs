@@ -490,7 +490,10 @@ impl Captured {
         match &self.of {
             Of::Pane { pane, wrap_pending } => {
                 let (id, tab, version) = (pane.id, pane.tab, pane.version);
-                write!(out, "{{\"id\":\"{id}\",\"tab\":\"{tab}\",\"version\":\"{version}\"")?;
+                write!(
+                    out,
+                    "{{\"id\":\"{id}\",\"tab\":\"{tab}\",\"version\":\"{version}\""
+                )?;
                 for (key, value) in &pane.facts {
                     out.write_char(',')?;
                     crate::json::write_str(out, key)?;

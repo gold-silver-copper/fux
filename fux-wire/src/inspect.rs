@@ -78,7 +78,10 @@ wire! {
 
 impl Pane {
     pub fn fact(&self, name: &str) -> Option<&Json> {
-        self.facts.iter().find(|(key, _)| key == name).map(|(_, v)| v)
+        self.facts
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, v)| v)
     }
 }
 

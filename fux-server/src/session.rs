@@ -4377,7 +4377,10 @@ mod tests {
             }
             // A launch directory of 70,000 bytes not UTF-8, in hex.
             if let Some(pane) = snapshot.panes.first_mut() {
-                pane.facts.push(("cwd".into(), Json::str("ff".repeat(70_000))));
+                pane.facts.push((
+                    "cwd".into(),
+                    Json::str(std::iter::repeat_n("ff", 70_000).collect::<String>()),
+                ));
             }
             let bytes = fux_wire::wire::encode(&*snapshot);
             assert_eq!(
@@ -7174,6 +7177,32 @@ mod tests {
         assert_eq!(ids(AnyRef::Workspace(ws))?, "+1 @1 %1 @2 %2 %3");
         assert_eq!(ids(AnyRef::Tab(tab))?, "@2 %2 %3");
         assert_eq!(ids(AnyRef::Pane(PaneId::of(3)))?, "%3");
+        Ok(())
+    }
+
+    /// A pane's facts are one observation: its snapshot's record, a
+    /// capture and a live get read each field alike, and a write between
+    /// two observations moves its version and the journal's cursor.
+    #[test]
+    fn a_pane_reads_as_one_observation_wherever_it_is_read() -> TestResult {
+        let (mut s, _) = attached(6, 30)?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
+        s.out(PaneId::of(1), b"hi\x1b]2;title\x07\x1b[?1h");
+        for (name, _) in s.observed(PaneId::of(1))?.facts {
+            let read =
+                |s: &mut Session, from: &str| output(s, &format!("{from} str {name} get json"));
+            let listed = read(&mut s, "%1 info str panes get first")?;
+            assert_eq!(read(&mut s, "%1 capture")?, listed, "{name}");
+            assert_eq!(read(&mut s, "%1")?, listed, "{name}");
+        }
+        let seen =
+            |s: &mut Session| output(s, "%1 capture dup str version get swap str cursor get");
+        let before = seen(&mut s)?;
+        s.out(PaneId::of(1), b"more");
+        run(&mut s, "%1 str written rename")?;
+        let after = seen(&mut s)?;
+        let moved = before.lines().zip(after.lines()).filter(|(a, b)| a != b);
+        assert_eq!(moved.count(), 2, "{before} {after}");
         Ok(())
     }
 

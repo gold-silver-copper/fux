@@ -1,8 +1,8 @@
 use super::{Error, Session};
+use crate::pane::Pane;
 use crate::view::ClientKind;
 use crate::workspace::{Child, Fit};
 use fux_wire::command::AnyRef;
-use crate::pane::Pane;
 use fux_wire::id::{PaneId, TabId};
 use fux_wire::inspect::{self, Projection, Scope, Snapshot};
 use fux_wire::json::Json;
@@ -40,7 +40,9 @@ impl Session {
         }
         if *projection == Projection::Recipe {
             let dir = self.dir_with(pane.id(), &mut Memory)?;
-            let dir = dir.as_ref().map(|d| d.as_deref().map(std::path::Path::as_os_str));
+            let dir = dir
+                .as_ref()
+                .map(|d| d.as_deref().map(std::path::Path::as_os_str));
             facts.push(("cwd", crate::capture::directory(dir.map_err(|e| e.raw()))));
         }
         Ok(inspect::Pane {
@@ -228,4 +230,3 @@ impl Session {
         Ok(Body::Snapshot(Box::new(snapshot)))
     }
 }
-

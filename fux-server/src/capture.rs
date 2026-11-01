@@ -177,20 +177,26 @@ pub fn pane(
     let keep = keep.as_deref();
     let read = (read.enumerate())
         .filter(move |(at, _)| keep.is_none_or(|keep| keep.get(*at) == Some(&true)));
-    let facts = &mut observed.facts;
-    facts.insert(0, ("cursor".to_owned(), Json::str(journal.to_string())));
-    let mut fields = Vec::with_capacity(3);
-    // The history rows kept above the first row read: history it was not
-    // asked for (rows a range leaves out are not counted).
-    fields.push(("above", above.map_or(Json::Null, Json::count)));
     // Of the rows read: which go on in the next, as a joined capture joins
     // them, and the links on the columns read.
     let wrapped = read
         .clone()
         .map(|(_, (row, _))| Json::Bool(row.continues()));
-    fields.push(("wrapped_rows", Json::Array(wrapped.collect())));
-    fields.push(("links", links(read.clone(), selection.start, view)));
-    facts.extend(fields.into_iter().map(|(k, v)| (k.to_owned(), v)));
+    let read_here = [
+        ("cursor", Json::str(journal.to_string())),
+        // The history rows kept above the first row read: history it was
+        // not asked for (rows a range leaves out are not counted).
+        ("above", above.map_or(Json::Null, Json::count)),
+        ("wrapped_rows", Json::Array(wrapped.collect())),
+        ("links", links(read.clone(), selection.start, view)),
+    ]
+    .map(|(k, v)| (k.to_owned(), v));
+    // The journal's cursor beside the version, the rest after the facts.
+    let [cursor_read, rest @ ..] = read_here;
+    observed.facts = std::iter::once(cursor_read)
+        .chain(std::mem::take(&mut observed.facts))
+        .chain(rest)
+        .collect();
     let of = Of::Pane {
         pane: observed,
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
@@ -828,9 +834,19 @@ fn path(value: &std::ffi::OsStr) -> Json {
     use std::os::unix::ffi::OsStrExt;
     let (encoding, text) = match value.to_str() {
         Some(text) => ("utf8", text.to_owned()),
-        None => ("hex", value.as_bytes().iter().map(|b| format!("{b:02x}")).collect()),
+        None => (
+            "hex",
+            value
+                .as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        ),
     };
-    Json::object(vec![("encoding", Json::str(encoding)), ("text", Json::str(text))])
+    Json::object(vec![
+        ("encoding", Json::str(encoding)),
+        ("text", Json::str(text)),
+    ])
 }
 
 /// Where a picture is, for `json`: its top row (negative once scrolled
@@ -904,6 +920,15 @@ mod tests {
                 .collect(),
         };
         super::pane(observed, pane, journal, history, view)
+    }
+
+    #[test]
+    fn recipe_paths_keep_exact_os_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"/a\xff/b");
+        let path = r#"{"encoding":"hex","text":"2f61ff2f62"}"#;
+        let known = format!(r#"{{"status":"known","path":{path}}}"#);
+        assert_eq!(super::directory(Ok(Some(raw))).render(), known);
     }
 
     /// A capture as printed.
@@ -1435,12 +1460,10 @@ mod tests {
             wrapped,
             ..CaptureView::default()
         };
-        Ok(
-            match captured(pane, journal()?, Some(usize::MAX), view) {
-                Ok(got) => Ok((got.text()?, got.changed_rows.ok_or("changed_rows")?)),
-                Err(error) => Err(error.code()),
-            },
-        )
+        Ok(match captured(pane, journal()?, Some(usize::MAX), view) {
+            Ok(got) => Ok((got.text()?, got.changed_rows.ok_or("changed_rows")?)),
+            Err(error) => Err(error.code()),
+        })
     }
 
     /// A capture `since` a version reads only the lines with a row that

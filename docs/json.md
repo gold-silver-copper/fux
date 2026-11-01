@@ -13,19 +13,26 @@ panes an array of their objects). Rows and columns count from 0; times are milli
 
 ## A pane
 
-`ls json` gives each pane its identity and size, its program under `program`, its terminal's fields under `state` and what it was started as under `launch` (below); `PANE capture json` gives the identity, `program` and `state` fields too, but
-for `id`, `name` and `label` (it says `pane`):
+A pane's facts are one observation, read in one server turn: its
+identity and place, its program, what it was started as and its
+terminal's state, in one flat object, the same wherever it is read.
+`ls json` and `X info json` give each pane's under `panes`; `PANE capture
+json` gives it with what it read of the screen and the journal's
+`cursor` (below); `PANE str FIELD get` reads one field of it now. In
+order:
 
 | Field | Value |
 | --- | --- |
-| `id` | `"%3"` |
+| `id` | `"%3"` (a handle in fuxth) |
+| `tab` | the tab it is in, `"@2"` (a handle in fuxth) |
+| `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
 | `name` | its given name (`rename`), else `null`; no other workspace, tab or pane has it |
 | `label` | display text: its given name, else title, launch program basename, or id; never a lookup name |
 | `title` | what the program set (OSC 0 or 2), else `""`, without control characters |
 | `rows`, `cols` | its size |
 | `row`, `col` | where it is in its tab, laid out on the tab's effective size; `null` where it has no place |
-| `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
 | `program` | the program it holds, one record (below): the one it runs, or the one that ended, till a respawn's new program takes its place; `null` while a respawn lets go of a program that still ran, as the pane then holds none |
+| `launch` | what it was started as: `choice`, `"shell"` or `"program"`, and `cwd`, the directory it started in (`{"encoding":"utf8","text":"/src"}`; `"hex"` and its bytes for a directory that is not UTF-8); its program's `argv` says with what |
 | `alt_screen` | its program holds the full screen |
 | `mouse_mode` | the mouse reports its program asked for: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` for none |
 | `mouse_encoding` | how it asked for mouse reports to be spelled: `"default"` (coordinates as single bytes), `"utf8"` (1005), `"sgr"` (1006) or `"urxvt"` (1015) |
@@ -98,10 +105,11 @@ held str clients get each str pane get print end
 `get` on a record, held action answer, or capture is local, even if the
 source pane has changed, respawned, or closed. A held answer's `pane`,
 `version`, `status`, and applicable change/exit fields come from that answer.
-A capture exposes its saved `pane` (or `client`), version, journal cursor, screen geometry,
-lines, optional styles, and captured state fields such as `last_status`.
+A capture exposes its pane's saved observation (`id`, `version`, `last_status`
+and the rest) or its `client` and screen size, its journal cursor, lines and
+optional styles.
 An absent field still fails `no_field`; it never falls back to a live read.
-Use `ANSWER pane str name get` to request the live pane name explicitly.
+Use `ANSWER pane str name get` (`CAPTURE pane …`) to request the live pane name explicitly.
 Arrays become fuxth lists, objects become records, booleans and integers keep
 their types, and strings keep their exact text. Null has kind `null`; it is
 neither false nor an empty string/list. An absent field fails `no_field`.
@@ -131,18 +139,17 @@ a tab's layout (a split, a close, a move or swap, `arrange`, a reshape, its fit
 or size, the clients' screens giving it another) emits one `laid_out` event with its new
 `layout_revision`; one with another host, its layout as it was, emits one at the same revision.
 
-Each pane has `id`, `tab`, `name`, `label`, `title`, `rows`, `cols`,
-`row`, `col` and `version`. A name is given or null; a label is display text. Facts adds
-`program`, `state`, containing the terminal fields above but `title`, and
-`launch`, what it was started as: `choice` (`shell` or `program`) and
-`cwd`, both choices' original inputs, with its program's `argv`. Topology uses only
-retained state and performs no process metadata queries. Recipe adds `cwd`,
-where the pane's program is now, which `dump` starts a shell in: null when
-unknown, `{status: known, path: ...}`, or
-`{status: failed, operation: cwd, errno: N}`. OS text uses
-`{encoding: utf8, text: ...}` or `{encoding: hex, text: ...}` for exact
-non-UTF-8 bytes. Replay launches new processes; these are launch inputs,
-not saved process memory.
+Each pane is its observation (above): `id`, `tab`, `version`, `name`,
+`label`, `title`, `rows`, `cols`, `row` and `col`, then, in facts and
+recipe, `program`, `launch` and its terminal's fields. Topology stops
+before `program`: it uses only retained state and performs no process
+metadata queries. Recipe adds `cwd` last, where the pane's program is
+now, which `dump` starts a shell in: null when unknown,
+`{status: known, path: ...}`, or `{status: failed, operation: cwd, errno:
+N}`. OS text uses `{encoding: utf8, text: ...}` or `{encoding: hex,
+text: ...}` for exact non-UTF-8 bytes. Replay launches new processes;
+these are launch inputs, not saved process memory. The snapshot's
+`cursor` is its panes' journal cursor.
 
 Each client has `id`, `kind` (`terminal` or `headless`), `read_only`, physical
 `rows`/`cols`, `pane_rows`/`pane_cols`, optional `workspace`/`tab`/`pane`,
@@ -200,8 +207,12 @@ changing; the journal does not promise a complete stream of terminal replies.
 ## `PANE capture json`
 
 ```json
-{"pane":"%1","screen_rows":23,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"],"wrap_pending":false,"version":"…","cursor":"SEQ:RUN",PANE FIELDS…,"above":0,"wrapped_rows":[false,…],"links":[{"row":0,"col":2,"len":4,"uri":"https://…"}]}
+{"id":"%1","tab":"@1","version":"…","cursor":"SEQ:RUN",PANE FIELDS…,"above":0,"wrapped_rows":[false,…],"links":[{"row":0,"col":2,"len":4,"uri":"https://…"}],"wrap_pending":false,"screen_cursor":[ROW,COL],"lines":["…"]}
 ```
+
+A pane's capture is its observation (the pane's fields above, read in
+the same turn as its screen), with what it read of the screen. Its
+`rows` and `cols` are its screen's size.
 
 `VERSION since` reads only the lines with a row changed after that
 version of the pane, a blank one too, and adds `"changed_rows":[3,7]`
@@ -243,8 +254,7 @@ shows; its `uri` is not.
 (each screen row a line). Blanks at a line's end are trimmed, but with
 `styles` those painted (a background, reverse video, underline or
 strikeout) stay, in `lines` and `styles` alike: a painted surface shows
-whole. `screen_rows` and `screen_cols` are the screen's size;
-`screen_cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event and
+whole. `screen_cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event and
 `wrapped` count them, whatever
 `lines` join or `rows` and `cols` take: `null` while hidden or on the
 screen not captured (`main-screen` under a full-screen program). `wrap_pending`:
@@ -268,7 +278,8 @@ logical lines. `wrapped` keeps only the physical rows selected. Cutting a
 wide glyph at either column boundary leaves a blank in the selected half.
 
 `CLIENT capture json`:
-`{"client":"c1","screen_rows":24,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"]}`.
+`{"client":"c1","screen_rows":24,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"]}`,
+`screen_rows` and `screen_cols` its terminal's size.
 
 Client JSON serialization writes capture runs directly without constructing
 a second JSON object graph, and plain text streams nested lists' captures and
