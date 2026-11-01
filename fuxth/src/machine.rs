@@ -93,7 +93,8 @@ impl<A> Steps<A> {
             | Op::JumpUnless(target)
             | Op::EachNext(target)
             | Op::Tried(target)
-            | Op::Try(target, _),
+            | Op::Try(target, _)
+            | Op::Do(target),
         ) = self.ops.get_mut(at)
         {
             *target = to;
@@ -159,7 +160,10 @@ impl<A> Steps<A> {
                 | Op::EachStart
                 | Op::EachNext(_)
                 | Op::Try(..)
-                | Op::Tried(_) => {}
+                | Op::Tried(_)
+                | Op::Do(_)
+                | Op::Loop(_)
+                | Op::LoopBy(_) => {}
             }
         }
     }
@@ -210,6 +214,14 @@ pub(crate) enum Op<A> {
     /// `catch`: the body went through; on past the handler, to the step
     /// given.
     Tried(usize),
+    /// `do`: takes the limit and the first index; a loop begun, or, with
+    /// the two equal, a jump past it, to the step given.
+    Do(usize),
+    /// `loop`: the index one on; unless it reached the limit, back to the
+    /// body's first step, given.
+    Loop(usize),
+    /// `loop-by`: takes how far the index moves, as `loop` moves it by 1.
+    LoopBy(usize),
 }
 
 /// Whether the code returns from step `at` doing nothing more: it is past
@@ -305,9 +317,24 @@ enum Body {
         handler: usize,
         frames: usize,
         iters: usize,
+        loops: usize,
+        returns: usize,
         building: usize,
         compiling: bool,
     },
+}
+
+/// An open `do` loop: its index and limit, the step after its end, and the
+/// frames, `each` loops and open blocks there were at it, which `leave`
+/// goes back to.
+#[derive(Clone, Copy, Debug)]
+struct Loop {
+    index: i64,
+    limit: i64,
+    exit: usize,
+    frames: usize,
+    iters: usize,
+    marks: usize,
 }
 
 impl Body {
@@ -367,6 +394,14 @@ pub struct Machine<A> {
     /// index in a list, a byte in a string, so each step finds it at once),
     /// and how many frames there were at it.
     iters: Vec<(Sequence<A>, usize, usize)>,
+    /// Each open `do` loop, the innermost last.
+    loops: Vec<Loop>,
+    /// The return stack (`to-return`): values only, never where a word
+    /// returns to.
+    returns: Vec<Value<A>>,
+    /// The digits held so far between `digits-begin` and `digits-end`, the
+    /// last first.
+    digits: String,
     /// What application words give, kept between calls.
     out: Vec<Value<A>>,
     /// Steps taken in all, through every run.
@@ -409,6 +444,9 @@ impl<A: AppValue> Machine<A> {
             locals: Vec::new(),
             marks: Vec::new(),
             iters: Vec::new(),
+            loops: Vec::new(),
+            returns: Vec::new(),
+            digits: String::new(),
             out: Vec::new(),
             steps: 0,
             chars: Vec::new(),
@@ -504,6 +542,9 @@ impl<A: AppValue> Machine<A> {
         self.stack.clear();
         self.marks.clear();
         self.iters.clear();
+        self.loops.clear();
+        self.returns.clear();
+        self.digits.clear();
         self.building.clear();
         self.compiling = false;
         self.last = None;
@@ -582,6 +623,8 @@ impl<A: AppValue> Machine<A> {
                 handler,
                 frames,
                 iters,
+                loops,
+                returns,
                 building,
                 compiling,
                 ..
@@ -600,6 +643,8 @@ impl<A: AppValue> Machine<A> {
         }
         self.stack.truncate(depth);
         self.iters.truncate(iters);
+        self.loops.truncate(loops);
+        self.returns.truncate(returns);
         self.building.truncate(building);
         self.compiling = compiling;
         self.jump(handler);
@@ -855,6 +900,7 @@ impl<A: AppValue> Machine<A> {
                     }
                     Op::Leave => {
                         self.iters.retain(|(.., frames)| *frames < depth);
+                        self.loops.retain(|l| l.frames < depth);
                         while self.marks.last().is_some_and(|(_, b)| b.frames() >= depth) {
                             self.marks.pop();
                         }
@@ -924,6 +970,8 @@ impl<A: AppValue> Machine<A> {
                             handler: *handler,
                             frames: depth,
                             iters: self.iters.len(),
+                            loops: self.loops.len(),
+                            returns: self.returns.len(),
                             building: self.building.len(),
                             compiling: self.compiling,
                         };
@@ -932,6 +980,13 @@ impl<A: AppValue> Machine<A> {
                     Op::Tried(out) => {
                         self.marks.pop();
                         *step = *out;
+                    }
+                    Op::Do(exit) => self.start_loop(*exit, depth)?,
+                    Op::Loop(body) => self.next_loop(1, *body),
+                    Op::LoopBy(body) => {
+                        let by = self.pop()?;
+                        let by = self.int(Builtin::LoopBy, by)?;
+                        self.next_loop(by, *body);
                     }
                 }
             }
@@ -967,6 +1022,75 @@ impl<A: AppValue> Machine<A> {
             via,
             locals: base,
         });
+    }
+
+    /// `do`: the limit and the first index taken, and a loop begun at the
+    /// step after, in the frame `frames` deep; with the two equal, none,
+    /// and on at `exit`, past its end.
+    #[inline(never)]
+    fn start_loop(&mut self, exit: usize, frames: usize) -> Result<(), Error> {
+        self.depth(2)?;
+        let [limit, index] = self.moved();
+        let (limit, index) = (self.int(Builtin::Do, limit)?, self.int(Builtin::Do, index)?);
+        if index == limit {
+            self.jump(exit);
+            return Ok(());
+        }
+        let (iters, marks) = (self.iters.len(), self.marks.len());
+        self.loops.push(Loop {
+            index,
+            limit,
+            exit,
+            frames,
+            iters,
+            marks,
+        });
+        Ok(())
+    }
+
+    /// `loop` and `loop-by`: the innermost loop's index moved `by`, and
+    /// back to `body`, unless it crossed from just under the limit to the
+    /// limit, or, moving down, from the limit to just under it, as Forth's
+    /// `+loop` does: then the loop ends.
+    #[inline(never)]
+    fn next_loop(&mut self, by: i64, body: usize) {
+        let Some(running) = self.loops.last_mut() else {
+            return;
+        };
+        let was = running.index.wrapping_sub(running.limit);
+        let now = was.wrapping_add(by);
+        running.index = running.index.wrapping_add(by);
+        if (was ^ now) < 0 && (now ^ by) >= 0 {
+            self.loops.pop();
+        } else {
+            self.jump(body);
+        }
+    }
+
+    /// The `nth` innermost `do` loop of the code running (0 for the
+    /// innermost), for `word`, which goes in that many loops and one.
+    fn running_loop(&self, nth: usize, word: Builtin) -> Result<Loop, Error> {
+        let depth = self.frames.len();
+        let mut ours = self.loops.iter().rev().take_while(|l| l.frames == depth);
+        ours.nth(nth).copied().ok_or_else(|| {
+            let what = if nth == 0 {
+                "a do … loop"
+            } else {
+                "a do … loop in another"
+            };
+            self.fail(Code::NotTopLevel, format!("{} goes in {what}", word.name()))
+        })
+    }
+
+    /// `leave`: the innermost loop ended, and the `each` loops and blocks
+    /// begun in it, and on past its end.
+    fn leave_loop(&mut self) -> Result<(), Error> {
+        let running = self.running_loop(0, Builtin::Leave)?;
+        self.loops.pop();
+        self.iters.truncate(running.iters);
+        self.marks.truncate(running.marks);
+        self.jump(running.exit);
+        Ok(())
     }
 
     /// The innermost code frame's `let` name in `slot`.
@@ -1109,6 +1233,40 @@ impl<A: AppValue> Machine<A> {
                 Err(self.fail(Code::Type, Wants::Flag.not(other.kind(), false)))
             }
         }
+    }
+
+    /// `value` as an integer, for `word`.
+    fn int(&self, word: Builtin, value: Value<A>) -> Result<i64, Error> {
+        let app = matches!(value, Value::App(_));
+        Int::of(value).map_err(|got| self.refused(Int::wants(word), got, app))
+    }
+
+    /// The character with code `n`.
+    fn character(&self, n: i64) -> Result<char, Error> {
+        let c = u32::try_from(n).ok().and_then(char::from_u32);
+        c.ok_or_else(|| self.fail(Code::Range, format!("{n} is no character code")))
+    }
+
+    /// `word` on two booleans, `logical`, or on two integers, `bits`.
+    fn logic(
+        &mut self,
+        word: Builtin,
+        (a, b): (Value<A>, Value<A>),
+        logical: fn(bool, bool) -> bool,
+        bits: fn(i64, i64) -> i64,
+    ) -> Result<(), Error> {
+        let value = match (a, b) {
+            (Value::Bool(a), Value::Bool(b)) => Value::Bool(logical(a, b)),
+            (Value::Int(a), Value::Int(b)) => Value::Int(bits(a, b)),
+            (a, b) => {
+                let app = matches!(a, Value::App(_)) || matches!(b, Value::App(_));
+                let got = format!("{} and {}", a.kind(), b.kind());
+                let wants = Wants::Takes(word, "two booleans or two integers");
+                return Err(self.refused(Some(wants), &got, app));
+            }
+        };
+        self.push(value);
+        Ok(())
     }
 
     /// `n` as `word`'s count: 0 or more.
@@ -1699,6 +1857,70 @@ builtins! { m host;
         "integer division, truncating toward zero; by zero it fails" {
         m.divided(a, b)
     }
+    MulDivMod "mul-div-mod" [cold] (n: Int, k: Int, d: Int) "n k d -- r q"
+        "n times k divided by d, the product kept exact: the remainder and the quotient, truncating toward zero; by zero it fails" {
+        // Past 128 bits no product of two integers goes, and a remainder
+        // is smaller than d; a quotient past 64 bits wraps around.
+        let (product, d) = (i128::from(n).wrapping_mul(i128::from(k)), i128::from(d));
+        let (Some(r), Some(q)) = (product.checked_rem(d), product.checked_div(d)) else {
+            return Err(m.fail(Code::DivByZero, "division by zero"));
+        };
+        let r = i64::try_from(r).unwrap_or(0);
+        let q = u64::try_from(q.cast_unsigned() & u128::from(u64::MAX)).unwrap_or(0);
+        m.push(Value::Int(r));
+        m.push(Value::Int(q.cast_signed()));
+        Ok(())
+    }
+    And "and" [cold] (a: Any, b: Any) "a b -- x"
+        "whether both are true (both worked out first); of two integers, the bits set in both" {
+        m.logic(Builtin::And, (a, b), |a, b| a & b, |a, b| a & b)
+    }
+    Or "or" [cold] (a: Any, b: Any) "a b -- x"
+        "whether either is true (both worked out first); of two integers, the bits set in either" {
+        m.logic(Builtin::Or, (a, b), |a, b| a | b, |a, b| a | b)
+    }
+    Xor "xor" [cold] (a: Any, b: Any) "a b -- x"
+        "whether one is true and the other not; of two integers, the bits set in one only" {
+        m.logic(Builtin::Xor, (a, b), |a, b| a ^ b, |a, b| a ^ b)
+    }
+    Invert "invert" [cold] (x: Any) "x -- x" "the other boolean; of an integer, every bit flipped" {
+        let flipped = match x {
+            Value::Bool(b) => Value::Bool(!b),
+            Value::Int(n) => Value::Int(!n),
+            other @ (Value::Str(_)
+            | Value::List(_)
+            | Value::App(_)
+            | Value::Xt(_)
+            | Value::Mark(_)
+            | Value::Failure(_)) => {
+                let app = matches!(other, Value::App(_));
+                let wants = Wants::Takes(Builtin::Invert, "a boolean or an integer");
+                return Err(m.refused(Some(wants), other.kind(), app));
+            }
+        };
+        m.push(flipped);
+        Ok(())
+    }
+    ShiftLeft "shift-left" [cold] (n: Int, u: Int) "n u -- n"
+        "n's bits moved u places up, 0s coming in (past 63 places, 0)" {
+        let u = u32::try_from(m.count(Builtin::ShiftLeft, u)?).unwrap_or(u32::MAX);
+        let moved = n.cast_unsigned().checked_shl(u).unwrap_or(0);
+        m.push(Value::Int(moved.cast_signed()));
+        Ok(())
+    }
+    ShiftRight "shift-right" [cold] (n: Int, u: Int) "n u -- n"
+        "n's bits moved u places down, 0s coming in at the top (past 63 places, 0)" {
+        let u = u32::try_from(m.count(Builtin::ShiftRight, u)?).unwrap_or(u32::MAX);
+        let moved = n.cast_unsigned().checked_shr(u).unwrap_or(0);
+        m.push(Value::Int(moved.cast_signed()));
+        Ok(())
+    }
+    Within "within" [cold] (x: Int, lo: Int, hi: Int) "x lo hi -- flag"
+        "whether x is from lo up to before hi; with hi below lo, whether it is outside hi up to before lo" {
+        let inside = x.wrapping_sub(lo).cast_unsigned() < hi.wrapping_sub(lo).cast_unsigned();
+        m.push(Value::Bool(inside));
+        Ok(())
+    }
     Lt "lt" (a: Any, b: Any) "a b -- a<b"
         "whether a comes before b: two integers, two strings or two lists" {
         let order = compare(&a, &b).ok_or_else(|| m.fail(Code::Type, unordered(&a, &b)))?;
@@ -1759,10 +1981,64 @@ builtins! { m host;
         Ok(())
     }
     Char "char" (n: Int) "c -- s" "the one-character string of the character with code c" {
-        let c = u32::try_from(n).ok().and_then(char::from_u32);
-        let c = c.ok_or_else(|| m.fail(Code::Range, format!("{n} is no character code")))?;
+        let c = m.character(n)?;
         let c = m.char(c);
         m.push(c);
+        Ok(())
+    }
+    Depth "depth" [cold] () "-- n"
+        "how many values the stack has (in list … end or try … catch, above where it began)" {
+        let floor = m.marks.last().map_or(0, |(at, _)| *at);
+        let n = m.stack.len().saturating_sub(floor);
+        m.push(Value::Int(i64::try_from(n).unwrap_or(i64::MAX)));
+        Ok(())
+    }
+    ToReturn "to-return" [cold] (x: Any) "x --" "x moved to the return stack, which holds values only" {
+        m.returns.push(x);
+        Ok(())
+    }
+    FromReturn "from-return" [cold] () "-- x" "the return stack's top value moved back" {
+        let x = m.returns.pop();
+        let x = x.ok_or_else(|| m.fail(Code::StackUnderflow, "the return stack is empty"))?;
+        m.push(x);
+        Ok(())
+    }
+    CopyReturn "copy-return" [cold] () "-- x" "a copy of the return stack's top value" {
+        let x = m.returns.last().cloned();
+        let x = x.ok_or_else(|| m.fail(Code::StackUnderflow, "the return stack is empty"))?;
+        m.push(x);
+        Ok(())
+    }
+    I "i" [cold] () "-- n" "in a do … loop: its index" {
+        let index = m.running_loop(0, Builtin::I)?.index;
+        m.push(Value::Int(index));
+        Ok(())
+    }
+    J "j" [cold] () "-- n" "in a do … loop in another: the outer loop's index" {
+        let index = m.running_loop(1, Builtin::J)?.index;
+        m.push(Value::Int(index));
+        Ok(())
+    }
+    Leave "leave" [cold] () "--" "in a do … loop: end it now, going on after its loop"
+        { m.leave_loop() }
+    DigitsBegin "digits-begin" [cold] () "--"
+        "begin a number's text: digit, digits, hold, holds and sign put characters before it, and digits-end gives it" {
+        m.digits.clear();
+        Ok(())
+    }
+    Hold "hold" [cold] (n: Int) "c --" "the character with code c put before the text digits-end gives" {
+        let c = m.character(n)?;
+        m.digits.push(c);
+        Ok(())
+    }
+    Holds "holds" [cold] (s: Str) "s --" "s put before the text digits-end gives" {
+        m.digits.extend(s.chars().rev());
+        Ok(())
+    }
+    DigitsEnd "digits-end" [cold] (_n: Int) "n -- s" "n dropped, and the text put together since digits-begin" {
+        let text: String = m.digits.chars().rev().collect();
+        m.digits.clear();
+        m.push(Value::str(text));
         Ok(())
     }
     Kind "kind" (x: Any) "x -- name" "integer, boolean, string, list, xt, or the host's kind" {
@@ -1784,8 +2060,7 @@ builtins! { m host;
         m.written(host, &text)
     }
     Emit "emit" [cold] (n: Int) "c --" "write the character with code c now" {
-        let c = u32::try_from(n).ok().and_then(char::from_u32);
-        let c = c.ok_or_else(|| m.fail(Code::Range, format!("{n} is no character code")))?;
+        let c = m.character(n)?;
         m.written(host, c.encode_utf8(&mut [0; 4]))
     }
     Fail "fail" (x: Any) "x --" "stop the program, with x as the reason" {
@@ -1857,9 +2132,32 @@ builtins! { m host;
     Else "else" [immediate] () "--" "flag if … else … then: the part run when flag is false"
         { m.otherwise() }
     Then "then" [immediate] () "--" "flag if … else … then: closes it" { m.then() }
-    Begin "begin" [immediate] () "--" "begin … flag until: the body until flag is true"
+    Begin "begin" [immediate] () "--"
+        "begin … flag until: the body until flag is true; begin … flag while … end, begin … again"
         { m.open(crate::reader::Construct::Begin) }
     Until "until" [immediate] () "flag --" "begin … flag until: closes it" { m.until() }
+    While "while" [immediate] () "flag --"
+        "begin … flag while … end: while flag is true, the part after while, then begin's again"
+        { m.test_loop() }
+    Again "again" [immediate] () "--"
+        "begin … again: closes it, the body run for ever (until leave-definition or a failure)"
+        { m.again() }
+    Do "do" [immediate] () "limit first --"
+        "limit first do … loop: the body for each index from first up to before limit, none when the two are equal; i gives it"
+        { m.open(crate::reader::Construct::Do) }
+    Loop "loop" [immediate] () "--" "limit first do … loop: closes it, the index 1 on each time"
+        { m.close_loop(Op::Loop) }
+    LoopBy "loop-by" [immediate] () "n --"
+        "limit first do … n loop-by: closes it, the index n on each time, until it crosses from under the limit to it"
+        { m.close_loop(Op::LoopBy) }
+    Case "case" [immediate] () "x --"
+        "x case v of … end … end: the part after the first v equal to x, x dropped; else the part before the last end, which drops x"
+        { m.open(crate::reader::Construct::Case) }
+    Of "of" [immediate] () "x v -- | x"
+        "x case v of … end … end: when v equals x, x dropped and the part to of's end, then on after the case's"
+        { m.of() }
+    Ahead "ahead" [immediate] () "--" "ahead … then: a jump past the words up to then"
+        { m.open(crate::reader::Construct::Ahead) }
     List "list" [immediate] () "-- list"
         "list … end: a list of the values its body leaves; the body starts with an empty stack"
         { m.open(crate::reader::Construct::List) }
