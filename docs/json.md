@@ -262,11 +262,16 @@ status naming the whole.
 
 ## `next-events` and `events`
 
-`SCOPE str CURSOR SECONDS next-events` returns one immutable record:
+`SCOPE str CURSOR SECONDS next-events` returns one immutable record; its
+`json`, and its fields with `get`, are all of it:
 
 ```json
 {"events":[{"event":"bell","pane":"%3","tab":"@2","workspace":"+2","origin":{"kind":"program","pane":"%3","generation":0},"next":"42:7-1f"}],"next":"42:7-1f","missed":0,"status":"continuing","reason":null}
 ```
+
+Left at a command line's end, it prints its events alone, a JSON object a
+line (none: nothing); one with `missed` above 0 is refused there, on
+stderr (`fail`, exit 1).
 
 The scope is a pane, tab, workspace, client, or `all`. An empty cursor starts
 at the journal's current end; otherwise use `SEQ:RUN`, from a snapshot's

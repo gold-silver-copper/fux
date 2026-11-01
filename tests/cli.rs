@@ -699,6 +699,70 @@ fn a_closed_pipe_ends_fux_quietly() -> Outcome {
     Ok(())
 }
 
+/// An action acts though stdout's reader is already gone: the closed pipe
+/// is met as its answer is written (141), never before it asks. A wait or
+/// stream meets it as it waits, caught or not.
+#[test]
+fn an_action_acts_though_stdout_is_closed() -> Outcome {
+    let server = Server::start("")?;
+    let closed = |args: &[&str]| -> Result<std::process::Output, String> {
+        let (reader, writer) = std::io::pipe().map_err(e)?;
+        drop(reader);
+        std::process::Command::new(fux())
+            .args(args)
+            .env("FUX_SOCKET", &server.socket)
+            .env_remove("FUX_PANE")
+            .stdout(writer)
+            .output()
+            .map_err(e)
+    };
+    let renamed = closed(&["%1", "str", "renamed", "rename"])?;
+    assert_eq!(renamed.status.code(), Some(0));
+    assert_eq!(server.ok(&["str", "renamed", "pane"])?, "%1\n");
+    let launch = [
+        "agent-opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "sh",
+        "program",
+        "new-tab",
+    ];
+    let made = closed(&launch)?;
+    assert_eq!(made.status.code(), Some(141));
+    assert_eq!(
+        server.ok(&["str", "agent", "workspace", "panes", "len"])?,
+        "1\n"
+    );
+    let caught = "str output try all str '' events catch 2drop end";
+    let stream = closed(&[caught])?;
+    assert_eq!(stream.status.code(), Some(141));
+    assert_eq!(String::from_utf8_lossy(&stream.stderr), "");
+    Ok(())
+}
+
+/// A batch `next-events` leaves prints as its events, a JSON object a line:
+/// nothing when none came; `json` gives all of it.
+#[test]
+fn a_batch_left_prints_its_events() -> Outcome {
+    let server = Server::start("")?;
+    let idle = server.fux(&["all", "str", "", "0", "next-events"])?;
+    assert_eq!((idle.status, idle.stdout.as_str()), (0, ""));
+    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
+    server.ok(&["%1", "str", "told", "rename"])?;
+    let read = ["all", "str", cursor.trim(), "0", "next-events"];
+    let events = server.ok(&read)?;
+    assert!(
+        matches!(&events.lines().collect::<Vec<_>>()[..], [one]
+            if one.starts_with(r#"{"event":"renamed""#) && one.contains(r#""next":""#)),
+        "{events}"
+    );
+    let whole = server.ok(&[&read[..], &["json"]].concat())?;
+    assert!(whole.starts_with(r#"{"events":[{"#) && whole.contains(r#""missed":0"#));
+    Ok(())
+}
+
 /// A stop between requests ends the run, not the connection: the next
 /// run's request is asked on it, as one after a stop under way is asked on
 /// a new one.

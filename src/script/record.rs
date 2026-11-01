@@ -13,6 +13,8 @@ type V = Value<Fux>;
 pub struct Record {
     pub(super) fields: Vec<(String, V)>,
     pub(super) of: Option<Run>,
+    /// A `next-events` batch, which the command line prints as its events.
+    batch: bool,
 }
 
 impl PartialEq for Record {
@@ -34,6 +36,17 @@ impl Record {
                 )
             })
     }
+    /// What the command line prints of it, if not itself: a batch's
+    /// events alone; a batch that missed entries, refused.
+    pub(super) fn printed_events(&self) -> Result<Option<V>, Failure> {
+        if !self.batch {
+            return Ok(None);
+        }
+        match self.get("missed")? {
+            Value::Int(missed) if missed > 0 => Err(missed_entries(missed)),
+            _ => self.get("events").map(Some),
+        }
+    }
     pub(super) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         out.write_char('{')?;
         for (i, (key, value)) in self.fields.iter().enumerate() {
@@ -46,6 +59,15 @@ impl Record {
         }
         out.write_char('}')
     }
+}
+
+/// Journal entries lost before a cursor, which the reader must resnapshot
+/// for, as `events` says too.
+fn missed_entries(missed: i64) -> Failure {
+    Failure::new(
+        fuxth::Code::Fail,
+        format!("{missed} journal entries missed; resnapshot before continuing"),
+    )
 }
 
 fn fail() -> Failure {
@@ -98,7 +120,12 @@ impl Builder {
         self.finish(out, None)
     }
     fn finish(&mut self, fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
-        Ok(Value::App(Fux::Record(Rc::new(Record { fields, of }))))
+        let batch = false;
+        Ok(Value::App(Fux::Record(Rc::new(Record {
+            fields,
+            of,
+            batch,
+        }))))
     }
     fn json(&mut self, value: &Json, depth: u8) -> Result<V, Failure> {
         if depth >= inspect::DEPTH {
@@ -206,13 +233,20 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
     let next = b.text(&batch.next.to_string())?;
     let status = b.text(batch.status.name())?;
     let reason = b.optional(reason)?;
-    b.record([
+    let fields = [
         ("events", events),
         ("next", next),
         ("missed", number(batch.missed)?),
         ("status", status),
         ("reason", reason),
-    ])
+    ];
+    let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
+    let record = Record {
+        fields,
+        of: None,
+        batch: true,
+    };
+    Ok(Value::App(Fux::Record(Rc::new(record))))
 }
 
 macro_rules! record {

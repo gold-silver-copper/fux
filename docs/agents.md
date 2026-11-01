@@ -190,7 +190,8 @@ panes as it begins and answers changes in watch order, not exit chronology.
   exit; group waits do not give exit chronology. Lost entries (`missed`)
   fail it on stderr: resnapshot. Events invalidate state, and do not
   replicate live OS facts. `all str CURSOR SECONDS next-events` returns one
-  batch: its events, exact `next`, `missed` and status.
+  batch: its events, exact `next`, `missed` and status (`json`); left at
+  the end, it prints its events alone, and fails on `missed`.
 
   ```sh
   C=$(fux all str '' 0 next-events str next get)

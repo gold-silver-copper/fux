@@ -1572,8 +1572,9 @@ pub fn main(
     };
     let mut left = Vec::new();
     match ran(args, argv, &mut out, acted, &mut left) {
-        // Its reader gone, fux ends quietly, whatever the program did then.
-        Err(_) if closed.get() => Ok(PIPE),
+        // Its reader gone, fux ends quietly, whatever the program did then,
+        // failed or caught it and went on.
+        _ if closed.get() => Ok(PIPE),
         // stdout holds only what the program printed. Why it failed goes to
         // stderr, then what the words before the failure left, their
         // answers; nowhere is left to say that stderr failed.
@@ -1676,15 +1677,22 @@ fn output_failed(error: io::Error) -> Failed {
 }
 
 /// Writes a value left on the stack, without holding a second whole copy:
-/// a list an item a line, a list in it as one line of JSON. An empty
-/// string, list, capture or answer of no panes writes nothing, and options
-/// or a request nothing; an empty string in a list is a blank line.
+/// a list an item a line, a list in it as one line of JSON; a `next-events`
+/// batch its events, refused if it missed entries. An empty string, list,
+/// capture or answer of no panes writes nothing, and options or a request
+/// nothing; an empty string in a list is a blank line.
 fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
     match value {
         Value::List(list) => list.items().iter().try_for_each(|item| line(out, item)),
         Value::Str(text) if text.is_empty() => Ok(()),
         Value::App(Fux::Answer(answer, _)) if answer.is_empty() => Ok(()),
         Value::App(Fux::Opts(_)) => Ok(()),
+        Value::App(Fux::Record(record)) => {
+            match (record.printed_events()).map_err(|f| Failed::new(Code::of(f.code), f.message))? {
+                Some(events) => written(out, &events),
+                None => line(out, value),
+            }
+        }
         Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => line(out, value),
     }
 }
@@ -2109,6 +2117,55 @@ pub(crate) mod tests {
         let program = "list 1 str '' list 2 str x end end str '' list end 3";
         assert_eq!(super::main(&[program.into()], None, &mut out)?, 0);
         assert_eq!(String::from_utf8(out)?, "1\n\n[2,\"x\"]\n3\n");
+        Ok(())
+    }
+
+    /// A closed pipe a program caught still ends it with `PIPE`.
+    #[test]
+    fn a_caught_closed_pipe_still_ends_quietly() -> TestResult {
+        struct Closed;
+        impl std::io::Write for Closed {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let program = "str output try str x print catch 2drop end";
+        assert_eq!(
+            super::main(&[program.into()], None, &mut Closed)?,
+            super::PIPE
+        );
+        Ok(())
+    }
+
+    /// A batch that missed entries is refused as it is printed, and nothing
+    /// of it written; one with none is its events alone.
+    #[test]
+    fn a_batch_left_that_missed_entries_is_refused() -> TestResult {
+        use fux_wire::events::{Batch, Status};
+        let next = "1:1-0".parse().map_err(|()| "cursor")?;
+        for (missed, written) in [(2, None), (0, Some(""))] {
+            let batch = Batch {
+                next,
+                missed,
+                status: Status::Timeout,
+                events: Vec::new(),
+            };
+            let mut out = Vec::new();
+            let printed = super::written(
+                &mut out,
+                &super::record::events(batch).map_err(|f| f.message)?,
+            );
+            let said = printed.map_err(|f| f.to_string());
+            match written {
+                Some(text) => assert_eq!(String::from_utf8(out)?, text),
+                None => assert!(
+                    out.is_empty() && said.is_err_and(|e| e.contains("2 journal entries missed")),
+                ),
+            }
+        }
         Ok(())
     }
 

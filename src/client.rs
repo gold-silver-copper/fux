@@ -11,7 +11,8 @@ use fux_vt::keys::{Key, KeyPress, Modifiers};
 use fux_wire::act::Act;
 use fux_wire::code::Code;
 #[cfg(test)]
-use fux_wire::command::{Command, Request};
+use fux_wire::command::Command;
+use fux_wire::command::Request;
 use fux_wire::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
     Reply, Role, ToAttached, ToCommand,
@@ -299,10 +300,13 @@ impl Requests {
     }
 
     /// Sends one request and reads its reply in pieces. With `out`, a
-    /// command line's: if stdout's reader goes while it waits (a closed
-    /// pipe: `fux all str '' events | head -1`), it is set, and the request
-    /// fails.
+    /// command line's: if stdout's reader goes while a wait or an event
+    /// read waits (a closed pipe: `fux all str '' events | head -1`), it is
+    /// set, and the wait fails. An action is never stopped so: it acts, and
+    /// a closed pipe is met as its answer is written, as `cat` meets one.
     pub fn ask(&mut self, asked: &Asked, out: Option<&Cell<bool>>) -> Result<Reply, Error> {
+        let waits = matches!(asked.request, Request::Wait(_) | Request::NextEvents { .. });
+        let out = out.filter(|_| waits);
         wait_at_most(&self.stream, None);
 
         send(&mut self.stream, asked)?;
@@ -339,18 +343,27 @@ impl Requests {
 }
 
 /// Waits until the server sends more on `stream`, or stdout's reader is
-/// gone (a pipe's: the system says `POLLERR`), and says which.
+/// gone, and says which. Only a pipe's is watched: its reader gone, Linux
+/// says `POLLERR`, and macOS, asked for `POLLHUP`, says that.
 fn reader_gone(stream: &UnixStream) -> Result<bool, Error> {
+    use std::os::fd::AsFd as _;
+    use std::os::unix::fs::FileTypeExt as _;
     let out = io::stdout();
+    let pipe = (out.as_fd().try_clone_to_owned())
+        .and_then(|fd| std::fs::File::from(fd).metadata())
+        .is_ok_and(|meta| meta.file_type().is_fifo());
+    if !pipe {
+        return Ok(false);
+    }
     loop {
         let mut fds = [
             PollFd::new(stream, PollFlags::IN),
-            PollFd::new(&out, PollFlags::NONE),
+            PollFd::new(&out, PollFlags::HUP),
         ];
         match fuxix::poll::poll(&mut fds, None) {
             Ok(_) => {
                 let [_, out] = fds;
-                return Ok(out.revents().intersects(PollFlags::ERR));
+                return Ok(out.revents().intersects(PollFlags::ERR | PollFlags::HUP));
             }
             Err(Errno::INTR) => {}
             Err(e) => return Err(failed("poll")(e)),

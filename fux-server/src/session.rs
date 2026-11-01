@@ -3503,7 +3503,7 @@ pub(crate) mod testing {
         Ok(text)
     }
 
-    fn run_as(
+    pub(crate) fn run_as(
         session: &mut Session,
         client: Option<ClientId>,
         job: &fux::screens::Job,
@@ -8106,7 +8106,7 @@ mod journal_tests {
     use crate::session::testing::TestResult;
     use fux_wire::events::{Actor, Batch};
     use fux_wire::inspect::Scope;
-    use testing::{output, run, started};
+    use testing::{output, run, run_as, started};
 
     fn batch(s: &Session, from: fux_wire::events::Cursor) -> Result<Batch, String> {
         Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
@@ -8265,11 +8265,10 @@ mod journal_tests {
         for _ in 0..kept.get().saturating_add(1) {
             s.output(PaneId::of(1), b"\x07", Instant::now());
         }
-        let failed = output(&mut s, &format!("%1 dup kill str {from} events"));
-        assert!(
-            failed.is_err_and(|e| e.contains("journal entries missed; resnapshot")),
-            "loss fails, printing nothing"
-        );
+        let job = format!("%1 dup kill str {from} events").into();
+        let (printed, failed) = run_as(&mut s, None, &job);
+        assert!(printed.is_empty(), "loss prints nothing");
+        assert!(failed.is_err_and(|e| e.message.contains("journal entries missed; resnapshot")));
         Ok(())
     }
     #[test]
