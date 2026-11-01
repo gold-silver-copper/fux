@@ -400,7 +400,7 @@ fn last_output(screen: &Screen) -> Option<(std::ops::Range<usize>, std::ops::Ran
 /// Where `last-output` reads, for `json`: from `start` up to `end`, each
 /// `[ROW,COL]`, its rows counted from the screen's top (above it, into
 /// history, negative), as pictures' are; a running command's through its
-/// cursor's row; `null` where it reads nothing.
+/// cursor's row; `null` where no command was marked or its rows are gone.
 fn output_range(screen: &Screen) -> Json {
     let Some((rows, cols, ended)) = last_output(screen) else {
         return Json::Null;
