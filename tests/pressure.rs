@@ -34,7 +34,7 @@ fn send_now(server: &Server, pane: &str, keys: &[&str]) -> Outcome {
 /// each closed at once.
 #[test]
 fn a_server_out_of_descriptors_recovers() -> Outcome {
-    let server = Server::start_limited("", Some(64))?;
+    let server = Server::start_limited("", "-n 64")?;
     assert_eq!(server.fux(&["ls"])?.status, 0);
     // A full backlog is refused by the kernel at once, which is fine.
     let connect = || match UnixStream::connect(&server.socket) {

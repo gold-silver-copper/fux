@@ -323,3 +323,38 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
     })?;
     Ok(())
 }
+
+/// A layout as deep as its panes, each a stack of one pane and all the
+/// rest, is laid out by a server on a small stack (`ulimit -s 256`, which
+/// a debug build's recursive layout overflows), for every pane and for a
+/// client shown the deepest, and the server lives.
+#[test]
+fn a_layout_as_deep_as_its_panes_is_laid_out_on_a_small_stack() -> Outcome {
+    const PANES: u32 = 600;
+    let server = Server::start_limited("", "-s 256")?;
+    let stack = "str %1 pane str true program stack drop\n";
+    let stacked: String = std::iter::repeat_n(stack, PANES as usize - 1).collect();
+    let out = server.piped(fux().as_ref(), &["-"], &stacked)?;
+    assert_eq!(out.status, 0, "{}", out.stderr);
+    let revision = server.words("@1 str layout_revision get")?;
+    // stack[%1, stack[%2, … stack[%599, %600]]]: node 2k is a stack of
+    // node 2k+1, pane k+1, and node 2k+2, the rest.
+    let mut nodes = format!("@1 str {} list", revision.trim());
+    for k in 0..PANES - 1 {
+        let (pane, rest) = (2 * k + 1, 2 * k + 2);
+        nodes += &format!(" list str stack list {pane} {rest} end end %{}", k + 1);
+    }
+    nodes += &format!(" %{PANES} end arrange");
+    let out = server.piped(fux().as_ref(), &["-"], &nodes)?;
+    assert_eq!(out.status, 0, "{}", out.stderr);
+    let mut client = server.attach(24, 80)?;
+    client.ready()?;
+    server.words(&format!("str c1 client %{PANES} show"))?;
+    let shown = server.words("str c1 client focused")?;
+    assert_eq!(shown.trim(), format!("%{PANES}"));
+    let pid = server.pid().ok_or("the server's pid")?;
+    assert!(alive(i32::try_from(pid).map_err(e)?), "{}", server.log());
+    let nodes = server.words("@1 str topology snapshot str tabs get first str nodes get len")?;
+    assert_eq!(nodes.trim(), (2 * PANES - 1).to_string());
+    Ok(())
+}
