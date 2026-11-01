@@ -1,0 +1,3 @@
+# FILE's metadata fails with ELOOP, not "no such file", and FILE's own name
+# holds the text that ENOENT's message ends with.
+ln -s 'notes(os error 2)' 'notes(os error 2)'

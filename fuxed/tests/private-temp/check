@@ -1,0 +1,6 @@
+# The refused save left FILE alone, and its temporary copy, written to
+# before it failed, was 0600 from before that write. One test a line, as
+# bash -e runs it.
+[ -s .notes.txt.fuxed-save ]
+[ "$(mode .notes.txt.fuxed-save)" = 600 ]
+[ "$(ls -A | wc -l)" -eq 2 ]

@@ -94,10 +94,12 @@ impl From<Failure> for Stop {
     }
 }
 
-/// The terminal's modes as found, and for keys once `stty` made them.
+/// The terminal's modes as found, and for keys once `stty` made them;
+/// and whether its own modes read a CR typed as a newline (`ICRNL`).
 struct Modes {
     cooked: Termios,
     raw: Option<Termios>,
+    crnl: bool,
 }
 
 pub struct Input {
@@ -117,6 +119,10 @@ pub struct Input {
     held: Vec<u8>,
     /// Bytes read and not yet taken.
     bytes: VecDeque<u8>,
+    /// How many of `bytes`, from the front, the terminal gave in key
+    /// mode, without its own modes' CR to newline: a line read takes a
+    /// CR among them as the newline those modes would have made it.
+    raw_read: usize,
     ended: bool,
     interrupt: Pipe,
     /// SIGTSTP, then each of `ENDING`, caught once the terminal is first
@@ -138,6 +144,7 @@ impl Input {
             keys: VecDeque::new(),
             held: Vec::new(),
             bytes: VecDeque::new(),
+            raw_read: 0,
             ended: false,
             interrupt: Pipe::new(&[Signal::Int]).map_err(|e| errno("catching SIGINT", e))?,
             caught: Vec::new(),
@@ -247,7 +254,7 @@ impl Input {
                 if !input.keys.is_empty() {
                     return Ok(true);
                 }
-                if let Some(byte) = input.bytes.pop_front() {
+                if let Some(byte) = input.take() {
                     input.decode(byte);
                     continue;
                 }
@@ -294,16 +301,23 @@ impl Input {
         self.decoder = Decoder::with_paste_limit(TIMING, usize::MAX);
         for &byte in typed.as_bytes().iter().chain(&held).rev() {
             self.bytes.push_front(byte);
+            // Decoded from what the terminal gave in key mode.
+            if self.terminal {
+                self.raw_read = self.raw_read.saturating_add(1);
+            }
         }
         loop {
-            if let Some((end, newline)) = line_end(&self.bytes, most) {
-                let line: Vec<u8> = (0..end).filter_map(|_| self.bytes.pop_front()).collect();
+            let crnl = self.modes.as_ref().is_some_and(|modes| modes.crnl);
+            let raw = if crnl { self.raw_read } else { 0 };
+            if let Some((end, newline)) = line_end(&self.bytes, most, raw) {
+                let line: Vec<u8> = (0..end).filter_map(|_| self.take()).collect();
                 if newline {
-                    self.bytes.pop_front();
+                    self.take();
                 }
                 return Ok(Some(text(line)?));
             }
             if self.ended {
+                self.raw_read = 0;
                 return match self.bytes.is_empty() {
                     true => Ok(None),
                     false => Ok(Some(text(std::mem::take(&mut self.bytes).into())?)),
@@ -322,7 +336,14 @@ impl Input {
                 self.fill()?;
             }
         }
+        self.raw_read = 0;
         Ok(text(std::mem::take(&mut self.bytes).into())?)
+    }
+
+    /// The next byte read and not yet taken.
+    fn take(&mut self) -> Option<u8> {
+        self.raw_read = self.raw_read.saturating_sub(1);
+        self.bytes.pop_front()
     }
 
     /// The text of the file at `path`, or why there is none. A file that
@@ -394,7 +415,7 @@ impl Input {
             if let Some(key) = self.keys.pop_front() {
                 return Ok(key);
             }
-            if let Some(byte) = self.bytes.pop_front() {
+            if let Some(byte) = self.take() {
                 self.decode(byte);
                 continue;
             }
@@ -462,6 +483,10 @@ impl Input {
                 Ok(n) => {
                     self.ended |= n == 0;
                     self.bytes.extend(buffer.get(..n).unwrap_or_default());
+                    // A key read reads only once every byte is taken.
+                    if self.raw {
+                        self.raw_read = self.bytes.len();
+                    }
                     return Ok(());
                 }
                 Err(Errno::INTR) => self.check()?,
@@ -527,7 +552,12 @@ impl Input {
         if self.modes.is_none() {
             let cooked = attributes(std::io::stdin())
                 .map_err(|e| errno("reading the terminal's modes", e))?;
-            self.modes = Some(Modes { cooked, raw: None });
+            let crnl = crnl()?;
+            self.modes = Some(Modes {
+                cooked,
+                raw: None,
+                crnl,
+            });
             for signal in std::iter::once(Signal::Tstp).chain(ENDING) {
                 let pipe = Pipe::new(&[signal]).map_err(|e| errno("catching a signal", e))?;
                 self.caught.push((signal, pipe));
@@ -577,13 +607,13 @@ impl Drop for Input {
     }
 }
 
-/// Where the line at the start of `bytes` ends: before its newline, or
-/// before its character past `most`; and whether a newline ends it. None
-/// while neither is there yet.
-fn line_end(bytes: &VecDeque<u8>, most: usize) -> Option<(usize, bool)> {
+/// Where the line at the start of `bytes` ends: before its newline (or a
+/// CR among the first `raw`), or before its character past `most`; and
+/// whether a newline ends it. None while neither is there yet.
+fn line_end(bytes: &VecDeque<u8>, most: usize, raw: usize) -> Option<(usize, bool)> {
     let mut chars = 0usize;
     for (at, &byte) in bytes.iter().enumerate() {
-        if byte == b'\n' {
+        if byte == b'\n' || (byte == b'\r' && at < raw) {
             return Some((at, true));
         }
         // A character starts at any byte but a UTF-8 continuation.
@@ -597,11 +627,30 @@ fn line_end(bytes: &VecDeque<u8>, most: usize) -> Option<(usize, bool)> {
     None
 }
 
+/// Whether the terminal on stdin reads a CR typed as a newline, as
+/// `stty -a` says (`icrnl` or `-icrnl`).
+fn crnl() -> Result<bool, Failure> {
+    let ran = std::process::Command::new("stty")
+        .arg("-a")
+        .stdin(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| Failure::new(Code::Host(IO), format!("stty -a: {e}")))?;
+    if !ran.status.success() {
+        let said = String::from_utf8_lossy(&ran.stderr);
+        return Err(Failure::new(
+            Code::Host(IO),
+            format!("stty -a: {}", said.trim()),
+        ));
+    }
+    let said = String::from_utf8_lossy(&ran.stdout);
+    Ok(said.split_whitespace().any(|flag| flag == "icrnl"))
+}
+
 /// Puts the terminal on stdin in key mode, as `stty` does it.
 fn stty() -> Result<(), Failure> {
     let ran = std::process::Command::new("stty")
         .args([
-            "-icanon", "-echo", "-iexten", "-ixon", "min", "1", "time", "0",
+            "-icanon", "-echo", "-iexten", "-ixon", "-icrnl", "min", "1", "time", "0",
         ])
         .stdin(std::process::Stdio::inherit())
         .output()

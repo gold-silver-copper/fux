@@ -352,6 +352,23 @@ impl Drop for Terminal {
 }
 
 #[test]
+fn a_line_read_after_a_key_on_a_terminal_ends_at_enter() -> Outcome {
+    let dir = dir("line")?;
+    std::fs::write(dir.join("line.fux"), "read-key print 99 accept print").map_err(e)?;
+    let mut keys = Terminal::start(&dir, &["line.fux"])?;
+    keys.wait_until_keys()?;
+    keys.type_in("\r")?;
+    assert_eq!(keys.wait_for("13\r\n")?, "13\r\n");
+    // The line is the terminal's to echo, and Enter ends it.
+    keys.type_in("hello\r")?;
+    let echoed = "hello\r\nhello\r\n";
+    assert_eq!(keys.wait_for(echoed)?, echoed);
+    let status = keys.child.wait().map_err(e)?;
+    assert!(status.success(), "{status:?}");
+    Ok(())
+}
+
+#[test]
 fn an_ending_signal_puts_the_terminal_back() -> Outcome {
     let dir = dir("ending")?;
     std::fs::write(dir.join("keys.fux"), "begin read-key drop false until").map_err(e)?;
@@ -446,6 +463,22 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
     repl.wait_until_keys()?;
     repl.type_in("\x1b[A")?;
     assert_eq!(repl.wait_for("ok\r\n")?, "1114112\r\nok\r\n");
+    // Enter reads as the 13 a terminal sends, though the terminal's own
+    // modes turn it into a newline, which ends this line.
+    repl.type_in("read-key print\r")?;
+    repl.wait_for("read-key print\r\n")?;
+    repl.wait_until_keys()?;
+    repl.type_in("\r")?;
+    assert_eq!(repl.wait_for("ok\r\n")?, "13\r\nok\r\n");
+    // A key typed ahead with the lines after it, which the key read reads
+    // with it: each line still ends at its Enter, for `accept` and for the
+    // REPL's next line.
+    repl.type_in("read-key print 99 accept print\r")?;
+    repl.wait_for("read-key print 99 accept print\r\n")?;
+    repl.wait_until_keys()?;
+    repl.type_in("xhello\r1 2 add print\r")?;
+    let ahead = "120\r\nhello\r\nok\r\n3\r\nok\r\n";
+    assert_eq!(repl.wait_for(ahead)?, ahead);
     repl.type_in("\x04")?;
     let status = repl.child.wait().map_err(e)?;
     assert!(status.success(), "{status:?}");
