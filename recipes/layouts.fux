@@ -1,0 +1,42 @@
+# Layout presets: `require recipes/layouts.fux`, then `@2 even-h`; `arrange`
+# refuses one if the tab changed since its observation.
+# panes way alternate start -- nodes : balanced flat nodes with absolute child indices from start; leaves share room by pane count
+define layout-of
+  let start let alternate let way let ps
+  ps len let n
+  n 1 eq if list ps first end else
+    n 2 div let a n a sub let b
+    alternate if
+      way str horizontal eq if str vertical else str horizontal then
+    else way then let next-way
+    list list way a b start 1 add start a 2 mul add end end
+    ps 0 a slice next-way alternate start 1 add recurse cat
+    ps a n slice next-way alternate start a 2 mul add recurse cat
+  then
+end
+# panes way cross -- nodes : first pane takes two shares, the rest one, evenly along cross
+define main-of
+  let cross let way let ps
+  ps len 1 eq if list ps first end else
+    list list way 2 1 1 2 end ps first end
+    ps 1 ps len slice cross false 2 layout-of cat
+  then
+end
+# tab -- tab revision panes : one topology observation's tab, revision and panes in tree order
+define layout-current
+  str tab str 'a tab' assert-kind str topology snapshot let observed
+  observed str tabs get first let tab
+  tab str id get tab str layout_revision get
+  list observed str panes get each str id get end end
+end
+# tab -- : arrange its current panes side by side, with equal shares
+define even-h layout-current str horizontal false 0 layout-of arrange end
+# tab -- : arrange its current panes above one another, with equal shares
+define even-v layout-current str vertical false 0 layout-of arrange end
+# tab -- : first current pane above an equal-share row, taking two shares against its one
+define main-h layout-current str vertical str horizontal main-of arrange end
+# tab -- : first current pane beside an equal-share column, taking two shares against its one
+define main-v layout-current str horizontal str vertical main-of arrange end
+# tab -- : arrange its current panes in balanced tiles, alternating axes
+define tiled layout-current str horizontal true 0 layout-of arrange end
+hide layout-of hide main-of hide layout-current

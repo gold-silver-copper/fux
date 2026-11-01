@@ -37,14 +37,15 @@ pub fn pane(
         .0
         .skip(selection.start)
         .take(selection.len());
-    let mut state = state(pane)?;
+    let mut fields = vec![("title", Json::str(pane.title().as_str()))];
+    fields.extend(state(pane)?);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
-    state.push(("above", above.map_or(Json::Null, Json::count)));
+    fields.push(("above", above.map_or(Json::Null, Json::count)));
     let of = Of::Pane {
         version: pane.version(run),
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
-        state: state.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+        state: fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
     };
     Ok(build(read, of, (screen.size().into(), cursor), view))
 }
@@ -424,7 +425,6 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
             .ok()
             .flatten()
     });
-    let launch_argv = Json::Array(pane.runs.launch().argv.iter().map(Json::str).collect());
     let last_status = screen.commands().last_status;
 
     let (exited, signal) = match pane.process().exit_status() {
@@ -463,12 +463,10 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
         .map(|e| e.message(&mut Memory))
         .transpose()?;
     let values = [
-        ("title", Json::str(pane.title().as_str())),
         (
             "foreground_group",
             group.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
         ),
-        ("launch_argv", launch_argv),
         // Its program closed its terminal and runs on: nothing reads keys
         // there (the terminal hung up; Linux says so).
         ("hung_up", Json::Bool(hung_up)),
@@ -476,7 +474,6 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
         ("exited", exited),
         ("signal", signal),
         ("alt_screen", Json::Bool(screen.mode(Mode::AlternateScreen))),
-        ("mouse", Json::Bool(mouse != MouseProtocolMode::None)),
         // What it asked for: whether a move without a button is reported.
         (
             "mouse_mode",

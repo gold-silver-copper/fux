@@ -18,7 +18,7 @@ fux                               # attach, starting a server if none runs
 
 ## Using it
 
-`fux` alone runs `default-attach` (`opts attach`), starting a server in the
+`fux` alone runs `opts attach`, starting a server in the
 background if none answers. `fux opts str work in attach` attaches to workspace
 `work`; `fux @2 attach` shows a tab's first pane in layout order, and
 `fux %3 attach` focuses that pane. Explicit targets must exist.
@@ -117,7 +117,7 @@ values from a stack and leaving its own.
 
 ```sh
 fux ls listing                                    # what there is
-A=$(fux agent-opts 80 24 size str htop program new-tab)     # start htop: %3:0.0.0.0.0:RUN, its version
+A=$(fux opts str agent in 80 24 size str htop program new-tab)     # start htop: %3:0.0.0.0.0:RUN, its version
 fux str "$A" changed wait                         # until it differs: %3:0.412.0.0.0:RUN screen
 fux %3 capture                                    # its screen
 fux %3 str q text send-keys                       # press q: its version from before
@@ -211,7 +211,7 @@ takes a pane or direction. Directions are `str left`, `str right`, `str up`
 and `str down`.
 
 ```sh
-fux agent-opts str web name 120 40 size str ./app program str --verbose arg new-tab
+fux opts str agent in str web name 120 40 size str ./app program str --verbose arg new-tab
 fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 ```
@@ -219,7 +219,7 @@ fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 A program can name what it made; a wait on an action's answer waits from the version it holds:
 
 ```sh
-fux agent-opts 80 24 size str sh program str -c arg str 'echo hello; sleep 1' arg new-tab let P   P wait drop   P capture
+fux opts str agent in 80 24 size str sh program str -c arg str 'echo hello; sleep 1' arg new-tab let P   P wait drop   P capture
 ```
 
 A script plays well with the shell. `args` gives the arguments after
@@ -244,15 +244,14 @@ Use `fux --file ./greet.fux` to run it.
 
 The bundled words are written in fuxth themselves (`fux help WORD` shows
 each one's code): `type` and `press` (text and a key into a pane), `line`
-(a line typed and Enter), `shell` (a tab with a shell in workspace
-`agent`), `agent-opts` (options with `str agent in`), and `counts` (a
-version's counts, as integers). `observed` samples a pane or single answer
+(a line typed and Enter), and `counts` (a version's counts, as
+integers). `observed` samples a pane or single answer
 and retains an existing pane capture. `shows`, `quiet` and `until-ended`
 return their matching capture; `grows` waits for a counter increase within
 one program generation. Their timeouts apply to each change; use an outer
 shell deadline for the whole loop (`fux help agents`).
 
-From outside fux, `new-tab` needs `in`; `agent-opts` is `opts str agent in`.
+From outside fux, `new-tab` needs `in` and `size`.
 `opts str new-workspace in ... new-tab` starts its tab in a fresh unnamed
 workspace.
 
@@ -285,7 +284,7 @@ test or an agent:
 ```sh
 export FUX_SOCKET="$XDG_RUNTIME_DIR/fux/test.sock"
 fux start                                         # returns once it answers: nothing in it yet
-fux agent-opts 80 24 size str ./app program new-tab
+fux opts str agent in 80 24 size str ./app program new-tab
 fux kill-server
 ```
 
@@ -390,8 +389,9 @@ For example, bind `str 't q' code me str last step-tab end bind` in your config.
   printed, or its failure, in the bar. It and the rename prompts edit with
   the arrows, Home, End, Backspace and Delete.
 - **Prompts and questions of your own:** `prompt` opens a line whose Enter
-  runs your fuxth with the line on its stack, a string, and `confirm` a
-  question, a chooser titled with it whose one row, Yes, runs it
+  runs your fuxth with the line on its stack, a string; the recipe file
+  `recipes/confirm.fux` gives `confirm`, a question, a chooser titled with
+  it whose one row, Yes, runs it
   (`me str 'close it?' code %3 kill end confirm`); its row is no pane, tab or
   workspace, so `r` and `x` refuse there. The question is a chooser's
   title: text (`42 string`, not `42`), or `[text,subject]`, which closes
@@ -560,7 +560,7 @@ Emulator defaults are bundled in `src/script/client-defaults.fux`:
 | `cell-placement` | `false` | Per client; position after each non-ASCII glyph |
 
 The three pane settings also have typed creation options, for example
-`fux agent-opts false reflow 0 picture-bytes str /bin/cat program new-tab`.
+`fux opts str agent in false reflow 0 picture-bytes str /bin/cat program new-tab`.
 They survive terminal reset and respawn, and dump preserves them.
 Decoder changes take effect when reading begins idle, keeping an unfinished
 Escape or paste's existing timing. Zero waits for the next explicit timeout
@@ -720,7 +720,7 @@ not a safe way to discover whether the first one ran.
 
 ```fux
 @2 dup str layout_revision get
-list %3 %4 %5 end str horizontal even-of arrange
+list list str horizontal 1 2 1 2 end %3 list str horizontal 1 1 3 4 end %4 %5 end arrange
 ```
 
 The list must name every current pane of that tab exactly once. The revision
@@ -742,25 +742,19 @@ nests at most 64 deep; past that it fails `too_long`, as `arrange` checks or
 the server. Revision exhaustion refuses further
 guarded edits rather than reusing a token.
 
-The library's pure builders accept pane lists: `PANES str horizontal even-of`
-(or `str vertical`) uses balanced splits weighted by pane count;
-`PANES str horizontal str vertical main-of` gives the first pane two shares
-beside an evenly stacked remainder's one (swap the axes for a main pane
-above); `PANES tiled-of` alternates horizontal and vertical splits, weighted
-by pane count. Empty lists fail. These builders read no session state and submit nothing
-until `arrange`.
-
-For an existing tab, `@2 even-h`, `@2 even-v`, `@2 main-h`, `@2 main-v`,
-and `@2 tiled` each read one topology snapshot and arrange its panes in tree
-order, using that observation's revision. `even-h` puts panes side by side;
-`even-v` stacks them. `main-h` puts the first pane above the rest in a row;
-`main-v` puts it beside the rest in a column. Both give the main pane two
-shares against the remainder's one. Concurrent layout changes and layouts
-that do not fit are refused by `arrange`, without a retry.
-
-For example, a config binding can arrange the focused tab:
+Layout presets are a recipe file, `recipes/layouts.fux` in a checkout of
+fux: after `require recipes/layouts.fux`, `@2 even-h`, `@2 even-v`,
+`@2 main-h`, `@2 main-v` and `@2 tiled` each read one topology snapshot and
+arrange its panes in tree order, using that observation's revision.
+`even-h` puts panes side by side; `even-v` stacks them. `main-h` puts the
+first pane above the rest in a row; `main-v` puts it beside the rest in a
+column. Both give the main pane two shares against the remainder's one.
+`tiled` alternates horizontal and vertical splits. Concurrent layout
+changes and layouts that do not fit are refused by `arrange`, without a
+retry. A config that requires it, relative to itself, can bind one:
 
 ```fux
+require layouts.fux
 str 'a =' code me focused tab even-h end bind str 'panes side by side' label
 ```
 
@@ -877,14 +871,14 @@ and width implementations.
   `tee`. On Linux (util-linux):
 
   ```sh
-  fux agent-opts str script program str -q arg str -e arg str -f arg str LOG arg str -c arg str 'make test' arg new-tab
+  fux opts str agent in str script program str -q arg str -e arg str -f arg str LOG arg str -c arg str 'make test' arg new-tab
   ```
 
   On macOS and the BSDs, whose `script` takes the command as its last
   words and flushes with `-F`:
 
   ```sh
-  fux agent-opts str script program str -q arg str -F arg str LOG arg str sh arg str -c arg str 'make test' arg new-tab
+  fux opts str agent in str script program str -q arg str -F arg str LOG arg str sh arg str -c arg str 'make test' arg new-tab
   ```
 
   LOG holds the raw bytes the program wrote to its terminal; util-linux

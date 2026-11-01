@@ -311,20 +311,8 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
     let server = Server::start("")?;
     let code = "printf 'X\\033[65535b%.0s' $(seq 4000); echo; echo DO''NE";
     let out = server.fux(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        code,
-        "arg",
-        "new-tab",
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "str", "-c",
+        "arg", "str", code, "arg", "new-tab",
     ])?;
     let pane = out.stdout.split(':').next().ok_or("its pane")?;
     assert_eq!(server.exits(pane)?, "0");
@@ -358,7 +346,9 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         fill.display(),
         pid_file.display()
     );
-    let words = ["agent-opts", "80", "24", "size", "str", "sh", "program"];
+    let words = [
+        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program",
+    ];
     let words = words
         .into_iter()
         .chain(["str", "-c", "arg", "str", &code, "arg", "new-tab"]);

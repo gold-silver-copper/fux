@@ -25,7 +25,7 @@ about two builds.
 # guards: keys sent with expect at a version the pane has moved past are
 #   refused stale, and none of them reach the program
 # exercises: stale-expect
-$ V=$(fux agent-opts 80 24 size str sh program str -c arg str 'read x; read y; echo "second=$y"' arg new-tab)
+$ V=$(fux opts str agent in 80 24 size str sh program str -c arg str 'read x; read y; echo "second=$y"' arg new-tab)
 $ fux "${V%%:*}" str x text str Enter key send-keys
   ~ %a:0.0.0.0.0:R1
 $ fux str "$V" expect str y text str Enter key send-keys
@@ -51,7 +51,7 @@ $ fux str "$V" expect str y text str Enter key send-keys
 A step sees `DIR` (its 0700 directory, also `HOME`), `FUX_SOCKET` (its
 server), `REPO` (this repository), `PATH` with the recording `fux` first,
 `SHELL=/bin/sh`, `LANG=C.UTF-8` and no other variable of the caller's. Give
-every new tab a size (`agent-opts 80 24 size`): there is no terminal. A step
+every new tab a size (`opts str agent in 80 24 size`): there is no terminal. A step
 may start a program in the background; it is killed with the cassette. A
 cassette that closes its server's last workspace stops the server, which fails
 it: keep a workspace of its own (`examples.cassette`).

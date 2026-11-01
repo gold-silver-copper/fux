@@ -71,26 +71,24 @@ impl Session {
                         continue;
                     }
                     let pane = self.parts.panes().get(id).ok_or(Error::NoPane(*id))?;
-                    let state = if projection == Projection::Facts {
+                    let (state, launch) = if projection == Projection::Topology {
+                        (None, None)
+                    } else {
                         let fields = crate::capture::state(pane)?;
                         let fields = fields.into_iter().map(|(k, v)| (k.to_owned(), v));
-                        Some(Json::Object(fields.collect()))
-                    } else {
-                        None
-                    };
-                    let recipe = if projection == Projection::Recipe {
                         let launch = pane.runs.launch();
-                        let argv = launch.argv.iter().map(str::to_owned).collect();
-                        Some(inspect::Recipe {
+                        let launch = inspect::Launch {
                             shell: matches!(pane.runs, crate::pane::Runs::Shell(_)),
-                            argv,
-                            initial_cwd: path(launch.cwd.as_os_str()),
-                            observed_cwd: match self.dir_with(*id, &mut Memory)? {
-                                Ok(Some(dir)) => inspect::Directory::Known(path(dir.as_os_str())),
-                                Ok(None) => inspect::Directory::Unknown,
-                                Err(errno) => inspect::Directory::Failed(errno.raw()),
-                            },
-                            options: pane.options(),
+                            argv: launch.argv.iter().map(str::to_owned).collect(),
+                            cwd: path(launch.cwd.as_os_str()),
+                        };
+                        (Some(Json::Object(fields.collect())), Some(launch))
+                    };
+                    let cwd = if projection == Projection::Recipe {
+                        Some(match self.dir_with(*id, &mut Memory)? {
+                            Ok(Some(dir)) => inspect::Directory::Known(path(dir.as_os_str())),
+                            Ok(None) => inspect::Directory::Unknown,
+                            Err(errno) => inspect::Directory::Failed(errno.raw()),
                         })
                     } else {
                         None
@@ -105,7 +103,8 @@ impl Session {
                         cols: pane.size().cols(),
                         version: pane.version(self.run),
                         state,
-                        recipe,
+                        launch,
+                        cwd,
                         pid: pane.process().child().map(|c| c.leader.pid().as_raw()),
                     };
                     snapshot.panes.push(fact);

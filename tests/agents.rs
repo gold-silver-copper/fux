@@ -28,7 +28,7 @@ fn program<'a>(argv: &[&'a str]) -> Vec<&'a str> {
     words
 }
 
-/// A program's tab: `agent-opts`, then `before` (size, waits…), then
+/// A program's tab: `opts str agent in`, then `before` (size, waits…), then
 /// the program, then `new-tab`; at 80 by 24 unless `before` gives a size,
 /// as no client is attached to lay it out on.
 fn launch<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
@@ -38,7 +38,7 @@ fn launch<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
         &["80", "24", "size"]
     };
     [
-        &["agent-opts"][..],
+        &["opts", "str", "agent", "in"][..],
         size,
         before,
         &program(argv),
@@ -383,7 +383,12 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         let home = format!("{home}={}", dir.to_string_lossy());
         let new = ["new-tab", "str", shell, "rename"];
         let program = program(&["env", &home, shell, "-i"]);
-        server.ok(&[&["agent-opts", "80", "24", "size"][..], &program, &new].concat())?;
+        server.ok(&[
+            &["opts", "str", "agent", "in", "80", "24", "size"][..],
+            &program,
+            &new,
+        ]
+        .concat())?;
         check(shell)?;
     }
     let plain = server.ok(&launch(&[], &["sh"]))?;
@@ -1211,7 +1216,7 @@ fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
         let code = format!("{source} 1 until-ended 1 until-ended str exited get");
         assert_eq!(server.ok(&[&code])?, "7\n");
     }
-    let code = "agent-opts 80 24 size str sh program str -c arg str 'sleep 0.1; exit 7' arg new-tab 1 timeout wait 1 until-ended str exited get";
+    let code = "opts str agent in 80 24 size str sh program str -c arg str 'sleep 0.1; exit 7' arg new-tab 1 timeout wait 1 until-ended str exited get";
     assert_eq!(server.ok(&[code])?, "7\n");
     Ok(())
 }

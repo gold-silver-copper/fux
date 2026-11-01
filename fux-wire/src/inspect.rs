@@ -69,17 +69,18 @@ wire! {
         pub version: Version,
         pub pid: Option<i32>,
         pub state: Option<Json>,
-        pub recipe: Option<Recipe>,
+        pub launch: Option<Launch>,
+        /// Where it is now, which only the recipe reads.
+        pub cwd: Option<Directory>,
     }
 }
 wire! {
+    /// What it was started as: a shell or a program, and where.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Recipe {
+    pub struct Launch {
         pub shell: bool,
         pub argv: Vec<String>,
-        pub initial_cwd: Path,
-        pub observed_cwd: Directory,
-        pub options: crate::command::PaneOptions,
+        pub cwd: Path,
     }
 }
 wire! {
@@ -260,8 +261,9 @@ impl Snapshot {
         for p in &self.panes {
             if p.version.run != self.run
                 || p.version.pane != p.id
-                || p.state.is_some() != (self.projection == Projection::Facts)
-                || p.recipe.is_some() != (self.projection == Projection::Recipe)
+                || p.state.is_some() != (self.projection != Projection::Topology)
+                || p.launch.is_some() != (self.projection != Projection::Topology)
+                || p.cwd.is_some() != (self.projection == Projection::Recipe)
             {
                 return Err(bad());
             }
