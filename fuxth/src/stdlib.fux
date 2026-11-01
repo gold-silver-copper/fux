@@ -106,7 +106,11 @@ define remove
   s 0 k slice s k 1 add s len slice cat
 end
 # from to -- list : from, from+1, …, to-1 (empty when to is at most from)
-define range let limit let from list from limit lt if limit from do i loop then end end
+define range
+  let limit
+  let from
+  list from limit lt if limit from do i loop then end
+end
 # n e -- n^e : n to the power e, e at least 0
 define pow
   let e let n
