@@ -1,0 +1,25 @@
+[package]
+name = "fuxth-run"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "fuxth, a small Forth for the shell, as a program: files, pipes and a REPL, with words for the terminal, files and the process"
+repository = "https://github.com/gold-silver-copper/fux"
+readme = "README.md"
+keywords = ["forth", "interpreter", "repl", "fux"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "fuxth"
+path = "src/main.rs"
+
+[dependencies]
+fuxth = { path = "../fuxth", version = "0.7.0" }
+fuxix = { path = "../fuxix", version = "0.8.0" }
+fux-vt = { path = "../fux-vt", version = "0.15.0" }
+# O_NONBLOCK, to open a FIFO that may wait without waiting.
+libc = "0.2"
+
+[lints]
+workspace = true
