@@ -955,6 +955,19 @@ mod tests {
     }
 
     #[test]
+    fn a_notification_is_told_to_each_client_showing_its_workspace() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "opts 80 24 size str elsewhere name new-workspace")?;
+        let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+        run(&mut s, "str c2 client str elsewhere workspace show")?;
+        s.out(PaneId::of(1), b"\x1b]9;build done\x07");
+        let notice = |s: &Session, c| (s.views.get(&c)?.notice.as_ref()).map(|n| n.text.clone());
+        assert_eq!(notice(&s, c).as_deref(), Some("%1: build done"));
+        assert_eq!(notice(&s, d), None);
+        Ok(())
+    }
+
+    #[test]
     fn titles_follow_the_focused_pane_and_are_restored_when_turned_off() -> Outcome {
         let (mut s, c) = session()?;
         let other = s.attach(10, 40, None).map_err(|e| e.to_string())?;
