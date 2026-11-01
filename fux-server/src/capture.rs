@@ -663,11 +663,7 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
     let child = process.child();
     let pid = child.map(|child| child.leader.pid().as_raw());
     // What the group runs, and where, is the OS's to say (`ps`, `/proc`).
-    let group = child.and_then(|child| {
-        fuxix::terminal::foreground_group(&child.master)
-            .ok()
-            .flatten()
-    });
+    let group = child.and_then(|c| fuxix::terminal::foreground_group(&c.master).ok().flatten());
     let (exited, signal) = match process.exit_status() {
         Some(fux_wire::answer::Ended::Exited(code)) => (Json::int(code), Json::Null),
         Some(fux_wire::answer::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
@@ -689,7 +685,7 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
         ("input_unread", Json::count(pane.left.input)),
         (
             "foreground_group",
-            group.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
+            group.map_or(Json::Null, |g| Json::int(g.as_raw())),
         ),
     ]))
 }
