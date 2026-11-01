@@ -284,6 +284,42 @@ fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
     Ok(())
 }
 
+/// `C-b c` opens the focused pane's history in the attached terminal's
+/// `$EDITOR`, given `+LINE` for its last line, in a split titled
+/// `history` that closes when the editor exits.
+#[test]
+fn edit_history_opens_the_terminals_editor_at_the_end() -> Outcome {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::start("")?;
+    let (args, editor) = (server.dir.join("args"), server.dir.join("editor"));
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}.part'\nmv '{0}.part' '{0}'\nsleep 1\n",
+        args.display()
+    );
+    std::fs::write(&editor, script).map_err(e)?;
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).map_err(e)?;
+    let mut terminal = Terminal::start(12, 60, &[fux()], |command| {
+        command
+            .env("FUX_SOCKET", &server.socket)
+            .env("XDG_CONFIG_HOME", server.dir.join("config"))
+            .env("EDITOR", &editor);
+    })?;
+    server.type_line("%1", "seq 1 30")?;
+    server.shows("%1", "30")?;
+    terminal.type_bytes(b"\x02c")?;
+    eventually("the editor's arguments", || Ok(args.exists()))?;
+    let got = std::fs::read_to_string(&args).map_err(e)?;
+    let lines = server.ok(&["str", "%1", "pane", "all-history", "capture"])?;
+    let last = format!("+{}\n", lines.lines().count());
+    assert!(got.starts_with(&last), "{got} (wanted {last})");
+    let label = server.ok(&["str", "%2", "pane", "str", "label", "get"])?;
+    assert_eq!(label.trim(), "history");
+    eventually("the split closed", || Ok(server.panes()?.len() == 1))?;
+    terminal.type_bytes(b"\x02d")?;
+    terminal.wait_exit()?;
+    Ok(())
+}
+
 /// A client attached from inside a pane, showing that pane, draws it as a
 /// placeholder rather than its own screen, which would draw itself again
 /// with each paint: the pane's screen count stays still.

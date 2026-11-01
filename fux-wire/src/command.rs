@@ -10,8 +10,9 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// A pane's checked history budget, in bytes.
-pub type HistoryBytes = Number<0, { 1 << 30 }>;
+/// A pane's history budget, in bytes: the user's to size, up to the most
+/// memory one allocation may hold.
+pub type HistoryBytes = Number<0, { isize::MAX.unsigned_abs() }>;
 
 /// The events a server's journal keeps, from its start: a reader further
 /// behind is told how many it missed.

@@ -2143,18 +2143,17 @@ mod tests {
         Ok(())
     }
 
-    /// What a program prints and leaves is its notice; one longer than
-    /// the frame it is sent in is said not to be shown.
+    /// What a program prints and leaves is its notice, however long.
     #[test]
-    fn a_notice_past_its_frame_is_said_not_shown() -> Result<(), Box<dyn std::error::Error>> {
+    fn what_a_program_prints_is_its_notice() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         let line: String = std::iter::repeat_n('x', 1000).collect();
         let code = format!("0 begin str {line} print 1 add 0 pick 1100 eq until drop");
         assert!(program(&mut keyboard, Job::from(code)).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let said = matches!(acts.as_slice(),
-            [Act::Notice { text, error: true }] if text.contains("was not shown"));
-        assert!(said, "{acts:?}");
+            [Act::Notice { text, error: false }] if text.matches('x').count() == 1_100_000);
+        assert!(said, "{} acts", acts.len());
         assert!(program(&mut keyboard, Job::from(format!("str {line}"))).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let shown =

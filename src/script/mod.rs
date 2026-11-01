@@ -1104,12 +1104,20 @@ impl Asks for AsClient<'_> {
         state: Option<&mut Draft>,
         out: &mut dyn Write,
     ) -> Result<Vec<Value<Fux>>, Failed> {
-        let Local::Open(open) = what else {
-            return self.asks.local(what, state, out);
-        };
-        let screen = admit(open.clone(), state.as_deref(), &self.context)?;
-        self.opened = Some(screen);
-        Ok(Vec::new())
+        match what {
+            Local::Open(open) => {
+                let screen = admit(open.clone(), state.as_deref(), &self.context)?;
+                self.opened = Some(screen);
+                Ok(Vec::new())
+            }
+            // The client's own environment: its person's.
+            Local::Shell(Shell::Getenv(name)) => Ok(vec![Value::str(getenv(name)?)]),
+            Local::Attach { .. }
+            | Local::Server(_)
+            | Local::Start
+            | Local::Status
+            | Local::Shell(_) => self.asks.local(what, state, out),
+        }
     }
 }
 
