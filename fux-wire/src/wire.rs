@@ -915,7 +915,7 @@ mod tests {
         let encoded = encode(&policy);
         assert_eq!(Reader::new(&encoded).whole::<PaneOptions>(), Ok(policy));
         let mut invalid = Vec::new();
-        ((1usize << 30) + 1).put(&mut invalid);
+        usize::MAX.put(&mut invalid);
         false.put(&mut invalid);
         assert_eq!(
             Reader::new(&invalid).whole::<PaneOptions>(),
