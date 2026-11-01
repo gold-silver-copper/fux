@@ -1188,4 +1188,20 @@ mod tests {
         assert_eq!(text, "abcdefghijklmnopLINKED");
         Ok(())
     }
+
+    /// `marks` marks what only styling tells: a selection drawn in
+    /// reverse video or a background colour, and faint text inside or
+    /// beside it.
+    #[test]
+    fn marks_say_what_only_styling_tells() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(2, 30, 0)?;
+        pane.output(b"a \x1b[2mdim\x1b[7mboth\x1b[22mrev\x1b[m z");
+        let marks = CaptureView {
+            marks: true,
+            ..CaptureView::default()
+        };
+        let got = super::pane(&pane, journal()?, None, marks)?;
+        assert_eq!(got.text()?, "a ⟨dim⟩⟦⟨both⟩rev⟧ z");
+        Ok(())
+    }
 }

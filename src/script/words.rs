@@ -400,7 +400,7 @@ words! {
         Reading Wrapped "wrapped" "pane-builder -- pane-builder" raises(Type Unused) "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";
         Reading Full "full" "pane-builder -- pane-builder" raises(Type Unused) "capture: every row and cell, untrimmed" "fux %3 full capture";
         Reading Styles "styles" "pane-builder -- pane-builder" raises(Type Unused) "capture: colours and attributes" "fux %3 styles capture";
-        Reading Marks "marks" "pane-builder -- pane-builder" raises(Type Unused) "capture: highlighted text (reverse video, or a background colour) as ⟦this⟧" "fux %3 marks capture";
+        Reading Marks "marks" "pane-builder -- pane-builder" raises(Type Unused) "capture: what only styling tells, as text: highlighted (reverse video, or a background colour) as ⟦this⟧, and rendered faint (SGR 2) as ⟨this⟩" "fux %3 marks capture";
         Reading MainScreen "main-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: what was printed before a program took the screen" "fux %3 main-screen capture";
         Reading AltScreen "alt-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: the full screen a program drew last" "fux %3 alt-screen capture";
         Reading LastOutput "last-output" "pane-builder -- pane-builder" raises(Type Unused) "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux %3 last-output capture";

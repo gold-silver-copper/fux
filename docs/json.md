@@ -219,7 +219,10 @@ whole. `screen_rows` and `screen_cols` are the screen's size;
 `lines` join or `rows` and `cols` take: `null` while hidden or on the
 screen not captured (`main-screen` under a full-screen program). `wrap_pending`:
 a glyph went into the last column, autowrap on, and the next goes on the
-next line, though the cursor shows on that last cell. With `marks`, each line holds its marks as text does. With the
+next line, though the cursor shows on that last cell. With `marks`, each line holds its marks as text does:
+`⟦this⟧` highlighted (reverse video, or a background colour, as a
+program draws a selection), `⟨this⟩` rendered faint (SGR 2), inside any
+highlighting. With the
 `styles` option, `"styles"` holds a list per line of its runs of cells that are not
 plain: `{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"inverse":true,
 "hidden":true,"dim":true,"italic":true,"strikeout":true,"underline":true,
