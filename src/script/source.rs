@@ -24,15 +24,20 @@ pub(super) fn identity(path: &Path) -> io::Result<PathBuf> {
     })
 }
 
-/// A config's sources: the file it was, and each file it read in, as it
-/// was named, from which file, the file it was, and its text.
+/// A resolution of a source: the path named, the file naming it, and the
+/// file it is, or why none is.
+type Resolved = (String, Option<PathBuf>, Result<PathBuf, String>);
+
+/// A config's sources: the file it was, and each attempt to read one in,
+/// in order: as it was named, from which file, the file it was, and its
+/// text, or why it wasn't there (which a `try` may have caught).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frozen {
     name: String,
     text: String,
     pub(super) path: Option<PathBuf>,
-    resolved: Vec<(String, Option<PathBuf>, PathBuf)>,
-    read: Vec<(PathBuf, String)>,
+    resolved: Vec<Resolved>,
+    read: Vec<(PathBuf, Result<String, String>)>,
 }
 
 impl Frozen {
@@ -85,8 +90,8 @@ pub struct Files {
     frozen: Option<(Config, usize, usize)>,
     /// No file is read: a key's or a prompt's program.
     sealed: bool,
-    resolved: Vec<(String, Option<PathBuf>, PathBuf)>,
-    read: Vec<(PathBuf, String)>,
+    resolved: Vec<Resolved>,
+    read: Vec<(PathBuf, Result<String, String>)>,
     /// Marked before a file that may not read the same again (a pipe) is
     /// read: the command line's program then isn't run again elsewhere.
     pub(super) acted: Option<super::Acted>,
@@ -133,10 +138,17 @@ impl Files {
                 .get(*at)
                 .filter(|(p, f, _)| p == path && f.as_deref() == from);
             *at = at.saturating_add(1);
-            return found
-                .map(|(.., file)| file.clone())
-                .ok_or_else(|| unread(path));
+            return found.map_or_else(|| Err(unread(path)), |(.., file)| file.clone());
         }
+        let file = self.live(path, from);
+        // Kept whatever came of it, for a replay to meet the same.
+        let kept = (path.to_owned(), from.map(Path::to_owned), file.clone());
+        self.resolved.push(kept);
+        file
+    }
+
+    /// The file `path` names from `from`, on the file system.
+    fn live(&self, path: &str, from: Option<&Path>) -> Result<PathBuf, String> {
         let named = Path::new(path);
         let full = if named.is_absolute() {
             named.to_owned()
@@ -150,10 +162,7 @@ impl Files {
             };
             base.join(named)
         };
-        let file = identity(&full).map_err(|e| e.to_string())?;
-        self.resolved
-            .push((path.to_owned(), from.map(Path::to_owned), file.clone()));
-        Ok(file)
+        identity(&full).map_err(|e| e.to_string())
     }
 
     /// The text of the file `resolve` gave: replayed, the next one the
@@ -162,18 +171,17 @@ impl Files {
         if let Some((config, _, at)) = &mut self.frozen {
             let found = config.read.get(*at).filter(|(p, _)| p == path);
             *at = at.saturating_add(1);
-            return found
-                .map(|(_, text)| text.clone())
-                .ok_or_else(|| unread(&path.display().to_string()));
+            let unread = || Err(unread(&path.display().to_string()));
+            return found.map_or_else(unread, |(_, text)| text.clone());
         }
         if let Some(acted) = &self.acted
             && !path.metadata().is_ok_and(|m| m.is_file())
         {
             acted.mark();
         }
-        let text = read(path).map_err(|e| e.to_string())?;
+        let text = read(path).map_err(|e| e.to_string());
         self.read.push((path.to_owned(), text.clone()));
-        Ok(text)
+        text
     }
 }
 
@@ -359,12 +367,12 @@ mod tests {
         let file = PathBuf::from("/c/child.fux");
         let config = Frozen {
             resolved: vec![
-                ("child.fux".into(), None, file.clone()),
-                ("child.fux".into(), None, file.clone()),
+                ("child.fux".into(), None, Ok(file.clone())),
+                ("child.fux".into(), None, Ok(file.clone())),
             ],
             read: vec![
-                (file.clone(), "define answer 41 end".into()),
-                (file.clone(), "define answer 42 end".into()),
+                (file.clone(), Ok("define answer 41 end".into())),
+                (file.clone(), Ok("define answer 42 end".into())),
             ],
             ..Frozen::text("config", "include child.fux include child.fux")
         };
@@ -377,6 +385,34 @@ mod tests {
             files.resolve("child.fux", None).is_err(),
             "read no more than it did"
         );
+        Ok(())
+    }
+
+    /// A lookup the config caught failing fails again as it is replayed,
+    /// so the next one reads what the config read next.
+    #[test]
+    fn a_caught_failed_lookup_replays_as_it_failed() -> TestResult {
+        let f = Fixture::new()?;
+        let config = "define optional\n\
+            str require try tick include execute catch 2drop end\n\
+            end\n\
+            optional missing.fux\n\
+            include child.fux\n";
+        let root = f.write("main.fux", config)?;
+        f.write("child.fux", "define answer 41 end")?;
+        let state = crate::script::run_file(&root)?;
+        let mut machine = crate::script::compiled(
+            state.config.as_ref(),
+            &fuxth::token::source("key", "answer print")?,
+        )?;
+        let mut out = Vec::new();
+        let mut host =
+            crate::script::Host::new(fux_wire::protocol::Context::default(), None, &mut out);
+        assert!(matches!(
+            machine.run(&mut host, 1000)?,
+            fuxth::Outcome::Finished
+        ));
+        assert_eq!(String::from_utf8(out)?, "41\n");
         Ok(())
     }
 
