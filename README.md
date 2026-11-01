@@ -266,16 +266,17 @@ pane.
 
 ### Which server
 
-`str NAME server` before the rest is the server named NAME (its socket
-`NAME.sock` in fux's directory, `$XDG_RUNTIME_DIR/fux` or, with
-`XDG_RUNTIME_DIR` unset, `$TMPDIR/fux`), `str PATH socket` a socket's path;
-without either, `FUX_SOCKET`, else the default. A private server for a test
-or an agent:
+`FUX_SOCKET` is the socket of the server a `fux` command talks to, else
+`server.sock` in fux's directory (`$XDG_RUNTIME_DIR/fux` or, with
+`XDG_RUNTIME_DIR` unset, `$TMPDIR/fux`). Each `fux` command talks to one
+server; two are two commands joined by the shell. A private server for a
+test or an agent:
 
 ```sh
-fux str test server start                         # returns once it answers: nothing in it yet
-fux str test server agent-opts 80 24 size str ./app program new-tab
-fux str test server kill-server
+export FUX_SOCKET="$XDG_RUNTIME_DIR/fux/test.sock"
+fux start                                         # returns once it answers: nothing in it yet
+fux agent-opts 80 24 size str ./app program new-tab
+fux kill-server
 ```
 
 ## Keys
@@ -885,9 +886,7 @@ and width implementations.
 
 The server listens only on a Unix socket, which is the only way to
 control it: a sandbox that denies `connect` to it cannot drive fux. The
-socket is `str PATH socket`, `str NAME
-server` (`NAME.sock` in fux's directory), else `FUX_SOCKET`, else
-`server.sock` there. fux's directory is `$XDG_RUNTIME_DIR/fux` whenever
+socket is `FUX_SOCKET`, else `server.sock` in fux's directory. fux's directory is `$XDG_RUNTIME_DIR/fux` whenever
 `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`; one of them set empty or to
 a relative path is refused, as is neither set. An auto-started server logs
 to `fux.log` beside it.

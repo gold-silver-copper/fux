@@ -20,20 +20,6 @@ use crate::wire::{Wire, wire};
 use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
-/// Which server a command names, before the command: `str PATH socket`, `str NAME server`,
-/// or neither. The client's to choose; `fux_server::socket::socket_path`
-/// finds its socket.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Choice {
-    /// Neither: `FUX_SOCKET`, else `server.sock`.
-    #[default]
-    Default,
-    /// A socket's path (`socket`).
-    Path(std::path::PathBuf),
-    /// A server's name: its socket is `NAME.sock` in fux's directory.
-    Name(String),
-}
-
 /// Bumped on any change to the frames below.
 pub const PROTOCOL: u32 = 59;
 /// The largest frame, kind byte included.

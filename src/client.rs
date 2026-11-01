@@ -747,8 +747,7 @@ impl Keyboard {
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
-                let chosen = fux_wire::protocol::Choice::Path(path);
-                let mut server = script::Server::stoppable(chosen, stops.clone());
+                let mut server = script::Server::stoppable(path, stops.clone());
                 for (job, frames) in todo {
                     let after = std::rc::Rc::new(std::cell::Cell::new(fux_wire::protocol::Fence {
                         run,
