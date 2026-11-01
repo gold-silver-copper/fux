@@ -2654,8 +2654,11 @@ builtins! { m host;
         m.written(host, &text)
     }
     Hide "hide" [cold] () "--"
-        "hide NAME: NAME leaves the dictionary, so it is found no more; code compiled before keeps calling the word"
-        { m.hide() }
+        "hide NAME: NAME leaves the dictionary, so it is found no more; code compiled before keeps calling the word" {
+        let name = m.next_word(Builtin::Hide, "a name")?;
+        let why = "no such word; text is `str WORD`";
+        m.names.remove(&*name.text).map(drop).ok_or_else(|| Error::new(Code::UnknownWord, why, Some(&name)))
+    }
     PrintStack "print-stack" [cold] () "--"
         "write the values depth counts, a line each as print writes them, the deepest first, leaving them" {
         let floor = m.marks.last().map_or(0, |(at, _)| *at);

@@ -1267,15 +1267,6 @@ impl<A: AppValue> Machine<A> {
         self.written(host, &said.unwrap_or_default())
     }
 
-    /// `hide NAME`: NAME out of the dictionary. Calls compiled before
-    /// hold the word itself, so they keep calling it.
-    pub(crate) fn hide(&mut self) -> Result<(), Error> {
-        let name = self.next_word(Builtin::Hide, "a name")?;
-        self.found(&name)?;
-        self.names.remove(&*name.text);
-        Ok(())
-    }
-
     /// `start-compiling`.
     pub(crate) fn start_compiling(&mut self) -> Result<(), Error> {
         if self.building.is_empty() {

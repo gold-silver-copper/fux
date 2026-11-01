@@ -367,7 +367,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "a", "1", "add",
     ])?;
     assert!(
-        before.starts_with("fux: type: argument 12: add: "),
+        before.starts_with("fux: type: argument 15: add: "),
         "{before}"
     );
     assert!(
@@ -378,7 +378,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     // failure holds them, with its number in Forth's table (gap 26).
     assert_eq!(
         before.lines().nth(1),
-        Some("fux: already took effect: argument 8: new-tab"),
+        Some("fux: already took effect: argument 11: new-tab"),
         "{before}"
     );
     let caught = "str all try %1 str x text send-keys drop 1 0 div
