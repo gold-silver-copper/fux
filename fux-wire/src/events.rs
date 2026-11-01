@@ -43,7 +43,7 @@ wire! {
 /// Supplied context, never authenticated human or agent identity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Actor {
-    Unknown,
+    Outside,
     Client(client: ClientId),
     Pane(pane: PaneId, generation: u64),
     Program(pane: PaneId, generation: u64),
@@ -54,7 +54,7 @@ pub enum Actor {
 impl Actor {
     pub fn kind(self) -> &'static str {
         match self {
-            Self::Unknown => "unknown",
+            Self::Outside => "outside",
             Self::Server => "server",
             Self::Client(_) => "client",
             Self::Pane(..) => "pane",
@@ -137,7 +137,7 @@ impl Batch {
                         origin.push(("pane", Json::str(p.to_string())));
                         origin.push(("generation", Json::uint(generation)));
                     }
-                    Actor::Unknown | Actor::Server => {}
+                    Actor::Outside | Actor::Server => {}
                 }
                 fields.push(("origin".into(), Json::object(origin)));
                 fields.push(("next".into(), Json::str(item.next.to_string())));

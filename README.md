@@ -710,7 +710,7 @@ fails with `stale`. A token for another tab or run, or a future serial, fails
 with `bad_value`.
 Pane focus stays with the same pane.
 Every background and sizing-client screen must show every pane; watchers do
-not constrain it. Success journals one `arranged` invalidation, then sizes
+not constrain it. Success journals one `laid_out` invalidation, then sizes
 panes through the normal settle path, which reports PTY resize failures.
 
 The tree is a flat list, rooted at index zero. Each leaf accepts a typed pane

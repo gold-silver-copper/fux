@@ -11,11 +11,10 @@ capture[pane].pictures[]: row col rows cropped cols width height
 capture[pane].styles[][]: col len fg bg bold inverse hidden dim italic strikeout underline blink
 capture[pane]: screen_rows screen_cols screen_cursor lines styles pane version wrap_pending title foreground_group launch_argv hung_up read_error exited signal alt_screen mouse mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_unread above
 events.events[].origin[client]: kind client
+events.events[].origin[outside]: kind
 events.events[].origin[pane]: kind pane generation
 events.events[].origin[program]: kind pane generation
 events.events[].origin[server]: kind
-events.events[].origin[unknown]: kind
-events.events[][arranged]: event tab workspace origin next
 events.events[][attached]: event pane tab workspace client origin next
 events.events[][bell]: event pane tab workspace origin next
 events.events[][closed]: event pane tab workspace origin next
