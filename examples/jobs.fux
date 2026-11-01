@@ -12,7 +12,7 @@ define until-ended
   begin 600 timeout wait dup counts 4 at 1 eq until
 end
 # answer -- status: once its pane's program has exited
-define exit-status until-ended str exited get end
+define exit-status until-ended str program get str exited get end
 
 1 job 2 job 3 job
 rot exit-status rot exit-status rot exit-status

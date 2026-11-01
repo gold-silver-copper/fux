@@ -178,6 +178,7 @@ pub fn pane(
     let mut fields = vec![
         ("cursor", Json::str(journal.to_string())),
         ("title", Json::str(pane.title().as_str())),
+        ("program", program(pane)?),
     ];
     fields.extend(state(pane)?);
     // The history rows kept above the first row read: history it was not
@@ -642,27 +643,64 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
     captured(of, size, grid.cursor, lines, Vec::new(), view)
 }
 
-/// What is known of a pane's program, for `json`: its foreground group,
-/// the status it exited with, the modes that say how it takes input, the
-/// input queued for it, and the cell its program is told, by its tab's
-/// host (`Session::host_panes`).
-pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::code::Error> {
-    let screen = pane.screen();
-    let cell = screen.graphics().cell();
+/// A pane's program, for `json`: its generation, the argv it was started
+/// with, its process (none once it ended), how far along its life it is,
+/// how it ended and what it left, and its terminal's foreground group;
+/// `null` while the pane has none of its own (a respawn under way).
+pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
+    let process = pane.process();
+    let state = match process {
+        // A session that starts no programs (tests) runs its panes' unstarted,
+        // as input takes them (`refuses_input`).
+        Process::Reading(_) | Process::Absent => "running",
+        // It closed its terminal and runs on: nothing reads keys there
+        // (the terminal hung up; Linux says so).
+        Process::HungUp(_) => "hung_up",
+        Process::ReadFailed(..) => "read_failed",
+        Process::Exited(_) => "ended",
+        Process::Respawning => return Ok(Json::Null),
+    };
+    let child = process.child();
+    let pid = child.map(|child| child.leader.pid().as_raw());
     // What the group runs, and where, is the OS's to say (`ps`, `/proc`).
-    let group = pane.process().child().and_then(|child| {
+    let group = child.and_then(|child| {
         fuxix::terminal::foreground_group(&child.master)
             .ok()
             .flatten()
     });
-    let last_status = screen.commands().last_status;
-
-    let (exited, signal) = match pane.process().exit_status() {
+    let (exited, signal) = match process.exit_status() {
         Some(fux_wire::answer::Ended::Exited(code)) => (Json::int(code), Json::Null),
         Some(fux_wire::answer::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
         Some(fux_wire::answer::Ended::Lost) | None => (Json::Null, Json::Null),
     };
-    let hung_up = matches!(pane.process(), Process::HungUp(_));
+    let read_error = pane
+        .read_error()
+        .map(|e| e.message(&mut Memory))
+        .transpose()?;
+    let argv = pane.runs.launch().argv.iter().map(Json::str).collect();
+    Ok(Json::object(vec![
+        ("generation", Json::uint(pane.respawns)),
+        ("argv", Json::Array(argv)),
+        ("pid", pid.map_or(Json::Null, Json::int)),
+        ("state", Json::str(state)),
+        ("exited", exited),
+        ("signal", signal),
+        ("read_error", read_error.map_or(Json::Null, Json::str)),
+        ("input_unread", Json::count(pane.left.input)),
+        (
+            "foreground_group",
+            group.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
+        ),
+    ]))
+}
+
+/// What is known of a pane's terminal, for `json`: the modes that say how
+/// its program takes input, the input queued for it, and the cell its
+/// program is told, by its tab's host (`Session::host_panes`).
+pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::code::Error> {
+    let screen = pane.screen();
+    let cell = screen.graphics().cell();
+    let last_status = screen.commands().last_status;
     let mouse = screen.mouse_protocol_mode();
     let bracketed_paste = screen.mode(Mode::BracketedPaste);
     let pictures = Json::Array(screen.pictures().map(picture).collect());
@@ -688,21 +726,7 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
         ]),
         None => Json::Null,
     };
-    let read_error = pane
-        .read_error()
-        .map(|e| e.message(&mut Memory))
-        .transpose()?;
     let values = [
-        (
-            "foreground_group",
-            group.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
-        ),
-        // Its program closed its terminal and runs on: nothing reads keys
-        // there (the terminal hung up; Linux says so).
-        ("hung_up", Json::Bool(hung_up)),
-        ("read_error", read_error.map_or(Json::Null, Json::str)),
-        ("exited", exited),
-        ("signal", signal),
         ("alt_screen", Json::Bool(screen.mode(Mode::AlternateScreen))),
         // What it asked for: whether a move without a button is reported.
         (
@@ -770,7 +794,6 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
         ("truncated", Json::Array(cut_fields)),
         // Input accepted and not yet written to its terminal.
         ("input_queued", Json::count(pane.input().len())),
-        ("input_unread", Json::count(pane.left.input)),
     ];
     let mut fields = Vec::with_capacity(values.len().saturating_add(1));
     fields.extend(values);

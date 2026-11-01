@@ -75,7 +75,9 @@ wire! {
         pub row: Option<u16>,
         pub col: Option<u16>,
         pub version: Version,
-        pub pid: Option<i32>,
+        /// Its program, by generation: none in a topology, null while a
+        /// respawn is under way.
+        pub program: Option<Json>,
         pub state: Option<Json>,
         pub launch: Option<Launch>,
         /// Where it is now, which only the recipe reads.
@@ -83,11 +85,11 @@ wire! {
     }
 }
 wire! {
-    /// What it was started as: a shell or a program, and where.
+    /// What it was started as, a shell or a program, and where; its
+    /// program's `argv` says with what.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Launch {
         pub shell: bool,
-        pub argv: Vec<String>,
         pub cwd: Path,
     }
 }
@@ -292,6 +294,7 @@ impl Snapshot {
         for p in &self.panes {
             if p.version.run != self.run
                 || p.version.pane != p.id
+                || p.program.is_some() != (self.projection != Projection::Topology)
                 || p.state.is_some() != (self.projection != Projection::Topology)
                 || p.launch.is_some() != (self.projection != Projection::Topology)
                 || p.cwd.is_some() != (self.projection == Projection::Recipe)

@@ -261,7 +261,9 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{record}"
     );
     assert_eq!(
-        server.ok(&["str", "%1", "pane", "str", "exited", "get"])?,
+        server.ok(&[
+            "str", "%1", "pane", "str", "program", "get", "str", "exited", "get"
+        ])?,
         "null\n"
     );
     // An option a word would leave unused is refused, not ignored: a new

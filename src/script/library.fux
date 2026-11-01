@@ -112,10 +112,10 @@ define chooser-row
   let item item str id get let id
   list id list id string item str label get dup id string eq if drop else str ' ' swap then end glue end
 end
-# record -- string : a held snapshot hierarchy, each workspace's tabs and workspaces under it; facts include process outcomes
+# record -- string : a held snapshot hierarchy, each workspace's tabs and workspaces under it; facts and recipes include process outcomes
 define listing
   let s s str scope get kind let sk
-  s str projection get str facts eq let facts
+  s str projection get str topology ne let facts
   s str workspaces get let wss s str panes get let panes
   list wss each str id get end end let wids
   sk str all eq sk str client eq or let clients
@@ -140,13 +140,12 @@ define listing
         panes pi at let p
         list indent p chooser-row last str ' '
           p str cols get string str x p str rows get string
-          p str pid get kind str null ne if str ' pid ' p str pid get string else
-            facts if p str state get let st
-              st str exited get kind str null ne if str ' exited ' st str exited get string else
-              st str signal get kind str null ne if str ' signal ' st str signal get string else
-              str ' ended, its status lost' then then
-            then
-          then
+          facts if p str program get let pr pr kind str null ne if
+            pr str pid get kind str null ne if str ' pid ' pr str pid get string else
+            pr str exited get kind str null ne if str ' exited ' pr str exited get string else
+            pr str signal get kind str null ne if str ' signal ' pr str signal get string else
+            str ' ended, its status lost' then then then
+          then then
         end glue
         pi 1 add let pi
       end
@@ -210,6 +209,9 @@ end
 # pane-record prefix action -- source : one complete creation, including its saved options and launch role
 define dump-create
   let action let prefix let p p str launch get let launch p str state get let state
+  p str program get dup kind str null eq if
+    list p str id get string str ' is respawning: dump it once its program takes its place' end glue fail
+  then str argv get let argv
   list
     p dump-warnings
     prefix
@@ -221,9 +223,9 @@ define dump-create
     p dump-cwd let cwd
     cwd str encoding get str utf8 eq if cwd str text get dump-text str 'cwd ' then
     launch str choice get str shell eq if
-      str 'list ' launch str argv get each dump-text end str 'end shell-program '
+      str 'list ' argv each dump-text end str 'end shell-program '
     else
-      true let first-arg launch str argv get each
+      true let first-arg argv each
         dump-text first-arg if str 'program ' false let first-arg else str 'arg ' then
       end
     then

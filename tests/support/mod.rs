@@ -412,7 +412,9 @@ impl Server {
             since = self.changed(pane, &since, deadline)?;
         }
         Ok(self
-            .ok(&["str", pane, "pane", "str", "exited", "get"])?
+            .ok(&[
+                "str", pane, "pane", "str", "program", "get", "str", "exited", "get",
+            ])?
             .trim()
             .to_owned())
     }

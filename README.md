@@ -43,7 +43,9 @@ pane, tells each attached terminal why, and removes its socket.
 A pane runs your shell (the `shell` setting: `fux help set`), or the program
 it was given (`new-tab`, `split`). A shell's pane closes when its shell exits,
 showing its viewers the exit status; a program's pane stays, its exit told,
-until `kill` closes it or `respawn` starts it again. A tab closes with its
+until `kill` closes it or `respawn` starts it again. The pane's `program`
+record (`fux %2 str program get json`) is its program's generation, argv,
+process, state and how it ended (`fux help json`). A tab closes with its
 last pane, a workspace with its last tab or workspace.
 A pane's lines re-wrap when its width changes, history included.
 

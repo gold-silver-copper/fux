@@ -378,17 +378,17 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
         let base = [
             ("id", id(AnyRef::Pane(p.id),run)), ("tab", id(AnyRef::Tab(p.tab),run)),
             ("name", b.optional(p.name.as_deref())?), ("label", b.text(&p.label)?), ("title", b.text(&p.title)?),
-            ("pid", p.pid.map(number).unwrap_or_else(|| Ok(null()))?),
             ("rows", number(p.rows)?), ("cols", number(p.cols)?),
             ("row", p.row.map(number).unwrap_or_else(|| Ok(null()))?), ("col", p.col.map(number).unwrap_or_else(|| Ok(null()))?),
             ("version", b.text(&p.version.to_string())?),
         ];
-        let mut fields = Vec::with_capacity(base.len().saturating_add(3));
+        let mut fields = Vec::with_capacity(base.len().saturating_add(4));
         for (key, value) in base { fields.push((key.to_owned(), value)); }
+        if let Some(program) = &p.program { fields.push(("program".to_owned(), b.json(program, 0)?)); }
         if let Some(state) = &p.state { fields.push(("state".to_owned(), b.json(state, 0)?)); }
         if let Some(l) = &p.launch {
             let launch = record! { b; "choice" => b.text(if l.shell { "shell" } else { "program" })?,
-                "argv" => b.list(&l.argv, |b,s| b.text(s))?, "cwd" => b.path(&l.cwd)?
+                "cwd" => b.path(&l.cwd)?
             }?;
             fields.push(("launch".to_owned(), launch));
         }

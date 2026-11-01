@@ -3014,7 +3014,6 @@ impl Session {
 
     /// A pane's state, as `ls json` has it.
     fn pane_json<'a>(&'a self, p: &'a Pane) -> Result<Fields, Error> {
-        let pid = |c: &Child| Json::Int(i64::from(c.leader.pid().as_raw()));
         let tab = self.locate(p.id()).and_then(|(_, tab)| self.tab(tab));
         let at = tab.and_then(|tab| self.sized(tab).rect(p.id()));
         let values = [
@@ -3026,8 +3025,8 @@ impl Session {
             ("cols", Json::int(p.size().cols())),
             ("row", at.map_or(Json::Null, |r| Json::int(r.y()))),
             ("col", at.map_or(Json::Null, |r| Json::int(r.x()))),
-            ("pid", p.process().child().map_or(Json::Null, pid)),
             ("version", Json::str(format!("{}", p.version(self.run)))),
+            ("program", crate::capture::program(p)?),
         ];
         let mut fields = Vec::with_capacity(values.len());
         fields.extend(values);
@@ -3052,10 +3051,6 @@ impl Session {
                     "label" => Json::str(format!("{}", pane.display_label())),
                     "rows" => Json::int(pane.size().rows()),
                     "cols" => Json::int(pane.size().cols()),
-                    "pid" => pane
-                        .process()
-                        .child()
-                        .map_or(Json::Null, |c| Json::int(c.leader.pid().as_raw())),
                     "version" => Json::str(format!("{}", pane.version(self.run))),
                     _ => self
                         .pane_json(pane)?
@@ -3856,8 +3851,8 @@ mod tests {
                     .iter_mut()
                     .find(|p| p.id == PaneId::of(2))
                     .ok_or("pane")?;
-                pane.pid = pid;
-                pane.state = Some(Json::Object(vec![
+                pane.program = Some(Json::Object(vec![
+                    ("pid".into(), pid.map_or(Json::Null, Json::Int)),
                     ("exited".into(), exited.clone()),
                     ("signal".into(), signal.clone()),
                 ]));
@@ -4352,7 +4347,11 @@ mod tests {
                 assert_eq!(pane.cwd.is_some(), projection == Projection::Recipe);
                 if let Some(launch) = &pane.launch {
                     assert!(launch.shell);
-                    assert!(!launch.argv.is_empty());
+                    let Some(Json::Object(program)) = &pane.program else {
+                        return Err("no program".into());
+                    };
+                    let argv = program.iter().find(|(k, _)| k == "argv");
+                    assert!(matches!(argv, Some((_, Json::Array(a))) if !a.is_empty()));
                 }
             }
             if let Some(launch) = snapshot.panes.first_mut().and_then(|p| p.launch.as_mut()) {
@@ -6078,6 +6077,8 @@ mod tests {
             assert!(sent.is_err_and(|e| e.contains("respawning")));
             let signalled = s.signalled(id).map(drop).map_err(|e| e.to_string());
             assert!(signalled.is_err_and(|e| e.contains("respawning")));
+            // Nor has it a program of its own till the new one takes its place.
+            assert_eq!(output(&mut s, "%2 str program get json")?.trim(), "null");
             turns(&mut s, id, &mut waiting)?;
             let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
             assert!(lines.contains(r#""respawned","pane":"%2""#), "{lines}");
@@ -6349,7 +6350,7 @@ mod tests {
         assert!(s.pane(id).is_ok_and(|p| p.input().is_empty()));
         let json = output(&mut s, "%2 capture json")?;
         assert!(
-            json.contains(r#""input_queued":0,"input_unread":3"#),
+            json.contains(r#""input_unread":3,"#) && json.contains(r#""input_queued":0,"#),
             "{json}"
         );
         // Respawned over while it runs, with input it has not read.
@@ -6597,7 +6598,7 @@ mod tests {
         }
         let told = exited(&s);
         let writing = matches!(fuxix::process::ended(writer), Ok(None));
-        let status = output(&mut s, "%2 1 until-ended str exited get");
+        let status = output(&mut s, "%2 1 until-ended str program get str exited get");
         let screen = |s: &Session| s.pane(id).map(|p| p.version(s.run).counts.screen);
         let at_exit = screen(&s)?;
         // Its terminal is read on, a turn at a time, others served between:

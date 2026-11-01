@@ -102,7 +102,8 @@ fn a_pipeline_keeps_its_group_when_its_leader_is_gone() -> Outcome {
     let (_, shell) = server.newest_pane()?;
     server.type_line("%1", "true | sleep 300")?;
     eventually("a foreground group whose leader exited", || {
-        let group = server.ok(&["%1", "str", "foreground_group", "get"])?;
+        let program = ["%1", "str", "program", "get"];
+        let group = server.ok(&[&program[..], &["str", "foreground_group", "get"]].concat())?;
         let group = group.trim().parse::<i32>().ok();
         Ok(group.is_some_and(|g| g != shell && !exists(g)))
     })?;

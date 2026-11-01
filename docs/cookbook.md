@@ -54,8 +54,8 @@ fux opts str work in 80 24 size str sh program new-tab str shell rename
 Start it in a new tab, or in a split of a pane, and print its exit status.
 
 ```sh
-fux opts str work in 80 24 size str sh program str -c arg str 'sleep 1; exit 3' arg new-tab 60 until-ended str exited get
-fux str shell pane str vertical axis str sh program str -c arg str 'exit 5' arg split 60 until-ended str exited get
+fux opts str work in 80 24 size str sh program str -c arg str 'sleep 1; exit 3' arg new-tab 60 until-ended str program get str exited get
+fux str shell pane str vertical axis str sh program str -c arg str 'exit 5' arg split 60 until-ended str program get str exited get
 ```
 
 ## Type a line, send keys
@@ -118,13 +118,14 @@ As JSON, one object a line, for `jq` (`fux help json` says every field):
 
 ```sh
 fux str shell pane capture json | jq -r '.version, .lines[-1]'
-fux ls | jq -r '.panes[] | [.id, .name // "", .state.exited // ""] | @tsv'
+fux ls | jq -r '.panes[] | [.id, .name // "", .program.exited // ""] | @tsv'
 ```
 
 ## What a pane runs, and where
 
-fux gives the pane's process (`pid`) and its terminal's foreground
-process group (`foreground_group`); the OS says what they run. The
+fux gives the pane's program's process (`pid`) and its terminal's
+foreground process group (`foreground_group`), in its `program` record;
+the OS says what they run. The
 group's leader may have exited while the rest of a pipeline runs on:
 then `ps -p` fails, the leader's command and directory are unknown, and
 `pgrep -g` still lists the group. Here a second pane, `piped`, runs a
@@ -134,13 +135,13 @@ pipeline whose leader `true` exits at once.
 fux opts str work in 80 24 size str sh program new-tab str piped rename > /dev/null
 fux str piped pane str '$' 30 shows > /dev/null
 fux str piped pane str 'true | sleep 300' line > /dev/null
-until G=$(fux str piped pane str foreground_group get) &&
-  [ "$G" != "$(fux str piped pane str pid get)" ] && ! kill -0 "$G" 2> /dev/null; do sleep 0.1; done
+until G=$(fux str piped pane str program get str foreground_group get) &&
+  [ "$G" != "$(fux str piped pane str program get str pid get)" ] && ! kill -0 "$G" 2> /dev/null; do sleep 0.1; done
 ```
 
 ```sh
 for p in shell piped; do
-  G=$(fux str "$p" pane str foreground_group get)
+  G=$(fux str "$p" pane str program get str foreground_group get)
   if ps -o comm=,args= -p "$G"; then
     if [ "$(uname)" = Linux ]; then
       tr '\0' '\n' < "/proc/$G/cmdline"
@@ -245,7 +246,7 @@ fux sets no time limits of its own: `timeout(1)` bounds a fux command
 
 ```sh
 timeout 2 fux str shell pane str 'never shown' 600 shows || [ $? -eq 124 ]
-fux opts str work in 80 24 size str timeout program str 2 arg str sleep arg str 600 arg new-tab 60 until-ended str exited get
+fux opts str work in 80 24 size str timeout program str 2 arg str sleep arg str 600 arg new-tab 60 until-ended str program get str exited get
 ```
 
 ## A project with agent workspaces

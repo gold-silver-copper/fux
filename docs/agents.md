@@ -26,7 +26,7 @@ Run with `timeout 30 fux -` and this program on stdin:
 opts str agent in 80 24 size str sh program str -c arg
 str 'echo result=42; exit 7' arg new-tab
 10 until-ended let seen
-seen string print seen str exited get print
+seen string print seen str program get str exited get print
 ```
 
 **Guard input against the screen you read.** Save this as `reply.fux` and
@@ -154,7 +154,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
 
   ```fux
   opts str agent in 80 24 size str cargo program str test arg new-tab
-  600 until-ended str exited get
+  600 until-ended str program get str exited get
   ```
 - **A bell or notification:** its version's `BELLS`, `counts 2 at`, grows,
   as for a command's end.
@@ -273,8 +273,9 @@ panes as it begins and answers changes in watch order, not exit chronology.
 - **Whether a program waits for keys:** fux does not say; no system
   reports it as a fact. Wait for what the program shows when it asks (a
   prompt's text), or for quiet.
-- **What a pane runs, and where:** fux gives `pid` and `foreground_group`
-  (G: `%3 str foreground_group get`); the OS says the rest. Linux:
+- **What a pane runs, and where:** fux gives its program's `pid` and
+  `foreground_group` (G: `%3 str program get str foreground_group get`);
+  the OS says the rest. Linux:
   `ps -o comm=,args= -p G`, `/proc/G/cmdline` (exact arguments),
   `readlink /proc/G/cwd`, `pgrep -a -g G` (the whole group, also once its
   leader exited); macOS: `ps -o comm=,args= -p G`, `lsof -a -p G -d cwd
@@ -348,7 +349,8 @@ holds the workspace's ordered tabs, panes, tree and client placement. Its
 `str panes get` is a local list of records; each record's `str id get` is a
 handle and `str title get` is the retained title. Use `json` to read the flat
 collections in another language. Topology makes no process metadata queries;
-`facts` adds process/terminal state and `recipe` adds saved launch inputs.
+`facts` adds each pane's program and terminal state, and `recipe` adds saved
+launch inputs.
 
 `PANE READ capture`, READ any of: `100 history`, `all-history`,
 `main-screen` (what was printed before a program took the screen),
