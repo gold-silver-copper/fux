@@ -5870,6 +5870,8 @@ mod tests {
             Ok::<_, String>(())
         };
         queue(&mut s, b"abc")?;
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""input_queued":3"#), "{json}");
         let lines = told(&mut s, |s| s.end_program(id, Ended::Exited(0)));
         assert!(
             lines.contains(r#"{"event":"exited","pane":"%2","tab":"@2","workspace":"+2","exited":0,"input_unread":3}"#),
@@ -5882,7 +5884,10 @@ mod tests {
         );
         assert!(s.pane(id).is_ok_and(|p| p.input().is_empty()));
         let json = output(&mut s, "%2 capture json")?;
-        assert!(json.contains(r#""input_unread":3"#), "{json}");
+        assert!(
+            json.contains(r#""input_queued":0,"input_unread":3"#),
+            "{json}"
+        );
         // Respawned over while it runs, with input it has not read.
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
@@ -5901,6 +5906,27 @@ mod tests {
         let json = output(&mut s, "%2 capture json")?;
         assert!(json.contains(r#""input_unread":0"#), "{json}");
         reap(&mut s);
+        Ok(())
+    }
+
+    #[test]
+    fn the_input_modes_a_program_sets_are_its_facts() -> TestResult {
+        let (mut s, _) = attached(24, 80)?;
+        let modes = |s: &mut Session| -> Result<String, String> {
+            let json = output(s, "%1 capture json")?;
+            let from = json.find(r#""mouse_mode""#).ok_or(json.clone())?;
+            let to = json.find(r#","pictures""#).ok_or(json.clone())?;
+            Ok(json.get(from..to).unwrap_or_default().to_owned())
+        };
+        assert_eq!(
+            modes(&mut s)?,
+            r#""mouse_mode":null,"mouse_encoding":"default","bracketed_paste":false,"focus_events":false,"app_cursor":false,"app_keypad":false,"keyboard_flags":0"#
+        );
+        s.out(PaneId::of(1), b"\x1b[?1002;1006;2004;1004;1h\x1b=\x1b[>5u");
+        assert_eq!(
+            modes(&mut s)?,
+            r#""mouse_mode":"button_motion","mouse_encoding":"sgr","bracketed_paste":true,"focus_events":true,"app_cursor":true,"app_keypad":true,"keyboard_flags":5"#
+        );
         Ok(())
     }
 

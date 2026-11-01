@@ -9,7 +9,7 @@ capture[pane].cell: width height
 capture[pane].lost: copies_cut copies_not_text pictures memory
 capture[pane].pictures[]: row col rows cropped cols width height
 capture[pane].styles[][]: col len fg bg bold inverse hidden dim italic strikeout underline blink
-capture[pane]: screen_rows screen_cols screen_cursor lines styles pane version wrap_pending title foreground_group hung_up read_error exited signal alt_screen mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_unread above
+capture[pane]: screen_rows screen_cols screen_cursor lines styles pane version wrap_pending title foreground_group hung_up read_error exited signal alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_queued input_unread above
 dictionary[]: name provenance effect documentation definition codes
 events.events[].origin[client]: kind client
 events.events[].origin[outside]: kind
@@ -57,7 +57,7 @@ snapshot.facts.panes[].launch: choice argv cwd
 snapshot.facts.panes[].state.cell: width height
 snapshot.facts.panes[].state.lost: copies_cut copies_not_text pictures memory
 snapshot.facts.panes[].state.pictures[]: row col rows cropped cols width height
-snapshot.facts.panes[].state: foreground_group hung_up read_error exited signal alt_screen mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_unread
+snapshot.facts.panes[].state: foreground_group hung_up read_error exited signal alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_queued input_unread
 snapshot.facts.panes[]: id tab name label title pid rows cols version state launch
 snapshot.facts.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
 snapshot.facts.workspaces[]: id name label tabs
@@ -74,7 +74,7 @@ snapshot.recipe.panes[].launch: choice argv cwd
 snapshot.recipe.panes[].state.cell: width height
 snapshot.recipe.panes[].state.lost: copies_cut copies_not_text pictures memory
 snapshot.recipe.panes[].state.pictures[]: row col rows cropped cols width height
-snapshot.recipe.panes[].state: foreground_group hung_up read_error exited signal alt_screen mouse_mode bracketed_paste pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_unread
+snapshot.recipe.panes[].state: foreground_group hung_up read_error exited signal alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status bells notification truncated input_queued input_unread
 snapshot.recipe.panes[]: id tab name label title pid rows cols version state launch cwd
 snapshot.recipe.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
 snapshot.recipe.workspaces[]: id name label tabs

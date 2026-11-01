@@ -3,7 +3,9 @@
 //! pane's state, as data (`Captured`) that the client renders as text or
 //! as JSON.
 use crate::pane::{Pane, Process};
-use fux_vt::{Attributes, CommandMark, Mode, MouseProtocolMode, Row, Screen};
+use fux_vt::{
+    Attributes, CommandMark, Mode, MouseProtocolEncoding, MouseProtocolMode, Row, Screen,
+};
 use fux_wire::answer::{Captured, Line, Of, Run, highlighted};
 use fux_wire::command::{CaptureView, Source};
 use fux_wire::id::ClientId;
@@ -413,9 +415,9 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
 }
 
 /// What is known of a pane's program, for `json`: its foreground group,
-/// the status it exited with, and the modes
-/// that say how it takes input, and the cell its program is told, by its
-/// tab's host (`Session::host_panes`).
+/// the status it exited with, the modes that say how it takes input, the
+/// input queued for it, and the cell its program is told, by its tab's
+/// host (`Session::host_panes`).
 pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::code::Error> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
@@ -486,7 +488,30 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
                 MouseProtocolMode::AnyMotion => Json::str("any_motion"),
             },
         ),
+        // How it asked for mouse reports to be spelled.
+        (
+            "mouse_encoding",
+            Json::str(match screen.mouse_protocol_encoding() {
+                MouseProtocolEncoding::Default => "default",
+                MouseProtocolEncoding::Utf8 => "utf8",
+                MouseProtocolEncoding::Sgr => "sgr",
+                MouseProtocolEncoding::Urxvt => "urxvt",
+            }),
+        ),
         ("bracketed_paste", Json::Bool(bracketed_paste)),
+        (
+            "focus_events",
+            Json::Bool(screen.mode(Mode::FocusReporting)),
+        ),
+        (
+            "app_cursor",
+            Json::Bool(screen.mode(Mode::ApplicationCursor)),
+        ),
+        (
+            "app_keypad",
+            Json::Bool(screen.mode(Mode::ApplicationKeypad)),
+        ),
+        ("keyboard_flags", Json::int(screen.kitty_keyboard_flags())),
         ("pictures", pictures),
         ("lost", lost),
         ("cell", cell),
@@ -514,6 +539,8 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
             notification.map_or(Json::Null, |n| Json::str(n.as_str())),
         ),
         ("truncated", Json::Array(cut_fields)),
+        // Input accepted and not yet written to its terminal.
+        ("input_queued", Json::count(pane.input().len())),
         ("input_unread", Json::count(pane.left.input)),
     ];
     let mut fields = Vec::with_capacity(values.len().saturating_add(1));
