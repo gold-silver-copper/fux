@@ -832,12 +832,8 @@ impl Stack {
     fn children_mut(&mut self) -> impl Iterator<Item = &mut Tree> {
         std::iter::once(&mut self.first).chain(&mut self.rest)
     }
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.rest.len().saturating_add(1)
-    }
-    /// Never: a stack has two or more children.
-    pub fn is_empty(&self) -> bool {
-        false
     }
     /// What `client` is shown here: its choice, else the first child.
     pub fn shown(&self, client: ClientId) -> Shown<usize> {
@@ -1541,6 +1537,17 @@ mod tests {
         assert_eq!(root.split((p(2), p(3)), way, Shares::HALVED), Ok(()));
         assert_eq!(root.panes(), [0, 1, 2, 3, 4].map(p));
         assert_eq!(from_nodes(&root.nodes()).map_err(|e| e.to_string())?, root);
+        let mut deep = Tree::Pane(p(0));
+        (1..70).for_each(|n| deep.append(p(n)));
+        let leaves = deep
+            .nodes()
+            .iter()
+            .filter(|n| matches!(n, Node::Pane(_)))
+            .count();
+        assert_eq!(
+            leaves, 70,
+            "a tree deeper than a flat layout may be is flat"
+        );
         let few = |children| vec![Node::Stack { children }, Node::Pane(p(1))];
         for nodes in [few(vec![]), few(vec![1])] {
             let refused = from_nodes(&nodes).map(drop).map_err(|e| e.code());

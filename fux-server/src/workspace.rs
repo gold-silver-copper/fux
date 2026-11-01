@@ -573,7 +573,7 @@ fn rename(
 }
 
 /// A client's place, its current child in each node, and whether it is
-/// shown each pane, of those in a stack's child (`Parts::places`).
+/// shown each pane (`Parts::places`).
 type Place = (
     Option<crate::journal::PaneAt>,
     BTreeMap<Option<AnyRef>, AnyRef>,
@@ -796,9 +796,9 @@ impl Parts {
 
     /// Journals `shown` for each client whose place, current child in a
     /// node there before and after (not one made or closed), or whether it
-    /// is shown a pane there before and after, is not as `before`: the place left in the workspaces as they were nested then
-    /// (`nesting`), the one reached as they are now, and one place that
-    /// stays in both.
+    /// is shown a pane there before and after, is not as `before`: the
+    /// place left in the workspaces as they were nested then (`nesting`),
+    /// the one reached as they are now, and one place that stays in both.
     fn moved(&mut self, before: BTreeMap<ClientId, Place>, nesting: &BTreeMap<WsId, WsId>) {
         let after = self.places();
         let clients: BTreeSet<ClientId> = before.keys().chain(after.keys()).copied().collect();
