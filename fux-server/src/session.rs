@@ -1225,8 +1225,12 @@ impl Session {
                     })?;
                     self.start(size, initial, now)?;
                 }
-                (self.parts.workspaces().first().map(|w| AnyRef::Workspace(w.id())))
-                    .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?
+                (self
+                    .parts
+                    .workspaces()
+                    .first()
+                    .map(|w| AnyRef::Workspace(w.id())))
+                .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?
             }
         };
         let id = self.ids.client()?;
@@ -2349,7 +2353,9 @@ impl Session {
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
             &Command::Members { target, members } => {
                 let ids = match members {
-                    Members::Panes => (self.panes_of(target)?.into_iter().map(AnyRef::Pane)).collect(),
+                    Members::Panes => {
+                        (self.panes_of(target)?.into_iter().map(AnyRef::Pane)).collect()
+                    }
                     Members::Tabs => (self.tabs_of(target)?.into_iter().map(AnyRef::Tab)).collect(),
                 };
                 Ok(Body::Handles(ids).into())
@@ -2421,7 +2427,7 @@ impl Session {
         // A pane's own tab.
         let target = match self.there(target)? {
             AnyRef::Pane(p) => AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1),
-            target => target,
+            target @ (AnyRef::Tab(_) | AnyRef::Workspace(_)) => target,
         };
         let tabs = self.tabs_of(Some(target))?;
         if let Some(size) = size {
@@ -2818,7 +2824,8 @@ impl Session {
     /// next or previous among what holds it, going round, the one it was
     /// shown there before, or a pane's neighbour on its screen.
     fn step(&self, view: &View, from: AnyRef, way: Way) -> Result<AnyRef, Error> {
-        let (siblings, shown) = (self.parts.siblings(from, view.id)).ok_or(Error::NoClient(view.id))?;
+        let (siblings, shown) =
+            (self.parts.siblings(from, view.id)).ok_or(Error::NoClient(view.id))?;
         let kind = from.kind();
         match (way, from) {
             (Way::Step(toward), _) => {
@@ -2838,11 +2845,17 @@ impl Session {
                 let tab = self.locate(from).and_then(|(_, tab)| self.root(tab));
                 let placement = tab.map(|root| layout::place(root, view.pane_area()));
                 let found = placement.and_then(|p| layout::neighbor(&p, from, direction));
-                found.map(AnyRef::Pane).ok_or(Error::NoNeighbor { from, direction })
+                found
+                    .map(AnyRef::Pane)
+                    .ok_or(Error::NoNeighbor { from, direction })
             }
             (Way::Toward(direction), AnyRef::Tab(_) | AnyRef::Workspace(_)) => Err(fail(
                 Raise::BadValue,
-                format!("{} steps among a tab's panes: {from} is a {}", direction.name(), kind.name()),
+                format!(
+                    "{} steps among a tab's panes: {from} is a {}",
+                    direction.name(),
+                    kind.name()
+                ),
             )),
         }
     }
@@ -3780,7 +3793,10 @@ mod tests {
         // A tab's whole layout; a pane's tab as far as it is in it, the
         // pane alone.
         for (scope, panes) in [
-            (Scope::Target(AnyRef::Tab("@2".parse().map_err(|_| "tab")?)), 2),
+            (
+                Scope::Target(AnyRef::Tab("@2".parse().map_err(|_| "tab")?)),
+                2,
+            ),
             (Scope::Target(AnyRef::Pane(PaneId::of(2))), 1),
         ] {
             let Body::Snapshot(snapshot) = s.inspect(scope, Projection::Topology)? else {
@@ -3896,21 +3912,30 @@ mod tests {
                     holds(ws.stack(), client)?;
                     for tab in ws.tabs() {
                         let Shown { current, last } = tab.seat(client).ok_or("no seat")?.focus;
-                        let ok = tab.holds(current)
-                            && last.is_none_or(|l| l != current && tab.holds(l));
+                        let ok =
+                            tab.holds(current) && last.is_none_or(|l| l != current && tab.holds(l));
                         ok.then_some(()).ok_or("a focus that is not the tab's")?;
                     }
                 }
             }
             Ok(())
         }
-        let shown = |s: &Session, client| s.workspace(WsId::of(1)).and_then(|w| w.stack().shown(client));
+        let shown = |s: &Session, client| {
+            s.workspace(WsId::of(1))
+                .and_then(|w| w.stack().shown(client))
+        };
         let at = |current, last: Option<u32>| {
-            Some(Shown { current: TabId::of(current), last: last.map(TabId::of) })
+            Some(Shown {
+                current: TabId::of(current),
+                last: last.map(TabId::of),
+            })
         };
         let (mut s, c) = attached(10, 40)?;
         let d = s.attach(10, 40, None)?;
-        run(&mut s, "opts +1 in 80 24 size new-tab drop opts +1 in 80 24 size new-tab drop")?;
+        run(
+            &mut s,
+            "opts +1 in 80 24 size new-tab drop opts +1 in 80 24 size new-tab drop",
+        )?;
         invariants(&s)?;
         output_as(&mut s, Some(c), "me @1 str next step me @2 str next step")?;
         assert_eq!((shown(&s, c), shown(&s, d)), (at(3, Some(2)), at(1, None)));
@@ -3923,18 +3948,26 @@ mod tests {
         run(&mut s, "@1 kill")?;
         assert_eq!((shown(&s, c), shown(&s, d)), (at(3, None), at(3, None)));
         invariants(&s)?;
-        let error = output_as(&mut s, Some(c), "me @3 str last step").err().ok_or("a last")?;
+        let error = output_as(&mut s, Some(c), "me @3 str last step")
+            .err()
+            .ok_or("a last")?;
         assert!(error.contains("no previously shown tab"), "{error}");
         // So do workspaces and panes.
         run(&mut s, "opts str other in 80 24 size new-tab drop")?;
         output_as(&mut s, Some(c), "me +1 str next step")?;
         assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(2)));
         run(&mut s, "+2 kill %3 str horizontal axis split drop")?;
-        assert_eq!(s.place(c).map(|p| (p.ws, p.pane)), Some((WsId::of(1), PaneId::of(5))));
+        assert_eq!(
+            s.place(c).map(|p| (p.ws, p.pane)),
+            Some((WsId::of(1), PaneId::of(5)))
+        );
         invariants(&s)?;
         output_as(&mut s, Some(d), "me %5 str left step")?;
         run(&mut s, "%5 kill")?;
-        assert_eq!([c, d].map(|v| s.place(v).map(|p| p.pane)), [Some(PaneId::of(3)); 2]);
+        assert_eq!(
+            [c, d].map(|v| s.place(v).map(|p| p.pane)),
+            [Some(PaneId::of(3)); 2]
+        );
         invariants(&s)?;
         Ok(())
     }
@@ -6387,7 +6420,9 @@ mod tests {
         let journal = fux::script::default_state()?.preferences.journal_entries;
         let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id, journal);
         s.test_keymap = fux::script::default_state()?.draft();
-        let refused = run(&mut s, "opts str new-workspace in new-tab").err().unwrap_or_default();
+        let refused = run(&mut s, "opts str new-workspace in new-tab")
+            .err()
+            .unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("give a size"),
             "{refused}"
@@ -6725,7 +6760,10 @@ mod tests {
         let taken = "opts 80 24 size str workspace-3 in str workspace-3 name new-tab";
         assert!(run(&mut s, taken).is_err());
         let third = format!("%3:0.0.0.0.0:{}\n", s.run);
-        assert_eq!(output(&mut s, "opts str new-workspace in 80 24 size new-tab")?, third);
+        assert_eq!(
+            output(&mut s, "opts str new-workspace in 80 24 size new-tab")?,
+            third
+        );
         let names: Vec<Option<&str>> = s.parts.workspaces().iter().map(|w| w.name()).collect();
         assert_eq!(names, [None, Some("workspace-3"), None]);
         // A move to a new workspace with no tab ID left takes no workspace

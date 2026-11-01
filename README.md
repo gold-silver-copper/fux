@@ -41,7 +41,7 @@ SIGINT, SIGHUP, or until its last pane closes. It then hangs up every
 pane, tells each attached terminal why, and removes its socket.
 
 A pane runs your shell (the `shell` setting: `fux help set`), or the program
-it was given (`new-tab`, `new-workspace`, `split`). A shell's pane closes when its shell exits,
+it was given (`new-tab`, `split`). A shell's pane closes when its shell exits,
 showing its viewers the exit status; a program's pane stays, its exit told,
 until `kill` closes it or `respawn` starts it again. A tab closes with its
 last pane, a workspace with its last tab.
@@ -179,7 +179,7 @@ time or steps: `ulimit`, cgroups and `timeout` do.
 
 What a word that acts takes (**options**, a wait, keys) goes
 on the pane before it, in any order: the pane given them becomes a request,
-which the word at the end acts on. `new-tab` and `new-workspace` have
+which the word at the end acts on. `new-tab` has
 no pane yet, nor has `attach`: they start from `opts`, empty options.
 A single-valued option occurs once; arguments and input fragments accumulate
 in order. `split` requires `str horizontal axis` (side by side) or
@@ -187,18 +187,31 @@ in order. `split` requires `str horizontal axis` (side by side) or
 percent, and `str horizontal` or `str vertical`. Mouse events are positional:
 `%2 str click 3 10 send-mouse`.
 `all str CURSOR events` streams events as they come; `next-events` returns one batch.
-`new-tab` and `new-workspace` start a shell, or the program given (`program`, then each `arg`; a
+`new-tab` starts a shell, or the program given (`program`, then each `arg`; a
 shell's line is `str sh program str -c arg str LINE arg`), whose pane stays
-once it exits. Asked from a key or prompt, they move its client to the new
-tab; from the command line, no client. Their tab is laid out on `COLS ROWS size`, else on the
+once it exits, in the workspace `in` names: one not there is made, and
+`str new-workspace in` makes an unnamed one. Asked from a key or prompt, it
+moves its client to the new tab; from the command line, no client. Their tab is laid out on `COLS ROWS size`, else on the
 caller's own screen (a client's keys), else on the caller's tab (`fux`
 run in a pane): never on the screen of a client that does not show the
 caller's tab. Run from outside fux, a size must be given: fux makes none
 up.
 
-`all` names the whole session for `info`, `dump`, `notify` and `events`;
-`ls` is the library word `all info`. `CLIENT HANDLE show` follows a pane,
-tab or workspace. `WORKSPACE panes` lists panes, and `WORKSPACE tabs` lists tabs.
+A handle names everything under it, and `all` the whole session: `info`,
+`dump`, `events`, `panes`, `tabs` and `kill` take any of them (a pane holds
+no tabs, and `PANE info` or `PANE dump` has its tab hold that pane alone);
+`ls` is the library word `all info`.
+
+The server shows each client one workspace at a time, a workspace one of
+its tabs, and a tab focuses one of its panes: each client its own at every
+level, each remembering the one it showed there before. `CLIENT HANDLE
+show` shows a client a pane, tab or workspace, and each that holds it.
+`CLIENT HANDLE WAY step` shows it a sibling of the handle: `str next` or
+`str previous` among what holds it, going round; `str last`, the one it was
+shown there before; or for a pane `str left`, `str right`, `str up` or
+`str down`, its neighbour on the client's screen. Stepping to another pane
+of a zoomed tab ends the zoom. When what a client is shown closes, it is
+shown the one before, else the next, else the one before that in order.
 `capture` takes a pane or client; only panes take capture options and have
 versions. `PANE version` reads the current version; `ANSWER version` and
 `CAPTURE version` return the version held when observed. `--version` prints
@@ -314,14 +327,14 @@ prefix again sends it to the pane.
 
 | Key | Runs | Does |
 | --- | --- | --- |
-| `h` `j` `k` `l` | `me str left focus` … | focus the pane that way |
-| `o` / `q` | `me str next focus` / `me str last focus` | focus the next / last pane |
+| `h` `j` `k` `l` | `me-focused str left step` … | focus the pane that way |
+| `o` / `q` | `me-focused str next step` / `me-focused str last step` | focus the next / last pane |
 | `v` / `s` | `me focused str horizontal axis split drop` / `… str vertical axis …` | split side by side / stacked |
-| `x` | `me me focused confirm-close` | close the pane (asks: `y` or Enter closes, `n` or Esc keeps it) |
+| `x` | `me-focused confirm-close` | close the pane (asks: `y` or Enter closes, `n` or Esc keeps it) |
 | `z` | `me focused zoom` | zoom the pane, or restore it, on every screen showing its tab |
-| `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
+| `a`, then a key | `me-focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
 | `c` | `me edit-history` | the pane's history in your `$EDITOR`, at its end, in a split that closes when the editor exits |
-| `n` / `b` | `me str next step-tab` / `me str previous step-tab` | next / previous tab |
+| `n` / `b` | `me-focused tab str next step` / `… str previous step` | next / previous tab |
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
 | `r`, then `h` `j` `k` `l` | `me focused str left 1 move-border` … | move a border one cell |
@@ -344,23 +357,26 @@ before yours, in the words yours uses
 command prompt prints yours the same way. From the CLI, `fux list-keys`
 prints these defaults.
 
-`me str last step-tab` and `me str last step-workspace` return to the
-previous distinct tab or workspace that this attachment showed. Last tab
-can cross workspaces; last workspace returns to that workspace's remembered
-tab. Repeating `last` toggles the two places. Showing the same place again
-or reordering it does not change history. Each attachment retains just one
-previous identity of each kind; closing it clears it, with no older fallback.
-If a close selects the remembered place, it ceases to be its own previous
-place. With no previous place, the step refuses. Detaching discards this history.
-For example, bind `str 't q' code me str last step-tab end bind` in your config.
+`me-focused` is the keys' own word, `me me focused`: the client and the pane
+it focuses. `me-focused tab str last step` and `me-focused workspace str
+last step` return to the tab this client was shown last in its workspace,
+or to the workspace it was shown last, with the tab it was shown there.
+Repeating `last` toggles the two. Showing the same one again or reordering
+it does not change what was last; closing it forgets it. With no last one,
+the step refuses. Detaching discards it all. For example, bind
+`str 't q' code me-focused tab str last step end bind` in your config.
 
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
   or panes. A chooser acts on the item it was opened for, even once
   renamed, and closes if that item is gone.
   Enter or `y` selects, `r` renames, `x` closes, Esc, `q` or `n` cancels; arrows,
   `j`/`k`, PageUp/PageDown and Home/End move.
-  These five choosers are library words over one `choose` primitive. Each
-  reads one topology snapshot for its rows, source and current marker.
+  They are three library words over one `choose` primitive:
+  `CLIENT HANDLE choose-among` shows the sibling chosen (`t g` is
+  `me-focused tab choose-among`), `CLIENT PANE HANDLE choose-move` moves the
+  pane to it (`a t` is `me-focused dup tab choose-move`), and `choose-pane`
+  swaps. Each reads one topology snapshot for its rows, source and current
+  marker.
   Custom lists use `choose (client title rows current selected callback --)`:
   rows are `[payload,label]`, and both indices are `[]` or `[index]`.
   Selection is empty only when there are no rows; the current marker is
@@ -600,7 +616,7 @@ str 't n' code opts new-tab drop end bind         # t is a layer: C-b t n
 str 'r l' code me focused str right 1 move-border end bind  repeat   # C-b r l l l, then Esc
 str g code me focused str vertical axis str lazygit program split drop end bind
   str 'lazygit' label  str Tools group            # what the column shows, and under which heading
-str M-h code me str left focus end bind-root      # no prefix: Alt-h alone
+str M-h code me-focused str left step end bind-root   # no prefix: Alt-h alone
 ```
 
 `fux help set` lists the settings: what each takes and where its bundled
@@ -930,13 +946,13 @@ Against mistakes, rather than against a program of yours that means harm:
   terminal is attached (headless clients do not count), is refused:
   `kill` on its process stops it anyway (`fux status`'s `server_pid`; on
   macOS, which says none, `lsof -t SOCKET`). `kill` takes a
-  handle, never a default, so an empty variable closes nothing.
+  handle or `all`, never a default, so an empty variable closes nothing.
 - To keep an agent to panes of its own, give it a server of its own, a
   session apart from yours:
 
   ```sh
   FUX_SOCKET=/run/user/1000/agent.sock fux start
-  FUX_SOCKET=/run/user/1000/agent.sock fux opts 120 40 size new-workspace
+  FUX_SOCKET=/run/user/1000/agent.sock fux opts str agent in 120 40 size new-tab
   ```
 
   An agent given only that socket reaches only what runs there; you watch

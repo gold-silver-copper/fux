@@ -420,8 +420,8 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     let client = said(&["str", "c9", "client", "focused"])?;
     assert!(client.contains("no client c9"), "{client}");
-    // What a word takes, all of it: focus's every way, text's booleans.
-    let way = said(&["str", "c9", "client", "str", "sideways", "focus"])?;
+    // What a word takes, all of it: step's every way, text's booleans.
+    let way = said(&["str", "c9", "client", "%1", "str", "sideways", "step"])?;
     assert!(way.contains("up, down, next, previous or last"), "{way}");
     let text = said(&["%1", "opts", "80", "24", "size", "text"])?;
     assert!(text.contains("a string, a number or a boolean"), "{text}");

@@ -61,7 +61,7 @@ impl<I: Copy + Eq> Shown<I> {
             return false;
         }
         let at = was.iter().position(|c| *c == self.current).unwrap_or(0);
-        let (before, after) = was.split_at(at);
+        let (before, after) = was.split_at_checked(at).unwrap_or((was, &[]));
         let mut near = after.iter().chain(before.iter().rev()).copied();
         let next = self.last.take().or_else(|| near.find(|c| kept(*c)));
         match next.or(first) {
@@ -151,8 +151,10 @@ impl<C: Child> Stack<C> {
     /// it was shown before, else its neighbour.
     fn remove(&mut self, id: C::Id) -> Option<C> {
         let was: Vec<C::Id> = self.children.iter().map(C::id).collect();
-        let index = was.iter().position(|c| *c == id)?;
-        let child = self.children.remove(index);
+        let (gone, kept) = (std::mem::take(&mut self.children).into_iter())
+            .partition::<Vec<C>, _>(|c| c.id() == id);
+        self.children = kept;
+        let child = gone.into_iter().next()?;
         for shown in self.shown.values_mut() {
             shown.keep(&was, |c| c != id, None);
         }
@@ -471,7 +473,9 @@ impl Tab {
         }
         let root = &self.root;
         for seat in self.seats.values_mut() {
-            let moved = seat.focus.keep(&was, |p| root.contains(p), Some(root.first_pane()));
+            let moved = seat
+                .focus
+                .keep(&was, |p| root.contains(p), Some(root.first_pane()));
             seat.held &= !moved;
         }
         out
@@ -599,7 +603,11 @@ impl Parts {
                 (panes, seat)
             }
             AnyRef::Tab(tab) => {
-                let ws = self.workspaces.children.iter().find(|w| w.tabs.get(tab).is_some())?;
+                let ws = self
+                    .workspaces
+                    .children
+                    .iter()
+                    .find(|w| w.tabs.get(tab).is_some())?;
                 among(&ws.tabs, client, AnyRef::Tab)
             }
             AnyRef::Workspace(_) => among(&self.workspaces, client, AnyRef::Workspace),
@@ -620,7 +628,9 @@ impl Parts {
     fn viewing<R>(&mut self, change: impl FnOnce(&mut Parts) -> R) -> R {
         let places = |parts: &Parts| -> BTreeMap<ClientId, _> {
             let clients = parts.workspaces.clients();
-            clients.map(|c| (c, place_of(&parts.workspaces, c))).collect()
+            clients
+                .map(|c| (c, place_of(&parts.workspaces, c)))
+                .collect()
         };
         let before = places(self);
         let out = change(self);
@@ -695,11 +705,14 @@ impl Parts {
                 if let Some((_, t)) = tab_mut(&mut self.workspaces, tab) {
                     t.set_focus(&mut self.journal, ws, client, pane);
                 }
-                self.workspaces.get_mut(ws).map(|w| w.tabs.show(client, tab));
+                if let Some(w) = self.workspaces.get_mut(ws) {
+                    w.tabs.show(client, tab);
+                }
                 ws
             }
             AnyRef::Tab(tab) => {
-                let Some(w) = (self.workspaces.children.iter_mut()).find(|w| w.tabs.get(tab).is_some())
+                let Some(w) =
+                    (self.workspaces.children.iter_mut()).find(|w| w.tabs.get(tab).is_some())
                 else {
                     return;
                 };

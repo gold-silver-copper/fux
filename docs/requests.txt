@@ -4,14 +4,13 @@ Request::Wait wait: Wait
 Request::NextEvents scope: inspect::Scope, from: Option<events::Cursor>, timeout: Limit
 Command::Inspect scope: inspect::Scope, projection: inspect::Projection
 Command::KillServer
-Command::NewWorkspace name: Option<String>, size: Size, cwd: Option<PathBuf>, start: Start, options: PaneOptions
 Command::NewTab target: Option<WsRef>, name: Option<String>, size: Size, cwd: Option<PathBuf>, start: Start, options: PaneOptions
 Command::Split axis: Axis, target: PaneId, start: Start, cwd: Option<PathBuf>, shares: Option<(NonZeroU32, NonZeroU32)>, options: PaneOptions
 Command::Respawn target: PaneId, kill: bool, argv: Option<Program>
 Command::Notify target: Option<AnyRef>, text: String
 Command::Resize what: Resized
 Command::SendMouse target: PaneId, mouse: Mouse, row: u16, col: u16
-Command::Kill target: AnyRef
+Command::Kill target: Option<AnyRef>
 Command::Signal target: PaneId, signal: fuxix::process::Signal
 Command::Rename target: AnyRef, name: String
 Command::MovePane target: PaneId, to: MoveTo
@@ -25,7 +24,7 @@ Command::Zoom target: PaneId
 Command::CapturePane target: PaneId, history: Option<usize>, view: CaptureView
 Command::Reorder target: AnyRef, toward: Sibling
 Command::Resolve text: String, kind: Kind
-Command::Members target: AnyRef, members: Members
+Command::Members target: Option<AnyRef>, members: Members
 Command::Client client: Option<ClientId>, action: ClientAction
 Scope::All
 Scope::Target target: AnyRef
@@ -37,15 +36,15 @@ Projection::Facts
 Projection::Topology
 Projection::Recipe
 Projection::Field field: String
+WsRef::Id id: WsId
+WsRef::Name name: String
+WsRef::New
 Screen size: fux_vt::Size
 Size rows: u16, cols: u16
 Start::Shell argv: Program
 Start::Program argv: Program
 Program program: String, args: Vec<String>
 PaneOptions history_bytes: HistoryBytes, program_clipboard: bool, reflow: bool, alternate_scroll_lines: ScrollLines, picture_bytes: PictureBytes
-WsRef::Id id: WsId
-WsRef::Name name: String
-WsRef::New
 Axis::Horizontal
 Axis::Vertical
 Resized::Tabs target: AnyRef, size: Size
@@ -103,9 +102,8 @@ ClientAction::Detach
 ClientAction::Capture
 ClientAction::Open screen: callback::Open
 ClientAction::Keys inputs: Vec<Input>
-ClientAction::SelectPane pick: PanePick
-ClientAction::SelectTab pick: Pick<TabId>
-ClientAction::SelectWorkspace pick: Pick<WsRef>
+ClientAction::Show target: AnyRef
+ClientAction::Step from: AnyRef, way: Way
 Open::List list: ListScreen
 Open::Prompt prompt: Prompt
 ListScreen title: String, items: Vec<Item>, current: Option<usize>, selected: usize, about: Option<(AnyRef, Option<command::Run>)>, action: Callback, client: Data
@@ -123,13 +121,9 @@ Data::Code v: Code
 Code words: Vec<String>
 Callback code: Code, args: Vec<Data>
 Prompt title: String, line: String, action: Option<Callback>
-PanePick::Step step: Sibling
-PanePick::Id id: PaneId
-PanePick::Last
-PanePick::Toward direction: Direction
-Pick::Step step: Sibling
-Pick::Last
-Pick::Id id: T
+Way::Step step: Sibling
+Way::Last
+Way::Toward direction: Direction
 Wait since: Since, timeout: Option<Limit>
 Since::Now target: AnyRef
 Since::Version version: Version

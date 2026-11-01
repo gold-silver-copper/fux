@@ -1,8 +1,8 @@
 use super::{Error, Session};
 use crate::view::{ClientKind, Mode};
 use crate::workspace::{Fit, Shown};
-use fux_wire::id::ClientId;
 use fux_wire::command::AnyRef;
+use fux_wire::id::ClientId;
 use fux_wire::inspect::{self, Projection, Scope, Snapshot};
 use fux_wire::json::Json;
 use fux_wire::layout::{Node, Tree};
@@ -209,7 +209,11 @@ impl Session {
                 last,
             })
         };
-        let root = self.parts.stack().shown(client).map(|s| s.map(AnyRef::Workspace));
+        let root = self
+            .parts
+            .stack()
+            .shown(client)
+            .map(|s| s.map(AnyRef::Workspace));
         let mut seats: Vec<_> = seat(None, root).into_iter().collect();
         for ws in self.parts.workspaces() {
             let tabs = ws.stack().shown(client).map(|s| s.map(AnyRef::Tab));

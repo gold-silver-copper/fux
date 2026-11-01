@@ -342,23 +342,8 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
     for program in [attach.to_owned(), behind, orphaned] {
         let server = Server::start("")?;
         let launch = [
-            "opts",
-            "str",
-            "viewer",
-            "name",
-            "60",
-            "12",
-            "size",
-            "str",
-            "sh",
-            "program",
-            "str",
-            "-c",
-            "arg",
-            "str",
-            &program,
-            "arg",
-            "new-workspace",
+            "opts", "str", "viewer", "in", "60", "12", "size", "str", "sh", "program", "str", "-c",
+            "arg", "str", &program, "arg", "new-tab",
         ];
         let pane = server.ok(&launch)?;
         let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
@@ -392,23 +377,8 @@ fn a_headless_client_in_its_own_pane_keeps_its_capture_and_sizing() -> Outcome {
     let server = Server::start("")?;
     let attach = "unset FUX_PANE; \"$FUX\" opts 50 10 size str viewer in attach; sleep 60";
     let launch = [
-        "opts",
-        "str",
-        "viewer",
-        "name",
-        "60",
-        "12",
-        "size",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        attach,
-        "arg",
-        "new-workspace",
+        "opts", "str", "viewer", "in", "60", "12", "size", "str", "sh", "program", "str", "-c",
+        "arg", "str", attach, "arg", "new-tab",
     ];
     let pane = server.ok(&launch)?;
     let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
@@ -995,13 +965,16 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
             "end",
             "set",
             "opts",
+            "str",
+            "new-workspace",
+            "in",
             "80",
             "24",
             "size",
             "str",
             &cwd_text,
             "cwd",
-            "new-workspace",
+            "new-tab",
         ])?;
         assert_eq!(out.status, 1);
         assert!(
@@ -1015,7 +988,16 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     assert_eq!(server.ok(&["ls", "listing"])?, before);
     // The server is unharmed, and a good shell starts again.
     server.ok(&["str", "shell", "list", "str", "/bin/sh", "end", "set"])?;
-    server.ok(&["opts", "80", "24", "size", "new-workspace"])?;
+    server.ok(&[
+        "opts",
+        "str",
+        "new-workspace",
+        "in",
+        "80",
+        "24",
+        "size",
+        "new-tab",
+    ])?;
     Ok(())
 }
 

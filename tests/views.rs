@@ -39,7 +39,9 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
     })?;
     // new-tab from the CLI, with a name.
     server.words("opts 60 10 size str +1 workspace in str logs name new-tab")?;
-    server.ok(&["str", "c1", "client", "str", "last", "step-tab"])?;
+    server.ok(&[
+        "str", "c1", "client", "dup", "focused", "tab", "str", "last", "step",
+    ])?;
     assert!(client_line(&server, "c1")?.contains(" @2 "));
     client.wait_for("on-two")?;
     Ok(())
@@ -68,7 +70,17 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
     // Attaching to a workspace by name.
     let mut other = server.attach_to(10, 60, "third")?;
     other.wait_for("$")?;
-    server.ok(&["str", "c1", "client", "str", "last", "step-workspace"])?;
+    server.ok(&[
+        "str",
+        "c1",
+        "client",
+        "dup",
+        "focused",
+        "workspace",
+        "str",
+        "last",
+        "step",
+    ])?;
     assert!(client_line(&server, "c1")?.contains(" +2 "));
     assert!(client_line(&server, "c2")?.contains(" +3 "));
     Ok(())

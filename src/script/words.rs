@@ -10,8 +10,8 @@ use fux_wire::callback::Open;
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{
     AnyRef, Button, ClientAction, Command, Extent, HistoryBytes, Input, Kind, Limit, Members,
-    Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since, Way,
-    Source, SwapWith, To, Usage, Wait, Wheel, WsRef,
+    Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since, Source,
+    SwapWith, To, Usage, Wait, Way, Wheel, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Axis;

@@ -210,7 +210,7 @@ clipped. A malformed reply ends that request's connection.
 
 ## What a word made
 
-`split`, `new-tab`, `new-workspace` and `respawn` leave an answer
+`split`, `new-tab` and `respawn` leave an answer
 (below), which is also the new pane: a word that wants a pane takes it as
 one, and `wait` waits from its version. `json` of a pane, tab or workspace is its id as a string, `"%4"`,
 and `X info json` all of it. `X panes json` and `X tabs json` are arrays
@@ -219,7 +219,7 @@ of them in layout order, `["%3","%4"]`.
 ## Answers and waits
 
 `json` of an action's answer (`send-keys`, `send-mouse`,
-`signal`, `split`, `new-tab`, `new-workspace`, `respawn`) is
+`signal`, `split`, `new-tab`, `respawn`) is
 `{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":0}`: its pane's version from
 just before it acted, or as a new pane starts: one object for an action
 or wait on a pane, an array for one on a tab or workspace, however many

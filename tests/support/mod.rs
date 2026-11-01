@@ -216,7 +216,7 @@ impl Server {
         // workspace main, is 80 by 24, in the server's home.
         let home = server.dir.to_string_lossy().into_owned();
         let first = [
-            "opts", "str", "main", "name", "80", "24", "size", "str", &home, "cwd",
+            "opts", "str", "main", "in", "80", "24", "size", "str", &home, "cwd",
         ];
         let argv = server.state.preferences.shell.argv();
         let mut launch: Vec<&str> = vec!["list"];
@@ -236,7 +236,7 @@ impl Server {
             "history-bytes",
             clipboard,
             "program-clipboard",
-            "new-workspace",
+            "new-tab",
         ]);
         server.ok(&[&first[..], launch.as_slice()].concat())?;
         Ok((server, held))

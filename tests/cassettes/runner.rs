@@ -1642,9 +1642,10 @@ fn journal_monitor(
             fail(format!("event {seq} is not the next of this run"), ev);
         }
         let name = ev.text_of("event");
+        // An unzoomed tab's `pane` is null: no pane's.
         let ids: Vec<String> = ["pane", "tab", "workspace"]
             .iter()
-            .filter_map(|k| ev.get(k).map(Json::text))
+            .filter_map(|k| ev.get(k).filter(|v| **v != Json::Null).map(Json::text))
             .collect();
         if name == "created"
             && let Some(subject) = ids.first()

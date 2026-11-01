@@ -1255,7 +1255,12 @@ mod tests {
     #[test]
     fn library_chooser_callbacks_act_on_the_selected_destination() -> Outcome {
         for (open, keys, observe, expected) in [
-            ("me me focused tab choose-among", "j\r", "me focused tab string", "@2\n"),
+            (
+                "me me focused tab choose-among",
+                "j\r",
+                "me focused tab string",
+                "@2\n",
+            ),
             (
                 "me me focused workspace choose-among",
                 "j\r",
