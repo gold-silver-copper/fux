@@ -233,18 +233,11 @@ impl Session {
         let Some(rect) = placement.rect(pane) else {
             return false;
         };
-        let visible = if crate::render::bar_overlay(self, view, &placement) {
-            rect.split(
-                fux_wire::layout::Axis::Vertical,
-                view.rows.saturating_sub(1).saturating_sub(rect.y()),
-            )
-            .0
-        } else {
-            rect
-        };
-        let inside = visible.contains(event.row, event.col);
-        // A release still reaches its pane when feedback covers all of it.
-        let rect = if visible.is_empty() { rect } else { visible };
+        // What feedback covers takes no presses; a release still reaches
+        // its pane, kept to the pane.
+        let cover = crate::render::bar_cover(self, view, &placement);
+        let inside = rect.contains(event.row, event.col)
+            && !cover.is_some_and(|c| c.contains(event.row, event.col));
         let seat = self.shown_tab(client).and_then(|t| t.seat(client));
         let held = seat.is_some_and(|s| s.held);
         // A press of a button, not the wheel, holds it; a release lets go.
@@ -526,7 +519,7 @@ mod tests {
         let (mut s, c) = session()?;
         let mut presentation = s.views.get(&c).ok_or("view")?.presentation.clone();
         presentation.bar = fux_wire::presentation::Bar::new(
-            fux_wire::presentation::BarPosition::Off,
+            fux_wire::presentation::BarPosition::Bottom,
             vec![],
             vec![],
             false,
@@ -549,7 +542,7 @@ mod tests {
                 .screen()
                 .size()
                 .rows(),
-            rows + 1
+            rows - 1
         );
         let batch = Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
             .batch(s.parts.journal(), true)?;
@@ -1464,27 +1457,26 @@ mod tests {
     }
 
     #[test]
-    fn bar_feedback_blocks_mouse_presses_but_preserves_a_held_release() -> Outcome {
+    fn bar_feedback_blocks_presses_where_it_covers_but_keeps_a_held_release() -> Outcome {
         let (mut s, c) = crate::session::testing::attached(2, 20)?;
-        output_as(
-            &mut s,
-            Some(c),
-            "str bar list str off list end list end false end set",
-        )?;
         s.size_client(c, 1, 20).map_err(|e| e.to_string())?;
         s.out(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, b"\x1b[<0;1;1M");
         assert_eq!(queued(&mut s, 1), b"\x1b[<0;1;1M");
+        // " refused " covers the row's last ten cells.
         s.notify_to(c, "refused", true);
-        s.input(c, b"\x1b[<0;2;1M");
+        s.input(c, b"\x1b[<0;16;1M");
         assert!(queued(&mut s, 1).is_empty());
-        s.input(c, b"\x1b[<0;2;1m");
-        assert_eq!(queued(&mut s, 1), b"\x1b[<0;2;1m");
+        s.input(c, b"\x1b[<0;16;1m");
+        assert_eq!(queued(&mut s, 1), b"\x1b[<0;16;1m");
         assert!(
             s.shown_tab(c)
                 .and_then(|t| t.seat(c))
                 .is_some_and(|seat| !seat.held)
         );
+        // Left of it, the row is the pane's.
+        s.input(c, b"\x1b[<0;2;1M");
+        assert_eq!(queued(&mut s, 1), b"\x1b[<0;2;1M");
         Ok(())
     }
 

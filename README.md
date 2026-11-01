@@ -47,12 +47,18 @@ until `kill` closes it or `respawn` starts it again. A tab closes with its
 last pane, a workspace with its last tab.
 A pane's lines re-wrap when its width changes, history included.
 
-By default the bottom row is the bar: the workspace and its tabs on the left; on the
-right the focused pane's id and label (its given name, else its OSC 0/2
-title, launch program or id), or a notice. A screen too
+By default the panes have every row, and the bar takes none. While the
+prefix (or any screen of fux's) is in use, the bar draws over the bottom
+row: the workspace and its tabs on the left; on the right the focused
+pane's id and label (its given name, else its OSC 0/2 title, launch
+program or id), or what the keys do. When it ends, the row shows the pane
+again. A notice takes only the bottom-right corner, until your next key;
+a bell or a program's notification (OSC 9, 777) shows there for five
+seconds, or until your next key. A screen too
 small for its tab (a watcher's, or one too small for all its panes)
 shows panes cut off at their right and bottom, or none of a pane it has
-no room for: the bar names them before the title, hidden first: `[hidden %3] [cut %2]`.
+no room for: the corner names them, hidden first: `[hidden %3] [cut %2]`.
+No pane is ever resized for fux's own feedback.
 
 ### Presentation
 
@@ -82,7 +88,7 @@ a role, foreground, background, then any of `bold`, `dim`, `italic` and
 repeated roles/flags and malformed colours refuse the draft.
 
 `bar` is `[position [left fields] [right fields] tab-numbers?]`. Position is
-`top`, `bottom` or `off`; the boolean numbers tabs from 1 in workspace order.
+`top`, `bottom` or `off` (the default); the boolean numbers tabs from 1 in workspace order.
 Fields are `workspace`, `tabs`, `pane` and `[slot N]`, in the order
 given, each occurring once. There are no substitutions
 or executable fields. Native notices, copy hints, prefix/repeat/zoom feedback and
@@ -94,8 +100,10 @@ Omitted slots are empty. Slot text stays inert even when it spells fuxth.
 A program supplies any changing text explicitly; fux adds no clock or polling
 timer and never evaluates a program during paint.
 
-Top and bottom reserve one row. Off reserves none: native feedback temporarily
-overlays the bottom pane row, covering its text and pictures without resizing
+Top and bottom reserve one row, as `bottom` with the default fields did
+before (`fux help cookbook`, "The bar on a row of its own"). Off reserves
+none: while one of fux's screens shows, the whole bar overlays the bottom
+pane row; other feedback covers only its right corner, without resizing
 PTYs. Client captures include that feedback; pane captures retain the underlying
 pane text. Feedback disappears on the normal input/cancel paths. Zoom alone
 does not create an overlay with the bar off; the focused pane fills the screen.
@@ -814,8 +822,11 @@ and width implementations.
   knows is not answered: one the host didn't say, palette entries past 15
   the program didn't set, and every colour in a tab with no host.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
-  most once every 250 ms; a tab you are not looking at is marked `!` in the
-  bar until you show it. `str bell false set` silences both.
+  most once every 250 ms, and shows it a brief `bell in …` notice; a tab
+  you are not looking at is also marked `!` in the bar until you show it.
+  `str bell false set` silences all three. A program's notification (OSC
+  9, 777) shows as a brief notice, `%3 label: text`, in each terminal
+  showing its workspace, in place of a bell's notice from the same output.
 - **Titles.** With `str titles true set`, your terminal's title is the
   focused pane's (or its tab's label). fux saves your terminal's own title
   first and restores it when you detach or turn titles off.

@@ -8,9 +8,9 @@
 //! 1. **Directly**: to a terminal of the recording's size.
 //! 2. **Through fux**: fux as a library, as its server runs it. A
 //!    [`Session`] with one workspace, one tab and one pane, and one client
-//!    one row taller than the recording, so that the pane, above the bar,
-//!    is exactly the recording's size (`Session::pane_area`; the placement
-//!    is checked). The output goes into the pane as the server reads it
+//!    of the recording's size, whose bar takes no row, so that the pane is
+//!    exactly the recording's size (`View::pane_area`; the placement is
+//!    checked). The output goes into the pane as the server reads it
 //!    (`Session::output`, at most 16 KiB a read), the pane's replies are
 //!    taken as its program would read them, and the client is painted as
 //!    the server paints it (see [`Through::paint`]). The client's terminal
@@ -254,8 +254,7 @@ impl Through {
                 .journal_entries,
         );
         // The client attaching starts its first shell, on its screen.
-        let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
-        let size = fux_vt::Size::new(client_rows, cols).map_err(|e| format!("fux: {e}"))?;
+        let size = fux_vt::Size::new(rows, cols).map_err(|e| format!("fux: {e}"))?;
         let preferences = fux::script::default_state()
             .map_err(|e| e.to_string())?
             .preferences;
@@ -290,7 +289,7 @@ impl Through {
                 rect.w()
             ));
         }
-        let mut terminal = terminal(kind, client_rows, cols)?;
+        let mut terminal = terminal(kind, rows, cols)?;
         terminal.process(fux::client::ENTER.as_bytes())?;
         let mut through = Through {
             session,
@@ -315,11 +314,10 @@ impl Through {
     /// the pane, the terminal takes the new size, and the next paint is the
     /// server's.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
-        let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
         (self.session)
-            .resize(self.client, client_rows, cols, std::time::Instant::now())
+            .resize(self.client, rows, cols, std::time::Instant::now())
             .map_err(|e| format!("fux: {e}"))?;
-        self.terminal.resize(client_rows, cols)?;
+        self.terminal.resize(rows, cols)?;
         let view = self.session.views.get(&self.client).ok_or("fux: no view")?;
         self.session.placement_into(view, &mut self.placement);
         self.rect = match self.placement.panes.as_slice() {

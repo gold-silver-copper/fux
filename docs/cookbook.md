@@ -243,6 +243,18 @@ define split-right me focused str horizontal axis split drop end
 str v code split-right end bind
 ```
 
+## The bar on a row of its own
+
+The bar takes no row by default: the panes have every row, the prefix
+draws the bar over the bottom one until it ends, and a bell or a
+program's notification shows in its corner for five seconds. This
+config gives the bar its own row below the panes again.
+
+```fux
+# ~/.config/fux/config.fux
+str bar list str bottom list str workspace str tabs end list str pane end false end set
+```
+
 ## A word of your own
 
 `define … end` makes a word for one command line; `require` loads words

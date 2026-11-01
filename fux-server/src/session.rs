@@ -66,6 +66,8 @@ pub enum Timer {
     /// server's other work of this turn. A respawn under way in the pane
     /// takes its turn too (`Session::after_turn`).
     Unread(PaneId),
+    /// A client's alert notice ends (`View::alert`).
+    Notice(ClientId),
 }
 
 /// Where a command comes from, which says what it acts on when it names no
@@ -1939,19 +1941,31 @@ impl Session {
     /// server polls no longer than the soonest, and fires those due
     /// (`Session::fire`).
     pub fn timers(&self) -> impl Iterator<Item = (Instant, Timer)> + '_ {
-        self.parts.panes().values().flat_map(|pane| {
+        let panes = self.parts.panes().values().flat_map(|pane| {
             let respawn = self.respawning.get(&pane.id()).map(|r| r.since);
             // A respawn's turn reads a held frame: one parser call a round.
             let frame = (pane.frame_deadline().filter(|_| respawn.is_none()))
                 .map(|at| (at, Timer::Frame(pane.id())));
             let unread = (pane.unread_due().or(respawn)).map(|at| (at, Timer::Unread(pane.id())));
             frame.into_iter().chain(unread)
-        })
+        });
+        let notices = (self.views.values())
+            .filter_map(|v| Some((v.notice.as_ref()?.until?, Timer::Notice(v.id))));
+        panes.chain(notices)
     }
 
     /// What `timer` waited for is done, now that it is due.
     pub fn fire(&mut self, timer: Timer, now: Instant) {
         match timer {
+            // Only the notice that was due: a newer one keeps its own time.
+            Timer::Notice(client) => {
+                if let Some(view) = self.views.get_mut(&client)
+                    && (view.notice.as_ref()).is_some_and(|n| n.until.is_some_and(|u| u <= now))
+                {
+                    view.notice = None;
+                    view.dirty = true;
+                }
+            }
             Timer::Frame(id) => self.read_with(id, |p| p.release_frame(now), now),
             Timer::Unread(id) => {
                 // A respawn under way reads a frame its old program holds.
@@ -1976,7 +1990,7 @@ impl Session {
 
     /// Reads into pane `id` with `read`, as every read of a pane's output
     /// does: its tab's host colours and palette given it first; after, its
-    /// bell rung, its copies made in order, and the views showing it
+    /// bell rung and notification told, its copies made in order, and the views showing it
     /// repainted and told what it refused (`tell_refused`).
     fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut PaneMut<'_>), now: Instant) {
         let place = self.locate(id);
@@ -2008,10 +2022,10 @@ impl Session {
         // Program copies go to viewers of the tab, including zoomed views
         // and watchers, when this pane permits them. Invalid copies are
         // counted and reported.
-        let (bell, copies) = pane.take_read();
+        let (bell, notified, copies) = pane.take_read();
         let changed_label = labelled.filter(|(was, _)| was != &*pane.label());
-        if bell {
-            self.ring(id, now);
+        if bell || notified.is_some() {
+            self.alert(id, bell, notified, now);
         }
         for text in copies {
             self.copied(&text, &viewers);
@@ -3455,6 +3469,10 @@ pub(crate) mod testing {
         }
     }
 
+    /// A client's bar on a row of its own, the panes below it.
+    pub(crate) const BAR_ROW: &str =
+        "str bar list str bottom list str workspace str tabs end list str pane end false end set";
+
     /// A session with `/bin/sh`, started at 80 by 24.
     pub(crate) fn started() -> Result<Session, String> {
         // One run for every session of the tests: two that did the same
@@ -3817,7 +3835,9 @@ mod tests {
         fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())
     }
 
-    use super::testing::{InProcess, attached, output, output_as, requests, run, said, started};
+    use super::testing::{
+        BAR_ROW, InProcess, attached, output, output_as, requests, run, said, started,
+    };
     use super::*;
     use crate::pane::Left;
     use fux_wire::code::Code;
@@ -4174,7 +4194,7 @@ mod tests {
             assert!(!tab.fixed);
             assert_eq!(
                 snapshot.clients.first().map(|v| (v.rows, v.pane_rows)),
-                Some((12, 11))
+                Some((12, 12))
             );
             for pane in &snapshot.panes {
                 assert_eq!(pane.state.is_some(), projection == Projection::Facts);
@@ -4876,7 +4896,7 @@ mod tests {
             )?;
             assert_eq!(
                 s.parts.panes().get(&PaneId::of(1)).map(Pane::size),
-                Some(sized(19, 20)?)
+                Some(sized(20, 20)?)
             );
         }
         Ok(())
@@ -5187,6 +5207,8 @@ mod tests {
     #[test]
     fn a_fixed_tab_no_client_sizes_is_laid_out_on_its_size() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
+        // A screen of one row has no room below its bar.
+        output_as(&mut s, Some(c), BAR_ROW)?;
         run(&mut s, "opts 40 12 size str +1 workspace in new-tab drop")?;
         run(&mut s, &format!("str {c} client str @2 tab show"))?;
         let size = |s: &Session| {
@@ -5210,9 +5232,12 @@ mod tests {
         let roomy = bar(&mut s, 30, 100)?.unwrap_or_default();
         assert!(!roomy.contains('['), "{roomy}");
         let small = bar(&mut s, 6, 80)?.unwrap_or_default();
-        assert!(small.contains("[cut %1 %2] %1"), "{small}");
+        assert!(small.trim_end().ends_with("[cut %1 %2]"), "{small}");
         let short = bar(&mut s, 3, 80)?.unwrap_or_default();
-        assert!(short.contains("[hidden %2] [cut %1] %1"), "{short}");
+        assert!(
+            short.trim_end().ends_with("[hidden %2] [cut %1]"),
+            "{short}"
+        );
         // Named before the tabs and the title on a narrow bar.
         let narrow = bar(&mut s, 3, 24)?.unwrap_or_default();
         assert!(narrow.contains("[hidden %2] [cut %1]"), "{narrow}");
@@ -5244,7 +5269,7 @@ mod tests {
         s.execute(&new_tab, &Origin::Cli(caller), Instant::now())?;
         let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
         let size = tab.fit().size();
-        assert_eq!((size.cols(), size.rows()), (200, 49));
+        assert_eq!((size.cols(), size.rows()), (200, 50));
         Ok(())
     }
 
@@ -6506,7 +6531,7 @@ mod tests {
 
     #[test]
     fn a_tab_no_client_shows_is_sized_as_on_a_clients_screen() -> TestResult {
-        let (mut s, c) = attached(11, 40)?;
+        let (mut s, c) = attached(10, 40)?;
         output_as(
             &mut s,
             Some(c),
@@ -6554,7 +6579,7 @@ mod tests {
         assert!(watch(&mut s, 11, 40).is_err());
         assert!(s.parts.panes().is_empty());
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(|p| p.size().into());
-        let c = s.attach(11, 40, None)?;
+        let c = s.attach(10, 40, None)?;
         assert_eq!(size(&s, 1), Some((10, 40)));
         // Nor from a caller with no screen or tab of its own, whatever
         // client is attached.
@@ -7884,8 +7909,8 @@ mod tests {
     #[test]
     fn a_pane_starts_at_the_size_its_screens_give_it() -> TestResult {
         let mut s = started()?;
-        let wide = s.attach(11, 101, None)?;
-        s.attach(11, 81, None)?;
+        let wide = s.attach(10, 101, None)?;
+        s.attach(10, 81, None)?;
         let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
         // The narrow one, zoomed, follows the split unzoomed.
         run(&mut s, "str c2 client zoom")?;
@@ -7914,10 +7939,11 @@ mod tests {
     fn a_screen_with_no_room_sizes_no_pane() -> TestResult {
         let mut s = started()?;
         let small = s.attach(5, 6, None)?;
-        // A client of one row has no room: its tab, which the other
-        // client's screen sizes, sizes the tab it makes.
+        // A client of one row with a bar has no room: its tab, which the
+        // other client's screen sizes, sizes the tab it makes.
         let one = s.attach(1, 40, None)?;
-        s.attach(11, 40, None)?;
+        output_as(&mut s, Some(one), BAR_ROW)?;
+        s.attach(10, 40, None)?;
         s.detach_client(small);
         output_as(
             &mut s,
@@ -7943,6 +7969,7 @@ mod tests {
     fn a_screen_with_no_room_refuses_nothing() -> TestResult {
         let (mut s, _) = attached(11, 40)?;
         let tiny = s.attach(1, 40, None)?;
+        output_as(&mut s, Some(tiny), BAR_ROW)?;
         run(
             &mut s,
             "%1 str horizontal axis split drop %1 str horizontal axis split drop",
@@ -8304,7 +8331,7 @@ mod journal_tests {
             let (mut s, client) = testing::attached(24, 80)?;
             run(
                 &mut s,
-                "opts 80 23 size str +1 workspace in new-tab drop opts 80 23 size new-workspace drop @1 80 23 resize @2 80 23 resize @3 80 23 resize",
+                "opts 80 24 size str +1 workspace in new-tab drop opts 80 24 size new-workspace drop @1 80 24 resize @2 80 24 resize @3 80 24 resize",
             )?;
             let from = s.parts.journal().end(s.run);
             run(&mut s, &format!("str {client} client {target} show"))?;

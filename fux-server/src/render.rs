@@ -212,14 +212,19 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     visible
 }
 
-/// Clips pane pictures away from bar-off feedback, after held-frame recovery.
-pub(crate) fn clip_bar_pictures(view: &View, pictures: &mut Vec<Visible>) {
+/// Clips pane pictures away from what bar-off feedback covers (`bar_cover`),
+/// after held-frame recovery: one that reaches into it loses its rows from
+/// the covered row down.
+pub(crate) fn clip_bar_pictures(view: &View, cover: Rect, pictures: &mut Vec<Visible>) {
     let fux_vt::Graphics::Sixel(cell) = view.terminal.graphics() else {
         return;
     };
-    let bottom = view.rows.saturating_sub(1);
     pictures.retain_mut(|picture| {
-        picture.area.2 = picture.area.2.min(bottom.saturating_sub(picture.area.0));
+        let (y, x, h, w) = picture.area;
+        if x >= cover.right() || x.saturating_add(w) <= cover.x() {
+            return true;
+        }
+        picture.area.2 = h.min(cover.y().saturating_sub(y));
         picture.crop.3 = picture
             .crop
             .3
@@ -1381,51 +1386,42 @@ fn bar_parts(grid: &mut Grid, y: u16, mut x: u16, end: u16, parts: &[(String, At
     }
 }
 
-/// Whether native feedback covers the bottom row of a bar-off view.
-pub(crate) fn bar_overlay(session: &Session, view: &View, placement: &Placement) -> bool {
-    view.presentation.bar.position() == fux_wire::presentation::BarPosition::Off
-        && (view.notice.is_some()
-            || !view.mode.is_normal()
-            || !unseen(session, view, placement).is_empty())
+/// The cells of a bar-off view's bottom row its feedback covers, if it
+/// shows any: the whole row while one of its screens shows (the prefix's
+/// among them), else the corner its right side takes, a cell's margin
+/// included. What it covers takes no clicks and shows no pictures; the
+/// rest of the row is the pane's.
+pub(crate) fn bar_cover(session: &Session, view: &View, placement: &Placement) -> Option<Rect> {
+    let unseen = unseen(session, view, placement);
+    let (_, start, _) = right_side(session, view, &unseen);
+    off_cover(view, &unseen, start)
 }
 
-/// Native feedback takes precedence over the configured right side. With
-/// the bar off, feedback overlays the bottom pane row without resizing it.
-fn bar(
-    grid: &mut Grid,
+/// `bar_cover`, given its unseen panes and where its right side starts.
+fn off_cover(view: &View, unseen: &str, start: u16) -> Option<Rect> {
+    if view.presentation.bar.position() != fux_wire::presentation::BarPosition::Off {
+        return None;
+    }
+    let row = Rect::screen(view.rows, view.cols).split(Axis::Vertical, view.rows.checked_sub(1)?);
+    if !view.mode.is_normal() {
+        Some(row.1)
+    } else if view.notice.is_some() || !unseen.is_empty() {
+        Some(row.1.split(Axis::Horizontal, start.saturating_sub(1)).1)
+    } else {
+        None
+    }
+}
+
+/// What the right of `view`'s bar shows, the column it starts at and its
+/// width: native feedback before the configured fields, which show only
+/// where the whole bar does.
+fn right_side(
     session: &Session,
     view: &View,
-    placement: &Placement,
-) -> Result<(), fux_vt::Error> {
-    use fux_wire::presentation::BarPosition;
-    let Some(bottom) = view.rows.checked_sub(1) else {
-        return Ok(());
-    };
-    let position = view.presentation.bar.position();
-    let y = if position == BarPosition::Top {
-        0
-    } else {
-        bottom
-    };
+    unseen: &str,
+) -> (Vec<(String, Attributes)>, u16, u16) {
     let base = view.presentation.styles.bar.attributes();
-    let unseen = unseen(session, view, placement);
-    let feedback = view.notice.is_some() || !view.mode.is_normal() || !unseen.is_empty();
-    if position == BarPosition::Off && !feedback {
-        return Ok(());
-    }
-    if position == BarPosition::Off {
-        // Restore the covered pane cells on the next compose, including
-        // unchanged rows, and never expose its cursor through the feedback.
-        grid.cover_bar(y)?;
-        grid.memo = None;
-        grid.cursor = grid.cursor.filter(|(row, _)| *row != y);
-    }
-    let row = Rect::screen(view.rows, view.cols)
-        .split(Axis::Vertical, y)
-        .1
-        .split(Axis::Vertical, 1)
-        .0;
-    grid.fill(row, base);
+    let whole = whole_bar(view);
     let right = if let Some(notice) = &view.notice {
         let style = if notice.error {
             view.presentation.styles.error
@@ -1441,11 +1437,11 @@ fn bar(
     } else if let Mode::Panel(Panel::Repeat(text)) = &view.mode {
         vec![(text.clone(), view.presentation.styles.keys.attributes())]
     } else {
-        let mut parts = vec![(unseen.clone(), base)];
+        let mut parts = vec![(unseen.to_owned(), base)];
         if view.zoom {
             parts.push(("[zoom] ".to_owned(), base));
         }
-        if position != BarPosition::Off {
+        if whole {
             parts.extend(bar_fields(
                 session,
                 view,
@@ -1455,19 +1451,72 @@ fn bar(
         }
         parts
     };
-    let unseen_width = width(&unseen);
-    let share = if position == BarPosition::Off || view.cols < 4 {
+    let share = if !whole || view.cols < 4 {
         view.cols
     } else {
         (view.cols / 2).saturating_add(view.cols / 4)
     };
     let right_width = bar_width(&right)
-        .min(share.max(unseen_width))
+        .min(share.max(width(unseen)))
         .min(view.cols);
-    let left_limit = view
-        .cols
-        .saturating_sub(right_width.saturating_add(u16::from(right_width > 0)));
-    if position != BarPosition::Off {
+    let start = view.cols.saturating_sub(right_width.saturating_add(1));
+    (right, start, right_width)
+}
+
+/// Whether `view` shows its whole bar: on its own row, or over the panes
+/// while one of its screens shows.
+fn whole_bar(view: &View) -> bool {
+    view.presentation.bar.position() != fux_wire::presentation::BarPosition::Off
+        || !view.mode.is_normal()
+}
+
+/// Native feedback takes precedence over the configured right side. With
+/// the bar off, the whole bar overlays the bottom pane row while one of the
+/// client's screens shows, and other feedback only its corner
+/// (`bar_cover`), without resizing a pane.
+fn bar(
+    grid: &mut Grid,
+    session: &Session,
+    view: &View,
+    placement: &Placement,
+) -> Result<(), fux_vt::Error> {
+    let Some(bottom) = view.rows.checked_sub(1) else {
+        return Ok(());
+    };
+    use fux_wire::presentation::BarPosition;
+    let position = view.presentation.bar.position();
+    let y = if position == BarPosition::Top {
+        0
+    } else {
+        bottom
+    };
+    let base = view.presentation.styles.bar.attributes();
+    let unseen = unseen(session, view, placement);
+    let (right, start, right_width) = right_side(session, view, &unseen);
+    let row = Rect::screen(view.rows, view.cols)
+        .split(Axis::Vertical, y)
+        .1
+        .split(Axis::Vertical, 1)
+        .0;
+    let cover = match position {
+        BarPosition::Off => {
+            let Some(cover) = off_cover(view, &unseen, start) else {
+                return Ok(());
+            };
+            // Restore the covered pane cells on the next compose, including
+            // unchanged rows, and never expose a pane's cursor through it.
+            grid.cover_bar(y)?;
+            grid.memo = None;
+            grid.cursor = (grid.cursor).filter(|(y, x)| !cover.contains(*y, *x));
+            cover
+        }
+        BarPosition::Top | BarPosition::Bottom => row,
+    };
+    grid.fill(cover, base);
+    if whole_bar(view) {
+        let left_limit = view
+            .cols
+            .saturating_sub(right_width.saturating_add(u16::from(right_width > 0)));
         bar_parts(
             grid,
             y,
@@ -1476,7 +1525,6 @@ fn bar(
             &bar_fields(session, view, view.presentation.bar.left(), left_limit),
         );
     }
-    let start = view.cols.saturating_sub(right_width.saturating_add(1));
     bar_parts(grid, y, start, start.saturating_add(right_width), &right);
     Ok(())
 }
@@ -2817,11 +2865,6 @@ mod tests {
     fn zoom_with_bar_off_keeps_the_bottom_pane_row_and_cursor() -> Result<(), String> {
         use crate::session::testing::{attached, output_as};
         let (mut session, client) = attached(4, 40)?;
-        output_as(
-            &mut session,
-            Some(client),
-            "str bar list str off list end list end false end set",
-        )?;
         session.out(PaneId::of(1), b"\x1b[4;1Hbottom prompt");
         let before = compose(&session, client).ok_or("before")?;
         output_as(&mut session, Some(client), "me zoom")?;
@@ -2830,19 +2873,14 @@ mod tests {
         assert_eq!(zoomed.cursor, before.cursor);
         assert!(zoomed.memo.is_some());
         let view = session.views.get(&client).ok_or("view")?;
-        assert!(!bar_overlay(&session, view, &session.placement(view)));
+        assert!(bar_cover(&session, view, &session.placement(view)).is_none());
         Ok(())
     }
 
     #[test]
     fn bar_off_feedback_overlays_and_restores_the_pane_without_resizing() -> Result<(), String> {
-        use crate::session::testing::{attached, output_as};
+        use crate::session::testing::attached;
         let (mut session, client) = attached(4, 40)?;
-        output_as(
-            &mut session,
-            Some(client),
-            "str bar list str off list end list end false end set",
-        )?;
         session.out(PaneId::of(1), b"\x1b[4;1Hlast pane row");
         let view = session.views.get(&client).ok_or("view")?;
         assert_eq!(view.pane_area().h(), 4);
@@ -2855,14 +2893,17 @@ mod tests {
             .get(&PaneId::of(1))
             .ok_or("pane")?
             .size();
+        let cursor = grid.cursor;
         session.notify_to(client, "visible refusal", true);
         assert!(compose_into(&session, client, &mut grid, &mut placement));
-        assert!(grid.row_text(3).contains("visible refusal"));
+        // A corner notice: the row's start and its cursor still show.
+        assert!(grid.row_text(3).starts_with("last pane row"));
+        assert!(grid.row_text(3).ends_with(" visible refusal"));
         assert_eq!(
             session.parts.panes().get(&PaneId::of(1)).map(|p| p.size()),
             Some(size)
         );
-        assert!(grid.cursor.is_none());
+        assert_eq!(grid.cursor, cursor);
         if let Some(view) = session.views.get_mut(&client) {
             view.notice = None;
         }
@@ -2880,13 +2921,8 @@ mod tests {
 
     #[test]
     fn bar_feedback_preserves_the_row_behind_a_held_frame() -> Result<(), String> {
-        use crate::session::testing::{attached, output_as};
+        use crate::session::testing::attached;
         let (mut session, client) = attached(4, 40)?;
-        output_as(
-            &mut session,
-            Some(client),
-            "str bar list str off list end list end false end set",
-        )?;
         session.out(
             PaneId::of(1),
             b"\x1b[4;1H\x1b]8;;https://example.test/\x1b\\old pane row\x1b]8;;\x1b\\",
@@ -2924,7 +2960,7 @@ mod tests {
         session.notify_to(client, "feedback", true);
         let covered = held(&session, &before)?;
         assert!(covered.row_text(3).contains("feedback"));
-        assert_eq!(covered.cursor, None);
+        assert_eq!(covered.cursor, before.cursor, "outside the notice");
         if let Some(view) = session.views.get_mut(&client) {
             view.notice = None;
         }
@@ -2942,31 +2978,40 @@ mod tests {
     }
 
     #[test]
-    fn retained_pictures_are_clipped_away_from_bar_feedback() -> Result<(), String> {
+    fn pictures_are_clipped_only_where_bar_feedback_covers_them() -> Result<(), String> {
         let (mut session, client) = crate::session::testing::attached(4, 40)?;
+        session.notify_to(client, "refused", true);
         let view = session.views.get_mut(&client).ok_or("view")?;
         view.terminal.sixel = Some(true);
         view.terminal.cell = fux_vt::CellSize::new(12, 12);
+        let view = session.views.get(&client).ok_or("view")?;
+        let cover = bar_cover(&session, view, &session.placement(view)).ok_or("cover")?;
+        // " refused " and the trailing cell: the bottom row's last nine.
+        assert_eq!((cover.y(), cover.x(), cover.w()), (3, 31, 9));
         let picture = Arc::new(Picture::new(12, 48, vec![255; 12 * 48 * 4]).ok_or("picture")?);
+        let at = |area, crop| Visible {
+            pane: PaneId::of(1),
+            area,
+            crop,
+            picture: Arc::clone(&picture),
+        };
         let mut pictures = vec![
-            Visible {
-                pane: PaneId::of(1),
-                area: (0, 0, 4, 1),
-                crop: (0, 0, 12, 48),
-                picture: Arc::clone(&picture),
-            },
-            Visible {
-                pane: PaneId::of(1),
-                area: (3, 1, 1, 1),
-                crop: (0, 0, 12, 12),
-                picture,
-            },
+            // Left of the notice, its bottom row beside it.
+            at((0, 0, 4, 1), (0, 0, 12, 48)),
+            // Reaching into it.
+            at((0, 30, 4, 2), (0, 0, 12, 48)),
+            // Under it.
+            at((3, 35, 1, 1), (0, 0, 12, 12)),
         ];
-        clip_bar_pictures(view, &mut pictures);
-        assert_eq!(pictures.len(), 1);
-        let visible = pictures.first().ok_or("visible")?;
-        assert_eq!(visible.area, (0, 0, 3, 1));
-        assert_eq!(visible.crop, (0, 0, 12, 36));
+        clip_bar_pictures(view, cover, &mut pictures);
+        let areas: Vec<_> = pictures.iter().map(|p| (p.area, p.crop)).collect();
+        assert_eq!(
+            areas,
+            [
+                ((0, 0, 4, 1), (0, 0, 12, 48)),
+                ((0, 30, 3, 2), (0, 0, 12, 36))
+            ]
+        );
         Ok(())
     }
 
