@@ -56,9 +56,14 @@ end
 
 # ---- Opening: a file that doesn't exist opens empty
 # -- flag : whether FILE is confirmed missing: reading it fails as ENOENT,
-# which only the OS's message tells (finding fuxed-3)
+# which only the OS's message tells (finding fuxed-3). The message must end
+# with exactly `(os error 2) (FILE)`, so FILE's own name can't say it.
 define missing
-  str all try filename read-file drop false catch string str '(os error 2)' contains end
+  list str '(os error 2) (' filename str ')' end glue let tail
+  str all try filename read-file drop false catch
+    string let said
+    said len tail len ge if said said len tail len sub said len slice tail eq else false then
+  end
 end
 # A file whose metadata can't be read for another reason opens empty, with
 # the OS's error on the status row, and isn't saved over.
