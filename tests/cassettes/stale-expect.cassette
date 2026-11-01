@@ -16,7 +16,7 @@ $ fux "${V%%:*}" 5 until-ended | grep '^second='
   ~ second=z
 @journal
   = event=exited pane=%a exited=0
-  ~ {"event":"created","workspace":"+a","name":"agent","origin":{"kind":"unknown"}}
-  ~ {"event":"created","tab":"@a","workspace":"+a","name":null,"origin":{"kind":"unknown"}}
-  ~ {"event":"created","pane":"%a","tab":"@a","workspace":"+a","origin":{"kind":"unknown"}}
+  ~ {"event":"created","workspace":"+a","name":"agent","origin":{"kind":"outside"}}
+  ~ {"event":"created","tab":"@a","workspace":"+a","name":null,"origin":{"kind":"outside"}}
+  ~ {"event":"created","pane":"%a","tab":"@a","workspace":"+a","origin":{"kind":"outside"}}
   ~ {"event":"exited","pane":"%a","tab":"@a","workspace":"+a","exited":0,"origin":{"kind":"program","pane":"%a","generation":0}}

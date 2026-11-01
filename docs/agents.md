@@ -200,7 +200,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
 
   For hooks, use an ordinary program over this stream, filtering the
   triggering event and state as well as known origin. Origins identify
-  supplied client/pane/program context; an external CLI remains unknown.
+  supplied client/pane/program context; an external CLI is `outside`.
   No exactly-once effects are promised.
 - **First recorded exit across jobs:** save this as `first-exit.py` and
   run `python3 -I first-exit.py` on the private socket. Take the cursor before

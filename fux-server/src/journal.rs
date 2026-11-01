@@ -406,7 +406,7 @@ pub fn every_kind_read(run: Run) -> Result<Batch, String> {
         Actor::Pane(at.1, 1),
         Actor::Program(at.1, 1),
         Actor::Server,
-        Actor::Unknown,
+        Actor::Outside,
     ];
     let kept = fux_wire::command::JournalEntries::new(64).ok_or("journal")?;
     let mut journal = Journal::new(kept);

@@ -2255,7 +2255,7 @@ impl Session {
                 {
                     Actor::Pane(pane, generation)
                 }
-                _ => Actor::Unknown,
+                _ => Actor::Outside,
             },
         }
     }
@@ -8245,8 +8245,8 @@ mod journal_tests {
             [
                 Actor::Client(client),
                 Actor::Pane(id, 0),
-                Actor::Unknown,
-                Actor::Unknown
+                Actor::Outside,
+                Actor::Outside
             ]
         );
         assert_eq!(

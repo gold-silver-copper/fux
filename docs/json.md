@@ -317,7 +317,7 @@ Known origin is supplied context, not authenticated human or agent identity:
 any client it addresses. Naming a client in an external CLI request does
 not supply its origin. `pane` carries a CLI caller's pane and program
 generation, `program` carries the terminal producer's pane and generation,
-`server` denotes a server action, and an external CLI is `unknown`. Deferred
+`server` denotes a server action, and an external CLI is `outside`. Deferred
 respawns retain their requesting origin. Server-observed disconnects are
 server actions; an explicit detach retains its request origin. No agent
 label is inferred.
