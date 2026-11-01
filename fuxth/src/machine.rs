@@ -1596,101 +1596,69 @@ builtins! { m host;
         m.find(s);
         Ok(())
     }
-    NextWord "next-word" [cold] () "-- s" "the next word of the input, as written" {
-        m.next_string()
-    }
-    Immediate "immediate" [cold] () "--" "the word defined last runs even while a definition is compiled" {
-        m.immediate()
-    }
+    NextWord "next-word" [cold] () "-- s" "the next word of the input, as written"
+        { m.string(Builtin::NextWord) }
+    Immediate "immediate" [cold] () "--" "the word defined last runs even while a definition is compiled"
+        { m.immediate() }
     Compiling "compiling" [cold] () "-- flag" "whether the words read are being compiled" {
         m.push(Value::Bool(m.compiling));
         Ok(())
     }
-    StartCompiling "start-compiling" [cold] () "--" "compile the words read again, into the definition open" {
-        m.start_compiling()
-    }
+    StartCompiling "start-compiling" [cold] () "--" "compile the words read again, into the definition open"
+        { m.start_compiling() }
     Evaluate "evaluate" [hosted] (s: Str) "s --"
-        "read s as a source file is read, and run it here" {
-        m.evaluate(&s)
-    }
+        "read s as a source file is read, and run it here" { m.evaluate(&s) }
     StopCompiling "stop-compiling" [immediate] () "--"
         "run the words read, until start-compiling, though a definition is open" {
         m.compiling = false;
         Ok(())
     }
-    Str "str" [immediate] () "-- s" "str WORD: WORD as text, whatever it looks like" {
-        m.string()
-    }
+    Str "str" [immediate] () "-- s" "str WORD: WORD as text, whatever it looks like"
+        { m.string(Builtin::Str) }
     Define "define" [immediate] () "--"
-        "define NAME … end: a word of your own, found from its end on (end closes code, list, each and try too)" {
-        m.define()
-    }
-    End "end" [immediate] () "--" "… end: closes the innermost of define, code, list, each and try … catch" {
-        m.end()
-    }
-    Code "code" [immediate] () "-- xt" "code … end: the words between, compiled, as an xt" {
-        m.code()
-    }
+        "define NAME … end: a word of your own, found from its end on (end closes code, list, each and try too)"
+        { m.define() }
+    End "end" [immediate] () "--" "… end: closes the innermost of define, code, list, each and try … catch"
+        { m.end() }
+    Code "code" [immediate] () "-- xt" "code … end: the words between, compiled, as an xt"
+        { m.code() }
     Let "let" [immediate] () "x --"
-        "x let NAME: NAME gives x from then on (in a definition, for that call)" {
-        m.let_name()
-    }
-    To "to" [immediate] () "x --" "x to NAME: the let name NAME gives x from then on" {
-        m.set_name()
-    }
-    Tick "tick" [immediate] () "-- xt" "tick NAME: the xt of the word NAME" {
-        m.tick()
-    }
+        "x let NAME: NAME gives x from then on (in a definition, for that call)" { m.let_name() }
+    To "to" [immediate] () "x --" "x to NAME: the let name NAME gives x from then on"
+        { m.set_name() }
+    Tick "tick" [immediate] () "-- xt" "tick NAME: the xt of the word NAME" { m.tick() }
     Postpone "postpone" [immediate] () "--"
-        "postpone NAME: in a definition, what NAME does when compiled, done when the definition runs" {
-        m.postpone()
-    }
-    Literal "literal" [immediate] (x: Any) "x --" "x literal: in a definition, x, pushed when the definition runs" {
-        m.literal(x)
-    }
-    Recurse "recurse" [immediate] () "--" "in a definition: a call to the definition itself" {
-        m.compile_only(Builtin::Recurse, Op::Recurse)
-    }
+        "postpone NAME: in a definition, what NAME does when compiled, done when the definition runs"
+        { m.postpone() }
+    Literal "literal" [immediate] (x: Any) "x --" "x literal: in a definition, x, pushed when the definition runs"
+        { m.literal(x) }
+    Recurse "recurse" [immediate] () "--" "in a definition: a call to the definition itself"
+        { m.compile_only(Builtin::Recurse, Op::Recurse) }
     LeaveDefinition "leave-definition" [immediate] () "--"
-        "in a definition: return from it now, its loops left" {
-        m.compile_only(Builtin::LeaveDefinition, Op::Leave)
-    }
+        "in a definition: return from it now, its loops left"
+        { m.compile_only(Builtin::LeaveDefinition, Op::Leave) }
     If "if" [immediate] () "flag --"
-        "flag if … else … then: the first part if flag is true (or an integer not 0), else the second" {
-        m.open(crate::reader::Construct::If)
-    }
-    Else "else" [immediate] () "--" "flag if … else … then: the part run when flag is false" {
-        m.otherwise()
-    }
-    Then "then" [immediate] () "--" "flag if … else … then: closes it" {
-        m.then()
-    }
-    Begin "begin" [immediate] () "--" "begin … flag until: the body until flag is true" {
-        m.open(crate::reader::Construct::Begin)
-    }
-    Until "until" [immediate] () "flag --" "begin … flag until: closes it" {
-        m.until()
-    }
+        "flag if … else … then: the first part if flag is true (or an integer not 0), else the second"
+        { m.open(crate::reader::Construct::If) }
+    Else "else" [immediate] () "--" "flag if … else … then: the part run when flag is false"
+        { m.otherwise() }
+    Then "then" [immediate] () "--" "flag if … else … then: closes it" { m.then() }
+    Begin "begin" [immediate] () "--" "begin … flag until: the body until flag is true"
+        { m.open(crate::reader::Construct::Begin) }
+    Until "until" [immediate] () "flag --" "begin … flag until: closes it" { m.until() }
     List "list" [immediate] () "-- list"
-        "list … end: a list of the values its body leaves; the body starts with an empty stack" {
-        m.open(crate::reader::Construct::List)
-    }
+        "list … end: a list of the values its body leaves; the body starts with an empty stack"
+        { m.open(crate::reader::Construct::List) }
     Each "each" [immediate] () "seq --"
-        "seq each … end: the body once per element, the element pushed (a string's are character codes)" {
-        m.open(crate::reader::Construct::Each)
-    }
+        "seq each … end: the body once per element, the element pushed (a string's are character codes)"
+        { m.open(crate::reader::Construct::Each) }
     Try "try" [immediate] () "codes --"
-        "codes try … catch … end: the body from an empty stack, its values left; if it fails with one of codes (str 'timeout closed' just before try), the handler instead, on the stack as it was at try and the failure's message (or the value it carries) and code" {
-        m.try_body()
-    }
-    Catch "catch" [immediate] () "--" "codes try … catch … end: the handler" {
-        m.catch()
-    }
-    Include "include" [immediate] () "--" "include PATH: the file's words read here, relative to the file naming it" {
-        m.include(host, false)
-    }
+        "codes try … catch … end: the body from an empty stack, its values left; if it fails with one of codes (str 'timeout closed' just before try), the handler instead, on the stack as it was at try and the failure's message (or the value it carries) and code"
+        { m.try_body() }
+    Catch "catch" [immediate] () "--" "codes try … catch … end: the handler" { m.catch() }
+    Include "include" [immediate] () "--" "include PATH: the file's words read here, relative to the file naming it"
+        { m.include(host, Builtin::Include) }
     Require "require" [immediate] () "--"
-        "require PATH: the file's words read here, unless they were read already" {
-        m.include(host, true)
-    }
+        "require PATH: the file's words read here, unless they were read already"
+        { m.include(host, Builtin::Require) }
 }
