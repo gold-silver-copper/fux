@@ -74,7 +74,7 @@ or group-wait order. The complete recipe is below.
 
 More: `fux help recipes`, `keys`, `read`, `shells`, `programs`, `servers`;
 `fux help guide` gives all topics, `fux help json` the full schema,
-`fux help WORD` a word's contract.
+`fux help WORD` a word's contract; `fux help cookbook` recipes to copy.
 
 ## recipes: Waiting for what you need
 

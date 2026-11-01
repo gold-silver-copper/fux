@@ -46,8 +46,8 @@ reference.
 | Thing | What it is | Identity | Lifetime |
 |---|---|---|---|
 | server | owns everything for one run | its socket and its run | start until told to stop |
-| workspace | an ordered group of tabs (tmux: session) | `+N` plus run; a name or none | until its last tab closes |
-| tab | panes laid out together, seen one at a time (tmux: window) | `@N` plus run; a name or none | until its last pane closes |
+| workspace | an ordered group of tabs and workspaces, seen one at a time (tmux: session) | `+N` plus run; a name or none | until its last child closes |
+| tab | panes laid out together, split side by side or stacked one at a time, seen one at a time (tmux: window) | `@N` plus run; a name or none | until its last pane closes |
 | pane | a terminal that outlives its programs | `%N` plus run; a name or none | until killed |
 | program | one run of a process in a pane; a respawn is the next generation | pane plus generation | start to exit |
 | client | an attached terminal, or a headless stand-in | `cN` plus run | attach to detach |
