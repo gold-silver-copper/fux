@@ -4,15 +4,15 @@ use crate::pane::{self, Pane, PaneMut, Process, Runs};
 use crate::process::{self, Child};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Waiting, Watches};
-use crate::workspace::{Destination, Fit, Parts, Seat, Split, Tab, Workspace};
+use crate::workspace::{Destination, Fit, Parts, Split, Tab, Workspace};
 use fux_vt::Size;
 use fux_vt::keys::Direction;
 use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
 use fux_wire::code::{Error, Raise, fail};
 use fux_wire::command::Start;
 use fux_wire::command::{
-    self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
-    PaneResize, Pick, Request, Resized, Sibling, SwapWith, WsRef,
+    self, AnyRef, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PaneResize,
+    Request, Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
 use fux_wire::json::{Fields, Json};
@@ -126,21 +126,6 @@ pub struct Place {
     pub ws: WsId,
     pub tab: TabId,
     pub pane: PaneId,
-}
-
-/// Where a select command takes a client: a workspace, and a tab and pane
-/// there if given.
-struct Picked {
-    ws: WsId,
-    at: Option<Spot>,
-}
-
-/// Where in a workspace a client is shown: a tab, and a pane in it if
-/// given.
-#[derive(Clone, Copy)]
-pub(crate) struct Spot {
-    pub tab: TabId,
-    pub pane: Option<PaneId>,
 }
 
 /// A pane's size to begin with, and the cell its program is told it
@@ -458,7 +443,12 @@ impl Session {
     }
     /// The workspace client `client` shows.
     pub fn shown_workspace(&self, client: ClientId) -> Option<&Workspace> {
-        (self.parts.workspaces().iter()).find(|w| w.viewers.contains(&client))
+        self.parts.stack().current(client)
+    }
+    /// The clients showing workspace `ws`.
+    pub(crate) fn showing(&self, ws: WsId) -> impl Iterator<Item = ClientId> + '_ {
+        let shows = move |c: &ClientId| self.shown_workspace(*c).is_some_and(|w| w.id() == ws);
+        self.views.keys().copied().filter(shows)
     }
     /// The tab client `client` shows.
     pub fn shown_tab(&self, client: ClientId) -> Option<&Tab> {
@@ -534,9 +524,7 @@ impl Session {
     /// Where client `client` is, if it is attached: the workspace it is
     /// shown, while there is any.
     pub fn place(&self, client: ClientId) -> Option<Place> {
-        let ws = self.shown_workspace(client)?;
-        let tab = ws.tab_of(client)?;
-        let (ws, pane, tab) = (ws.id(), tab.focus(client)?, tab.id());
+        let ((ws, tab), pane) = self.parts.place(client)?;
         Some(Place { ws, tab, pane })
     }
 
@@ -836,38 +824,32 @@ impl Session {
         }
     }
 
-    /// The tabs `target` is or holds: a pane's own, a tab, or a
-    /// workspace's every tab, in order.
-    fn tabs_of(&self, target: AnyRef) -> Result<impl Iterator<Item = TabId> + '_, Error> {
-        let (one, tabs): (Option<TabId>, &[Tab]) = match target {
-            AnyRef::Tab(tab) => (Some(self.tab(tab).ok_or(Error::NoTab(tab))?.id()), &[]),
-            AnyRef::Workspace(id) => (
-                None,
-                self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs(),
-            ),
-            AnyRef::Pane(pane) => (Some(self.locate(pane).ok_or(Error::NoPane(pane))?.1), &[]),
+    /// The tabs in `scope`, in order: a tab itself, a workspace's, or with
+    /// none every one; a pane holds none.
+    fn tabs_of(&self, scope: Option<AnyRef>) -> Result<Vec<TabId>, Error> {
+        let workspaces = self.parts.workspaces().iter();
+        let tabs = |ws: Option<WsId>| {
+            let ws = workspaces.filter(|w| ws.is_none_or(|id| w.id() == id));
+            ws.flat_map(Workspace::tabs).map(Tab::id).collect()
         };
-        Ok(one.into_iter().chain(tabs.iter().map(|tab| tab.id())))
+        Ok(match scope.map(|target| self.there(target)).transpose()? {
+            None => tabs(None),
+            Some(AnyRef::Workspace(id)) => tabs(Some(id)),
+            Some(AnyRef::Tab(tab)) => vec![tab],
+            Some(AnyRef::Pane(_)) => Vec::new(),
+        })
     }
 
-    /// The panes `target` names: a pane, or a tab's or workspace's every
-    /// pane, in order.
-    fn panes_of(&self, target: AnyRef) -> Result<Vec<PaneId>, Error> {
-        let mut ids = Vec::new();
-        let mut take = |id: PaneId| ids.push(id);
-        match target {
-            AnyRef::Pane(id) => take(self.pane(id)?.id()),
-            AnyRef::Tab(id) => self
-                .root(id)
-                .ok_or(Error::NoTab(id))?
-                .for_each_pane(&mut take),
-            AnyRef::Workspace(id) => {
-                for tab in self.workspace(id).ok_or(Error::NoWorkspace(id))?.tabs() {
-                    tab.root().for_each_pane(&mut take);
-                }
-            }
+    /// The panes in `scope`, in layout order: a pane itself, the panes of
+    /// the tabs in it (`tabs_of`).
+    fn panes_of(&self, scope: Option<AnyRef>) -> Result<Vec<PaneId>, Error> {
+        if let Some(AnyRef::Pane(id)) = scope {
+            return Ok(vec![self.pane(id)?.id()]);
         }
-        Ok(ids)
+        let tabs = self.tabs_of(scope)?;
+        Ok((tabs.into_iter().filter_map(|t| self.root(t)))
+            .flat_map(Tree::panes)
+            .collect())
     }
 
     /// Sends `inputs` to the programs of the panes `to` names, each encoded
@@ -887,7 +869,7 @@ impl Session {
         // Every pane must take them, or none is sent them: each one's are
         // made first.
         let (run, mut each) = (self.run, Vec::new());
-        for id in self.panes_of(to.target())? {
+        for id in self.panes_of(Some(to.target()))? {
             let pane = self.live_pane_mut(id)?;
             let bytes = bytes(&pane, inputs);
             each.push((pane.version(run), bytes));
@@ -1081,8 +1063,7 @@ impl Session {
             tab,
             pane: pane.id(),
         };
-        let clients = self.views.keys().copied();
-        (self.parts).add_workspace((id, name), (tab, tab_name, fit), clients, pane);
+        (self.parts).add_workspace((id, name), (tab, tab_name, fit), pane);
         Ok(made)
     }
 
@@ -1207,32 +1188,14 @@ impl Session {
         // A size no view has is refused before anything starts on it.
         let (rows, cols) = attach.size.nonzero();
         let (rows, cols) = fux_wire::command::size(rows.get(), cols.get())?;
-        let (ws, spot) = match &attach.target {
+        // Its first pane focused, as every new seat is, or the zoomed one:
+        // a tab's zoom stays.
+        let at = match &attach.target {
             Some(command::AttachTarget::Workspace(workspace)) => {
-                (self.resolve_ws(workspace)?, None)
+                AnyRef::Workspace(self.resolve_ws(workspace)?)
             }
-            // Its first pane focused, as every new seat is, or the
-            // zoomed one: a tab's zoom stays.
-            Some(command::AttachTarget::Tab(tab)) => {
-                let ws = self.tab_workspace(*tab)?;
-                (
-                    ws,
-                    Some(Spot {
-                        tab: *tab,
-                        pane: None,
-                    }),
-                )
-            }
-            Some(command::AttachTarget::Pane(pane)) => {
-                let (ws, tab) = self.locate(*pane).ok_or(Error::NoPane(*pane))?;
-                (
-                    ws,
-                    Some(Spot {
-                        tab,
-                        pane: Some(*pane),
-                    }),
-                )
-            }
+            Some(command::AttachTarget::Tab(tab)) => self.there(AnyRef::Tab(*tab))?,
+            Some(command::AttachTarget::Pane(pane)) => self.there(AnyRef::Pane(*pane))?,
             None => {
                 // A server with nothing in it (just started, or its session
                 // did not come back) starts its first shell on this client's
@@ -1262,11 +1225,8 @@ impl Session {
                     })?;
                     self.start(size, initial, now)?;
                 }
-                (
-                    (self.parts.workspaces().first().map(|w| w.id()))
-                        .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?,
-                    None,
-                )
+                (self.parts.workspaces().first().map(|w| AnyRef::Workspace(w.id())))
+                    .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?
             }
         };
         let id = self.ids.client()?;
@@ -1294,8 +1254,7 @@ impl Session {
         let runs_in = self.parts.panes().iter().find(|(_, pane)| leads(pane));
         view.runs_in = runs_in.map(|(id, _)| *id);
         self.views.insert(id, view);
-        self.parts.attach(id);
-        self.parts.show(id, ws, spot);
+        self.parts.attach(id, Some(at));
         self.view_event(id, crate::journal::ViewChange::Attached);
         self.ask(id, crate::outer::QUERIES);
         self.settle(now);
@@ -1312,21 +1271,11 @@ impl Session {
     }
 
     /// The command's client follows what it made or moved.
-    /// Remember the place before the command: a move may already have
-    /// closed its old tab and selected a temporary replacement.
-    fn follow(&mut self, here: Here, ws: WsId, at: Option<Spot>) {
-        if let Here::Client(client, before) = here
+    fn follow(&mut self, here: Here, to: AnyRef) {
+        if let Here::Client(client, _) = here
             && self.views.contains_key(&client)
         {
-            self.parts.show(client, ws, at);
-            if let (Some(after), Some(view)) = (self.place(client), self.views.get_mut(&client)) {
-                if before.tab != after.tab {
-                    view.last_tab = Some(before.tab);
-                }
-                if before.ws != after.ws {
-                    view.last_workspace = Some(before.ws);
-                }
-            }
+            self.parts.show(client, to);
         }
     }
 
@@ -1500,16 +1449,8 @@ impl Session {
     /// Ends what a view shows if what it is about is gone: a chooser about
     /// a pane, tab or workspace that closed. Which opening it ended, if it did, which
     /// its client is told (`ToAttached::Ended`), the mode being the client's.
-    /// Forgets remembered places that closed or that a close made current.
     fn repair(&self, view: &mut View) -> Option<u64> {
         use fux_wire::act::{List, Panel};
-        let place = self.place(view.id);
-        view.last_tab = view
-            .last_tab
-            .filter(|id| self.tab(*id).is_some() && place.is_none_or(|at| at.tab != *id));
-        view.last_workspace = view
-            .last_workspace
-            .filter(|id| self.workspace(*id).is_some() && place.is_none_or(|at| at.ws != *id));
         let gone = match &view.mode {
             Mode::Panel(Panel::List(List {
                 about: Some(about), ..
@@ -1950,11 +1891,7 @@ impl Session {
             if tab.name().is_some() || tab.root().first_pane() != id || pane.name().is_some() {
                 return None;
             }
-            let others: Vec<ClientId> = self
-                .workspace(ws)?
-                .viewers
-                .iter()
-                .copied()
+            let others: Vec<ClientId> = (self.showing(ws))
                 .filter(|client| !viewers.contains(client))
                 .collect();
             (!others.is_empty()).then(|| (pane.label().into_owned(), others))
@@ -2123,7 +2060,7 @@ impl Session {
         let watches = match wait.since {
             command::Since::Now(AnyRef::Pane(id)) => Watches::Pane((id, self.pane(id)?.counts())),
             command::Since::Now(target) => Watches::Panes(
-                (self.panes_of(target)?.into_iter())
+                (self.panes_of(Some(target))?.into_iter())
                     .map(|id| Ok((id, self.pane(id)?.counts())))
                     .collect::<Result<Vec<_>, Error>>()?,
             ),
@@ -2279,19 +2216,6 @@ impl Session {
                 Ok(Reply::default())
             }
             Command::KillServer => self.kill_server(origin),
-            Command::NewWorkspace {
-                name,
-                size,
-                cwd,
-                start,
-                options,
-            } => {
-                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here)?;
-                let new = NewPane::new(start, &cwd, *options, sized);
-                let made = self.create_workspace(name.clone(), None, fit, new, now)?;
-                self.follow(here, made.ws, None);
-                Ok(acted(self.pane(made.pane)?.version(self.run)))
-            }
             Command::NewTab {
                 target,
                 name,
@@ -2305,11 +2229,7 @@ impl Session {
                 // A workspace named that is not there is made, its first tab
                 // this one.
                 let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new, now)?;
-                let at = Spot {
-                    tab: made.tab,
-                    pane: None,
-                };
-                self.follow(here, made.ws, Some(at));
+                self.follow(here, AnyRef::Tab(made.tab));
                 Ok(acted(self.pane(made.pane)?.version(self.run)))
             }
             &Command::Respawn {
@@ -2323,9 +2243,7 @@ impl Session {
                     Some(target) => match self.there(*target)? {
                         AnyRef::Pane(p) => self.viewers(self.locate(p).map(|(_, t)| t)),
                         AnyRef::Tab(t) => self.viewers(Some(t)),
-                        AnyRef::Workspace(w) => (self.workspace(w))
-                            .map(|w| w.viewers.iter().copied().collect())
-                            .unwrap_or_default(),
+                        AnyRef::Workspace(w) => self.showing(w).collect(),
                     },
                 };
                 for client in to {
@@ -2431,19 +2349,8 @@ impl Session {
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
             &Command::Members { target, members } => {
                 let ids = match members {
-                    Members::Panes => {
-                        let panes = self.panes_of(target)?;
-                        let mut ids = Vec::with_capacity(panes.len());
-                        ids.extend(panes.into_iter().map(AnyRef::Pane));
-                        ids
-                    }
-                    Members::Tabs => {
-                        let mut ids = Vec::new();
-                        for tab in self.tabs_of(target)? {
-                            ids.push(AnyRef::Tab(tab));
-                        }
-                        ids
-                    }
+                    Members::Panes => (self.panes_of(target)?.into_iter().map(AnyRef::Pane)).collect(),
+                    Members::Tabs => (self.tabs_of(target)?.into_iter().map(AnyRef::Tab)).collect(),
                 };
                 Ok(Body::Handles(ids).into())
             }
@@ -2451,7 +2358,7 @@ impl Session {
         }
     }
 
-    /// What `new-workspace` and `new-tab` do before their pane starts: the
+    /// What `new-tab` does before its pane starts: the
     /// directory it starts in found, and its tab's fit and the size settling
     /// gives its pane: with a client asking, which then shows it, on its
     /// screen, in the cell its terminal said; else its fit's, in no cell, as
@@ -2511,7 +2418,12 @@ impl Session {
     /// panes, as a split that would is, is refused.
     fn resize_tabs(&mut self, target: AnyRef, size: command::Size) -> Result<(), Error> {
         let size = size.map(fux_wire::command::Screen::size);
-        let tabs: Vec<_> = self.tabs_of(target)?.collect();
+        // A pane's own tab.
+        let target = match self.there(target)? {
+            AnyRef::Pane(p) => AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1),
+            target => target,
+        };
+        let tabs = self.tabs_of(Some(target))?;
         if let Some(size) = size {
             let area = Fit::Fixed(size).area();
             for tab in &tabs {
@@ -2666,33 +2578,25 @@ impl Session {
             return Err(Error::NoPane(target));
         }
         self.ids = ids;
-        let (_, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
         for client in followers {
-            self.parts.focus(tab, client, new);
+            self.parts.show(client, AnyRef::Pane(new));
         }
         let version = self.pane(new)?.version(self.run);
         Ok(acted(version))
     }
 
-    /// `kill`: a pane closed, or a tab's or workspace's every pane.
-    fn kill(&mut self, target: AnyRef, now: Instant) -> Result<(), Error> {
-        match self.there(target)? {
-            AnyRef::Pane(pane) => self.close_pane(pane, None, now),
-            AnyRef::Tab(tab) => {
-                self.remove_tab(tab, now);
-                self.after_close(now);
-            }
-            AnyRef::Workspace(workspace) => {
-                while let Some(tab) = self
-                    .workspace(workspace)
-                    .and_then(|ws| ws.tabs().first())
-                    .map(Tab::id)
-                {
-                    self.remove_tab(tab, now);
-                }
-                self.after_close(now);
-            }
+    /// `kill`: a pane closed, or every pane in `scope` (`tabs_of`), tab by
+    /// tab.
+    fn kill(&mut self, scope: Option<AnyRef>, now: Instant) -> Result<(), Error> {
+        if let Some(AnyRef::Pane(pane)) = scope {
+            self.pane(pane)?;
+            self.close_pane(pane, None, now);
+            return Ok(());
         }
+        for tab in self.tabs_of(scope)? {
+            self.remove_tab(tab, now);
+        }
+        self.after_close(now);
         Ok(())
     }
 
@@ -2750,7 +2654,7 @@ impl Session {
             }
         };
         let view = || self.views.get(&client).ok_or(Error::NoClient(client));
-        let picked = match *action {
+        let to = match *action {
             ClientAction::Open(ref screen) => {
                 self.outbox
                     .push(Outgoing::To(client, ToAttached::Open(screen.clone())));
@@ -2778,13 +2682,10 @@ impl Session {
                 let captured = crate::capture::client(client, &grid);
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
-            ClientAction::SelectPane(pick) => self.pick_pane(view()?, place, pick)?,
-            ClientAction::SelectTab(pick) => self.pick_tab(view()?, place, pick)?,
-            ClientAction::SelectWorkspace(ref pick) => self.pick_ws(view()?, pick)?,
+            ClientAction::Show(target) => self.there(target)?,
+            ClientAction::Step { from, way } => self.step(view()?, self.there(from)?, way)?,
         };
-        // A select shows the client where it picked.
-        let Picked { ws, at } = picked;
-        self.follow(Here::Client(client, place), ws, at);
+        self.follow(Here::Client(client, place), to);
         Ok(Reply::default())
     }
 
@@ -2820,7 +2721,7 @@ impl Session {
         let (from_ws, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let fit = Fit::Clients(self.tab(from).ok_or(Error::NoTab(from))?.fit().size());
         let mut ids = self.ids.clone();
-        let (ws, dest) = match to {
+        let dest = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
                 let root = self.root(from).ok_or(Error::NoTab(from))?;
@@ -2830,22 +2731,20 @@ impl Session {
                 self.parts.reshape(pane, |old| *old = root);
                 return Ok(());
             }
-            &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, Destination::Tab(tab)),
+            &MoveTo::Tab(tab) => Destination::Tab(self.tab(tab).ok_or(Error::NoTab(tab))?.id()),
             MoveTo::Workspace(r) => {
                 let ws = self.resolve_ws(r)?;
                 let first = self.workspace(ws).and_then(|w| w.tabs().first());
-                let tab = first.ok_or(Error::NoWorkspace(ws))?.id();
-                (ws, Destination::Tab(tab))
+                Destination::Tab(first.ok_or(Error::NoWorkspace(ws))?.id())
             }
             // A tab made for it holds it alone, which shows on every size
             // it is laid out on (each has a cell: its fit's, and a screen
             // that sizes panes, `View::sizes`): nothing after refuses the
             // move.
-            MoveTo::NewTab => (from_ws, Destination::NewTab(from_ws, ids.tab()?, fit)),
+            MoveTo::NewTab => Destination::NewTab(from_ws, ids.tab()?, fit),
             MoveTo::NewWorkspace => {
                 let (id, tab) = (ids.workspace()?, ids.tab()?);
-                let first = (tab, None, fit);
-                (id, Destination::NewWorkspace((id, None), first))
+                Destination::NewWorkspace((id, None), (tab, None, fit))
             }
         };
         let tab = match &dest {
@@ -2862,8 +2761,7 @@ impl Session {
         // Both IDs or neither: one taken alone would be lost.
         self.ids = ids;
         // The moving client follows its pane.
-        let pane = Some(pane);
-        self.follow(here, ws, Some(Spot { tab, pane }));
+        self.follow(here, AnyRef::Pane(pane));
         Ok(())
     }
 
@@ -2916,76 +2814,37 @@ impl Session {
         moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
     }
 
-    /// The pane `focus` picks for client `view`, which is at `at`.
-    fn pick_pane(&self, view: &View, at: Place, pick: PanePick) -> Result<Picked, Error> {
-        let client = view.id;
-        let tab = self.tab(at.tab).ok_or(Error::NoTab(at.tab))?;
-        let panes = tab.root().panes();
-        let (current, last) = (tab.focus(client), tab.seat(client).and_then(Seat::last));
-        let target = match pick {
-            PanePick::Id(p) => p,
-            PanePick::Step(toward) => {
-                let index = current.and_then(|c| panes.iter().position(|p| *p == c));
-                let next = round(&panes, index.unwrap_or(0), toward);
-                *next.ok_or(Error::OnlyOne(Kind::Pane))?
+    /// The sibling of `from` that `way` says client `view` is shown: the
+    /// next or previous among what holds it, going round, the one it was
+    /// shown there before, or a pane's neighbour on its screen.
+    fn step(&self, view: &View, from: AnyRef, way: Way) -> Result<AnyRef, Error> {
+        let (siblings, shown) = (self.parts.siblings(from, view.id)).ok_or(Error::NoClient(view.id))?;
+        let kind = from.kind();
+        match (way, from) {
+            (Way::Step(toward), _) => {
+                let index = siblings.iter().position(|s| *s == from);
+                let next = round(&siblings, index.unwrap_or(0), toward);
+                next.copied().ok_or(Error::OnlyOne(kind))
             }
-            PanePick::Last => {
-                last.ok_or_else(|| fail(Raise::NoPane, "no previously focused pane"))?
+            (Way::Last, _) => (shown.and_then(|s| s.last)).ok_or_else(|| {
+                let code = match kind {
+                    Kind::Pane => Raise::NoPane,
+                    Kind::Tab => Raise::NoTab,
+                    Kind::Workspace => Raise::NoWorkspace,
+                };
+                fail(code, format!("no previously shown {}", kind.name()))
+            }),
+            (Way::Toward(direction), AnyRef::Pane(from)) => {
+                let tab = self.locate(from).and_then(|(_, tab)| self.root(tab));
+                let placement = tab.map(|root| layout::place(root, view.pane_area()));
+                let found = placement.and_then(|p| layout::neighbor(&p, from, direction));
+                found.map(AnyRef::Pane).ok_or(Error::NoNeighbor { from, direction })
             }
-            PanePick::Toward(direction) => {
-                let from = current.ok_or_else(|| fail(Raise::NoPane, "no pane focused"))?;
-                let placement = layout::place(tab.root(), view.pane_area());
-                layout::neighbor(&placement, from, direction)
-                    .ok_or(Error::NoNeighbor { from, direction })?
-            }
-        };
-        let (ws, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
-        let pane = Some(target);
-        Ok(Picked {
-            ws,
-            at: Some(Spot { tab, pane }),
-        })
-    }
-
-    /// The tab `show` picks for a client at `at`.
-    fn pick_tab(&self, view: &View, at: Place, to: Pick<TabId>) -> Result<Picked, Error> {
-        let (ws, target) = match to {
-            Pick::Id(t) => (self.tab_workspace(t)?, t),
-            Pick::Last => {
-                let tab = view
-                    .last_tab
-                    .ok_or_else(|| fail(Raise::NoTab, "no previously shown tab"))?;
-                (self.tab_workspace(tab)?, tab)
-            }
-            Pick::Step(toward) => {
-                let tabs = self.workspace(at.ws).map_or(&[][..], Workspace::tabs);
-                let index = tabs.iter().position(|t| t.id() == at.tab);
-                let next = round(tabs, index.unwrap_or(0), toward);
-                (at.ws, next.ok_or(Error::OnlyOne(Kind::Tab))?.id())
-            }
-        };
-        let at = Some(Spot {
-            tab: target,
-            pane: None,
-        });
-        Ok(Picked { ws, at })
-    }
-
-    /// The workspace `show` picks for client `view`.
-    fn pick_ws(&self, view: &View, pick: &Pick<WsRef>) -> Result<Picked, Error> {
-        let ws = match pick {
-            Pick::Id(r) => self.resolve_ws(r)?,
-            Pick::Last => view
-                .last_workspace
-                .ok_or_else(|| fail(Raise::NoWorkspace, "no previously shown workspace"))?,
-            Pick::Step(toward) => {
-                let workspaces = self.parts.workspaces();
-                let index = workspaces.iter().position(|w| w.viewers.contains(&view.id));
-                let next = round(workspaces, index.unwrap_or(0), *toward);
-                next.ok_or(Error::OnlyOne(Kind::Workspace))?.id()
-            }
-        };
-        Ok(Picked { ws, at: None })
+            (Way::Toward(direction), AnyRef::Tab(_) | AnyRef::Workspace(_)) => Err(fail(
+                Raise::BadValue,
+                format!("{} steps among a tab's panes: {from} is a {}", direction.name(), kind.name()),
+            )),
+        }
     }
 
     // ------------------------------------------------------------------ ls
@@ -3014,10 +2873,8 @@ impl Session {
             return Ok(Body::Found(target));
         }
         if field == "panes" && !matches!(target, AnyRef::Pane(_)) {
-            let panes = self.panes_of(target)?;
-            let mut ids = Vec::with_capacity(panes.len());
-            ids.extend(panes.into_iter().map(AnyRef::Pane));
-            return Ok(Body::Handles(ids));
+            let panes = self.panes_of(Some(target))?;
+            return Ok(Body::Handles(panes.into_iter().map(AnyRef::Pane).collect()));
         }
         let no_field = || fail(Raise::NoField, format!("{target} has no field {field:?}"));
         let value = match target {
@@ -3914,14 +3771,17 @@ mod tests {
     #[test]
     fn scoped_topology_keeps_full_membership_and_the_shared_layout_revision() -> TestResult {
         use fux_wire::inspect::{Projection, Scope};
+        use fux_wire::layout::Node;
         let (mut s, _) = attached(12, 80)?;
         run(
             &mut s,
             "opts +1 in 80 24 size new-tab drop %2 str horizontal axis split drop opts +1 in 80 24 size new-tab drop",
         )?;
-        for scope in [
-            Scope::Target(AnyRef::Tab("@2".parse().map_err(|_| "tab")?)),
-            Scope::Target(AnyRef::Pane(PaneId::of(2))),
+        // A tab's whole layout; a pane's tab as far as it is in it, the
+        // pane alone.
+        for (scope, panes) in [
+            (Scope::Target(AnyRef::Tab("@2".parse().map_err(|_| "tab")?)), 2),
+            (Scope::Target(AnyRef::Pane(PaneId::of(2))), 1),
         ] {
             let Body::Snapshot(snapshot) = s.inspect(scope, Projection::Topology)? else {
                 return Err("snapshot".into());
@@ -3929,17 +3789,18 @@ mod tests {
             snapshot.validate()?;
             let ws = snapshot.workspaces.first().ok_or("workspace")?;
             assert_eq!(ws.tabs.len(), 3);
-            assert_eq!(snapshot.tabs.len(), 1);
+            assert_eq!((snapshot.tabs.len(), snapshot.panes.len()), (1, panes));
             let tab = snapshot.tabs.first().ok_or("tab")?;
             assert_eq!(tab.revision, s.tab(tab.id).and_then(|t| t.revision(s.run)));
-            assert!(matches!(
+            let split = matches!(
                 tab.nodes.first(),
-                Some(fux_wire::layout::Node::Split {
+                Some(Node::Split {
                     first: 1,
                     second: 2,
                     ..
                 })
-            ));
+            );
+            assert_eq!(split, panes == 2);
             let held = fux::script::answered(Reply {
                 run: Some(s.run),
                 ..Body::Snapshot(snapshot).into()
@@ -4014,62 +3875,67 @@ mod tests {
         Ok(())
     }
 
+    /// D-112: each client is shown its own child of every stack and
+    /// focuses its own pane of every tab, each with a last that is another
+    /// child; a close takes the clients it showed to their last, else its
+    /// neighbour.
     #[test]
-    fn last_places_follow_each_clients_visits_not_order() -> TestResult {
+    fn each_client_has_one_current_and_last_at_every_node() -> TestResult {
+        use crate::workspace::{Child, Shown, Stack};
+        fn holds<C: Child>(stack: &Stack<C>, client: ClientId) -> Result<(), String> {
+            let Shown { current, last } = stack.shown(client).ok_or("not shown")?;
+            let child = |id| stack.get(id).is_some();
+            (child(current) && last.is_none_or(|l| l != current && child(l)))
+                .then_some(())
+                .ok_or_else(|| "a current or last that is not a child".into())
+        }
+        fn invariants(s: &Session) -> Result<(), String> {
+            for &client in s.views.keys() {
+                holds(s.parts.stack(), client)?;
+                for ws in s.parts.workspaces() {
+                    holds(ws.stack(), client)?;
+                    for tab in ws.tabs() {
+                        let Shown { current, last } = tab.seat(client).ok_or("no seat")?.focus;
+                        let ok = tab.holds(current)
+                            && last.is_none_or(|l| l != current && tab.holds(l));
+                        ok.then_some(()).ok_or("a focus that is not the tab's")?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        let shown = |s: &Session, client| s.workspace(WsId::of(1)).and_then(|w| w.stack().shown(client));
+        let at = |current, last: Option<u32>| {
+            Some(Shown { current: TabId::of(current), last: last.map(TabId::of) })
+        };
         let (mut s, c) = attached(10, 40)?;
         let d = s.attach(10, 40, None)?;
-        run(
-            &mut s,
-            "opts +1 in 80 24 size new-tab drop opts +1 in 80 24 size new-tab drop",
-        )?;
-        for (way, message) in [
-            ("step-tab", "no previously shown tab"),
-            ("step-workspace", "no previously shown workspace"),
-        ] {
-            let error = output_as(&mut s, Some(c), &format!("me str last {way}"))
-                .err()
-                .ok_or("last succeeded before a visit")?;
-            assert!(error.contains(message), "{error}");
-        }
-        output_as(
-            &mut s,
-            Some(c),
-            "me @3 show me @3 show @3 str previous reorder",
-        )?;
-        output_as(&mut s, Some(d), "me @2 show")?;
-        for tab in [1, 3, 1] {
-            output_as(&mut s, Some(c), "me str last step-tab")?;
-            assert_eq!(s.place(c).map(|p| p.tab), Some(TabId::of(tab)));
-            assert_eq!(s.place(d).map(|p| p.tab), Some(TabId::of(2)));
-        }
-        // Following a move must not remember the temporary replacement
-        // selected as its old tab closes.
-        output_as(&mut s, Some(c), "me @2 show %2 @3 move")?;
-        assert_eq!(s.views.get(&c).ok_or("view")?.last_tab, None);
-        output_as(&mut s, Some(c), "me @1 show")?;
-        // Creation follows its caller and records the place it left.
-        output_as(
-            &mut s,
-            Some(c),
-            "opts str / cwd 80 24 size new-workspace drop",
-        )?;
-        run(&mut s, "opts str / cwd 80 24 size new-workspace drop")?;
-        output_as(&mut s, Some(d), "me +3 show")?;
-        output_as(
-            &mut s,
-            Some(c),
-            "me +3 show me +3 show +3 str previous reorder",
-        )?;
-        for ws in [2, 3, 2] {
-            output_as(&mut s, Some(c), "me str last step-workspace")?;
-            assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(ws)));
-            assert_eq!(s.place(d).map(|p| p.ws), Some(WsId::of(3)));
-        }
-        // Last tab remembers a visit across workspace boundaries too.
-        output_as(&mut s, Some(c), "me str last step-tab")?;
-        assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(3)));
-        output_as(&mut s, Some(d), "me str last step-workspace")?;
-        assert_eq!(s.place(d).map(|p| p.ws), Some(WsId::of(1)));
+        run(&mut s, "opts +1 in 80 24 size new-tab drop opts +1 in 80 24 size new-tab drop")?;
+        invariants(&s)?;
+        output_as(&mut s, Some(c), "me @1 str next step me @2 str next step")?;
+        assert_eq!((shown(&s, c), shown(&s, d)), (at(3, Some(2)), at(1, None)));
+        output_as(&mut s, Some(c), "me @3 str last step")?;
+        assert_eq!(shown(&s, c), at(2, Some(3)));
+        // Its current tab closed, a client goes to its last; with none, to
+        // the next one, else the one before.
+        run(&mut s, "@2 kill")?;
+        assert_eq!((shown(&s, c), shown(&s, d)), (at(3, None), at(1, None)));
+        run(&mut s, "@1 kill")?;
+        assert_eq!((shown(&s, c), shown(&s, d)), (at(3, None), at(3, None)));
+        invariants(&s)?;
+        let error = output_as(&mut s, Some(c), "me @3 str last step").err().ok_or("a last")?;
+        assert!(error.contains("no previously shown tab"), "{error}");
+        // So do workspaces and panes.
+        run(&mut s, "opts str other in 80 24 size new-tab drop")?;
+        output_as(&mut s, Some(c), "me +1 str next step")?;
+        assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(2)));
+        run(&mut s, "+2 kill %3 str horizontal axis split drop")?;
+        assert_eq!(s.place(c).map(|p| (p.ws, p.pane)), Some((WsId::of(1), PaneId::of(5))));
+        invariants(&s)?;
+        output_as(&mut s, Some(d), "me %5 str left step")?;
+        run(&mut s, "%5 kill")?;
+        assert_eq!([c, d].map(|v| s.place(v).map(|p| p.pane)), [Some(PaneId::of(3)); 2]);
+        invariants(&s)?;
         Ok(())
     }
 
@@ -4123,32 +3989,6 @@ mod tests {
             }
             assert!(malformed.validate().is_err());
         }
-        Ok(())
-    }
-
-    #[test]
-    fn last_places_forget_closed_targets_and_detached_clients() -> TestResult {
-        let (mut s, c) = attached(10, 40)?;
-        output_as(&mut s, Some(c), "opts str / cwd +1 in new-tab drop")?;
-        run(&mut s, "@1 kill")?;
-        let error = output_as(&mut s, Some(c), "me str last step-tab")
-            .err()
-            .ok_or("closed tab remembered")?;
-        assert!(error.contains("no previously shown tab"), "{error}");
-        // Moving the last pane closes its old tab and workspace.
-        output_as(&mut s, Some(c), "opts str / cwd new-workspace drop")?;
-        run(&mut s, "%2 @3 move")?;
-        let view = s.views.get(&c).ok_or("view")?;
-        assert_eq!((view.last_tab, view.last_workspace), (None, None));
-        output_as(&mut s, Some(c), "opts str / cwd new-workspace drop")?;
-        // Closing the current place selects a survivor; it must not be its own last.
-        run(&mut s, "+3 kill")?;
-        let view = s.views.get(&c).ok_or("view")?;
-        assert_eq!((view.last_tab, view.last_workspace), (None, None));
-        s.detach_client(c);
-        let d = s.attach(10, 40, None)?;
-        let view = s.views.get(&d).ok_or("view")?;
-        assert_eq!((view.last_tab, view.last_workspace), (None, None));
         Ok(())
     }
 
@@ -4307,7 +4147,7 @@ mod tests {
             .tab(tab)
             .and_then(|t| t.revision(s.run))
             .ok_or("revision")?;
-        s.parts.focus(tab, client, PaneId::of(3));
+        s.parts.show(client, AnyRef::Pane(PaneId::of(3)));
         let before = s.root(tab).cloned().ok_or("tree")?;
         let cursor = s.parts.journal().end(s.run);
         let origin = Origin::Cli(Caller::default());
@@ -4629,7 +4469,7 @@ mod tests {
         let (mut s, incumbent) = attached(24, 80)?;
         run(
             &mut s,
-            "%1 str horizontal axis split drop opts str second name 80 24 size new-workspace drop",
+            "%1 str horizontal axis split drop opts str second in 80 24 size new-tab drop",
         )?;
         run(&mut s, "str c1 client %2 show")?;
         let presentation = fux::script::default_state()?.preferences.presentation();
@@ -5146,7 +4986,7 @@ mod tests {
     fn a_new_tab_takes_the_screen_of_the_callers_tab() -> TestResult {
         let (mut s, _small) = attached(24, 80)?;
         let big = s.attach(50, 200, None)?;
-        run(&mut s, "opts 100 30 size str other name new-workspace drop")?;
+        run(&mut s, "opts 100 30 size str other in new-tab drop")?;
         run(
             &mut s,
             &format!("str {big} client str other workspace show"),
@@ -5198,7 +5038,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "%1 str horizontal axis str / cwd split drop")?;
         run(&mut s, &format!("str {c} client focused zoom"))?;
-        run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
+        run(&mut s, "opts 80 24 size str other in new-tab drop")?;
         output_as(
             &mut s,
             Some(c),
@@ -5818,7 +5658,7 @@ mod tests {
         s.input(c, b"\x1b[6;20;10t");
         let told = winsize(&s);
         assert!(told.is_some_and(|(_, pixels)| pixels.is_some()), "{told:?}");
-        run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
+        run(&mut s, "opts 80 24 size str other in new-tab drop")?;
         let show = |ws: &str| format!("str {c} client str {ws} workspace show");
         let unknown = |s: &Session| winsize(s).is_some_and(|(_, pixels)| pixels.is_none());
         run(&mut s, &show("other"))?;
@@ -6299,7 +6139,7 @@ mod tests {
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
         // One in a tab no client shows is told once one does.
-        run(&mut s, "opts 20 4 size str other name new-workspace")?;
+        run(&mut s, "opts 20 4 size str other in new-tab")?;
         run(&mut s, "str c1 client str other workspace show")?;
         if let Some(view) = s.views.get_mut(&client) {
             view.notice = None;
@@ -6547,7 +6387,7 @@ mod tests {
         let journal = fux::script::default_state()?.preferences.journal_entries;
         let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id, journal);
         s.test_keymap = fux::script::default_state()?.draft();
-        let refused = run(&mut s, "opts new-workspace").err().unwrap_or_default();
+        let refused = run(&mut s, "opts str new-workspace in new-tab").err().unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("give a size"),
             "{refused}"
@@ -6877,14 +6717,15 @@ mod tests {
     #[test]
     fn workspace_names_stay_unique_and_failures_use_no_ids() -> TestResult {
         let mut s = started()?;
-        assert!(run(&mut s, "opts 80 24 size str +1 name new-workspace").is_err());
+        assert!(run(&mut s, "opts 80 24 size str +9 in new-tab").is_err());
         assert_eq!(
-            output(&mut s, "opts 80 24 size str workspace-3 name new-workspace")?,
+            output(&mut s, "opts 80 24 size str workspace-3 in new-tab")?,
             format!("%2:0.0.0.0.0:{}\n", s.run)
         );
-        assert!(run(&mut s, "opts 80 24 size str workspace-3 name new-workspace").is_err());
+        let taken = "opts 80 24 size str workspace-3 in str workspace-3 name new-tab";
+        assert!(run(&mut s, taken).is_err());
         let third = format!("%3:0.0.0.0.0:{}\n", s.run);
-        assert_eq!(output(&mut s, "opts 80 24 size new-workspace")?, third);
+        assert_eq!(output(&mut s, "opts str new-workspace in 80 24 size new-tab")?, third);
         let names: Vec<Option<&str>> = s.parts.workspaces().iter().map(|w| w.name()).collect();
         assert_eq!(names, [None, Some("workspace-3"), None]);
         // A move to a new workspace with no tab ID left takes no workspace
@@ -7021,12 +6862,12 @@ mod tests {
     fn what_cannot_be_done_is_refused() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         for code in [
-            "opts str %3 name new-workspace",
+            "opts str %3 in new-tab",
             "str +1 workspace str +2 rename",
             "str +1 workspace str @2 rename",
             "str %1 pane str '' rename",
             "str %1 pane str up 1 move-border",
-            "str c1 client str last focus",
+            "str c1 client dup focused str last step",
             "str @1 tab str next reorder",
         ] {
             assert!(run(&mut s, code).is_err(), "{code}");
@@ -7052,7 +6893,7 @@ mod tests {
             s.views.get(&c).map(|v| &v.mode),
             Some(Mode::Normal)
         ));
-        run(&mut s, "str c1 client choose-tab")?;
+        run(&mut s, "str c1 client dup focused tab choose-among")?;
         assert!(matches!(
             s.views.get(&c).map(|v| &v.mode),
             Some(Mode::Panel(fux_wire::act::Panel::List(_)))
@@ -7394,7 +7235,7 @@ mod tests {
         let (named, first, split) = (named?, first?, split?);
         let before = named_state(&s)?;
         for (source, holder) in [
-            ("opts 80 24 size str pane name new-workspace", "%1, a pane,"),
+            ("opts 80 24 size str pane in new-tab", "%1, a pane,"),
             (
                 "opts 80 24 size str ws in str pane name new-tab",
                 "%1, a pane,",
@@ -8240,11 +8081,11 @@ mod tests {
                     .collect())
             };
         assert!(matches!(
-            run("me str next focus")?.as_slice(),
+            run("me me focused str next step")?.as_slice(),
             [Err(Error::OnlyOne(Kind::Pane))]
         ));
         let kill = Command::Kill {
-            target: AnyRef::Pane(PaneId::of(9)),
+            target: Some(AnyRef::Pane(PaneId::of(9))),
         };
         assert!(matches!(
             s.execute(&kill, &origin, Instant::now()),
@@ -8300,7 +8141,7 @@ mod journal_tests {
         for name in [
             "laid_out",
             "reordered",
-            "focused",
+            "shown",
             "zoomed",
             "history_budget",
             "history_cleared",
@@ -8437,7 +8278,7 @@ mod journal_tests {
             let (mut s, client) = testing::attached(24, 80)?;
             run(
                 &mut s,
-                "opts 80 24 size str +1 workspace in new-tab drop opts 80 24 size new-workspace drop @1 80 24 resize @2 80 24 resize @3 80 24 resize",
+                "opts 80 24 size str +1 workspace in new-tab drop opts str new-workspace in 80 24 size new-tab drop @1 80 24 resize @2 80 24 resize @3 80 24 resize",
             )?;
             let from = s.parts.journal().end(s.run);
             run(&mut s, &format!("str {client} client {target} show"))?;

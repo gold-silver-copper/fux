@@ -60,7 +60,7 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
     eventually("+2 again", || {
         Ok(client_line(&server, "c1")?.contains(" +2 "))
     })?;
-    server.words("opts 60 10 size str third name new-workspace")?;
+    server.words("opts 60 10 size str third in new-tab")?;
     server.ok(&["str", "c1", "client", "str", "third", "workspace", "show"])?;
     eventually("on the third", || {
         Ok(client_line(&server, "c1")?.contains(" +3 "))

@@ -597,24 +597,32 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     Ok(vocabulary)
 }
 
-/// The bundled dictionary, and this client's config's definitions.
-fn base(config: Option<&Config>) -> Result<Machine<Fux>, Failed> {
-    let ready = READY.with(|ready| ready.as_ref().map(|(m, _)| m.clone()).map_err(Clone::clone))?;
+/// The bundled dictionary.
+fn base() -> Result<Machine<Fux>, Failed> {
+    READY.with(|ready| ready.as_ref().map(|(m, _)| m.clone()).map_err(Clone::clone))
+}
+
+/// A client's dictionary: the bundled one, the bundled keys' words, and
+/// its config's definitions.
+fn client_base(config: Option<&Config>) -> Result<Machine<Fux>, Failed> {
+    let keyed = KEYED.with(Clone::clone)?;
     match config {
-        Some(config) => configured_machine(config, ready),
-        None => Ok(ready),
+        Some(config) => configured_machine(config, keyed),
+        None => Ok(keyed),
     }
 }
 
 /// A machine with the library, to read `tokens`: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    compiled(None, tokens)
+    let mut machine = base()?;
+    machine.read(tokens.to_vec(), None);
+    Ok(machine)
 }
 
-/// A machine with the library and, for a key's or the prompt's program,
-/// its client's config's definitions (`config`), to read `tokens`.
+/// A machine with a client's dictionary (`client_base`), for a key's or
+/// the prompt's program, to read `tokens`.
 pub(crate) fn compiled(config: Option<&Config>, tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    let mut machine = base(config)?;
+    let mut machine = client_base(config)?;
     machine.read(tokens.to_vec(), None);
     Ok(machine)
 }
@@ -633,7 +641,7 @@ pub(crate) fn callback_machine(
     args: Option<&[fux_wire::callback::Data]>,
     stop: Option<&Stop>,
 ) -> Result<Machine<Fux>, Failed> {
-    let mut machine = base(config)?;
+    let mut machine = client_base(config)?;
     let code = match program {
         crate::screens::Program::Line(line) => {
             machine.read(token::source("key", line)?, None);
@@ -720,9 +728,25 @@ fn configured_machine(config: &Config, mut machine: Machine<Fux>) -> Result<Mach
     Ok(machine)
 }
 
+/// The bundled dictionary and the bundled keys' own words, which their
+/// bindings run: the keys read on a client state of their own that is let
+/// go (`default_state` binds them).
+fn keyed() -> Result<Machine<Fux>, Failed> {
+    let mut machine = base()?;
+    machine.read(token::source("keys.fux", KEYS)?, None);
+    let mut draft = Draft::default();
+    let mut out = io::sink();
+    let mut host = Host::new(Context::default(), Some(&mut draft), &mut out);
+    run(&mut machine, &mut host, &mut ConfigOnly::default(), None)?;
+    machine.clear();
+    Ok(machine)
+}
+
 thread_local! {
     /// The libraries, read once a thread, and their help.
     static READY: Result<(Machine<Fux>, Docs), Failed> = libraries();
+    /// The bundled keys', as `keyed` made it.
+    static KEYED: Result<Machine<Fux>, Failed> = keyed();
     /// The last config's, as `configured_machine` made it.
     static CONFIGURED: std::cell::RefCell<Option<(Config, Machine<Fux>)>> =
         const { std::cell::RefCell::new(None) };
@@ -1611,16 +1635,17 @@ pub fn run_file(path: &std::path::Path) -> Result<ClientState, Failed> {
 
 fn run_config_on(config: source::Frozen, defaults: &ClientState) -> Result<ClientState, Failed> {
     let mut draft = defaults.draft();
-    let mut machine = base(None)?;
+    let mut machine = client_base(None)?;
     machine.read(config.tokens()?, config.path.clone());
     let files = quiet(machine, Some(&mut draft), false)?;
     draft.config = Some(Arc::new(config.with(files)));
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
-/// Runs config code with only local reads and draft mutations.
+/// Runs config code with only local reads and draft mutations, in a
+/// client's dictionary.
 fn run_quiet(tokens: &[Token], state: Option<&mut Draft>, diagnostics: bool) -> Result<(), Failed> {
-    quiet(compile(tokens)?, state, diagnostics).map(drop)
+    quiet(compiled(None, tokens)?, state, diagnostics).map(drop)
 }
 
 /// Runs `machine`'s config code as `run_quiet` does: the files it read.
@@ -1755,7 +1780,7 @@ fn ran(
         program: program.clone(),
     });
     let rerun = argv.map(|argv| client::Rerun { argv, program });
-    let mut machine = base(None).map_err(|failed| uncompiled(failed, again.as_ref()))?;
+    let mut machine = base().map_err(|failed| uncompiled(failed, again.as_ref()))?;
     // A file with no canonical path (`<(…)`) requires relative to the
     // working directory, as stdin does.
     machine.read(tokens, path.as_ref().and_then(|p| p.canonicalize().ok()));
@@ -3009,7 +3034,7 @@ pub(crate) mod tests {
         };
         let mut keymap = super::default_state()?.draft();
         let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("define "))
             .partition(|l| l.contains(" bind-in") || l.contains(" bind-action"));
         assert_eq!(
             keymap.keys.bindings.all().len(),
@@ -3029,7 +3054,7 @@ pub(crate) mod tests {
         let mut again = super::default_state()?.draft();
         run(
             "other",
-            "str C-a prefix str M-n code me str next step-tab end bind-root",
+            "str C-a prefix str M-n code me me focused tab str next step end bind-root",
             &mut again,
         )?;
         run("listed", &keymap.keys.describe(), &mut again)?;
@@ -3109,7 +3134,7 @@ pub(crate) mod tests {
     fn a_screen_past_a_grid_is_size_from_the_word_and_the_server() -> TestResult {
         use super::testing::attached;
         let most = u16::MAX;
-        let word = format!("opts {most} {most} size new-workspace");
+        let word = format!("opts str new-workspace in {most} {most} size new-tab");
         let word = evaluate(&word, None, &mut Refuse, &mut Vec::new());
         let (mut session, client) = attached(8, 30)?;
         let server = session.resize(client, most, most, std::time::Instant::now());

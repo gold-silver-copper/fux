@@ -89,7 +89,7 @@ const PROMPT: &[&str] = &[
     "me focused str horizontal axis split drop\r",
     "me focused zoom\r",
     "ls\r",
-    "me str next step-tab\r",
+    "me me focused tab str next step\r",
     "nonsense\r",
     "str %99 pane kill\r",
     "me me focused tab rename-prompt\r",
@@ -289,7 +289,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             workspace(rng),
             rng.below(9)
         ),
-        2 => format!("opts 80 23 size str w{} name new-workspace", rng.below(9)),
+        2 => format!("opts 80 23 size str w{} in new-tab", rng.below(9)),
         3 => format!("str {} pane str horizontal axis split", pane(rng)),
         4 => format!(
             "str {} pane str horizontal axis {} program-clipboard split",
@@ -336,7 +336,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         ),
         17 => format!("str {} client str {} pane show", client(rng), pane(rng)),
         18 => format!(
-            "str {} client str {} focus",
+            "str {} client dup focused str {} step",
             client(rng),
             rng.pick(&["next", "previous", "last", "left", "right", "up", "down"])
                 .copied()
@@ -344,7 +344,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         ),
         19 => format!("str {} client str {} tab show", client(rng), tab(rng)),
         20 => format!(
-            "str {} client str {} step-tab",
+            "str {} client dup focused tab str {} step",
             client(rng),
             rng.pick(&["next", "previous", "last"])
                 .copied()
@@ -365,8 +365,8 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
                 client(rng),
                 match n {
                     1 => "command-prompt",
-                    2 => "choose-tab",
-                    _ => "choose-workspace",
+                    2 => "dup focused tab choose-among",
+                    _ => "dup focused workspace choose-among",
                 }
             ),
         },
@@ -400,7 +400,7 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         37 if clients.len() > 1 => format!("str {} client detach", client(rng)),
         38 => format!("str {} client capture", client(rng)),
         _ => format!(
-            "str {} client str {} step-workspace",
+            "str {} client dup focused workspace str {} step",
             client(rng),
             rng.pick(&["next", "previous", "last"])
                 .copied()

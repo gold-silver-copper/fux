@@ -348,7 +348,7 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `laid_out` | tab/workspace; same-tab swap, reshaping, a guarded `arrange`, fit or effective host changed; pane resizes can follow |
 | `moved` | `from_tab`, `from_workspace`; both old and new scopes receive it |
 | `attached`, `detached` | `client` and its last place if known |
-| `shown`, `focused` | `client` and the affected place; departures invalidate both places; includes automatic repair |
+| `shown` | `client` and its place, each time it changes at any level (workspace, tab, focused pane, or a zoom of its tab): one at the place left, one at the place reached; includes automatic repair after a close |
 | `zoomed` | tab/workspace and its zoomed `pane`, null when it no longer has one: by `zoom`, a focus on another pane there, or the pane leaving |
 | `view_resized` | `client`; client size invalidated |
 | `screen` | `client`; fresh opening, close or mode ending invalidated |
@@ -430,8 +430,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":63,
- "server_release":"0.36.0","server_protocol":63,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":64,
+ "server_release":"0.36.0","server_protocol":64,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

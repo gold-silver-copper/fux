@@ -1,10 +1,10 @@
 unbind-all
-str 'h' code me str left focus end bind str 'focus left' label str 'Focus' group
-str 'j' code me str down focus end bind str 'focus down' label str 'Focus' group
-str 'k' code me str up focus end bind str 'focus up' label str 'Focus' group
-str 'l' code me str right focus end bind str 'focus right' label str 'Focus' group
-str 'o' code me str next focus end bind str 'next pane' label str 'Focus' group
-str 'q' code me str last focus end bind str 'last pane' label str 'Focus' group
+str 'h' code me me focused str left step end bind str 'focus left' label str 'Focus' group
+str 'j' code me me focused str down step end bind str 'focus down' label str 'Focus' group
+str 'k' code me me focused str up step end bind str 'focus up' label str 'Focus' group
+str 'l' code me me focused str right step end bind str 'focus right' label str 'Focus' group
+str 'o' code me me focused str next step end bind str 'next pane' label str 'Focus' group
+str 'q' code me me focused str last step end bind str 'last pane' label str 'Focus' group
 str 'v' code me focused str horizontal axis split drop end bind str 'split side by side' label str 'Panes' group
 str 's' code me focused str vertical axis split drop end bind str 'split stacked' label str 'Panes' group
 str 'x' code me me focused confirm-close end bind str 'close pane' label str 'Panes' group
@@ -18,20 +18,20 @@ str 'm h' code me focused str left move end bind str 'move left' label str 'Move
 str 'm j' code me focused str down move end bind str 'move down' label str 'Move' group repeat
 str 'm k' code me focused str up move end bind str 'move up' label str 'Move' group repeat
 str 'm l' code me focused str right move end bind str 'move right' label str 'Move' group repeat
-str 'n' code me str next step-tab end bind str 'next tab' label str 'Tabs' group
-str 'b' code me str previous step-tab end bind str 'previous tab' label str 'Tabs' group
+str 'n' code me me focused tab str next step end bind str 'next tab' label str 'Tabs' group
+str 'b' code me me focused tab str previous step end bind str 'previous tab' label str 'Tabs' group
 str 't n' code opts new-tab drop end bind str 'new tab' label str 'Tabs' group
-str 't h' code me str previous step-tab end bind str 'previous tab' label str 'Tabs' group
-str 't l' code me str next step-tab end bind str 'next tab' label str 'Tabs' group
-str 't g' code me choose-tab end bind str 'choose a tab' label str 'Tabs' group
+str 't h' code me me focused tab str previous step end bind str 'previous tab' label str 'Tabs' group
+str 't l' code me me focused tab str next step end bind str 'next tab' label str 'Tabs' group
+str 't g' code me me focused tab choose-among end bind str 'choose a tab' label str 'Tabs' group
 str 't r' code me me focused tab rename-prompt end bind str 'rename tab' label str 'Tabs' group
 str 't x' code me me focused tab confirm-close end bind str 'close tab' label str 'Tabs' group
 str 't m h' code me focused tab str previous reorder end bind str 'move tab earlier' label str 'Reorder' group repeat
 str 't m l' code me focused tab str next reorder end bind str 'move tab later' label str 'Reorder' group repeat
-str 'w n' code opts new-workspace drop end bind str 'new workspace' label str 'Workspaces' group
-str 'w h' code me str previous step-workspace end bind str 'previous workspace' label str 'Workspaces' group
-str 'w l' code me str next step-workspace end bind str 'next workspace' label str 'Workspaces' group
-str 'w g' code me choose-workspace end bind str 'choose a workspace' label str 'Workspaces' group
+str 'w n' code opts str new-workspace in new-tab drop end bind str 'new workspace' label str 'Workspaces' group
+str 'w h' code me me focused workspace str previous step end bind str 'previous workspace' label str 'Workspaces' group
+str 'w l' code me me focused workspace str next step end bind str 'next workspace' label str 'Workspaces' group
+str 'w g' code me me focused workspace choose-among end bind str 'choose a workspace' label str 'Workspaces' group
 str 'w r' code me me focused workspace rename-prompt end bind str 'rename workspace' label str 'Workspaces' group
 str 'w x' code me me focused workspace confirm-close end bind str 'close workspace' label str 'Workspaces' group
 str 'w m h' code me focused workspace str previous reorder end bind str 'move workspace earlier' label str 'Reorder' group repeat

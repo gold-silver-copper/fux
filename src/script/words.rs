@@ -10,7 +10,7 @@ use fux_wire::callback::Open;
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{
     AnyRef, Button, ClientAction, Command, Extent, HistoryBytes, Input, Kind, Limit, Members,
-    Mouse, MoveTo, PanePick, PaneResize, Percent, Pick, Program, Request, Resized, Sibling, Since,
+    Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since, Way,
     Source, SwapWith, To, Usage, Wait, Wheel, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId};
@@ -187,8 +187,8 @@ impl Opt {
     }
 }
 
-/// The words that start from opts, as the table says: `new-tab,
-/// new-workspace, attach and attach-defaults`, `last` before the last.
+/// The words that start from opts, as the table says: `new-tab, attach
+/// and attach-defaults`, `last` before the last.
 pub fn from_opts(last: &str) -> String {
     let opts = |act: &&Act| (act.takes()).is_some_and(|t| t.after != After::Pane);
     let names: Vec<&str> = (Act::ALL.iter().filter(opts))
@@ -209,7 +209,7 @@ pub const KINDS: [(&str, &str, Option<&str>); 20] = [
     ("client-capture", "a client's capture", None),
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
     ("record", "a record", None), ("null", "null", None),
-    ("opts", "options (from opts, for new-tab, new-workspace, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("opts", "options (from opts, for new-tab, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("pane-request", "a pane request", Some("nothing acts on this request")),
     ("tab-request", "a tab request", Some("nothing acts on this request")),
     ("workspace-request", "a workspace request", Some("nothing acts on this request")),
@@ -262,17 +262,16 @@ words! {
         Finding Tab "tab" "ref -- tab" "the tab ref names: its name, @N, or a pane's tab" "fux %3 tab str logs rename" [];
         Finding Workspace "workspace" "ref -- workspace" "the workspace ref names: its name, +N, or a pane's or tab's workspace" "fux str agent workspace kill" [];
         Finding Here "here" "-- pane" "the pane this runs in (FUX_PANE)" "fux here str done notify" [];
-        Finding Client "client" "name -- client" "a client by its id, c2" "fux str c1 client str left focus" [];
+        Finding Client "client" "name -- client" "a client by its id, c2" "fux str c1 client detach" [];
         Finding Me "me" "-- client" "the client whose key or prompt runs this" "str z code me focused zoom end bind" [];
-        Finding Panes "panes" "handle -- list" "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
-        Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
-        Finding All "all" "-- all" "the whole session, for info, notify, events and dump" "fux all info" [];
-        Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" "empty options, for new-tab, new-workspace, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program new-tab" [];
+        Finding Panes "panes" "scope -- list" "the panes in a pane (itself), a tab, a workspace or all, in layout order" "fux str agent workspace panes each capture print end" [];
+        Finding Tabs "tabs" "scope -- list" "the tabs in a tab (itself), a workspace or all, in order; a pane holds none" "fux str agent workspace tabs each str name get print end" [];
+        Finding All "all" "-- all" "the whole session, for the words that take a scope: info, panes, tabs, kill, notify, events and dump" "fux all info" [];
+        Finding Focused "focused" "client -- pane" "the pane a client focuses: its tab's zoomed one while it has one" "fux str c1 client focused capture" [];
+        Starting Opts "opts" "-- opts" "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program new-tab" [];
         Starting Split "split" "subject -- answer" "split a pane along its required axis: a shell, or the program given" "fux %3 str vertical axis split" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
-        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
-        Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
-        Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (new-tab, new-workspace, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Program Arg];
+        Starting NewTab "new-tab" "opts -- answer" "a tab with the client's shell or explicit launch, in the workspace in names (made if it is not there; str new-workspace in makes an unnamed one), else the caller's" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
+        Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (new-tab, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Program Arg];
         Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
         Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
@@ -282,7 +281,7 @@ words! {
         Reading Get "get" "readable field -- value" "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
         Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failure as its fields, a failed wait's answer its value" "fux ls json" [];
         Reading NextEvents "next-events" "event-scope cursor secs -- record" "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux all str '' 0 next-events json" [];
-        Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
+        Changing Kill "kill" "scope --" "close a pane, tab or workspace, or all of them, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace, to a name no other one has" "fux %3 str editor rename" [];
         Changing Notify "notify" "scope text --" "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
         Changing Resize "resize" "sized cols rows --" "a tab layout or headless client size, each at least 1, as large as a screen's grid holds; a pane selects its tab" "fux @2 120 40 resize" [];
@@ -298,10 +297,8 @@ words! {
         Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
         Changing Zoom "zoom" "pane --" "fill its tab with the pane on every screen showing it, or restore the tab if it does" "fux %3 zoom" [];
         Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux runs opts attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach (or bare fux, which runs opts attach)" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
-        Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
-        Clients Show "show" "client handle --" "show and follow a pane, tab or workspace" "fux str c1 client %3 show" [];
-        Clients StepTab "step-tab" "client way --" "show the next, previous or last visited tab" "fux str c1 client str next step-tab" [];
-        Clients StepWorkspace "step-workspace" "client way --" "show the next, previous or last visited workspace" "fux str c1 client str previous step-workspace" [];
+        Clients Show "show" "client handle --" "show a client a pane, tab or workspace, and each that holds it" "fux str c1 client %3 show" [];
+        Clients Step "step" "client handle way --" "show a client the next, previous or last shown of the handle's siblings, or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux str c1 client @2 str next step" [];
         Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
         Server Start "start" "--" "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
@@ -323,7 +320,7 @@ words! {
         Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
     }
     Opt {
-        Starting Name "name" "x name -- x" "the given name: new-tab's tab, or new-workspace's workspace" "fux opts str agent in str web name 80 24 size str ./app program new-tab";
+        Starting Name "name" "x name -- x" "the given name: new-tab's tab" "fux opts str agent in str web name 80 24 size str ./app program new-tab";
         Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts str agent in 80 24 size str ./app program new-tab";
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux opts str agent in str /srv cwd 80 24 size str ./app program new-tab";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell; its pane stays once it exits" "fux opts str agent in 80 24 size str ./app program new-tab";
@@ -365,7 +362,7 @@ words! {
     Keys {
         Config Prefix "prefix" "key --" "this client's prefix (config)" "str C-a prefix";
         Config Bind "bind" "keys code --" "keys after the prefix run code (config)" "str 'g v' code me focused str horizontal axis split drop end bind";
-        Config BindRoot "bind-root" "key code --" "a key without the prefix runs code (config)" "str M-n code me str next step-tab end bind-root";
+        Config BindRoot "bind-root" "key code --" "a key without the prefix runs code (config)" "str M-n code me me focused tab str next step end bind-root";
         Config Label "label" "text --" "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' code me focused str horizontal axis split drop end bind str 'split right' label";
         Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' code me focused str horizontal axis split drop end bind str panes group";
         Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H code me focused str left 2 move-border end bind repeat";
@@ -613,19 +610,6 @@ fn sibling(value: &Value<Fux>) -> Result<Sibling, Failure> {
         value,
         &[("next", Sibling::Next), ("previous", Sibling::Previous)],
     )
-}
-
-/// A relative tab or workspace selection, including retained history.
-fn pick<T>(value: &Value<Fux>) -> Result<Pick<T>, Failure> {
-    one_of(
-        value,
-        &[
-            ("next", Some(Sibling::Next)),
-            ("previous", Some(Sibling::Previous)),
-            ("last", None),
-        ],
-    )
-    .map(|step| step.map_or(Pick::Last, Pick::Step))
 }
 
 /// One of a closed set, by its name; refused, naming each, if none.
@@ -1217,7 +1201,7 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
 }
 
 /// A request for the panes or tabs of `target`, as a list of handles.
-fn members_of(target: AnyRef, members: Members) -> Ask {
+fn members_of(target: Option<AnyRef>, members: Members) -> Ask {
     ask(Command::Members { target, members })
 }
 
@@ -1475,18 +1459,6 @@ impl Host<'_> {
                 };
                 later(ask(tab))
             }
-            Act::NewWorkspace => {
-                let built = finished(act, next()?)?;
-                let (start, options) = self.launch(&built)?;
-                let workspace = Command::NewWorkspace {
-                    name: built.name,
-                    size: built.size,
-                    cwd: built.cwd,
-                    options,
-                    start,
-                };
-                later(ask(workspace))
-            }
             Act::Split => {
                 let (p, built) = request_pane(act, next()?)?;
                 let axis = built.axis.ok_or_else(|| {
@@ -1623,8 +1595,8 @@ impl Host<'_> {
                 )?;
                 later(ask(Command::Inspect { scope, projection }))
             }
-            Act::Panes => later(members_of(target(&next()?)?, Members::Panes)),
-            Act::Tabs => later(members_of(target(&next()?)?, Members::Tabs)),
+            Act::Panes => later(members_of(scope(&next()?)?, Members::Panes)),
+            Act::Tabs => later(members_of(scope(&next()?)?, Members::Tabs)),
             Act::Get => {
                 let value = next()?;
                 // A live field's handle, checked before the field is taken.
@@ -1699,7 +1671,7 @@ impl Host<'_> {
             }
             // ---------------------------------------------------- changing
             Act::Kill => tell(Command::Kill {
-                target: target(&next()?)?,
+                target: scope(&next()?)?,
             }),
             Act::Rename => {
                 let target = target(&next()?)?;
@@ -1897,31 +1869,22 @@ impl Host<'_> {
                     creation: Box::new(built),
                 })
             }
-            Act::Focus => {
-                let c = client(&next()?)?;
-                let ways = Direction::ALL.map(|way| (way.name(), PanePick::Toward(way)));
-                let steps = [
-                    ("next", PanePick::Step(Sibling::Next)),
-                    ("previous", PanePick::Step(Sibling::Previous)),
-                    ("last", PanePick::Last),
-                ];
-                let pick = one_of(&next()?, &[ways.as_slice(), &steps].concat())?;
-                order(c, ClientAction::SelectPane(pick))
-            }
             Act::Show => {
                 let c = client(&next()?)?;
-                let action = match target(&next()?)? {
-                    AnyRef::Pane(p) => ClientAction::SelectPane(PanePick::Id(p)),
-                    AnyRef::Tab(t) => ClientAction::SelectTab(Pick::Id(t)),
-                    AnyRef::Workspace(w) => ClientAction::SelectWorkspace(Pick::Id(WsRef::Id(w))),
-                };
-                order(c, action)
+                order(c, ClientAction::Show(target(&next()?)?))
             }
-            Act::StepTab => order(client(&next()?)?, ClientAction::SelectTab(pick(&next()?)?)),
-            Act::StepWorkspace => order(
-                client(&next()?)?,
-                ClientAction::SelectWorkspace(pick(&next()?)?),
-            ),
+            Act::Step => {
+                let c = client(&next()?)?;
+                let from = target(&next()?)?;
+                let ways = Direction::ALL.map(|way| (way.name(), Way::Toward(way)));
+                let steps = [
+                    ("next", Way::Step(Sibling::Next)),
+                    ("previous", Way::Step(Sibling::Previous)),
+                    ("last", Way::Last),
+                ];
+                let way = one_of(&next()?, &[ways.as_slice(), &steps].concat())?;
+                order(c, ClientAction::Step { from, way })
+            }
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
             // ------------------------------------------------------ server
             Act::Start => {
@@ -2485,12 +2448,9 @@ mod tests {
             cases.push(("fail", format!("{target} all-history drop")));
         }
         for suffix in [
-            "kill",
             "capture",
             "wait",
             "str x text send-keys",
-            "panes",
-            "tabs",
             "80 24 resize",
             "attach",
             "str x rename",

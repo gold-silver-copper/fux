@@ -230,7 +230,7 @@ mod tests {
     fn run(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
         let path = path.canonicalize()?;
         let tokens = fuxth::token::source(&path.display().to_string(), &read(&path)?)?;
-        let mut machine = crate::script::base(None)?;
+        let mut machine = crate::script::base()?;
         machine.read(tokens, Some(path));
         let mut out = Vec::new();
         let mut host =

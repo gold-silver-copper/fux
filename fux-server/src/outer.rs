@@ -417,8 +417,8 @@ impl Session {
             return;
         };
         // Each client showing the workspace, and whether it is shown the tab.
-        let viewers: BTreeMap<ClientId, bool> = (ws.viewers.iter())
-            .map(|c| (*c, ws.tab_of(*c).is_some_and(|t| t.holds(id))))
+        let viewers: BTreeMap<ClientId, bool> = (self.showing(ws.id()))
+            .map(|c| (c, ws.tab_of(c).is_some_and(|t| t.holds(id))))
             .collect();
         let panes = self.parts.panes();
         let rang = (ws.tabs().iter().find(|t| t.holds(id)))
@@ -601,7 +601,7 @@ mod tests {
         let theirs = "\x1b]11;rgb:1111/2222/3333\x07\x1b]4;1;rgb:1111/2222/3333\x07";
         assert_eq!(ask(&mut s, 1), theirs);
         // A workspace c1 neither shows nor typed into: no terminal's.
-        run(&mut s, "opts 80 24 size str other name new-workspace")?;
+        run(&mut s, "opts 80 24 size str other in new-tab")?;
         assert_eq!(ask(&mut s, 2), "");
         s.out(PaneId::of(2), b"\x1b]11;#445566\x07");
         assert_eq!(ask(&mut s, 2), "\x1b]11;rgb:4444/5555/6666\x07");
@@ -805,7 +805,7 @@ mod tests {
         };
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         assert_eq!(refused(&mut s), Some(0));
-        run(&mut s, "opts 80 24 size str other name new-workspace")?;
+        run(&mut s, "opts 80 24 size str other in new-tab")?;
         run(&mut s, "str c1 client str other workspace show")?;
         assert_eq!(refused(&mut s), Some(1));
         Ok(())
@@ -820,7 +820,7 @@ mod tests {
         s.out(PaneId::of(1), b"\x1b[?2031h");
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
-        run(&mut s, "opts 80 24 size str other name new-workspace")?;
+        run(&mut s, "opts 80 24 size str other in new-tab")?;
         run(&mut s, "str c1 client str other workspace show")?;
         s.input(c, b"\x1b[?997;2n");
         assert_eq!(answered(&mut s, 1), "");
@@ -909,7 +909,7 @@ mod tests {
         // A client on another workspace is not rung.
         run(&mut s, "str c1 client str @1 tab show")?;
         let _ = s.before_paint(c);
-        run(&mut s, "opts 80 24 size str elsewhere name new-workspace")?;
+        run(&mut s, "opts 80 24 size str elsewhere in new-tab")?;
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         run(&mut s, "str c2 client str elsewhere workspace show")?;
         let _ = sent(&mut s, d);
@@ -957,7 +957,7 @@ mod tests {
     #[test]
     fn a_notification_is_told_to_each_client_showing_its_workspace() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "opts 80 24 size str elsewhere name new-workspace")?;
+        run(&mut s, "opts 80 24 size str elsewhere in new-tab")?;
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         run(&mut s, "str c2 client str elsewhere workspace show")?;
         s.out(PaneId::of(1), b"\x1b]9;build done\x07");

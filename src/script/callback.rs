@@ -144,7 +144,7 @@ pub fn admit(
         for arg in &action.args {
             runs(arg, &mut of).map_err(super::callback_failed)?;
         }
-        let mut machine = super::base(config)?;
+        let mut machine = super::client_base(config)?;
         let mut compile = |code: &Code| super::code_value(&mut machine, code, stop);
         let values = action.args.iter().chain(given.iter().copied());
         let read = values.map(|v| value(v, &mut compile).map(drop));

@@ -1558,7 +1558,7 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
 #[test]
 fn attach_preferences_apply_before_explicit_operands() -> Outcome {
     let server = Server::start("opts str second in attach-defaults")?;
-    server.words("opts str second name 80 24 size new-workspace drop")?;
+    server.words("opts str second in 80 24 size new-tab drop")?;
     for (args, expected) in [(&[][..], "%2"), (&["%1", "attach"][..], "%1")] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
         eventually(&format!("the client on {expected}"), || {

@@ -1,6 +1,6 @@
 //! One attached client's own view of the shared state.
 use fux_wire::act::Panel;
-use fux_wire::id::{ClientId, PaneId, TabId, WsId};
+use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Rect;
 use fux_wire::presentation::Presentation;
 
@@ -54,9 +54,6 @@ pub struct View {
     pub kind: ClientKind,
     pub rows: u16,
     pub cols: u16,
-    /// The previous distinct places this attachment showed, across workspaces.
-    pub last_tab: Option<TabId>,
-    pub last_workspace: Option<WsId>,
     pub mode: Mode,
     /// The latest opening, retained after it ends to refuse stale redraws.
     pub opening: u64,
@@ -90,8 +87,6 @@ impl View {
             kind: ClientKind::Terminal,
             rows,
             cols,
-            last_tab: None,
-            last_workspace: None,
             mode: Mode::Normal,
             opening: 0,
             notice: None,

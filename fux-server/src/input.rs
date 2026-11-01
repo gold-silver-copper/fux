@@ -781,7 +781,7 @@ mod tests {
         for _ in 0..3 {
             run(&mut s, NEW_TAB)?;
         }
-        run(&mut s, "str c1 client choose-tab")?;
+        run(&mut s, "str c1 client dup focused tab choose-among")?;
         s.input(c, b"\x1b[H");
         let shown = screen_text(&s, c)?;
         assert!(shown.contains("@1 %1"), "{shown}");
@@ -793,7 +793,7 @@ mod tests {
     fn list_and_confirm_keys_match_exact_case() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, NEW_TAB)?;
-        run(&mut s, "str c1 client choose-tab")?;
+        run(&mut s, "str c1 client dup focused tab choose-among")?;
         s.input(c, b"\x1b[HJ");
         assert!(mode(&s, c).ends_with(" 0"));
         s.input(c, b"j");
@@ -816,7 +816,7 @@ mod tests {
         for _ in 0..40 {
             run(&mut s, NEW_TAB)?;
         }
-        run(&mut s, "str c1 client choose-tab")?;
+        run(&mut s, "str c1 client dup focused tab choose-among")?;
         s.input(c, b"\x1b[H");
         s.input(c, &downs(30));
         let Some(Mode::Panel(Panel::List(list))) = s.views.get(&c).map(|v| &v.mode) else {
@@ -1104,7 +1104,7 @@ mod tests {
         run(&mut s, "str %1 pane str horizontal axis split")?;
         run(&mut s, "str %2 pane str vertical axis split")?;
         run(&mut s, NEW_TAB)?;
-        run(&mut s, "opts 80 24 size new-workspace")?;
+        run(&mut s, "opts str new-workspace in 80 24 size new-tab")?;
         run(&mut s, "str c1 client str %2 pane show")?;
         Ok((s, c))
     }
@@ -1193,10 +1193,10 @@ mod tests {
             }
         }
         for (code, captures) in [
-            ("me choose-tab", 0),
-            ("me choose-workspace", 0),
-            ("me %2 choose-tab-for", 1),
-            ("me %2 choose-workspace-for", 1),
+            ("me me focused tab choose-among", 0),
+            ("me me focused workspace choose-among", 0),
+            ("me %2 %2 tab choose-move", 1),
+            ("me %2 %2 workspace choose-move", 1),
             ("me %2 choose-pane", 1),
         ] {
             let (mut s, c) = busy()?;
@@ -1255,16 +1255,16 @@ mod tests {
     #[test]
     fn library_chooser_callbacks_act_on_the_selected_destination() -> Outcome {
         for (open, keys, observe, expected) in [
-            ("me choose-tab", "j\r", "me focused tab string", "@2\n"),
+            ("me me focused tab choose-among", "j\r", "me focused tab string", "@2\n"),
             (
-                "me choose-workspace",
+                "me me focused workspace choose-among",
                 "j\r",
                 "me focused workspace string",
                 "+2\n",
             ),
-            ("me %2 choose-tab-for", "j\r", "%2 tab string", "@2\n"),
+            ("me %2 %2 tab choose-move", "j\r", "%2 tab string", "@2\n"),
             (
-                "me %2 choose-workspace-for",
+                "me %2 %2 workspace choose-move",
                 "j\r",
                 "%2 workspace string",
                 "+2\n",
@@ -1289,10 +1289,10 @@ mod tests {
     #[test]
     fn list_rename_and_close_callbacks_address_each_choosers_destination() -> Outcome {
         for (open, target, kind) in [
-            ("me choose-tab", "@1", "tab"),
-            ("me choose-workspace", "+1", "workspace"),
-            ("me %2 choose-tab-for", "@1", "tab"),
-            ("me %2 choose-workspace-for", "+1", "workspace"),
+            ("me me focused tab choose-among", "@1", "tab"),
+            ("me me focused workspace choose-among", "+1", "workspace"),
+            ("me %2 %2 tab choose-move", "@1", "tab"),
+            ("me %2 %2 workspace choose-move", "+1", "workspace"),
             ("me %2 choose-pane", "%1", "pane"),
         ] {
             let (mut s, c) = busy()?;
@@ -1406,7 +1406,7 @@ mod tests {
             &mut s,
             "@1 str shared rename opts 80 24 size str +1 workspace in new-tab drop",
         )?;
-        output_as(&mut s, Some(c), "me choose-tab")?;
+        output_as(&mut s, Some(c), "me me focused tab choose-among")?;
         run(
             &mut s,
             "@1 kill opts 80 24 size str +1 workspace in str shared name new-tab drop",

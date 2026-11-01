@@ -2191,7 +2191,7 @@ mod tests {
         check(&mut session)?;
         run(&mut session, "str %2 pane str vertical axis split")?;
         check(&mut session)?;
-        run(&mut session, "str c1 client str next focus")?;
+        run(&mut session, "str c1 client dup focused str next step")?;
         check(&mut session)?;
         let focused = session.focused(client).ok_or("focused pane")?;
         assert!(compose(&session, client).ok_or("client")?.cursor.is_some());
@@ -2473,7 +2473,7 @@ mod tests {
         );
         assert_eq!(fresh.modes.cursor_colour, None);
         // Focus on %1, the cursor last painted in %2: none.
-        crate::session::testing::run(&mut s, "str c1 client str next focus")?;
+        crate::session::testing::run(&mut s, "str c1 client dup focused str next step")?;
         painted.cursor = Some((other.y(), other.x()));
         assert_eq!(compose(&s, &painted).cursor, None);
         assert_eq!(compose(&s, &painted).modes.cursor_colour, None);
