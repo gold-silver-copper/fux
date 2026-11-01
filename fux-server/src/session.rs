@@ -66,6 +66,8 @@ pub enum Timer {
     /// server's other work of this turn. A respawn under way in the pane
     /// takes its turn too (`Session::after_turn`).
     Unread(PaneId),
+    /// A client's alert notice ends (`View::alert`).
+    Notice(ClientId),
 }
 
 /// Where a command comes from, which says what it acts on when it names no
@@ -1939,19 +1941,31 @@ impl Session {
     /// server polls no longer than the soonest, and fires those due
     /// (`Session::fire`).
     pub fn timers(&self) -> impl Iterator<Item = (Instant, Timer)> + '_ {
-        self.parts.panes().values().flat_map(|pane| {
+        let panes = self.parts.panes().values().flat_map(|pane| {
             let respawn = self.respawning.get(&pane.id()).map(|r| r.since);
             // A respawn's turn reads a held frame: one parser call a round.
             let frame = (pane.frame_deadline().filter(|_| respawn.is_none()))
                 .map(|at| (at, Timer::Frame(pane.id())));
             let unread = (pane.unread_due().or(respawn)).map(|at| (at, Timer::Unread(pane.id())));
             frame.into_iter().chain(unread)
-        })
+        });
+        let notices = (self.views.values())
+            .filter_map(|v| Some((v.notice.as_ref()?.until?, Timer::Notice(v.id))));
+        panes.chain(notices)
     }
 
     /// What `timer` waited for is done, now that it is due.
     pub fn fire(&mut self, timer: Timer, now: Instant) {
         match timer {
+            // Only the notice that was due: a newer one keeps its own time.
+            Timer::Notice(client) => {
+                if let Some(view) = self.views.get_mut(&client)
+                    && (view.notice.as_ref()).is_some_and(|n| n.until.is_some_and(|u| u <= now))
+                {
+                    view.notice = None;
+                    view.dirty = true;
+                }
+            }
             Timer::Frame(id) => self.read_with(id, |p| p.release_frame(now), now),
             Timer::Unread(id) => {
                 // A respawn under way reads a frame its old program holds.
