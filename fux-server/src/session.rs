@@ -7322,7 +7322,8 @@ mod tests {
 
     /// Every way a name is given refuses one a workspace, tab or pane
     /// already has, before anything changes: creating, renaming, and
-    /// replaying a dump beside what it was dumped from.
+    /// replaying a dump beside what it was dumped from, whether the name
+    /// taken is a tab's, its first pane's or a split pane's.
     #[test]
     fn a_taken_name_is_refused_before_anything_changes() -> TestResult {
         let mut s = started()?;
@@ -7330,21 +7331,43 @@ mod tests {
             &mut s,
             "str +1 workspace str ws rename str @1 tab str tab rename str %1 pane str pane rename",
         )?;
-        let dump = s.dump_recipe(None)?;
+        // @2: an unnamed tab, its first pane named; @3: only a split pane named.
+        for (tab, split) in [("%2", "%3"), ("%4", "%5")] {
+            run(&mut s, "opts 80 24 size +1 in new-tab drop")?;
+            let split = format!("str {tab} pane str horizontal axis split drop str {split} pane");
+            run(&mut s, &split)?;
+        }
+        run(
+            &mut s,
+            "str %2 pane str runner rename str %5 pane str split rename",
+        )?;
+        let dumps = [TabId::of(1), TabId::of(2), TabId::of(3)]
+            .map(|tab| s.dump_recipe(Some(AnyRef::Tab(tab))));
+        let [named, first, split] = dumps;
+        let (named, first, split) = (named?, first?, split?);
         let before = named_state(&s)?;
-        for source in [
-            "opts 80 24 size str pane name new-workspace",
-            "opts 80 24 size str ws in str pane name new-tab",
+        for (source, holder) in [
+            ("opts 80 24 size str pane name new-workspace", "%1, a pane,"),
+            (
+                "opts 80 24 size str ws in str pane name new-tab",
+                "%1, a pane,",
+            ),
             // A workspace `in` names that is not there is made by its name.
-            "opts 80 24 size str tab in new-tab",
-            "opts 80 24 size str fresh in str fresh name new-tab",
-            "str %1 pane str ws rename",
-            "str @1 tab str pane rename",
-            "str +1 workspace str tab rename",
-            &dump,
+            ("opts 80 24 size str tab in new-tab", "@1, a tab,"),
+            (
+                "opts 80 24 size str fresh in str fresh name new-tab",
+                "\"fresh\"",
+            ),
+            ("str %1 pane str ws rename", "+1, a workspace,"),
+            ("str @1 tab str pane rename", "%1, a pane,"),
+            ("str +1 workspace str tab rename", "@1, a tab,"),
+            (&named, "@1, a tab,"),
+            (&first, "%2, a pane,"),
+            (&split, "%5, a pane,"),
         ] {
             let refused = output(&mut s, source).err().ok_or(source)?;
-            assert!(refused.starts_with("name_taken:"), "{source}: {refused}");
+            let taken = refused.starts_with("name_taken:") && refused.contains(holder);
+            assert!(taken, "{source}: {refused}");
             assert_eq!(named_state(&s)?, before, "{source}");
         }
         // Its own name is still its own.
