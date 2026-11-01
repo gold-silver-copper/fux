@@ -15,7 +15,7 @@ use std::rc::Rc;
 const UNSET_VAR: &str = "unset_var";
 pub const READ: &str = "read";
 pub const IO: &str = "io";
-const OUTPUT: &str = "output";
+pub const OUTPUT: &str = "output";
 
 /// A file `create-file` opened, by its place in the runner's table.
 #[derive(Clone, Debug, PartialEq)]
@@ -168,14 +168,28 @@ impl Runner {
         }
     }
 
-    /// Writes `text` to stdout now.
+    /// Writes `text` to stdout now: once a key word made the runner catch
+    /// the ending signals, a piece at a time, each once stdout takes it
+    /// without waiting.
     fn out(&mut self, text: &str) -> Result<(), Failure> {
-        let mut out = std::io::stdout().lock();
-        let wrote = out.write_all(text.as_bytes()).and_then(|()| out.flush());
-        wrote.map_err(|e| {
-            self.closed |= e.kind() == std::io::ErrorKind::BrokenPipe;
-            output_failed(&e)
-        })
+        let mut rest = text.as_bytes();
+        while !rest.is_empty() {
+            self.input.writable()?;
+            let most = if self.input.watching() {
+                input::PIPE_WRITE
+            } else {
+                rest.len()
+            };
+            let (piece, after) = rest.split_at_checked(most).unwrap_or((rest, &[]));
+            let mut out = std::io::stdout().lock();
+            let wrote = out.write_all(piece).and_then(|()| out.flush());
+            wrote.map_err(|e| {
+                self.closed |= e.kind() == std::io::ErrorKind::BrokenPipe;
+                output_failed(&e)
+            })?;
+            rest = after;
+        }
+        Ok(())
     }
 
     /// The file `file` names, open.

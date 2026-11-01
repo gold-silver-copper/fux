@@ -15,7 +15,7 @@
 //! Keys and lines take from one queue of bytes read, in order: a key is
 //! decoded from as few bytes as make it, so what follows is still there
 //! for a line.
-use crate::words::{IO, READ};
+use crate::words::{IO, OUTPUT, READ};
 use fux_vt::keys::decode::{Decoder, Input as Decoded, Timing};
 use fux_vt::keys::{Direction, Key, KeyPress};
 use fuxix::Errno;
@@ -73,6 +73,10 @@ pub const CONSTANTS: &[(&str, i64)] = &[
 /// (`escape-delay-ms`), and an unfinished paste.
 const TIMING: Timing = Timing::new(35, 5000);
 
+/// What a write takes once stdout is ready without waiting: a pipe's
+/// atomic write, `PIPE_BUF`, at its smallest (macOS's).
+pub const PIPE_WRITE: usize = 512;
+
 /// The signals that end the runner once the terminal was in key mode,
 /// with its own modes put back first.
 const ENDING: [Signal; 3] = [Signal::Term, Signal::Hup, Signal::Quit];
@@ -108,6 +112,9 @@ pub struct Input {
     /// Keys decoded and not yet taken: a paste's characters after the
     /// first.
     keys: VecDeque<i64>,
+    /// The bytes given the decoder since the last key it made: those it
+    /// holds, a key begun, which a line read takes back.
+    held: Vec<u8>,
     /// Bytes read and not yet taken.
     bytes: VecDeque<u8>,
     ended: bool,
@@ -129,6 +136,7 @@ impl Input {
             // A paste of any length is kept whole: no limit of the runner's.
             decoder: Decoder::with_paste_limit(TIMING, usize::MAX),
             keys: VecDeque::new(),
+            held: Vec::new(),
             bytes: VecDeque::new(),
             ended: false,
             interrupt: Pipe::new(&[Signal::Int]).map_err(|e| errno("catching SIGINT", e))?,
@@ -143,15 +151,14 @@ impl Input {
         if let Some(stop) = self.pending.take() {
             return Err(stop);
         }
-        let came: Vec<Signal> = (self.caught.iter())
-            .filter(|(_, pipe)| drained(pipe))
-            .map(|(signal, _)| *signal)
-            .collect();
-        if let Some(&signal) = came.iter().find(|signal| ENDING.contains(signal)) {
-            self.cook()?;
+        if let Some(signal) = self.ending()? {
             return Err(Stop::Signal(signal));
         }
-        if came.contains(&Signal::Tstp) {
+        let stop = self
+            .caught
+            .iter()
+            .find(|(signal, _)| *signal == Signal::Tstp);
+        if stop.is_some_and(|(_, pipe)| drained(pipe)) {
             self.suspend()?;
         }
         match drained(&self.interrupt) {
@@ -160,10 +167,72 @@ impl Input {
         }
     }
 
+    /// An ending signal that came, the terminal's modes put back.
+    fn ending(&mut self) -> Result<Option<Signal>, Failure> {
+        let ending = self
+            .caught
+            .iter()
+            .filter(|(signal, _)| ENDING.contains(signal));
+        // Each pipe drained, whichever came.
+        let came = ending.fold(None, |came, (signal, pipe)| match drained(pipe) {
+            true => Some(*signal),
+            false => came,
+        });
+        if came.is_some() {
+            self.cook()?;
+        }
+        Ok(came)
+    }
+
+    /// Once the ending signals are caught (a key word changed the
+    /// terminal), waits until stdout takes `PIPE_WRITE` bytes without
+    /// waiting, so that a write held up by a reader that doesn't read can't
+    /// hold off SIGTERM. One that comes meanwhile puts the terminal back,
+    /// fails the write, and ends the run at the next check.
+    pub fn writable(&mut self) -> Result<(), Failure> {
+        if self.caught.is_empty() {
+            return Ok(());
+        }
+        loop {
+            if let Some(Stop::Signal(signal)) = &self.pending {
+                let why = format!("writing the output: ended by SIG{}", signal.name());
+                return Err(Failure::new(Code::Host(OUTPUT), why));
+            }
+            let stdout = std::io::stdout();
+            let mut fds = vec![PollFd::new(&stdout, Events::OUT)];
+            let ending = self
+                .caught
+                .iter()
+                .filter(|(signal, _)| ENDING.contains(signal));
+            fds.extend(ending.map(|(_, pipe)| PollFd::new(pipe.reader(), Events::IN)));
+            match poll(&mut fds, None) {
+                Ok(_) | Err(Errno::INTR) => {}
+                Err(e) => return Err(errno("waiting to write the output", e)),
+            }
+            let ready = fds.first().is_some_and(|fd| !fd.revents().is_empty());
+            drop(fds);
+            if let Some(signal) = self.ending()? {
+                self.pending = Some(Stop::Signal(signal));
+            } else if ready {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Whether the ending signals are caught, and writes wait for stdout.
+    pub fn watching(&self) -> bool {
+        !self.caught.is_empty()
+    }
+
     /// Raises `stop` at the next check: for a wait whose caller can only
     /// fail (`include`).
     pub fn defer(&mut self, stop: Stop) {
         self.pending = Some(stop);
+    }
+
+    /// The stop `defer` holds, if a check hasn't raised it yet.
+    pub fn deferred(&mut self) -> Option<Stop> {
+        self.pending.take()
     }
 
     /// `read-key`: the next key, waiting for it.
@@ -213,13 +282,17 @@ impl Input {
     /// The next line, of at most `most` characters, without its newline;
     /// the last, if it has none; none at the end.
     pub fn line(&mut self, most: usize) -> Result<Option<String>, Stop> {
-        // Keys decoded but not taken come before the bytes after them.
+        // Keys decoded but not taken come first, then the bytes of a key
+        // begun, as they were read, then the bytes after them; the decoder
+        // starts again.
         let keys = std::mem::take(&mut self.keys);
         let typed: String = keys
             .iter()
             .filter_map(|&k| u32::try_from(k).ok().and_then(char::from_u32))
             .collect();
-        for &byte in typed.as_bytes().iter().rev() {
+        let held = std::mem::take(&mut self.held);
+        self.decoder = Decoder::with_paste_limit(TIMING, usize::MAX);
+        for &byte in typed.as_bytes().iter().chain(&held).rev() {
             self.bytes.push_front(byte);
         }
         loop {
@@ -344,6 +417,15 @@ impl Input {
         let mut inputs = Vec::new();
         self.decoder.bytes(&[byte], &mut inputs);
         self.decoder.mark(Instant::now());
+        self.held.push(byte);
+        // Waiting, as its deadline says, the decoder holds bytes: those
+        // since its last key, or, if this byte made one and it still waits
+        // (`ESC ESC`), this byte alone, which begins the next.
+        match (self.decoder.deadline().is_some(), inputs.is_empty()) {
+            (false, _) => self.held.clear(),
+            (true, false) => self.held = vec![byte],
+            (true, true) => {}
+        }
         self.taken(inputs);
     }
 
@@ -351,6 +433,7 @@ impl Input {
     fn timeout(&mut self) {
         let mut inputs = Vec::new();
         self.decoder.timeout(&mut inputs);
+        self.held.clear();
         self.taken(inputs);
     }
 

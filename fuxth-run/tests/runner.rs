@@ -2,6 +2,7 @@
 use fuxix::poll::{Events, PollFd, poll};
 use fuxix::terminal::Size;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -160,6 +161,31 @@ fn a_key_driven_program_over_a_pipe_saves_a_file() -> Outcome {
     std::fs::write(dir.join("line.fux"), "read-key drop 99 accept print").map_err(e)?;
     let ran = run(&dir, &["line.fux"], "xhello\nrest")?;
     assert_eq!(text(&ran.stdout), "hello\n");
+    // And a character begun, which a key probe left in the decoder.
+    std::fs::write(
+        dir.join("probe.fux"),
+        "read-key drop key-ready drop str probed print 99 accept print",
+    )
+    .map_err(e)?;
+    let mut child = Command::new(FUXTH)
+        .arg("probe.fux")
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    let mut input = child.stdin.take().ok_or("no stdin")?;
+    input.write_all(b"x\xc3").map_err(e)?;
+    let mut output = child.stdout.take().ok_or("no stdout")?;
+    let mut probed = [0; 7];
+    std::io::Read::read_exact(&mut output, &mut probed).map_err(e)?;
+    assert_eq!(&probed, b"probed\n");
+    input.write_all(b"\xa9\n").map_err(e)?;
+    drop(input);
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut output, &mut rest).map_err(e)?;
+    assert_eq!(rest, "é\n");
+    assert!(child.wait().map_err(e)?.success());
     // A bracketed paste of any length arrives whole, a key a character.
     let counting = "0 let n str end_of_input try begin read-key drop n 1 add to n false until catch drop end n";
     std::fs::write(dir.join("count.fux"), counting).map_err(e)?;
@@ -212,14 +238,16 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
         .status();
     assert!(made.map_err(e)?.success());
     std::fs::write(dir.join("read.fux"), "str data read-file").map_err(e)?;
+    std::fs::write(dir.join("include.fux"), "include source").map_err(e)?;
     // A writer that holds `data` open and writes nothing.
     let mut writer = Command::new("sh")
         .args(["-c", "exec sleep 30 > data"])
         .current_dir(&dir)
         .spawn()
         .map_err(e)?;
-    // A source with no writer at all, and a file read that waits on one.
-    for args in [["source"], ["read.fux"]] {
+    // A source with no writer at all, a file read that waits on one, and
+    // an include of a source with none.
+    for args in [["source"], ["read.fux"], ["include.fux"]] {
         let child = Command::new(FUXTH)
             .args(args)
             .current_dir(&dir)
@@ -253,11 +281,16 @@ struct Terminal {
 
 impl Terminal {
     fn start(dir: &PathBuf, args: &[&str]) -> Result<Self, String> {
+        let argv: Vec<&str> = std::iter::once(FUXTH).chain(args.iter().copied()).collect();
+        Self::start_with(dir, &argv)
+    }
+
+    /// `argv` on a terminal of its own.
+    fn start_with(dir: &PathBuf, argv: &[&str]) -> Result<Self, String> {
         let size = Size::new(24, 80).ok_or("size")?;
         let (master, slave) = fuxix::pty::open(size).map_err(e)?;
-        let argv: Vec<&str> = std::iter::once(FUXTH).chain(args.iter().copied()).collect();
         let (child, _) = slave
-            .spawn(&argv, |command| {
+            .spawn(argv, |command| {
                 command.current_dir(dir);
             })
             .map_err(e)?;
@@ -332,6 +365,45 @@ fn an_ending_signal_puts_the_terminal_back() -> Outcome {
         .map_err(e)?
         .modes();
     assert!(modes.canonical && modes.echo, "{modes:?}");
+    Ok(())
+}
+
+#[test]
+fn an_ending_signal_ends_a_write_held_up_by_a_full_pipe() -> Outcome {
+    let dir = dir("held")?;
+    let made = Command::new("mkfifo").arg("out").current_dir(&dir).status();
+    assert!(made.map_err(e)?.success());
+    // A reader that holds stdout's pipe open and never reads.
+    let reader = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(dir.join("out"))
+        .map_err(e)?;
+    std::fs::write(
+        dir.join("print.fux"),
+        "read-key drop begin str x print false until",
+    )
+    .map_err(e)?;
+    let mut keys = Terminal::start_with(&dir, &["sh", "-c", "exec \"$0\" print.fux > out", FUXTH])?;
+    keys.wait_until_keys()?;
+    keys.type_in("k")?;
+    std::thread::sleep(Duration::from_millis(500));
+    let pid = fuxix::process::Pid::of(&keys.child).ok_or("no pid")?;
+    fuxix::process::kill(pid, fuxix::process::Signal::Term).map_err(e)?;
+    let deadline = after(Duration::from_secs(10));
+    let status = loop {
+        match keys.child.try_wait().map_err(e)? {
+            Some(status) => break status,
+            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            None => return Err("SIGTERM never ended the held write".to_owned()),
+        }
+    };
+    assert_eq!(status.code(), Some(128 + 15));
+    let modes = fuxix::terminal::attributes(&keys.master)
+        .map_err(e)?
+        .modes();
+    assert!(modes.canonical && modes.echo, "{modes:?}");
+    drop(reader);
     Ok(())
 }
 

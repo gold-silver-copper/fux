@@ -110,6 +110,22 @@ fn repl(machine: &mut Machine<File>, runner: &mut Runner) -> ExitCode {
 /// for. Each time it stops, before it goes on, Ctrl-C is raised as
 /// `interrupt`, Ctrl-Z done, and an ending signal ends it.
 fn drive(machine: &mut Machine<File>, runner: &mut Runner) -> Ended {
+    let ended = run(machine, runner);
+    // A stop a wait could only defer (`include`'s) ends the run as itself,
+    // however the run went on to end.
+    match runner.input.deferred() {
+        None => ended,
+        Some(Stop::Signal(signal)) => Ended::Signal(signal),
+        Some(Stop::Failed(failure)) => Ended::Failed(Error::new(
+            failure.code,
+            failure.message,
+            machine.at().as_ref(),
+        )),
+    }
+}
+
+/// `drive`'s run, to its end.
+fn run(machine: &mut Machine<File>, runner: &mut Runner) -> Ended {
     loop {
         let done = match machine.run(runner, SLICE) {
             Ok(Outcome::Finished) => return Ended::Finished,
