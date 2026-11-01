@@ -1172,7 +1172,7 @@ pub fn run(
 
 /// Raises a failed reply's failure at the word. A pane's answer's
 /// failure (`PaneAnswer::FAILURES`) carries its answer, which a `try` that catches it gets for its
-/// message; uncaught, the answer is left, printed before why it failed.
+/// message; uncaught, the answer is left, told on stderr before why it failed.
 /// Any other fails alone: no other failure answers.
 fn raised(
     machine: &mut Machine<Fux>,
@@ -1189,7 +1189,7 @@ fn raised(
     match machine.raise(failure, Some(answer.clone())) {
         Ok(()) => Ok(()),
         Err(error) => {
-            // Only the original uncaught wait failure prints its answer.
+            // Only the original uncaught wait failure tells its answer.
             if error.code == code.into() {
                 machine.push(answer);
             }
@@ -1536,7 +1536,8 @@ fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a
-/// line. Its exit status (0, or what `exit` gave), or why it failed. With
+/// line (`written`), or on a failure told on stderr. Its exit status (0, or
+/// what `exit` gave), or why it failed. With
 /// `argv`, the process's whole command line, a server of another protocol
 /// is followed: the process runs it again with the server's binary
 /// (`client::follow`); with none, as in tests, never.
@@ -1574,26 +1575,26 @@ pub fn main(
         status: None,
         acted,
     };
-    let ran = run(&mut machine, &mut host, &mut cli, None);
-    // What the words before a failure left is printed too: their answers.
-    // The run's failure, if it failed, came first, and is the one told.
-    let stack = match &ran {
-        Ok(stack) => stack.as_slice(),
-        Err(_) => machine.stack(),
-    };
-    let mut out = io::BufWriter::with_capacity(64 << 10, &mut *host.out);
-    let printed = (stack.iter())
-        // Empty pane outcomes and captures print no blank line;
-        // options or a request, nothing.
-        .filter(|value| {
-            !matches!(value, Value::App(Fux::Answer(a, _)) if a.is_empty())
-                && !matches!(value, Value::App(Fux::Opts(_)))
-        })
-        .try_for_each(|value| written(&mut out, value))
-        .and_then(|()| out.flush().map_err(output_failed));
-    ran?;
-    printed?;
-    Ok(cli.status.unwrap_or(0))
+    match run(&mut machine, &mut host, &mut cli, None) {
+        Ok(stack) => {
+            printed(&stack, host.out)?;
+            Ok(cli.status.unwrap_or(0))
+        }
+        // stdout holds only what the program printed. What the words
+        // before the failure left, their answers, goes to stderr, before
+        // why it failed; nowhere is left to say that stderr failed.
+        Err(failed) => {
+            let _ = printed(machine.stack(), &mut io::stderr());
+            Err(failed)
+        }
+    }
+}
+
+/// Writes what a run left, a value a line.
+fn printed(stack: &[Value<Fux>], out: &mut dyn Write) -> Result<(), Failed> {
+    let mut out = io::BufWriter::with_capacity(64 << 10, out);
+    (stack.iter()).try_for_each(|value| written(&mut out, value))?;
+    out.flush().map_err(output_failed)
 }
 
 /// A command line this fux cannot compile, `failed`, which the server's
@@ -1625,8 +1626,22 @@ fn output_failed(error: io::Error) -> Failed {
     Failed::new(Code::Output, format!("writing the output: {error}"))
 }
 
-/// Writes a value's text without holding a second whole copy.
+/// Writes a value left on the stack, without holding a second whole copy:
+/// a list an item a line, a list in it as one line of JSON. An empty
+/// string, list, capture or answer of no panes writes nothing, and options
+/// or a request nothing; an empty string in a list is a blank line.
 fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
+    match value {
+        Value::List(list) => list.items().iter().try_for_each(|item| line(out, item)),
+        Value::Str(text) if text.is_empty() => Ok(()),
+        Value::App(Fux::Answer(answer, _)) if answer.is_empty() => Ok(()),
+        Value::App(Fux::Opts(_)) => Ok(()),
+        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => line(out, value),
+    }
+}
+
+/// Writes one item and its line end: its text, or a list's JSON.
+fn line(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
     struct Out<'a>(&'a mut dyn Write, Option<io::Error>);
     impl std::fmt::Write for Out<'_> {
         fn write_str(&mut self, text: &str) -> std::fmt::Result {
@@ -1637,11 +1652,15 @@ fn written(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
         }
     }
     let mut stream = Out(out, None);
-    let wrote = value.write_text(&mut stream);
+    let wrote = match value {
+        Value::List(_) => words::write_json_value(value, &mut stream)
+            .map_err(|_| Failed::new(Code::Output, "the text could not be written")),
+        _ => (value.write_text(&mut stream)).map_err(|f| Failed::new(Code::of(f.code), f.message)),
+    };
     if let Some(error) = stream.1 {
         return Err(output_failed(error));
     }
-    wrote.map_err(|f| Failed::new(Code::of(f.code), f.message))?;
+    wrote?;
     writeln!(out).map_err(output_failed)
 }
 

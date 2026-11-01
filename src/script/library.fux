@@ -348,46 +348,35 @@ define tiled-of str horizontal true 0 layout-of end
 define events-checked
   let batch
   batch str missed get 0 gt if
-    list str '{"event":"missed","count":' batch str missed get string
-      str ',"next":' batch str next get json str '}' end glue print
-    str 'journal entries missed; resnapshot before continuing' fail
+    list batch str missed get string str ' journal entries missed; resnapshot before continuing' end
+    glue fail
   then
   batch
 end
 # Timeout is an observation outcome, never evidence that a program is ready.
-# record -- : print one admitted batch as NDJSON, then its exact checkpoint
-define events-print
-  events-checked let batch
-  batch str events get each json print end
-  list str '{"event":' batch str status get json str ',"next":'
-    batch str next get json str ',"reason":' batch str reason get json str '}' end glue print
-end
-# event-scope cursor secs n -- string : a stream of n batches, or (0) till it ends; empty cursor starts now
+# record -- : print one admitted batch's events, a JSON object a line, each with its next
+define events-print events-checked str events get each json print end end
+# event-scope cursor secs n -- : print n batches' events, or (0) till the stream ends; empty cursor starts now
 define events-since
   let batches let seconds let cursor let scope
   batches 0 lt if str 'events takes 0 batches or more' fail then
   seconds 0 lt if str 'events takes 0 seconds or more' fail then
-  scope cursor 0 next-events events-checked let batch
-  cursor str '' eq if batch str next get let cursor then
-  list str '{"event":"ready","from":' cursor json str '}' end glue print
+  scope cursor 0 next-events let batch
   batch events-print
-  batch str next get let cursor
-  batch str status get dup str gone eq swap str stopped eq or let ended
   1 let taken
+  # Nothing is on the stack as it reads: a failure leaves nothing to tell.
   begin
-    ended taken batches eq or dup not if
-      scope cursor seconds next-events events-checked let batch
-      batch str next get let cursor
+    batch str status get dup str gone eq swap str stopped eq or taken batches eq or
+    dup not if
+      drop scope batch str next get seconds next-events let batch
       batch events-print
-      batch str status get dup str gone eq swap str stopped eq or let ended
-      taken 1 add let taken
+      taken 1 add let taken false
     then
   until
-  cursor
 end
-# For restartable consumers use events-since and retain its returned cursor.
-# event-scope -- : till the stream ends, 30 seconds per wait; every batch prints its checkpoint
-define events str '' 30 0 events-since drop end
+# To restart, keep the last event's next.
+# event-scope -- : till the stream ends, 30 seconds per wait
+define events str '' 30 0 events-since end
 
 # tab -- tab revision list : one topology observation's tab, revision and panes in tree order
 define layout-current
