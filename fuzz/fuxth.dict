@@ -13,6 +13,8 @@
 " until"
 " try "
 " catch "
+" throw "
+"str all try "
 "str fail try "
 "str 'fail negative' try "
 "str 'div_by_zero overflow type range' try "

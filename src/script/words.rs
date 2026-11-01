@@ -278,8 +278,8 @@ words! {
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
         Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
         Reading Snapshot "snapshot" "snapshot-scope projection -- record" "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
-        Reading Get "get" "readable field -- value" "a held answer, capture or record field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
-        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
+        Reading Get "get" "readable field -- value" "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
+        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failure as its fields, a failed wait's answer its value" "fux ls json" [];
         Reading NextEvents "next-events" "event-scope cursor secs -- record" "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux all str '' 0 next-events json" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];
@@ -506,9 +506,11 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
         Value::Str(_) => string(value),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
-        other @ (Value::List(_) | Value::App(_) | Value::Xt(_) | Value::Mark(_)) => {
-            Err(wrong("a string, a number or a boolean", other))
-        }
+        other @ (Value::List(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)
+        | Value::Failure(_)) => Err(wrong("a string, a number or a boolean", other)),
     }
 }
 
@@ -550,6 +552,7 @@ pub(super) fn write_json_value(
                 Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
                 Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
             }?,
+            Value::Failure(thrown) => super::record::failure(thrown).write(out)?,
             Value::Xt(_) | Value::Mark(_) => {
                 let text = value.text().map_err(|_| std::fmt::Error)?;
                 fux_wire::json::write_str(out, &text)?
@@ -696,7 +699,8 @@ fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
         | Value::List(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_)) => target(value).map(Some),
+        | Value::Mark(_)
+        | Value::Failure(_)) => target(value).map(Some),
     }
 }
 
@@ -768,7 +772,8 @@ fn held(value: &Value<Fux>) -> Option<fux_wire::command::Version> {
         | Value::List(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_) => None,
+        | Value::Mark(_)
+        | Value::Failure(_) => None,
     }
 }
 
@@ -790,7 +795,8 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
         | Value::List(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_)) => {
+        | Value::Mark(_)
+        | Value::Failure(_)) => {
             return Err(wrong(wanted, other));
         }
     };
@@ -815,7 +821,8 @@ fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
         | Value::List(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_)) => {
+        | Value::Mark(_)
+        | Value::Failure(_)) => {
             let on = on(&other)
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
             std::rc::Rc::new(Opts {
@@ -985,7 +992,8 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
         | Value::List(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_)) => Opts {
+        | Value::Mark(_)
+        | Value::Failure(_)) => Opts {
             on: Some(on(&other)?),
             ..Opts::default()
         },
@@ -1031,7 +1039,8 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
         | Value::List(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_)) => Err(wrong(
+        | Value::Mark(_)
+        | Value::Failure(_)) => Err(wrong(
             &format!("options (from opts), as {word} takes"),
             &other,
         )),
@@ -1147,7 +1156,8 @@ fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Do
         | Value::List(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_)) => {
+        | Value::Mark(_)
+        | Value::Failure(_)) => {
             return Err(wrong("cells or a percent", &other));
         }
     };
@@ -1191,7 +1201,8 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
         | Value::List(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_)) => Err(wrong("a name, or a pane, tab or workspace", &other)),
+        | Value::Mark(_)
+        | Value::Failure(_)) => Err(wrong("a name, or a pane, tab or workspace", &other)),
     }
 }
 
@@ -1319,7 +1330,8 @@ impl fuxth::Host for Host<'_> {
                 | Value::List(_)
                 | Value::App(_)
                 | Value::Xt(_)
-                | Value::Mark(_) => {}
+                | Value::Mark(_)
+                | Value::Failure(_) => {}
             }
         }
         match result {
@@ -1605,7 +1617,7 @@ impl Host<'_> {
                 let value = next()?;
                 // A live field's handle, checked before the field is taken.
                 let live = match &value {
-                    Value::App(Fux::Record(_) | Fux::Answer(..)) => None,
+                    Value::App(Fux::Record(_) | Fux::Answer(..)) | Value::Failure(_) => None,
                     value @ (Value::Int(_)
                     | Value::Bool(_)
                     | Value::Str(_)
@@ -1625,6 +1637,9 @@ impl Host<'_> {
                     Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
                     Value::App(Fux::Answer(answer, run)) => {
                         now(out, super::record::answer_field(&answer, run, &field)?)
+                    }
+                    Value::Failure(thrown) => {
+                        now(out, super::record::failure(&thrown).get(&field)?)
                     }
                     other @ (Value::Int(_)
                     | Value::Bool(_)
@@ -1648,7 +1663,8 @@ impl Host<'_> {
                 | Value::List(_)
                 | Value::App(_)
                 | Value::Xt(_)
-                | Value::Mark(_)) => now(out, json_text(&other)),
+                | Value::Mark(_)
+                | Value::Failure(_)) => now(out, json_text(&other)),
             },
             Act::NextEvents => {
                 let scope = observation_scope(&next()?)?;
@@ -1690,7 +1706,8 @@ impl Host<'_> {
                     | Value::List(_)
                     | Value::App(_)
                     | Value::Xt(_)
-                    | Value::Mark(_)) => Ok(target(&value)?),
+                    | Value::Mark(_)
+                    | Value::Failure(_)) => Ok(target(&value)?),
                 };
                 let size = laid_out(&next()?, &next()?)?;
                 let resized = match sized {
@@ -1809,7 +1826,8 @@ impl Host<'_> {
                     | Value::List(_)
                     | Value::App(_)
                     | Value::Xt(_)
-                    | Value::Mark(_)) => {
+                    | Value::Mark(_)
+                    | Value::Failure(_)) => {
                         return Err(wrong(
                             "a tab, workspace, new-tab, new-workspace or direction",
                             &value,
@@ -1828,7 +1846,8 @@ impl Host<'_> {
                     | Value::List(_)
                     | Value::App(_)
                     | Value::Xt(_)
-                    | Value::Mark(_)) => SwapWith::Pane(pane(&value)?),
+                    | Value::Mark(_)
+                    | Value::Failure(_)) => SwapWith::Pane(pane(&value)?),
                 };
                 tell(Command::SwapPane { target, with })
             }
@@ -2049,7 +2068,8 @@ impl Host<'_> {
                     | Value::Bool(_)
                     | Value::App(_)
                     | Value::Xt(_)
-                    | Value::Mark(_) => {
+                    | Value::Mark(_)
+                    | Value::Failure(_) => {
                         return Err(wrong("a title or [text,subject handle]", &heading));
                     }
                 };
@@ -2157,7 +2177,12 @@ impl Host<'_> {
                     "a callback is source text or [captured arguments,source text]",
                 )),
             })?,
-            Value::Int(_) | Value::Bool(_) | Value::App(_) | Value::Xt(_) | Value::Mark(_) => {
+            Value::Int(_)
+            | Value::Bool(_)
+            | Value::App(_)
+            | Value::Xt(_)
+            | Value::Mark(_)
+            | Value::Failure(_) => {
                 return Err(wrong("a callback", value));
             }
         };
@@ -2576,7 +2601,7 @@ mod tests {
             "opts str sh shell-program",
             "%1 str nope history-budget",
         ] {
-            let source = format!("str type try {program} drop catch 2drop str caught print end");
+            let source = format!("str type try {program} drop catch drop str caught print end");
             let (failed, asked, printed) = offline(&source)?;
             if failed.is_some() || asked != 0 || printed != "caught\n" {
                 let failed = failed.map(|f| f.to_string()).unwrap_or_default();
@@ -2595,7 +2620,7 @@ mod tests {
             ("config", "str bar-slots list 1 end set"),
             ("config", "str shell list 1 end set"),
         ] {
-            let source = format!("str {code} try {program} catch 2drop str caught print end");
+            let source = format!("str {code} try {program} catch drop str caught print end");
             let (failed, _, printed) = offline(&source)?;
             if failed.is_some() || printed != "caught\n" {
                 let failed = failed.map(|f| f.to_string()).unwrap_or_default();

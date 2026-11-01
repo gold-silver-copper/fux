@@ -56,7 +56,9 @@ once.
   grow as far as memory lets them: the user and the OS bound a run
   (Ctrl-C, `timeout`, `ulimit`). No walk over a value or a chain of code
   (comparing, writing, dropping) is a Rust recursion.
-- **Errors** carry a stable code, a message, and the file, line and word.
+- **Errors** carry a stable code, a message, and the file, line and word;
+  caught, a failure is a value, with its number in Forth's table where the
+  standard has one (`stack_underflow` -4, `div_by_zero` -10, `fail` -2).
 
 ## The core
 
@@ -73,7 +75,7 @@ definition is compiled:
 | `begin … FLAG until` | the body, until FLAG is true |
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |
 | `SEQ each … end` | the body once per element of a string or list, the element pushed; the body sees the whole stack |
-| `CODES try … catch … end` | the body, from an empty stack, its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, sources being read, blocks, code being compiled and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top; an application's failure may carry a value instead of the message (`Machine::raise`'s `carried`). A failure of another code goes through untouched, as does one in the handler |
+| `CODES try … catch … end` | the body, from an empty stack, its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`; `str all try` for every code a running word raises), what it began is undone (its calls, sources being read, blocks, code being compiled and values) and the handler runs instead, on the stack as it was at `try` and one **failure**: its code, its number in Forth's table of `throw` codes, its message and place, the value an application's failure may carry (`Machine::raise`'s `carried`), and the steps whose words had taken effect (`Machine::acted`). `throw` raises it again; a failure of another code goes through untouched, as does one in the handler |
 | `code … end` | the words between, compiled, as an xt: pushed at the top level, compiled as a literal in a definition |
 | `tick NAME` | NAME's xt, likewise |
 | `postpone NAME` | in a definition: what NAME does when compiled, done when the definition runs |
@@ -105,7 +107,9 @@ which only its own code's words resolve; `end` closes the innermost.
 | `kind` | x -- name | `integer`, `boolean`, `string`, `list`, `xt`, or the host's |
 | `string` | x -- s | as `print` shows it: a list's elements with spaces |
 | `print`, `write`, `emit` | x -- / x -- / c -- | now: a line; text with no line end; a character |
-| `fail` | x -- | stops the program, x the reason |
+| `fail` | x -- | stops the program, x the reason (Forth's `abort"`, -2) |
+| `throw` | x -- | raises x, a failure, again; or the failure numbered x: the code with that number (`-10 throw` is `div_by_zero`), else `thrown`; `0 throw` raises none |
+| `abort`, `quit` | -- | `-1 throw`, `-56 throw` |
 | `execute` | xt -- | runs the word |
 | `find` | s -- xt true / s false | the word named s now |
 | `next-word` | -- s | the next word of the input, for a word that reads one |
@@ -164,7 +168,10 @@ The host implements [`Host`]: `call(word, args, out)` gets the word's values
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
 host pushes before running the machine again, or its failure is what the
 host raises there (`machine.raise(failure, carried)`), caught by a `try` as one at
-once would be; `machine.at()` is the token of the word it stopped at. The
+once would be; `machine.at()` is the token of the word it stopped at. Once
+what a word asked took effect, the host says so (`machine.acted(step)`):
+every failure from then on lists that step, once (`Thrown::actions`, and
+`machine.actions()` for one no `try` caught). The
 codes of its words' failures are the vocabulary's (`raises`), for a `try` to
 name. `write(text)` writes. `resolve` and `read` give `include` and
 `require` their files: a host that reads none keeps the defaults, which

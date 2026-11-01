@@ -394,7 +394,7 @@ mod tests {
     fn a_caught_failed_lookup_replays_as_it_failed() -> TestResult {
         let f = Fixture::new()?;
         let config = "define optional\n\
-            str require try tick include execute catch 2drop end\n\
+            str require try tick include execute catch drop end\n\
             end\n\
             optional missing.fux\n\
             include child.fux\n";
