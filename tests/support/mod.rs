@@ -520,6 +520,7 @@ impl Client {
                     cwd: server.dir.clone(),
                 }
             }),
+            ancestry: Vec::new(),
         };
         stream.write_all(&attach.encode()).map_err(e)?;
         stream.set_nonblocking(true).map_err(e)?;

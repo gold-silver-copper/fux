@@ -390,6 +390,11 @@ wire! {
         pub read_only: bool,
         pub presentation: crate::presentation::Presentation,
         pub initial: Option<crate::command::InitialWorkspace>,
+        /// The client's pid and its ancestors', nearest first, as far as
+        /// the OS says: one a pane's program, the client runs in that pane,
+        /// which it is shown as a placeholder and neither sizes nor types
+        /// into.
+        pub ancestry: Vec<u32>,
     }
 }
 
@@ -408,6 +413,7 @@ impl Attach {
             read_only: false,
             presentation,
             initial: None,
+            ancestry: Vec::new(),
         }
     }
 }
@@ -878,6 +884,7 @@ mod tests {
                 read_only: false,
                 initial: None,
                 presentation: presentation.clone(),
+                ancestry: Vec::new(),
             }
         );
         let workspace: Option<crate::command::WsRef> = None;
@@ -892,6 +899,7 @@ mod tests {
                 read_only: true,
                 initial: None,
                 presentation: presentation.clone(),
+                ancestry: Vec::new(),
             }
         );
         let act = Act::Paste("界\n".into());

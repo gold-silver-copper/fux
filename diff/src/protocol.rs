@@ -247,6 +247,7 @@ fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
                 .map_err(|e| e.to_string())?
                 .preferences
                 .presentation(),
+            ancestry: Vec::new(),
         }
         .encode(),
         Spec::Resize(rows, cols) => AttachedFrame::Resize(crate::size(rows, cols)).encode(),

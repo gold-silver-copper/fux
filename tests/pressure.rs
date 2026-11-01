@@ -279,6 +279,7 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
                 .map_err(|e| e.to_string())?
                 .preferences
                 .presentation(),
+            ancestry: Vec::new(),
         };
         stream.write_all(&hello.encode()).map_err(e)?;
         stream.write_all(&attach.encode()).map_err(e)?;

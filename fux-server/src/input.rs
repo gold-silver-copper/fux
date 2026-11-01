@@ -169,6 +169,16 @@ impl Session {
         pane: fux_wire::id::PaneId,
         write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
     ) -> bool {
+        // Its own pane would hand it back what it typed, again and again.
+        if self
+            .views
+            .get(&client)
+            .is_some_and(|v| v.runs_in == Some(pane))
+        {
+            let why = format!("{pane} runs this client: what it types there is not sent");
+            self.notify_to(client, why, true);
+            return true;
+        }
         let why = match self.live_pane_mut(pane).map(|mut p| p.push_with(write)) {
             Ok(()) => return false,
             Err(refused) => refused.to_string(),

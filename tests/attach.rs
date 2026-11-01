@@ -87,6 +87,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
         read_only: false,
         initial: None,
         presentation: server.state.preferences.presentation(),
+        ancestry: Vec::new(),
     };
     let hello = Hello {
         protocol: PROTOCOL,
@@ -322,11 +323,68 @@ fn edit_history_opens_the_terminals_editor_at_the_end() -> Outcome {
 
 /// A client attached from inside a pane, showing that pane, draws it as a
 /// placeholder rather than its own screen, which would draw itself again
-/// with each paint: the pane's screen count stays still.
+/// with each paint, and types nothing into it, which it would read back:
+/// the pane's screen count stays still. So does a client behind another
+/// terminal in that pane (`script(1)`), whose session is its own.
 #[test]
 fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
-    let server = Server::start("")?;
     let attach = "unset FUX_PANE; exec \"$FUX\" opts str viewer in attach";
+    // util-linux's script, else BSD's.
+    let behind = format!(
+        "if script -qfc true /dev/null >/dev/null 2>&1; \
+         then exec script -qfc '{attach}' /dev/null; \
+         else exec script -q /dev/null sh -c '{attach}'; fi"
+    );
+    for program in [attach.to_owned(), behind] {
+        let server = Server::start("")?;
+        let launch = [
+            "opts",
+            "str",
+            "viewer",
+            "name",
+            "60",
+            "12",
+            "size",
+            "str",
+            "sh",
+            "program",
+            "str",
+            "-c",
+            "arg",
+            "str",
+            &program,
+            "arg",
+            "new-workspace",
+        ];
+        let pane = server.ok(&launch)?;
+        let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
+        server.shows(&pane, "this client")?;
+        let still = || -> Result<bool, String> {
+            let before = server.version(&pane)?;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            Ok(server.version(&pane)? == before)
+        };
+        eventually("the pane's screen still", still)?;
+        assert!(still()?, "the pane kept changing: {program}");
+        // What it types into its own pane, a key or a paste, is refused out
+        // loud, not handed back to it.
+        for input in ["text", "paste"] {
+            server.ok(&[&pane, "str", "x", input, "send-keys"])?;
+            server.shows(&pane, "runs this client")?;
+            eventually("the pane's screen still", still)?;
+            let queued = server.ok(&["str", &pane, "pane", "str", "input_unread", "get"])?;
+            assert_eq!(queued.trim(), "0");
+        }
+    }
+    Ok(())
+}
+
+/// A headless client in a pane of the tab it shows paints nothing there:
+/// its capture is the pane's, and it sizes the tab.
+#[test]
+fn a_headless_client_in_its_own_pane_keeps_its_capture_and_sizing() -> Outcome {
+    let server = Server::start("")?;
+    let attach = "unset FUX_PANE; \"$FUX\" opts 50 10 size str viewer in attach; sleep 60";
     let launch = [
         "opts",
         "str",
@@ -348,14 +406,18 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
     ];
     let pane = server.ok(&launch)?;
     let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
-    server.shows(&pane, "this client")?;
-    let still = || -> Result<bool, String> {
-        let before = server.version(&pane)?;
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        Ok(server.version(&pane)? == before)
-    };
-    eventually("the pane's screen still", still)?;
-    assert!(still()?, "the pane kept changing");
+    server.shows(&pane, "c1")?;
+    eventually("the tab sized by the client", || {
+        Ok(server
+            .ok(&["str", &pane, "pane", "str", "cols", "get"])?
+            .trim()
+            == "50")
+    })?;
+    let captured = server.ok(&["str", "c1", "client", "capture"])?;
+    assert!(
+        captured.contains("c1") && !captured.contains("this client"),
+        "{captured}"
+    );
     Ok(())
 }
 

@@ -1215,18 +1215,6 @@ impl Session {
         result
     }
 
-    /// Client `client` runs in the session `leader` leads, where the OS
-    /// says: the pane whose program that is, if any (`View::runs_in`).
-    pub fn runs_in(&mut self, client: ClientId, leader: Option<fuxix::process::Pid>) {
-        let leads =
-            |pane: &Pane| (pane.process().child()).is_some_and(|c| Some(c.leader.pid()) == leader);
-        let pane = self.parts.panes().iter().find(|(_, pane)| leads(pane));
-        let pane = pane.map(|(id, _)| *id);
-        if let Some(view) = self.views.get_mut(&client) {
-            view.runs_in = pane;
-        }
-    }
-
     fn attach_checked(&mut self, attach: Attach, now: Instant) -> Result<ClientId, Error> {
         self.check_run(attach.of)?;
         if attach.initial.is_some() && (attach.target.is_some() || attach.read_only) {
@@ -1306,6 +1294,15 @@ impl Session {
             false => ClientKind::Terminal,
         };
         view.read_only = attach.read_only;
+        // The pane it runs in, if any: the one whose program it descends
+        // from. A headless client shows on no terminal, so on none.
+        let leads = |pane: &Pane| {
+            let leader = pane.process().child().map(|c| c.leader.pid().as_raw());
+            let leader = leader.and_then(|pid| u32::try_from(pid).ok());
+            !attach.headless && leader.is_some_and(|pid| attach.ancestry.contains(&pid))
+        };
+        let runs_in = self.parts.panes().iter().find(|(_, pane)| leads(pane));
+        view.runs_in = runs_in.map(|(id, _)| *id);
         self.views.insert(id, view);
         self.parts.attach(id);
         self.parts.show(id, ws, spot);

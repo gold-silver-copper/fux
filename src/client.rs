@@ -1144,6 +1144,8 @@ pub fn attach(
         read_only: attaching.read_only,
         presentation: attaching.state.preferences.presentation(),
         initial,
+        // A pane's program among them, it runs in that pane.
+        ancestry: if terminal { ancestry() } else { Vec::new() },
     };
     let raw = terminal
         .then(|| Raw::enter_with(&stdin, &mut io::stdout()))
@@ -1175,6 +1177,48 @@ pub fn attach(
     let reason = result.and_then(|reason| finished.map(|()| reason))?;
     let _ = writeln!(io::stdout(), "[{reason}]");
     Ok(())
+}
+
+/// This process and its ancestors, nearest first, as the OS says: each
+/// one's parent from `/proc` where there is one, else from `ps(1)`.
+fn ancestry() -> Vec<u32> {
+    let listed = std::cell::OnceCell::new();
+    let parent = |pid: u32| -> Option<u32> {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            let listed: &Vec<(u32, u32)> = listed.get_or_init(parents);
+            return listed
+                .iter()
+                .find(|(p, _)| *p == pid)
+                .map(|(_, parent)| *parent);
+        };
+        // The name, in parentheses, may hold anything; the state, then the
+        // parent, follow it.
+        let (_, fields) = stat.rsplit_once(')')?;
+        fields.split_whitespace().nth(1)?.parse().ok()
+    };
+    let mut chain = vec![std::process::id()];
+    let mut next = Some(std::os::unix::process::parent_id());
+    while let Some(pid) = next.filter(|pid| *pid > 1 && !chain.contains(pid)) {
+        chain.push(pid);
+        next = parent(pid);
+    }
+    chain
+}
+
+/// Every process and its parent, as `ps -A -o pid= -o ppid=` lists them;
+/// none if it can't.
+fn parents() -> Vec<(u32, u32)> {
+    let listed = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=", "-o", "ppid="])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let listed = listed.map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
+    let pair = |line: &str| {
+        let mut numbers = line.split_whitespace().map(str::parse);
+        Some((numbers.next()?.ok()?, numbers.next()?.ok()?))
+    };
+    listed.map_or_else(|_| Vec::new(), |out| out.lines().filter_map(pair).collect())
 }
 
 /// Why a client detached when a signal told it to.
