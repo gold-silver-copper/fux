@@ -987,12 +987,12 @@ impl Server {
                 }
             }
         }
-        let overlay = render::bar_overlay(session, view, &attached.placement);
+        let cover = render::bar_cover(session, view, &attached.placement);
         attached.pane_pictures = pictures.clone();
         if !view.mode.is_normal() {
             pictures.clear();
-        } else if overlay {
-            render::clip_bar_pictures(view, &mut pictures);
+        } else if let Some(cover) = cover {
+            render::clip_bar_pictures(view, cover, &mut pictures);
         }
         for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
             attached.shown.forget_area(gone.area);
@@ -1745,11 +1745,6 @@ mod tests {
         let (mut server, _peer) = server()?;
         let client = *server.session.views.keys().next().ok_or("client")?;
         let pane = *server.session.parts.panes().keys().next().ok_or("pane")?;
-        crate::session::testing::output_as(
-            &mut server.session,
-            Some(client),
-            "str bar list str off list end list end false end set",
-        )?;
         let view = server.session.views.get_mut(&client).ok_or("view")?;
         view.terminal.sixel = Some(true);
         view.terminal.cell = fux_vt::CellSize::new(12, 12);
@@ -1758,16 +1753,17 @@ mod tests {
         let picture = std::sync::Arc::new(
             fux_vt::sixel::Picture::new(12, 24, vec![255; 12 * 24 * 4]).ok_or("picture")?,
         );
+        // Under the corner the notice will cover.
         let full = vec![
             render::Visible {
                 pane,
-                area: (8, 0, 2, 1),
+                area: (8, 35, 2, 1),
                 crop: (0, 0, 12, 24),
                 picture: std::sync::Arc::clone(&picture),
             },
             render::Visible {
                 pane,
-                area: (9, 1, 1, 1),
+                area: (9, 36, 1, 1),
                 crop: (0, 0, 12, 12),
                 picture,
             },
@@ -1841,14 +1837,16 @@ mod tests {
             crate::session::testing::output_as(
                 &mut server.session,
                 Some(client),
-                "str bar list str off list end list end false end set str styles list list str bar str default str default end list str notice str default str default end end set",
+                "str styles list list str bar str default str default end list str notice str default str default end end set",
             )?;
             server.session.out(pane, b"\x1b[10;1H\x1b]8;;https://example.test/old\x1b\\old A\x1b]8;;\x1b\\\x1b[5 q\x1b]12;#123456\x07");
             if clear_without_output {
                 server.session.out(pane, b"\x1b[?25l");
             }
             server.paint(0, Instant::now());
-            server.session.notify_to(client, "feedback", false);
+            // A notice a cell narrower than the screen covers its row.
+            let feedback = "-------------------------------feedback";
+            server.session.notify_to(client, feedback, false);
             server.paint(0, Instant::now());
             let attached = server
                 .conns

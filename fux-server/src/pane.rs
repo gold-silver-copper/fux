@@ -259,6 +259,8 @@ struct Sink<'a, 't> {
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
+    /// Set by a notification (OSC 9, 777).
+    notified: &'a mut Option<Said>,
     alerts: &'a mut Alerts,
     /// Each OSC 52 write, in order: its UTF-8 text, or why it is no copy.
     copied: &'a mut Vec<Result<String, Uncopied>>,
@@ -305,6 +307,7 @@ impl fux_vt::Sink for Sink<'_, '_> {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = Said::new(text);
                 self.tell.tell(Told::Notification(text.clone()));
+                *self.notified = Some(text.clone());
                 self.alerts.last = Some(text);
             }
             Event::Clipboard { data, .. } => {
@@ -607,8 +610,11 @@ pub struct Pane {
     /// is told it (`Session::tell_schemes`).
     pub scheme_told: Option<Scheme>,
     /// The program rang the bell since the session last looked
-    /// (`Session::ring`).
+    /// (`Session::alert`).
     pub bell: bool,
+    /// The program's latest notification since the session last looked
+    /// (`Session::alert`).
+    notified: Option<Said>,
     /// What the program put on the clipboard (OSC 52) since the session
     /// last looked, in order: each text, which the session copies
     /// (`Session::copied`), or why it copied nothing, which it tells. The
@@ -777,10 +783,10 @@ impl<'a> PaneMut<'a> {
         self.pane.take_untold()
     }
     /// What the session takes after each read: whether its program rang
-    /// the bell, and its copies, in order.
+    /// the bell, its latest notification, and its copies, in order.
     /// Refused copies are counted here, unless this pane's program-copy permission
     /// is false, which copies nothing and so refuses none.
-    pub fn take_read(&mut self) -> (bool, Vec<String>) {
+    pub fn take_read(&mut self) -> (bool, Option<Said>, Vec<String>) {
         let mut copies = Vec::new();
         let allowed = self.pane.options.program_clipboard;
         for copy in std::mem::take(&mut self.pane.copied)
@@ -797,7 +803,8 @@ impl<'a> PaneMut<'a> {
                 Err(why) => self.pane.uncopied(why),
             }
         }
-        (std::mem::take(&mut self.pane.bell), copies)
+        let (bell, notified) = (&mut self.pane.bell, &mut self.pane.notified);
+        (std::mem::take(bell), notified.take(), copies)
     }
     /// Its program ended so, told once what it wrote is read.
     pub fn exiting(&mut self, ended: Ended) {
@@ -952,6 +959,7 @@ impl Pane {
             colours: Colours::default(),
             scheme_told: None,
             bell: false,
+            notified: None,
             copied: Vec::new(),
             respawns: 0,
             left: Left::default(),
@@ -1154,6 +1162,7 @@ impl Pane {
             tell,
             title: &mut self.title,
             bell: &mut self.bell,
+            notified: &mut self.notified,
             alerts: &mut self.alerts,
             copied: &mut self.copied,
             colours: &self.colours,
@@ -1535,6 +1544,7 @@ impl Pane {
             id: self.id,
             name: std::mem::take(&mut self.name),
             bell: self.bell,
+            notified: self.notified.take(),
             copied: std::mem::take(&mut self.copied),
             untold: self.untold,
             colours: self.colours,
@@ -2333,7 +2343,7 @@ pub(crate) mod tests {
         let bad = b"\x1b]52;c;***\x07";
         let copy = |pane: &mut Lone, bytes: &[u8]| {
             pane.output(bytes);
-            pane.placed().take_read().1.len()
+            pane.placed().take_read().2.len()
         };
         copy(&mut pane, bad);
         assert_eq!(pane.take_untold().copies_not_text, 1);

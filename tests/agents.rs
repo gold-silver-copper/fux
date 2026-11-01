@@ -545,7 +545,7 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
         server.ok(&[&capture[..], &["kind"]].concat())?.trim(),
         "client-capture"
     );
-    eventually("a paint", || Ok(server.ok(&capture)?.contains("main")))?;
+    eventually("a paint", || Ok(server.ok(&capture)?.contains('$')))?;
     // Keys typed at it are a person's: the prefix opens the column.
     server.ok(&["str", "c1", "client", "str", "C-b", "key", "send-keys"])?;
     eventually("the column", || {

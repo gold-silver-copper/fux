@@ -468,7 +468,9 @@ impl Drop for Fixture {
 }
 
 /// The configuration a walk starts from, and returns to.
-pub const CONFIG_VALID: &str = "str shell list str /bin/sh end set\nstr history-bytes 500000 set\n";
+/// The walk's clients keep the bar on a row of its own: its checks read it.
+pub const CONFIG_VALID: &str = "str shell list str /bin/sh end set\nstr history-bytes 500000 set\n\
+    str bar list str bottom list str workspace str tabs end list str pane end false end set\n";
 
 /// The environment of everything the walk starts: nothing inherited but
 /// `PATH`, and `HOME` the fixture.

@@ -186,8 +186,9 @@ scrollback in bytes (10 MB by default), not rows. `FUX_SOCKET`, `FUX_PANE`,
 `TMUX`, `TMUX_PANE`, and zellij's and herdr's variables are removed from
 all it starts. Patterns (the ready marker, the throughput markers, the
 echoed glyphs) are found in the text the client writes, escape sequences
-skipped, as herdr moves the cursor before each cell it paints. The client's PTY is 41×120 (a
-40×120 pane, the corpus's size, and a bar), `TERM=xterm-256color`. The
+skipped, as herdr moves the cursor before each cell it paints. The client's PTY is 40×120 for fux,
+whose bar takes no row, and 41×120 for the others (a 40×120 pane, the
+corpus's size, and a bar), `TERM=xterm-256color`. The
 pane programs are this binary's (`__echo`, `__flood`, `__serve`,
 `__fill`).
 

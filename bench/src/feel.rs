@@ -493,8 +493,9 @@ fn start(
             env.push(("FUX_BIN".into(), place.fux.clone()));
             let env_ref: Vec<(&str, &str)> =
                 env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            // fux's bar takes no row: the pane is the client's size.
             let terminal = Terminal::start(
-                ROWS.saturating_add(1),
+                ROWS,
                 COLS,
                 &place.fux,
                 // No words attaches.

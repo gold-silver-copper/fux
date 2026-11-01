@@ -4,10 +4,18 @@ use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::Rect;
 use fux_wire::presentation::Presentation;
 
+/// How long a program's alert (a bell, a notification) shows if nothing
+/// ends it sooner: about as long as a desktop notification stays, long
+/// enough to read a line, short enough not to hide the pane's corner.
+pub const ALERT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
     pub text: String,
     pub error: bool,
+    /// When it ends of itself, an alert's (`View::alert`); others end only
+    /// on input or a screen.
+    pub until: Option<std::time::Instant>,
 }
 
 /// What a view shows over its panes: nothing, or one of its client's
@@ -122,7 +130,20 @@ impl View {
     /// Shows a notice, an error's if `error`.
     pub fn notify(&mut self, text: impl Into<String>, error: bool) {
         let text = text.into();
-        self.notice = Some(Notice { text, error });
+        self.notice = Some(Notice {
+            text,
+            error,
+            until: None,
+        });
         self.dirty = true;
+    }
+
+    /// Shows a program's alert as a notice that ends [`ALERT`] after `now`,
+    /// unless input or a newer notice ends it first.
+    pub fn alert(&mut self, text: String, now: std::time::Instant) {
+        self.notify(text, false);
+        if let Some(notice) = &mut self.notice {
+            notice.until = now.checked_add(ALERT);
+        }
     }
 }

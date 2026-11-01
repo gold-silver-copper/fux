@@ -181,7 +181,11 @@ fn choosers_select_rename_and_close() -> Outcome {
         t.contains("+2 elsewhere") && t.contains("* +1 main")
     })?;
     client.keys(&format!("{DOWN}\r"))?;
-    bar_has(&mut client, "elsewhere")?;
+    pumped(&mut client, "on +2", || {
+        Ok(server
+            .ok(&["ls", "listing"])?
+            .contains("client c1 100x30 +2"))
+    })?;
     // The move chooser of the pane actions moves the pane there.
     server.ok(&["str", "%4", "pane", "str", "horizontal", "axis", "split"])?;
     client.keys(&format!("{PREFIX}aw"))?;

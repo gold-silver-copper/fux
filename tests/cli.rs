@@ -549,13 +549,13 @@ fn ls_json_list_keys_and_help() -> Outcome {
         "\"workspace\":\"+1\"",
         "\"tab\":\"@1\"",
         "\"panes\":[{\"id\":\"%1\"",
-        "\"rows\":9,\"cols\":50",
+        "\"rows\":10,\"cols\":50",
         "\"cursor\":",
         r#""host":"c1""#,
         r#""terminal":{"sixel_reported":null,"cell_reported":null,"underline_styles_reported":null,"kitty_flags_reported":null}"#,
         r#""output":{"graphics":"text","underline_styles":false,"clipboard":"osc52","kitty_flags_requested":null}"#,
         "\"clients\":[{\"id\":\"c1\"",
-        "\"pane_rows\":9,\"pane_cols\":50",
+        "\"pane_rows\":10,\"pane_cols\":50",
     ] {
         assert!(json.contains(field), "{field} in {json}");
     }

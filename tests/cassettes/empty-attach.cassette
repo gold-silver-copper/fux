@@ -1,6 +1,6 @@
 # fux cassette 1
 # guards: an untargeted headless attach to an empty server starts one
-#   workspace, its shell laid out on the attach's screen below the bar,
+#   workspace, its shell laid out on the whole of the attach's screen,
 #   and the client ends when detached
 # fix: #317
 $ fux ls str workspaces get len
@@ -13,9 +13,9 @@ $ fux ls str workspaces get len
   ~ 1
 $ fux ls str panes get first let p p str cols get p str rows get
   = 100
-  = 29
+  = 30
   ~ 100
-  ~ 29
+  ~ 30
 $ fux str c1 client detach
 $ wait "$(cat "$DIR/attach.pid")"; cat "$DIR/attach.out"
   = ca

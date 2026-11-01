@@ -35,6 +35,10 @@ pub fn fux() -> &'static str {
     static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BIN.get_or_init(|| std::env::var("FUX_BIN").unwrap_or_else(|_| FUX.to_owned()))
 }
+/// A config that gives the bar a row of its own, below the panes.
+pub const BAR_ROW: &str =
+    "str bar list str bottom list str workspace str tabs end list str pane end false end set";
+
 /// How long a test waits for something to show.
 pub const PATIENCE: Duration = Duration::from_secs(10);
 
@@ -760,7 +764,7 @@ impl Client {
         }
     }
 
-    /// The bottom row: the bar.
+    /// The bottom row: the bar, when it has one (`BAR_ROW`).
     pub fn bar(&self) -> String {
         self.lines().last().cloned().unwrap_or_default()
     }
