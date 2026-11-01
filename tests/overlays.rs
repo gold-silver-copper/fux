@@ -199,6 +199,48 @@ fn choosers_select_rename_and_close() -> Outcome {
     Ok(())
 }
 
+/// A client's `opening` is the kind of screen it shows over its panes, null
+/// with none, and each change is a `screen` event naming the same kind.
+#[test]
+fn a_clients_opening_names_its_screen_as_its_screen_events_do() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(30, 100)?;
+    client.wait_for("$")?;
+    let next = ["all", "str", "", "0", "next-events", "str", "next", "get"];
+    let cursor = server.ok(&next)?;
+    let opening = ["str", "c1", "client", "str", "facts", "snapshot"];
+    let opening = [&opening[..], &["str", "clients", "get", "first"]].concat();
+    let opening = [&opening[..], &["str", "opening", "get", "json"]].concat();
+    for (keys, kind) in [
+        (PREFIX.to_owned(), "\"column\""),
+        ("tg".to_owned(), "\"list\""),
+        ("\x1b".to_owned(), "null"),
+        (format!("{PREFIX}e"), "\"prompt\""),
+        ("\x1b".to_owned(), "null"),
+    ] {
+        client.keys(&keys)?;
+        pumped(
+            &mut client,
+            kind,
+            || Ok(server.ok(&opening)?.trim() == kind),
+        )?;
+    }
+    let events = server.ok(&["all", "str", cursor.trim(), "0", "next-events"])?;
+    let kinds: Vec<&str> = (events.lines())
+        .filter(|e| e.starts_with(r#"{"event":"screen""#) && e.contains(r#""client":"c1""#))
+        .filter_map(|e| e.split(r#""kind":"#).nth(1)?.split([',', '}']).next())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["\"column\"", "\"column\"", "null", "\"list\"", "null"]
+            .into_iter()
+            .chain(["\"column\"", "null", "\"prompt\"", "null"])
+            .collect::<Vec<_>>(),
+        "{events}"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     let server = Server::start("")?;

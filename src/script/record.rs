@@ -417,7 +417,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
             "layout_revision" => b.text(&choice.revision.to_string())?, "stack" => number(choice.stack)?,
             "current" => number(choice.current)?, "last" => choice.last.map(number).unwrap_or_else(|| Ok(null()))?
         })?,
-        "opening" => c.opening.map(number).unwrap_or_else(|| Ok(null()))?, "mode" => b.text(&c.mode)?
+        "opening" => c.opening.map(|o| b.text(o.name())).unwrap_or_else(|| Ok(null()))?
     })?;
     let scope = match s.scope {
         Scope::All => Value::App(Fux::All),

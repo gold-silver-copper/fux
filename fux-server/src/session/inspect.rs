@@ -1,5 +1,5 @@
 use super::{Error, Session};
-use crate::view::{ClientKind, Mode};
+use crate::view::ClientKind;
 use crate::workspace::{Child, Fit};
 use fux_wire::command::AnyRef;
 use fux_wire::id::PaneId;
@@ -157,10 +157,6 @@ impl Session {
             if !selected {
                 continue;
             }
-            let mode = match view.mode {
-                Mode::Normal => "normal",
-                Mode::Panel(_) => "panel",
-            };
             let terminal = view.terminal.facts();
             let graphics = match view.terminal.graphics() {
                 fux_vt::Graphics::Text => "text",
@@ -213,8 +209,7 @@ impl Session {
                         })
                     })
                     .collect(),
-                opening: (!view.mode.is_normal()).then_some(view.opening),
-                mode: mode.to_owned(),
+                opening: view.mode.opening(),
             };
             snapshot.clients.push(fact);
         }

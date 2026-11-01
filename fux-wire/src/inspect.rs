@@ -119,8 +119,8 @@ wire! {
         pub seats: Vec<Seat>,
         /// What it is shown at each stack in the layouts of the tabs here.
         pub choices: Vec<Choice>,
-        pub opening: Option<u64>,
-        pub mode: String,
+        /// The screen it shows over its panes, if one.
+        pub opening: Option<crate::act::Opening>,
     }
 }
 wire! {

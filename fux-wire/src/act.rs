@@ -67,6 +67,34 @@ wire! {
 }
 
 wire! {
+    /// Which of its screens a client shows over its panes: a `Panel`'s kind.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Opening { Column, Repeat, List, Prompt, }
+}
+
+impl Panel {
+    pub fn opening(&self) -> Opening {
+        match self {
+            Panel::Column(_) => Opening::Column,
+            Panel::Repeat(_) => Opening::Repeat,
+            Panel::List(_) => Opening::List,
+            Panel::Prompt { .. } => Opening::Prompt,
+        }
+    }
+}
+
+impl Opening {
+    pub fn name(self) -> &'static str {
+        match self {
+            Opening::Column => "column",
+            Opening::Repeat => "repeat",
+            Opening::List => "list",
+            Opening::Prompt => "prompt",
+        }
+    }
+}
+
+wire! {
     /// The command column as a client shows it.
     #[derive(Clone, Debug, PartialEq, Eq, Default)]
     pub struct Column {

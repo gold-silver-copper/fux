@@ -35,6 +35,14 @@ impl Mode {
             Mode::Panel(_) => false,
         }
     }
+
+    /// The screen shown over the panes, if one.
+    pub fn opening(&self) -> Option<fux_wire::act::Opening> {
+        match self {
+            Mode::Normal => None,
+            Mode::Panel(panel) => Some(panel.opening()),
+        }
+    }
 }
 
 /// Where a client shows what it is sent.

@@ -133,7 +133,9 @@ not saved process memory.
 
 Each client has `id`, `kind` (`terminal` or `headless`), `read_only`, physical
 `rows`/`cols`, `pane_rows`/`pane_cols`, optional `workspace`/`tab`/`pane`,
-`seats`, `choices`, `opening` (null without an open screen), and `mode`.
+`seats`, `choices`, and `opening`: the screen it shows over its panes,
+`column` (the prefix's command column), `repeat` (a repeat mode's bar),
+`list` (a chooser) or `prompt`, null when none is open.
 Each of `seats` is what it is shown `in` a workspace (the server's, with
 `in` null) or focuses in a tab: `current`, and `last`, the one before.
 Each of `choices` is its child at a stack of a tab in the snapshot:
@@ -382,9 +384,9 @@ label is inferred.
 Client-only keymaps, request preferences and local config evaluation are not
 server state. Notices, presentation preferences and edits or selection
 movement within an existing screen opening are not journaled. Client
-records retain `mode` and `opening`; `screen` invalidates a fresh opening
-(including replacement), a close or a mode ending, including repair and
-history loss. Actual pane resizes and host changes still invalidate their
+records hold `opening`, and `screen` says when it changes: a fresh opening
+(a replacement included) or a close, including a chooser fux closes because
+what it was about is gone. Actual pane resizes and host changes still invalidate their
 pane or layout after a presentation edit. Program `notification` and
 `title` events remain distinct from client notices.
 
@@ -410,7 +412,7 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `shown` | `client` and its place, each time it changes at any level (workspace, tab, focused pane, or a zoom of its tab): one at the place left, one at the place reached; includes automatic repair after a close |
 | `zoomed` | tab/workspace and its zoomed `pane`, null when it no longer has one: by `zoom`, a focus on another pane there, or the pane leaving |
 | `view_resized` | `client` and its terminal's new `cols`, `rows` |
-| `screen` | `client` and the `kind` of screen it now shows (`column`, `repeat`, `list` or `prompt`), null once none: a fresh opening, close or mode ending |
+| `screen` | `client` and the `kind` of screen it now shows (`column`, `repeat`, `list` or `prompt`), null once none: a fresh opening or a close |
 | `history_budget` | pane's new `history_bytes` |
 | `history_cleared` | pane history invalidated |
 | `respawned` | the new program's `generation`; optional `input_unread`, the old program's input not written to its terminal |
@@ -495,8 +497,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":69,
- "server_release":"0.36.0","server_protocol":69,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":70,
+ "server_release":"0.36.0","server_protocol":70,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

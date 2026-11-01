@@ -105,10 +105,7 @@ impl Session {
                     }
                 }
                 if changed || view.mode.is_normal() {
-                    let opening = match &view.mode {
-                        Mode::Normal => None,
-                        Mode::Panel(panel) => Some(crate::journal::Opening::of(panel)),
-                    };
+                    let opening = view.mode.opening();
                     self.view_event(client, crate::journal::ViewChange::Screen(opening));
                 }
             }
