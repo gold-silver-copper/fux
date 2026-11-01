@@ -2,6 +2,7 @@
 //! (`Grid::reflowed`), laid out in one walk over the rows and copied in a
 //! second, each through `Reflow`.
 use super::*;
+use crate::CommandMark;
 
 impl Grid {
     /// The primary screen resized with reflow: every logical line, a run of
@@ -19,13 +20,16 @@ impl Grid {
     /// keeps the identity of the line's k-th row before, if it had one.
     ///
     /// Also returns how many history rows, laid out as they were, the new
-    /// grid takes unchanged (`adopt_history`).
+    /// grid takes unchanged (`adopt_history`), and `places` moved with their
+    /// characters as the cursor is. A place in no retained row stays as it
+    /// was; one on a row the resize drops goes to an identity no row has.
     pub fn reflowed(
         &self,
         size: Size,
         next: &mut u64,
         version: u64,
-    ) -> Result<(Self, usize), Error> {
+        places: [Option<CommandMark>; 3],
+    ) -> Result<(Self, usize, [Option<CommandMark>; 3]), Error> {
         Self::check_size(size)?;
         let cols = size.cols();
         // The cursor and the saved cursor go with their characters; one
@@ -35,12 +39,29 @@ impl Grid {
                 .checked_add(usize::from(cursor.row))
                 .map(|row| (row, usize::from(past(cursor.col, cursor.pending_wrap))))
         };
-        let marks = [at(self.cursor), at(self.saved.cursor)];
+        let [a, b, c] = places.map(|place| {
+            place.and_then(|place| Some((self.index_of(place.row)?, usize::from(place.col))))
+        });
+        let marks = [at(self.cursor), at(self.saved.cursor), a, b, c];
         let layout = self.reflow(usize::from(cols), marks, &mut Layout)?;
         let screen = usize::from(size.rows());
         // A mark no line held goes to the start of the last row.
         let last = Mark::Blank(layout.rows.saturating_sub(1), 0);
-        let [cursor, saved] = layout.marks.map(|mark| mark.unwrap_or(last));
+        let [cursor, saved, laid @ ..] = layout.marks;
+        let [cursor, saved] = [cursor, saved].map(|mark| mark.unwrap_or(last));
+        // A place takes its column now, and its row's identity once the
+        // copy gives the row one.
+        let mut moved = [None; 3];
+        for ((moved, laid), place) in moved.iter_mut().zip(laid).zip(places) {
+            if let (Some(laid), Some(place)) = (laid, place) {
+                let (row, col) = match laid {
+                    Mark::Text(row, col) => (row, col),
+                    Mark::Blank(row, col) => (row, col.min(usize::from(cols).saturating_sub(1))),
+                };
+                let col = u16::try_from(col).unwrap_or(cols);
+                *moved = Some((row, CommandMark { col, ..place }));
+            }
+        }
         let (Mark::Text(cursor_row, _) | Mark::Blank(cursor_row, _)) = cursor;
         // Blank lines below the cursor go before any line scrolls into
         // history, but only those of the screen's own lines past the new
@@ -87,23 +108,30 @@ impl Grid {
             written: 0,
             text: Text::default(),
             links: None,
+            places: moved,
         };
         self.reflow(usize::from(cols), marks, &mut copy)?;
+        let mut places = places;
+        for (place, moved) in places.iter_mut().zip(copy.places) {
+            if let Some((_, moved)) = moved {
+                *place = Some(moved);
+            }
+        }
         while replacement.order.len() < screen {
             let meta = Meta::new(next_id(next), version, false, 0);
             replacement.push_screen_row(meta, &[], None, None);
         }
         replacement.fit_cursor();
-        Ok((replacement, kept))
+        Ok((replacement, kept, places))
     }
 
     /// Lays every retained row out again at `width` columns, giving each run
-    /// of cells and each finished row to `target`. `marks` are the cursor's
-    /// and the saved cursor's retained row and column.
+    /// of cells and each finished row to `target`. `marks` are the cursor's,
+    /// the saved cursor's and the places' retained row and column.
     fn reflow(
         &self,
         width: usize,
-        marks: [Option<(usize, usize)>; 2],
+        marks: [Option<(usize, usize)>; MARKS],
         target: &mut impl Reflow,
     ) -> Result<Reflowed, Error> {
         let retained = self.retained_len();
@@ -190,7 +218,7 @@ impl Grid {
             end,
             prompt: false,
             pending: false,
-            offsets: [None; 2],
+            offsets: [None; MARKS],
         };
         let first = pass.out.rows;
         let mut base = 0usize;
@@ -375,9 +403,13 @@ trait Reflow {
     ) -> Result<(), Error>;
 }
 
+/// How many marks a reflow carries: the cursor, the saved cursor and three
+/// places.
+const MARKS: usize = 5;
+
 struct Pass<'a, T> {
     width: usize,
-    marks: [Option<(usize, usize)>; 2],
+    marks: [Option<(usize, usize)>; MARKS],
     out: Reflowed,
     target: &'a mut T,
 }
@@ -396,7 +428,7 @@ struct Run {
     prompt: bool,
     pending: bool,
     /// Where the marks are in the line, each taken once placed.
-    offsets: [Option<usize>; 2],
+    offsets: [Option<usize>; MARKS],
 }
 
 impl Run {
@@ -437,8 +469,8 @@ impl Run {
     }
 }
 
-/// Where a mark, the cursor or the saved cursor, is laid out: a reflowed
-/// row and a column in it.
+/// Where a mark, the cursor, the saved cursor or a place, is laid out: a
+/// reflowed row and a column in it.
 #[derive(Clone, Copy)]
 enum Mark {
     /// On a glyph of its line's text, or just after the last: one past the
@@ -455,7 +487,7 @@ enum Mark {
 struct Reflowed {
     rows: usize,
     /// `None` for a mark no line held.
-    marks: [Option<Mark>; 2],
+    marks: [Option<Mark>; MARKS],
     trailing_blank: usize,
     /// The laid-out row that the line holding the screen's first row
     /// begins on.
@@ -493,6 +525,9 @@ struct Fill<'a> {
     written: usize,
     text: Text,
     links: Option<RowLinks>,
+    /// The places, each with the reflowed row it is on, which gives it its
+    /// identity.
+    places: [Option<(usize, CommandMark)>; 3],
 }
 impl Reflow for Fill<'_> {
     fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: RunLinks<'_>) {
@@ -534,10 +569,18 @@ impl Reflow for Fill<'_> {
         id: Option<RowId>,
         prompt: bool,
     ) -> Result<(), Error> {
-        if !self.rows.contains(&row) {
+        let keep = self.rows.contains(&row);
+        let mut places = (self.places.iter_mut().flatten())
+            .filter(|(at, _)| *at == row)
+            .peekable();
+        if !keep && places.peek().is_none() {
             return Ok(());
         }
         let id = id.unwrap_or_else(|| next_id(self.next));
+        places.for_each(|(_, place)| place.row = id);
+        if !keep {
+            return Ok(());
+        }
         let cols = self.grid.size.cols();
         // The next reflow finds the row's text, and recycling clears it,
         // from its `used` mark.

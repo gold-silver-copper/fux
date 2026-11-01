@@ -1192,4 +1192,29 @@ mod tests {
         }
         Ok(())
     }
+
+    /// A resize that rewraps an ended command's output reads the same text
+    /// as before, and its range ends where the output's last character went.
+    #[test]
+    fn a_reflowed_last_output_follows_its_text() -> Result<(), Box<dyn std::error::Error>> {
+        let view = CaptureView {
+            source: fux_wire::command::Source::LastOutput,
+            ..CaptureView::default()
+        };
+        let mut pane = pane(3, 30, 1 << 20)?;
+        pane.output(b"$ \x1b]133;C\x07abcdefghijklmnopLINKED\x1b]133;D;0\x07");
+        pane.resize(fux_vt::Size::new(3, 15)?);
+        let json = json(&pane, None, CaptureView::default())?;
+        let want = r#""last_output":{"start":[0,2],"end":[1,9]}"#;
+        assert!(json.contains(want), "{json}");
+        let text = super::pane(
+            &pane,
+            fux_wire::command::Run::now().ok_or("a clock")?,
+            None,
+            view,
+        )?
+        .text()?;
+        assert_eq!(text, "abcdefghijklmnopLINKED");
+        Ok(())
+    }
 }
