@@ -276,7 +276,7 @@ Recordings:
 | `CSI > 0 q` | XTVERSION | 14 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small | answers (first with `\eP>\|fux VERSION\e\\`) |
 | `CSI ? 1016 l` | reset: mouse: SGR pixel encoding | 14 | claude, claude-ghostty, claude-main, claude-resize, claude-small, lazygit, lazygit-small, lazygit-stage | implemented |
 | `CSI > c` | DA2, secondary device attributes | 13 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | answers (first with `\e[>1;VERSION;0c`) |
-| `OSC 133 ; A` | semantic prompt | 13 | fish, fish-complete, fish-history, fish-small | implemented: a fresh line, and the row marked (Row::starts_prompt) |
+| `OSC 133 ; A` | semantic prompt | 13 | fish, fish-complete, fish-history, fish-small | implemented: a fresh line, and the row marked |
 | `CSI ? 1005 l` | reset: mouse: UTF-8 encoding | 12 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented |
 | `CSI 18 t` | XTWINOPS: size in characters? | 11 | lazygit, lazygit-small, lazygit-stage, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | answers (first with `\e[8;24;80t`) |
 | `CSI ? 4 m` | XTQMODKEYS, modifyOtherKeys? | 11 | lazygit, lazygit-small, lazygit-stage, vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | answers (first with `\e[>4;0m`) |

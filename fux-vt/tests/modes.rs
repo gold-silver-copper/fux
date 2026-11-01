@@ -7,6 +7,11 @@
 //! a VT420) and read back by DSR and DECRQM.
 
 use fux_vt::{Attributes, Color, Feature, Identity, Mode, Options, Parser, Size};
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const MODES: Options = Options::new().with(Feature::ModeReports);
@@ -332,34 +337,32 @@ fn decaln_fills_the_screen_with_e() -> Result {
     let s = p.screen();
     assert_eq!(s.cursor_position(), (0, 0));
     assert!(!s.pending_wrap() && !s.mode(Mode::Origin));
-    assert_eq!(s.scroll_region(), (0, 2));
-    assert_eq!(
-        s.attributes(),
-        Attributes::new(Color::Idx(1), Color::Default)
-    );
     for row in 0..3 {
-        assert!(!s.row_wrapped(row), "row {row}");
+        assert!(!s.row_continues(row), "row {row}");
         for col in 0..4 {
             let cell = s.cell(row, col).ok_or("a cell")?;
             assert_eq!(cell.contents(), "E");
             assert_eq!(cell.attributes(), Attributes::default());
         }
     }
-    // An E printed after it takes the pen's colours.
+    // A glyph printed after it takes the pen's colours and no attribute.
     p.process(b"X")?;
     let cell = p.screen().cell(0, 0).ok_or("a cell")?;
-    assert_eq!((cell.contents(), cell.fgcolor()), ("X", Color::Idx(1)));
-    // A prompt mark goes with the row's text, as ED's erase takes it.
-    let options = Options::new().with(Feature::PromptMarks);
-    let mut p = Parser::with_options(Size::new(2, 3)?, 0, options)?;
-    p.process(b"\x1b]133;A\x07$ \x1b#8")?;
-    assert!(!p.screen().starts_prompt(0));
+    assert_eq!(cell.contents(), "X");
+    let pen = Attributes::new(Color::Idx(1), Color::Default);
+    assert_eq!(cell.attributes(), pen);
+    // A line feed on the last row scrolls the whole screen: no margins.
+    p.process(b"\x1b[3;1H\n")?;
+    let top = p.screen().cell(0, 0).ok_or("a cell")?;
+    assert_eq!(top.contents(), "E");
     // Rows already filled keep their version.
     let mut p = Parser::new(Size::new(2, 3)?, 0)?;
     p.process(b"\x1b#8")?;
     let mark = p.screen().mark();
     p.process(b"\x1b#8")?;
-    assert_eq!(p.screen().dirty_rows_since(mark).count(), 0);
+    let s = p.screen();
+    let full = s.full_refresh_since(mark);
+    assert!(!full && !s.rows().any(|r| r.changed_since(mark)));
     Ok(())
 }
 

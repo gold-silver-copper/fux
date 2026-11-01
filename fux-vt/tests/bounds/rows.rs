@@ -5,7 +5,8 @@
 
 use std::time::Instant;
 
-use fux_vt::keys::decode::{Decoder, Input, PASTE_LIMIT};
+use crate::feed::{Feed, cells_text};
+use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::{
     Feature, Graphics, Identity, Mode, Options, Parser, Size, bytes::ByteQueue, sixel::Picture,
 };
@@ -25,6 +26,9 @@ pub type Row = fn(Scale, usize) -> Found;
 /// B32 hold to it (measured 24, 1, 48, 229 and 769 bytes at 1x).
 const NOTHING: usize = 1 << 10;
 
+/// The paste limit the probes' decoders keep.
+const PASTE_LIMIT: usize = 64 * 1024;
+
 /// A link run's bytes: its columns and its link (`link.rs` asserts it).
 /// A row of 200 columns, the probes' width, holds at most 200 runs, in a
 /// list with room for 256: hence `256 * RUN` a row, twice for both grids.
@@ -32,6 +36,10 @@ const RUN: usize = 32;
 
 /// The most pixels a picture may have (`sixel.rs`, `MAX_PIXELS`).
 const MAX_PIXELS: u64 = 4096 * 2160;
+
+/// The most bytes of name and version XTVERSION reports
+/// (`Identity`'s `MAX_LEN`).
+const IDENTITY_LEN: usize = 48;
 
 /// Feeds `setup` `input`, held to `bound` for `copies` copies, and then
 /// `after`'s checks.
@@ -298,56 +306,83 @@ pub fn b06(scale: Scale, chunk: usize) -> Found {
     probe.finish()
 }
 
-// B07: `Picture::new` checks its size against its pixels, so `encode`'s
-// work is at most the crop's pixels within the picture.
-pub fn b07(scale: Scale, _: usize) -> Found {
-    let made = |w: u32, h: u32, len: usize| Picture::new(w, h, vec![0; len]).is_some();
-    let checks = [
-        (
-            made(u32::MAX, u32::MAX, 0),
-            false,
-            "u32::MAX square, no pixels",
-        ),
-        (made(5, 3, 59), false, "w × h × 4 − 1"),
-        (made(5, 3, 60), true, "w × h × 4"),
-        (made(5, 3, 61), false, "w × h × 4 + 1"),
-        (made(4096, 1, 4096 * 4), true, "4096 wide"),
-        (made(4097, 1, 4097 * 4), false, "4097 wide"),
-        (made(1, 4096, 4096 * 4), true, "4096 tall"),
-        (made(1, 4097, 4097 * 4), false, "4097 tall"),
-    ];
-    for (made, want, what) in checks {
-        if made != want {
-            return Err(format!("{what}: made {made}"));
+/// A picture of `width` by `height` pixels drawn as a program draws one,
+/// in sixel through a parser, each pixel the colour register `colour`
+/// names, or clear for `None`: 256 registers, each its own colour.
+fn drawn(
+    width: u32,
+    height: u32,
+    colour: impl Fn(u32, u32) -> Option<u8>,
+) -> Result<std::sync::Arc<Picture>, String> {
+    let mut out = format!("\x1bP0;1q\"1;1;{width};{height}").into_bytes();
+    for c in 0..256u32 {
+        let (red, green) = ((c / 16).saturating_mul(6), (c % 16).saturating_mul(6));
+        out.extend(format!("#{c};2;{red};{green};50").bytes());
+    }
+    for top in (0..height.div_ceil(6)).map(|band| band.saturating_mul(6)) {
+        // Each register's sixels across the band, one per column.
+        let mut bands = vec![vec![0u8; usize::try_from(width).unwrap_or(0)]; 256];
+        for y in top..height.min(top.saturating_add(6)) {
+            for x in 0..width {
+                let bit = 1u8.checked_shl(y.saturating_sub(top)).unwrap_or(0);
+                let at = (colour(x, y).map(usize::from))
+                    .and_then(|c| bands.get_mut(c))
+                    .and_then(|band| band.get_mut(usize::try_from(x).ok()?));
+                if let Some(sixel) = at {
+                    *sixel |= bit;
+                }
+            }
         }
+        for (c, band) in bands.iter().enumerate() {
+            let Some(last) = band.iter().rposition(|&sixel| sixel != 0) else {
+                continue;
+            };
+            out.extend(format!("#{c}").bytes());
+            for run in band
+                .get(..=last)
+                .unwrap_or_default()
+                .chunk_by(|a, b| a == b)
+            {
+                let (sixel, n) = (
+                    run.first().map_or(b'?', |s| s.saturating_add(b'?')),
+                    run.len(),
+                );
+                match n {
+                    1..4 => out.extend(std::iter::repeat_n(sixel, n)),
+                    _ => out.extend(format!("!{n}{}", char::from(sixel)).bytes()),
+                }
+            }
+            out.push(b'$');
+        }
+        out.push(b'-');
     }
-    // The largest crop over a small picture encodes in a bounded time.
-    let picture = Picture::new(4, 4, vec![255; 64]).ok_or("4 by 4")?;
-    let start = Instant::now();
-    let mut out = Vec::new();
-    for _ in 0..scale.times() {
-        out.clear();
-        fux_vt::sixel::encode(&picture, (0, 0, u32::MAX, u32::MAX), &mut out);
-    }
-    let took = start.elapsed();
-    (took.as_secs() < 1 && !out.is_empty())
-        .then_some(())
-        .ok_or(format!("{took:?} to encode a 4 by 4 picture"))
+    out.extend_from_slice(b"\x1b\\");
+    let size = Size::new(60, 200).map_err(|e| e.to_string())?;
+    let options = Feature::ALL.into_iter().collect();
+    let mut parser = Parser::with_options(size, 0, options).map_err(|e| e.to_string())?;
+    parser.set_host_graphics(fux_vt::CellSize::new(10, 20).map_or(Graphics::Text, Graphics::Sixel));
+    parser.process(&out).map_err(|e| e.to_string())?;
+    let picture = parser.screen().pictures().next().map(|s| s.picture.clone());
+    picture.ok_or(format!("no {width} by {height} picture shown"))
 }
 
 // B08: `encode`: at most 12 bytes a crop pixel and 6 a colour a band,
 // besides its colours' definitions, and at most C_ENC units of work a crop
-// pixel, however many colours a band has.
+// pixel, however many colours a band has, and a crop past the picture
+// only its pixels within it.
 pub fn b08(scale: Scale, _: usize) -> Found {
-    let (width, height) = (2000u32, 1000u32);
-    let mut rgba = Vec::new();
-    for y in 0..height {
-        for x in 0..width {
-            let [grey, ..] = ((x ^ y) & 255).to_le_bytes();
-            rgba.extend([grey, grey, grey, 255]);
-        }
+    // The largest crop over a small picture: the work of its 16 pixels.
+    let small = drawn(4, 4, |_, _| Some(255))?;
+    let mut out = Vec::new();
+    let before = fux_vt::work_spent();
+    fux_vt::sixel::encode(&small, (0, 0, u32::MAX, u32::MAX), &mut out);
+    encoded(16, fux_vt::work_spent().saturating_sub(before))?;
+    if out.is_empty() {
+        return Err("nothing encoded of a 4 by 4 picture".to_owned());
     }
-    let picture = Picture::new(width, height, rgba).ok_or("2000 by 1000")?;
+    let (width, height) = (2000u32, 1000u32);
+    let checkerboard = drawn(width, height, |x, y| u8::try_from((x ^ y) & 255).ok())?;
+    let (width, height) = (checkerboard.width(), checkerboard.height());
     let pixels = u64::from(width).saturating_mul(u64::from(height));
     let bands = u64::from(height.div_ceil(6));
     let most = pixels
@@ -355,11 +390,10 @@ pub fn b08(scale: Scale, _: usize) -> Found {
         .saturating_add(bands.saturating_mul(256 * 6))
         .saturating_add(256 * 20)
         .saturating_add(64);
-    let mut out = Vec::new();
     for _ in 0..scale.times() {
         out.clear();
         let before = fux_vt::work_spent();
-        fux_vt::sixel::encode(&picture, (0, 0, width, height), &mut out);
+        fux_vt::sixel::encode(&checkerboard, (0, 0, width, height), &mut out);
         encoded(pixels, fux_vt::work_spent().saturating_sub(before))?;
         let len = u64::try_from(out.len()).unwrap_or(u64::MAX);
         if len > most {
@@ -371,24 +405,16 @@ pub fn b08(scale: Scale, _: usize) -> Found {
     }
     // 256 colours a band, each only in the band's first and last columns:
     // the work is the pixels', not each colour's across the width.
-    let mut rgba = Vec::new();
-    for y in 0..height {
-        for x in 0..width {
-            let ends = x < 128 || x >= width.saturating_sub(128);
-            let [grey, ..] = (x % 128)
-                .saturating_mul(2)
-                .saturating_add(y % 2)
-                .to_le_bytes();
-            rgba.extend(if ends {
-                [grey, grey, grey, 255]
-            } else {
-                [0; 4]
-            });
-        }
-    }
-    let picture = Picture::new(width, height, rgba).ok_or("2000 by 1000")?;
+    let ends = drawn(2000, 1000, |x, y| {
+        let grey = (x % 128).saturating_mul(2).saturating_add(y % 2);
+        u8::try_from(grey)
+            .ok()
+            .filter(|_| !(128..2000 - 128).contains(&x))
+    })?;
+    let (width, height) = (ends.width(), ends.height());
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
     let before = fux_vt::work_spent();
-    fux_vt::sixel::encode(&picture, (0, 0, width, height), &mut out);
+    fux_vt::sixel::encode(&ends, (0, 0, width, height), &mut out);
     encoded(pixels, fux_vt::work_spent().saturating_sub(before))
 }
 
@@ -990,7 +1016,7 @@ fn decoded(
     keep: bool,
 ) -> Result<Decoded, String> {
     decoded_by(
-        Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)),
+        Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT),
         input,
         chunk,
         per_read,
@@ -1070,7 +1096,7 @@ pub fn b23(scale: Scale, chunk: usize) -> Found {
         one.extend(repeat(b"p", len));
         one.extend(b("\x1b[201~"));
         let (mut decoder, mut out) = (
-            Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)),
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT),
             Vec::new(),
         );
         let (mut pasted, mut refused) = (0usize, 0usize);
@@ -1143,7 +1169,8 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     // begin ST; and a `CSI ?` answer at its limit after an Escape.
     // A read scans and copies what is held: 2 × 258 a read (THREATS.md B24).
     let expecting = || {
-        let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut decoder =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         decoder.expect(Instant::now());
         decoder
     };
@@ -1151,7 +1178,7 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     answer.extend(repeat(b"6", 258 - 7));
     answer.extend(b"\x1b\\");
     for decoder in [
-        Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)),
+        Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT),
         expecting(),
     ] {
         decoded_by(
@@ -1217,7 +1244,8 @@ pub fn b25(scale: Scale, chunk: usize) -> Found {
         (past("\x1b[?", 2 + 257, "c"), false),
     ] {
         let decode = |size: usize| {
-            let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+            let mut decoder =
+                Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
             if expect {
                 decoder.expect(Instant::now());
             }
@@ -1279,9 +1307,9 @@ pub fn b28(scale: Scale, chunk: usize) -> Found {
     // Each kind of reply against the shortest request for it, with what
     // makes its answer longest set up first: the most digits a position
     // has (a screen of 8192 columns, the cursor at its end), an identity
-    // of `Identity::MAX_LEN` bytes, every rendition and three direct
+    // of `IDENTITY_LEN` bytes, every rendition and three direct
     // colours: at most 16 bytes a byte that asked.
-    let half: String = std::iter::repeat_n('n', Identity::MAX_LEN / 2).collect();
+    let half: String = std::iter::repeat_n('n', IDENTITY_LEN / 2).collect();
     let name: &'static str = Box::leak(half.clone().into_boxed_str());
     let version: &'static str = Box::leak(half.into_boxed_str());
     let options = Options::from_iter(Feature::ALL).with_identity(Some(Identity { name, version }));
@@ -1830,7 +1858,7 @@ pub fn b38(_: Scale, _: usize) -> Found {
 // B39: `Cells` holds at most 64 Mi cells, and refuses more.
 pub fn b39(scale: Scale, _: usize) -> Found {
     const MAX_CELLS: usize = 64 << 20;
-    // Past the most: refused, by `new` and by `resize`, which leaves the
+    // Past the most: refused, by `new` and by `reset`, which leaves the
     // cells as they were. (At the most, 512 MiB, only at 100x.)
     for len in [MAX_CELLS.saturating_add(1), usize::MAX] {
         let made = std::panic::catch_unwind(|| fux_vt::Cells::new(len).map(|c| c.len()));
@@ -1840,22 +1868,14 @@ pub fn b39(scale: Scale, _: usize) -> Found {
             Err(_) => return Err(format!("Cells::new({len}) panics")),
         }
         let mut cells = fux_vt::Cells::new(4).map_err(|e| e.to_string())?;
-        let grown = std::panic::catch_unwind(move || {
-            let grown = cells.resize(len, fux_vt::CellRef::default());
-            (grown, cells.len())
+        let reset = std::panic::catch_unwind(move || {
+            let reset = cells.reset(len);
+            (reset, cells.len())
         });
-        match grown {
+        match reset {
             Ok((Err(fux_vt::Error::Capacity), 4)) => {}
-            Ok(other) => return Err(format!("resize to {len} gave {other:?}")),
-            Err(_) => return Err(format!("resize to {len} panics")),
-        }
-        let cells = std::iter::repeat_n(fux_vt::CellRef::default(), len);
-        let copied =
-            std::panic::catch_unwind(|| fux_vt::Cells::try_from_iter(cells).map(|c| c.len()));
-        match copied {
-            Ok(Err(fux_vt::Error::Capacity)) => {}
-            Ok(other) => return Err(format!("try_from_iter of {len} gave {other:?}")),
-            Err(_) => return Err(format!("try_from_iter of {len} panics")),
+            Ok(other) => return Err(format!("reset to {len} gave {other:?}")),
+            Err(_) => return Err(format!("reset to {len} panics")),
         }
     }
     let most = if scale == Scale::Hundred {
@@ -1863,11 +1883,12 @@ pub fn b39(scale: Scale, _: usize) -> Found {
     } else {
         1 << 10
     };
-    let made = fux_vt::Cells::new(most).map_err(|e| e.to_string())?;
-    let copied = fux_vt::Cells::try_from_iter(made.iter()).map_err(|e| e.to_string())?;
-    (made.len() == most && copied.len() == most)
+    let mut made = fux_vt::Cells::new(most).map_err(|e| e.to_string())?;
+    let len = made.len();
+    made.reset(most).map_err(|e| e.to_string())?;
+    (len == most && made.len() == most)
         .then_some(())
-        .ok_or(format!("Cells::new({most}) made {}", made.len()))
+        .ok_or(format!("Cells::new({most}) made {len}"))
 }
 
 // B40: finding a row by its identity costs a binary search: rows at most
@@ -1902,7 +1923,7 @@ pub fn b40(scale: Scale, chunk: usize) -> Found {
     };
     for _ in 0..10usize.saturating_mul(scale.times()) {
         for id in [top, above] {
-            let found = probe.host(0, |p| p.screen().row_by_id(id).is_some())?;
+            let found = probe.host(0, |p| p.screen().row_index(id).is_some())?;
             if !found {
                 return Err(format!("row {id:?} was not found"));
             }
@@ -2024,7 +2045,7 @@ pub fn b44(_: Scale, chunk: usize) -> Found {
         let text: String = parser
             .screen()
             .main_rows()
-            .map(|r| r.cells_text())
+            .map(|r| cells_text(&r))
             .collect();
         let shown = string.escape_ascii();
         if !text.contains("hello") {
@@ -2106,7 +2127,7 @@ fn modes_past_a_refusal() -> Found {
 fn degrades(chunk: usize) -> Found {
     let lines = |parser: &Parser| -> Vec<String> {
         let rows = parser.screen().rows();
-        rows.map(|r| r.cells_text().trim_end().to_owned()).collect()
+        rows.map(|r| cells_text(&r).trim_end().to_owned()).collect()
     };
     let fed = |n: u32, before: &[u8], after: &[u8]| -> Result<Parser, String> {
         let options = Feature::ALL.into_iter().collect();
@@ -2177,12 +2198,12 @@ fn refusing(n: u32) -> Result<Parser, String> {
 // B45: each encoded key or mouse event is at most 64 bytes: every key with
 // every modifier, a kitty report of the largest code points with every
 // modifier bit, in every key mode; every mouse event at the edges of each
-// encoding's positions, in every mode and encoding.
+// encoding's positions, in every mode and encoding, as a screen that set
+// them reports it.
 pub fn b45(_: Scale, _: usize) -> Found {
     use fux_vt::keys::encode::{KeyMode, OtherKeysLevel, Report, key_bytes};
-    use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, mouse_bytes};
-    use fux_vt::keys::{Direction, Function, Key, KeyPress, Keystroke, Kitty, Modifiers};
-    use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
+    use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, ScrollLines};
+    use fux_vt::keys::{Key, KeyPress, Keystroke, Kitty, Modifiers};
     let all_mods = || {
         (0..8u8).map(|bits| Modifiers {
             shift: bits & 1 != 0,
@@ -2194,20 +2215,9 @@ pub fn b45(_: Scale, _: usize) -> Found {
         .into_iter()
         .map(Key::Char)
         .collect();
-    keys.extend([
-        Key::Enter,
-        Key::Tab,
-        Key::Escape,
-        Key::Backspace,
-        Key::Delete,
-        Key::Insert,
-        Key::Home,
-        Key::End,
-        Key::PageUp,
-        Key::PageDown,
-    ]);
-    keys.extend(Direction::ALL.map(Key::Arrow));
-    keys.extend((1..=Function::LAST).filter_map(Function::new).map(Key::F));
+    // Every named key, the arrows and F1 to F35 among them.
+    let names = fux_vt::keys::all_names();
+    keys.extend((names.iter()).filter_map(|name| name.parse::<KeyPress>().ok().map(|p| p.key)));
     let mut modes = Vec::new();
     for (application, backarrow) in [(false, false), (false, true), (true, false), (true, true)] {
         for other_keys in [
@@ -2264,33 +2274,44 @@ pub fn b45(_: Scale, _: usize) -> Found {
     actions.extend(MouseButton::ALL.map(|b| MouseAction::Release(Some(b))));
     actions.extend(MouseButton::ALL.map(|b| MouseAction::Motion(Some(b))));
     let edges = [0u16, 222, 223, 2014, 2015, u16::MAX];
+    let mut events = Vec::new();
     for &action in &actions {
         for mods in all_mods() {
             for &row in &edges {
                 for &col in &edges {
-                    let event = MouseEvent {
+                    events.push(MouseEvent {
                         action,
                         mods,
                         row,
                         col,
-                    };
-                    for mode in [
-                        MouseProtocolMode::Press,
-                        MouseProtocolMode::PressRelease,
-                        MouseProtocolMode::ButtonMotion,
-                        MouseProtocolMode::AnyMotion,
-                    ] {
-                        for encoding in [
-                            MouseProtocolEncoding::Default,
-                            MouseProtocolEncoding::Utf8,
-                            MouseProtocolEncoding::Sgr,
-                        ] {
-                            out.clear();
-                            mouse_bytes(event, mode, encoding, &mut out);
-                            longest = longest.max(out.len());
-                        }
-                    }
+                    });
                 }
+            }
+        }
+    }
+    let lines = ScrollLines::new(1).ok_or("a line's scroll")?;
+    // X10, press and release, button motion, any motion; the default
+    // encoding, UTF-8, SGR, urxvt.
+    for mode in [9u16, 1000, 1002, 1003] {
+        for encoding in ["", ";1005", ";1006", ";1015"] {
+            let size = Size::new(1, 1).map_err(|e| e.to_string())?;
+            let mut parser = Parser::new(size, 0).map_err(|e| e.to_string())?;
+            let set = format!("\x1b[?{mode}{encoding}h");
+            parser.process(set.as_bytes()).map_err(|e| e.to_string())?;
+            let mut reported = 0usize;
+            for &event in &events {
+                for chunk in parser
+                    .screen()
+                    .encode_mouse(event, lines)
+                    .into_iter()
+                    .flatten()
+                {
+                    longest = longest.max(chunk.len());
+                    reported = reported.saturating_add(1);
+                }
+            }
+            if reported == 0 {
+                return Err(format!("nothing reported after {}", set.escape_debug()));
             }
         }
     }
@@ -2351,7 +2372,6 @@ pub const ROWS: &[(&str, Row)] = &[
     ("B04", b04),
     ("B05", b05),
     ("B06", b06),
-    ("B07", b07),
     ("B08", b08),
     ("B09", b09),
     ("B11", b11),
@@ -2410,7 +2430,8 @@ pub fn run(row: Row, scale: Scale) -> Result<(), Vec<String>> {
     }
 }
 
-/// How many rows `THREATS.md` 2 has: B01 to B46 but B10 and B29, and B34a.
-pub const COUNT: usize = 45;
+/// How many rows `THREATS.md` 2 has: B01 to B46 but B07, B10 and B29, and
+/// B34a.
+pub const COUNT: usize = 44;
 
 const _: () = assert!(ROWS.len() == COUNT);

@@ -623,7 +623,7 @@ impl Place {
 
 /// Kills `child`'s process group, and it, and reaps it.
 fn stop_group(child: &mut Child) {
-    if let Some(group) = fuxix::process::Pid::of(child) {
+    if let Some(group) = i32::try_from(child.id()).ok().and_then(fuxix::process::Pid::from_raw) {
         let _ = fuxix::process::kill_group(group, fuxix::process::Signal::Kill);
     }
     let _ = child.kill();
@@ -785,7 +785,7 @@ fn drive(
         .map_err(e)?;
     let finished = finish(&mut sh, deadline).is_some();
     // Whatever a step left running in the background goes with it.
-    if let Some(group) = fuxix::process::Pid::of(&sh) {
+    if let Some(group) = i32::try_from(sh.id()).ok().and_then(fuxix::process::Pid::from_raw) {
         let _ = fuxix::process::kill_group(group, fuxix::process::Signal::Kill);
     }
     let mut problems = Vec::new();
@@ -911,6 +911,16 @@ fn journal(ctx: &Ctx, place: &Place, run: &str, deadline: Instant) -> Result<Vec
     }
 }
 
+/// Whether a process `pid` exists, as `ps -p` finds it: a zombie not yet
+/// reaped does.
+fn exists(pid: i32) -> bool {
+    Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .stdout(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Stops the server, which must have lived, and checks that no pane
 /// program outlives it.
 fn stop(server: &mut Child, ctx: &Ctx, place: &Place, panes: Vec<i32>) -> Vec<String> {
@@ -944,11 +954,11 @@ fn stop(server: &mut Child, ctx: &Ctx, place: &Place, panes: Vec<i32>) -> Vec<St
         left.push(format!("the server panicked: {}", log.trim()));
     }
     let deadline = Instant::now().checked_add(Duration::from_secs(3));
-    for pid in panes.into_iter().filter_map(fuxix::process::Pid::from_raw) {
-        while fuxix::process::exists(pid) && deadline.is_some_and(|d| Instant::now() < d) {
+    for pid in panes.into_iter().filter(|pid| *pid > 0) {
+        while exists(pid) && deadline.is_some_and(|d| Instant::now() < d) {
             std::thread::sleep(Duration::from_millis(10));
         }
-        if fuxix::process::exists(pid) {
+        if exists(pid) {
             left.push(format!("pane process {pid} outlived its server"));
         }
     }

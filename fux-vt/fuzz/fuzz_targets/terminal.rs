@@ -9,7 +9,7 @@ use fux_vt::{Feature, Identity, Options, Parser, Size};
 use libfuzzer_sys::fuzz_target;
 mod common;
 use common::{
-    Record, Rows, features_reached, marks_sound, pick, reached, until_stops, versions_follow,
+    Record, Rows, features_reached, fed, marks_sound, pick, reached, until_stops, versions_follow,
 };
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
@@ -72,7 +72,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(mut whole) = Parser::with_options(first, budget, options) else {
         return;
     };
-    features_reached(&whole);
+    features_reached(options);
     let mut split = whole.clone();
     // A third copy is fed each piece of output cut at sizes from 2 to 17,
     // chosen by the output itself: runs of text and clusters then break at
@@ -115,38 +115,6 @@ fuzz_target!(|data: &[u8]| {
                 assert!(split.resize(size).is_ok());
                 kept = None;
             }
-            0xfe => {
-                let Some(parameters) = input.get(..8) else {
-                    break;
-                };
-                input = input.get(8..).unwrap_or_default();
-                let mut values = parameters.iter().copied();
-                let offset = usize::from(values.next().unwrap_or_default());
-                // Once a window's height and width: a window is the screen's.
-                let _ = values.nth(1);
-                let a = (
-                    u16::from(values.next().unwrap_or_default()),
-                    u16::from(values.next().unwrap_or_default()),
-                );
-                let b = (
-                    u16::from(values.next().unwrap_or_default()),
-                    u16::from(values.next().unwrap_or_default()),
-                );
-                let cells = usize::from(values.next().unwrap_or_default());
-                let bytes = cells.saturating_mul(4);
-                fn window(p: &Parser, offset: usize) -> fux_vt::Window<'_> {
-                    let window = p.screen().window();
-                    window.row(0).map_or(window, |top| top.up(offset).window())
-                }
-                reached("call Window::text");
-                let mark = whole.screen().mark();
-                let result = window(&whole, offset).text(a, b, cells, bytes);
-                assert_eq!(result, window(&split, offset).text(a, b, cells, bytes));
-                if let Ok(text) = result {
-                    assert!(text.len() <= bytes);
-                }
-                assert_eq!(mark, whole.screen().mark());
-            }
             operation => {
                 // 0xfd: a count, then a byte a character, each one of
                 // `graphemes::CHARACTERS`, so clusters of every kind, and
@@ -171,7 +139,7 @@ fuzz_target!(|data: &[u8]| {
                 let mut b = Record::default();
                 let before = kept.take().unwrap_or_else(|| Rows::of(&whole));
                 let mark = whole.screen().mark();
-                assert!(whole.process_with(bytes, &mut a).is_ok());
+                assert!(fed(&mut whole, bytes, &mut a));
                 let after = Rows::of(&whole);
                 versions_follow(&before, &after);
                 marks_sound(&before, mark, &whole, &after);
@@ -183,7 +151,7 @@ fuzz_target!(|data: &[u8]| {
                 let mut was = Rows::of(&split);
                 for byte in bytes {
                     let one = std::slice::from_ref(byte);
-                    assert!(split.process_with(one, &mut b).is_ok());
+                    assert!(fed(&mut split, one, &mut b));
                     let now = Rows::of(&split);
                     versions_follow(&was, &now);
                     was = now;

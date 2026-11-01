@@ -6,7 +6,15 @@
 //! time and split in two anywhere, with the same cells. The expected cells
 //! are derived by hand from the README's rows, not read from fux-vt.
 
-use fux_vt::{CLUSTER_CAPACITY, Feature, Options, Parser, Size, clusters, str_width};
+use fux_vt::{Feature, Options, Parser, Size, clusters, str_width};
+
+/// The most bytes a cell's cluster keeps.
+const CLUSTER_CAPACITY: usize = 128;
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::{Feed, Look};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 

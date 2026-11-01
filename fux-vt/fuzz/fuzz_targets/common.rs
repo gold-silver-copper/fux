@@ -2,7 +2,9 @@
 //! a parser says, the hashes of rows a change of version is checked
 //! against, and feeding as fux's pane does.
 
-use fux_vt::{Color, Event, Feature, OSC_PAYLOAD_LIMIT, Parser, Rgb, RowId, Sink, Stop, Unhandled};
+use fux_vt::{
+    Color, Event, Feature, OSC_PAYLOAD_LIMIT, Options, Parser, Rgb, RowId, Sink, Stop, Unhandled,
+};
 
 /// Notes that a run reached `what`: a `Feature` on, or a host call made.
 /// Built with the `reach` feature (`reach.sh`), each name is written to
@@ -24,13 +26,14 @@ pub fn reached(what: &str) {
     let _ = what;
 }
 
-/// Notes each `Feature` `p` has on as reached, and every one there is as
-/// `of Feature NAME`, so a report knows them all.
-pub fn features_reached(p: &Parser) {
+/// Notes each `Feature` `options` have on as reached, and every one there
+/// is as `of Feature NAME`, so a report knows them all.
+pub fn features_reached(options: Options) {
     if cfg!(feature = "reach") {
         for feature in Feature::ALL {
             reached(&format!("of Feature {feature:?}"));
-            if p.options().has(feature) {
+            // On, if turning it on changes nothing.
+            if options.set(feature, true) == options {
                 reached(&format!("feature {feature:?}"));
             }
         }
@@ -186,9 +189,9 @@ fn cells_hash(row: fux_vt::Row<'_>) -> u64 {
     h.0
 }
 
-/// A retained row: its identity, version, wrap flag, prompt mark and cells'
-/// hash.
-pub type Kept = (RowId, u64, bool, bool, u64);
+/// A retained row: its identity, version, whether its line goes on in the
+/// next row, and its cells' hash.
+pub type Kept = (RowId, u64, bool, u64);
 
 /// Every retained row of the screen in use, top first, each hashed once,
 /// and how many of them are history.
@@ -201,10 +204,7 @@ impl Rows {
     pub fn of(p: &Parser) -> Self {
         let screen = p.screen();
         let all = (screen.rows())
-            .map(|row| {
-                let (id, version, wrapped) = (row.id(), row.version(), row.wrapped());
-                (id, version, wrapped, row.starts_prompt(), cells_hash(row))
-            })
+            .map(|row| (row.id(), row.version(), row.continues(), cells_hash(row)))
             .collect();
         Self {
             all,
@@ -219,15 +219,15 @@ impl Rows {
     }
 }
 
-/// A row whose cells, wrap flag or prompt mark changed has a newer version:
-/// a change is never missed (`THREATS.md` section 6, 28).
+/// A row whose cells or wrap changed has a newer version: a change is
+/// never missed (`THREATS.md` section 6, 28).
 pub fn versions_follow(before: &Rows, after: &Rows) {
     let mut before = before.all.clone();
     before.sort_unstable_by_key(|r| r.0);
-    for (id, version, wrapped, prompt, cells) in &after.all {
+    for (id, version, wrapped, cells) in &after.all {
         if let Ok(at) = before.binary_search_by_key(id, |r| r.0)
-            && let Some((_, was, was_wrapped, was_prompt, was_cells)) = before.get(at)
-            && (wrapped != was_wrapped || prompt != was_prompt || cells != was_cells)
+            && let Some((_, was, was_wrapped, was_cells)) = before.get(at)
+            && (wrapped != was_wrapped || cells != was_cells)
         {
             assert!(version > was, "{id:?} changed without a new version");
         }
@@ -237,8 +237,8 @@ pub fn versions_follow(before: &Rows, after: &Rows) {
 /// The change marks are sound by place (`THREATS.md` section 6, 28): read
 /// from `mark`, taken when the screen's rows were `before`, a reader of
 /// `after`, whose rows are `now`, is told to redraw everything, or
-/// `dirty_rows_since` names the row at every place whose row, cells, wrap
-/// or prompt mark changed, as fux redraws.
+/// `Row::changed_since` names the row at every place whose row, cells or
+/// wrap changed, as fux redraws.
 pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows) {
     let screen = after.screen();
     reached("call full_refresh_since");
@@ -251,17 +251,32 @@ pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows
         before.len(),
         "the screen's height changed with no full refresh"
     );
-    let dirty: std::collections::HashSet<RowId> =
-        screen.dirty_rows_since(mark).map(|row| row.id()).collect();
+    let dirty: std::collections::HashSet<RowId> = (screen.rows())
+        .filter(|row| row.changed_since(mark))
+        .map(|row| row.id())
+        .collect();
     for ((y, now), was) in (0u16..).zip(now).zip(before) {
-        let (id, _, wrapped, prompt, cells) = now;
-        let (was_id, _, was_wrapped, was_prompt, was_cells) = was;
-        if (id, wrapped, prompt, cells) != (was_id, was_wrapped, was_prompt, was_cells) {
-            assert!(screen.changed_since(mark), "place {y} changed, unmarked");
+        let (id, _, wrapped, cells) = now;
+        let (was_id, _, was_wrapped, was_cells) = was;
+        if (id, wrapped, cells) != (was_id, was_wrapped, was_cells) {
+            assert_ne!(screen.mark(), mark, "place {y} changed, unmarked");
             assert!(
                 dirty.contains(id),
                 "place {y} changed, and no reader is told"
             );
+        }
+    }
+}
+
+/// Feeds every byte of `bytes` to `p`, from each stop on: whether no call
+/// failed and no room was refused.
+pub fn fed(p: &mut Parser, bytes: &[u8], sink: &mut Record) -> bool {
+    let (mut rest, refused) = (bytes, p.refused());
+    loop {
+        match p.process_until_stop(rest, sink) {
+            Ok(Some((taken, _))) => rest = rest.get(taken..).unwrap_or_default(),
+            Ok(None) => return p.refused() == refused,
+            Err(_) => return false,
         }
     }
 }

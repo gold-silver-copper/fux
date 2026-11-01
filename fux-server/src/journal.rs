@@ -625,7 +625,7 @@ pub fn every_kind(
         Told::HistoryBudget(isize::MAX.unsigned_abs()),
         Told::HistoryCleared,
         Told::HungUp,
-        Told::ReadFailed(fuxix::Errno::INVAL),
+        Told::ReadFailed(fuxix::Errno::SRCH),
         // The most a fuxth integer says, as it reads them.
         Told::Input {
             kind: Sent::Keys,

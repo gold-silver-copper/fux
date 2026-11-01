@@ -5,6 +5,11 @@
 //! sequence written, and what xterm wrote back.
 
 use fux_vt::{Event, Feature, Options, Parser, Sink, Size};
+
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;

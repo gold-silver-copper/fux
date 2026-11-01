@@ -6,12 +6,16 @@
 
 use fux_vt::keys::decode::Decoder;
 
+/// The paste limit the tests' decoders keep.
+const PASTE_LIMIT: usize = 64 * 1024;
+
 #[test]
 fn each_read_decodes_once_except_for_its_held_prefix() {
     let one = [b"\x1b[?".as_slice(), &vec![b'1'; 300], b"c"].concat();
     let input: Vec<u8> = std::iter::repeat_n(one, 100).flatten().collect();
     for chunk in [input.len(), 4096] {
-        let mut decoder = Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+        let mut decoder =
+            Decoder::with_paste_limit(fux_vt::keys::decode::Timing::new(35, 5000), PASTE_LIMIT);
         let mut out = Vec::new();
         let mut rest = input.as_slice();
         while !rest.is_empty() {

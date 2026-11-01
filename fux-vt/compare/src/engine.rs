@@ -418,7 +418,11 @@ pub fn always() -> Result<(), String> {
 pub const SUBJECT: Kind = Kind {
     name: "fux-vt",
     about: "the code under test",
-    can: Can::ALL,
+    // Its prompt marks are its own: it tells no host of them.
+    can: Can {
+        prompt: false,
+        ..Can::ALL
+    },
     blanks: Blanks::XTERM,
     panel: false,
     in_process: true,

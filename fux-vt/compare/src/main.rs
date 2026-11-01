@@ -44,6 +44,32 @@ fn vt_size(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
     fux_vt::Size::new(rows, cols).map_err(|e| format!("fux-vt: {rows}x{cols}: {e}"))
 }
 
+/// Reads `bytes` into `parser` as a pane does, `process_until_stop` from
+/// each stop on until none is left, giving `sink` the replies and events:
+/// `Err(Error::Capacity)` if room was refused on the way, every byte read
+/// regardless.
+fn feed(
+    parser: &mut fux_vt::Parser,
+    bytes: &[u8],
+    sink: &mut impl fux_vt::Sink,
+) -> Result<(), fux_vt::Error> {
+    let (refused, mut rest) = (parser.refused(), bytes);
+    while let Ok(Some((taken, _))) = parser.process_until_stop(rest, sink) {
+        rest = rest.get(taken..).unwrap_or_default();
+    }
+    match parser.refused() == refused {
+        true => Ok(()),
+        false => Err(fux_vt::Error::Capacity),
+    }
+}
+
+/// [`feed`] with the replies dropped.
+fn feed_deaf(parser: &mut fux_vt::Parser, bytes: &[u8]) -> Result<(), fux_vt::Error> {
+    struct Deaf;
+    impl fux_vt::Sink for Deaf {}
+    feed(parser, bytes, &mut Deaf)
+}
+
 const USAGE: &str = "\
 usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                       [--engines LIST] [--no-reflow] [--subject NAME]

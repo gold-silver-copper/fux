@@ -10,13 +10,32 @@
 //! checker holds after every read. Each mouse report decoded encodes back
 //! to an event that decodes alike, and each paste, bracketed again, holds
 //! no end marker but its own.
-use fux_vt::keys::decode::{Decoder, Input, PASTE_LIMIT};
-use fux_vt::keys::encode::{PASTE_END, PASTE_START, paste};
-use fux_vt::keys::mouse::{MouseAction, mouse_bytes};
-use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
+use fux_vt::keys::decode::{Decoder, Input};
+use fux_vt::keys::encode::paste;
+use fux_vt::keys::mouse::{MouseAction, ScrollLines};
+use fux_vt::{Options, Parser, Sink, Size};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
+
+/// The most bytes a paste keeps by default (`Decoder`).
+const PASTE_LIMIT: usize = 64 * 1024;
+/// What starts and ends a bracketed paste (xterm's ctlseqs, "Bracketed
+/// Paste Mode").
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// Takes nothing.
+struct Deaf;
+impl Sink for Deaf {}
+
+/// A screen that reports every mouse event, in SGR (`CSI ? 1003 h`,
+/// `CSI ? 1006 h`).
+fn reporting() -> Option<Parser> {
+    let mut p = Parser::with_options(Size::new(1, 1).ok()?, 0, Options::new()).ok()?;
+    let read = p.process_until_stop(b"\x1b[?1003h\x1b[?1006h", &mut Deaf);
+    matches!(read, Ok(None)).then_some(p)
+}
 
 /// Fails on any fault the decoder's checker finds.
 #[cfg(feature = "checks")]
@@ -114,6 +133,9 @@ fuzz_target!(|data: &[u8]| {
         n => n.saturating_mul(5),
     };
     let (expect, start) = (options & 1 != 0, Instant::now());
+    let (Some(reporting), Some(lines)) = (reporting(), ScrollLines::new(1)) else {
+        return;
+    };
     let whole = decode(&steps, 0, limit, expect, start);
     // However the bytes arrive, the same inputs.
     assert_eq!(
@@ -152,9 +174,9 @@ fuzz_target!(|data: &[u8]| {
         }
         if let Input::Mouse(event) = *input {
             // SGR carries every event any report does.
-            let mut sgr = Vec::new();
-            let (any, encoding) = (MouseProtocolMode::AnyMotion, MouseProtocolEncoding::Sgr);
-            let sent = mouse_bytes(event, any, encoding, &mut sgr);
+            let sgr = reporting.screen().encode_mouse(event, lines);
+            let sent = sgr.is_some();
+            let sgr: Vec<u8> = sgr.into_iter().flatten().flatten().collect();
             // The wheel is never released or held.
             let wheel = match event.action {
                 MouseAction::Press(_) => false,

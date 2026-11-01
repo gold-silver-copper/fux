@@ -121,7 +121,10 @@ impl Terminal {
         env: &[(&str, &str)],
         watch: Option<&[u8]>,
     ) -> Result<Terminal, String> {
-        let size = fuxix::terminal::Size::new(rows, cols).ok_or("a zero size")?;
+        let size = std::num::NonZeroU16::new(rows)
+            .zip(std::num::NonZeroU16::new(cols))
+            .map(fuxix::terminal::Size::from)
+            .ok_or("a zero size")?;
         let (master, slave) = fuxix::pty::open(size).map_err(|e| format!("opening a PTY: {e}"))?;
         // Read and written as a terminal is, waiting.
         let master = OwnedFd::from(master);
@@ -207,7 +210,10 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        if let Some(pid) = fuxix::process::Pid::of(&self.child) {
+        if let Some(pid) = i32::try_from(self.child.id())
+            .ok()
+            .and_then(fuxix::process::Pid::from_raw)
+        {
             let _ = fuxix::process::kill_group(pid, fuxix::process::Signal::Hup);
         }
         let _ = self.child.kill();

@@ -2,6 +2,8 @@
 use fuxix::poll::{Events, PollFd, poll};
 use fuxix::terminal::Size;
 use std::io::Write;
+use std::num::NonZeroU16;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -213,7 +215,10 @@ fn ctrl_c_is_a_failure_try_catches_and_uncaught_exits_130() -> Outcome {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(e)?;
-    let pid = fuxix::process::Pid::of(&child).ok_or("no pid")?;
+    let pid = i32::try_from(child.id())
+        .ok()
+        .and_then(fuxix::process::Pid::from_raw)
+        .ok_or("no pid")?;
     for _ in 0..2 {
         std::thread::sleep(Duration::from_millis(300));
         fuxix::process::kill(pid, fuxix::process::Signal::Int).map_err(e)?;
@@ -259,7 +264,10 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(e)?;
-        let pid = fuxix::process::Pid::of(&child).ok_or("no pid")?;
+        let pid = i32::try_from(child.id())
+            .ok()
+            .and_then(fuxix::process::Pid::from_raw)
+            .ok_or("no pid")?;
         std::thread::sleep(Duration::from_millis(300));
         fuxix::process::kill(pid, fuxix::process::Signal::Int).map_err(e)?;
         let ran = child.wait_with_output().map_err(e)?;
@@ -284,6 +292,8 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
 /// typed into it.
 struct Terminal {
     master: fuxix::pty::Master,
+    /// The program's side, for `stty` to read its modes.
+    tty: OwnedFd,
     child: std::process::Child,
     seen: String,
 }
@@ -296,8 +306,12 @@ impl Terminal {
 
     /// `argv` on a terminal of its own.
     fn start_with(dir: &PathBuf, argv: &[&str]) -> Result<Self, String> {
-        let size = Size::new(24, 80).ok_or("size")?;
+        let size = NonZeroU16::new(24)
+            .zip(NonZeroU16::new(80))
+            .map(Size::from)
+            .ok_or("size")?;
         let (master, slave) = fuxix::pty::open(size).map_err(e)?;
+        let tty = slave.as_fd().try_clone_to_owned().map_err(e)?;
         let (child, _) = slave
             .spawn(argv, |command| {
                 command.current_dir(dir);
@@ -305,6 +319,7 @@ impl Terminal {
             .map_err(e)?;
         Ok(Self {
             master,
+            tty,
             child,
             seen: String::new(),
         })
@@ -359,17 +374,29 @@ impl Terminal {
         }
     }
 
+    /// Whether the terminal edits a line at a time (`icanon`) and echoes
+    /// (`echo`), as `stty -a` says.
+    fn modes(&self) -> Result<(bool, bool), String> {
+        let tty = self.tty.try_clone().map_err(e)?;
+        let out = Command::new("stty")
+            .arg("-a")
+            .stdin(Stdio::from(tty))
+            .output()
+            .map_err(e)?;
+        let said = String::from_utf8_lossy(&out.stdout);
+        let on = |flag| {
+            said.split(|c: char| c.is_whitespace() || c == ';')
+                .any(|word| word == flag)
+        };
+        Ok((on("icanon"), on("echo")))
+    }
+
     /// Waits until the program has the terminal in line mode (`canonical`)
     /// or key mode: what is typed before would be echoed and edited by the
     /// terminal, or not.
     fn wait_until_canonical(&self, canonical: bool) -> Outcome {
         let deadline = after(Duration::from_secs(10));
-        while fuxix::terminal::attributes(&self.master)
-            .map_err(e)?
-            .modes()
-            .canonical
-            != canonical
-        {
+        while self.modes()?.0 != canonical {
             if Instant::now() > deadline {
                 return Err(format!("the terminal never went canonical {canonical}"));
             }
@@ -410,13 +437,14 @@ fn an_ending_signal_puts_the_terminal_back() -> Outcome {
     std::fs::write(dir.join("keys.fux"), "begin read-key drop false until").map_err(e)?;
     let mut keys = Terminal::start(&dir, &["keys.fux"])?;
     keys.wait_until_canonical(false)?;
-    let pid = fuxix::process::Pid::of(&keys.child).ok_or("no pid")?;
+    let pid = i32::try_from(keys.child.id())
+        .ok()
+        .and_then(fuxix::process::Pid::from_raw)
+        .ok_or("no pid")?;
     fuxix::process::kill(pid, fuxix::process::Signal::Term).map_err(e)?;
     assert_eq!(keys.ended()?.code(), Some(128 + 15));
-    let modes = fuxix::terminal::attributes(&keys.master)
-        .map_err(e)?
-        .modes();
-    assert!(modes.canonical && modes.echo, "{modes:?}");
+    let modes = keys.modes()?;
+    assert_eq!(modes, (true, true), "line mode and echo");
     Ok(())
 }
 
@@ -440,13 +468,14 @@ fn an_ending_signal_ends_a_write_held_up_by_a_full_pipe() -> Outcome {
     keys.wait_until_canonical(false)?;
     keys.type_in("k")?;
     std::thread::sleep(Duration::from_millis(500));
-    let pid = fuxix::process::Pid::of(&keys.child).ok_or("no pid")?;
+    let pid = i32::try_from(keys.child.id())
+        .ok()
+        .and_then(fuxix::process::Pid::from_raw)
+        .ok_or("no pid")?;
     fuxix::process::kill(pid, fuxix::process::Signal::Term).map_err(e)?;
     assert_eq!(keys.ended()?.code(), Some(128 + 15));
-    let modes = fuxix::terminal::attributes(&keys.master)
-        .map_err(e)?
-        .modes();
-    assert!(modes.canonical && modes.echo, "{modes:?}");
+    let modes = keys.modes()?;
+    assert_eq!(modes, (true, true), "line mode and echo");
     drop(reader);
     Ok(())
 }

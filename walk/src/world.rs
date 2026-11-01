@@ -147,9 +147,6 @@ impl World {
 /// Whether a process exists and has not exited: a zombie waiting for its
 /// parent to reap it counts as gone.
 pub fn alive(pid: fuxix::process::Pid) -> bool {
-    if !fuxix::process::exists(pid) {
-        return false;
-    }
     std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
         .output()

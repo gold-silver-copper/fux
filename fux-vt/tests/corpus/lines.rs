@@ -3,14 +3,18 @@ use fux_vt::Parser;
 
 /// Each row of the screen, its blank tail trimmed.
 pub fn lines(parser: &Parser) -> Vec<String> {
-    let screen = parser.screen();
-    let (rows, cols) = screen.size().into();
-    (0..rows)
+    let window = parser.screen().window();
+    (0..window.rows())
         .map(|y| {
-            (0..cols)
-                .filter_map(|x| screen.cell(y, x))
+            (window.row(y).iter().flat_map(|row| row.cells()))
                 .filter(|c| !c.is_wide_continuation())
-                .map(|c| if c.has_contents() { c.contents() } else { " " })
+                .map(|c| {
+                    if c.contents().is_empty() {
+                        " "
+                    } else {
+                        c.contents()
+                    }
+                })
                 .collect::<String>()
                 .trim_end()
                 .to_owned()

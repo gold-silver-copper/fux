@@ -34,6 +34,11 @@ use std::process::Command;
 
 use fux_vt::{Feature, Options, Parser, Size};
 
+#[path = "corpus/feed.rs"]
+#[expect(dead_code, reason = "each test binary uses some of the helpers")]
+mod feed;
+use feed::Feed;
+
 #[path = "corpus/invariants.rs"]
 mod invariants;
 #[path = "corpus/pieces.rs"]

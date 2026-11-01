@@ -27,12 +27,11 @@ macro_rules! stack {
             use std::os::fd::{AsFd, OwnedFd};
             use $ix::Errno;
 
-            pub fn errno(n: i32) -> String {
-                let error = std::io::Error::from_raw_os_error(n);
-                match Errno::from_io_error(&error) {
-                    Some(e) => format!("{e:?} {e} {}", e.raw()),
-                    None => "none".into(),
-                }
+            /// The errnos both releases name, as each says them.
+            pub fn errnos() -> String {
+                [Errno::INTR, Errno::AGAIN, Errno::INPROGRESS]
+                    .map(|e| format!("{e:?} {e} {}", e.raw()))
+                    .join("\n")
             }
 
             /// Each request's result, then, if the last asked not to wait,
@@ -82,7 +81,11 @@ fn descriptors() -> Result<Vec<(&'static str, OwnedFd, OwnedFd)>, String> {
         ("pipe", read, write),
         ("socket", OwnedFd::from(socket), OwnedFd::from(peer)),
     ];
-    if let Some(Ok((master, slave))) = fuxix::terminal::Size::new(24, 80).map(fuxix::pty::open) {
+    if let Some(Ok((master, slave))) = std::num::NonZeroU16::new(24)
+        .zip(std::num::NonZeroU16::new(80))
+        .map(fuxix::terminal::Size::from)
+        .map(fuxix::pty::open)
+    {
         let slave = slave
             .as_fd()
             .try_clone_to_owned()
@@ -93,9 +96,7 @@ fn descriptors() -> Result<Vec<(&'static str, OwnedFd, OwnedFd)>, String> {
 }
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
-    for n in 0..=200 {
-        same(&format!("errno {n}"), base::errno(n), cur::errno(n))?;
-    }
+    same("errnos", base::errnos(), cur::errnos())?;
     let mut requests = 0u64;
     for case in 0..times(300, scale) {
         let asked: Vec<bool> = (0..r.below(4).saturating_add(1))
@@ -156,6 +157,6 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         }
     }
     Ok(format!(
-        "201 errnos, {requests} nonblocking requests, {pipes} pipes, the config path in {paths} environments"
+        "3 errnos, {requests} nonblocking requests, {pipes} pipes, the config path in {paths} environments"
     ))
 }

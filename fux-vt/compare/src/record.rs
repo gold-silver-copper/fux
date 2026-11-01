@@ -218,7 +218,7 @@ pub fn replies_now(recording: &crate::corpus::Recording) -> Result<Vec<u8>, Stri
             out.extend(parser.resize_report().unwrap_or_default());
         }
         let mut sink = Replies::default();
-        let _ = parser.process_with(bytes, &mut sink);
+        let _ = crate::feed(&mut parser, bytes, &mut sink);
         out.extend_from_slice(&sink.0);
     }
     Ok(out)
@@ -243,7 +243,10 @@ impl Session {
         self.parser
             .resize(crate::vt_size(rows, cols)?)
             .map_err(|e| format!("fux-vt: {e}"))?;
-        let size = fuxix::terminal::Size::new(rows, cols).ok_or("a terminal of no size")?;
+        let size = std::num::NonZeroU16::new(rows)
+            .zip(std::num::NonZeroU16::new(cols))
+            .map(fuxix::terminal::Size::from)
+            .ok_or("a terminal of no size")?;
         fuxix::terminal::set_window_size(&self.master, size, None)
             .map_err(|e| format!("resizing the PTY: {e}"))?;
         if let Some(report) = self.parser.resize_report() {
@@ -275,7 +278,7 @@ impl Session {
                     let mut sink = Replies::default();
                     // The parser refuses only allocations past its limits,
                     // as in fux, where output goes on regardless.
-                    let _ = self.parser.process_with(got, &mut sink);
+                    let _ = crate::feed(&mut self.parser, got, &mut sink);
                     if !sink.0.is_empty() {
                         self.replies.extend_from_slice(&sink.0);
                         self.master
@@ -301,7 +304,10 @@ pub fn start(
     argv: &[String],
     setup: impl FnOnce(&mut Command),
 ) -> Result<(File, Child), String> {
-    let size = fuxix::terminal::Size::new(rows, cols).ok_or("a terminal of no size")?;
+    let size = std::num::NonZeroU16::new(rows)
+        .zip(std::num::NonZeroU16::new(cols))
+        .map(fuxix::terminal::Size::from)
+        .ok_or("a terminal of no size")?;
     let (master, slave) = fuxix::pty::open(size).map_err(|e| format!("opening a PTY: {e}"))?;
     let master = OwnedFd::from(master);
     fuxix::io::set_nonblocking(&master, false).map_err(|e| format!("the PTY: {e}"))?;
@@ -360,7 +366,7 @@ fn end(child: &mut Child, session: &mut Session) {
     if exited(child, session, Duration::from_secs(2)) {
         return;
     }
-    if let Some(pid) = Pid::of(child) {
+    if let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) {
         let _ = fuxix::process::kill_group(pid, Signal::Hup);
         if exited(child, session, Duration::from_secs(2)) {
             return;
@@ -377,8 +383,10 @@ fn end(child: &mut Child, session: &mut Session) {
 /// the key mode `screen` is in: decoded by fux's decoder, the Escape
 /// deadline passing at the end, and encoded by its encoder.
 fn typed(keys: &[u8], screen: &fux_vt::Screen) -> Vec<u8> {
-    let mut decoder =
-        fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+    let mut decoder = fux_vt::keys::decode::Decoder::with_paste_limit(
+        fux_vt::keys::decode::Timing::new(35, 5000),
+        usize::MAX,
+    );
     let mut inputs = Vec::new();
     decoder.bytes(keys, &mut inputs);
     decoder.timeout(&mut inputs);
@@ -611,12 +619,12 @@ mod tests {
         let mut parser = fux_vt::Parser::with_options(crate::vt_size(4, 20)?, 0, options)?;
         let keys = b"\x04:q\r\x1b";
         assert_eq!(super::typed(keys, parser.screen()), keys);
-        parser.process(b"\x1b[>4;2m")?;
+        crate::feed_deaf(&mut parser, b"\x1b[>4;2m")?;
         assert_eq!(
             super::typed(keys, parser.screen()),
             b"\x1b[27;5;100~:q\r\x1b"
         );
-        parser.process(b"\x1b[>1u")?;
+        crate::feed_deaf(&mut parser, b"\x1b[>1u")?;
         assert_eq!(
             super::typed(keys, parser.screen()),
             b"\x1b[100;5u:q\r\x1b[27u"

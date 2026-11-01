@@ -1,7 +1,7 @@
 //! fux-vt's encoders beside libghostty-vt's: what [`super`] says, run.
 use super::VERDICTS;
 use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};
-use fux_vt::keys::{Direction, Function, Key, KeyPress, Keystroke, Kitty, Modifiers};
+use fux_vt::keys::{Direction, Key, KeyPress, Keystroke, Kitty, Modifiers};
 use fux_vt::{Feature, Options, Parser};
 use libghostty_vt::terminal::Mode;
 use libghostty_vt::{Terminal, TerminalOptions, focus, key as gkey, mouse as gmouse, paste};
@@ -108,7 +108,7 @@ impl Pair {
         let options = Options::new().with(Feature::KittyKeyboard);
         let mut fux = Parser::with_options(crate::vt_size(ROWS, COLS)?, 0, options)
             .map_err(|e| format!("fux-vt: {e:?}"))?;
-        fux.process(setup).map_err(|e| format!("fux-vt: {e:?}"))?;
+        crate::feed_deaf(&mut fux, setup).map_err(|e| format!("fux-vt: {e:?}"))?;
         let mut ghostty = Terminal::new(TerminalOptions {
             cols: COLS,
             rows: ROWS,
@@ -293,7 +293,7 @@ fn keys() -> Vec<(Key, Modifiers)> {
         Key::PageDown,
     ];
     named.extend(Direction::ALL.map(Key::Arrow));
-    named.extend((1..=12).filter_map(Function::new).map(Key::F));
+    named.extend((1..=12).filter_map(function));
     let mut chars: Vec<char> = ('a'..='z').chain('A'..='Z').chain('0'..='9').collect();
     chars.extend("-=[]\\;',./` ".chars());
     chars.extend(SHIFTED.iter().map(|&(c, _)| c));
@@ -455,10 +455,7 @@ fn key_verdict(
     let other_keys = setup.contains("\x1b[>4;2m");
     let csi = |b: &[u8]| b.starts_with(b"\x1b[");
     let kitty_form = |b: &[u8]| csi(b) && b.ends_with(b"u") || b.starts_with(b"\x1b[27;");
-    if Function::new(3).map(Key::F) == Some(key)
-        && ours.ends_with(b"R")
-        && theirs.ends_with(b"~")
-        && flags & 9 == 0
+    if function(3) == Some(key) && ours.ends_with(b"R") && theirs.ends_with(b"~") && flags & 9 == 0
     {
         return Some("f3");
     }
@@ -902,6 +899,11 @@ fn compare_pastes(
         );
     }
     Ok(())
+}
+
+/// The function key `n`, by its name, as a host names it.
+fn function(n: u8) -> Option<Key> {
+    format!("F{n}").parse::<KeyPress>().ok()?.plain_key()
 }
 
 #[cfg(test)]

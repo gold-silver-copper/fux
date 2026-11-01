@@ -1,30 +1,29 @@
 //! What is read of both sides after every step, and how two readings are
 //! told apart:
 //!
-//! - the screen's state: size, cursor, pending wrap, every mode, margins,
-//!   the pen, the open link, history length, storage, the mark, the
-//!   resize report and the options;
-//! - every retained row, history and screen: identity, version, soft wrap,
-//!   prompt mark, length, spilled text, and each cell's text, halves,
-//!   attributes (through both `attributes` and each getter) and link; and
-//!   whether `Screen::cell`, `Screen::link`, `Screen::row_wrapped`,
-//!   `Screen::starts_prompt` and `Row::cell` say the same;
+//! - the screen's state: size, cursor, pending wrap, every mode, the key
+//!   encoding, history length, the mark, the resize report and the
+//!   window's size;
+//! - every retained row, history and screen: identity, version, whether
+//!   its line goes on, length, and each cell's text, halves, attributes
+//!   and link; and whether `Window::row` and `Row::cell` say the same;
 //! - three marks (as made, the step before, a few steps before): changed,
 //!   full refresh, and the dirty rows each way;
 //! - rows looked up by identity, one of them perhaps gone;
-//! - copies of the screen and the top of history (`Window::text`);
 //! - probes: copies of each parser given sequences that show what no
 //!   accessor does, read after each: every query's reply (DECRQM for every
 //!   mode, DSR, DA1/2/3, XTVERSION, DECXCPR, DECRQSS, DECRQCRA, kitty's
-//!   flags, the size reports, colour queries); the saved cursor (DECRC)
-//!   and the character sets (G0 and G1 drawn); the tab stops; each row's
-//!   end (a line rendition halves it); what a selective erase leaves (the
-//!   protected cells, DECSEL and DECSED); the cluster
-//!   the next character would join and the character REP repeats; the
-//!   kitty keyboard stack, popped, and the alternate screen's.
+//!   flags, the size reports, colour queries); the saved cursor and pen
+//!   (DECRC) and the character sets (G0 and G1 drawn); the tab stops; the
+//!   margins (where origin mode's corners are); each row's end (a line
+//!   rendition halves it); the pen and the open link (a glyph printed);
+//!   what a selective erase leaves (the protected cells, DECSEL and
+//!   DECSED); the cluster the next character would join and the character
+//!   REP repeats; the kitty keyboard stack, popped, and the alternate
+//!   screen's.
 use crate::Side;
 use crate::case::{Count, Difference, same, same_list};
-use crate::model::{Glance, Heard, Row, Selection};
+use crate::model::{Glance, Heard, Row};
 use std::fmt::Write;
 
 /// The row buffers a comparison reads into, kept from step to step.
@@ -36,20 +35,18 @@ pub struct Readers {
 
 /// What differs between two rows, first: a field, or the first cell.
 fn row_difference(a: &Row, b: &Row) -> (String, String, String) {
-    let fields: [(&str, String, String); 9] = [
+    let fields: [(&str, String, String); 7] = [
         ("identity", a.id.to_string(), b.id.to_string()),
         ("version", a.version.to_string(), b.version.to_string()),
-        ("soft wrap", a.wrapped.to_string(), b.wrapped.to_string()),
-        ("prompt mark", a.prompt.to_string(), b.prompt.to_string()),
+        (
+            "goes on in the next",
+            a.continues.to_string(),
+            b.continues.to_string(),
+        ),
         (
             "length",
             format!("{} (empty {})", a.len, a.is_empty),
             format!("{} (empty {})", b.len, b.is_empty),
-        ),
-        (
-            "spilled text",
-            a.text_len.to_string(),
-            b.text_len.to_string(),
         ),
         (
             "has links",
@@ -147,9 +144,8 @@ pub fn compare<A: Side, B: Side>(
             });
         }
     }
-    let (mut sa, mut sb) = (a.state(), b.state());
-    common_modes(&mut sa.modes, &mut sb.modes);
-    same(step, "the screen's state", &sa, &sb)?;
+    let sa = a.state();
+    same(step, "the screen's state", &sa, &b.state())?;
     rows(step, a, b, readers, count)?;
     same_list(step, "the marks", &a.marks(), &b.marks())?;
     // Rows looked up by identity: the bottom, the top of the screen, the
@@ -171,24 +167,6 @@ pub fn compare<A: Side, B: Side>(
         &a.lookups(&offsets),
         &b.lookups(&offsets),
     )?;
-    // The screen and the top of history, copied whole.
-    let (rows, cols) = sa.size;
-    let last = (rows.saturating_sub(1), cols.saturating_sub(1));
-    for offset in [0, sa.history_len] {
-        let selection = Selection {
-            offset,
-            from: (0, 0),
-            to: last,
-            max_cells: usize::MAX,
-            max_bytes: usize::MAX,
-        };
-        same(
-            step,
-            &format!("a copy of the window {offset} rows up"),
-            &a.copy(&selection, false),
-            &b.copy(&selection, false),
-        )?;
-    }
     let (pa, pb) = (probes(a), probes(b));
     match pa.iter().zip(&pb).find(|(x, y)| x != y) {
         // Each reading starts with its probe's name.
@@ -281,8 +259,8 @@ const QUERIES: &[&str] = &[
     "\x1b]4;1;?\x07",
 ];
 
-/// A clone's state after a probe's sequence: the cursor, pen and kitty
-/// flags, and the cursor's row.
+/// A clone's state after a probe's sequence: the cursor and kitty flags,
+/// and the cursor's row.
 fn glance<S: Side>(s: &S) -> Glance {
     let state = s.state();
     let (rows, _) = state.size;
@@ -297,7 +275,6 @@ fn glance<S: Side>(s: &S) -> Glance {
         cursor: state.cursor,
         pending_wrap: state.pending_wrap,
         origin_mode: state.modes.contains(&("Origin".into(), true)),
-        pen: state.pen,
         kitty_keyboard_flags: state.kitty_keyboard_flags,
         row,
     }
@@ -326,8 +303,8 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
         }
     }
     out.push(format!("queries: {heard:?}"));
-    // The saved cursor and the character sets; the tab stops; the kitty
-    // stack; the alternate screen's.
+    // The saved cursor, and the character sets with the saved pen and
+    // link, as the glyphs they draw show; the tab stops.
     let mut copy = s.clone();
     out.push(poke(&mut copy, "DECRC", b"\x1b8"));
     out.push(poke(&mut copy, "G0 and G1", b"q\x0eq\x0f"));
@@ -342,10 +319,17 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
     let _ = copy.process(b"\x1b[3Z", &mut heard);
     let _ = write!(stops, "back {}", copy.state().cursor.1);
     out.push(format!("tab stops: {stops} {heard:?}"));
+    // The margins: where origin mode's home and far corner are.
+    let mut copy = s.clone();
+    out.push(poke(&mut copy, "origin mode's home", b"\x1b[?6h"));
+    out.push(poke(
+        &mut copy,
+        "origin mode's far corner",
+        b"\x1b[65535;65535H",
+    ));
     // Each row's end, where the cursor stops going right, which a line
     // rendition halves: with origin mode off, row by row.
     let mut ends = String::new();
-    let mut copy = s.clone();
     let _ = copy.process(b"\x1b[?6l\x1b[?69l", &mut heard);
     let (rows, _) = copy.state().size;
     for y in 0..rows.min(400) {
@@ -354,6 +338,9 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
         let _ = write!(ends, "{} ", copy.state().cursor.1);
     }
     out.push(format!("row ends: {ends}"));
+    // The pen and the open link, as a glyph printed at the top left shows
+    // them.
+    out.push(poke(&mut copy, "a glyph printed", b"\x1b[Hx"));
     // The protected cells: what a selective erase of the screen leaves
     // (DECSED), and of the cursor's line (DECSEL).
     let mut copy = s.clone();
@@ -368,47 +355,10 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
         }
     }
     out.push(format!("after DECSED: {kept}"));
+    // The kitty stack; the alternate screen's.
     for _ in 0..3 {
         out.push(poke(&mut copy, "kitty pop", b"\x1b[<u"));
     }
     out.push(poke(&mut copy, "the other screen", b"\x1b[?1049h\x1b[?u"));
     out
-}
-
-/// Keeps of each side's modes those the other names too, by name, in one
-/// order: a mode one side's `Mode` has and the other's lacks is no
-/// difference between them, as `Mode::ALL` grows.
-fn common_modes(a: &mut Vec<(String, bool)>, b: &mut Vec<(String, bool)>) {
-    let names = |modes: &Vec<(String, bool)>| -> std::collections::BTreeSet<String> {
-        modes.iter().map(|(name, _)| name.clone()).collect()
-    };
-    let (in_a, in_b) = (names(a), names(b));
-    a.retain(|(name, _)| in_b.contains(name));
-    b.retain(|(name, _)| in_a.contains(name));
-    a.sort();
-    b.sort();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::common_modes;
-
-    /// A mode only one side has, or the two sides' orders, make no
-    /// difference; a mode both have, set on one side alone, does.
-    #[test]
-    fn modes_are_compared_by_name_over_those_both_sides_have() {
-        let mode = |name: &str, on: bool| (name.to_string(), on);
-        let mut a = vec![
-            mode("Origin", false),
-            mode("New", true),
-            mode("Insert", true),
-        ];
-        let mut b = vec![mode("Insert", true), mode("Origin", false)];
-        common_modes(&mut a, &mut b);
-        assert_eq!(a, b);
-        let mut a = vec![mode("Origin", true), mode("Insert", true)];
-        let mut b = vec![mode("Insert", true), mode("Origin", false)];
-        common_modes(&mut a, &mut b);
-        assert_ne!(a, b);
-    }
 }

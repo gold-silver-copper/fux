@@ -1,7 +1,7 @@
 //! A case: a parser's size, history and options, and the steps both sides
 //! take, each followed by a reading of everything (`observe`). Also how a
 //! case is written down to replay (`Case::to_text`) and read back.
-use crate::model::{Call, Error, Heard, IDENTITIES, Selection, Setup, Stop};
+use crate::model::{Call, Error, Heard, IDENTITIES, Setup, Stop};
 use crate::observe::{self, Readers};
 use crate::{Side, base, work};
 use std::fmt;
@@ -9,15 +9,14 @@ use std::fmt;
 /// One thing done to both parsers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// Output, in one call of `process_with`.
+    /// Output, every byte read as a host reads it: `process_until_stop`
+    /// again after each stop, its results not kept (`Side::process`).
     Output(Vec<u8>),
     /// Output through `process_until_stop`, called again after each stop
     /// (a frame's start or end, or the budget), until the bytes are used up.
     Frame(Vec<u8>),
     /// A resize.
     Resize(u16, u16),
-    /// A window read and a copy made from it.
-    Copy(Selection),
     /// A host's call, and what it gave back.
     Host(Call),
 }
@@ -218,7 +217,7 @@ impl Case {
         quick(self.rows, self.cols)
             && self.steps.iter().all(|step| match step {
                 Step::Resize(rows, cols) => quick(*rows, *cols),
-                Step::Output(_) | Step::Frame(_) | Step::Copy(_) | Step::Host(_) => true,
+                Step::Output(_) | Step::Frame(_) | Step::Host(_) => true,
             })
     }
 
@@ -227,7 +226,7 @@ impl Case {
         safe(self.rows, self.cols)
             && self.steps.iter().all(|step| match step {
                 Step::Resize(rows, cols) => safe(*rows, *cols),
-                Step::Output(_) | Step::Frame(_) | Step::Copy(_) | Step::Host(_) => true,
+                Step::Output(_) | Step::Frame(_) | Step::Host(_) => true,
             })
     }
 
@@ -237,7 +236,7 @@ impl Case {
             .iter()
             .map(|step| match step {
                 Step::Output(b) | Step::Frame(b) => b.len(),
-                Step::Resize(..) | Step::Copy(_) | Step::Host(_) => 0,
+                Step::Resize(..) | Step::Host(_) => 0,
             })
             .sum()
     }
@@ -308,8 +307,8 @@ fn run<A: Side, B: Side>(case: &Case) -> Result<Count, Difference> {
                 let (mut ha, mut hb) = (Vec::new(), Vec::new());
                 let ra = a.process(bytes, &mut ha);
                 let rb = b.process(bytes, &mut hb);
-                same(at, "process_with's result", &ra, &rb)?;
-                same_list(at, "what process_with gave the host", &ha, &hb)?;
+                same(at, "the output's result", &ra, &rb)?;
+                same_list(at, "what the output gave the host", &ha, &hb)?;
                 count.bytes = count
                     .bytes
                     .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
@@ -328,14 +327,6 @@ fn run<A: Side, B: Side>(case: &Case) -> Result<Count, Difference> {
                 let ra = a.resize(*rows, *cols);
                 let rb = b.resize(*rows, *cols);
                 same(at, "resize's result", &ra, &rb)?;
-            }
-            Step::Copy(selection) => {
-                same(
-                    at,
-                    "a window and a copy from it",
-                    &a.copy(selection, true),
-                    &b.copy(selection, true),
-                )?;
             }
             Step::Host(call) => {
                 a.host(*call);
@@ -403,10 +394,6 @@ impl Case {
                 Step::Output(bytes) => out.push_str(&format!("output {}\n", escape(bytes))),
                 Step::Frame(bytes) => out.push_str(&format!("frame {}\n", escape(bytes))),
                 Step::Resize(rows, cols) => out.push_str(&format!("resize {rows} {cols}\n")),
-                Step::Copy(s) => out.push_str(&format!(
-                    "copy {} {} {} {} {} {} {}\n",
-                    s.offset, s.from.0, s.from.1, s.to.0, s.to.1, s.max_cells, s.max_bytes
-                )),
                 Step::Host(call) => out.push_str(&format!("host {}\n", call.to_text())),
             }
         }
@@ -450,17 +437,6 @@ impl Case {
                     let n = numbers()?;
                     case.steps
                         .push(Step::Resize(small(n.first())?, small(n.get(1))?));
-                }
-                "copy" => {
-                    let n = numbers()?;
-                    let get = |i: usize| n.get(i).copied().ok_or(at("too few numbers".into()));
-                    case.steps.push(Step::Copy(Selection {
-                        offset: get(0)?,
-                        from: (small(n.get(1))?, small(n.get(2))?),
-                        to: (small(n.get(3))?, small(n.get(4))?),
-                        max_cells: get(5)?,
-                        max_bytes: get(6)?,
-                    }));
                 }
                 "host" => case.steps.push(Step::Host(
                     Call::from_text(rest).ok_or(at(format!("no host call {rest:?}")))?,
@@ -536,13 +512,7 @@ mod tests {
                 Step::Output(b"a\\b\x1b[1m\xff\n".to_vec()),
                 Step::Frame(b"\x1b[?2026h".to_vec()),
                 Step::Resize(2, 9),
-                Step::Copy(Selection {
-                    offset: 1,
-                    from: (0, 1),
-                    to: (1, 2),
-                    max_cells: 10,
-                    max_bytes: 40,
-                }),
+                Step::Host(Call::Graphics(2, 6)),
             ],
         };
         assert_eq!(Case::from_text(&case.to_text())?, case);
@@ -551,24 +521,35 @@ mod tests {
 
     #[test]
     fn a_difference_names_its_field() {
-        let base = crate::model::Glance {
-            cursor: (2, 3),
-            pending_wrap: false,
-            origin_mode: false,
-            pen: crate::cells::default_style(),
-            kitty_keyboard_flags: 0,
-            row: "a row: of text".into(),
+        let base = crate::model::Row {
+            cells: vec![crate::model::Cell {
+                end: 0,
+                wide: false,
+                continuation: false,
+                style: crate::cells::default_style(),
+            }],
+            text: "a row: of text".into(),
+            ..crate::model::Row::default()
         };
         let mut work = base.clone();
-        work.pen.bold = true;
+        if let Some(cell) = work.cells.first_mut() {
+            cell.style.bold = true;
+        }
         assert_eq!(
             explain(&base, &work),
             (
-                "pen.bold".into(),
+                "cells.style.bold".into(),
                 "bold: false,".into(),
                 "bold: true,".into()
             )
         );
+        let base = crate::model::Glance {
+            cursor: (2, 3),
+            pending_wrap: false,
+            origin_mode: false,
+            kitty_keyboard_flags: 0,
+            row: "a row: of text".into(),
+        };
         let mut work = base.clone();
         work.cursor.1 = 4;
         assert_eq!(
@@ -632,6 +613,33 @@ mod tests {
         };
         assert_eq!(Case::from_text(&case.to_text())?, case);
         run::<work::Terminal, work::Terminal>(&case).map_err(|d| d.to_string())?;
+        Ok(())
+    }
+
+    /// What no accessor shows is seen by the probes: the pen, the open
+    /// link, both pairs of margins and the saved pen, each set in one
+    /// output and not the other, with no DECRQSS to report them.
+    #[test]
+    fn the_pen_the_open_link_and_the_margins_are_seen() -> Result<(), String> {
+        let setup = Setup {
+            setting_reports: false,
+            ..Setup::pane()
+        };
+        let probes = |output: &[u8]| -> Result<Vec<String>, String> {
+            let mut t = work::Terminal::new(10, 20, 0, &setup).map_err(|e| e.0)?;
+            t.process(output, &mut Vec::new()).map_err(|e| e.0)?;
+            Ok(observe::probes(&t))
+        };
+        for (set, unset) in [
+            // A cursor saved first: DECRC's glyphs show the pen saved.
+            (&b"\x1b7\x1b[1m"[..], &b"\x1b7"[..]),
+            (b"\x1b7\x1b]8;;https://a\x1b\\", b"\x1b7"),
+            (b"\x1b[2;5r", b"\x1b[H"),
+            (b"\x1b[?69h\x1b[3;9s", b"\x1b[?69h"),
+            (b"\x1b[31m\x1b7\x1b[m", b"\x1b7"),
+        ] {
+            assert_ne!(probes(set)?, probes(unset)?, "{}", escape(set));
+        }
         Ok(())
     }
 

@@ -3694,9 +3694,10 @@ pub(crate) mod testing {
     impl Default for Keys {
         fn default() -> Self {
             Self {
-                decoder: fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(
-                    35, 5000,
-                )),
+                decoder: fux_vt::keys::decode::Decoder::with_paste_limit(
+                    fux_vt::keys::decode::Timing::new(35, 5000),
+                    usize::MAX,
+                ),
                 screen: Default::default(),
             }
         }
@@ -3799,6 +3800,7 @@ fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use crate::session::testing::TestResult;
+    use crate::vt_feed::cells_text;
     /// `rows` by `cols`.
     fn sized(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
         fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())
@@ -5177,16 +5179,16 @@ mod tests {
 
     #[test]
     fn unexpected_terminal_read_errors_are_not_empty_output() -> TestResult {
-        let mut reads = [Ok(1), Err(fuxix::Errno::INTR), Err(fuxix::Errno::INVAL)].into_iter();
+        let mut reads = [Ok(1), Err(fuxix::Errno::INTR), Err(fuxix::Errno::SRCH)].into_iter();
         let (left, end) = left_turn(|bytes| {
             if let Some(first) = bytes.first_mut() {
                 *first = b'x';
             }
-            reads.next().ok_or(fuxix::Errno::INVAL)?
+            reads.next().ok_or(fuxix::Errno::SRCH)?
         });
         assert_eq!(
             (left, end),
-            (b"x".to_vec(), Drain::Failed(fuxix::Errno::INVAL))
+            (b"x".to_vec(), Drain::Failed(fuxix::Errno::SRCH))
         );
         for end in [Ok(0), Err(fuxix::Errno::IO)] {
             assert_eq!(left_turn(|_| end), (Vec::new(), Drain::Closed));
@@ -5208,7 +5210,7 @@ mod tests {
             .parts
             .pane_mut(id)
             .ok_or("pane")?
-            .read_failed(fuxix::Errno::INVAL);
+            .read_failed(fuxix::Errno::SRCH);
         assert!(session.tell_lost());
         let view = session.views.get(&client).ok_or("client")?;
         let notice = &view.notice.as_ref().ok_or("notice")?.text;
@@ -5253,13 +5255,13 @@ mod tests {
             }
             session.out(id, b"saved");
             if live {
-                session.read_failed(id, fuxix::Errno::INVAL, Instant::now());
+                session.read_failed(id, fuxix::Errno::SRCH, Instant::now());
             } else {
                 session
                     .parts
                     .pane_mut(id)
                     .ok_or("pane")?
-                    .read_failed(fuxix::Errno::INVAL);
+                    .read_failed(fuxix::Errno::SRCH);
             }
             session.end_program(id, Ended::Exited(0));
             let notice = session
@@ -5270,25 +5272,25 @@ mod tests {
             assert!(
                 notice.error
                     && notice.text.contains("reading program terminal")
-                    && notice.text.contains(&fuxix::Errno::INVAL.to_string()),
+                    && notice.text.contains(&fuxix::Errno::SRCH.to_string()),
                 "{notice:?}"
             );
             assert!(notice.text.contains("exited"), "{notice:?}");
             assert_eq!(notice.text.matches("reading program terminal").count(), 1);
             if explicit {
-                assert_eq!(session.pane(id)?.read_error(), Some(fuxix::Errno::INVAL));
+                assert_eq!(session.pane(id)?.read_error(), Some(fuxix::Errno::SRCH));
                 assert!(
                     session
                         .pane(id)?
                         .screen()
                         .rows()
-                        .any(|row| row.cells_text().contains("saved"))
+                        .any(|row| cells_text(&row).contains("saved"))
                 );
             } else {
                 assert!(session.pane(id).is_err());
             }
             if last {
-                assert!(session.outbox.iter().any(|out| matches!(out, Outgoing::Shutdown(why, _) if why.contains(&fuxix::Errno::INVAL.to_string()))));
+                assert!(session.outbox.iter().any(|out| matches!(out, Outgoing::Shutdown(why, _) if why.contains(&fuxix::Errno::SRCH.to_string()))));
             }
         }
         Ok(())
@@ -6550,7 +6552,7 @@ mod tests {
             let text = pane
                 .screen()
                 .rows()
-                .map(|r| r.cells_text())
+                .map(|r| cells_text(&r))
                 .collect::<String>();
             assert!(
                 text.contains("DONE"),
@@ -6657,7 +6659,7 @@ mod tests {
         s.end_program(id, Ended::Exited(0));
         let left = s.leftover.contains_key(&id);
         let from = s.parts.journal().end(s.run);
-        let fail = |_: &fuxix::pty::Master, _: &mut [u8]| Err(fuxix::Errno::INVAL);
+        let fail = |_: &fuxix::pty::Master, _: &mut [u8]| Err(fuxix::Errno::SRCH);
         s.read_left_with(id, true, fail, Instant::now());
         let told = crate::journal::Reader::new(
             fux_wire::inspect::Scope::All,
@@ -6685,7 +6687,7 @@ mod tests {
         assert!(left, "no writer left on its terminal");
         let failed = Json::object(vec![
             ("event", Json::str("read_failed")),
-            ("read_error", Json::str(fuxix::Errno::INVAL.to_string())),
+            ("read_error", Json::str(fuxix::Errno::SRCH.to_string())),
         ]);
         assert!(
             matches!(&told[..], [one] if one.data == failed

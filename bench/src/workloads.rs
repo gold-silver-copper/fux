@@ -367,7 +367,7 @@ pub fn fed(name: &str) -> String {
         format!("{NO_STREAM}: fux-vt::Parser::resize, its history filled 4096 bytes a call")
     } else if name.starts_with("vt/") {
         let chunk = chunked(name).map_or(CHUNK, |(_, n)| n);
-        format!("fux-vt::Parser::process_with, {chunk} bytes a call")
+        format!("fux-vt::Parser::process_until_stop, {chunk} bytes a call")
     } else if name == "encode/sixel" {
         format!("{NO_STREAM}: fux_vt::sixel::encode of the whole picture, {ENCODES} times")
     } else if name.starts_with("pane/") {
@@ -587,6 +587,22 @@ impl fux_vt::Sink for Sink {
     }
 }
 
+/// Reads `bytes` into `parser` as a pane does, `process_until_stop` from
+/// each stop on until none is left, its replies to [`Sink`]: an error if
+/// room was refused on the way.
+pub(crate) fn feed(parser: &mut fux_vt::Parser, bytes: &[u8]) -> Result<(), String> {
+    let (refused, mut rest) = (parser.refused(), bytes);
+    while let Some((taken, _)) =
+        (parser.process_until_stop(rest, &mut Sink)).map_err(|e| e.to_string())?
+    {
+        rest = rest.get(taken..).unwrap_or_default();
+    }
+    match parser.refused() == refused {
+        true => Ok(()),
+        false => Err(fux_vt::Error::Capacity.to_string()),
+    }
+}
+
 /// What a pane is given of `bytes` (a tick's read, or a whole load), a
 /// call at a time, as fux's server gives it: [`PANE_PIECE`] bytes a call.
 fn given(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -642,7 +658,7 @@ fn vt(loads: &[Load], baseline: bool, chunk: usize) -> Result<Done, String> {
             )),
         };
         for piece in pieces(&load.bytes, chunk) {
-            let _ = p.process_with(black_box(piece), &mut Sink);
+            let _ = feed(p, black_box(piece));
         }
     }
     black_box(parser.as_ref().map(|p| p.screen().cursor_position()));
@@ -685,11 +701,11 @@ fn moment(setup: &[u8], measured: &[u8], baseline: bool) -> Result<Done, String>
             .with(fux_vt::Feature::Pictures),
     )?;
     for piece in pieces(setup, CHUNK) {
-        let _ = parser.process_with(piece, &mut Sink);
+        let _ = feed(&mut parser, piece);
     }
     if !baseline {
         for piece in pieces(measured, CHUNK) {
-            let _ = parser.process_with(black_box(piece), &mut Sink);
+            let _ = feed(&mut parser, black_box(piece));
         }
     }
     black_box(parser.screen().cursor_position());
@@ -715,7 +731,7 @@ fn full_history(
         false => synthetic::make("ascii", fill).ok_or("no ascii workload")?,
     };
     for piece in pieces(&bytes, CHUNK) {
-        let _ = parser.process_with(piece, &mut Sink);
+        let _ = feed(&mut parser, piece);
     }
     Ok(parser)
 }
@@ -735,7 +751,7 @@ fn sixel_picture(payloads: &Path) -> Result<std::sync::Arc<fux_vt::sixel::Pictur
         )
         .map_err(|e| format!("a parser of {size:?}: {e}"))?,
     );
-    parser.process(&frame).map_err(|e| e.to_string())?;
+    feed(&mut parser, &frame)?;
     let shown = parser
         .screen()
         .pictures()
@@ -1022,9 +1038,7 @@ fn kitty_mode(flags: u8) -> Result<fux_vt::keys::encode::KeyMode, String> {
             .with(fux_vt::Feature::Pictures),
     )
     .map_err(|e| e.to_string())?;
-    parser
-        .process(format!("\x1b[>{flags}u").as_bytes())
-        .map_err(|e| e.to_string())?;
+    feed(&mut parser, format!("\x1b[>{flags}u").as_bytes())?;
     Ok(parser.screen().key_mode())
 }
 
@@ -1052,8 +1066,10 @@ fn keys(recordings: &[Recording], kitty: Option<fux_vt::keys::encode::KeyMode>) 
 /// The keystrokes fux's decoder reads in `keys`, its Escape deadline passing
 /// at the end.
 fn strokes(keys: &[u8]) -> Vec<fux_vt::keys::Keystroke> {
-    let mut decoder =
-        fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+    let mut decoder = fux_vt::keys::decode::Decoder::with_paste_limit(
+        fux_vt::keys::decode::Timing::new(35, 5000),
+        usize::MAX,
+    );
     let mut inputs = Vec::new();
     decoder.bytes(keys, &mut inputs);
     decoder.timeout(&mut inputs);
@@ -1075,8 +1091,10 @@ fn decode(steps: &[Vec<u8>], baseline: bool, total: usize) -> Result<Done, Strin
     }
     let mut units = 0usize;
     let mut inputs = Vec::new();
-    let mut decoder =
-        fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000));
+    let mut decoder = fux_vt::keys::decode::Decoder::with_paste_limit(
+        fux_vt::keys::decode::Timing::new(35, 5000),
+        usize::MAX,
+    );
     while units < total {
         for keys in steps {
             units = units.saturating_add(keys.len());

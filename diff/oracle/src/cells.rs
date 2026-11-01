@@ -43,17 +43,12 @@ pub enum Edit {
         wide: bool,
         style: Style,
     },
-    /// `resize` with a cell `CellRef::new` makes.
-    Resize {
-        len: usize,
-        text: String,
-        wide: bool,
-        style: Style,
-    },
+    /// `reset`.
+    Reset { len: usize },
     /// `set` from a cell of the run as it was.
     Copy { i: usize, from: usize },
-    /// The run collected from its own cells (`Cells::try_from_iter`), compared
-    /// with itself (`PartialEq`), and taking its place.
+    /// A new run as long, each cell `set` from the run's, compared with it
+    /// (`PartialEq`), and taking its place.
     Collect,
 }
 
@@ -159,12 +154,7 @@ fn edit(r: &mut Rng, len: usize) -> Edit {
                 style: style(r),
             }
         }
-        6 => Edit::Resize {
-            len: r.below(40),
-            text: text(r),
-            wide: r.chance(10),
-            style: style(r),
-        },
+        6 => Edit::Reset { len: r.below(40) },
         7 => Edit::Copy {
             i: at(r),
             from: at(r),

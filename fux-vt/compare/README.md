@@ -265,7 +265,9 @@ After creation and after every step, each engine is read into one
   underline colour; bold, dim, italic, underline, blink, inverse, hidden,
   strikeout) and its OSC 8 link: the URI, and which cells share one link.
   Engines name links in their own ways, so the names are not compared;
-- each row's soft-wrap flag, and whether a prompt starts on it (OSC 133 A);
+- each row's soft-wrap flag (fux-vt's is `Row::continues`, what a host
+  reads), and whether a prompt starts on it (OSC 133 A; fux-vt tells no
+  host its prompt marks, so none is compared with fux-vt's);
 - the cursor, and whether a wrap is pending;
 - cursor visibility, DECAWM, DECOM, the alternate screen, DECCKM, DECKPAM,
   bracketed paste, focus reporting, synchronized output (2026), in-band

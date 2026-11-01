@@ -234,8 +234,9 @@ mod tests {
             b"\x1bPq#0;2;0;0;0",
             b"plain",
         ] {
-            let _ = vt.process(&super::framed(load, 7));
-            let text: String = vt.screen().rows().map(|r| r.cells_text()).collect();
+            let _ = crate::workloads::feed(&mut vt, &super::framed(load, 7));
+            let rows = vt.screen().rows();
+            let text: String = rows.flat_map(|r| r.cells()).map(|c| c.shown()).collect();
             assert!(text.contains(super::marker(7).trim()), "{load:?}: {text:?}");
         }
         Ok(())

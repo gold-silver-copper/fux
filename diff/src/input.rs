@@ -195,7 +195,10 @@ stack!(
 stack!(
     cur,
     current,
-    fux_vt::keys::decode::Decoder::new(fux_vt::keys::decode::Timing::new(35, 5000)),
+    fux_vt::keys::decode::Decoder::with_paste_limit(
+        fux_vt::keys::decode::Timing::new(35, 5000),
+        64 * 1024
+    ),
     |press, application, out| fux_vt::keys::encode::key_bytes(
         press.into(),
         fux_vt::keys::encode::KeyMode::Legacy {

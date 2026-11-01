@@ -56,7 +56,7 @@ impl Client {
             if n == 0 {
                 break;
             }
-            let _ = self.screen.process(buffer.get(..n).unwrap_or_default());
+            feed(&mut self.screen, buffer.get(..n).unwrap_or_default());
         }
     }
 
@@ -83,7 +83,10 @@ impl Client {
     /// Resizes the terminal; the kernel signals the client.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         let master = self.master.as_ref().ok_or("the terminal is closed")?;
-        let size = fuxix::terminal::Size::new(rows, cols).ok_or("a zero size")?;
+        let size = std::num::NonZeroU16::new(rows)
+            .zip(std::num::NonZeroU16::new(cols))
+            .map(fuxix::terminal::Size::from)
+            .ok_or("a zero size")?;
         fuxix::terminal::set_window_size(master, size, None).map_err(|e| e.to_string())?;
         // The same size signals nothing, and nothing is repainted: the
         // screen stays as it is.
@@ -91,7 +94,7 @@ impl Client {
             return Ok(());
         }
         let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
-        self.screen = fux_vt::Parser::new(size, 0).map_err(|e| e.to_string())?;
+        self.screen = terminal(size)?;
         self.rows = rows;
         self.cols = cols;
         Ok(())
@@ -100,7 +103,10 @@ impl Client {
     /// Closes the terminal, as closing its window does.
     pub fn hang_up(&mut self) {
         self.master = None;
-        if let Some(pid) = fuxix::process::Pid::of(&self.child) {
+        if let Some(pid) = i32::try_from(self.child.id())
+            .ok()
+            .and_then(fuxix::process::Pid::from_raw)
+        {
             let _ = fuxix::process::kill(pid, fuxix::process::Signal::Hup);
         }
     }
@@ -116,10 +122,10 @@ impl Client {
                         if cell.is_wide_continuation() {
                             continue;
                         }
-                        line.push_str(if cell.has_contents() {
-                            cell.contents()
-                        } else {
+                        line.push_str(if cell.contents().is_empty() {
                             " "
+                        } else {
+                            cell.contents()
                         });
                     }
                 }
@@ -310,7 +316,10 @@ impl Fixture {
     /// A new real client of `rows` by `cols`: its id.
     pub fn attach(&mut self, rows: u16, cols: u16) -> Result<String, String> {
         let before = self.listed_clients()?;
-        let size = fuxix::terminal::Size::new(rows, cols).ok_or("a zero size")?;
+        let size = std::num::NonZeroU16::new(rows)
+            .zip(std::num::NonZeroU16::new(cols))
+            .map(fuxix::terminal::Size::from)
+            .ok_or("a zero size")?;
         let (master, slave) = fuxix::pty::open(size).map_err(|e| e.to_string())?;
         // No words attaches.
         let argv = [self.fux.as_os_str()];
@@ -344,7 +353,7 @@ impl Fixture {
                 child,
                 screen: fux_vt::Size::new(rows.max(1), cols.max(1))
                     .map_err(|e| e.to_string())
-                    .and_then(|size| fux_vt::Parser::new(size, 0).map_err(|e| e.to_string()))?,
+                    .and_then(terminal)?,
                 rows: rows.max(1),
                 cols: cols.max(1),
             },
@@ -485,4 +494,20 @@ pub fn environment(command: &mut Command, dir: &Path) {
         .env("SHELL", "/bin/sh")
         .env("TERM", "xterm-256color")
         .env("LANG", "C.UTF-8");
+}
+
+/// A client's terminal, `size`, without history.
+fn terminal(size: fux_vt::Size) -> Result<fux_vt::Parser, String> {
+    fux_vt::Parser::with_options(size, 0, fux_vt::Options::default()).map_err(|e| e.to_string())
+}
+
+/// Reads `bytes` into `terminal` as fux reads a pane's output: from each
+/// stop on until none is left, its replies dropped.
+fn feed(terminal: &mut fux_vt::Parser, bytes: &[u8]) {
+    struct Deaf;
+    impl fux_vt::Sink for Deaf {}
+    let mut rest = bytes;
+    while let Ok(Some((taken, _))) = terminal.process_until_stop(rest, &mut Deaf) {
+        rest = rest.get(taken..).unwrap_or_default();
+    }
 }

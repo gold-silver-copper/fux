@@ -31,26 +31,14 @@ macro_rules! side {
     ) => {
         pub mod $module {
             use crate::model::{
-                self, Blink, Call, Cell, Color, Error, Heard, Lookup, Marked, Row, Seen, Setup,
-                State, Stop, Style, Underline,
+                self, Blink, Call, Cell, Color, Error, Heard, Lookup, Marked, Row, Setup, State,
+                Stop, Style, Underline,
             };
             use $vt as vt;
 
             /// The row `offset` up from the bottom.
             fn back(s: &vt::Screen, offset: usize) -> Option<vt::Row<'_>> {
                 s.rows().nth_back(offset)
-            }
-
-            /// How many rows up into history a window starts at row `id`, if
-            /// one can.
-            fn up(s: &vt::Screen, id: vt::RowId) -> Option<usize> {
-                s.history_len().checked_sub(s.row_by_id(id)?.index())
-            }
-
-            /// The window `offset` rows up into history, at most all of it.
-            fn window(s: &vt::Screen, offset: usize) -> vt::Window<'_> {
-                let window = s.window();
-                window.row(0).map_or(window, |top| top.up(offset).window())
             }
 
             /// A parser, and the marks taken of its screen.
@@ -107,25 +95,6 @@ macro_rules! side {
                 }
             }
 
-            /// A cell's style through its own accessors rather than its
-            /// attributes.
-            fn getters(c: &vt::CellRef<'_>) -> Style {
-                Style {
-                    fg: color(c.fgcolor()),
-                    bg: color(c.bgcolor()),
-                    underline_color: color(c.underline_color()),
-                    bold: c.bold(),
-                    dim: c.dim(),
-                    italic: c.italic(),
-                    underline: c.underline(),
-                    underline_style: underline(c.underline_style()),
-                    inverse: c.inverse(),
-                    blink: blink(c.blink()),
-                    hidden: c.hidden(),
-                    strikeout: c.strikeout(),
-                }
-            }
-
             fn error(e: vt::Error) -> Error {
                 Error(format!("{e:?}: {e}"))
             }
@@ -135,13 +104,23 @@ macro_rules! side {
                 s.size().into()
             }
 
-            /// Every mode (`Mode::ALL`), by name: all but DECHCCM, which is
-            /// permanent and which the DECRQM probe compares.
+            /// Every mode, by name: all but DECHCCM, which is permanent and
+            /// which the DECRQM probe compares. The match names each, so a
+            /// mode fux-vt adds fails to build until it is read here too.
             fn modes(s: &vt::Screen) -> Vec<(String, bool)> {
-                (vt::Mode::ALL.into_iter())
-                    .filter(|m| !matches!(m, vt::Mode::HorizontalCursorCoupling))
-                    .map(|m| (format!("{m:?}"), s.mode(m)))
-                    .collect()
+                crate::side::every_mode!(vt::Mode, HorizontalCursorCoupling;
+                    Insert, NewLine, ApplicationCursor, SmoothScroll, ReverseVideo, Origin,
+                    Autowrap, AutoRepeat, MousePress, CursorBlink, ShowCursor, MoreFix,
+                    ReverseWrap, AlternateScreen, ApplicationKeypad, BackarrowSendsBackspace,
+                    LeftRightMargins, SixelDisplay, MousePressRelease, MouseHighlight,
+                    MouseButtonMotion, MouseAnyMotion, FocusReporting, MouseUtf8, MouseSgr,
+                    AlternateScroll, MouseUrxvt, MouseSgrPixels, ExtendedReverseWrap,
+                    AlternateScreenCleared, SaveCursor, AlternateScreenSaveCursor,
+                    BracketedPaste, SynchronizedOutput, ColorSchemeUpdates, InBandResize,
+                    GraphemeClustering)
+                .into_iter()
+                .map(|m| (format!("{m:?}"), s.mode(m)))
+                .collect()
             }
 
             /// FNV-1a over `bytes`, folded into `h`.
@@ -155,20 +134,24 @@ macro_rules! side {
                 let mut h = crate::side::Fnv(0xcbf2_9ce4_8422_2325);
                 for c in row.cells() {
                     std::hash::Hash::hash(&(c.contents(), c.is_wide(), c.is_wide_continuation()), &mut h);
-                    std::hash::Hash::hash(&getters(&c), &mut h);
+                    std::hash::Hash::hash(&style(c.attributes()), &mut h);
                 }
                 std::hash::Hasher::finish(&h)
             }
 
             /// A picture's pixels, hashed at an 8 by 8 grid of them (all of
-            /// them is millions, every step).
+            /// them is millions, every step), each read as `sixel::encode`
+            /// gives it alone.
             fn pixels_hash(p: &vt::sixel::Picture) -> u64 {
                 let (w, h) = (p.width(), p.height());
                 let mut hash = 0xcbf2_9ce4_8422_2325;
+                let mut pixel = Vec::new();
                 for y in 0..8u32 {
                     for x in 0..8u32 {
                         let at = (x.saturating_mul(w) / 8, y.saturating_mul(h) / 8);
-                        hash = fold(hash, &p.pixel(at.0, at.1).unwrap_or_default());
+                        pixel.clear();
+                        vt::sixel::encode(p, (at.0, at.1, 1, 1), &mut pixel);
+                        hash = fold(hash, &pixel);
                     }
                 }
                 hash
@@ -196,16 +179,6 @@ macro_rules! side {
                         .identity
                         .map(|(name, version)| vt::Identity { name, version }),
                 )
-            }
-
-            /// The options back, as the parser reports them.
-            fn setup(o: vt::Options) -> Setup {
-                let mut setup = Setup::default();
-                for (f, (_, on)) in vt::Feature::ALL.into_iter().zip(setup.flags()) {
-                    *on = o.has(f);
-                }
-                setup.identity = o.identity().map(|i| (i.name, i.version));
-                setup
             }
 
             /// Everything the parser gives the host, in order.
@@ -272,9 +245,17 @@ macro_rules! side {
                 }
 
                 fn process(&mut self, bytes: &[u8], heard: &mut Vec<Heard>) -> Result<(), Error> {
-                    self.parser
-                        .process_with(bytes, &mut Sink(heard))
-                        .map_err(error)
+                    let refused = self.parser.refused();
+                    let mut rest = bytes;
+                    while let Some((taken, _)) =
+                        self.parser.process_until_stop(rest, &mut Sink(heard)).map_err(error)?
+                    {
+                        rest = rest.get(taken..).unwrap_or_default();
+                    }
+                    match self.parser.refused() == refused {
+                        true => Ok(()),
+                        false => Err(error(vt::Error::Capacity)),
+                    }
                 }
 
                 fn process_until_stop(
@@ -315,7 +296,6 @@ macro_rules! side {
 
                 fn state(&self) -> State {
                     let s = self.parser.screen();
-                    let pen = s.attributes();
                     let (rows, cols) = size(s);
                     let retained = s.history_len().saturating_add(usize::from(rows));
                     State {
@@ -324,32 +304,25 @@ macro_rules! side {
                         pending_wrap: s.pending_wrap(),
                         modes: modes(s),
                         cursor_shape: s.cursor_shape().number(),
-                        scroll_region: s.scroll_region(),
                         mouse: format!("{:?}", s.mouse_protocol_mode()),
                         encoding: format!("{:?}", s.mouse_protocol_encoding()),
                         kitty_keyboard_flags: s.kitty_keyboard_flags(),
-                        modify_other_keys: format!("{:?}", s.modify_other_keys()),
-                        pen: style(pen),
-                        hyperlink: s
-                            .hyperlink()
-                            .map(|(uri, id)| (uri.to_owned(), id.map(str::to_owned))),
+                        key_mode: format!("{:?}", s.key_mode()),
                         history_len: s.history_len(),
-                        storage_cells: s.storage_cells(),
                         mark: number(s.mark()),
                         resize_report: self.parser.resize_report(),
-                        options: setup(self.parser.options()),
                         colors_changed: s.colors_changed(),
                         rows_end_there: retained
                             .checked_sub(1)
                             .is_none_or(|last| back(s, last).is_some())
                             && back(s, retained).is_none(),
-                        left_right_margins: s.left_right_margins(),
+                        window: (s.window().rows(), s.window().cols()),
                         palette: (0..=u8::MAX).map(|i| rgb(s.palette_color(i))).collect(),
                         dynamic: (10..=19).map(|n| rgb(s.dynamic_color(n))).collect(),
                         pictures: (s.pictures())
                             .map(|p| {
                                 let size = (p.picture.width(), p.picture.height());
-                                (p.id, p.row, p.col, p.cols, p.rows, size, pixels_hash(p.picture))
+                                (p.row, p.col, p.cols, p.rows, size, pixels_hash(p.picture))
                             })
                             .collect(),
                         inactive: {
@@ -362,7 +335,7 @@ macro_rules! side {
                             };
                             let history = other.len().saturating_sub(usize::from(rows));
                             (other.skip(history))
-                                .map(|r| (number(r.id()), r.wrapped(), cells_hash(r)))
+                                .map(|r| (number(r.id()), r.continues(), cells_hash(r)))
                                 .collect()
                         },
                     }
@@ -381,63 +354,43 @@ macro_rules! side {
                     };
                     out.id = number(row.id());
                     out.version = row.version();
-                    out.wrapped = row.wrapped();
-                    out.prompt = row.starts_prompt();
+                    out.continues = row.continues();
                     out.len = row.len();
                     out.is_empty = row.is_empty();
-                    out.text_len = row.text_len();
                     out.has_links = row.has_links();
                     let (rows, _) = size(s);
-                    // The row's place on the screen, if it is a live row.
-                    let live = usize::from(rows)
+                    // The row as the window shows it, if it is a live row.
+                    let shown = usize::from(rows)
                         .checked_sub(offset.saturating_add(1))
-                        .and_then(|y| u16::try_from(y).ok());
+                        .and_then(|y| u16::try_from(y).ok())
+                        .map(|y| s.window().row(y));
                     let mut cell_agrees = true;
-                    let (mut screen_cell_agrees, mut screen_link_agrees) = (true, true);
+                    let mut window_agrees = shown.is_none_or(|w| {
+                        w.is_some_and(|w| w.id() == row.id() && w.continues() == row.continues())
+                    });
                     for (col, c) in row.cells().enumerate() {
                         out.text.push_str(c.contents());
-                        let st = style(c.attributes());
-                        let getters_agree = getters(&c) == st;
                         out.cells.push(Cell {
                             end: out.text.len(),
-                            has_contents: c.has_contents(),
                             wide: c.is_wide(),
                             continuation: c.is_wide_continuation(),
-                            style: st,
-                            getters_agree,
+                            style: style(c.attributes()),
                         });
                         let l = row.link(col);
                         cell_agrees &= row.cell(col) == Some(c);
-                        if let Some(y) = live {
-                            let x = u16::try_from(col).ok();
-                            screen_cell_agrees &= x.and_then(|x| s.cell(y, x)) == Some(c);
-                            screen_link_agrees &= x.and_then(|x| s.link(y, x)) == l;
+                        if let Some(Some(w)) = shown {
+                            window_agrees &= w.cell(col) == Some(c) && w.link(col) == l;
                         }
                         if let Some(l) = l {
-                            let (uri, id) = (l.uri().to_owned(), l.id().map(str::to_owned));
-                            let key = l.key();
-                            out.links.push((col, model::Link { uri, id, key }));
+                            out.links.push((col, model::Link { uri: l.uri().to_owned(), key: l.key() }));
                         }
                     }
                     cell_agrees &= row.cell(row.len()).is_none();
                     if !cell_agrees {
                         out.disagreeing.push("Row::cell");
                     }
-                    if let Some(y) = live {
-                        let past = u16::try_from(row.len()).unwrap_or(u16::MAX);
-                        screen_cell_agrees &= s.cell(y, past).is_none();
-                        if !screen_cell_agrees {
-                            out.disagreeing.push("Screen::cell");
-                        }
-                        if !screen_link_agrees {
-                            out.disagreeing.push("Screen::link");
-                        }
-                        if s.row_wrapped(y) != row.wrapped() {
-                            out.disagreeing.push("Screen::row_wrapped");
-                        }
-                        if s.starts_prompt(y) != row.starts_prompt() {
-                            out.disagreeing.push("Screen::starts_prompt");
-                        }
+                    if !window_agrees {
+                        out.disagreeing.push("Window::row");
                     }
                     true
                 }
@@ -454,20 +407,29 @@ macro_rules! side {
                     let s = self.parser.screen();
                     self.marks
                         .iter()
-                        .map(|&mark| Marked {
-                            changed: s.changed_since(mark),
-                            full_refresh: s.full_refresh_since(mark),
-                            dirty: s.dirty_rows_since(mark).map(|r| number(r.id())).collect(),
+                        .map(|&mark| {
+                            let full_refresh = s.full_refresh_since(mark);
+                            Marked {
+                                changed: s.mark() != mark,
+                                full_refresh,
+                                dirty: (s.rows())
+                                    .filter(|r| full_refresh || r.changed_since(mark))
+                                    .map(|r| number(r.id()))
+                                    .collect(),
+                            }
                         })
                         .collect()
                 }
 
                 fn lookups(&mut self, offsets: &[usize]) -> Vec<Lookup> {
                     let s = self.parser.screen();
-                    let look = |id: vt::RowId| Lookup {
-                        id: number(id),
-                        offset: up(s, id),
-                        version: s.row_by_id(id).map(|r| r.version()),
+                    let look = |id: vt::RowId| {
+                        let index = s.row_index(id);
+                        Lookup {
+                            id: number(id),
+                            index,
+                            version: index.and_then(|i| s.rows().nth(i)).map(|r| r.version()),
+                        }
                     };
                     let mut out: Vec<Lookup> = self.oldest.into_iter().map(look).collect();
                     out.extend(
@@ -482,42 +444,6 @@ macro_rules! side {
                         .and_then(|last| back(s, last))
                         .map(|r| r.id());
                     out
-                }
-
-                fn copy(&self, ask: &model::Selection, cells: bool) -> Seen {
-                    let w = window(self.parser.screen(), ask.offset);
-                    let mut seen = Seen {
-                        rows: w.rows(),
-                        cols: w.cols(),
-                        wrapped: Vec::new(),
-                        row_ids: Vec::new(),
-                        cells: Vec::new(),
-                        text: w
-                            .text(ask.from, ask.to, ask.max_cells, ask.max_bytes)
-                            .map_err(error),
-                    };
-                    if cells {
-                        for y in 0..=w.rows() {
-                            seen.wrapped.push(w.row_wrapped(y));
-                            seen.row_ids
-                                .push(w.row(y).map(|r| (number(r.id()), r.len())));
-                            let mut line = String::new();
-                            for x in 0..=w.cols() {
-                                match w.cell(y, x) {
-                                    Some(c) => line.push_str(&format!(
-                                        "[{:?} {} {} {:?}]",
-                                        c.contents(),
-                                        c.is_wide(),
-                                        c.is_wide_continuation(),
-                                        style(c.attributes())
-                                    )),
-                                    None => line.push_str("[-]"),
-                                }
-                            }
-                            seen.cells.push(line);
-                        }
-                    }
-                    seen
                 }
             }
 
@@ -561,8 +487,8 @@ macro_rules! side {
             /// A `Cell` as its own accessors show it.
             fn stored(c: &vt::CellRef<'_>) -> String {
                 format!(
-                    "contents {} wide {} continuation {} {:?}",
-                    c.has_contents(),
+                    "{:?} wide {} continuation {} {:?}",
+                    c.contents(),
                     c.is_wide(),
                     c.is_wide_continuation(),
                     style(c.attributes())
@@ -577,12 +503,8 @@ macro_rules! side {
 
                 fn constants() -> Vec<(&'static str, String)> {
                     let mut out = vec![
-                        ("UNICODE_VERSION", format!("{:?}", vt::UNICODE_VERSION)),
-                        ("URI_LIMIT", vt::URI_LIMIT.to_string()),
-                        ("ID_LIMIT", vt::ID_LIMIT.to_string()),
                         ("OSC_PAYLOAD_LIMIT", vt::OSC_PAYLOAD_LIMIT.to_string()),
-                        ("CLUSTER_CAPACITY", vt::CLUSTER_CAPACITY.to_string()),
-                        ("Identity::MAX_LEN", vt::Identity::MAX_LEN.to_string()),
+                        ("Error::Capacity", error(vt::Error::Capacity).0),
                         (
                             "Options::default is Options::new",
                             (vt::Options::default() == vt::Options::new()).to_string(),
@@ -614,19 +536,6 @@ macro_rules! side {
                                     .map(|u| (underline(u), u.number()))
                             ),
                         ));
-                    }
-                    for len in [0usize, 1, 2, 3, 10, 100, 1000] {
-                        out.push((
-                            "Cells::text_limit",
-                            format!("{len}: {}", vt::Cells::text_limit(len)),
-                        ));
-                    }
-                    for e in [
-                        vt::Error::Capacity,
-                        vt::Error::CopyLimit,
-                        vt::Error::InvalidRange,
-                    ] {
-                        out.push(("Error", error(e).0));
                     }
                     out
                 }
@@ -670,16 +579,7 @@ macro_rules! side {
                             run.fill(*start..*end, cell);
                             stored(&cell)
                         }
-                        Edit::Resize {
-                            len,
-                            text,
-                            wide,
-                            style,
-                        } => {
-                            let cell = vt::CellRef::new(text, *wide, attributes(style));
-                            let made = run.resize(*len, cell);
-                            format!("{} {}", made.is_ok(), stored(&cell))
-                        }
+                        Edit::Reset { len } => format!("{:?}", run.reset(*len).map_err(error)),
                         Edit::Copy { i, from } => {
                             let was = run.clone();
                             match was.get(*from) {
@@ -687,16 +587,17 @@ macro_rules! side {
                                 None => "no cell".into(),
                             }
                         }
-                        Edit::Collect => {
-                            match vt::Cells::try_from_iter(run.iter()) {
-                                Ok(collected) => {
-                                    let equal = collected == *run;
-                                    *run = collected;
-                                    format!("{equal}")
-                                }
-                                Err(error) => format!("{error}"),
+                        Edit::Collect => match vt::Cells::new(run.len()) {
+                            Ok(mut collected) => {
+                                let kept: Vec<bool> = (run.range(0..run.len()).enumerate())
+                                    .map(|(i, cell)| collected.set(i, cell))
+                                    .collect();
+                                let equal = collected == *run;
+                                *run = collected;
+                                format!("{equal} {kept:?}")
                             }
-                        }
+                            Err(e) => error(e).0,
+                        },
                     }
                 }
 
@@ -704,33 +605,26 @@ macro_rules! side {
                     out.clear();
                     out.len = run.len();
                     out.is_empty = run.is_empty();
-                    out.text_len = run.text_len();
-                    let mut get_agrees = run.get(run.len()).is_none();
-                    for (i, c) in run.iter().enumerate() {
+                    let mut range_agrees = run.range(0..run.len()).len() == run.len();
+                    for (i, c) in (0..run.len()).filter_map(|i| run.get(i)).enumerate() {
                         out.text.push_str(c.contents());
-                        let st = style(c.attributes());
-                        let getters_agree = getters(&c) == st;
                         out.cells.push(Cell {
                             end: out.text.len(),
-                            has_contents: c.has_contents(),
                             wide: c.is_wide(),
                             continuation: c.is_wide_continuation(),
-                            style: st,
-                            getters_agree,
+                            style: style(c.attributes()),
                         });
-                        get_agrees &= run.get(i) == Some(c);
+                        range_agrees &= run.range(i..i.saturating_add(1)).eq(Some(c));
                     }
-                    if !get_agrees {
+                    if run.get(run.len()).is_some() {
                         out.disagreeing.push("Cells::get");
                     }
                     let (from, to) = (
                         run.len() / 3,
                         (run.len().saturating_mul(2) / 3).saturating_add(2),
                     );
-                    if !run
-                        .range(from..to)
-                        .eq(run.iter().skip(from).take(to.saturating_sub(from)))
-                    {
+                    range_agrees &= run.range(from..to).eq((from..to).filter_map(|i| run.get(i)));
+                    if !range_agrees {
                         out.disagreeing.push("Cells::range");
                     }
                 }
@@ -738,6 +632,19 @@ macro_rules! side {
         }
     };
 }
+
+/// The modes of `Mode` (`$mode`) listed, but `$left`: the match has no
+/// catch-all, so a mode that is not listed fails to build.
+macro_rules! every_mode {
+    ($mode:path, $left:ident; $($m:ident),* $(,)?) => {{
+        use $mode as Mode;
+        let _named = |m: Mode| match m {
+            Mode::$left $(| Mode::$m)* => (),
+        };
+        [$(Mode::$m),*]
+    }};
+}
+use every_mode;
 
 side!(work, fux_vt, "work", checked);
 side!(base, base_vt, "base");
