@@ -68,6 +68,15 @@ name = "fuxth-core"
 version = "0.7.0"
 
 [[package]]
+name = "fuxth-run"
+version = "0.1.0"
+dependencies = [
+ "fux-vt",
+ "fuxix",
+ "fuxth",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
