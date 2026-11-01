@@ -156,7 +156,8 @@ fn zoom_fills_the_screen_and_restores() -> Outcome {
 
 /// With no bar, the default, a fresh client gives every row to its panes.
 /// The prefix draws the bar over the bottom row until it ends, and a bell
-/// in another tab takes only the row's corner. Neither resizes a pane.
+/// in another tab takes only the row's corner, briefly. Neither resizes a
+/// pane.
 #[test]
 fn the_bar_draws_over_the_panes_only_while_the_prefix_is_in_use() -> Outcome {
     let server = Server::start("")?;
@@ -183,6 +184,10 @@ fn the_bar_draws_over_the_panes_only_while_the_prefix_is_in_use() -> Outcome {
         row.starts_with("bottom-row") && row.ends_with(&format!("bell in {other}"))
     })?;
     assert!(whole()?);
+    // It ends by itself, with no key, and the row is the pane's again.
+    client.wait("the notice's end", |t| {
+        t.lines().nth(9) == Some("bottom-row")
+    })?;
     Ok(())
 }
 

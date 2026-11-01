@@ -406,9 +406,10 @@ impl Session {
     }
 
     /// Pane `id`'s program rang the bell or sent a notification. Each
-    /// client showing its workspace is told so in a notice: of a bell, one
-    /// not shown its tab, which has the tab marked in its bar until it
-    /// shows it; and a bell rings each, at most once every [`BELL_GAP`].
+    /// client showing its workspace is told so in a brief notice
+    /// (`View::alert`), the notification's text if it sent one; a bell
+    /// rings each, at most once every [`BELL_GAP`], and marks the tab in the
+    /// bar of each not shown it until it shows it.
     pub(crate) fn alert(&mut self, id: PaneId, bell: bool, notified: Option<Said>, now: Instant) {
         let Some(ws) =
             (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
@@ -437,14 +438,13 @@ impl Session {
             let Some(&shown) = viewers.get(&view.id) else {
                 continue;
             };
-            if let Some(notice) = &notice {
-                view.notify(notice.clone(), false);
+            let rings = bell && view.presentation.bell;
+            // A notification's text says more than a bell read with it.
+            if let Some(text) = (notice.clone()).or_else(|| rings.then(|| rang.clone())) {
+                view.alert(text, now);
             }
-            if !bell || !view.presentation.bell {
+            if !rings {
                 continue;
-            }
-            if !shown {
-                view.notify(rang.clone(), false);
             }
             if let Some(seat) = tab.seat_mut(view.id).filter(|s| !shown && !s.rang) {
                 seat.rang = true;
@@ -961,9 +961,68 @@ mod tests {
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         run(&mut s, "str c2 client str elsewhere workspace show")?;
         s.out(PaneId::of(1), b"\x1b]9;build done\x07");
-        let notice = |s: &Session, c| (s.views.get(&c)?.notice.as_ref()).map(|n| n.text.clone());
         assert_eq!(notice(&s, c).as_deref(), Some("%1: build done"));
         assert_eq!(notice(&s, d), None);
+        Ok(())
+    }
+
+    /// The text of client `c`'s notice, if it shows one.
+    fn notice(s: &Session, c: ClientId) -> Option<String> {
+        (s.views.get(&c)?.notice.as_ref()).map(|n| n.text.clone())
+    }
+
+    #[test]
+    fn a_bell_notice_shows_even_from_a_pane_hidden_by_zoom() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(&mut s, "str c1 client str %1 pane show str c1 client zoom")?;
+        s.out(PaneId::of(2), b"\x07");
+        assert_eq!(notice(&s, c).as_deref(), Some("bell in %1"));
+        // Its tab is shown: no mark for it.
+        let tab = s.shown_tab(c).ok_or("tab")?;
+        assert!(tab.seat(c).is_some_and(|seat| !seat.rang));
+        Ok(())
+    }
+
+    #[test]
+    fn a_notification_read_with_a_bell_keeps_its_text() -> Outcome {
+        let (mut s, c) = session()?;
+        run(
+            &mut s,
+            "opts 80 24 size str +1 workspace in new-tab drop str c1 client str @2 tab show",
+        )?;
+        let _ = sent(&mut s, c);
+        s.out(PaneId::of(1), b"\x07\x1b]9;build done\x07");
+        assert_eq!(notice(&s, c).as_deref(), Some("%1: build done"));
+        assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
+        let tab = s.tab(TabId::of(1)).ok_or("@1")?;
+        assert!(tab.seat(c).is_some_and(|seat| seat.rang));
+        Ok(())
+    }
+
+    #[test]
+    fn an_alert_notice_ends_by_itself_and_the_pane_shows_again() -> Outcome {
+        let (mut s, c) = session()?;
+        s.out(PaneId::of(1), b"\x1b[10;1Hbottom row");
+        s.out(PaneId::of(1), b"\x1b]9;done\x07");
+        let row = |s: &Session| (crate::render::compose(s, c)).map(|g| g.row_text(9));
+        assert!(row(&s).is_some_and(|r| r.ends_with("%1: done")));
+        let (due, timer) = (s.timers())
+            .find(|(_, t)| matches!(t, crate::session::Timer::Notice(_)))
+            .ok_or("no notice timer")?;
+        // Not before it is due.
+        let early = due.checked_sub(std::time::Duration::from_millis(1));
+        s.fire(timer, early.ok_or("early")?);
+        assert!(notice(&s, c).is_some());
+        s.fire(timer, due);
+        assert_eq!(notice(&s, c), None);
+        assert_eq!(row(&s).as_deref(), Some("bottom row"));
+        // An alert's end never ends a newer notice.
+        s.out(PaneId::of(1), b"\x1b]9;again\x07");
+        s.notify_to(c, "newer", false);
+        let late = due.checked_add(crate::view::ALERT).ok_or("late")?;
+        s.fire(timer, late);
+        assert_eq!(notice(&s, c).as_deref(), Some("newer"));
         Ok(())
     }
 

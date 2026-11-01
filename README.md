@@ -52,9 +52,9 @@ prefix (or any screen of fux's) is in use, the bar draws over the bottom
 row: the workspace and its tabs on the left; on the right the focused
 pane's id and label (its given name, else its OSC 0/2 title, launch
 program or id), or what the keys do. When it ends, the row shows the pane
-again. A notice, a bell in a tab you are not looking at, and a program's
-notification (OSC 9, 777) take only the bottom-right corner, until your
-next key. A screen too
+again. A notice takes only the bottom-right corner, until your next key;
+a bell or a program's notification (OSC 9, 777) shows there for five
+seconds, or until your next key. A screen too
 small for its tab (a watcher's, or one too small for all its panes)
 shows panes cut off at their right and bottom, or none of a pane it has
 no room for: the corner names them, hidden first: `[hidden %3] [cut %2]`.
@@ -818,10 +818,11 @@ and width implementations.
   knows is not answered: one the host didn't say, palette entries past 15
   the program didn't set, and every colour in a tab with no host.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
-  most once every 250 ms; a tab you are not looking at shows a `bell in …`
-  notice and is marked `!` in the bar until you show it. `str bell false
-  set` silences all three. A program's notification (OSC 9, 777) shows as
-  a notice, `%3 label: text`, in each terminal showing its workspace.
+  most once every 250 ms, and shows it a brief `bell in …` notice; a tab
+  you are not looking at is also marked `!` in the bar until you show it.
+  `str bell false set` silences all three. A program's notification (OSC
+  9, 777) shows as a brief notice, `%3 label: text`, in each terminal
+  showing its workspace, in place of a bell's notice from the same output.
 - **Titles.** With `str titles true set`, your terminal's title is the
   focused pane's (or its tab's label). fux saves your terminal's own title
   first and restores it when you detach or turn titles off.

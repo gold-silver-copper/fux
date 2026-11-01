@@ -245,8 +245,8 @@ str v str split-right bind
 ## The bar on a row of its own
 
 The bar takes no row by default: the panes have every row, the prefix
-draws the bar over the bottom one until it ends, and a bell in another tab
-or a program's notification shows in its corner until the next key. This
+draws the bar over the bottom one until it ends, and a bell or a
+program's notification shows in its corner for five seconds. This
 config gives the bar its own row below the panes again.
 
 ```fux
