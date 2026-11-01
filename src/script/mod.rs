@@ -1584,7 +1584,9 @@ fn ran(
     });
     let rerun = argv.map(|argv| client::Rerun { argv, program });
     let mut machine = base(None).map_err(|failed| uncompiled(failed, again.as_ref()))?;
-    machine.read(tokens, path.clone());
+    // A file with no canonical path (`<(…)`) requires relative to the
+    // working directory, as stdin does.
+    machine.read(tokens, path.as_ref().and_then(|p| p.canonicalize().ok()));
     let mut state = Draft::default();
     // A program file that may not read the same again (a pipe, `<(…)`)
     // is not read again by the server's binary.
