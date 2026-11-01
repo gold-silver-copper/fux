@@ -279,7 +279,7 @@ words! {
         Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
         Reading Snapshot "snapshot" "snapshot-scope projection -- record" "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
         Reading Get "get" "readable field -- value" "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux %3 str exited get" [];
-        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
+        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failure as its fields, a failed wait's answer its value" "fux ls json" [];
         Reading NextEvents "next-events" "event-scope cursor secs -- record" "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux all str '' 0 next-events json" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];

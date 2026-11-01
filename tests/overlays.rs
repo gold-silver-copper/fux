@@ -217,6 +217,13 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.wait_for("Enter accept")?;
     client.keys("nope\r")?;
     bar_has(&mut client, "nope: no such word")?;
+    // A failure after an action says the action took effect (D-25).
+    client.keys(&format!("{PREFIX}e"))?;
+    client.wait_for("Enter accept")?;
+    client.keys("str %1 pane str acted rename str boom fail\r")?;
+    bar_has(&mut client, "already took effect")?;
+    assert!(server.ok(&["ls", "listing"])?.contains("%1 acted"));
+    server.ok(&["%1", "str", "left", "rename"])?;
     // The focused program exited, so it has no readable nearby cwd.
     server.exits("%2")?;
     client.keys(&format!("{PREFIX}e"))?;

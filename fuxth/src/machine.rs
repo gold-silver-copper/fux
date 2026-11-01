@@ -375,7 +375,12 @@ pub struct Machine<A> {
     chars: Vec<Option<Value<A>>>,
     /// The steps whose words took effect (`acted`), each once, in the order
     /// they first did: what a failure says had happened before it.
-    actions: Vec<Token>,
+    actions: Vec<(Step, Token)>,
+    /// How many sources were given to read, which names each.
+    pub(crate) sources: u64,
+    /// The calls under way where a failure `throw` raised again, and no
+    /// `try` caught, first happened.
+    raised: Vec<Token>,
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, usize, usize)>,
@@ -408,6 +413,8 @@ impl<A: AppValue> Machine<A> {
             steps: 0,
             chars: Vec::new(),
             actions: Vec::new(),
+            sources: 0,
+            raised: Vec::new(),
             last: None,
         };
         let vocabulary = Rc::clone(&machine.vocabulary);
@@ -503,17 +510,23 @@ impl<A: AppValue> Machine<A> {
         self.actions.clear();
     }
 
-    /// The word at `step` took effect (the host did what it asked): listed,
-    /// once, with every failure from then on.
-    pub fn acted(&mut self, step: Token) {
-        if !self.actions.contains(&step) {
-            self.actions.push(step);
+    /// The word the machine is at took effect (the host did what it
+    /// asked): listed with every failure from then on, at the innermost
+    /// call under way whose token `skip` doesn't pass over (`calls`). Each
+    /// step is listed once, however many times it acts; two steps are two,
+    /// though one line holds both.
+    pub fn acted(&mut self, skip: impl Fn(&Token) -> bool) {
+        let found = self.steps().rev().find(|(_, token)| !skip(token));
+        if let Some((step, token)) = found
+            && !self.actions.iter().any(|(listed, _)| *listed == step)
+        {
+            self.actions.push((step, token));
         }
     }
 
     /// The steps whose words took effect, in the order they first did.
-    pub fn actions(&self) -> &[Token] {
-        &self.actions
+    pub fn actions(&self) -> impl Iterator<Item = &Token> {
+        self.actions.iter().map(|(_, token)| token)
     }
 
     /// It is a callback's: what it is given must be used up, so it fails
@@ -547,7 +560,7 @@ impl<A: AppValue> Machine<A> {
     /// so far, the handler next. Else its error, which no `try` caught, the
     /// machine left where it happened, for its host to say where, but for
     /// the code it was compiling.
-    fn recover(&mut self, thrown: Thrown<A>) -> Result<(), Error> {
+    fn recover(&mut self, mut thrown: Thrown<A>) -> Result<(), Error> {
         let code = thrown.error.code;
         let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&code));
         let Some(caught) = self.marks.iter().rposition(catches) else {
@@ -556,6 +569,9 @@ impl<A: AppValue> Machine<A> {
             self.building.clear();
             self.compiling = false;
             self.stack.retain(|value| !matches!(value, Value::Mark(_)));
+            if !thrown.calls.is_empty() {
+                self.raised = thrown.calls;
+            }
             return Err(thrown.error);
         };
         // Those inside it end with it.
@@ -574,6 +590,11 @@ impl<A: AppValue> Machine<A> {
         else {
             return Err(thrown.error);
         };
+        // Where it happened, if calls end as it is caught (else they are
+        // under way still); one raised again keeps where it first did.
+        if thrown.calls.is_empty() && self.frames.len() > frames {
+            thrown.calls = self.calls().collect();
+        }
         while self.frames.len() > frames {
             self.leave();
         }
@@ -582,7 +603,7 @@ impl<A: AppValue> Machine<A> {
         self.building.truncate(building);
         self.compiling = compiling;
         self.jump(handler);
-        let actions = self.actions.clone();
+        let actions = self.actions().cloned().collect();
         self.push(Value::Failure(Rc::new(Thrown { actions, ..thrown })));
         Ok(())
     }
@@ -620,10 +641,23 @@ impl<A: AppValue> Machine<A> {
     /// frame, still shows the call that began it. Read from either end, it
     /// allocates nothing.
     pub fn calls(&self) -> impl DoubleEndedIterator<Item = Token> + '_ {
+        self.steps().map(|(_, token)| token)
+    }
+
+    /// The calls under way where the failure that ended the run happened:
+    /// for one `throw` raised again, those where it first did, which ended
+    /// as a `try` caught it.
+    pub fn failed_calls(&self) -> impl DoubleEndedIterator<Item = Token> + '_ {
+        let live = self.raised.is_empty();
+        (self.raised.iter().cloned()).chain(self.calls().filter(move |_| live))
+    }
+
+    /// `calls`, each with which step it is.
+    fn steps(&self) -> impl DoubleEndedIterator<Item = (Step, Token)> + '_ {
         let (innermost, last) = (self.frames.len().saturating_sub(1), self.taken());
         self.frames.iter().enumerate().flat_map(move |(i, frame)| {
             let (via, at) = match frame {
-                Frame::Read(read) => (None, read.last()),
+                Frame::Read(read) => (None, read.step()),
                 Frame::Code {
                     code, step, via, ..
                 } => {
@@ -641,21 +675,23 @@ impl<A: AppValue> Machine<A> {
         })
     }
 
-    /// The token of the step the innermost frame took last: none for a
+    /// The step the innermost frame took last, and its token: none for a
     /// call just begun (its caller took the call).
-    fn taken(&self) -> Option<Token> {
+    fn taken(&self) -> Option<(Step, Token)> {
         let (depth, code, step) = self.last?;
         let Some(Frame::Code { code: frame, .. }) = self.frames.last() else {
             return None;
         };
         let ours = depth == self.frames.len() && *frame == code;
-        ours.then(|| self.version_at(code)?.token(step))?
+        let token = ours.then(|| self.version_at(code)?.token(step))??;
+        Some((Step::Code(code, step), token))
     }
 
-    /// The token of the step before `step` of the code at `code`: none at
+    /// The step before `step` of the code at `code`, and its token: none at
     /// its first.
-    fn before(&self, code: usize, step: usize) -> Option<Token> {
-        self.version_at(code)?.token(step.checked_sub(1)?)
+    fn before(&self, code: usize, step: usize) -> Option<(Step, Token)> {
+        let step = step.checked_sub(1)?;
+        Some((Step::Code(code, step), self.version_at(code)?.token(step)?))
     }
 
     /// The token the step just taken came from: where an error is, and
@@ -665,7 +701,7 @@ impl<A: AppValue> Machine<A> {
     /// taken; the word read last, while reading. A word of the core's or
     /// the host's run by `execute` has no token of its own: its caller's.
     pub fn at(&self) -> Option<Token> {
-        if let Some(taken) = self.taken() {
+        if let Some((_, taken)) = self.taken() {
             return Some(taken);
         }
         self.frames.iter().rev().find_map(|frame| match frame {
@@ -674,6 +710,7 @@ impl<A: AppValue> Machine<A> {
                 code, step, via, ..
             } => (self.before(*code, *step))
                 .or_else(|| via.and_then(|(code, step)| self.before(code, step)))
+                .map(|(_, token)| token)
                 .or_else(|| self.version_at(*code)?.token(*step)),
         })
     }
@@ -720,6 +757,7 @@ impl<A: AppValue> Machine<A> {
         budget: u64,
     ) -> Result<Outcome<H::Request>, Error> {
         let until = self.steps.saturating_add(budget);
+        self.raised.clear();
         loop {
             match self.steps_until(host, until) {
                 Err(error) => self.recover(thrown(error, None))?,
@@ -1262,6 +1300,21 @@ impl<A: AppValue> Machine<A> {
     }
 }
 
+/// Which step of which code, or which word of which source read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Code(usize, usize),
+    Read(u64, usize),
+}
+
+impl Read {
+    /// The word it read last, and which it is.
+    fn step(&self) -> Option<(Step, Token)> {
+        let at = self.next.checked_sub(1)?;
+        Some((Step::Read(self.id, at), self.last()?))
+    }
+}
+
 /// `error` as a failure to raise, carrying `carried`: its number its code's.
 fn thrown<A>(error: Error, carried: Option<Value<A>>) -> Thrown<A> {
     Thrown {
@@ -1269,6 +1322,7 @@ fn thrown<A>(error: Error, carried: Option<Value<A>>) -> Thrown<A> {
         error,
         carried,
         actions: Vec::new(),
+        calls: Vec::new(),
     }
 }
 

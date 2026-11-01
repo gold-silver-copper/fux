@@ -88,7 +88,7 @@ end
 # client -- : its focused pane's history in this client's $EDITOR (else vi), opened at its last line (+LINE, which vi, vim, nvim, nano and emacs take), in a split titled history and closed when the editor exits; after a failure, Enter closes it. env(1) gives the program the pane's id and the editor, and "${FUX:-fux}" is the server's fux
 define edit-history
   focused let p
-  str unset_var try str EDITOR getenv catch 2drop str vi end
+  str unset_var try str EDITOR getenv catch drop str vi end
   dup str '' eq if drop str vi then let editor
   p str vertical axis
   str env program  list str FUX_TARGET= p string end glue arg

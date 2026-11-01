@@ -176,9 +176,7 @@ fn run_at(text: &str, budget: u64, host: &mut Toy) -> Result<Vec<Value<Ticket>>,
             )?,
             // Answered, it took effect.
             Outcome::Suspended(n) => {
-                if let Some(at) = machine.at() {
-                    machine.acted(at);
-                }
+                machine.acted(|_| false);
                 machine.push(Value::Int(n.saturating_mul(10)));
             }
             Outcome::Paused => {}
@@ -864,11 +862,25 @@ fn throw_raises_a_failure_or_a_number() -> Result<(), Error> {
         Some("div_by_zero: t:2: div: division by zero")
     );
     assert_eq!(code(run("5 throw")), Some("thrown"));
+    // It keeps the calls that were under way where it happened, for its
+    // host to place it by, not those where it is raised again.
+    let text = "define f 1 0 div end define g throw end\nstr all try\nf catch\ng end";
+    let mut machine = compile(text)?;
+    let ran = machine.run(&mut Toy::default(), u64::MAX).err();
+    assert_eq!(ran.map(|e| e.code), Some(Code::DivByZero));
+    let calls: Vec<String> = (machine.failed_calls())
+        .map(|t| format!("{}:{}", t.place, t.text))
+        .collect();
+    assert!(
+        calls.ends_with(&["t:3:f".to_owned(), "t:1:div".to_owned()]),
+        "{calls:?}"
+    );
     Ok(())
 }
 
 /// A failure lists the steps whose words had taken effect before it, each
-/// once, in the order they first did: the host says which (`acted`).
+/// once, however often it acted, in the order they first did; two steps on
+/// one line are two. The host says which took effect (`acted`).
 #[test]
 fn a_failure_lists_the_actions_taken_before_it() -> Result<(), Error> {
     let taken = |values: Vec<Value<Ticket>>| -> Vec<String> {
@@ -881,7 +893,9 @@ fn a_failure_lists_the_actions_taken_before_it() -> Result<(), Error> {
     };
     let text = "1 ask drop\ndefine twice 2 ask drop 3 ask drop end twice twice
         str all try -1 ask catch end";
-    assert_eq!(taken(run(text)?), ["t:1:ask", "t:2:ask"]);
+    assert_eq!(taken(run(text)?), ["t:1:ask", "t:2:ask", "t:2:ask"]);
+    let looped = "0 begin 1 ask drop 1 add dup 3 eq until str all try -1 ask catch end";
+    assert_eq!(taken(run(looped)?), ["t:1:ask"]);
     let none: [&str; 0] = [];
     assert_eq!(taken(run("str all try 1 0 div catch end")?), none);
     Ok(())

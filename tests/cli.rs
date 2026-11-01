@@ -366,6 +366,13 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         inside.ends_with("(use: PANE TEXT type, which leaves answer)\n"),
         "{inside}"
     );
+    // Raised again, it is placed where it first failed, at the program's
+    // call into the library, not at `throw`.
+    let rethrown = said(&["str", "all", "try", "3", "upper", "catch", "throw", "end"])?;
+    assert!(
+        rethrown.starts_with("fux: type: argument 5: upper: inside upper, each: "),
+        "{rethrown}"
+    );
     // Caught, it is only why: no place, no bundled step, no usage.
     let caught =
         server.words("str type try list 1 end 0 at str x type catch str message get end")?;
@@ -407,6 +414,10 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         catch dup str number get swap str actions get end";
     let caught = server.ok(&caught.split_whitespace().collect::<Vec<_>>())?;
     assert_eq!(caught, "-10\nargument 8: send-keys\n");
+    // Two steps on one line are two actions, though the line names both.
+    let line = "str all try %1 str first rename %1 str second rename str boom fail
+        catch str actions get len end";
+    assert_eq!(server.ok(&[line])?, "2\n");
     // The language's own words say how they are written.
     for (words, usage) in [
         (
@@ -703,6 +714,15 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
         !server.ok(&["ls", "listing"])?.contains("%2"),
         "new-tab ran after help failed"
     );
+    // What is left refused as it is printed, after the run acted: the
+    // report still lists the action.
+    let refused = full()?.args(["%1", "str", "x", "rename", "42"]).output();
+    let told = String::from_utf8_lossy(&refused.map_err(e)?.stderr).into_owned();
+    assert!(
+        told.starts_with("fux: output: ")
+            && told.contains("\nfux: already took effect: argument 4: rename\n"),
+        "{told}"
+    );
     let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
     server.ok(&["%1", "str", "told", "rename"])?;
     let mut events = (full()?.args(["all", "str", cursor.trim(), "events"]))
@@ -788,6 +808,37 @@ fn an_action_acts_though_stdout_is_closed() -> Outcome {
     Ok(())
 }
 
+/// `start` is an action, which a later failure lists.
+#[test]
+fn a_started_server_is_an_action() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&["kill-server"])?;
+    let failed = {
+        let _guard = spawning()?;
+        server.fux(&["start", "str", "boom", "fail"])?
+    };
+    server.ok(&["kill-server"])?;
+    let caught = ["str", "all", "try", "start", "str", "boom", "fail"];
+    let caught = {
+        let _guard = spawning()?;
+        server.ok(&[
+            &caught[..],
+            &["catch", "str", "actions", "get", "len", "end"],
+        ]
+        .concat())
+    };
+    server.ok(&["kill-server"])?;
+    assert!(
+        failed
+            .stderr
+            .contains("\nfux: already took effect: argument 1: start\n"),
+        "{}",
+        failed.stderr
+    );
+    assert_eq!(caught?, "1\n");
+    Ok(())
+}
+
 /// A batch `next-events` leaves prints as its events, a JSON object a line:
 /// nothing when none came; `json` gives all of it.
 #[test]
@@ -824,6 +875,16 @@ fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
     let failed = server.fux(&[&lost[..], &keys].concat())?;
     assert_eq!(failed.status, 1, "{}", failed.stderr);
     assert_eq!(failed.stdout, "");
+    // The batch refused as it is printed, the action is told too.
+    let refused = server.fux(&[&lost[..], &keys[..5]].concat())?;
+    assert!(
+        refused.stderr.contains("entries missed")
+            && refused
+                .stderr
+                .contains("fux: already took effect: argument 10: send-keys"),
+        "{}",
+        refused.stderr
+    );
     let told: Vec<_> = failed.stderr.lines().collect();
     assert!(
         matches!(&told[..], [why, taken, batch, answer]
