@@ -326,6 +326,18 @@ impl Terminal {
 }
 
 impl Terminal {
+    /// Its status once it ends, within 10 seconds.
+    fn ended(&mut self) -> Result<std::process::ExitStatus, String> {
+        let deadline = after(Duration::from_secs(10));
+        loop {
+            match self.child.try_wait().map_err(e)? {
+                Some(status) => return Ok(status),
+                None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                None => return Err("it never ended".to_owned()),
+            }
+        }
+    }
+
     /// Waits until the program has the terminal in key mode: what is typed
     /// before would be echoed and edited by the terminal.
     fn wait_until_keys(&self) -> Outcome {
@@ -363,7 +375,7 @@ fn a_line_read_after_a_key_on_a_terminal_ends_at_enter() -> Outcome {
     keys.type_in("hello\r")?;
     let echoed = "hello\r\nhello\r\n";
     assert_eq!(keys.wait_for(echoed)?, echoed);
-    let status = keys.child.wait().map_err(e)?;
+    let status = keys.ended()?;
     assert!(status.success(), "{status:?}");
     Ok(())
 }
@@ -376,8 +388,7 @@ fn an_ending_signal_puts_the_terminal_back() -> Outcome {
     keys.wait_until_keys()?;
     let pid = fuxix::process::Pid::of(&keys.child).ok_or("no pid")?;
     fuxix::process::kill(pid, fuxix::process::Signal::Term).map_err(e)?;
-    let status = keys.child.wait().map_err(e)?;
-    assert_eq!(status.code(), Some(128 + 15));
+    assert_eq!(keys.ended()?.code(), Some(128 + 15));
     let modes = fuxix::terminal::attributes(&keys.master)
         .map_err(e)?
         .modes();
@@ -407,15 +418,7 @@ fn an_ending_signal_ends_a_write_held_up_by_a_full_pipe() -> Outcome {
     std::thread::sleep(Duration::from_millis(500));
     let pid = fuxix::process::Pid::of(&keys.child).ok_or("no pid")?;
     fuxix::process::kill(pid, fuxix::process::Signal::Term).map_err(e)?;
-    let deadline = after(Duration::from_secs(10));
-    let status = loop {
-        match keys.child.try_wait().map_err(e)? {
-            Some(status) => break status,
-            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            None => return Err("SIGTERM never ended the held write".to_owned()),
-        }
-    };
-    assert_eq!(status.code(), Some(128 + 15));
+    assert_eq!(keys.ended()?.code(), Some(128 + 15));
     let modes = fuxix::terminal::attributes(&keys.master)
         .map_err(e)?
         .modes();
@@ -483,7 +486,7 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
     let ahead = "120\r\nhello\r\nok\r\n3\r\nok\r\n";
     assert_eq!(repl.wait_for(ahead)?, ahead);
     repl.type_in("\x04")?;
-    let status = repl.child.wait().map_err(e)?;
+    let status = repl.ended()?;
     assert!(status.success(), "{status:?}");
     Ok(())
 }
