@@ -105,14 +105,6 @@ pub fn admit(
     context: &fux_wire::protocol::Context,
 ) -> Result<crate::screens::Screen, super::Failed> {
     let refused = |why| super::Failed::new(fux_wire::code::Code::BadValue, why);
-    // It goes to its client in one frame.
-    if fux_wire::wire::encode(&open).len() > fux_wire::protocol::MAX_FRAME.saturating_sub(128) {
-        let past = super::Failed::new(
-            fux_wire::code::Raise::TooLong,
-            "screen data is past a frame",
-        );
-        return Err(past);
-    }
     let config = state.and_then(|s| s.config.as_ref());
     let check =
         |action: &fux_wire::callback::Callback, args: Vec<Data>| -> Result<(), super::Failed> {
@@ -246,7 +238,7 @@ mod tests {
         )));
         let spec = list(payload, "receiver-only");
         use fux_wire::protocol::{Decoder, Frame, ToAttached};
-        let encoded = ToAttached::Open(spec).encode()?;
+        let encoded = ToAttached::Open(spec).encode();
         let mut decoder = Decoder::default();
         decoder.push(&encoded);
         let Some(ToAttached::Open(spec)) = decoder.frame::<ToAttached>()? else {
@@ -469,11 +461,6 @@ mod tests {
             ),
         });
         assert!(admit(spec, None, &context).is_err());
-        let huge = list(
-            Data::Text(std::iter::repeat_n('x', fux_wire::protocol::MAX_FRAME).collect()),
-            "2drop",
-        );
-        assert!(admit(huge, None, &context).is_err());
         assert!(data(&Value::App(Fux::Opts(std::rc::Rc::new(Default::default())))).is_err());
         Ok(())
     }

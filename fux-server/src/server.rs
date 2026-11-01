@@ -387,12 +387,9 @@ impl Conn {
         }
     }
 
-    /// Encodes a frame straight into the output; a connection whose frame
-    /// cannot be encoded fails.
-    fn send<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>, now: Instant) {
-        if self.out.push_with(|out| frame.encode_into(out)).is_err() {
-            self.enter(session, Stage::Dead, now);
-        }
+    /// Encodes a frame straight into the output.
+    fn send<'a>(&mut self, frame: &impl Frame<'a>) {
+        self.out.push_with(|out| frame.encode_into(out));
     }
 
     /// Its client attaches as `attach` says: it is told its id before
@@ -402,7 +399,7 @@ impl Conn {
             Ok(client) => {
                 let attached = Attached::new(client, now);
                 self.enter(session, Stage::Attached(Box::new(attached)), now);
-                self.send(session, &ToAttached::Welcome(client, session.run), now);
+                self.send(&ToAttached::Welcome(client, session.run));
             }
             Err(error) => self.end(session, &ToAttached::Exit(&error.to_string()), now),
         }
@@ -436,7 +433,7 @@ impl Conn {
             return;
         }
         split_into(&bytes, ToCommand::Part, &mut self.out);
-        self.send(session, &ToCommand::PartsEnd, now);
+        self.send(&ToCommand::PartsEnd);
         if self.stage.asked() {
             self.enter(session, Stage::Command, now);
         }
@@ -446,7 +443,7 @@ impl Conn {
     /// terminal given back first: it closes once what waits is sent.
     fn end<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>, now: Instant) {
         self.enter(session, Stage::Closing, now);
-        self.send(session, frame, now);
+        self.send(frame);
     }
 
     /// Sends the client attached here `frame`, an `Exit` as its last
@@ -461,7 +458,7 @@ impl Conn {
             ToAttached::Welcome(..)
             | ToAttached::Ended(_)
             | ToAttached::Open(_)
-            | ToAttached::Keys(_) => self.send(session, frame, now),
+            | ToAttached::Keys(_) => self.send(frame),
         }
     }
 
@@ -1246,7 +1243,7 @@ impl Server {
                 }
                 let ours = Hello::ours(hello.role);
                 let between = Mismatch::between(&hello, &ours);
-                conn.send(session, &Greeting::Hello(ours), now);
+                conn.send(&Greeting::Hello(ours));
                 // A mismatch is answered whatever the role: a client of
                 // another protocol may say one this protocol has not.
                 match (between, hello.role) {
@@ -2132,8 +2129,8 @@ mod tests {
             let key = AttachedFrame::Act(Box::new(fux_wire::act::Act::Key(
                 fux_vt::keys::KeyPress::char('a').into(),
             )))
-            .encode()?;
-            let resize = AttachedFrame::Resize(fux_vt::Size::new(10, 40)?).encode()?;
+            .encode();
+            let resize = AttachedFrame::Resize(fux_vt::Size::new(10, 40)?).encode();
             let mut prefix = Vec::new();
             for _ in 0..KEYS {
                 prefix.extend_from_slice(&key);
@@ -2146,7 +2143,7 @@ mod tests {
                 .get_mut(0)
                 .ok_or("worker")?
                 .decoder
-                .push(&asked.encode()?);
+                .push(&asked.encode());
             server.serve_conn(0, PollFlags::IN, Instant::now());
             assert!(matches!(
                 server.conns.first().map(|c| &c.stage),
@@ -2172,7 +2169,7 @@ mod tests {
                 .get_mut(2)
                 .ok_or("unrelated")?
                 .decoder
-                .push(&unrelated.encode()?);
+                .push(&unrelated.encode());
             let mut left = prefix.as_slice();
             while !left.is_empty() {
                 let (chunk, rest) = left
@@ -2310,7 +2307,7 @@ mod tests {
                         .get_mut(1)
                         .ok_or("source")?
                         .decoder
-                        .push(&AttachedFrame::Detach.encode()?);
+                        .push(&AttachedFrame::Detach.encode());
                 }
                 server.serve_conn(1, PollFlags::IN, Instant::now());
                 if let Some(source) = server.conns.get_mut(1) {

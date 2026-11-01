@@ -134,7 +134,7 @@ preferences! {
     reflow "reflow": bool;
     /// Arrows per alternate-screen wheel action; Ctrl keeps half-page scrolling.
     alternate_scroll_lines "alternate-scroll-lines": ScrollLines;
-    /// Picture byte budget for new panes; zero disables picture support.
+    /// Picture byte budget for new panes, up to fux-vt's picture ceiling; zero disables picture support.
     picture_bytes "picture-bytes": PictureBytes;
     /// Legacy Escape wait, applied when this client's decoder is idle.
     escape_delay "escape-delay-ms": DecodeMillis;
@@ -287,7 +287,6 @@ mod tests {
             ("paste-timeout-ms", Value::Int(65536)),
             ("cell-placement", Value::str("cells")),
             ("history-bytes", Value::Int(-1)),
-            ("history-bytes", Value::Int((1 << 30) + 1)),
             ("journal-entries", Value::Int(0)),
             ("bell", Value::Int(0)),
             ("bell", Value::str("off")),

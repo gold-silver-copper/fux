@@ -242,9 +242,8 @@ fn wait_at_most(stream: &UnixStream, timeout: Option<Duration>) {
 }
 
 fn send<'a>(stream: &mut UnixStream, frame: &impl Frame<'a>) -> Result<(), Error> {
-    let bytes = frame.encode()?;
     stream
-        .write_all(&bytes)
+        .write_all(&frame.encode())
         .map_err(failed("writing to the server"))
 }
 
@@ -672,10 +671,6 @@ enum Update {
     Finished(Ran),
 }
 
-/// The longest a program's notice may be: the frame it goes to the server
-/// in holds no more. One longer is not shown, but said not to be.
-const NOTICE_MAX: usize = fux_wire::protocol::MAX_PAYLOAD - 64;
-
 /// The state the worker and the client share. A program changes a copy,
 /// put in its place whole (`run_job`), so one that panicked holding it
 /// left no change half made.
@@ -788,7 +783,9 @@ impl Keyboard {
                 }
             });
         spawned?;
-        let mut decoder = fux_vt::keys::decode::Decoder::new(timing);
+        // A paste of any length is kept: the user's terminal and memory
+        // bound it, not fux.
+        let mut decoder = fux_vt::keys::decode::Decoder::with_paste_limit(timing, usize::MAX);
         // The server asks the terminal about itself as the client attaches.
         decoder.expect(Instant::now());
         Ok(Keyboard {
@@ -1093,13 +1090,6 @@ fn run_job(
         Err(failed) => Some((failed.notice(), true)),
         Ok(stack) => said(String::from_utf8_lossy(&out).into_owned(), &stack),
     };
-    let notice = notice.map(|(text, error)| match text.len() {
-        0..=NOTICE_MAX => (text, error),
-        n => (
-            format!("a notice of {n} bytes, longer than {NOTICE_MAX}, was not shown"),
-            true,
-        ),
-    });
     Ran {
         notice,
         opened,
@@ -1137,16 +1127,16 @@ pub fn attach(
     // connecting still ends fux, and before it goes raw.
     let early = (!terminal).then(Signals::new).transpose()?;
     // An untargeted writable attach carries the launch an empty server starts.
-    // One unmade, or past the frame, is left out, said only on a refusal.
+    // One unmade is left out, said only on a refusal.
     let creates = attaching.target.is_none() && !attaching.read_only;
-    let (initial, mut unusable) = match creates.then(|| attaching.initial()).transpose() {
+    let (initial, unusable) = match creates.then(|| attaching.initial()).transpose() {
         Ok(initial) => (initial, None),
         Err(why) => (None, Some(why)),
     };
     let (mut stream, mut decoder, _) = connect(socket, Role::Attach)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
     let size = size.or_else(window_size).ok_or(Error::NoSize)?;
-    let mut attach = Attach {
+    let attach = Attach {
         of: attaching.of,
         headless: !terminal,
         size,
@@ -1154,16 +1144,9 @@ pub fn attach(
         read_only: attaching.read_only,
         presentation: attaching.state.preferences.presentation(),
         initial,
+        // A pane's program among them, it runs in that pane.
+        ancestry: if terminal { ancestry() } else { Vec::new() },
     };
-    // Counted before it is encoded: past a frame, the launch is left out,
-    // and a request past one without it is refused.
-    if let Err(why) = fits(&attach) {
-        if attach.initial.take().is_none() {
-            return Err(Error::Failed(why));
-        }
-        unusable = Some(why);
-        fits(&attach).map_err(Error::Failed)?;
-    }
     let raw = terminal
         .then(|| Raw::enter_with(&stdin, &mut io::stdout()))
         .transpose()?;
@@ -1196,12 +1179,46 @@ pub fn attach(
     Ok(())
 }
 
-/// Whether `attach` fits the one frame it is sent in.
-fn fits(attach: &Attach) -> Result<(), String> {
-    let limit = fux_wire::protocol::MAX_PAYLOAD;
-    (fux_wire::wire::encode(attach).len() <= limit)
-        .then_some(())
-        .ok_or_else(|| format!("the attach request exceeds one frame ({limit} bytes)"))
+/// This process and its ancestors, nearest first, as the OS says: each
+/// one's parent from `/proc` where there is one, else from `ps(1)`.
+fn ancestry() -> Vec<u32> {
+    let listed = std::cell::OnceCell::new();
+    let parent = |pid: u32| -> Option<u32> {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            let listed: &Vec<(u32, u32)> = listed.get_or_init(parents);
+            return listed
+                .iter()
+                .find(|(p, _)| *p == pid)
+                .map(|(_, parent)| *parent);
+        };
+        // The name, in parentheses, may hold anything; the state, then the
+        // parent, follow it.
+        let (_, fields) = stat.rsplit_once(')')?;
+        fields.split_whitespace().nth(1)?.parse().ok()
+    };
+    let mut chain = vec![std::process::id()];
+    let mut next = Some(std::os::unix::process::parent_id());
+    while let Some(pid) = next.filter(|pid| *pid > 1 && !chain.contains(pid)) {
+        chain.push(pid);
+        next = parent(pid);
+    }
+    chain
+}
+
+/// Every process and its parent, as `ps -A -o pid= -o ppid=` lists them;
+/// none if it can't.
+fn parents() -> Vec<(u32, u32)> {
+    let listed = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=", "-o", "ppid="])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let listed = listed.map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
+    let pair = |line: &str| {
+        let mut numbers = line.split_whitespace().map(str::parse);
+        Some((numbers.next()?.ok()?, numbers.next()?.ok()?))
+    };
+    listed.map_or_else(|_| Vec::new(), |out| out.lines().filter_map(pair).collect())
 }
 
 /// Why a client detached when a signal told it to.
@@ -2140,30 +2157,6 @@ mod tests {
         Ok(())
     }
 
-    /// A screen opens only if it fits a frame at its largest with the keys
-    /// as they are when it opens; else it says so and opens nothing.
-    #[test]
-    fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let mut keyboard = keyboard(false)?;
-        let prompt = fux_wire::callback::Prompt {
-            title: std::iter::repeat_n('t', fux_wire::protocol::MAX_FRAME).collect(),
-            line: fux_wire::act::Line::new(String::new()),
-            action: None,
-        };
-        let mut acts = Vec::new();
-        keyboard.open(Screen::Prompt(prompt), &mut acts);
-        assert!(
-            matches!(
-                acts.as_slice(),
-                [Dispatch::Send(Act::Notice { error: true, .. })]
-            ),
-            "{acts:?}"
-        );
-        assert_eq!(keyboard.screen.screen, Screen::default());
-        Ok(())
-    }
-
     /// A binding's program, then the prefix, Esc (as `CSI 27 u`) and a key,
     /// stop the program and leave the key for after it, however the reads
     /// split them: the cancel is checked at each key, not at a read's end.
@@ -2194,18 +2187,17 @@ mod tests {
         Ok(())
     }
 
-    /// What a program prints and leaves is its notice; one longer than
-    /// the frame it is sent in is said not to be shown.
+    /// What a program prints and leaves is its notice, however long.
     #[test]
-    fn a_notice_past_its_frame_is_said_not_shown() -> Result<(), Box<dyn std::error::Error>> {
+    fn what_a_program_prints_is_its_notice() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         let line: String = std::iter::repeat_n('x', 1000).collect();
         let code = format!("0 begin str {line} print 1 add 0 pick 1100 eq until drop");
         assert!(program(&mut keyboard, Job::from(code)).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let said = matches!(acts.as_slice(),
-            [Act::Notice { text, error: true }] if text.contains("was not shown"));
-        assert!(said, "{acts:?}");
+            [Act::Notice { text, error: false }] if text.matches('x').count() == 1_100_000);
+        assert!(said, "{} acts", acts.len());
         assert!(program(&mut keyboard, Job::from(format!("str {line}"))).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let shown =
@@ -2338,7 +2330,7 @@ mod tests {
     }
 
     fn write(peer: &mut UnixStream, frame: &Greeting) {
-        let _ = frame.encode().map(|bytes| peer.write_all(&bytes));
+        let _ = peer.write_all(&frame.encode());
     }
 
     /// A process follows once: not one that finds its own ID marked, which

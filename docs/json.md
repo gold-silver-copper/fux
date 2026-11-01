@@ -411,7 +411,7 @@ is stopped as any program is. Lists nest as deep as memory lets them;
 what nests too deep to cross the wire (a callback's lists past 64, records
 past 32, a layout past 64) fails `too_long`, whether the word or the server
 refuses it; a size no screen can have, past what a grid holds, fails
-`size`; what one frame (1 MiB) cannot carry is refused. When the OS refuses
+`size`. When the OS refuses
 memory where fux asks for it, the failure is `memory`.
 `docs/codes.txt` lists every code with its exit status, and its number in
 Forth's table where it has one.
@@ -430,8 +430,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":58,
- "server_release":"0.36.0","server_protocol":58,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":59,
+ "server_release":"0.36.0","server_protocol":59,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

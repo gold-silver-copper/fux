@@ -1294,6 +1294,23 @@ impl Session {
             false => ClientKind::Terminal,
         };
         view.read_only = attach.read_only;
+        // The pane it runs in, if any: the one whose program it descends
+        // from, or whose session it is in, as the OS says (a parent between
+        // them may have gone). A headless client shows on no terminal, so on
+        // none.
+        let client = attach.ancestry.first();
+        let session = client.and_then(|pid| process::Pid::from_raw(i32::try_from(*pid).ok()?));
+        let session = session.and_then(fuxix::process::session);
+        let leads = |pane: &Pane| {
+            let Some(leader) = pane.process().child().map(|c| c.leader.pid()) else {
+                return false;
+            };
+            let descends =
+                u32::try_from(leader.as_raw()).is_ok_and(|pid| attach.ancestry.contains(&pid));
+            !attach.headless && (descends || session == Some(leader))
+        };
+        let runs_in = self.parts.panes().iter().find(|(_, pane)| leads(pane));
+        view.runs_in = runs_in.map(|(id, _)| *id);
         self.views.insert(id, view);
         self.parts.attach(id);
         self.parts.show(id, ws, spot);
@@ -1442,7 +1459,15 @@ impl Session {
 
     /// The clients showing tab `tab` that size its panes.
     fn sizing(&self, tab: TabId) -> impl Iterator<Item = &View> {
-        (self.views.values()).filter(move |v| v.sizes() && self.shows(v.id, tab))
+        (self.views.values()).filter(move |v| self.shows(v.id, tab) && self.sizes(v, tab))
+    }
+
+    /// Whether `view` sizes tab `tab`'s panes as it shows it: not if its
+    /// client runs in one of them (`View::runs_in`), whose terminal would
+    /// follow what it is sized to.
+    fn sizes(&self, view: &View, tab: TabId) -> bool {
+        let own = view.runs_in.and_then(|pane| self.locate(pane));
+        view.sizes() && own.is_none_or(|(_, t)| t != tab)
     }
 
     /// The size a client's screen gives panes, below its bar, if any.
@@ -1539,9 +1564,11 @@ impl Session {
         sizes.clear();
         // Each tab a client sizes, and its smallest screen.
         let mut screens = BTreeMap::new();
-        for view in self.views.values().filter(|v| v.sizes()) {
+        for view in self.views.values() {
             let size = Self::screen_size(view).map(Size::nonzero);
-            if let (Some(tab), Some((rows, cols))) = (self.shown_tab(view.id), size) {
+            if let (Some(tab), Some((rows, cols))) = (self.shown_tab(view.id), size)
+                && self.sizes(view, tab.id())
+            {
                 let (r, c) = screens.entry(tab.id()).or_insert((rows, cols));
                 (*r, *c) = ((*r).min(rows), (*c).min(cols));
             }

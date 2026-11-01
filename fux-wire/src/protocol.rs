@@ -2,7 +2,8 @@
 //!
 //! A frame is `u32 length | u8 kind | payload`, big-endian, where `length`
 //! counts the kind byte and the payload. A frame is at most `MAX_FRAME`; a
-//! longer paint or output is split across frames by the sender.
+//! longer one goes as `MORE` frames, each a piece of its payload, then a
+//! frame of its kind with the last piece, which the `Decoder` joins.
 //!
 //! Each frame is decoded once, as the type of frame allowed where it
 //! arrives: by a server, a `Hello`, then an `Attach` and `AttachedFrame`s,
@@ -34,16 +35,18 @@ pub enum Choice {
 }
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 58;
+pub const PROTOCOL: u32 = 59;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
 pub const MAX_PAYLOAD: usize = MAX_FRAME - 1;
-/// Why bytes are not a frame, or a frame cannot be sent.
+/// The kind of a piece of a longer frame's payload, followed by more
+/// pieces and then the frame's own kind with the last of it.
+const MORE: u8 = 19;
+/// Why bytes are not a frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A frame longer than the limit: one to send, or one a header
-    /// announces.
+    /// A header announcing more than the limit.
     Oversized { bytes: usize, limit: usize },
     /// A header announcing no bytes, not even the kind.
     Empty,
@@ -182,26 +185,38 @@ pub trait Frame<'a>: Sized {
     /// Writes the payload to `out`; the kind byte.
     fn write(&self, out: &mut Vec<u8>) -> u8;
 
-    /// The encoded frame, or an error if its payload exceeds `MAX_PAYLOAD`.
-    fn encode(&self) -> Result<Vec<u8>, Error> {
+    /// The encoded frame.
+    fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        self.encode_into(&mut out)?;
-        Ok(out)
+        self.encode_into(&mut out);
+        out
     }
 
-    /// Appends the encoded frame to `out`. A payload over `MAX_PAYLOAD` is
-    /// an error, and leaves `out` as it was.
-    fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), Error> {
+    /// Appends the encoded frame to `out`: a payload over `MAX_PAYLOAD` in
+    /// pieces that fit, all but the last as `MORE` frames.
+    fn encode_into(&self, out: &mut Vec<u8>) {
         let start = out.len();
-        let payload = put(self, out);
-        if payload > MAX_PAYLOAD {
-            out.truncate(start);
-            return Err(Error::Oversized {
-                bytes: payload,
-                limit: MAX_PAYLOAD,
-            });
+        if put(self, out) <= MAX_PAYLOAD {
+            return;
         }
-        Ok(())
+        let kind = out.get(start.saturating_add(4)).copied().unwrap_or(MORE);
+        let payload = out
+            .get(start.saturating_add(5)..)
+            .unwrap_or_default()
+            .to_vec();
+        out.truncate(start);
+        let (whole, rest) = payload.as_chunks::<MAX_PAYLOAD>();
+        let mut pieces = (whole.iter().map(<[u8; MAX_PAYLOAD]>::as_slice))
+            .chain((!rest.is_empty()).then_some(rest))
+            .peekable();
+        while let Some(piece) = pieces.next() {
+            let kind = if pieces.peek().is_some() { MORE } else { kind };
+            // A piece fits, so its length does too.
+            let length = u32::try_from(piece.len().saturating_add(1)).unwrap_or(u32::MAX);
+            out.extend_from_slice(&length.to_be_bytes());
+            out.push(kind);
+            out.extend_from_slice(piece);
+        }
     }
 }
 
@@ -375,6 +390,12 @@ wire! {
         pub read_only: bool,
         pub presentation: crate::presentation::Presentation,
         pub initial: Option<crate::command::InitialWorkspace>,
+        /// The client's pid and its ancestors', nearest first, as far as
+        /// the OS says: one a pane's program, or the client in its session,
+        /// the client runs in that pane,
+        /// which it is shown as a placeholder and neither sizes nor types
+        /// into.
+        pub ancestry: Vec<u32>,
     }
 }
 
@@ -393,6 +414,7 @@ impl Attach {
             read_only: false,
             presentation,
             initial: None,
+            ancestry: Vec::new(),
         }
     }
 }
@@ -666,12 +688,16 @@ impl<T: OneKind> Frame<'_> for T {
     }
 }
 
-/// Accumulates bytes from a stream and yields whole frames. A frame header
-/// claiming more than `MAX_FRAME` is refused as soon as it arrives, so what is
-/// held for a frame not yet complete stays under `4 + MAX_FRAME` bytes.
+/// Accumulates bytes from a stream and yields whole frames, a frame sent
+/// in pieces joined. A frame header claiming more than `MAX_FRAME` is
+/// refused as soon as it arrives.
 #[derive(Default)]
 pub struct Decoder {
     buffer: ByteQueue,
+    /// The pieces of a longer frame so far (`MORE`).
+    pieces: Vec<u8>,
+    /// The last frame joined from pieces, which its decoded value borrows.
+    joined: Vec<u8>,
 }
 
 impl Decoder {
@@ -684,31 +710,17 @@ impl Decoder {
         self.buffer.shrink(keep);
     }
 
-    /// The length of the whole frame the bytes held begin with, header
-    /// included; `None` if it is not all here yet; an error for a header
-    /// that announces no bytes or more than `MAX_FRAME`.
-    fn whole(&self) -> Result<Option<usize>, Error> {
-        let pending = self.buffer.as_slice();
-        let Some(header) = pending.first_chunk::<4>() else {
-            return Ok(None);
-        };
-        let whole = match u32::from_be_bytes(*header) as usize {
-            0 => return Err(Error::Empty),
-            length if length > MAX_FRAME => {
-                return Err(Error::Oversized {
-                    bytes: length,
-                    limit: MAX_FRAME,
-                });
-            }
-            length => length.saturating_add(4),
-        };
-        Ok((pending.len() >= whole).then_some(whole))
-    }
-
     /// Whether `frame` has something to say without more bytes: a whole
-    /// frame held, or an error.
+    /// frame held, its pieces before it, or an error.
     pub fn ready(&self) -> Result<bool, Error> {
-        self.whole().map(|whole| whole.is_some())
+        let mut pending = self.buffer.as_slice();
+        while let Some(length) = whole(pending)? {
+            if pending.get(4) != Some(&MORE) {
+                return Ok(true);
+            }
+            pending = pending.get(length..).unwrap_or_default();
+        }
+        Ok(false)
     }
 
     /// The next whole frame, decoded as one of `F`, its payload lent from
@@ -716,8 +728,17 @@ impl Decoder {
     /// frame that is oversized, malformed or not one of `F`, and the stream
     /// is then unusable.
     pub fn frame<'a, F: Frame<'a>>(&'a mut self) -> Result<Option<F>, Error> {
-        let Some(whole) = self.whole()? else {
-            return Ok(None);
+        self.joined = Vec::new();
+        let whole = loop {
+            let Some(whole) = whole(self.buffer.as_slice())? else {
+                return Ok(None);
+            };
+            if self.buffer.as_slice().get(4) != Some(&MORE) {
+                break whole;
+            }
+            let piece = self.buffer.take_front(whole);
+            self.pieces
+                .extend_from_slice(piece.get(5..).unwrap_or_default());
         };
         let frame = self.buffer.take_front(whole);
         // A whole frame has its kind byte.
@@ -725,14 +746,39 @@ impl Decoder {
             .get(4..)
             .and_then(<[u8]>::split_first)
             .unwrap_or((&0, &[]));
-        F::decode(*kind, payload).map(Some)
+        if self.pieces.is_empty() {
+            return F::decode(*kind, payload).map(Some);
+        }
+        self.joined = std::mem::take(&mut self.pieces);
+        self.joined.extend_from_slice(payload);
+        F::decode(*kind, &self.joined).map(Some)
     }
 
     /// Bytes held: whole frames not yet taken, and a frame not yet
     /// complete.
     pub fn buffered(&self) -> usize {
-        self.buffer.len()
+        self.buffer.len().saturating_add(self.pieces.len())
     }
+}
+
+/// The length of the whole frame the bytes `pending` begin with, header
+/// included; `None` if it is not all here yet; an error for a header that
+/// announces no bytes or more than `MAX_FRAME`.
+fn whole(pending: &[u8]) -> Result<Option<usize>, Error> {
+    let Some(header) = pending.first_chunk::<4>() else {
+        return Ok(None);
+    };
+    let whole = match u32::from_be_bytes(*header) as usize {
+        0 => return Err(Error::Empty),
+        length if length > MAX_FRAME => {
+            return Err(Error::Oversized {
+                bytes: length,
+                limit: MAX_FRAME,
+            });
+        }
+        length => length.saturating_add(4),
+    };
+    Ok((pending.len() >= whole).then_some(whole))
 }
 
 #[cfg(test)]
@@ -799,7 +845,7 @@ mod tests {
     macro_rules! round_trip {
         ($ty:ty, $kind:literal, $frame:expr) => {{
             let frame: $ty = $frame;
-            let bytes = frame.encode().unwrap_or_default();
+            let bytes = frame.encode();
             assert_eq!(bytes.get(4), Some(&$kind), "{frame:?}");
             let mut decoder = Decoder::default();
             let mut decoded = Vec::new();
@@ -839,6 +885,7 @@ mod tests {
                 read_only: false,
                 initial: None,
                 presentation: presentation.clone(),
+                ancestry: Vec::new(),
             }
         );
         let workspace: Option<crate::command::WsRef> = None;
@@ -853,6 +900,7 @@ mod tests {
                 read_only: true,
                 initial: None,
                 presentation: presentation.clone(),
+                ancestry: Vec::new(),
             }
         );
         let act = Act::Paste("界\n".into());
@@ -942,13 +990,13 @@ mod tests {
             role: Role::Command,
         };
         let head = [0, 0, 0, 16, 1, 0, 0, 0, 9, 1, 0, 0, 0, 6];
-        assert_eq!(command.encode(), Ok([&head[..], b"0.13.0"].concat()));
+        assert_eq!(command.encode(), [&head[..], b"0.13.0"].concat());
         // Each role's byte is the wire format's too: after the length, the
         // kind and the protocol's four bytes. Byte 2 was a kill's, which an
         // older server takes whatever the protocol, so no role of this
         // protocol's has it; another protocol's byte decodes as it came.
         for (role, byte) in [(Role::Attach, 0), (Role::Command, 1), (Role::Unknown(3), 3)] {
-            let encoded = hello(role).encode().unwrap_or_default();
+            let encoded = hello(role).encode();
             assert_eq!(encoded.get(9), Some(&byte), "{role:?}");
             let mut decoder = Decoder::default();
             decoder.push(&encoded);
@@ -957,32 +1005,42 @@ mod tests {
         Ok(())
     }
 
+    /// A frame longer than one goes in pieces that fit, and arrives
+    /// whole, in order with the frames around it; a header announcing
+    /// more than a frame is refused.
     #[test]
-    fn oversized_frames_are_refused_on_both_sides() {
-        let big = vec![0; MAX_PAYLOAD + 1];
+    fn a_long_frame_goes_in_pieces_and_arrives_whole() -> Result<(), Box<dyn std::error::Error>> {
+        let text: String = std::iter::repeat_n('x', MAX_PAYLOAD * 2 + 3).collect();
+        let long = AttachedFrame::Act(Box::new(Act::Paste(text)));
+        let mut bytes = long.encode();
+        AttachedFrame::Detach.encode_into(&mut bytes);
+        let mut pending = bytes.as_slice();
+        let mut kinds: Vec<u8> = Vec::new();
+        while let Some(length) = whole(pending)? {
+            kinds.extend(pending.get(4));
+            pending = pending.get(length..).unwrap_or_default();
+        }
+        assert_eq!(kinds, [MORE, MORE, 3, 5]);
+        let mut decoder = Decoder::default();
+        let (first, last) = bytes.split_at_checked(bytes.len() - 7).ok_or("short")?;
+        decoder.push(first);
+        assert!(!decoder.ready()?);
+        assert!(decoder.frame::<AttachedFrame>()?.is_none());
+        decoder.push(last);
+        assert!(decoder.ready()?);
+        assert_eq!(decoder.frame::<AttachedFrame>()?, Some(long));
         assert_eq!(
-            ToAttached::Paint(Cow::Borrowed(&big))
-                .encode()
-                .map_err(|e| e.to_string()),
-            Err(format!(
-                "a frame of {} bytes exceeds the {MAX_PAYLOAD}-byte limit",
-                MAX_PAYLOAD + 1
-            ))
+            decoder.frame::<AttachedFrame>()?,
+            Some(AttachedFrame::Detach)
         );
-        let fits = big.get(..MAX_PAYLOAD).unwrap_or_default();
-        assert!(ToAttached::Paint(Cow::Borrowed(fits)).encode().is_ok());
-        // Refused, it leaves nothing behind.
-        let mut out = b"before".to_vec();
-        let stdout = ToCommand::Part(Cow::Borrowed(&big));
-        assert!(stdout.encode_into(&mut out).is_err());
-        assert_eq!(out, b"before");
+        assert_eq!(decoder.buffered(), 0);
         let mut decoder = Decoder::default();
         // Any length past the limit will do.
         let over = u32::try_from(MAX_FRAME + 1).unwrap_or(u32::MAX);
         decoder.push(&over.to_be_bytes());
         assert!(decoder.ready().is_err());
         assert!(decoder.frame::<ToAttached>().is_err());
-        // A longer paint is split into frames that fit.
+        // A longer paint is split into frames that fit, each a paint.
         let mut queue = ByteQueue::default();
         let paint = vec![7; MAX_PAYLOAD * 2 + 3];
         split_into(&paint, ToAttached::Paint, &mut queue);
@@ -993,7 +1051,7 @@ mod tests {
             frames += 1;
         }
         assert_eq!(frames, 3);
-        assert_eq!(decoder.buffered(), 0);
+        Ok(())
     }
 
     /// Bytes that are not a frame of the kinds expected where they are

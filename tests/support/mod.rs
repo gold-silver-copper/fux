@@ -500,7 +500,7 @@ impl Client {
             version: "test".into(),
             role: Role::Attach,
         };
-        stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+        stream.write_all(&hello.encode()).map_err(e)?;
         let attach = Attach {
             of: None,
             headless: false,
@@ -520,8 +520,9 @@ impl Client {
                     cwd: server.dir.clone(),
                 }
             }),
+            ancestry: Vec::new(),
         };
-        stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
+        stream.write_all(&attach.encode()).map_err(e)?;
         stream.set_nonblocking(true).map_err(e)?;
         Ok(Client {
             stream,
@@ -605,7 +606,7 @@ impl Client {
     }
 
     pub fn frame<'a>(&mut self, frame: &impl Frame<'a>) -> Outcome {
-        self.write(&frame.encode().map_err(e)?)
+        self.write(&frame.encode())
     }
 
     /// Sends any bytes, as a client that does not follow the protocol

@@ -70,7 +70,8 @@ MESSAGE`, then what was left. A transport failure may leave input queued.
 
 For several programs, save an `ls` cursor BEFORE launch and replay journal
 exits; stop on `missed`. This gives first recorded exit, never OS chronology
-or group-wait order. The complete recipe is below.
+or group-wait order. `fux help recipes` gives the complete recipe ("First
+recorded exit across jobs").
 
 More: `fux help recipes`, `keys`, `read`, `shells`, `programs`, `servers`;
 `fux help guide` gives all topics, `fux help json` the full schema,
@@ -279,7 +280,7 @@ panes as it begins and answers changes in watch order, not exit chronology.
   key` (tmux's names: `Enter`, `Escape`, `Tab`, `BSpace`, `Up`, `PageDown`,
   `F5`, `C-c`, `M-s`, `S-Tab`; `Esc`, `Backspace`, `PgUp` too; a typo is
   refused; `key-names` lists the vocabulary), `str T paste` (bracketed if the program
-  asked), `str HEX bytes` (`1b5b41`), as much as one request (1 MiB) carries. A key
+  asked), `str HEX bytes` (`1b5b41`), of any length. A key
   N times is a loop: `%2 0 3 range each drop str Down key end
   send-keys`. A file's text, whole, from stdin (`input`):
 
@@ -472,7 +473,7 @@ caught failure holds them as `actions`. A run exits 0, what is left
 printed; or the one `N exit` gives (0 to 255); or with the status of the
 failure that stopped it (above), stdout getting nothing more and stderr
 why, then what was left.
-`str NAME getenv` reads a local variable in config or CLI mode; an unset
+`str NAME getenv` reads a local variable in config, a binding or CLI mode; an unset
 variable fails `unset_var`, never an empty string. From the command line
 alone, a script reads `args` (the strings after `--file FILE`), `input`
 (the rest of stdin; not when the program came from it), and `str PATH

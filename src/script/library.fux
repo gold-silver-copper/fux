@@ -85,13 +85,16 @@ define grows
     then
   until
 end
-# client -- : its focused pane's history in $EDITOR (else vi), in a split closed when the editor exits; after a failure, Enter closes it. env(1) gives the program the pane's id, and "${FUX:-fux}" is the server's fux
+# client -- : its focused pane's history in this client's $EDITOR (else vi), opened at its last line (+LINE, which vi, vim, nvim, nano and emacs take), in a split titled history and closed when the editor exits; after a failure, Enter closes it. env(1) gives the program the pane's id and the editor, and "${FUX:-fux}" is the server's fux
 define edit-history
   focused let p
+  str unset_var try str EDITOR getenv catch 2drop str vi end
+  dup str '' eq if drop str vi then let editor
   p str vertical axis
   str env program  list str FUX_TARGET= p string end glue arg
+  list str EDITOR= editor end glue arg
   str sh arg  str -c arg
-  str 'f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg
+  str 'printf "\033]2;history\007"; f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && $EDITOR "+$(($(wc -l <"$f")))" "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg
   split drop
 end
 # client handle -- : a prompt for its new name

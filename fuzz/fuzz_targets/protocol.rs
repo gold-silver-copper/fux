@@ -39,36 +39,55 @@ fn decode(next: Next, stream: &[u8], size: usize) -> (Vec<Vec<u8>>, Option<Error
                 Err(error) => return (frames, Some(error)),
             }
         }
-        // All that is held is one incomplete frame, whose header claimed at
-        // most MAX_FRAME, however large the pieces.
-        assert!(
-            decoder.buffered() < 4 + MAX_FRAME,
-            "{} bytes held",
-            decoder.buffered()
-        );
     }
     (frames, None)
+}
+
+/// The physical frames `bytes` begin with, as a decoder reads them: each
+/// header's kind and body; then whether a header claims no bytes or more
+/// than `MAX_FRAME`, which ends them.
+fn physical(mut bytes: &[u8]) -> (Vec<(u8, &[u8])>, bool) {
+    let mut frames = Vec::new();
+    while let Some((header, rest)) = bytes.split_first_chunk::<4>() {
+        let length = u32::from_be_bytes(*header) as usize;
+        if length == 0 || length > MAX_FRAME {
+            return (frames, true);
+        }
+        let Some((frame, after)) = rest.split_at_checked(length) else {
+            break;
+        };
+        frames.extend(frame.split_first().map(|(kind, body)| (*kind, body)));
+        bytes = after;
+    }
+    (frames, false)
 }
 
 /// The next frame `decoder` yields as one of the kinds expected at some
 /// point of a connection, encoded again.
 type Next = fn(&mut Decoder) -> Result<Option<Vec<u8>>, Error>;
 
-/// A decoded frame encodes again.
+/// A decoded frame encodes again, in physical frames none past the limit.
 fn encoded<'a>(frame: &impl Frame<'a>) -> Vec<u8> {
     let bytes = frame.encode();
-    assert!(bytes.is_ok(), "a decoded frame does not encode: {bytes:?}");
-    bytes.unwrap_or_default()
+    let (frames, oversized) = physical(&bytes);
+    assert!(!oversized && frames.iter().map(|(_, b)| b.len() + 5).sum::<usize>() == bytes.len());
+    bytes
 }
 
-/// A stream's frame, `bytes`, is what the stream writes for its payload
-/// (a reply's part too), and an empty stream writes nothing.
-fn splits_back<'a, F: Frame<'a>>(bytes: &[u8], payload: &'a [u8], frame: fn(Cow<'a, [u8]>) -> F) {
+/// A stream's payload (a paint, a reply's part) is written as frames of
+/// its kind, each within the limit, whose bodies together are the
+/// payload; an empty one as none.
+fn splits_back<'a, F: Frame<'a>>(payload: &'a [u8], frame: fn(Cow<'a, [u8]>) -> F) {
+    let kind = frame(Cow::Borrowed(&[])).encode().get(4).copied();
     let mut queue = ByteQueue::default();
     split_into(payload, frame, &mut queue);
-    // A header and no payload.
-    let expected: &[u8] = if bytes.len() == 5 { &[] } else { bytes };
-    assert_eq!(queue.as_slice(), expected);
+    let (frames, oversized) = physical(queue.as_slice());
+    assert!(!oversized && frames.iter().all(|(k, _)| Some(*k) == kind));
+    let joined: Vec<u8> = frames
+        .iter()
+        .flat_map(|(_, body)| body.iter().copied())
+        .collect();
+    assert_eq!(joined, payload);
 }
 
 /// A server's frame to a command client, encoded again.
@@ -78,7 +97,7 @@ fn to_command(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
     };
     let bytes = encoded(&frame);
     match &frame {
-        ToCommand::Part(p) => splits_back(&bytes, p, ToCommand::Part),
+        ToCommand::Part(p) => splits_back(p, ToCommand::Part),
         ToCommand::Exit(_) | ToCommand::PartsEnd => {}
     }
     Ok(Some(bytes))
@@ -91,7 +110,7 @@ fn to_attached(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
     };
     let bytes = encoded(&frame);
     match &frame {
-        ToAttached::Paint(p) => splits_back(&bytes, p, ToAttached::Paint),
+        ToAttached::Paint(p) => splits_back(p, ToAttached::Paint),
         ToAttached::Welcome(..)
         | ToAttached::Exit(_)
         | ToAttached::Ended(_)
@@ -114,12 +133,16 @@ fuzz_target!(|data: &[u8]| {
         to_command,
         to_attached,
     ];
+    // A header past the limit is refused as it comes, never waited on.
+    let (_, oversized) = physical(stream);
     for next in kinds {
-        // However the bytes arrive, the same frames and the same error;
-        // and the frames encode to the bytes they came from.
+        // However the bytes arrive, the same frames and the same error.
         let whole = decode(next, stream, 0);
         assert_eq!(decode(next, stream, usize::from(size)), whole);
         assert_eq!(decode(next, stream, 1), whole);
-        assert!(stream.starts_with(&whole.0.concat()));
+        assert!(!oversized || whole.1.is_some());
+        // The frames, encoded again, decode to themselves.
+        let again = whole.0.concat();
+        assert_eq!(decode(next, &again, 0), (whole.0, None));
     }
 });
