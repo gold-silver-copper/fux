@@ -42,10 +42,10 @@ impl Record {
         if !self.batch {
             return Ok(None);
         }
-        match self.get("missed")? {
-            Value::Int(missed) if missed > 0 => Err(missed_entries(missed)),
-            _ => self.get("events").map(Some),
+        if let Value::Int(missed @ 1..) = self.get("missed")? {
+            return Err(missed_entries(missed));
         }
+        self.get("events").map(Some)
     }
     pub(super) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         out.write_char('{')?;
