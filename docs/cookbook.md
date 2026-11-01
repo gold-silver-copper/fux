@@ -176,9 +176,11 @@ An empty cursor starts now; to go on after a stop, pass the last line's
 ## Read the screen, then follow what changes
 
 A capture holds `cursor`, the journal's cursor read with its screen:
-`events` from it holds every change after the capture and none from
-before, so nothing between reading the screen and following the pane is
-missed. Here the first event after the capture is the line typed after it.
+`events` from it starts reading the pane's journal entries after the
+capture, none from before (as from any cursor, entries evicted first are
+`missed`). A change only to the screen is no entry: it shows as a new
+version and in captures. Here the first event after the capture is the
+line typed after it.
 
 ```sh
 C=$(fux str shell pane capture str cursor get)

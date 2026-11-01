@@ -13,8 +13,9 @@ use fux_wire::json::Json;
 use fux_wire::wire::Memory;
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
-/// once with its version, the `journal`'s cursor and state (`state`), so
-/// `events` from that cursor holds every change after this read.
+/// once with its version, the `journal`'s cursor and state (`state`):
+/// `events` from that cursor reads the pane's journal entries after this
+/// read; a change only to the screen shows in versions and captures.
 pub fn pane(
     pane: &Pane,
     journal: fux_wire::events::Cursor,

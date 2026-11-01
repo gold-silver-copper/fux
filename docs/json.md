@@ -189,8 +189,10 @@ changing; the journal does not promise a complete stream of terminal replies.
 ```
 
 `cursor` is the journal cursor read in the same server turn as `version`
-and the screen: `PANE str CURSOR events` from it holds every journal entry
-after the capture and none from before it.
+and the screen: `PANE str CURSOR events` from it starts reading the pane's
+journal entries after the capture, none from before it (as from any cursor,
+entries evicted first are `missed`). A change only to the screen is no entry:
+it shows as a new `version` and in captures.
 
 `above` is how many history rows are kept above the first row read:
 history not asked for (`null` for `last-output`; rows a `rows` range
