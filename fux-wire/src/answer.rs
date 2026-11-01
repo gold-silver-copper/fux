@@ -260,7 +260,9 @@ wire! {
     /// (its row and column, if it shows on the screen read), its lines,
     /// trimmed as its view asked, and the styles their runs name; and
     /// whether it was read with styles (its text shows them as SGR, its
-    /// JSON lists them) and marks.
+    /// JSON lists them) and marks. Read `since` a version, its lines are
+    /// those with a row changed since, and `changed_rows` holds the row
+    /// each begins on.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Captured {
         pub of: Of,
@@ -272,6 +274,7 @@ wire! {
         pub styles: Vec<Attributes>,
         pub styled: bool,
         pub marks: bool,
+        pub changed_rows: Option<Vec<u32>>,
     }
 }
 
@@ -398,6 +401,29 @@ pub fn highlighted(a: &Attributes) -> bool {
     a.inverse() || a.background() != Color::Default
 }
 
+/// Marks closed and opened to go from text marked `on` to text marked
+/// `to`, each highlighted and faint: `⟦` and `⟧` around the highlighted,
+/// `⟨` and `⟩` around the faint, inside any highlighting.
+fn remark(
+    out: &mut dyn std::fmt::Write,
+    (lit, faint): (bool, bool),
+    to: (bool, bool),
+) -> Result<(bool, bool), std::fmt::Error> {
+    if faint && (!to.1 || lit != to.0) {
+        out.write_str("⟩")?;
+    }
+    if lit && !to.0 {
+        out.write_str("⟧")?;
+    }
+    if to.0 && !lit {
+        out.write_str("⟦")?;
+    }
+    if to.1 && (!faint || lit != to.0) {
+        out.write_str("⟨")?;
+    }
+    Ok(to)
+}
+
 impl Captured {
     /// The default-history styled capture, as the tests measure it: 9931
     /// lines of 100 cells, each cell in a style of its own.
@@ -428,6 +454,7 @@ impl Captured {
                 .collect(),
             styled: true,
             marks: false,
+            changed_rows: None,
         }
     }
 
@@ -440,9 +467,14 @@ impl Captured {
         let mut sgr = Vec::new();
         sgr.try_reserve_exact(self.text_scratch())
             .map_err(|_| std::fmt::Error)?;
+        let mut rows = self.changed_rows.iter().flatten();
         for (i, line) in self.lines.iter().enumerate() {
             if i > 0 {
                 out.write_char('\n')?;
+            }
+            // Read `since`, each line after its row, as `grep -n` writes it.
+            if let Some(row) = rows.next() {
+                write!(out, "{row}:")?;
             }
             self.write_line(out, line, self.styled, &mut sgr)?;
         }
@@ -480,6 +512,16 @@ impl Captured {
             out.write_char('"')?;
         }
         out.write_char(']')?;
+        if let Some(rows) = &self.changed_rows {
+            out.write_str(",\"changed_rows\":[")?;
+            for (i, row) in rows.iter().enumerate() {
+                if i > 0 {
+                    out.write_char(',')?;
+                }
+                write!(out, "{row}")?;
+            }
+            out.write_char(']')?;
+        }
         if let Of::Pane { wrap_pending, .. } = &self.of {
             write!(out, ",\"wrap_pending\":{wrap_pending}")?;
         }
@@ -537,7 +579,7 @@ impl Captured {
     }
 
     /// Write a line without allocating its plain or escaped intermediate
-    /// text; with `sgr`, its styles as SGR.
+    /// text; with `sgr`, its styles as SGR, and its marks in no style.
     pub fn write_line(
         &self,
         out: &mut dyn std::fmt::Write,
@@ -546,14 +588,18 @@ impl Captured {
         scratch: &mut Vec<u8>,
     ) -> std::fmt::Result {
         let mut pen = Attributes::default();
-        let mut on = false;
+        let mut on = (false, false);
         let mut taken = 0usize;
         for run in self.runs(line) {
             let (text, _, style) = run.ok_or(std::fmt::Error)?;
             taken = taken.saturating_add(text.len());
-            let lit = self.marks && highlighted(&style);
-            if lit && !on {
-                out.write_str("⟦")?;
+            let marked = (self.marks && highlighted(&style), self.marks && style.dim());
+            if marked != on {
+                if pen != Attributes::default() {
+                    out.write_str("\x1b[0m")?;
+                    pen = Attributes::default();
+                }
+                on = remark(out, on, marked)?;
             }
             if sgr && style != pen {
                 scratch.clear();
@@ -561,18 +607,12 @@ impl Captured {
                 out.write_str(std::str::from_utf8(scratch).map_err(|_| std::fmt::Error)?)?;
                 pen = style;
             }
-            if on && !lit {
-                out.write_str("⟧")?;
-            }
-            on = lit;
             out.write_str(text)?;
         }
         if pen != Attributes::default() {
             out.write_str("\x1b[0m")?;
         }
-        if on {
-            out.write_str("⟧")?;
-        }
+        remark(out, on, (false, false))?;
         out.write_str(line.text.get(taken..).ok_or(std::fmt::Error)?)
     }
 }

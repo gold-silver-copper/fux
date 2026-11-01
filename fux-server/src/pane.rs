@@ -569,6 +569,9 @@ pub struct Pane {
     /// the tab's effective size (`Session::effective`). What it reads and is resized to goes through the
     /// pane, which says what events tell of it.
     parser: fux_vt::Parser,
+    /// What `since` reads a version's changed rows from: the screen noted
+    /// before each change.
+    since: crate::capture::Since,
     /// Its program ends by `exit`, which says so.
     process: Process,
     input: InputQueue,
@@ -964,6 +967,7 @@ impl Pane {
             name,
             title: Title::default(),
             parser,
+            since: crate::capture::Since::default(),
             process: Process::Absent,
             input: InputQueue::default(),
             runs,
@@ -1178,6 +1182,7 @@ impl Pane {
         until_frame: bool,
         tell: &mut Teller<'_>,
     ) -> Option<(usize, fux_vt::Stop)> {
+        self.since.note(self.parser.screen());
         let refused = self.parser.refused();
         let mut sink = Sink {
             replies: Vec::new(),
@@ -1286,6 +1291,7 @@ impl Pane {
     /// The screen and the PTY made `size`, the frame drawn for the old
     /// size read.
     fn take_size(&mut self, size: Size, tell: &mut Teller<'_>) {
+        self.since.note(self.parser.screen());
         let refused = self.parser.refused();
         let resized = self.parser.resize(size);
         // A size refused is asked again as the session settles: counted
@@ -1325,6 +1331,10 @@ impl Pane {
 
     pub fn screen(&self) -> &Screen {
         self.parser.screen()
+    }
+
+    pub(crate) fn since(&self) -> &crate::capture::Since {
+        &self.since
     }
 
     /// It is asked the size it has: a size refused before, asked again,
@@ -1503,11 +1513,13 @@ impl Pane {
     }
 
     fn clear_history(&mut self) {
+        self.since.note(self.parser.screen());
         self.parser.clear_history();
     }
 
     pub(crate) fn set_history_bytes(&mut self, bytes: fux_wire::command::HistoryBytes) {
         self.options.history_bytes = bytes;
+        self.since.note(self.parser.screen());
         self.parser.set_history_bytes(bytes.get());
     }
 
@@ -1580,6 +1592,7 @@ impl Pane {
             respawns: fresh.respawns,
             title: fresh.title,
             parser: fresh.parser,
+            since: fresh.since,
             runs: fresh.runs,
             options: fresh.options,
             frame: fresh.frame,

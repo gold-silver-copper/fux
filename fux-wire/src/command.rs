@@ -432,12 +432,16 @@ wire! {
         pub styles: bool,
         /// Which screen it reads.
         pub source: Source,
-        /// Reverse video, how a selection is drawn, between `⟦` and `⟧`.
+        /// What only styling tells: a selection drawn (reverse video, or a
+        /// background colour) between `⟦` and `⟧`, faint text between `⟨`
+        /// and `⟩`.
         pub marks: bool,
         /// Rows `start..end`, from 0 at the top of what is captured.
         pub rows: Option<(u16, u16)>,
         /// Columns `start..end`, from 0.
         pub cols: Option<(u16, u16)>,
+        /// Only the lines with a row changed since this version of the pane.
+        pub since: Option<Version>,
     }
 }
 

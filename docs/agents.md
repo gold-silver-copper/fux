@@ -359,9 +359,12 @@ last row ends at its end mark, so a last line ending in `\r` reads
 empty), `wrapped` (each screen row a line; else a line wrapped at the
 pane's width is joined whole), `0 4 rows`, `0 40 cols`, `full`, `marks`
 (reverse video and any background colour as `⟦this⟧`: a program that
-paints its whole background is marked whole), `styles`. Blanks at a
-line's end are trimmed, so a prompt's `>>> ` reads `>>>`; `full` keeps
-every cell. Then `json` for the screen and what is known of the pane:
+paints its whole background is marked whole; text rendered faint as
+`⟨this⟩`), `styles`, `str VERSION since` (only the lines with a row
+changed since that version, each written after its row, `3:text`;
+`stale` where fux can't say which: after a scroll, resize or respawn).
+Blanks at a line's end are trimmed, so a prompt's `>>> ` reads `>>>`;
+`full` keeps every cell. Then `json` for the screen and what is known of the pane:
 `screen_cursor` is `[ROW,COL]` (`screen_rows` and `screen_cols` the
 screen's size), `alt_screen` whether a program holds the
 alternate screen, `history_lines` the history kept, `above` the history

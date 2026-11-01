@@ -475,6 +475,7 @@ fields!(
         ScreenCursor "screen_cursor",
         Lines "lines",
         Styles "styles",
+        ChangedRows "changed_rows",
     }
 );
 fields!(
@@ -568,7 +569,8 @@ pub(super) fn answer_field(
     }
 }
 
-/// A capture's own field, if it has it: `styles` only if read with them.
+/// A capture's own field, if it has it: `styles` only if read with them,
+/// `changed_rows` only if read `since` a version.
 fn capture_field(
     b: &mut Builder,
     c: &fux_wire::answer::Captured,
@@ -589,6 +591,7 @@ fn capture_field(
         }),
         CaptureField::Styles if !c.styled => return None,
         CaptureField::Styles => b.list(&c.lines, |b, line| styles(b, c, line)),
+        CaptureField::ChangedRows => b.list(c.changed_rows.as_ref()?, |_, row| number(*row)),
     })
 }
 
