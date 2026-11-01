@@ -596,8 +596,7 @@ impl Parts {
     fn places(&self) -> BTreeMap<ClientId, Place> {
         let clients = self.workspaces.shown.keys().copied();
         let currents = |c| {
-            self.seats(c)
-                .into_iter()
+            (self.seats(c).iter())
                 .map(|s| (s.within, s.current))
                 .collect()
         };
@@ -606,9 +605,8 @@ impl Parts {
             .collect()
     }
 
-    /// Journals `shown` for each client whose place is not as `before`, or
-    /// whose current child is not, in a node there before and after: a
-    /// node made or closed changes none.
+    /// Journals `shown` for each client whose place, or current child in a
+    /// node there before and after (not one made or closed), is not as `before`.
     fn moved(&mut self, before: BTreeMap<ClientId, Place>) {
         let after = self.places();
         let clients: BTreeSet<ClientId> = before.keys().chain(after.keys()).copied().collect();
