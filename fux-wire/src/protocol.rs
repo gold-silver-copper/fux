@@ -160,6 +160,14 @@ impl Wire for Role {
     }
 }
 
+impl Role {
+    /// The byte an older protocol's kill said, which a server of that
+    /// protocol obeyed whatever the client's protocol. Its client takes any
+    /// `Hello` as leave to have stopped the server, but reports an `Exit`
+    /// before one as a failure: so it is answered that alone.
+    pub const RETIRED_KILL: Role = Role::Unknown(2);
+}
+
 // Its shape is its byte's.
 #[cfg(test)]
 impl crate::wire::Reach for Role {}

@@ -1233,6 +1233,17 @@ impl Server {
                 let Some(hello) = decoder.frame::<Hello>()? else {
                     return Ok(false);
                 };
+                // An older client's kill: refused before any Hello, which it
+                // would take as the server stopped.
+                if hello.role == Role::RETIRED_KILL {
+                    let why = format!(
+                        "the server runs {}, which takes no kill: `kill` on its process stops it \
+                         (`fux status` gives its `server_pid`, where the system says it)",
+                        fux_wire::protocol::Build::OURS
+                    );
+                    conn.end(session, &Greeting::Exit(&why), now);
+                    return Ok(true);
+                }
                 let ours = Hello::ours(hello.role);
                 let between = Mismatch::between(&hello, &ours);
                 conn.send(session, &Greeting::Hello(ours), now);
