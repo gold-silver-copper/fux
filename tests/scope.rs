@@ -2,57 +2,27 @@
 mod support;
 use support::*;
 
-fn code(server: &Server, source: &str) -> Result<Output, String> {
-    let path = server.dir.join("scope.fux");
-    std::fs::write(&path, source).map_err(e)?;
-    server.fux(&["--file", &path.to_string_lossy()])
-}
-
+/// What carries another server run (one program talks to one server, so
+/// it comes as text: a version, a pane's identity) is refused before it
+/// changes anything here.
 #[test]
-fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
+fn another_runs_handles_are_refused_before_mutating() -> Outcome {
     let a = Server::start("")?;
     let b = Server::start("")?;
-    for server in [&a, &b] {
-        server.words("agent-opts 80 24 size str cat program new-tab")?;
-    }
-    // A scoped attach must refuse the foreign run without changing b.
-    std::fs::write(
-        a.dir.join("config/fux/config.fux"),
-        "str shell list str /no/such/scope-shell end set",
-    )
-    .map_err(e)?;
-    let socket = fux_wire::words::quote(&b.socket.to_string_lossy());
-    for (held, action) in [
-        ("%2", "kill"),
-        ("%2 str forbidden text", "send-keys"),
-        ("%2 str harmless text send-keys", "kill"),
-        ("%2 tab", "kill"),
-        ("%2 workspace", "kill"),
-        ("%2 tab panes 0 at", "kill"),
-        ("list list %2 end end let saved", "saved 0 at 0 at kill"),
-        ("%2 capture expect str forbidden text", "send-keys"),
-        ("%2 capture changed", "0 timeout wait"),
-        ("%2", "%1 swap-with"),
-        ("opts %2 workspace in", "str cat program new-tab"),
-        ("opts %2 workspace in 20 10 size", "attach"),
-        (
-            "%2 str version get let v %2 kill str closed try v changed wait catch str value get end",
-            "kill",
-        ),
+    let theirs = a.words("agent-opts 80 24 size str cat program new-tab")?;
+    b.words("agent-opts 80 24 size str cat program new-tab")?;
+    for action in [
+        "expect str forbidden text send-keys",
+        "pane kill",
+        "pane tab kill",
+        "changed 0 timeout wait",
     ] {
-        let out = code(&a, &format!("{held} str {socket} socket {action}"))?;
-        assert_eq!(out.status, 1, "{held} {action}: {}", out.stderr);
+        let out = b.fux(&[&format!("str {} {action}", theirs.trim())])?;
+        assert_eq!(out.status, 1, "{action}: {}", out.stderr);
         assert!(out.stderr.contains("server run"), "{}", out.stderr);
         assert_eq!(b.panes()?.len(), 2);
         assert!(!b.ok(&["%2", "capture"])?.contains("forbidden"));
     }
-    // Written text is explicitly interpreted by the server selected now.
-    let out = code(
-        &a,
-        &format!("str {socket} socket %2 str local text send-keys"),
-    )?;
-    assert_eq!(out.status, 0, "{}", out.stderr);
-    b.ok(&["%1", "str", "horizontal", "axis", "split"])?;
     Ok(())
 }
 
@@ -135,59 +105,22 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
     Ok(())
 }
 
+/// The terminal's foreground group is reported while a pipeline runs on
+/// after its leader exited: no other member is guessed to replace it.
 #[cfg(target_os = "linux")]
 #[test]
-fn foreground_metadata_observes_exec_and_keeps_launch_arguments_separate() -> Outcome {
+fn a_pipeline_keeps_its_group_when_its_leader_is_gone() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&[
-        "agent-opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "cd /; exec sleep 300",
-        "arg",
-        "new-tab",
-    ])?;
-    eventually("exec sleep", || {
-        Ok(server
-            .ok(&["%2", "capture", "json"])?
-            .contains("\"program\":\"sleep\""))
-    })?;
-    let json = server.ok(&["%2", "capture", "json"])?;
-    let (_, pid) = server.newest_pane()?;
-    for field in [
-        format!("\"foreground_group\":{pid}"),
-        format!("\"foreground_leader\":{pid}"),
-        "\"argv\":[\"sleep\",\"300\"]".into(),
-        "\"launch_argv\":[\"sh\",\"-c\",\"cd /; exec sleep 300\"]".into(),
-        "\"cwd\":\"/\"".into(),
-    ] {
-        assert!(json.contains(&field), "{field}: {json}");
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pipeline_keeps_its_group_when_the_observed_leader_is_gone() -> Outcome {
-    let server = Server::start("")?;
+    let (_, shell) = server.newest_pane()?;
     server.type_line("%1", "true | sleep 300")?;
     eventually("a foreground group whose leader exited", || {
-        let json = server.ok(&["%1", "capture", "json"])?;
-        Ok(!json.contains("\"foreground_group\":null")
-            && json.contains("\"foreground_leader\":null"))
+        let group = server.ok(&["%1", "str", "foreground_group", "get"])?;
+        let group = group.trim().parse::<i32>().ok();
+        Ok(group.is_some_and(|g| {
+            g != shell
+                && fuxix::process::Pid::from_raw(g).is_some_and(|g| !fuxix::process::exists(g))
+        }))
     })?;
-    let json = server.ok(&["%1", "capture", "json"])?;
-    for field in ["\"program\":null", "\"argv\":null", "\"cwd\":null"] {
-        assert!(json.contains(field), "{field}: {json}");
-    }
     Ok(())
 }
 

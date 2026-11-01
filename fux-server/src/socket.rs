@@ -1,8 +1,7 @@
 //! Where the server's socket lives, and the rules that keep it private.
 //!
-//! - The path is `str PATH socket`'s, or `str NAME server`'s
-//!   `NAME.sock` in fux's directory, else `FUX_SOCKET`, else `server.sock`
-//!   there: fux's directory is `$XDG_RUNTIME_DIR/fux` whenever that is
+//! - The path is `FUX_SOCKET`, else `server.sock` in fux's directory:
+//!   fux's directory is `$XDG_RUNTIME_DIR/fux` whenever that is
 //!   set (even empty, which is refused), else `$TMPDIR/fux`.
 //! - Its directory is owned by the user, mode 0700; the directories above
 //!   it are not checked (`private_directory`). The socket is mode 0600, set
@@ -13,7 +12,6 @@
 //!   bound. On Linux an `O_PATH` descriptor keeps its inode allocated so the
 //!   number cannot be reused by a replacement.
 //! - Every accepted peer must run as the server's own user.
-use fux_wire::protocol::Choice;
 use fuxix::process::geteuid;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
@@ -100,52 +98,31 @@ impl SocketPath {
     }
 }
 
-/// The socket a command uses: the one `choice` names, else `FUX_SOCKET`,
-/// else `server.sock` in fux's directory.
-pub fn socket_path(choice: &Choice) -> Result<SocketPath, Error> {
-    match choice {
-        Choice::Path(path) => checked(path, "socket"),
-        Choice::Name(name) => {
-            let valid = (1..=64).contains(&name.len())
-                && !name.starts_with(['.', '-'])
-                && (name.chars()).all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
-            if !valid {
-                return Err(Error::Refused(format!(
-                    "server {name:?}: a server's name is 1 to 64 letters, digits, '.', '_' or '-', \
-                     not starting with '.' or '-'"
-                )));
-            }
-            in_directory(&format!("{name}.sock"))
+/// The socket a command uses: `socket` if given, else `FUX_SOCKET`, else
+/// `server.sock` in fux's directory.
+pub fn socket_path(socket: Option<&Path>) -> Result<SocketPath, Error> {
+    if let Some(path) = socket {
+        return checked(path, "socket");
+    }
+    match std::env::var_os("FUX_SOCKET") {
+        Some(value) => {
+            let value = value.into_string().map_err(|_| not_utf8("FUX_SOCKET"))?;
+            checked(&value, "FUX_SOCKET")
         }
-        Choice::Default => match std::env::var_os("FUX_SOCKET") {
-            Some(value) => {
-                let value = value.into_string().map_err(|_| not_utf8("FUX_SOCKET"))?;
-                checked(&value, "FUX_SOCKET")
-            }
-            None => in_directory(DEFAULT_NAME),
-        },
+        None => in_directory(DEFAULT_NAME),
     }
 }
 
 /// What starts the server at `path`: `fux start` the default's (or
-/// `FUX_SOCKET`'s), the command that names its socket another's.
+/// `FUX_SOCKET`'s), with `FUX_SOCKET` set to it another's.
 pub fn start_hint(path: &Path) -> String {
-    let default = socket_path(&Choice::Default).is_ok_and(|s| s.path == path);
+    let default = socket_path(None).is_ok_and(|s| s.path == path);
     if default {
         return "`fux` in a terminal starts one, or `fux start` one with no terminal".into();
     }
-    let name = (path.parent().zip(directory().ok()))
-        .filter(|(parent, directory)| parent == directory)
-        .and_then(|_| path.file_name()?.to_str()?.strip_suffix(".sock"));
     // Quoted for a shell, as the hint is a command to run.
-    let words = match name {
-        Some(name) => format!("str {} server", fux_wire::words::quote(name)),
-        None => format!(
-            "str {} socket",
-            fux_wire::words::quote(&path.to_string_lossy())
-        ),
-    };
-    format!("`fux {words} start` starts one")
+    let path = fux_wire::words::quote(&path.to_string_lossy());
+    format!("`FUX_SOCKET={path} fux start` starts one")
 }
 
 /// fux's directory: under `XDG_RUNTIME_DIR` whenever it is set, else
@@ -497,19 +474,19 @@ mod tests {
         assert!(
             Error::NoServer(PathBuf::from("/x/y/absent.sock"))
                 .to_string()
-                .ends_with("`fux str /x/y/absent.sock socket start` starts one")
+                .ends_with("`FUX_SOCKET=/x/y/absent.sock fux start` starts one")
         );
         // A path with a blank is quoted, so the command can be pasted.
         assert!(
             Error::NoServer(PathBuf::from("/x/my dir/absent.sock"))
                 .to_string()
-                .ends_with("`fux str '/x/my dir/absent.sock' socket start` starts one")
+                .ends_with("`FUX_SOCKET='/x/my dir/absent.sock' fux start` starts one")
         );
         // As is one a shell would read otherwise: `;`, a quote.
         assert!(
             Error::NoServer(PathBuf::from("/x/a;b'c.sock"))
                 .to_string()
-                .ends_with(r"`fux str '/x/a;b'\''c.sock' socket start` starts one")
+                .ends_with(r"`FUX_SOCKET='/x/a;b'\''c.sock' fux start` starts one")
         );
     }
 

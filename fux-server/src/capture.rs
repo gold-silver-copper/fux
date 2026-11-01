@@ -2,7 +2,7 @@
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state, as data (`Captured`) that the client renders as text or
 //! as JSON.
-use crate::pane::{Pane, Process, Runs};
+use crate::pane::{Pane, Process};
 use fux_vt::{Attributes, CommandMark, Mode, MouseProtocolMode, Row, Screen};
 use fux_wire::answer::{Captured, Line, Of, Run, highlighted};
 use fux_wire::command::{CaptureView, Source};
@@ -411,38 +411,20 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
     captured(of, size, grid.cursor, lines, Vec::new(), view)
 }
 
-/// What is known of a pane's program, for `json`: its foreground program,
+/// What is known of a pane's program, for `json`: its foreground group,
 /// the status it exited with, and the modes
 /// that say how it takes input, and the cell its program is told, by its
 /// tab's host (`Session::host_panes`).
 pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::code::Error> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
-    // The terminal reports a group, whose leader may already have exited.
-    // Read that leader alone; a surviving member is not guessed to replace it.
+    // What the group runs, and where, is the OS's to say (`ps`, `/proc`).
     let group = pane.process().child().and_then(|child| {
         fuxix::terminal::foreground_group(&child.master)
             .ok()
             .flatten()
     });
-    let leader = group.filter(|pid| fuxix::process::exists(*pid));
-    let program = leader
-        .map(|pid| fuxix::process::name(pid, &mut Memory))
-        .transpose()?
-        .flatten();
-    let observed = leader
-        .map(|pid| fuxix::process::argv(pid, &mut Memory))
-        .transpose()?
-        .flatten();
-    let (launch_argv, argv) = arguments(&pane.runs, observed);
-    let cwd = match leader
-        .map(|pid| fuxix::process::cwd_observed(pid, &mut Memory).map(|r| r.ok().flatten()))
-        .transpose()?
-        .flatten()
-    {
-        Some(path) => Json::str(path.as_os_str().to_string_lossy()),
-        None => Json::Null,
-    };
+    let launch_argv = Json::Array(pane.runs.launch().argv.iter().map(Json::str).collect());
     let last_status = screen.commands().last_status;
 
     let (exited, signal) = match pane.process().exit_status() {
@@ -482,14 +464,9 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
         .transpose()?;
     let values = [
         ("title", Json::str(pane.title().as_str())),
-        ("program", program.map_or(Json::Null, Json::str)),
         (
             "foreground_group",
             group.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
-        ),
-        (
-            "foreground_leader",
-            leader.map_or(Json::Null, |pid| Json::int(pid.as_raw())),
         ),
         ("launch_argv", launch_argv),
         // Its program closed its terminal and runs on: nothing reads keys
@@ -541,27 +518,10 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
         ),
         ("truncated", Json::Array(cut_fields)),
         ("input_unread", Json::count(pane.left.input)),
-        ("cwd", cwd),
-        ("argv", argv),
     ];
     let mut fields = Vec::with_capacity(values.len().saturating_add(1));
     fields.extend(values);
     Ok(fields)
-}
-
-/// The words a pane's program was launched with, and those its foreground
-/// program has now, if observed.
-fn arguments(runs: &Runs, observed: Option<Vec<std::ffi::OsString>>) -> (Json, Json) {
-    let argv = match observed {
-        Some(words) => Json::Array(
-            (words.iter())
-                .map(|word| Json::str(word.to_string_lossy()))
-                .collect(),
-        ),
-        None => Json::Null,
-    };
-    let launch = Json::Array(runs.launch().argv.iter().map(Json::str).collect());
-    (launch, argv)
 }
 
 /// Where a picture is, for `json`: its top row (negative once scrolled
@@ -624,19 +584,6 @@ mod tests {
             self.write_text(&mut text)?;
             Ok(text)
         }
-    }
-
-    /// A program's observed words read as text, a byte no UTF-8 holds
-    /// replaced, beside the words it was launched with.
-    #[test]
-    fn observed_arguments_read_as_text() -> Result<(), Box<dyn std::error::Error>> {
-        let raw = b"a\0\xff\0\0";
-        let shell = crate::pane::tests::shell()?;
-        let observed = fuxix::process::argv_read(raw.as_slice(), &mut fux_wire::wire::Memory)?;
-        let (saved, observed) = super::arguments(&shell, observed);
-        assert_eq!(observed.render(), "[\"a\",\"\u{fffd}\",\"\"]");
-        assert_eq!(saved.render(), "[\"/bin/sh\"]");
-        Ok(())
     }
 
     #[test]

@@ -24,7 +24,6 @@ use fux_wire::command::{
 };
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::Axis;
-use fux_wire::protocol::Choice;
 use fux_wire::protocol::{Asked, Body, Context, End, Reply, Response};
 use fuxth::{AppValue, Code as Lang, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
@@ -361,8 +360,6 @@ pub enum Local {
         size: Option<fux_vt::Size>,
         creation: Box<Opts>,
     },
-    /// The server for what follows: its socket, by name or path.
-    Server(Choice),
     Start,
     Status,
     /// Open one of the client's own screens: a client running its keys'
@@ -702,7 +699,8 @@ pub fn docs() -> Rc<[fuxth::Doc]> {
 /// Where a program's requests go: a connection made when the first is.
 #[derive(Default)]
 pub struct Server {
-    chosen: Choice,
+    /// Its socket, if not `FUX_SOCKET`'s or the default's.
+    socket: Option<std::path::PathBuf>,
     requests: Option<client::Requests>,
     /// This job's source fence, kept on every request and across retries.
     pub after: Option<std::rc::Rc<std::cell::Cell<fux_wire::protocol::Fence>>>,
@@ -821,30 +819,25 @@ impl Stop {
 }
 
 impl Server {
-    pub fn new(chosen: Choice) -> Server {
+    /// The server on `socket`.
+    pub fn new(socket: std::path::PathBuf) -> Server {
         Server {
-            chosen,
+            socket: Some(socket),
             ..Self::default()
         }
     }
 
-    /// A server whose runs `stop` can stop.
-    pub fn stoppable(chosen: Choice, stop: Stop) -> Server {
+    /// The server on `socket`, whose runs `stop` can stop.
+    pub fn stoppable(socket: std::path::PathBuf, stop: Stop) -> Server {
         Server {
             stop: Some(stop),
-            ..Server::new(chosen)
+            ..Server::new(socket)
         }
-    }
-
-    /// The server for what follows.
-    pub fn choose(&mut self, chosen: Choice) {
-        self.chosen = chosen;
-        self.requests = None;
     }
 
     /// Its socket.
     pub fn socket(&self) -> Result<SocketPath, Failed> {
-        fux_server::socket::socket_path(&self.chosen).map_err(|e| client_failed(e.into()))
+        fux_server::socket::socket_path(self.socket.as_deref()).map_err(|e| client_failed(e.into()))
     }
 
     /// A connection's failure, as a run's: a server of another protocol is
@@ -996,8 +989,7 @@ impl Asks for Cli {
         // that may not read the same again marks it itself (`read_file`).
         let reads = matches!(
             what,
-            Local::Server(_)
-                | Local::Start
+            Local::Start
                 | Local::Status
                 | Local::Shell(Shell::Args | Shell::ReadFile(_) | Shell::Getenv(_))
         );
@@ -1115,11 +1107,9 @@ impl Asks for AsClient<'_> {
             }
             // The client's own environment: its person's.
             Local::Shell(Shell::Getenv(name)) => Ok(vec![Value::str(getenv(name)?)]),
-            Local::Attach { .. }
-            | Local::Server(_)
-            | Local::Start
-            | Local::Status
-            | Local::Shell(_) => self.asks.local(what, state, out),
+            Local::Attach { .. } | Local::Start | Local::Status | Local::Shell(_) => {
+                self.asks.local(what, state, out)
+            }
         }
     }
 }
@@ -1365,14 +1355,13 @@ pub fn handle(id: AnyRef, run: Option<Run>) -> Fux {
 }
 
 /// What a program does that the client does itself, from the command line:
-/// attaching, choosing, starting and stopping a server, and its status.
+/// attaching, starting and stopping a server, and its status.
 fn local(
     what: &Local,
     server: &mut Server,
     draft: Option<&mut Draft>,
 ) -> Result<Vec<Value<Fux>>, Failed> {
     match what {
-        Local::Server(chosen) => server.choose(chosen.clone()),
         Local::Attach {
             of,
             target,
@@ -1593,7 +1582,6 @@ impl Asks for ConfigOnly {
                 Ok(Vec::new())
             }
             Local::Attach { .. }
-            | Local::Server(_)
             | Local::Start
             | Local::Status
             | Local::Open(_)
@@ -1607,11 +1595,9 @@ impl Asks for ConfigOnly {
 fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     let why = match what {
         Local::Open(_) => "a client's screen opens from its own keys or prompt",
-        Local::Attach { .. }
-        | Local::Server(_)
-        | Local::Start
-        | Local::Status
-        | Local::Shell(_) => "runs from the command line only",
+        Local::Attach { .. } | Local::Start | Local::Status | Local::Shell(_) => {
+            "runs from the command line only"
+        }
     };
     Err(Failed::new(Code::NotHere, why))
 }

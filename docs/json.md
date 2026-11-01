@@ -25,10 +25,8 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited, and while a respawn of it is under way |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
-| `foreground_group` | the terminal's observed foreground process group id, or `null` if unknown; its leader may have exited while other members still run |
-| `foreground_leader` | the process id of that group's leader when observed to exist, else `null`; fux does not search for another group member |
-| `program` | the observed foreground leader's program name (Linux keeps its first 15 bytes), or `null` if unknown |
-| `launch_argv` | the checked arguments of its saved launch, for both shell and program roles, retained separately from live observations |
+| `foreground_group` | the terminal's observed foreground process group id `G`, or `null` if unknown; its leader may have exited while other members still run. The OS says what it runs: `ps -o comm=,args= -p G`, `/proc/G/cmdline`, `readlink /proc/G/cwd` and `pgrep -a -g G` (every member) on Linux; `ps -o`, `lsof -a -p G -d cwd -Fn` and `pgrep -lf -g G` on macOS. Each is a separate read that may race with the group changing |
+| `launch_argv` | the checked arguments of its saved launch, for both shell and program roles |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `read_error` | an unexpected PTY read failure as errno text, or `null`: a failed reader is no longer polled and refuses keys; the cause stays after exit until respawn |
 | `exited` | the status its program exited with (a pane started with a program, not a shell), else `null` |
@@ -53,7 +51,6 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | `notification` | the last notification's text, else `null`, without control characters |
 | `truncated` | which of `"title"` and `"notification"`, in that order, were cut, else `[]`: the fields above that the program sent more of than fux-vt keeps of a string (64 KiB), the rest dropped (`["notification"]`, `["title","notification"]`) |
 | `input_unread` | bytes of input fux queued for its program and had not yet written to its terminal as it ended, let go (till it is respawned), else 0. Input written to its terminal that the program never read is not counted: the system does not say |
-| `cwd`, `argv` | the observed foreground leader's directory and arguments, each `null` where unknown; separate OS reads may race with a process changing or exiting. No launch arguments stand in for unknown live arguments. JSON's text being UTF-8, a byte that is not is shown as U+FFFD |
 
 ## Snapshots and local records
 
@@ -104,7 +101,7 @@ handle, and a split is `[AXIS, FIRST_SHARE, SECOND_SHARE, FIRST, SECOND]`.
 The axis is `horizontal` or `vertical`; shares are positive integers and
 children are indices in that same list. These values feed `arrange` directly. Every node is reachable once, with
 one leaf per pane. Layout depth does not consume record nesting. A successful `arrange` emits
-one `arranged` event with the tab and workspace.
+one `laid_out` event with the tab and workspace.
 
 Each pane has `id`, `tab`, `name`, `label`, `title`, `pid`, `rows`, `cols`,
 and `version`. A name is given or null; a label is display text. Facts adds
@@ -312,15 +309,15 @@ resnapshot and reconcile, or fail the task explicitly. A full ring is
 evicted before append and does not grow.
 
 The journal guarantees ordered invalidations, not complete state replication:
-a later snapshot can already contain newer state. Live cwd, foreground
-process observations and continuous terminal cell changes are excluded.
+a later snapshot can already contain newer state. Foreground process
+groups and continuous terminal cell changes are excluded.
 
 Known origin is supplied context, not authenticated human or agent identity:
 `client` carries an attached source client named by a validated fence, independent of
 any client it addresses. Naming a client in an external CLI request does
 not supply its origin. `pane` carries a CLI caller's pane and program
 generation, `program` carries the terminal producer's pane and generation,
-`server` denotes a server action, and an external CLI is `unknown`. Deferred
+`server` denotes a server action, and an external CLI is `outside`. Deferred
 respawns retain their requesting origin. Server-observed disconnects are
 server actions; an explicit detach retains its request origin. No agent
 label is inferred.
@@ -348,8 +345,7 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `renamed` | `name` |
 | `closed` | closure invalidates membership/layout and repaired views |
 | `reordered` | changed tab/workspace order |
-| `laid_out` | tab/workspace; same-tab swap, reshaping, fit or effective host changed |
-| `arranged` | one guarded complete layout replacement; pane resizes can follow |
+| `laid_out` | tab/workspace; same-tab swap, reshaping, a guarded `arrange`, fit or effective host changed; pane resizes can follow |
 | `moved` | `from_tab`, `from_workspace`; both old and new scopes receive it |
 | `attached`, `detached` | `client` and its last place if known |
 | `shown`, `focused`, `zoomed` | `client` and the affected place; departures invalidate both places; includes automatic repair |
@@ -433,8 +429,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":59,
- "server_release":"0.36.0","server_protocol":59,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":60,
+ "server_release":"0.36.0","server_protocol":60,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

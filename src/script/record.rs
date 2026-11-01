@@ -216,7 +216,7 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
                 ("pane", id(AnyRef::Pane(p), run)),
                 ("generation", number(generation)?),
             ])?,
-            Actor::Server | Actor::Unknown => b.record([("kind", kind)])?,
+            Actor::Server | Actor::Outside => b.record([("kind", kind)])?,
         };
         let next = b.text(&item.next.to_string())?;
         let at = |r: Option<AnyRef>| r.map(|r| id(r, run));
@@ -557,7 +557,7 @@ mod tests {
         use fux_wire::id::{ClientId, PaneId, TabId, WsId};
         let next: Cursor = "1:1-0".parse().map_err(|()| fail())?;
         for origin in [
-            Actor::Unknown,
+            Actor::Outside,
             Actor::Server,
             Actor::Client(ClientId::of(3)),
             Actor::Pane(PaneId::of(4), 5),
@@ -638,7 +638,7 @@ mod tests {
                     assert_eq!(actor.get("pane")?, id(AnyRef::Pane(p), next.run));
                     assert_eq!(actor.get("generation")?, number(generation)?);
                 }
-                Actor::Unknown | Actor::Server => {}
+                Actor::Outside | Actor::Server => {}
             }
         }
         Ok(())

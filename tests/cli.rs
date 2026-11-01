@@ -904,9 +904,8 @@ fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
 fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
     use fux::script::Asks;
     let server = Server::start("")?;
-    let path = fux_wire::protocol::Choice::Path(server.socket.clone());
     let stop = fux::script::Stop::default();
-    let mut asks = fux::script::Server::stoppable(path, stop.clone());
+    let mut asks = fux::script::Server::stoppable(server.socket.clone(), stop.clone());
     let ls = fux_wire::protocol::Asked {
         after: None,
         request: fux_wire::command::Command::Inspect {

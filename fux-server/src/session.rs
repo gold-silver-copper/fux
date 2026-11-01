@@ -2255,7 +2255,7 @@ impl Session {
                 {
                     Actor::Pane(pane, generation)
                 }
-                _ => Actor::Unknown,
+                _ => Actor::Outside,
             },
         }
     }
@@ -4501,7 +4501,7 @@ mod tests {
         let events = told(&mut s, |s| result = run(s, &command));
         result?;
         assert_eq!(
-            events.matches("\"event\":\"arranged\"").count(),
+            events.matches("\"event\":\"laid_out\"").count(),
             1,
             "{events}"
         );
@@ -8245,8 +8245,8 @@ mod journal_tests {
             [
                 Actor::Client(client),
                 Actor::Pane(id, 0),
-                Actor::Unknown,
-                Actor::Unknown
+                Actor::Outside,
+                Actor::Outside
             ]
         );
         assert_eq!(
