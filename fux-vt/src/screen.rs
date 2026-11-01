@@ -1251,10 +1251,14 @@ impl Screen {
         }
         let version = self.version.saturating_add(1);
         let mut next = self.next_id;
-        let (mut primary, kept) = if reflow {
-            self.primary.reflowed(size, &mut next, version)?
+        // The command marks go with their characters when the lines
+        // rewrap; without reflow, they stay with their rows.
+        let (mut primary, kept, marks) = if reflow {
+            self.primary
+                .reflowed(size, &mut next, version, self.commands.marks())?
         } else {
-            self.primary.resized(size, &mut next, version)?
+            let (grid, kept) = self.primary.resized(size, &mut next, version)?;
+            (grid, kept, self.commands.marks())
         };
         let (mut alternate, _) = self.alternate.resized(size, &mut next, version)?;
         // Only now, with both grids built, does the resize happen: a refused
@@ -1268,6 +1272,7 @@ impl Screen {
         alternate.keyboard = mem::take(&mut self.alternate.keyboard);
         self.primary = primary;
         self.alternate = alternate;
+        self.commands = self.commands.moved(marks);
         self.modes.set(Mode::SynchronizedOutput, false);
         self.next_id = next;
         self.version = version;

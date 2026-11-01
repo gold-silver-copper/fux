@@ -39,6 +39,23 @@ impl Commands {
     pub fn running(&self) -> bool {
         self.output_start.is_some()
     }
+
+    /// Its marks: the running command's start, and the last one's start
+    /// and end.
+    pub(crate) fn marks(&self) -> [Option<Mark>; 3] {
+        let (start, end) = self.last_output.unzip();
+        [self.output_start, start, end]
+    }
+
+    /// These commands with their marks moved to `marks`, in `marks`'s
+    /// order.
+    pub(crate) fn moved(self, [output_start, start, end]: [Option<Mark>; 3]) -> Self {
+        Self {
+            output_start,
+            last_output: start.zip(end),
+            ..self
+        }
+    }
 }
 
 impl Screen {

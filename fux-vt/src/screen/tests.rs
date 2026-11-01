@@ -309,6 +309,82 @@ fn a_clear_moves_no_commands_output() -> Result<(), Error> {
     Ok(())
 }
 
+/// A command's marks go with their characters when a resize rewraps its
+/// lines, as the cursor does: the ended command's start and end and the
+/// running one's start, narrower and wider.
+#[test]
+fn command_marks_follow_a_reflow() -> Result<(), Error> {
+    let options = crate::Options::new()
+        .with(crate::Feature::PromptMarks)
+        .set(crate::Feature::Reflow, true);
+    let mut p = crate::Parser::with_options(Size::of(6, 30), 1 << 16, options)?;
+    p.process(b"$ \x1b]133;C\x07abcdefghijklmnopLINKED\x1b]133;D;0\x07\r\n")?;
+    p.process(b"$ \x1b]133;C\x070123456789ABCDEFGHIJ")?;
+    // The glyph `back` columns before `mark`.
+    let glyph = |p: &crate::Parser, mark: Option<CommandMark>, back: usize| {
+        let mark = mark?;
+        let row = p.screen().row_by_id(mark.row)?;
+        let cell = row.cell(usize::from(mark.col).checked_sub(back)?)?;
+        Some(cell.contents().to_owned())
+    };
+    for cols in [15, 40, 7] {
+        p.resize(Size::of(6, cols))?;
+        let commands = p.screen().commands();
+        let (start, end) = commands.last_output.unzip();
+        assert_eq!(glyph(&p, start, 0).as_deref(), Some("a"), "{cols}");
+        assert_eq!(glyph(&p, end, 1).as_deref(), Some("D"), "{cols}");
+        let running = commands.output_start;
+        assert_eq!(glyph(&p, running, 0).as_deref(), Some("0"), "{cols}");
+    }
+    Ok(())
+}
+
+/// At one column, where wide glyphs are left out, a command's mark on one
+/// goes with the character after it: its output keeps what survives of it
+/// and gains nothing after it.
+#[test]
+fn command_marks_on_left_out_glyphs_keep_their_output() -> Result<(), Error> {
+    let options = crate::Options::new()
+        .with(crate::Feature::PromptMarks)
+        .set(crate::Feature::Reflow, true);
+    for (output, start, end) in [
+        ("\x1b]133;C\x07\u{754c}a\x1b]133;D;0\x07", (0, 0), (0, 1)),
+        ("\x1b]133;C\x07a\x1b]133;D;0\x07\u{754c}b", (0, 0), (1, 0)),
+    ] {
+        let mut p = crate::Parser::with_options(Size::of(4, 6), 1 << 16, options)?;
+        p.process(output.as_bytes())?;
+        p.resize(Size::of(4, 1))?;
+        let (from, to) = (p.screen().commands().last_output).ok_or(Error::InvalidRange)?;
+        let at = |mark: CommandMark| (p.screen().row_index(mark.row), mark.col);
+        assert_eq!(at(from), (Some(start.0), start.1), "{output:?}");
+        assert_eq!(at(to), (Some(end.0), end.1), "{output:?}");
+    }
+    Ok(())
+}
+
+/// At one column, a cursor on a wide glyph left out goes to the end of its
+/// line, the saved cursor too: what comes next starts a row of its own
+/// and overwrites nothing.
+#[test]
+fn a_cursor_on_a_left_out_glyph_goes_to_its_line_s_end() -> Result<(), Error> {
+    let options = crate::Options::new().set(crate::Feature::Reflow, true);
+    for (before, after) in [(&b"\r"[..], &b""[..]), (b"\r\x1b7\x1b[4;6H", b"\x1b8")] {
+        let mut p = crate::Parser::with_options(Size::of(4, 6), 1 << 16, options)?;
+        p.process("\u{754c}ab".as_bytes())?;
+        p.process(before)?;
+        p.resize(Size::of(4, 1))?;
+        p.process(after)?;
+        p.process(b"X")?;
+        let rows: Vec<String> = p.screen().rows().map(|r| r.cells_text()).collect();
+        assert_eq!(
+            rows.get(..3),
+            Some(&["a", "b", "X"].map(String::from)[..]),
+            "{before:?}"
+        );
+    }
+    Ok(())
+}
+
 /// The primary screen's saved cursor is the one `CSI ? 1049 l` restores,
 /// whatever DECSC saves on the alternate screen.
 #[test]
