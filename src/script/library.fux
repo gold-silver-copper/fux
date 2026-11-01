@@ -210,7 +210,7 @@ end
 define dump-create
   let action let prefix let p p str launch get let launch p str state get let state
   p str program get dup kind str null eq if
-    list p str id get string str ' is respawning: dump it once its program takes its place' end glue fail
+    list p str id get string str ' holds no program while a respawn lets its old one go: dump it once the new one takes its place' end glue fail
   then str argv get let argv
   list
     p dump-warnings

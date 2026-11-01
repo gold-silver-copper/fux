@@ -643,10 +643,12 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
     captured(of, size, grid.cursor, lines, Vec::new(), view)
 }
 
-/// A pane's program, for `json`: its generation, the argv it was started
-/// with, its process (none once it ended), how far along its life it is,
-/// how it ended and what it left, and its terminal's foreground group;
-/// `null` while the pane has none of its own (a respawn under way).
+/// The program a pane holds, for `json`: its pane and generation, the argv
+/// it was started with, its process (none once it ended), how far along
+/// its life it is, how it ended and what it left, and its terminal's
+/// foreground group. One that ended is held till a respawn's program takes
+/// its place; `null` while a respawn lets go of one that ran, and the pane
+/// holds none.
 pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
     let process = pane.process();
     let state = match process {
@@ -675,6 +677,7 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
         .transpose()?;
     let argv = pane.runs.launch().argv.iter().map(Json::str).collect();
     Ok(Json::object(vec![
+        ("pane", Json::str(pane.id().to_string())),
         ("generation", Json::uint(pane.respawns)),
         ("argv", Json::Array(argv)),
         ("pid", pid.map_or(Json::Null, Json::int)),

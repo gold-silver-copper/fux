@@ -25,7 +25,7 @@ for `id`, `name` and `label` (it says `pane`):
 | `rows`, `cols` | its size |
 | `row`, `col` | where it is in its tab, laid out on the tab's effective size; `null` where it has no place |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
-| `program` | the program it runs, or ran last, one record (below); `null` while a respawn of it is under way: then no program is its own till the new one takes its place |
+| `program` | the program it holds, one record (below): the one it runs, or the one that ended, till a respawn's new program takes its place; `null` while a respawn lets go of a program that still ran, as the pane then holds none |
 | `alt_screen` | its program holds the full screen |
 | `mouse_mode` | the mouse reports its program asked for: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` for none |
 | `mouse_encoding` | how it asked for mouse reports to be spelled: `"default"` (coordinates as single bytes), `"utf8"` (1005), `"sgr"` (1006) or `"urxvt"` (1015) |
@@ -54,11 +54,13 @@ for `id`, `name` and `label` (it says `pane`):
 
 A pane's `program` is one run of the process fux started in it, as its
 terminal's session leader: the pane and its `generation` name it, as
-`FUX_PANE` (`%3:GENERATION`) does. A respawn starts the next generation, and
-this record's facts stay until then:
+`FUX_PANE` (`%3:GENERATION`) does. A respawn starts the next generation;
+until its program takes the pane's place, an ended program's record stays,
+its status with it:
 
 | Field | Value |
 | --- | --- |
+| `pane` | its pane, `"%3"` (a handle in fuxth) |
 | `generation` | how many times the pane was respawned before it started, its version's RESPAWNS |
 | `argv` | the checked words it was started with, which `respawn` and `dump` start again |
 | `pid` | its process, `null` once it ended |

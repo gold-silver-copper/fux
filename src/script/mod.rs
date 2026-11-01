@@ -1454,7 +1454,7 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
             record::events(*batch).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
         Body::Field(json) => {
-            record::from_json(&json).map_err(|e| Failed::new(Code::of(e.code), e.message))?
+            record::pane_fact(&json, run).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
     }])
 }

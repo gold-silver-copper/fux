@@ -10,7 +10,7 @@ capture[pane].last_output: start end
 capture[pane].links[]: row col len uri
 capture[pane].lost: copies_cut copies_not_text pictures memory
 capture[pane].pictures[]: row col rows cropped cols width height
-capture[pane].program: generation argv pid state exited signal read_error input_unread foreground_group
+capture[pane].program: pane generation argv pid state exited signal read_error input_unread foreground_group
 capture[pane].styles[][]: col len fg bg bold inverse hidden dim italic strikeout underline blink
 capture[pane]: screen_rows screen_cols screen_cursor lines styles changed_rows pane version wrap_pending cursor title program alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output bells notification truncated input_queued above wrapped_rows links
 dictionary[]: name provenance effect documentation definition codes
@@ -66,7 +66,7 @@ snapshot.facts.clients[].terminal: sixel_reported cell_reported underline_styles
 snapshot.facts.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane seats choices opening
 snapshot.facts.panes[].launch.cwd: encoding text
 snapshot.facts.panes[].launch: choice cwd
-snapshot.facts.panes[].program: generation argv pid state exited signal read_error input_unread foreground_group
+snapshot.facts.panes[].program: pane generation argv pid state exited signal read_error input_unread foreground_group
 snapshot.facts.panes[].state.cell: width height
 snapshot.facts.panes[].state.last_output: start end
 snapshot.facts.panes[].state.lost: copies_cut copies_not_text pictures memory
@@ -87,7 +87,7 @@ snapshot.recipe.panes[].cwd[failed]: status operation errno
 snapshot.recipe.panes[].cwd[known]: status path
 snapshot.recipe.panes[].launch.cwd: encoding text
 snapshot.recipe.panes[].launch: choice cwd
-snapshot.recipe.panes[].program: generation argv pid state exited signal read_error input_unread foreground_group
+snapshot.recipe.panes[].program: pane generation argv pid state exited signal read_error input_unread foreground_group
 snapshot.recipe.panes[].state.cell: width height
 snapshot.recipe.panes[].state.last_output: start end
 snapshot.recipe.panes[].state.lost: copies_cut copies_not_text pictures memory

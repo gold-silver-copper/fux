@@ -3052,6 +3052,7 @@ impl Session {
                     "rows" => Json::int(pane.size().rows()),
                     "cols" => Json::int(pane.size().cols()),
                     "version" => Json::str(format!("{}", pane.version(self.run))),
+                    "program" => crate::capture::program(pane)?,
                     _ => self
                         .pane_json(pane)?
                         .into_iter()
@@ -3869,6 +3870,30 @@ mod tests {
                 let text = String::from_utf8(out)?;
                 assert!(text.contains(expected), "{text}");
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn programs_alike_in_two_panes_are_two_programs() -> TestResult {
+        let mut s = started()?;
+        for _ in 0..2 {
+            run(
+                &mut s,
+                "opts str agent in 80 24 size str /bin/cat program new-tab drop",
+            )?;
+        }
+        for pane in [2, 3] {
+            s.end_program(PaneId::of(pane), Ended::Exited(7));
+        }
+        let records = ["%2", "%3"].map(|p| output(&mut s, &format!("{p} str program get json")));
+        let [two, three] = records.map(|r| r.unwrap_or_default());
+        assert!(two.contains(r#""pane":"%2","generation":0"#), "{two}");
+        assert_eq!(two.replace("%2", "%3"), three);
+        // Each way of reading it names its pane by handle.
+        for read in ["", "capture", "info str panes get first"] {
+            let code = format!("%3 {read} str program get str pane get dup kind swap string");
+            assert_eq!(output(&mut s, &code)?.trim(), "pane\n%3", "{read}");
         }
         Ok(())
     }
