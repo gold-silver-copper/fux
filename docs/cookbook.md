@@ -221,6 +221,22 @@ EOF
 fux require words.fux str shell pane str 42 screen-has
 ```
 
+## Run a fuxth program on its own
+
+`fuxth` runs a fuxth program without fux: a file, or the program on its
+stdin. It prints only what the program prints, then the values left, one
+a line; a failure says why on stderr and exits 1, and Ctrl-C exits 130.
+On a terminal with no file, `fuxth` is a REPL that prints the stack and
+`ok` after each line; `rlwrap fuxth` gives it line editing and history.
+
+```sh
+printf 'define square dup mul end\n7 square\n' > square.fux
+fuxth square.fux
+printf '3 4 add\n' | fuxth
+echo args > args.fux && fuxth args.fux one two
+echo '1 0 div' | fuxth || [ $? -eq 1 ]
+```
+
 ## Clean up
 
 Close the workspace the recipes made, and with it their panes. A server
