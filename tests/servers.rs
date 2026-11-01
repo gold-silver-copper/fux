@@ -614,6 +614,27 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     Ok(())
 }
 
+/// A dump replayed beside what it was dumped from, its pane's name taken,
+/// is refused as `name_taken` with nothing made, from any directory: one
+/// that is gone too.
+#[test]
+fn a_dump_replayed_beside_itself_makes_nothing_from_a_deleted_directory() -> Outcome {
+    let server = Server::start("")?;
+    server.ok(&["str", "%1", "pane", "str", "runner", "rename"])?;
+    let file = server.dir.join("runner.fux");
+    std::fs::write(&file, server.ok(&["all", "dump"])?).map_err(e)?;
+    let gone = server.dir.join("gone");
+    std::fs::create_dir(&gone).map_err(e)?;
+    let before = server.ok(&["ls", "json"])?;
+    let (gone, file) = (gone.to_str().ok_or("path")?, file.to_str().ok_or("path")?);
+    let replay = r#"cd "$1" && rmdir "$1" && exec fux --file "$2""#;
+    let ran = server.piped("/bin/sh".as_ref(), &["-c", replay, "sh", gone, file], "")?;
+    let taken = ran.stderr.starts_with("fux: name_taken: ") && ran.stderr.contains("%1, a pane,");
+    assert!(taken, "{}", ran.stderr);
+    assert_eq!(server.ok(&["ls", "json"])?, before);
+    Ok(())
+}
+
 /// A given name matching an old automatic label survives dump replay;
 /// its unnamed workspace stays separate from a workspace with an old label.
 #[test]

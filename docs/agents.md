@@ -434,8 +434,9 @@ all-history capture
 ```
 
 `name` there names the tab (`str tests tab`). A pane is named by a second
-request on its answer or handle: `new-tab dup str tests rename`, then
-`str tests pane`.
+request on its answer or handle: `new-tab dup str runner rename`, then
+`str runner pane`. A name is one thing's: a workspace, tab or pane that
+has it already refuses it to another (`name_taken`).
 
 `X let NAME` names a value, `define NAME … end` makes a word, `if … else …
 then` and `begin … until` decide and repeat (`begin … FLAG while … end`

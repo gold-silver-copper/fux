@@ -697,9 +697,17 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
             .status,
         1
     );
-    server.words("opts 80 24 size str +1 in str ed name new-tab")?;
+    // A name is one thing's: the pane has it, so no tab may.
+    let tab = [
+        "opts", "80", "24", "size", "str", "+1", "in", "str", "ed", "name", "new-tab",
+    ];
+    let taken = server.fux(&tab)?;
+    assert!(
+        taken.stderr.starts_with("fux: name_taken: "),
+        "{}",
+        taken.stderr
+    );
     assert_eq!(server.ok(&["str", "ed", "pane"])?, "%2\n");
-    assert_eq!(server.ok(&["str", "ed", "tab"])?, "@3\n");
     // A common spelling is a key's name too; an unknown name is refused with the vocabulary hint.
     server.ok(&["str", "ed", "pane", "str", "Backspace", "key", "send-keys"])?;
     let typo = server.fux(&["str", "ed", "pane", "str", "C-Bakspace", "key", "send-keys"])?;

@@ -4,7 +4,6 @@
 //! them; `docs/json.md` lists them all.
 use crate::command::{AnyRef, Kind};
 use crate::id::{ClientId, PaneId, TabId, WsId};
-use crate::words::joined;
 use fux_vt::keys::Direction;
 use std::num::NonZeroU8;
 
@@ -302,10 +301,8 @@ pub enum Error {
         from: PaneId,
         direction: Direction,
     },
-    // A name that cannot be given.
-    NameTaken(String),
-    /// A tab has the name: those tabs, then their panes.
-    TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
+    /// A name that cannot be given: the pane, tab or workspace that has it.
+    NameTaken(String, AnyRef),
     /// A name reserved for target syntax.
     NameReadAsTarget(String),
     /// Any other failure, made in one place and told apart by its code
@@ -336,7 +333,7 @@ impl Error {
             Self::NoClient(_) => Code::NoClient,
             Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
             Self::NameReadAsTarget(_) => Raise::BadName.into(),
-            Self::NameTaken(_) | Self::TabNameTaken(..) => Code::NameTaken,
+            Self::NameTaken(..) => Code::NameTaken,
             Self::Failed { code, .. } => *code,
         }
     }
@@ -359,17 +356,11 @@ impl std::fmt::Display for Error {
             Self::NoNeighbor { from, direction } => {
                 write!(f, "no pane {} of {from}", direction.name())
             }
-            Self::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
-            Self::TabNameTaken(name, tabs, panes) => {
-                let ids = (tabs.iter().map(|t| AnyRef::Tab(*t)))
-                    .chain(panes.iter().map(|p| AnyRef::Pane(*p)));
-                let ids = joined(ids, " ");
-                let kills = joined(tabs, " tab kill`, `fux str ");
-                write!(
-                    f,
-                    "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
-                )
-            }
+            Self::NameTaken(name, holder) => write!(
+                f,
+                "{holder}, a {}, is named {name:?} already: choose another name",
+                holder.kind().name()
+            ),
             Self::NameReadAsTarget(name) => write!(
                 f,
                 "{name:?} cannot be a name: it is reserved for target syntax"

@@ -283,7 +283,7 @@ words! {
         Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failure as its fields, a failed wait's answer its value" "fux ls json" [];
         Reading NextEvents "next-events" "event-scope cursor secs -- record" "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux all str '' 0 next-events json" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
-        Changing Rename "rename" "handle text --" "rename a pane, tab or workspace" "fux %3 str editor rename" [];
+        Changing Rename "rename" "handle text --" "rename a pane, tab or workspace, to a name no other one has" "fux %3 str editor rename" [];
         Changing Notify "notify" "scope text --" "a notice on the clients showing it, or every client with all" "fux all str done notify" [];
         Changing Resize "resize" "sized cols rows --" "a tab layout or headless client size, each at least 1, as large as a screen's grid holds; a pane selects its tab" "fux @2 120 40 resize" [];
         Changing ResizeAuto "resize-auto" "handle --" "a tab laid out on a client's screen again (at its size until one shows it)" "fux @2 resize-auto" [];
