@@ -8264,6 +8264,15 @@ mod journal_tests {
         let from = s.parts.journal().end(s.run);
         run(&mut s, "%1 kill")?;
         assert_eq!(shown(&s, from)?, [Some(TabId::of(2))]);
+        // A tab and a workspace it is not shown close: its seats there go,
+        // and nothing it is shown changes.
+        run(
+            &mut s,
+            "opts +1 in 80 24 size new-tab drop opts str other in 80 24 size new-tab drop",
+        )?;
+        let from = s.parts.journal().end(s.run);
+        run(&mut s, "@3 kill +2 kill")?;
+        assert_eq!(shown(&s, from)?, []);
         Ok(())
     }
 

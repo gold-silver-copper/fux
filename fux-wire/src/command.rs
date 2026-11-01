@@ -175,7 +175,7 @@ wire! {
 wire! {
     /// Any target: a pane, a tab or a workspace (`%N`, `@N`, `+N`), as a
     /// client's words found it.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     pub enum AnyRef {
         Pane(id: PaneId),
         Tab(id: TabId),

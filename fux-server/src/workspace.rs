@@ -508,7 +508,7 @@ fn rename(
 /// A client's place, and its current child in each node (`Parts::places`).
 type Place = (
     Option<crate::journal::PaneAt>,
-    Vec<(Option<AnyRef>, AnyRef)>,
+    BTreeMap<Option<AnyRef>, AnyRef>,
 );
 
 /// Where `client` is: the workspace it is shown, the tab it is shown there
@@ -606,14 +606,20 @@ impl Parts {
             .collect()
     }
 
-    /// Journals `shown` for each client whose place is not as `before`.
+    /// Journals `shown` for each client whose place is not as `before`, or
+    /// whose current child is not, in a node there before and after: a
+    /// node made or closed changes none.
     fn moved(&mut self, before: BTreeMap<ClientId, Place>) {
         let after = self.places();
         let clients: BTreeSet<ClientId> = before.keys().chain(after.keys()).copied().collect();
-        for client in clients
-            .into_iter()
-            .filter(|c| before.get(c) != after.get(c))
-        {
+        let moved = |c: &ClientId| match (before.get(c), after.get(c)) {
+            (Some((was, then)), Some((now, currents))) => {
+                was != now
+                    || (then.iter()).any(|(node, c)| currents.get(node).is_some_and(|n| n != c))
+            }
+            (was, now) => was != now,
+        };
+        for client in clients.into_iter().filter(moved) {
             let place = |of: &BTreeMap<ClientId, Place>| of.get(&client).and_then(|p| p.0);
             let (was, now) = (place(&before), place(&after));
             for at in (was.filter(|was| Some(*was) != now).map(Some).into_iter()).chain([now]) {
