@@ -414,7 +414,8 @@ the tests check instead.
   wrap, links or prompt mark changed is newer than the mark
   (`Row::changed_since`) or `full_refresh_since` says so, and the
   screen's mark moved on; `set_prompt` gives its row a new version, so
-  prompt marks count. (Tests: the fuzz targets' `common.rs`.)
+  prompt marks count. (Tests: the fuzz targets' `common.rs`; prompt
+  marks, which no host reads, `screen::tests::prompts`.)
 - **28a** `continues` on history's newest row continues into screen row 0.
   (Tests.)
 - **29** Whole and chunked feeding agree on modes, cursor shape,
