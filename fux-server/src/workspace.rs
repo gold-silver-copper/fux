@@ -809,8 +809,7 @@ impl Parts {
             let mut shown = BTreeMap::new();
             for (_, tab) in &tabs {
                 let seen: BTreeSet<PaneId> = tab.root.shown_panes(c).into_iter().collect();
-                tab.root
-                    .for_each_pane(&mut |p| _ = shown.insert(p, seen.contains(&p)));
+                shown.extend(tab.root.panes().into_iter().map(|p| (p, seen.contains(&p))));
             }
             shown
         };
