@@ -44,15 +44,16 @@ pub fn main() -> ExitCode {
     {
         return serve(rest);
     }
-    let ran = args.and_then(|args| script::main(&args, Some(argv), &mut std::io::stdout()));
-    let status = match ran {
-        Ok(status) => status,
+    let ran = match args {
+        // It tells its own failure.
+        Ok(args) => script::main(&args, Some(argv), &mut std::io::stdout()),
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
             let _ = writeln!(std::io::stderr(), "fux: {failed}");
-            failed.code.status().get()
+            Err(failed)
         }
     };
+    let status = ran.unwrap_or_else(|failed| failed.code.status().get());
     ExitCode::from(status)
 }
 

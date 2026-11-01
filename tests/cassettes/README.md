@@ -62,7 +62,7 @@ it: keep a workspace of its own (`examples.cassette`).
    exit status, an error code, a count, a field, a text a program printed.
 2. **The server lives:** it never ends during the replay, its log has no
    panic, it stops when asked, and no pane program outlives it.
-3. **Every fux call** (each goes through `fux-record`, below) ends 0, 1, 4 or
+3. **Every fux call** (each goes through `fux-record`, below) ends 0, 1, 2, 4 or
    124, a failure with a code of fux's whose status is that status.
 4. **fux's observable promises,** checked on raw values before anything is
    normalized, on fresh observations: an `ls` the runner takes before the first

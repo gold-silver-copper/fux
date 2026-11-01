@@ -8238,15 +8238,19 @@ mod journal_tests {
         Ok(())
     }
     #[test]
-    fn library_streams_checkpoint_and_fail_before_effects_on_loss() -> TestResult {
+    fn the_events_word_prints_events_till_its_scope_is_gone_and_fails_on_loss() -> TestResult {
         let mut s = started()?;
         let from = s.parts.journal().end(s.run);
         run(&mut s, "%1 str hello rename")?;
-        let streamed = output(&mut s, &format!("all str {from} 0 1 events-since drop"))?;
-        assert!(streamed.contains(r#""event":"ready""#), "{streamed}");
-        assert!(streamed.contains(r#""event":"renamed""#), "{streamed}");
+        let streamed = output(&mut s, &format!("%1 dup kill str {from} events"))?;
+        let events: Vec<_> = streamed.lines().collect();
         assert!(
-            streamed.contains(&format!(r#""next":"{}""#, s.parts.journal().end(s.run))),
+            matches!(&events[..], [renamed, .., closed]
+                if renamed.contains(r#""event":"renamed""#) && closed.contains(r#""event":"closed""#)),
+            "{streamed}"
+        );
+        assert!(
+            events.iter().all(|e| e.contains(r#""next":""#)),
             "{streamed}"
         );
         // Real records retain the server run in their handles.
@@ -8255,17 +8259,17 @@ mod journal_tests {
             &format!("all str {from} 0 next-events str events get first str pane get kind"),
         )?;
         assert_eq!(kind, "pane\n");
+        let mut s = started()?;
+        let from = s.parts.journal().end(s.run);
         let kept = fux::script::default_state()?.preferences.journal_entries;
         for _ in 0..kept.get().saturating_add(1) {
             s.output(PaneId::of(1), b"\x07", Instant::now());
         }
-        let failed = output(&mut s, &format!("all str {from} 0 1 events-since drop"));
-        assert!(failed.is_err_and(|e| e.contains("resnapshot")));
-        let marker = output(
-            &mut s,
-            &format!("str fail try all str {from} 0 1 events-since drop catch 2drop end"),
-        )?;
-        assert!(marker.contains(r#""event":"missed""#), "{marker}");
+        let failed = output(&mut s, &format!("%1 dup kill str {from} events"));
+        assert!(
+            failed.is_err_and(|e| e.contains("journal entries missed; resnapshot")),
+            "loss fails, printing nothing"
+        );
         Ok(())
     }
     #[test]

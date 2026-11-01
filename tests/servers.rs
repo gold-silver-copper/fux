@@ -236,14 +236,15 @@ fn streaming(server: &Server, args: &[&str]) -> Result<(std::process::Child, Nex
     Ok((events, next))
 }
 
-/// `fux all events` tells what happens, a line each, from `ready` on, in
-/// order: a pane made, its bell, its exit, its close.
+/// `fux all str CURSOR events` tells what happens after the cursor, a line
+/// each, in order: a pane made, its bell, its exit, its close; a stream of
+/// the pane's own ends once it closed.
 #[test]
 fn events_tell_what_happens() -> Outcome {
     let server = Server::start("")?;
-    let (mut events, next) = streaming(&server, &["all", "events"])?;
+    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
+    let (mut events, next) = streaming(&server, &["all", "str", cursor.trim(), "events"])?;
     let told = (|| {
-        next(r#""event":"ready""#)?;
         let pane = server.ok(&[
             "agent-opts",
             "80",
@@ -269,8 +270,27 @@ fn events_tell_what_happens() -> Outcome {
         next(&format!(r#""event":"bell","pane":"{pane}""#))?;
         let exited = next(&format!(r#""event":"exited","pane":"{pane}""#))?;
         assert!(exited.contains(r#""exited":7"#), "{exited}");
-        server.ok(&["str", pane, "pane", "kill"])?;
-        next(&format!(r#""event":"closed","pane":"{pane}""#))
+        let killed = [
+            "str",
+            pane,
+            "pane",
+            "dup",
+            "kill",
+            "str",
+            cursor.trim(),
+            "events",
+        ];
+        let own = server.fux(&killed)?;
+        next(&format!(r#""event":"closed","pane":"{pane}""#))?;
+        assert_eq!(own.status, 0, "{}", own.stderr);
+        assert!(own.stdout.ends_with("\n") && own.stdout.lines().all(|l| l.contains(pane)));
+        assert!(
+            own.stdout
+                .lines()
+                .last()
+                .is_some_and(|l| l.contains(r#""event":"closed""#))
+        );
+        Ok::<_, String>(())
     })();
     let _ = events.kill();
     let _ = events.wait();
@@ -288,15 +308,11 @@ fn a_stream_from_ls_misses_nothing() -> Outcome {
         .and_then(|rest| rest.split('"').next())
         .ok_or(format!("no cursor in {listing}"))?;
     server.words("opts str w name 80 24 size new-workspace")?;
-    let (mut events, next) = streaming(
-        &server,
-        &["all", "str", cursor, "30", "256", "events-since", "drop"],
-    )?;
-    let told = (|| Ok::<_, String>((next("")?, next("")?)))();
+    let (mut events, next) = streaming(&server, &["all", "str", cursor, "events"])?;
+    let told = next("");
     let _ = events.kill();
     let _ = events.wait();
-    let (ready, created) = told?;
-    assert_eq!(ready, format!(r#"{{"event":"ready","from":"{cursor}"}}"#));
+    let created = told?;
     assert!(created.contains(r#""event":"created""#), "{created}");
     assert!(created.contains(r#""name":"w"#), "{created}");
     let (seq, run) = cursor.split_once(':').ok_or("no run")?;
@@ -389,9 +405,9 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     let (b, c) = (first_word(&b), first_word(&c));
     let agent = ["str", "agent", "workspace"];
     let panes = server.ok(&[&agent[..], &["panes"]].concat())?;
-    assert_eq!(panes.trim(), format!("{a} {b} {c}"));
+    assert_eq!(panes, format!("{a}\n{b}\n{c}\n"));
     let tabs = server.ok(&[&agent[..], &["tabs"]].concat())?;
-    let Some((t1, t2)) = tabs.trim().split_once(' ') else {
+    let Some((t1, t2)) = tabs.trim().split_once('\n') else {
         return Err(format!("two tabs: {tabs}"));
     };
     let each = ["panes", "each", "tab", "print", "end"];
@@ -403,9 +419,9 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     server.ok(&["str", a, "pane", "str", b, "pane", "swap-with"])?;
     server.ok(&["str", t2, "tab", "str", "previous", "reorder"])?;
     let panes = server.ok(&[&agent[..], &["panes"]].concat())?;
-    assert_eq!(panes.trim(), format!("{c} {b} {a}"));
+    assert_eq!(panes, format!("{c}\n{b}\n{a}\n"));
     let tabs = server.ok(&[&agent[..], &["tabs"]].concat())?;
-    assert_eq!(tabs.trim(), format!("{t2} {t1}"));
+    assert_eq!(tabs, format!("{t2}\n{t1}\n"));
     // A place gone fails as it would for any word; another workspace
     // keeps the server up.
     server.words("opts 80 24 size str keep name new-workspace")?;

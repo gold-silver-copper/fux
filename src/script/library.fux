@@ -343,40 +343,22 @@ end
 # panes -- tree : balanced tiles, alternating axes, room shared by pane count
 define tiled-of str horizontal true 0 layout-of end
 
-# The caller must resnapshot or explicitly fail its task; filtered losses count too.
-# record -- record : refuse journal loss before any consumer effects
-define events-checked
-  let batch
-  batch str missed get 0 gt if
-    list batch str missed get string str ' journal entries missed; resnapshot before continuing' end
-    glue fail
-  then
-  batch
-end
 # Timeout is an observation outcome, never evidence that a program is ready.
-# record -- : print one admitted batch's events, a JSON object a line, each with its next
-define events-print events-checked str events get each json print end end
-# event-scope cursor secs n -- : print n batches' events, or (0) till the stream ends; empty cursor starts now
-define events-since
-  let batches let seconds let cursor let scope
-  batches 0 lt if str 'events takes 0 batches or more' fail then
-  seconds 0 lt if str 'events takes 0 seconds or more' fail then
-  scope cursor 0 next-events let batch
-  batch events-print
-  1 let taken
-  # Nothing is on the stack as it reads: a failure leaves nothing to tell.
+# Each wait is an hour at most, then asked again from where it got to.
+# event-scope cursor -- : its events, a JSON object a line, each with its next, till the scope is gone or the server stops; empty cursor starts now; loss fails
+define events
+  let cursor let scope
   begin
-    batch str status get dup str gone eq swap str stopped eq or taken batches eq or
-    dup not if
-      drop scope batch str next get seconds next-events let batch
-      batch events-print
-      taken 1 add let taken false
+    scope cursor 3600 next-events let batch
+    batch str missed get 0 gt if
+      list batch str missed get string
+        str ' journal entries missed; resnapshot before continuing' end glue fail
     then
+    batch str events get each json print end
+    batch str next get let cursor
+    batch str status get dup str gone eq swap str stopped eq or
   until
 end
-# To restart, keep the last event's next.
-# event-scope -- : till the stream ends, 30 seconds per wait
-define events str '' 30 0 events-since end
 
 # tab -- tab revision list : one topology observation's tab, revision and panes in tree order
 define layout-current

@@ -710,6 +710,8 @@ pub struct Server {
     stop: Option<Stop>,
     /// Whether a server of another protocol is followed.
     follow: Follow,
+    /// A command line's: set once its stdout's reader is gone.
+    out: Option<Rc<std::cell::Cell<bool>>>,
 }
 
 /// Whether a run follows a server of another protocol: runs its command
@@ -741,19 +743,34 @@ impl Acted {
     }
 }
 
-/// A command line's stdout, which marks its program acted.
+/// A command line's stdout, where all it prints goes: which marks its
+/// program acted, and notes its reader gone (a closed pipe).
 struct Watched<'a> {
     out: &'a mut dyn Write,
     acted: Acted,
+    closed: Rc<std::cell::Cell<bool>>,
+}
+
+impl Watched<'_> {
+    fn noted<T>(&self, wrote: io::Result<T>) -> io::Result<T> {
+        if let Err(error) = &wrote
+            && error.kind() == io::ErrorKind::BrokenPipe
+        {
+            self.closed.set(true);
+        }
+        wrote
+    }
 }
 
 impl Write for Watched<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.acted.mark();
-        self.out.write(bytes)
+        let wrote = self.out.write(bytes);
+        self.noted(wrote)
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.out.flush()
+        let flushed = self.out.flush();
+        self.noted(flushed)
     }
 }
 
@@ -925,7 +942,7 @@ impl Asks for Server {
         }
         let reply = match self.stop.as_ref().is_some_and(Stop::stopped) {
             true => Err(cancelled()),
-            false => requests.ask(asked).map_err(client_failed),
+            false => (requests.ask(asked, self.out.as_deref())).map_err(client_failed),
         };
         // Let go of before the flag is read: a stop from then on cannot
         // shut what is kept.
@@ -1536,8 +1553,8 @@ fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a
-/// line (`written`), or on a failure told on stderr. Its exit status (0, or
-/// what `exit` gave), or why it failed. With
+/// line (`written`). Its exit status (0, what `exit` gave, or `PIPE`), or
+/// why it failed, which it has told on stderr, with what was left. With
 /// `argv`, the process's whole command line, a server of another protocol
 /// is followed: the process runs it again with the server's binary
 /// (`client::follow`); with none, as in tests, never.
@@ -1545,6 +1562,44 @@ pub fn main(
     args: &[String],
     argv: Option<Vec<std::ffi::OsString>>,
     out: &mut dyn Write,
+) -> Result<u8, Failed> {
+    let acted = Acted::default();
+    let closed = Rc::new(std::cell::Cell::new(false));
+    let mut out = Watched {
+        out,
+        acted: acted.clone(),
+        closed: closed.clone(),
+    };
+    let mut left = Vec::new();
+    match ran(args, argv, &mut out, acted, &mut left) {
+        // Its reader gone, fux ends quietly, whatever the program did then.
+        Err(_) if closed.get() => Ok(PIPE),
+        // stdout holds only what the program printed. Why it failed goes to
+        // stderr, then what the words before the failure left, their
+        // answers; nowhere is left to say that stderr failed.
+        Err(failed) => {
+            let mut err = io::stderr();
+            let _ = writeln!(err, "fux: {failed}");
+            let _ = printed(&left, &mut err);
+            Err(failed)
+        }
+        ran => ran,
+    }
+}
+
+/// The status a shell gives `cat` that SIGPIPE ended, which fux ends with
+/// once its stdout's reader is gone (`fux all str '' events | head -1`): so
+/// a pipeline under `set -o pipefail` tells a program cut short from one
+/// that finished, as with `cat`.
+const PIPE: u8 = 128 + 13;
+
+/// `main`'s run, its output going to `out`; failed, what was left in `left`.
+fn ran(
+    args: &[String],
+    argv: Option<Vec<std::ffi::OsString>>,
+    out: &mut Watched<'_>,
+    acted: Acted,
+    left: &mut Vec<Value<Fux>>,
 ) -> Result<u8, Failed> {
     if matches!(args, [flag] if matches!(flag.as_str(), "--version" | "-V")) {
         writeln!(out, "{}", fux_wire::protocol::Build::OURS).map_err(output_failed)?;
@@ -1557,18 +1612,15 @@ pub fn main(
         Err(error) => return Err(uncompiled(error.into(), rerun.as_ref())),
     };
     let mut state = Draft::default();
-    let acted = Acted::default();
-    let mut out = Watched {
-        out,
-        acted: acted.clone(),
-    };
-    let mut host = Host::cli(client::context(), &mut state, &mut out);
+    let closed = out.closed.clone();
+    let mut host = Host::cli(client::context(), &mut state, out);
     let mut cli = Cli {
         server: Server {
             follow: rerun.map_or(Follow::Never, |rerun| Follow::Command {
                 rerun,
                 acted: acted.clone(),
             }),
+            out: Some(closed),
             ..Server::default()
         },
         from,
@@ -1580,11 +1632,8 @@ pub fn main(
             printed(&stack, host.out)?;
             Ok(cli.status.unwrap_or(0))
         }
-        // stdout holds only what the program printed. What the words
-        // before the failure left, their answers, goes to stderr, before
-        // why it failed; nowhere is left to say that stderr failed.
         Err(failed) => {
-            let _ = printed(machine.stack(), &mut io::stderr());
+            *left = machine.stack().to_vec();
             Err(failed)
         }
     }
@@ -2046,6 +2095,18 @@ pub(crate) mod tests {
         }
         assert_eq!(sink.0, (2 << 20) + 1);
         assert!(allocator.peak().saturating_sub(base) <= 64 << 10);
+        Ok(())
+    }
+
+    /// What a run leaves prints a value a line, and a list an item a line:
+    /// a list in it as a line of JSON, an empty string in it a blank line;
+    /// an empty string or list prints nothing.
+    #[test]
+    fn a_list_left_prints_an_item_a_line() -> TestResult {
+        let mut out = Vec::new();
+        let program = "list 1 str '' list 2 str x end end str '' list end 3";
+        assert_eq!(super::main(&[program.into()], None, &mut out)?, 0);
+        assert_eq!(String::from_utf8(out)?, "1\n\n[2,\"x\"]\n3\n");
         Ok(())
     }
 

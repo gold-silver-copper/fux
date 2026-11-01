@@ -1558,7 +1558,7 @@ fn monitor(
         let code = code(&call.err);
         match (call.status, &code) {
             (0, _) => {}
-            (1 | 4 | 124, Some(name)) => match name.parse::<Code>() {
+            (1 | 2 | 4 | 124, Some(name)) => match name.parse::<Code>() {
                 Ok(c) if i64::from(c.status().get()) == call.status => {}
                 Ok(_) => problems.push(format!(
                     "step {step}: `fux {shown}` ended {} with code {name}, whose status differs",
@@ -1569,7 +1569,7 @@ fn monitor(
                 )),
             },
             // The shim keeps 4,000 characters of stderr.
-            (1 | 4 | 124, None) if call.err_cut => {}
+            (1 | 2 | 4 | 124, None) if call.err_cut => {}
             (status, _) => problems.push(format!(
                 "step {step}: `fux {shown}` ended {status} without `fux: CODE:`"
             )),

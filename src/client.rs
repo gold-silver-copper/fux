@@ -19,6 +19,7 @@ use fux_wire::protocol::{
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -297,8 +298,11 @@ impl Requests {
         Ok(Requests { stream, decoder })
     }
 
-    /// Sends one request and reads its reply in pieces.
-    pub fn ask(&mut self, asked: &Asked) -> Result<Reply, Error> {
+    /// Sends one request and reads its reply in pieces. With `out`, a
+    /// command line's: if stdout's reader goes while it waits (a closed
+    /// pipe: `fux all str '' events | head -1`), it is set, and the request
+    /// fails.
+    pub fn ask(&mut self, asked: &Asked, out: Option<&Cell<bool>>) -> Result<Reply, Error> {
         wait_at_most(&self.stream, None);
 
         send(&mut self.stream, asked)?;
@@ -314,6 +318,12 @@ impl Requests {
                     ToCommand::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
                 }
             }
+            if let Some(out) = out
+                && reader_gone(&self.stream)?
+            {
+                out.set(true);
+                return Err(Error::Output(ErrorKind::BrokenPipe.into()));
+            }
             if !read_more(&mut self.stream, &mut self.decoder)? {
                 let closed = "the server closed the connection";
                 return Err(Error::Failed(closed.to_owned()));
@@ -325,6 +335,26 @@ impl Requests {
     /// ends as if the server had closed the connection.
     pub fn stopper(&self) -> Option<UnixStream> {
         self.stream.try_clone().ok()
+    }
+}
+
+/// Waits until the server sends more on `stream`, or stdout's reader is
+/// gone (a pipe's: the system says `POLLERR`), and says which.
+fn reader_gone(stream: &UnixStream) -> Result<bool, Error> {
+    let out = io::stdout();
+    loop {
+        let mut fds = [
+            PollFd::new(stream, PollFlags::IN),
+            PollFd::new(&out, PollFlags::NONE),
+        ];
+        match fuxix::poll::poll(&mut fds, None) {
+            Ok(_) => {
+                let [_, out] = fds;
+                return Ok(out.revents().intersects(PollFlags::ERR));
+            }
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(failed("poll")(e)),
+        }
     }
 }
 
