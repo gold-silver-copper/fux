@@ -1,6 +1,0 @@
-# Tabs for agents, in workspace agent: `require recipes/agent.fux`, or
-# `fux --file recipes/agent.fux`, to use its words.
-# -- opts : launch options placing new tabs in workspace agent (outside fux, give them a size too: agent-opts 80 24 size)
-define agent-opts opts str agent in end
-# -- answer : a tab with a shell, in workspace agent, on the size of the tab fux runs in (outside fux: agent-opts 80 24 size new-tab)
-define shell agent-opts new-tab end

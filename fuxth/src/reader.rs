@@ -273,15 +273,14 @@ impl<A: AppValue> Machine<A> {
         });
         match docs {
             Ok(docs) => {
-                let mut said = Vec::new();
-                for doc in docs {
-                    if let Some(entry) = self.names.get_mut(doc.name.as_str()) {
-                        let doc = Rc::new(doc);
-                        entry.doc = Some(Rc::clone(&doc));
-                        said.push(doc);
-                    }
-                }
-                Ok(said)
+                let mut docs: Vec<Rc<Doc>> = docs.into_iter().map(Rc::new).collect();
+                docs.retain(|doc| {
+                    let entry = self.names.get_mut(doc.name.as_str());
+                    entry
+                        .map(|entry| entry.doc = Some(Rc::clone(doc)))
+                        .is_some()
+                });
+                Ok(docs)
             }
             Err(error) => {
                 *self = before;

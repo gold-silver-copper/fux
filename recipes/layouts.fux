@@ -1,9 +1,5 @@
-# Layout presets for a tab's panes: `require recipes/layouts.fux`, then
-# `@2 even-h`. Each reads the tab's panes and layout revision in one
-# observation and gives them to `arrange` as a tree, which it refuses if
-# the tab changed since. The words under the presets are hidden once the
-# presets are made.
-
+# Layout presets: `require recipes/layouts.fux`, then `@2 even-h`; `arrange`
+# refuses one if the tab changed since its observation.
 # panes way alternate start -- nodes : balanced flat nodes with absolute child indices from start; leaves share room by pane count
 define layout-of
   let start let alternate let way let ps
@@ -33,7 +29,6 @@ define layout-current
   tab str id get tab str layout_revision get
   list observed str panes get each str id get end end
 end
-
 # tab -- : arrange its current panes side by side, with equal shares
 define even-h layout-current str horizontal false 0 layout-of arrange end
 # tab -- : arrange its current panes above one another, with equal shares

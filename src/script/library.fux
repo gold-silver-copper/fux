@@ -1,6 +1,5 @@
 # fux's bundled words, written in fuxth: every program may use them.
-# `explain NAME` says what each does. A helper is hidden once the words
-# that use it are defined (`hide`), so no program finds it by name.
+# `explain NAME` says what each does; a helper is hidden once its users are.
 
 # pane text -- answer : type text into a pane, nothing pressed after it; answers as send-keys does
 define type text send-keys end

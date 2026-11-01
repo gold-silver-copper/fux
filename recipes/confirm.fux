@@ -1,5 +1,4 @@
-# A question with one answer, Yes, before an action:
-# `require recipes/confirm.fux`, then `confirm` in a binding or a program.
+# Asks before an action: `require recipes/confirm.fux`, then `confirm`.
 # client title callback -- : a question: a chooser with one row, Yes; choosing it runs the callback, code … end or [captured arguments,code … end], on its captured arguments alone; the title is choose's, text (a number or boolean: string it first) or [text,subject handle], closing when the subject goes
 define confirm
   let action let question let c

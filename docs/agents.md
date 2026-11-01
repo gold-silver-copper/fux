@@ -256,9 +256,9 @@ panes as it begins and answers changes in watch order, not exit chronology.
   ```
   A command's output alone where the shell marks commands, else the screen:
   `str no_marks try %3 last-output capture catch drop %3 capture end`.
-- **A shell to type into:** `shell` makes a tab with one in workspace
-  `agent`, on the size of the tab `fux` runs in; from outside fux, give it
-  a size: `opts 80 24 size str agent in new-tab`. Wait for its prompt
+- **A shell to type into:** `opts str agent in new-tab` makes a tab with
+  one in workspace `agent`, on the size of the tab `fux` runs in; from
+  outside fux, give it a size: `opts str agent in 80 24 size new-tab`. Wait for its prompt
   (a text it shows) before you type: its startup may drop what comes
   sooner. A command that must run is surer started as the program: `opts str agent in
   80 24 size str sh program str -c arg str 'make test; exec

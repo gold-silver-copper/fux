@@ -231,15 +231,12 @@ fux str work workspace dump > work.fux
 Words only some programs want are recipe files, in a checkout of fux at
 `recipes/`, which a program loads with `require` (relative to the file
 or directory that names it) or runs with `fux --file`: `layouts.fux`'s
-presets arrange a tab's panes, `agent.fux`'s `agent-opts` places new
-tabs in workspace `agent`, and `confirm.fux`'s `confirm` asks before an
-action (the next recipe binds it).
+presets arrange a tab's panes, and `confirm.fux`'s `confirm` asks before
+an action (the next recipe binds it).
 
 ```sh
 fux str shell pane str horizontal axis str sh program split > /dev/null
 fux require recipes/layouts.fux str shell pane tab even-h
-fux require recipes/agent.fux agent-opts 80 24 size str true program new-tab 60 until-ended str exited get
-fux str agent workspace kill
 ```
 
 ## Key bindings and config
