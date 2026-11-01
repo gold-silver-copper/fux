@@ -2012,6 +2012,26 @@ fn a_definition_keeps_its_words_across_the_sources_it_is_read_from() -> Result<(
     Ok(())
 }
 
+/// A library's definitions have their words as they become findable: its
+/// own, from where they are in it, and one in a file it includes, as any
+/// other is gathered.
+#[test]
+fn a_librarys_definitions_keep_their_words() -> Result<(), Error> {
+    let mut machine = with_stdlib();
+    let mut host = Toy::default();
+    host.files.insert(
+        "/child.fux".into(),
+        "# -- n : seven\ndefine child-word 7 end".into(),
+    );
+    machine.library("outer.fux", "include child.fux", &mut host)?;
+    let source = machine.definition("child-word").and_then(|d| d.source());
+    assert_eq!(source.as_deref(), Some("define child-word 7 end"));
+    let library = "# -- n : seven\ndefine seven 7 end\nsee seven";
+    machine.library("l.fux", library, &mut host)?;
+    assert_eq!(host.printed.concat(), "# l.fux:2\ndefine seven 7 end\n");
+    Ok(())
+}
+
 /// What makes a word `create` made is the word the reader read and ran
 /// that made it, to the name, whatever that word read in between.
 #[test]

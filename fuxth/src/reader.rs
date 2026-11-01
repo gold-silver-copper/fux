@@ -259,10 +259,6 @@ impl<A: AppValue> Machine<A> {
         let before = self.clone();
         self.made = Some(Vec::new());
         self.read(tokens, None);
-        let read = match self.frames.last() {
-            Some(Frame::Read(read)) => Some(Rc::clone(&read.tokens)),
-            Some(Frame::Code { .. }) | None => None,
-        };
         let ran = self.run(host, u64::MAX);
         let made = self.made.take().unwrap_or_default();
         let docs = ran.and_then(|outcome| match outcome {
@@ -276,15 +272,10 @@ impl<A: AppValue> Machine<A> {
         });
         match docs {
             Ok(docs) => {
-                // Each definition with its help and its words, from its
-                // `define` to its `end`, which reading kept no others of.
                 let docs: Vec<Rc<Doc>> = docs.into_iter().map(Rc::new).collect();
-                for (doc, &(from, to)) in docs.iter().zip(&made) {
+                for doc in &docs {
                     if let Some(entry) = self.names.get_mut(doc.name.as_str()) {
                         entry.doc = Some(Rc::clone(doc));
-                        let words =
-                            (read.as_ref()).and_then(|t| Words::of(t, from..to.saturating_add(1)));
-                        entry.words = words.map(|words| Source::of(Vec::new(), words));
                     }
                 }
                 Ok(docs)
@@ -502,8 +493,8 @@ impl<A: AppValue> Machine<A> {
         // A definition is made of the words from the one the reader read
         // and ran that began it (`define`, or a word that runs it).
         let made = match kind {
-            // A library's are known from where they are (`library`).
-            Kind::Define(_) if self.made.is_some() => None,
+            // A library's own are known from where they are (`finished`).
+            Kind::Define(_) if self.made.is_some() && from.is_some() => None,
             Kind::Define(_) => self.invoked().and_then(|(id, from)| {
                 let at = (self.frames.iter())
                     .rposition(|frame| matches!(frame, Frame::Read(read) if read.id == id))?;
@@ -858,15 +849,24 @@ impl<A: AppValue> Machine<A> {
         };
         let code = self.version(code);
         let at = self.position();
+        let mut source = None;
         if let (Some(made), Some(from), Some(to)) = (&mut self.made, building.from, at) {
             made.push((from, to));
+            // A library's own: its words from its `define` to its `end`,
+            // where they are in the one source read, which gathered none.
+            let words = self
+                .source()
+                .and_then(|read| Words::of(&read.tokens, from..to.saturating_add(1)));
+            source = words.map(|words| Source::of(Vec::new(), words));
         }
-        // Its words: none known if a source it was read from couldn't say.
-        let source = building.made.and_then(|made| {
-            let run = made.run?;
-            let last = Words::of(&run.tokens, run.from..run.next(&self.frames)?)?;
-            Some(Source::of(made.runs, last))
-        });
+        // Its words gathered: none known if a source it was read from
+        // couldn't say.
+        if let Some(made) = building.made {
+            source = made.run.and_then(|run| {
+                let last = Words::of(&run.tokens, run.from..run.next(&self.frames)?)?;
+                Some(Source::of(made.runs, last))
+            });
+        }
         self.define_word(Rc::clone(&name), code, source);
         self.latest = Some(name);
     }
