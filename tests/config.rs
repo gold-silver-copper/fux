@@ -83,10 +83,10 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
 fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     let server = Server::start(
         "str C-a prefix\n\
-         str y str split-below bind\n\
          define split-below me focused str vertical axis split drop end\n\
+         str y code split-below end bind\n\
          str h unbind\n\
-         str g str 'me focused str horizontal axis str sh program str -c arg str \"echo from-g; exec sh\" arg split drop' bind\n\
+         str g code me focused str horizontal axis str sh program str -c arg str \"echo from-g; exec sh\" arg split drop end bind\n\
          str Tools group\n",
     )?;
     let mut client = server.attach(24, 90)?;
@@ -289,21 +289,23 @@ fn a_bad_config_is_reported() -> Outcome {
     );
     std::fs::write(&config, "str C-a prefix\n").map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
-    // A binding sees the config's definitions, written anywhere in it, as
-    // its words are found when it runs; a binding that doesn't split into
-    // words is said at its own line.
-    let ok = "str v str sr bind\ndefine sr me focused str horizontal axis split drop end\n";
+    // A binding sees the config's definitions made before it, as code
+    // compiled there does; one not made yet is said at the binding's line,
+    // before the binding is made.
+    let ok = "define sr me focused str horizontal axis split drop end\nstr v code sr end bind\n";
     std::fs::write(&config, ok).map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
-    let text = "str C-a prefix\nstr v str \"'sr\" bind\n";
+    let text = "str C-a prefix\nstr v code sr end bind\ndefine sr me zoom end\n";
     std::fs::write(&config, text).map_err(e)?;
     let failed = fux::script::run_file(&config)
         .err()
         .ok_or(text)?
         .to_string();
     assert!(failed.contains(&path.replace("config.fux", "")), "{failed}");
-    let said = "config.fux:2: bind: a ' opened here is never closed, in the binding for v";
-    assert!(failed.contains(said), "{failed}");
+    assert!(
+        failed.contains("config.fux:2: sr: no such word"),
+        "{failed}"
+    );
     Ok(())
 }
 
@@ -467,8 +469,8 @@ fn key_words_refuse_the_command_line() -> Outcome {
     let server = Server::start("")?;
     for words in [
         &["str", "C-a", "prefix"][..],
-        &["str", "q", "str", "me zoom", "bind"],
-        &["str", "F5", "str", "me zoom", "bind-root"],
+        &["str", "q", "code", "me", "zoom", "end", "bind"],
+        &["str", "F5", "code", "me", "zoom", "end", "bind-root"],
         &["str", "q", "unbind"],
         &["str", "F5", "unbind-root"],
         &["unbind-all"],
@@ -629,7 +631,7 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
 #[test]
 fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outcome {
     let server =
-        Server::start("str F5 str 'str titles true set %1 30 timeout wait drop' bind-root")?;
+        Server::start("str F5 code str titles true set %1 30 timeout wait drop end bind-root")?;
     let mut a = server.attach(8, 60)?;
     let mut b = server.attach(8, 60)?;
     a.wait_for("$")?;

@@ -230,16 +230,17 @@ fux str work workspace dump > work.fux
 The config is fuxth that each terminal runs as it attaches;
 `fux list-keys` prints the bundled keys as config lines. `edit-history`
 opens the focused pane's history in this terminal's `$EDITOR` (else `vi`)
-at its last line, bundled on `C-b c`. This
-config moves the prefix to `C-a`, binds `edit-history` on `e` too, and
-binds a word of its own on `v`.
+at its last line, bundled on `C-b c`. A binding runs a code value,
+`code … end`, never a string; a word of the config's is defined before
+the binding that names it. This config moves the prefix to `C-a`, binds
+`edit-history` on `e` too, and binds a word of its own on `v`.
 
 ```fux
 # ~/.config/fux/config.fux
 str C-a prefix
-str e str 'me edit-history' bind  str 'history in the editor' label
+str e code me edit-history end bind  str 'history in the editor' label
 define split-right me focused str horizontal axis split drop end
-str v str split-right bind
+str v code split-right end bind
 ```
 
 ## A word of your own
@@ -288,6 +289,23 @@ define table create allot does swap add end
 3 table slots str hi 1 slots store 1 slots fetch print
 EOF
 fux 5 constant five five five mul
+```
+
+## Replace a word later
+
+Calls bind early: a word keeps the version of each word it was compiled
+against. A word `defer` makes is the exception: it runs the xt `is` gave
+it last, so a word compiled before it changes with it, and `action-of`
+gives that xt.
+
+```sh
+fuxth <<'EOF'
+defer greeting
+define greet greeting print end
+code str hello end is greeting greet
+code str goodbye end is greeting greet
+action-of greeting execute print
+EOF
 ```
 
 ## Edit a file with fuxed

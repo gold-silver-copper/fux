@@ -10,7 +10,7 @@ use crate::script;
 use fux_vt::keys::decode::Input;
 use fux_vt::keys::{KeyPress, Keystroke};
 use fux_wire::act::{Act, LineAct, List, ListAct, Panel, ScreenAct};
-use fux_wire::callback::{Callback, Data, ListScreen, Open, Prompt};
+use fux_wire::callback::{Callback, Code, Data, ListScreen, Open, Prompt};
 
 /// One of a client's screens, or none: its keys then go through its
 /// bindings, in the middle of what `Held` says. So nothing is held for the
@@ -127,19 +127,28 @@ impl Display {
     }
 }
 
+/// What a job runs: a line typed at the command prompt, read as a
+/// program is; or a code value, compiled in the client's dictionary and
+/// run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Program {
+    Line(String),
+    Code(Code),
+}
+
 /// An owned worker operation: a program with inert typed arguments,
 /// or a relayed screen awaiting the receiving dictionary's admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
-    pub code: String,
+    pub program: Program,
     pub given: Option<Vec<Data>>,
     pub(crate) screen: Option<Open>,
 }
 
 impl From<String> for Job {
-    fn from(code: String) -> Self {
+    fn from(line: String) -> Self {
         Job {
-            code,
+            program: Program::Line(line),
             given: None,
             screen: None,
         }
@@ -147,21 +156,27 @@ impl From<String> for Job {
 }
 
 impl From<&str> for Job {
-    fn from(code: &str) -> Self {
-        code.to_owned().into()
+    fn from(line: &str) -> Self {
+        line.to_owned().into()
+    }
+}
+
+impl From<Code> for Job {
+    fn from(code: Code) -> Self {
+        Job {
+            program: Program::Code(code),
+            given: None,
+            screen: None,
+        }
     }
 }
 
 impl Job {
-    /// The code alone; arguments enter the compiler as literal values.
-    pub fn tokens(&self) -> Result<Vec<fuxth::token::Token>, fuxth::Error> {
-        fuxth::token::source("key", &self.code)
-    }
-
-    /// Instantiate a checked callback without constructing source from data.
+    /// A callback run on its captured arguments, then `args`, each a
+    /// value, never source.
     pub fn call(callback: &Callback, args: impl IntoIterator<Item = Data>) -> Self {
         Self {
-            code: callback.code.clone(),
+            program: Program::Code(callback.code.clone()),
             given: Some(callback.args.iter().cloned().chain(args).collect()),
             screen: None,
         }
@@ -169,7 +184,7 @@ impl Job {
 
     pub fn open(screen: Open) -> Self {
         Self {
-            code: String::new(),
+            program: Program::Line(String::new()),
             given: None,
             screen: Some(screen),
         }
@@ -179,7 +194,7 @@ impl Job {
         &self,
         config: Option<&script::Config>,
     ) -> Result<fuxth::Machine<script::Fux>, script::Failed> {
-        script::callback_machine(config, &self.tokens()?, self.given.as_deref())
+        script::callback_machine(config, &self.program, self.given.as_deref())
     }
 }
 
@@ -372,7 +387,7 @@ mod tests {
             current: Some(0),
             selected: 0,
             about: None,
-            action: "2drop".into(),
+            action: crate::testing::code("2drop").into(),
             client: Data::Int(0),
         })
     }
@@ -430,7 +445,7 @@ mod tests {
             [
                 Effect::Screen(ScreenAct::Hide),
                 Effect::Run(Job::call(
-                    &Callback::from("2drop"),
+                    &crate::testing::code("2drop").into(),
                     [Data::Int(0), Data::Int(2)]
                 ))
             ]
@@ -442,7 +457,7 @@ mod tests {
             [
                 Effect::Screen(ScreenAct::Hide),
                 Effect::Run(Job::call(
-                    &Callback::from("confirm-close"),
+                    &crate::testing::code("confirm-close").into(),
                     [Data::Int(0), Data::Int(1)]
                 ))
             ]
@@ -472,7 +487,7 @@ mod tests {
         let mut screen = Screen::Prompt(Prompt {
             title: "rename".into(),
             line: Line::new(String::new()),
-            action: Some("%1 swap rename".into()),
+            action: Some(crate::testing::code("%1 swap rename").into()),
         });
         let modes = crate::script::default_state()
             .map(|state| state.keys)
@@ -481,7 +496,7 @@ mod tests {
         screen.paste(&modes, "it's -x' drop");
         let ran = key(&mut screen, "Enter")?;
         let job = Job {
-            code: "%1 swap rename".into(),
+            program: Program::Code(crate::testing::code("%1 swap rename")),
             given: Some(vec![Data::Text("it's -x' drop".into())]),
             screen: None,
         };

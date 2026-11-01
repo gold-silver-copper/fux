@@ -620,22 +620,54 @@ fn callback_failed(f: fuxth::Failure) -> Failed {
     Failed::new(Code::of(f.code), f.message)
 }
 
-/// A callback's machine: its immutable arguments on the stack, to be used
-/// up, and its source to read.
+/// A key's or a callback's machine: its immutable arguments on the stack,
+/// to be used up, each code value among them compiled in its dictionary;
+/// then its code, compiled there, to run. Or a line typed at the prompt,
+/// to read as a program is.
 pub(crate) fn callback_machine(
     config: Option<&Config>,
-    tokens: &[Token],
+    program: &crate::screens::Program,
     args: Option<&[fux_wire::callback::Data]>,
 ) -> Result<Machine<Fux>, Failed> {
     let mut machine = base(config)?;
-    if let Some(args) = args {
-        for arg in args {
-            machine.push(callback::value(arg).map_err(callback_failed)?);
+    let code = match program {
+        crate::screens::Program::Line(line) => {
+            machine.read(token::source("key", line)?, None);
+            return Ok(machine);
         }
+        crate::screens::Program::Code(code) => code,
+    };
+    for arg in args.unwrap_or_default() {
+        let value = callback::value(arg, &mut |code| code_value(&mut machine, code));
+        machine.push(value.map_err(callback_failed)?);
+    }
+    let xt = code_value(&mut machine, code).map_err(callback_failed)?;
+    machine.push(xt);
+    if args.is_some() {
         machine.callback();
     }
-    machine.read(tokens.to_vec(), None);
+    machine.read(token::source("key", "execute")?, None);
     Ok(machine)
+}
+
+/// `code`, compiled in `machine`'s dictionary, which is at rest: its xt.
+/// Its words are said at `key`, as a key's program is.
+fn code_value(
+    machine: &mut Machine<Fux>,
+    code: &fux_wire::callback::Code,
+) -> Result<Value<Fux>, fuxth::Failure> {
+    let place = token::Place::Line {
+        source: Arc::from("key"),
+        line: 1,
+    };
+    let word = |w: &String| Token {
+        text: Rc::from(w.as_str()),
+        place: place.clone(),
+    };
+    let (mut out, words) = (io::sink(), code.words.iter().map(word).collect());
+    let mut host = Host::new(Context::default(), None, &mut out);
+    (machine.compile_code(words, &mut host).map(Value::Xt))
+        .map_err(|e| fuxth::Failure::new(e.code, e.located()))
 }
 
 /// The dictionary a config leaves: the config read again, from the
@@ -2883,15 +2915,15 @@ pub(crate) mod tests {
             screens.len()
         );
         // Quotes, a backslash and a line end, as a config writes them.
-        let mine = r#"str M-t str 'me zoom' bind-root str Mine group
-            str g str 'me focused str horizontal axis str sh program str "echo it'\''s" arg split drop' bind
+        let mine = r#"str M-t code me zoom end bind-root str Mine group
+            str g code me focused str horizontal axis str sh program str "echo it's" arg split drop end bind
             str "a \\ and
             a line" label"#;
         run("mine", mine, &mut keymap)?;
         let mut again = super::default_state()?.draft();
         run(
             "other",
-            "str C-a prefix str M-n str 'me str next step-tab' bind-root",
+            "str C-a prefix str M-n code me str next step-tab end bind-root",
             &mut again,
         )?;
         run("listed", &keymap.keys.describe(), &mut again)?;

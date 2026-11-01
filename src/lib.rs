@@ -21,6 +21,16 @@ use std::process::ExitCode;
 #[cfg(test)]
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[cfg(test)]
+mod testing {
+    /// A code value of `words`, split at spaces, as `code … end` around
+    /// them reads them: for tests, as no word turns text into code.
+    pub fn code(words: &str) -> fux_wire::callback::Code {
+        let words = words.split_whitespace().map(String::from).collect();
+        fux_wire::callback::Code { words }
+    }
+}
+
 // The tests measure their own allocations' peak (`fux_vt_peak`).
 #[cfg(test)]
 #[global_allocator]

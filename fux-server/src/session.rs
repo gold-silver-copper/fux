@@ -7034,7 +7034,7 @@ mod tests {
         let (mut s, c) = attached(10, 40)?;
         run(
             &mut s,
-            "str c1 client str title list list 1 str inert end end list end list 0 end str \"'missing-callback\" choose",
+            "define sender-only 2drop end str c1 client str title list list 1 str inert end end list end list 0 end code sender-only end choose",
         )?;
         let notice = s
             .views
@@ -7042,7 +7042,7 @@ mod tests {
             .and_then(|v| v.notice.as_ref())
             .map(|n| n.text.as_str())
             .unwrap_or_default();
-        assert!(notice.contains("never closed"), "{notice}");
+        assert!(notice.contains("sender-only: no such word"), "{notice}");
         assert!(matches!(
             s.views.get(&c).map(|v| &v.mode),
             Some(Mode::Normal)

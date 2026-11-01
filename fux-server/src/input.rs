@@ -721,9 +721,10 @@ mod tests {
     fn an_action_is_checked_as_its_screen_opens() -> Outcome {
         let (mut s, c) = session()?;
         for (action, said) in [
-            ("str \"'nosuch\"".to_owned(), "never closed"),
+            ("str drop".to_owned(), "code … end"),
+            ("code nosuch end".to_owned(), "no such word"),
             (
-                "list empty str drop str drop end".to_owned(),
+                "list empty code drop end code drop end end".to_owned(),
                 "a callback is",
             ),
         ] {
@@ -733,7 +734,7 @@ mod tests {
             assert_eq!(mode(&s, c), "normal");
         }
         // A prompt's start is a line as typing makes one: no line end.
-        let open = "me str t list str a 10 char str b end glue str drop prompt";
+        let open = "me str t list str a 10 char str b end glue code drop end prompt";
         let refused = output_as(&mut s, Some(c), open).err().unwrap_or_default();
         assert!(refused.contains("bad_value"), "{refused}");
         assert_eq!(mode(&s, c), "normal");
@@ -747,7 +748,7 @@ mod tests {
     #[test]
     fn a_confirmation_runs_its_callback_by_y_or_enter_alone() -> Outcome {
         let (mut s, c) = session()?;
-        let ask = "me str sure? list list %1 end str 'str yes rename' end confirm";
+        let ask = "me str sure? list list %1 end code str yes rename end end confirm";
         for key in ["n", "Escape", "r", "x"] {
             output_as(&mut s, Some(c), ask)?;
             assert_eq!(mode(&s, c), "list sure? 0");
@@ -833,15 +834,15 @@ mod tests {
     fn with_layers(s: &mut Session) -> Outcome {
         run(
             s,
-            "str 'g n' str 'opts str / cwd new-tab drop' bind str 'new tab' label str Tabs group",
+            "str 'g n' code opts str / cwd new-tab drop end bind str 'new tab' label str Tabs group",
         )?;
         run(
             s,
-            "str 'y l' str 'me focused str right 1 move-border' bind str Grow group repeat",
+            "str 'y l' code me focused str right 1 move-border end bind str Grow group repeat",
         )?;
         run(
             s,
-            "str 'y h' str 'me focused str left 1 move-border' bind str Grow group repeat",
+            "str 'y h' code me focused str left 1 move-border end bind str Grow group repeat",
         )
     }
 
@@ -937,7 +938,7 @@ mod tests {
         let start = pane_width(&s, 1);
         run(
             &mut s,
-            "str 'r Enter' str 'me focused str right 1 move-border' bind repeat",
+            "str 'r Enter' code me focused str right 1 move-border end bind repeat",
         )?;
         s.input(c, &prefixed("r\r\r"));
         assert!(mode(&s, c).starts_with("repeat "), "{}", mode(&s, c));
@@ -997,7 +998,7 @@ mod tests {
     #[test]
     fn keys_after_the_prefix_match_as_typed() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str V str 'opts str / cwd new-tab drop' bind")?;
+        run(&mut s, "str V code opts str / cwd new-tab drop end bind")?;
         s.input(c, &prefixed("V"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(mode(&s, c), "normal");
@@ -1020,7 +1021,7 @@ mod tests {
         s.input(c, &prefixed("\x1b[B\x1b[B\x1b[A"));
         assert_eq!(mode(&s, c), "column 1");
         escape(&mut s, c);
-        run(&mut s, "str Up str 'opts str / cwd new-tab drop' bind")?;
+        run(&mut s, "str Up code opts str / cwd new-tab drop end bind")?;
         s.input(c, &prefixed("\x1b[A"));
         assert_eq!(tabs(&s), Some(2));
         assert_eq!(mode(&s, c), "normal");
@@ -1032,7 +1033,7 @@ mod tests {
         let _ = queued_focused(&mut s, c);
         s.input(c, &[0x02, 0x02]);
         assert_eq!(queued_focused(&mut s, c), b"\x02");
-        run(&mut s, "str C-b str 'opts str / cwd new-tab drop' bind")?;
+        run(&mut s, "str C-b code opts str / cwd new-tab drop end bind")?;
         s.input(c, &[0x02, 0x02]);
         assert_eq!(tabs(&s), Some(3));
         assert!(queued_focused(&mut s, c).is_empty());
@@ -1040,7 +1041,7 @@ mod tests {
         for key in ["1", "F5", "M-n"] {
             run(
                 &mut s,
-                &format!("str {key} str 'opts str / cwd new-tab drop' bind"),
+                &format!("str {key} code opts str / cwd new-tab drop end bind"),
             )?;
         }
         s.input(c, &prefixed("1"));
@@ -1055,7 +1056,10 @@ mod tests {
     #[test]
     fn keys_without_the_prefix_share_no_heading() -> Outcome {
         let (mut s, c) = crate::session::testing::attached(100, 100)?;
-        run(&mut s, "str F2 str 'me zoom' bind-root str Session group")?;
+        run(
+            &mut s,
+            "str F2 code me zoom end bind-root str Session group",
+        )?;
         s.input(c, b"\x02");
         let text = screen_text(&s, c)?;
         let headings = text.lines().filter(|l| l.trim() == "Session").count();
@@ -1068,7 +1072,7 @@ mod tests {
         let (mut s, c) = session()?;
         run(
             &mut s,
-            "str M-t str 'opts str / cwd new-tab drop' bind-root",
+            "str M-t code opts str / cwd new-tab drop end bind-root",
         )?;
         s.input(c, b"\x1bt");
         assert_eq!(tabs(&s), Some(2));
@@ -1147,7 +1151,7 @@ mod tests {
                 typed.input(c, b"\r");
             }
             let (mut ran, d) = busy()?;
-            if let Err(error) = output_as(&mut ran, Some(d), &binding.code) {
+            if let Err(error) = output_as(&mut ran, Some(d), &binding.code.text()) {
                 refused.push(keys.clone());
                 // Leaving a repeat mode clears what its keys said.
                 if !repeat {
@@ -1328,19 +1332,19 @@ mod tests {
         for bad in [
             "str list str R str confirm-close bind-in",
             "str list str R str rename bind-in",
-            "str R str \"'nosuch\" bind-action",
-            "str Escape str 2drop bind-action",
+            "str R str nosuch bind-action",
+            "str Escape code 2drop end bind-action",
         ] {
             assert!(output_as(&mut s, Some(c), bad).is_err(), "{bad}");
         }
         output_as(
             &mut s,
             Some(c),
-            "str R str 'nip print' bind-action str test label",
+            "str R code nip print end bind-action str test label",
         )?;
         run(
             &mut s,
-            "str c1 client str hosts list list str '%1 kill' str '%1 kill' end end list end list 0 end str 'nip print' choose",
+            "str c1 client str hosts list list str '%1 kill' str '%1 kill' end end list end list 0 end code nip print end choose",
         )?;
         s.input(c, b"R");
         assert!(notice(&s, c).contains("%1 kill"), "{}", notice(&s, c));
@@ -1373,7 +1377,7 @@ mod tests {
                 false,
             ),
         ] {
-            let code = format!("me str title {rows} {current} {selected} str 2drop choose");
+            let code = format!("me str title {rows} {current} {selected} code 2drop end choose");
             assert_eq!(
                 output_as(&mut s, Some(c), &code).is_ok(),
                 accepted,
@@ -1384,7 +1388,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "me str title list list 7 str seven end list 8 str eight end end list 1 end list 0 end str 2drop choose",
+            "me str title list list 7 str seven end list 8 str eight end end list 1 end list 0 end code 2drop end choose",
         )?;
         let Screen::List(list) = screen(&s, c) else {
             return Err(mode(&s, c));

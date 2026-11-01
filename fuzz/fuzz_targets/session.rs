@@ -85,7 +85,7 @@ const SIDE: &[&str] = &[
     "str c1 client str c1 client focused tab confirm-close",
     "str c2 client str c2 client focused workspace rename-prompt",
     "str c1 client command-prompt",
-    "str t str 'me zoom' bind",
+    "str t code me zoom end bind",
     "str t unbind",
     "str r unbind",
     "str 't m' unbind",

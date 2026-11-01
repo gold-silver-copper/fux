@@ -1228,8 +1228,8 @@ fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
 /// next key's program asks on as before.
 #[test]
 fn a_stopped_key_program_leaves_the_next_one_asking() -> Outcome {
-    let keys = "str j str 'me focused 600 timeout wait drop' bind \
-                str k str 'me focused str next-''ok text send-keys' bind";
+    let keys = "str j code me focused 600 timeout wait drop end bind \
+                str k code me focused str next-''ok text send-keys end bind";
     let server = Server::start(keys)?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
     terminal.wait_for("%1")?;
@@ -1597,7 +1597,7 @@ fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
         "str shell list str /bin/cat end set\n\
-         str F5 str 'ls drop str fence-complete' bind-root\n",
+         str F5 code ls drop str fence-complete end bind-root\n",
     )
     .map_err(e)?;
     // Hold the attach connection between the client and the real server

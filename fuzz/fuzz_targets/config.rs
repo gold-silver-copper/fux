@@ -24,20 +24,23 @@ const KEYS: &[&str] = &[
     "é", "", "S-t", "s-g", "M-S-x", "C-S-a", "Escape", "Esc", "M-Escape", "C-b", "Enter", "F5",
     "Up", "Nope", "g n", "t m h", "r", "t n", "y l", "y h", "  ", "a Escape", "g Nope",
 ];
-/// Code to bind: programs that split into words, and some that do not.
-const CODES: &[&str] = &[
-    "me zoom",
-    "opts new-tab drop",
-    "me focused str right 1 move-border",
-    "me str next focus",
-    "",
-    "# only a comment",
-    "'unclosed",
-    "str 'a b' drop",
-    "nope-no-word",
-    "define x me zoom end x",
-    "1 if me zoom then",
-    "if",
+/// Code to bind, written between `code` and `end`, and whether it
+/// compiles there: words the config's dictionary has, and some it does
+/// not, or that close or comment out the `end`.
+const CODES: &[(&str, bool)] = &[
+    ("me zoom", true),
+    ("opts new-tab drop", true),
+    ("me focused str right 1 move-border", true),
+    ("me str next focus", true),
+    ("", true),
+    ("str 'a b' drop", true),
+    ("1 if me zoom then", true),
+    ("# only a comment", false),
+    ("'unclosed", false),
+    ("nope-no-word", false),
+    ("define x me zoom end x", false),
+    ("if", false),
+    ("end", false),
 ];
 /// Labels and groups.
 const TEXTS: &[&str] = &[
@@ -97,7 +100,7 @@ impl Statement {
         match kind % 9 {
             0 | 1 => Statement::Bind {
                 keys: pick(KEYS, next()).to_owned(),
-                code: pick(CODES, next()).to_owned(),
+                code: CODES[usize::from(next()) % CODES.len()].0.to_owned(),
                 root: kind % 9 == 1,
             },
             2 | 3 => Statement::Unbind {
@@ -118,7 +121,7 @@ impl Statement {
         match self {
             Statement::Bind { keys, code, root } => {
                 let word = if *root { "bind-root" } else { "bind" };
-                format!("{} {} {word}", str(keys), str(code))
+                format!("{} code {code} end {word}", str(keys))
             }
             Statement::Unbind { keys, root } => {
                 let word = if *root { "unbind-root" } else { "unbind" };
@@ -168,11 +171,11 @@ impl Models {
             |k: &KeyPress| k.key == fux_vt::keys::Key::Escape && !k.mods.ctrl && !k.mods.alt;
         match statement {
             Statement::Bind { keys, code, root } => {
-                // The code is split into words as it is bound; its words
-                // are found as it runs.
-                if !splits(code) {
+                // The code is compiled as it is bound, from the words
+                // between code and end.
+                let Some(code) = compiled(code) else {
                     return false;
-                }
+                };
                 let Ok(keys) = fux::keymap::keys(keys) else {
                     return false;
                 };
@@ -182,8 +185,8 @@ impl Models {
                         return false;
                     };
                     let binding = Binding {
-                        code: code.clone(),
-                        label: code.clone(),
+                        label: code.text(),
+                        code,
                         group: "Without the prefix".to_owned(),
                     };
                     match self.root.iter_mut().find(|(k, _)| k == key) {
@@ -205,8 +208,8 @@ impl Models {
                 let new = Model {
                     keys: keys.clone(),
                     binding: Binding {
-                        code: code.clone(),
-                        label: code.clone(),
+                        label: code.text(),
+                        code,
                         group: "Other".to_owned(),
                     },
                     repeat: false,
@@ -309,8 +312,12 @@ fn models_of(layer: &Layer) -> Vec<Model> {
         .collect()
 }
 
-fn splits(code: &str) -> bool {
-    fuxth::token::source("binding", code).is_ok()
+/// The code value `code … end` makes of `code`, if it compiles.
+fn compiled(code: &str) -> Option<fux_wire::callback::Code> {
+    let (_, compiles) = CODES.iter().find(|(c, _)| *c == code)?;
+    let tokens = fuxth::token::source("binding", code).ok().filter(|_| *compiles)?;
+    let words = tokens.iter().map(|t| t.text.to_string()).collect();
+    Some(fux_wire::callback::Code { words })
 }
 
 /// The rules every keymap keeps that its types do not: no empty layer, no
@@ -392,19 +399,20 @@ impl Client {
         let held_before = self.held.clone();
         let stroke = Keystroke::from(press);
         let steps = self.held.press(&self.keymap, stroke, read_only);
-        let codes: Vec<&str> = (self.keymap.bindings.all().into_iter())
-            .map(|(_, b, _)| b.code.as_str())
-            .chain(self.keymap.root.iter().map(|(_, b)| b.code.as_str()))
+        let codes: Vec<&fux_wire::callback::Code> = (self.keymap.bindings.all().into_iter())
+            .map(|(_, b, _)| &b.code)
+            .chain(self.keymap.root.iter().map(|(_, b)| &b.code))
             .collect();
         for step in &steps {
-            if let Effect::Run(fux::screens::Job { code, .. }) = step {
-                // Only a bound program runs, and it splits into words: it
-                // did when it was bound.
+            if let Effect::Run(fux::screens::Job { program, .. }) = step {
+                // Only a bound code value runs.
+                let fux::screens::Program::Code(code) = program else {
+                    panic!("{program:?} runs but is no code value");
+                };
                 assert!(
-                    codes.contains(&code.as_str()) || (read_only && code == "me detach"),
+                    codes.contains(&code) || (read_only && code.words == ["me", "detach"]),
                     "{code:?} runs but is not bound"
                 );
-                assert!(splits(code), "{code:?} runs but does not split");
             }
         }
         if !read_only && held_before == Held::Normal {

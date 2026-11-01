@@ -2977,7 +2977,7 @@ mod tests {
         output_as(
             &mut session,
             Some(client),
-            "str show-column false set str u str 'me focused str renamed rename' bind repeat",
+            "str show-column false set str u code me focused str renamed rename end bind repeat",
         )?;
         session.input(client, b"\x02");
         let grid = compose(&session, client).ok_or("screen")?;
