@@ -99,6 +99,8 @@ fn core_comparisons() {
         assert_eq!(fuxth(program, u64::MAX), bools(left), "{program}");
     }
     // `0 0 eq 1 add` is -1 + 1 in Forth; a boolean isn't an integer here.
+    // It fails `type`, which `throw` numbers -12 (argument type mismatch),
+    // not the plan's -24 (invalid numeric argument): that is `range`'s.
     assert!(ends("type")(&fuxth("0 0 eq 1 add", u64::MAX)));
     assert_eq!(fuxth("true 0 eq", u64::MAX), bools(&[false]));
 }
@@ -252,4 +254,93 @@ fn core_output() {
         other @ (Ended::Failed(..) | Ended::Refused(..) | Ended::Endless) => format!("{other:?}"),
     };
     assert_eq!(printed, "ABC\nD\n");
+}
+
+/// Annex F's tests of the Exception word set: CATCH THROW ABORT ABORT", as
+/// `try … catch … end`, `throw`, `abort` and `fail`. Deviations (§2 of the
+/// plan): the handler gets one failure, its code and its number (here
+/// `thrown 99` for 99), where CATCH gives the number, and 0 when nothing
+/// is thrown; a `try` body starts with an empty stack, so the values it
+/// works on come in by name, and a failure leaves the stack as it was at
+/// `try`, its values too, where CATCH restores only its depth.
+#[test]
+fn exception_catch_and_throw() {
+    let failed = |code: &str, number| V::Failure(code.to_owned(), Some(number));
+    let defs = "define t1 9 end define t2 8 0 throw end define t3 7 8 9 99 throw end
+        define t4 1 sub dup 0 gt if recurse else 999 throw -222 then end ";
+    for (program, left) in [
+        // T{ c1 -> 1 2 3 9 0 }T: no THROW, no 0 either.
+        (
+            "1 2 3 str all try t1 catch end",
+            &[V::Int(1), V::Int(2), V::Int(3), V::Int(9)][..],
+        ),
+        // T{ c2 -> 1 2 8 0 }T: 0 THROW does nothing.
+        (
+            "1 2 str all try t2 catch end",
+            &[V::Int(1), V::Int(2), V::Int(8)],
+        ),
+        // T{ c3 -> 1 2 99 }T: the stack as it was at CATCH.
+        (
+            "1 2 str all try t3 catch end",
+            &[V::Int(1), V::Int(2), failed("thrown", 99)],
+        ),
+        // T{ c4 -> 3 4 5 0 999 -111 }T: the calls unwound; 10 comes in by
+        // name, so nothing is left in its place.
+        (
+            "3 4 5 10 let n str all try n t4 catch end -111",
+            &[
+                V::Int(3),
+                V::Int(4),
+                V::Int(5),
+                failed("thrown", 999),
+                V::Int(-111),
+            ],
+        ),
+        // T{ c5 -> 5 }T: the depth at CATCH, however much the body dropped.
+        (
+            "1 2 3 4 str all try 9999 throw catch drop end",
+            &[1, 2, 3, 4].map(V::Int),
+        ),
+        // T{ 1 2 ' t6 c6 -> 1 2 11 }T: ABORT is -1 THROW.
+        (
+            "1 2 str all try abort catch end",
+            &[V::Int(1), V::Int(2), failed("abort", -1)],
+        ),
+        // T{ 3 0 ' t10 c6 -> 3 77 }T  T{ 4 5 ' t10 c6 -> 4 77 12 }T: ABORT"
+        // is -2 THROW, its message made as it runs.
+        (
+            "3 0 let flag str all try 77 flag if str 'not displayed' fail then catch end",
+            &[V::Int(3), V::Int(77)],
+        ),
+        (
+            "4 5 let flag str all try 77 flag if str 'not displayed' fail then catch end",
+            &[V::Int(4), failed("fail", -2)],
+        ),
+        // QUIT is -56 THROW (9.3.5's table).
+        ("str all try quit catch end", &[failed("quit", -56)]),
+    ] {
+        let program = format!("{defs}{program}");
+        assert_eq!(fuxth(&program, u64::MAX), mixed(left), "{program}");
+    }
+}
+
+/// T{ 6 7 ' t9 c6 3 -> 6 7 13 3 }T: an undefined word (-13) found by text
+/// three EVALUATEs deep is caught, and the sources it was read from end.
+#[test]
+fn exception_unlinks_the_sources_read() -> Result<(), fuxth::Error> {
+    let mut words = Vocabulary::default();
+    words.evaluate();
+    let mut machine = Machine::new(words);
+    machine.library("stdlib.fux", STDLIB, &mut Toy::default())?;
+    let program = "define t7 str '333 undefined-word 334' evaluate 335 end
+        define t8 str '222 t7 223' evaluate 224 end
+        define t9 str '111 112 t8 113' evaluate 114 end
+        6 7 str all try t9 catch end 3";
+    machine.read(token::source("program", program)?, None);
+    let ran = machine.run(&mut Toy::default(), u64::MAX)?;
+    assert_eq!(ran, Outcome::Finished);
+    let left: Vec<V> = machine.stack().iter().map(common::value).collect();
+    let undefined = V::Failure("unknown_word".to_owned(), Some(-13));
+    assert_eq!(left, [V::Int(6), V::Int(7), undefined, V::Int(3)]);
+    Ok(())
 }

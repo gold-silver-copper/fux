@@ -253,10 +253,10 @@ panes as it begins and answers changes in watch order, not exit chronology.
 
   ```fux
   %2 str y text send-keys let A
-  str timeout try A 10 timeout wait drop catch 2drop %2 str C-c key send-keys drop end
+  str timeout try A 10 timeout wait drop catch drop %2 str C-c key send-keys drop end
   ```
   A command's output alone where the shell marks commands, else the screen:
-  `str no_marks try %3 last-output capture catch 2drop %3 capture end`.
+  `str no_marks try %3 last-output capture catch drop %3 capture end`.
 - **A shell to type into:** `shell` makes a tab with one in workspace
   `agent`, on the size of the tab `fux` runs in; from outside fux, give it
   a size: `opts 80 24 size str agent in new-tab`. Wait for its prompt
@@ -437,10 +437,12 @@ request on its answer or handle: `new-tab dup str tests rename`, then
 then` and `begin … until` decide and repeat, `list … end` gathers what its
 body leaves, `SEQ each … end` runs once per element, `CODES try … catch …
 end` runs its handler instead of failing with one of CODES (`str timeout
-try %2 5 timeout wait catch … end`: its body starts with an empty stack;
-the handler, with the stack as at `try` and the failure's own message,
-with no place, word or usage added, or a failed wait's answer, and code
-on it); a failure it does
+try %2 5 timeout wait catch … end`, `str all try` for any: its body
+starts with an empty stack; the handler, with the stack as at `try` and
+one failure on it, whose fields `get` reads: `code`, `number` (in
+Forth's table, or null), `message` (the word's own, with no place, word
+or usage added), `value` (a failed wait's answer, or null) and `actions`;
+`throw` raises it again); a failure it does
 not name goes on, its status kept. An action leaves its answer: printed,
 it is the lines above; given to a word that wants a pane, it is its pane (an action's or wait's on a tab or workspace
 is of another kind, `answers`, which no such word takes, however many panes
@@ -462,13 +464,14 @@ uncertain values still need runtime checks.
 contains`). A request with unused options must first reach its action; converting
 it with `string` does not complete it. Unknown words fail with the fixed hint
 `text is str WORD`; fux does not infer an executable name or a correction. The
-standard library, written in fuxth, does the rest (`fux help` lists it). A
-mistake every run would make (too few values, a string given to `add` or
-`if`, a request nothing acts on: its error names the word to end it with)
-fails before any word acts; otherwise the words before a failing one have
-already acted. A run exits 0, what is left printed; or the one `N exit`
-gives (0 to 255); or with the status of the failure that stopped it
-(above), stdout getting nothing more and stderr why, then what was left.
+standard library, written in fuxth, does the rest (`fux help` lists it).
+Words run as they are read, so the words before a failing one have
+already acted: stderr lists each step that took effect, once, after why
+it failed (`fux: already took effect: argument 4: rename`), and a
+caught failure holds them as `actions`. A run exits 0, what is left
+printed; or the one `N exit` gives (0 to 255); or with the status of the
+failure that stopped it (above), stdout getting nothing more and stderr
+why, then what was left.
 `str NAME getenv` reads a local variable in config or CLI mode; an unset
 variable fails `unset_var`, never an empty string. From the command line
 alone, a script reads `args` (the strings after `--file FILE`), `input`

@@ -1,7 +1,8 @@
 //! Values on the stack: integers, booleans, strings, lists, execution
-//! tokens, the marks of constructs being compiled, and the application's
-//! own.
+//! tokens, failures, the marks of constructs being compiled, and the
+//! application's own.
 use crate::Code;
+use crate::Error;
 use crate::Failure;
 use crate::machine::Steps;
 use crate::reader::Construct;
@@ -48,7 +49,22 @@ pub enum Value<A> {
     /// An open construct, while a definition is compiled: only its own
     /// definition's words resolve it.
     Mark(Rc<Mark>),
+    /// A failure, as a `try`'s handler gets it.
+    Failure(Rc<Thrown<A>>),
     Bool(bool),
+}
+
+/// A failure as a value: what a `try`'s handler gets, and `throw` raises
+/// again. Its code and where it happened, its number in Forth's table of
+/// `throw` codes (its code's, or the one `throw` was given), the value it
+/// carries (a failed wait's answer), and the steps whose words had taken
+/// effect before it (`Machine::acted`).
+#[derive(Clone, Debug)]
+pub struct Thrown<A> {
+    pub error: Error,
+    pub number: Option<i64>,
+    pub carried: Option<Value<A>>,
+    pub actions: Vec<Token>,
 }
 
 /// An execution token: what `tick`, `find` and `code … end` give, and
@@ -227,6 +243,11 @@ pub(crate) fn release<A>(mut values: Vec<Value<A>>) {
                     code.held(&mut values);
                 }
             }
+            Value::Failure(thrown) => {
+                if let Ok(thrown) = Rc::try_unwrap(thrown) {
+                    values.extend(thrown.carried);
+                }
+            }
             Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) | Value::Mark(_) => {}
         }
     }
@@ -272,6 +293,15 @@ impl<A: PartialEq> PartialEq for Value<A> {
                 (Self::App(a), Self::App(b)) if a == b => {}
                 (Self::Xt(a), Self::Xt(b)) if a == b => {}
                 (Self::Mark(a), Self::Mark(b)) if Rc::ptr_eq(a, b) => {}
+                (Self::Failure(a), Self::Failure(b))
+                    if a.error == b.error && a.number == b.number && a.actions == b.actions =>
+                {
+                    match (&a.carried, &b.carried) {
+                        (Some(a), Some(b)) => pairs.push((a, b)),
+                        (None, None) => {}
+                        (Some(_), None) | (None, Some(_)) => return false,
+                    }
+                }
                 (
                     Self::Int(_)
                     | Self::Bool(_)
@@ -279,7 +309,8 @@ impl<A: PartialEq> PartialEq for Value<A> {
                     | Self::List(_)
                     | Self::App(_)
                     | Self::Xt(_)
-                    | Self::Mark(_),
+                    | Self::Mark(_)
+                    | Self::Failure(_),
                     _,
                 ) => {
                     return false;
@@ -301,6 +332,7 @@ impl<A: AppValue> Value<A> {
             Self::List(_) => "a list",
             Self::Xt(_) => "an xt",
             Self::Mark(_) => "a mark",
+            Self::Failure(_) => "a failure",
         }
     }
 
@@ -314,7 +346,8 @@ impl<A: AppValue> Value<A> {
             | Self::Str(_)
             | Self::List(_)
             | Self::Xt(_)
-            | Self::Mark(_) => bare(self.kind()),
+            | Self::Mark(_)
+            | Self::Failure(_) => bare(self.kind()),
         }
     }
 
@@ -341,6 +374,9 @@ impl<A: AppValue> Value<A> {
                 Self::Xt(xt) => write!(out, "(xt {})", xt.name()).map_err(|_| unwritten())?,
                 Self::Mark(mark) => {
                     write!(out, "(mark {})", mark.construct.name()).map_err(|_| unwritten())?
+                }
+                Self::Failure(thrown) => {
+                    write!(out, "{}", thrown.error).map_err(|_| unwritten())?
                 }
             }
             // The next item of the innermost list under way.

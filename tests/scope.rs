@@ -36,7 +36,7 @@ fn held_handles_refuse_another_server_before_mutating_it() -> Outcome {
         ("opts %2 workspace in", "str cat program new-tab"),
         ("opts %2 workspace in 20 10 size", "attach"),
         (
-            "%2 str version get let v %2 kill str closed try v changed wait catch drop end",
+            "%2 str version get let v %2 kill str closed try v changed wait catch str value get end",
             "kill",
         ),
     ] {

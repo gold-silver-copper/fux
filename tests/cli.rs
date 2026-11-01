@@ -260,11 +260,11 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         failed.stderr
     );
-    // A try naming the timeout goes on after it: the wait's answer goes
-    // with the body's values, its code is left.
+    // A try naming the timeout goes on after it: the body's values go,
+    // and the handler reads the failure's code.
     let caught = server.fux(&[
-        "str", "timeout", "try", "%1", "1", "timeout", "wait", "catch", "nip", "end", "str",
-        "after",
+        "str", "timeout", "try", "%1", "1", "timeout", "wait", "catch", "str", "code", "get",
+        "end", "str", "after",
     ])?;
     assert_eq!(caught.status, 0, "{}", caught.stderr);
     assert_eq!(caught.stdout, "timeout\nafter\n");
@@ -296,9 +296,10 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     // The language's codes fux's words give as they run are caught by
     // name: an option left unused, a word `explain` has not, a name a
     // target would read as an id.
-    let program = "str unused try opts 1 timeout str w in new-tab drop str made catch nip end
-        str unknown_word try str nosuch explain str shown catch nip end
-        str bad_name try str %1 pane tab str %7 rename str renamed catch nip end";
+    let program =
+        "str unused try opts 1 timeout str w in new-tab drop str made catch str code get end
+        str unknown_word try str nosuch explain str shown catch str code get end
+        str bad_name try str %1 pane tab str %7 rename str renamed catch str code get end";
     let caught = server.ok(&program.split_whitespace().collect::<Vec<_>>())?;
     assert_eq!(caught, "unused\nunknown_word\nbad_name\n");
     // A size no screen can have is refused, `size` as the server refuses
@@ -366,7 +367,8 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{inside}"
     );
     // Caught, it is only why: no place, no bundled step, no usage.
-    let caught = server.words("str type try list 1 end 0 at str x type catch drop end")?;
+    let caught =
+        server.words("str type try list 1 end 0 at str x type catch str message get end")?;
     assert_eq!(
         caught,
         "takes the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts), not an integer\n"
@@ -394,6 +396,17 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         server.ok(&["ls", "listing"])?.contains("agent"),
         "new-tab ran before add failed"
     );
+    // Its report lists the steps that took effect before it, as a caught
+    // failure holds them, with its number in Forth's table (gap 26).
+    assert_eq!(
+        before.lines().nth(1),
+        Some("fux: already took effect: argument 8: new-tab"),
+        "{before}"
+    );
+    let caught = "str all try %1 str x text send-keys drop 1 0 div
+        catch dup str number get swap str actions get end";
+    let caught = server.ok(&caught.split_whitespace().collect::<Vec<_>>())?;
+    assert_eq!(caught, "-10\nargument 8: send-keys\n");
     // The language's own words say how they are written.
     for (words, usage) in [
         (
@@ -494,7 +507,7 @@ fn a_script_runs_as_the_shell_runs_it() -> Outcome {
         input trim print
         args 0 at read-file trim print
         str FUX_SOCKET getenv print
-        str unset_var try str FUX_NO_SUCH_VAR getenv catch nip end print
+        str unset_var try str FUX_NO_SUCH_VAR getenv catch str code get end print
         str 'to stderr' warn
         str left 3 exit
         str never print\n",
@@ -768,7 +781,7 @@ fn an_action_acts_though_stdout_is_closed() -> Outcome {
         server.ok(&["str", "agent", "workspace", "panes", "len"])?,
         "1\n"
     );
-    let caught = "str output try all str '' events catch 2drop end";
+    let caught = "str output try all str '' events catch drop end";
     let stream = closed(&[caught])?;
     assert_eq!(stream.status.code(), Some(141));
     assert_eq!(String::from_utf8_lossy(&stream.stderr), "");
@@ -796,8 +809,9 @@ fn a_batch_left_prints_its_events() -> Outcome {
     Ok(())
 }
 
-/// A failure's report tells every value left, a batch that missed entries
-/// whole among them, and stdout nothing: the action after the batch is told.
+/// A failure's report tells the step that took effect, then every value
+/// left, a batch that missed entries whole among them, and stdout nothing:
+/// the action after the batch is told.
 #[test]
 fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
     let server = Server::start_journal(2)?;
@@ -812,9 +826,10 @@ fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
     assert_eq!(failed.stdout, "");
     let told: Vec<_> = failed.stderr.lines().collect();
     assert!(
-        matches!(&told[..], [why, batch, answer]
-            if why.starts_with("fux: fail: ") && batch.contains(r#""missed":2"#)
-                && answer.starts_with("%1:")),
+        matches!(&told[..], [why, taken, batch, answer]
+            if why.starts_with("fux: fail: ")
+                && *taken == "fux: already took effect: argument 10: send-keys"
+                && batch.contains(r#""missed":2"#) && answer.starts_with("%1:")),
         "{}",
         failed.stderr
     );

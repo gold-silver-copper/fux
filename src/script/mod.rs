@@ -139,7 +139,8 @@ fn scope(value: &Value<Fux>) -> Option<Run> {
         | Value::List(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_) => None,
+        | Value::Mark(_)
+        | Value::Failure(_) => None,
     }
 }
 
@@ -1130,7 +1131,12 @@ pub fn run(
                 match asks.ask(&asked) {
                     Ok(reply) => match reply.end() {
                         End::Failed { code, message } => raised(machine, (code, message), reply)?,
-                        End::Done => pushed(machine, answered(reply))?,
+                        End::Done => {
+                            if acts(&asked.request) {
+                                took_effect(machine);
+                            }
+                            pushed(machine, answered(reply))?
+                        }
                     },
                     Err(failed) => pushed(machine, Err(failed))?,
                 }
@@ -1151,8 +1157,10 @@ pub fn run(
                 }
                 let values = asks.local(&what, host.state.as_deref_mut(), host.out);
                 // An exit the host took ends the run here, as it stands.
-                if let (Local::Shell(Shell::Exit(_)), Ok(_)) = (&what, &values) {
-                    return Ok(machine.stack().to_vec());
+                match (&what, &values) {
+                    (Local::Shell(Shell::Exit(_)), Ok(_)) => return Ok(machine.stack().to_vec()),
+                    (Local::Attach { .. } | Local::Open(_), Ok(_)) => took_effect(machine),
+                    _ => {}
                 }
                 pushed(machine, values)?
             }
@@ -1160,9 +1168,45 @@ pub fn run(
     }
 }
 
+/// Whether a request changes something, so that a failure after it lists
+/// it: all but those that only read.
+fn acts(request: &Request) -> bool {
+    use fux_wire::command::{ClientAction, Command};
+    !matches!(
+        request,
+        Request::Wait(_)
+            | Request::NextEvents { .. }
+            | Request::Do(
+                Command::Inspect { .. }
+                    | Command::CapturePane { .. }
+                    | Command::Resolve { .. }
+                    | Command::Members { .. }
+                    | Command::Client {
+                        action: ClientAction::Capture,
+                        ..
+                    }
+            )
+    )
+}
+
+/// The word the machine waited at took effect: listed, at the program's
+/// step that ran it, with the failures after it.
+fn took_effect(machine: &mut Machine<Fux>) {
+    let step = machine.calls().rev().find(|t| !bundled(&t.place));
+    if let Some(step) = step {
+        machine.acted(step);
+    }
+}
+
+/// Whether `place` is in the prelude's or the library's source.
+fn bundled(place: &fuxth::Place) -> bool {
+    matches!(place, fuxth::Place::Line { source, .. }
+        if matches!(&**source, "stdlib.fux" | "library.fux"))
+}
+
 /// Raises a failed reply's failure at the word. A pane's answer's
-/// failure (`PaneAnswer::FAILURES`) carries its answer, which a `try` that catches it gets for its
-/// message; uncaught, the answer is left, told on stderr before why it failed.
+/// failure (`PaneAnswer::FAILURES`) carries its answer, as its `value` where a `try`
+/// catches it; uncaught, the answer is left, told on stderr after why it failed.
 /// Any other fails alone: no other failure answers.
 fn raised(
     machine: &mut Machine<Fux>,
@@ -1215,12 +1259,8 @@ fn pushed(
 /// the program's step that called it, with the bundled word's own step in
 /// the message, and how the program's word is used.
 fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
-    let bundled = |place: Option<&fuxth::Place>| {
-        matches!(place, Some(fuxth::Place::Line { source, .. })
-            if matches!(&**source, "stdlib.fux" | "library.fux"))
-    };
-    let step = bundled(error.place.as_ref())
-        .then(|| machine.calls().rev().find(|t| !bundled(Some(&t.place))));
+    let step = (error.place.as_ref().is_some_and(bundled))
+        .then(|| machine.calls().rev().find(|t| !bundled(&t.place)));
     let Some(step) = step.flatten() else {
         return telling(error);
     };
@@ -1550,17 +1590,25 @@ pub fn main(
         acted: acted.clone(),
         closed: closed.clone(),
     };
-    let mut left = Vec::new();
-    match ran(args, argv, &mut out, acted, &mut left) {
+    let (mut left, mut taken) = (Vec::new(), Vec::new());
+    match ran(args, argv, &mut out, acted, (&mut left, &mut taken)) {
         // Its reader gone, fux ends quietly, whatever the program did then,
         // failed or caught it and went on.
         _ if closed.get() => Ok(PIPE),
         // stdout holds only what the program printed. Why it failed goes to
-        // stderr, then what the words before the failure left, their
-        // answers; nowhere is left to say that stderr failed.
+        // stderr, then the steps that had taken effect, then what the words
+        // before the failure left, their answers; nowhere is left to say
+        // that stderr failed.
         Err(failed) => {
             let mut err = io::stderr();
             let _ = writeln!(err, "fux: {failed}");
+            for step in taken {
+                let _ = writeln!(
+                    err,
+                    "fux: already took effect: {}: {}",
+                    step.place, step.text
+                );
+            }
             let _ = printed(&left, &mut err, Batch::Whole);
             Err(failed)
         }
@@ -1574,13 +1622,14 @@ pub fn main(
 /// that finished, as with `cat`.
 const PIPE: u8 = 128 + 13;
 
-/// `main`'s run, its output going to `out`; failed, what was left in `left`.
+/// `main`'s run, its output going to `out`; failed, what was left in
+/// `left`, and the steps that had taken effect in `taken`.
 fn ran(
     args: &[String],
     argv: Option<Vec<std::ffi::OsString>>,
     out: &mut Watched<'_>,
     acted: Acted,
-    left: &mut Vec<Value<Fux>>,
+    (left, taken): (&mut Vec<Value<Fux>>, &mut Vec<Token>),
 ) -> Result<u8, Failed> {
     if matches!(args, [flag] if matches!(flag.as_str(), "--version" | "-V")) {
         writeln!(out, "{}", fux_wire::protocol::Build::OURS).map_err(output_failed)?;
@@ -1635,6 +1684,7 @@ fn ran(
         }
         Err(failed) => {
             *left = machine.stack().to_vec();
+            *taken = machine.actions().to_vec();
             Err(failed)
         }
     }
@@ -1706,7 +1756,8 @@ fn written(out: &mut dyn Write, value: &Value<Fux>, batch: Batch) -> Result<(), 
         | Value::Str(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_) => line(out, value),
+        | Value::Mark(_)
+        | Value::Failure(_) => line(out, value),
     }
 }
 
@@ -1730,7 +1781,8 @@ fn line(out: &mut dyn Write, value: &Value<Fux>) -> Result<(), Failed> {
         | Value::Str(_)
         | Value::App(_)
         | Value::Xt(_)
-        | Value::Mark(_) => {
+        | Value::Mark(_)
+        | Value::Failure(_) => {
             (value.write_text(&mut stream)).map_err(|f| Failed::new(Code::of(f.code), f.message))
         }
     };
@@ -1986,6 +2038,7 @@ pub(crate) mod tests {
                     fuxth::Value::Int(_)
                     | fuxth::Value::Xt(_)
                     | fuxth::Value::Mark(_)
+                    | fuxth::Value::Failure(_)
                     | fuxth::Value::Bool(_)
                     | fuxth::Value::Str(_)
                     | fuxth::Value::List(_)
@@ -2164,7 +2217,7 @@ pub(crate) mod tests {
                 Ok(())
             }
         }
-        let program = "str output try str x print catch 2drop end";
+        let program = "str output try str x print catch drop end";
         assert_eq!(
             super::main(&[program.into()], None, &mut Closed)?,
             super::PIPE
@@ -2278,7 +2331,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             held_reply(
-                "str closed try %1 0 timeout wait catch drop str pane get end",
+                "str closed try %1 0 timeout wait catch str value get str pane get end",
                 reply,
                 &mut Vec::new()
             )?,
@@ -2641,7 +2694,7 @@ pub(crate) mod tests {
             "t str @1:0:1-0 list list bad 1 1 0 0 end end arrange",
         ] {
             let code = format!(
-                "input let bad @1 let t 0 16 range each drop str bad_value try {proposal} catch 2drop end end"
+                "input let bad @1 let t 0 16 range each drop str bad_value try {proposal} catch drop end end"
             );
             let mut machine = compile(&token::source("scalar", &code)?)?;
             let mut sink = Vec::new();

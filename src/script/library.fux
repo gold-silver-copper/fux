@@ -57,7 +57,7 @@ define quiet
   begin
     let seen
     str timeout try seen changed secs timeout wait capture false
-    catch 2drop seen true end
+    catch drop seen true end
   until
 end
 # pane-or-observation secs -- capture : checks ended first, even with unknown status; follows the pane across respawns; timeout is per change

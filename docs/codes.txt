@@ -1,4 +1,4 @@
-# Every error code, its exit status, and whether `try` catches it (fux-wire's code table, then fuxth's). Generated: FUX_BLESS=1 cargo test -p fux-wire lists
+# Every error code, its exit status, whether `try` catches it, and its number in Forth's table of `throw` codes, if it has one (fux-wire's code table, then fuxth's). Generated: FUX_BLESS=1 cargo test -p fux-wire lists
 no_server 1 try
 mismatch 1 try
 client 1 try
@@ -40,22 +40,25 @@ output 1 try
 nested 1 try
 not_a_key 1 try
 cancelled 1 uncaught
-require 2 try
-open_quote 2 try
-unknown_word 2 try
-missing_token 2 try
-bad_name 1 try
-not_top_level 2 try
-unmatched 2 try
+require 2 try -37
+open_quote 2 try -39
+unknown_word 2 try -13
+missing_token 2 try -16
+bad_name 1 try -32
+not_top_level 2 try -14
+unmatched 2 try -22
 unclosed 2 uncaught
-stack_underflow 2 try
-type 2 try
-div_by_zero 1 try
-overflow 1 try
+stack_underflow 2 try -4
+type 2 try -12
+div_by_zero 1 try -10
+overflow 1 try -11
 unset 1 try
 unused 1 try
-range 1 try
-fail 1 try
+range 1 try -24
+fail 1 try -2
+abort 1 try -1
+quit 1 try -56
+thrown 1 try
 bad_codes 2 try
 too_long 1 try
 contract 1 uncaught

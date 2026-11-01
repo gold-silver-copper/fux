@@ -174,7 +174,13 @@ fn run_at(text: &str, budget: u64, host: &mut Toy) -> Result<Vec<Value<Ticket>>,
                 Failure::new(Code::Host("negative"), format!("{n} is below 0")),
                 None,
             )?,
-            Outcome::Suspended(n) => machine.push(Value::Int(n.saturating_mul(10))),
+            // Answered, it took effect.
+            Outcome::Suspended(n) => {
+                if let Some(at) = machine.at() {
+                    machine.acted(at);
+                }
+                machine.push(Value::Int(n.saturating_mul(10)));
+            }
             Outcome::Paused => {}
         }
     }
@@ -365,7 +371,7 @@ fn a_definition_is_found_from_its_end() -> Result<(), Error> {
     let down = "define down dup 0 gt if 1 sub recurse then end 5 down";
     assert_eq!(run(down)?, ints(&[0]));
     let failed = "define a 1 end str 'define a 2 frob end' let source
-        str unknown_word try source evaluate catch drop drop end a";
+        str unknown_word try source evaluate catch drop end a";
     assert_eq!(evaluated(failed)?, ints(&[1]));
     Ok(())
 }
@@ -747,79 +753,159 @@ fn strs(values: &[&str]) -> Vec<Value<Ticket>> {
     values.iter().map(|s| Value::str(*s)).collect()
 }
 
+/// Values as a test compares them: a failure as its code, number and
+/// message, and what it carries.
+fn shown(values: &[Value<Ticket>]) -> Vec<String> {
+    let shown = |value: &Value<Ticket>| {
+        let Value::Failure(f) = value else {
+            return value.text().unwrap_or_default();
+        };
+        let carried = f.carried.as_ref().and_then(|v| v.text().ok());
+        let carried = carried.map_or(String::new(), |v| format!(", carrying {v}"));
+        let code = f.error.code.name();
+        format!("{code} {:?}: {}{carried}", f.number, f.error.message)
+    };
+    values.iter().map(shown).collect()
+}
+
 #[test]
 fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     let caught = run("1 str fail try 2 str no fail catch end")?;
-    assert_eq!(caught, [ints(&[1]), strs(&["no", "fail"])].concat());
+    assert_eq!(shown(&caught), ["1", "fail Some(-2): no"]);
     // Only the same failure not caught is said where.
     let uncaught = run("1 str no fail").err().map(|e| e.located());
     assert_eq!(uncaught.as_deref(), Some("t:1: fail: no"));
     assert_eq!(
-        run("1 str fail try 2 3 catch drop drop 0 end")?,
+        run("1 str fail try 2 3 catch drop 0 end")?,
         ints(&[1, 2, 3])
     );
     assert_eq!(
-        run("str 'fail negative' try -1 ask catch end 5")?,
-        [strs(&["-1 is below 0", "negative"]), ints(&[5])].concat(),
+        shown(&run("str 'fail negative' try -1 ask catch end 5")?),
+        ["negative None: -1 is below 0", "5"],
         "a suspended word's failure, answered"
     );
-    // A failure that carries a value gives it in place of the message,
-    // as the vocabulary says its code may: a number, here.
+    // A failure that carries a value holds it, as the vocabulary says its
+    // code may: a number, here.
     assert_eq!(
-        run("str far try -1000 ask catch drop 1 add end")?,
-        ints(&[-999])
+        shown(&run("str far try -1000 ask catch end")?),
+        ["far None: -1000 is far below 0, carrying -1000"]
     );
     assert_eq!(
-        run("str not_a_number try str x ask catch nip end")?,
-        strs(&["not_a_number"]),
+        shown(&run("str not_a_number try str x ask catch end")?),
+        ["not_a_number None: ask takes an integer, not a string"],
         "a host word's failure at once"
     );
     assert_eq!(
-        run("str unused try nope catch nip end")?,
-        strs(&["unused"]),
+        shown(&run("str unused try nope catch end")?),
+        ["unused None: nothing uses it"],
         "a code of the language's that the host's words raise"
     );
     assert_eq!(
-        run("str div_by_zero try 1 0 div catch nip end")?,
-        strs(&["div_by_zero"])
+        shown(&run("str div_by_zero try 1 0 div catch end")?),
+        ["div_by_zero Some(-10): division by zero"]
     );
     // Not named, a failure goes through untouched: its code, its place.
-    let through = run("str fail try\n  -1 ask\ncatch drop drop end").err();
+    let through = run("str fail try\n  -1 ask\ncatch drop end").err();
     assert_eq!(
         through.map(|e| e.to_string()).as_deref(),
         Some("negative: t:2: ask: -1 is below 0")
     );
     // Nested: the innermost that names it; a failure in a handler goes out.
-    let nested = "str div_by_zero try str fail try 1 0 div catch drop drop 5 end catch nip end";
-    assert_eq!(run(nested)?, strs(&["div_by_zero"]));
-    let again =
-        "str fail try str fail try str a fail catch drop drop str b fail end catch drop end";
-    assert_eq!(run(again)?, strs(&["b"]));
+    let nested = "str div_by_zero try str fail try 1 0 div catch drop 5 end catch end";
+    let divided = "div_by_zero Some(-10): division by zero";
+    assert_eq!(shown(&run(nested)?), [divided]);
+    let again = "str fail try str fail try str a fail catch drop str b fail end catch end";
+    assert_eq!(shown(&run(again)?), ["fail Some(-2): b"]);
     assert_eq!(
         code(run("str fail try 1 catch end str c fail")),
         Some("fail")
     );
+    // `all` names every code a running word raises, the host's too.
+    let all = "str all try 1 0 div catch end str all try -1 ask catch end";
+    assert_eq!(shown(&run(all)?), [divided, "negative None: -1 is below 0"]);
+    Ok(())
+}
+
+/// `throw` raises a failure again, as it was, or the failure of a number:
+/// the code with that number in Forth's table, else `thrown`; 0 raises
+/// none. `abort` and `quit` are -1 and -56.
+#[test]
+fn throw_raises_a_failure_or_a_number() -> Result<(), Error> {
+    for (text, said) in [
+        ("str all try 5 throw catch end", "thrown Some(5): 5 thrown"),
+        (
+            "str all try -10 throw catch end",
+            "div_by_zero Some(-10): -10 thrown",
+        ),
+        ("str all try -2 throw catch end", "fail Some(-2): -2 thrown"),
+        ("str abort try abort catch end", "abort Some(-1): -1 thrown"),
+        (
+            "str abort try -1 throw catch end",
+            "abort Some(-1): -1 thrown",
+        ),
+        ("str quit try quit catch end", "quit Some(-56): -56 thrown"),
+        ("str all try 1 2 0 throw catch end", "2"),
+        (
+            "str all try str x throw catch end",
+            "type Some(-12): throw takes 0, a number or a failure, not a string",
+        ),
+    ] {
+        let left = shown(&run(text)?);
+        assert_eq!(left.last().map(String::as_str), Some(said), "{text}");
+    }
+    // Raised again, a failure is the one caught: its code, place and the
+    // value it carries; uncaught, it is said where it first failed.
+    let again = "str far try str all try -1000 ask catch throw end catch end";
+    let far = "far None: -1000 is far below 0, carrying -1000";
+    assert_eq!(shown(&run(again)?), [far]);
+    let uncaught = run("str all try\n1 0 div catch\nthrow end").err();
+    assert_eq!(
+        uncaught.map(|e| e.to_string()).as_deref(),
+        Some("div_by_zero: t:2: div: division by zero")
+    );
+    assert_eq!(code(run("5 throw")), Some("thrown"));
+    Ok(())
+}
+
+/// A failure lists the steps whose words had taken effect before it, each
+/// once, in the order they first did: the host says which (`acted`).
+#[test]
+fn a_failure_lists_the_actions_taken_before_it() -> Result<(), Error> {
+    let taken = |values: Vec<Value<Ticket>>| -> Vec<String> {
+        match values.last() {
+            Some(Value::Failure(f)) => (f.actions.iter())
+                .map(|t| format!("{}:{}", t.place, t.text))
+                .collect(),
+            _ => vec!["no failure".to_owned()],
+        }
+    };
+    let text = "1 ask drop\ndefine twice 2 ask drop 3 ask drop end twice twice
+        str all try -1 ask catch end";
+    assert_eq!(taken(run(text)?), ["t:1:ask", "t:2:ask"]);
+    let none: [&str; 0] = [];
+    assert_eq!(taken(run("str all try 1 0 div catch end")?), none);
     Ok(())
 }
 
 #[test]
 fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
     let deep = "define deep dup 0 eq if str bottom fail then 1 sub recurse end
-        define safe let n str fail try n deep catch drop end end";
+        define safe let n str fail try n deep catch end end";
     assert_eq!(
-        run(&format!("{deep} 50 safe 7 3 safe"))?,
-        [strs(&["bottom"]), ints(&[7]), strs(&["bottom"])].concat(),
+        shown(&run(&format!("{deep} 50 safe 7 3 safe"))?),
+        ["fail Some(-2): bottom", "7", "fail Some(-2): bottom"],
         "the body's call is not in its definition's last place"
     );
     let recursion = "define down dup 2000 eq if str bottom fail then 1 add recurse 1 end
-        str fail try 0 down catch nip end";
-    assert_eq!(run(recursion)?, strs(&["fail"]), "2000 calls undone");
+        str fail try 0 down catch end";
+    let bottom = "fail Some(-2): bottom";
+    assert_eq!(shown(&run(recursion)?), [bottom], "2000 calls undone");
     let blocks = "list 1 str fail try 2 list 3 4 end each dup 4 eq if str four fail then end
-        catch drop end 5 end list 6 7 end each end";
-    let list = List::new([ints(&[1]), strs(&["four"]), ints(&[5])].concat());
+        catch string end 5 end list 6 7 end each end";
+    let list = List::new([ints(&[1]), strs(&["fail: t:1: fail: four"]), ints(&[5])].concat());
     let list = Value::List(std::rc::Rc::new(list));
     assert_eq!(run(blocks)?, [vec![list], ints(&[6, 7])].concat());
-    let names = "1 let x str fail try 2 let x x fail catch drop drop end x";
+    let names = "1 let x str fail try 2 let x x fail catch drop end x";
     assert_eq!(
         run(names)?,
         ints(&[2]),
@@ -883,7 +969,7 @@ fn a_try_is_checked_as_it_is_read() {
             "stack_underflow: t:1: drop: takes 1 value, and the stack has 0 (inside try … catch",
         ),
         (
-            "str fail try 1 catch drop drop end add",
+            "str fail try 1 catch drop end add",
             "stack_underflow: t:1: add: takes 2 values, and the stack has 1",
         ),
         ("str fail try str a catch drop end 1 add", "type: t:1: add:"),
@@ -943,6 +1029,9 @@ fn every_core_word_documents_its_effect_and_meaning() {
                 || matches!(
                     builtin,
                     Builtin::Drop
+                        | Builtin::Throw
+                        | Builtin::Abort
+                        | Builtin::Quit
                         | Builtin::Print
                         | Builtin::Write
                         | Builtin::Emit

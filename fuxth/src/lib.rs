@@ -50,7 +50,7 @@ pub use fuxth_core::{Code, Failure};
 pub use machine::{Args, Builtin, Done, Host, Machine, Outcome};
 pub use reader::Doc;
 pub use token::{Place, Token};
-pub use value::{AppValue, List, Mark, Text, Value, Xt};
+pub use value::{AppValue, List, Mark, Text, Thrown, Value, Xt};
 pub use vocabulary::Vocabulary;
 
 /// fuxth's standard library, written in fuxth: every word beyond the core

@@ -254,8 +254,8 @@ the version it is still at; `{"pane":"%3","status":4}`, its pane closed.
 Uncaught, it ends the program with that status, stdout getting nothing
 more, and says why on stderr, one line, `fux: CODE: MESSAGE`, then the
 answers of the words before it and its own, as text; nothing after it runs. Caught by `try`,
-the handler gets its answer in place of the message, under the code:
-`str timeout try %3 5 timeout wait catch drop end json` prints it, and
+the handler's failure carries its answer as its `value`:
+`str timeout try %3 5 timeout wait catch str value get end json` prints it, and
 `wait` on it waits again from the version it is still at. A wait on a
 tab's or a workspace's panes answers each that changed, the first failing
 status naming the whole.
@@ -381,7 +381,8 @@ the server.
 ## Errors
 
 A failure is one line on stderr, `fux: CODE: MESSAGE`, the message naming
-the file, line and word it came from. Its exit status is 2 for a mistake in
+the file, line and word it came from, then a line for each step that had
+taken effect before it. Its exit status is 2 for a mistake in
 the program itself (`usage`, `require`, `open_quote`, `unknown_word`,
 `missing_token`, `not_top_level`, `unmatched`, `unclosed`,
 `stack_underflow`, `type`, `bad_codes`), a wait's own (above), else 1. CODE stays; every one fux gives
@@ -401,7 +402,8 @@ the program itself (`usage`, `require`, `open_quote`, `unknown_word`,
 - the language's own: `require`, `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `type`, `div_by_zero`, `overflow`,
-  `unset`, `unused`, `range`, `fail`, `too_long`, `bad_codes`, `contract`.
+  `unset`, `unused`, `range`, `fail`, `abort`, `quit`, `thrown`, `too_long`,
+  `bad_codes`, `contract`.
 
 fux sets no limits of its own: memory, time and steps are the user's and
 the OS's to bound (`ulimit`, cgroups, `timeout`), and a program that loops
@@ -411,10 +413,17 @@ past 32, a layout past 64) fails `too_long`, whether the word or the server
 refuses it; a size no screen can have, past what a grid holds, fails
 `size`; what one frame (1 MiB) cannot carry is refused. When the OS refuses
 memory where fux asks for it, the failure is `memory`.
-`docs/codes.txt` lists every code with its exit status.
+`docs/codes.txt` lists every code with its exit status, and its number in
+Forth's table where it has one.
 
 A program catches the failures its words give, by code, with `try` (`fux
 help try`); a code no running word gives is refused as the `try` is read.
+The handler gets one failure, which `json` prints as
+`{"code":"timeout","number":null,"message":"…","value":{…},"actions":["argument 4: rename"]}`:
+`number` is the code's in Forth's table of `throw` codes (`throw` takes
+it), `value` what it carries, and `actions` the steps that had taken
+effect, as an uncaught failure lists them on stderr after its line
+(`fux: already took effect: argument 4: rename`).
 Of the language's own, fux's words give `unused`, `unknown_word` and
 `bad_name` as they run, so a `try` may name them too.
 

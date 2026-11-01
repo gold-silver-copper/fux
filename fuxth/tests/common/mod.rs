@@ -100,6 +100,8 @@ pub enum V {
     Bool(bool),
     Str(String),
     List(Vec<V>),
+    /// A failure: its code and its number.
+    Failure(String, Option<i64>),
 }
 
 impl V {
@@ -110,6 +112,7 @@ impl V {
             V::Bool(b) => b.to_string(),
             V::Str(s) => s.clone(),
             V::List(items) => items.iter().map(V::text).collect::<Vec<_>>().join(" "),
+            V::Failure(code, _) => code.clone(),
         }
     }
 }
@@ -135,12 +138,14 @@ fn line(place: Option<&Place>) -> u32 {
     }
 }
 
-fn value(v: &Value<Nothing>) -> V {
+/// A value as a test shows it.
+pub fn value(v: &Value<Nothing>) -> V {
     match v {
         Value::Int(n) => V::Int(*n),
         Value::Bool(b) => V::Bool(*b),
         Value::Str(s) => V::Str(s.to_string()),
         Value::List(l) => V::List(l.items().iter().map(value).collect()),
+        Value::Failure(f) => V::Failure(f.error.code.name().to_owned(), f.number),
         Value::App(_) | Value::Xt(_) | Value::Mark(_) => {
             V::Str(v.text().unwrap_or_else(|f| f.message))
         }
@@ -242,7 +247,7 @@ const LIBRARY_WORDS: [&str; 28] = [
 
 /// What a generated `try` catches. Not the limits, which each run meets
 /// in its own place (a call in last place takes no room in fuxth).
-const TRY_CODES: [&str; 7] = [
+const TRY_CODES: [&str; 8] = [
     "fail",
     "type",
     "stack_underflow",
@@ -250,6 +255,7 @@ const TRY_CODES: [&str; 7] = [
     "overflow not_a_number",
     "fail type stack_underflow div_by_zero range overflow not_a_number",
     "unset",
+    "all",
 ];
 
 const CORE_WORDS: [&str; 18] = [
@@ -421,7 +427,7 @@ impl<'a> Gen<'a> {
 
     /// A `try` of codes its body may raise or never does: its body starts
     /// with values, as it starts with none, and ends now and then with a
-    /// step that fails as it runs. Its handler drops the message.
+    /// step that fails as it runs. Its handler drops the failure.
     fn try_block(&mut self, depth: usize) {
         let codes = self.rng.pick(&TRY_CODES);
         self.put(&["str", &format!("'{codes}'"), "try"]);
@@ -436,7 +442,7 @@ impl<'a> Gen<'a> {
                 .pick(&["str x fail", "1 0 div", "str x ask", "-1 char"]);
             self.put(&failing.split(' ').collect::<Vec<_>>());
         }
-        self.put(&["catch", "nip"]);
+        self.put(&["catch", "drop"]);
         self.seq(3, depth.saturating_add(1));
         self.put(&["end"]);
     }
@@ -626,7 +632,7 @@ impl<'a> Gen<'a> {
                         self.out
                             .extend(["1", "0", "div", "drop"].map(str::to_owned));
                     }
-                    "catch drop drop end"
+                    "catch drop end"
                 }
                 105..=107 if depth == 0 && above >= 1 => {
                     // A name for the top value, read straight back.

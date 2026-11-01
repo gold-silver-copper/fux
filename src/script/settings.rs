@@ -86,7 +86,8 @@ fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), Un
             | Value::List(_)
             | Value::App(_)
             | Value::Xt(_)
-            | Value::Mark(_) => None,
+            | Value::Mark(_)
+            | Value::Failure(_) => None,
         })
     };
     if let Some(item) = list.items().iter().find(|i| !matches!(i, Value::Str(_))) {
@@ -185,9 +186,12 @@ fn colour(value: &Value<Fux>) -> Result<fux_vt::Color, Unread> {
             let [_, r, g, b] = rgb.to_be_bytes();
             Ok(Color::Rgb(fux_vt::Rgb { r, g, b }))
         }
-        Value::Bool(_) | Value::List(_) | Value::App(_) | Value::Xt(_) | Value::Mark(_) => {
-            Err(wrong("a colour: 0 to 255, default, or #rrggbb", value))
-        }
+        Value::Bool(_)
+        | Value::List(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)
+        | Value::Failure(_) => Err(wrong("a colour: 0 to 255, default, or #rrggbb", value)),
     }
 }
 
@@ -303,7 +307,8 @@ impl Reads for fux_wire::presentation::Bar {
                         | Value::Bool(_)
                         | Value::App(_)
                         | Value::Xt(_)
-                        | Value::Mark(_) => {
+                        | Value::Mark(_)
+                        | Value::Failure(_) => {
                             Err("a bar field is a name or [slot 0..15]".to_owned().into())
                         }
                     })

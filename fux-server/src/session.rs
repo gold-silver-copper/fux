@@ -6671,7 +6671,7 @@ mod tests {
     #[test]
     fn a_failed_wait_keeps_its_answer() -> TestResult {
         let mut s = started()?;
-        let caught = "str timeout try %1 1 timeout wait catch drop end";
+        let caught = "str timeout try %1 1 timeout wait catch str value get end";
         let json = output(&mut s, &format!("{caught} json"))?;
         assert!(
             json.starts_with(r#"{"pane":"%1","version":"%1:"#) && json.contains(r#""status":124"#),
@@ -6727,7 +6727,7 @@ mod tests {
             assert_eq!(output(&mut s, source)?.trim(), expected, "{source}");
         }
         let closed = format!(
-            "str closed try str {} changed wait catch drop end counts",
+            "str closed try str {} changed wait catch str value get end counts",
             baseline.trim()
         );
         let refused = output(&mut s, &closed)
@@ -6743,7 +6743,7 @@ mod tests {
         let json = output(
             &mut s,
             "%1 capture expect str x text send-keys let sent \
-             str timeout try sent 0 timeout wait catch drop end \
+             str timeout try sent 0 timeout wait catch str value get end \
              0 quiet json",
         )?;
         assert!(
@@ -6759,7 +6759,7 @@ mod tests {
         let version = output(&mut s, "%1 str vertical axis split")?;
         run(&mut s, "%2 kill")?;
         let caught = format!(
-            "str closed try str {} changed wait catch drop end",
+            "str closed try str {} changed wait catch str value get end",
             version.trim()
         );
         assert_eq!(
@@ -7202,14 +7202,14 @@ mod tests {
         for source in ["opts str x arg new-tab", "%1 send-keys"] {
             let caught = output(
                 &mut s,
-                &format!("str usage try {source} drop catch 2drop str recovered end"),
+                &format!("str usage try {source} drop catch drop str recovered end"),
             )?;
             assert_eq!(caught, "recovered\n", "{source}");
         }
         assert_eq!(
             output(
                 &mut s,
-                "str not_here try me drop catch 2drop str recovered end"
+                "str not_here try me drop catch drop str recovered end"
             )?,
             "recovered\n"
         );
@@ -7403,7 +7403,7 @@ mod tests {
         assert!(upper.contains("(use: S upper"), "{upper}");
         // Caught, it is the failing word's own message (here `each`'s,
         // inside `upper`): no place, word or usage added.
-        let caught = output(&mut s, "str type try 3 upper catch drop end");
+        let caught = output(&mut s, "str type try 3 upper catch str message get end");
         assert_eq!(
             caught.as_deref(),
             Ok("each walks a string or a list, not an integer\n")

@@ -480,8 +480,10 @@ impl<A: AppValue> Machine<A> {
         };
         let words = Rc::clone(&self.vocabulary);
         let codes = (text.split_whitespace()).map(|name| words.caught(name));
-        let codes = codes.collect::<Result<Vec<Code>, String>>();
-        let codes = codes.map_err(|why| self.fail(Code::BadCodes, why))?;
+        let codes = codes.collect::<Result<Vec<Vec<Code>>, String>>();
+        let codes = codes
+            .map_err(|why| self.fail(Code::BadCodes, why))?
+            .concat();
         if codes.is_empty() {
             return Err(self.fail(Code::BadCodes, "names no code to catch"));
         }
@@ -831,7 +833,8 @@ impl<A: AppValue> Machine<A> {
             | Value::Str(_)
             | Value::List(_)
             | Value::App(_)
-            | Value::Xt(_) => None,
+            | Value::Xt(_)
+            | Value::Failure(_) => None,
         });
         match mark {
             Some(mark) => Error::new(
