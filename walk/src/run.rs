@@ -162,7 +162,7 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
         Step::Config(config) => {
             let text = match config {
                 Config::Valid => CONFIG_VALID.to_owned(),
-                Config::Invalid => format!("{CONFIG_VALID}str C-Left str nonsense bind\n"),
+                Config::Invalid => format!("{CONFIG_VALID}str C-Left code nonsense end bind\n"),
                 Config::PrefixA => format!("{CONFIG_VALID}str C-a prefix\n"),
                 Config::PrefixB => format!("{CONFIG_VALID}str C-b prefix\n"),
             };

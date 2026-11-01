@@ -124,7 +124,7 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
 #[test]
 fn pane_actions_are_bindings_a_config_extends() -> Outcome {
     let server =
-        Server::start("str 'a g' str 'me focused str hello notify' bind  str greet label")?;
+        Server::start("str 'a g' code me focused str hello notify end bind  str greet label")?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
     server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
@@ -306,14 +306,15 @@ fn detaching_with_an_overlay_open_is_safe() -> Outcome {
     Ok(())
 }
 
-/// Remote lists resolve only callback source in the receiving client's dictionary.
+/// A remote list's code value is compiled again in the receiving client's
+/// dictionary, from its words.
 #[test]
 fn a_remote_custom_chooser_delivers_inert_payload_to_the_receiving_dictionary() -> Outcome {
-    let server = Server::start("define receiver-only nip print end")?;
+    let server = Server::start("define shown nip print end")?;
     let mut client = server.attach(12, 70)?;
     client.wait_for("$")?;
-    // The CLI has no receiver-only definition; the label is never executable.
-    server.ok(&["str c1 client str Hosts list list str '%1 kill' str 'me focused kill' end end list end list 0 end str receiver-only choose"])?;
+    // The CLI's own shown prints nothing; the label is never executable.
+    server.ok(&["define shown 2drop end str c1 client str Hosts list list str '%1 kill' str 'me focused kill' end end list end list 0 end code shown end choose"])?;
     client.wait_for("Hosts")?;
     client.keys("\r")?;
     client.wait_for("%1 kill")?;

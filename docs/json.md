@@ -429,8 +429,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":60,
- "server_release":"0.36.0","server_protocol":60,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":61,
+ "server_release":"0.36.0","server_protocol":61,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

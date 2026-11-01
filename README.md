@@ -335,7 +335,7 @@ is dropped, which the bar says.
 `a`, `t` and `w` are **layers**. `t` and `w` share their verbs: `n` new,
 `h`/`l` previous and next, `g` choose, `r` rename, `x` close, and `m` then
 `h`/`l` to move it earlier or later, repeating. A layer is bindings like any
-other: `str 'a g' str '…' bind` adds one to it, listed in the column beside
+other: `str 'a g' code … end bind` adds one to it, listed in the column beside
 the defaults, and `unbind` takes one away. `f`, `g`, `i`, `u` and `y`
 are free for your own bindings. These keys are themselves a config, run
 before yours, in the words yours uses
@@ -351,7 +351,7 @@ or reordering it does not change history. Each attachment retains just one
 previous identity of each kind; closing it clears it, with no older fallback.
 If a close selects the remembered place, it ceases to be its own previous
 place. With no previous place, the step refuses. Detaching discards this history.
-For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
+For example, bind `str 't q' code me str last step-tab end bind` in your config.
 
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
   or panes. A chooser acts on the item it was opened for, even once
@@ -369,17 +369,19 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
   ```fux
   me str Hosts
   list list str server.example str 'Production host' end end
-  list end list 0 end str 'nip print' choose
+  list end list 0 end code nip print end choose
   ```
 
-  The callback is source or `[captured-arguments,source]`. Enter passes the
+  The callback is a code value, `code … end`, or
+  `[captured-arguments,code … end]`; a string is refused. Enter passes the
   captured values, then `client payload`; list key actions receive only
   `client payload`. The move/swap choosers capture their source once, and
   every row carries its destination handle. Immutable scalars,
-  typed handles, records, null and lists are admitted; unfinished
-  requests are refused.
-  The receiver checks its own dictionary and each actual payload kind;
-  runtime checks cover dynamic fields and require an empty result stack.
+  typed handles, records, null, lists and code values are admitted;
+  unfinished requests are refused. A code value goes to the receiving
+  client as its words, which it compiles in its own dictionary (a word it
+  defines otherwise means its own there); runtime checks cover dynamic
+  fields and require an empty result stack.
   Stale handles refuse rather than selecting a replacement with the same label.
 - **The command prompt** (`e`) runs fuxth as your client, `me` and all
   (`me focused str vertical axis str htop program split`), and shows what it
@@ -388,21 +390,21 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
 - **Prompts and questions of your own:** `prompt` opens a line whose Enter
   runs your fuxth with the line on its stack, a string, and `confirm` a
   question, a chooser titled with it whose one row, Yes, runs it
-  (`me str 'close it?' str '%3 kill' confirm`); its row is no pane, tab or
+  (`me str 'close it?' code %3 kill end confirm`); its row is no pane, tab or
   workspace, so `r` and `x` refuse there. The question is a chooser's
   title: text (`42 string`, not `42`), or `[text,subject]`, which closes
   when its subject goes.
-  A callback may also be `[captured-arguments,source]`; captured arguments
-  enter its stack before the submitted line, without becoming source:
-  `me str Rename str '' list list %3 end str rename end prompt`.
+  A callback may also be `[captured-arguments,code … end]`; captured
+  arguments enter its stack before the submitted line, as values:
+  `me str Rename str '' list list %3 end code rename end end prompt`.
   The rename prompts and close questions use this typed form in the library.
 - **These screens' keys are a config too**, as the bindings are: `bind-in`
   gives a key of a chooser or a line being typed one of that
   screen's actions, and `label` names it in the screen's hints
   (`str list str g str first bind-in str first label`); `unbind-in` takes one
   away. `bind-in` accepts only native actions. Executable list keys use
-  `str r str rename-prompt bind-action` and
-  `str x str confirm-close bind-action`; each receives `client payload`
+  `str r code rename-prompt end bind-action` and
+  `str x code confirm-close end bind-action`; each receives `client payload`
   and must leave an empty stack. An unknown native action always refuses.
   Escape always leaves a screen, and is never bound.
 - **A key's program** runs as your client, one at a time. While one that may
@@ -587,21 +589,23 @@ str terminal-clipboard false set
 
 unbind-all                                        # optional: no keys at all, the screens' too
 define split-right me focused str horizontal axis split drop end   # a word of the config's
-str v str split-right bind
-str 't n' str 'opts new-tab drop' bind            # t is a layer: C-b t n
-str 'r l' str 'me focused str right 1 move-border' bind  repeat   # C-b r l l l, then Esc
-str g str 'me focused str vertical axis str lazygit program split drop' bind
+str v code split-right end bind
+str 't n' code opts new-tab drop end bind         # t is a layer: C-b t n
+str 'r l' code me focused str right 1 move-border end bind  repeat   # C-b r l l l, then Esc
+str g code me focused str vertical axis str lazygit program split drop end bind
   str 'lazygit' label  str Tools group            # what the column shows, and under which heading
-str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
+str M-h code me str left focus end bind-root      # no prefix: Alt-h alone
 ```
 
 `fux help set` lists the settings: what each takes and where its bundled
 initialization lives.
 
-**Bindings** run fuxth, compiled when bound, run fresh each time their keys
-are typed, as your client (`me`). A binding, and the command prompt, may use
-the config's definitions, written anywhere in it; not its `let` names (a
-definition that reads one is refused there, with that reason). `bind` takes the keys after the prefix,
+**Bindings** run a code value, `code … end`, compiled where it is written
+and again, from its words, each time its keys are typed, fresh, as your
+client (`me`); a string is refused. A binding uses the config's
+definitions made before it, as any code does, and the command prompt any
+of them; not its `let` names (a definition that reads one is refused
+there, with that reason). `bind` takes the keys after the prefix,
 space-separated (`str 't n'` makes `t` a layer); `bind-root` one key, with
 no prefix, which then never reaches any program: bind chords or function
 keys rather than letters. A key sequence is a binding or a layer, never
@@ -748,7 +752,7 @@ that do not fit are refused by `arrange`, without a retry.
 For example, a config binding can arrange the focused tab:
 
 ```fux
-str 'a =' str 'me focused tab even-h' bind str 'panes side by side' label
+str 'a =' code me focused tab even-h end bind str 'panes side by side' label
 ```
 
 A dump makes the layouts and launches again: each shell starts afresh in

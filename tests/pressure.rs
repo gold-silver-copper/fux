@@ -111,7 +111,7 @@ fn received(out: &std::path::Path, expected: &[u8]) -> Outcome {
 /// prefix, and held keys follow the completed program.
 #[test]
 fn a_bound_program_follows_the_keys_before_it() -> Outcome {
-    let server = Server::start("str F5 str 'me focused str Z text send-keys drop' bind-root")?;
+    let server = Server::start("str F5 code me focused str Z text send-keys drop end bind-root")?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
     let (cat, out) = recorder(&server, "")?;

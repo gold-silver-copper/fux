@@ -28,7 +28,8 @@ once.
   keeps the version of each word it was compiled against, so a redefinition
   changes only what is compiled after it, and may call the version before
   it (`define down down down end`). Late binding is explicit: `find`,
-  `execute`, and a `let` name holding an xt.
+  `execute`, a `let` name holding an xt, and a word `defer` made, which
+  runs the xt `is` gave it last.
 - **Immediate words** run even while a definition is compiled: every word
   that shapes a program is one (`define`, `str`, `let`, `if`, `list`, `try`
   …), and a program makes its own with `immediate`, `postpone` and
@@ -88,8 +89,9 @@ definition is compiled:
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |
 | `SEQ each … end` | the body once per element of a string or list, the element pushed; the body sees the whole stack |
 | `CODES try … catch … end` | the body, from an empty stack, its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`; `str all try` for every code a running word raises), what it began is undone (its calls, sources being read, blocks, code being compiled and values) and the handler runs instead, on the stack as it was at `try` and one **failure**: its code, its number in Forth's table of `throw` codes, its message and place, the value an application's failure may carry (`Machine::raise`'s `carried`), and the steps whose words had taken effect (`Machine::acted`). `throw` raises it again; a failure of another code goes through untouched, as does one in the handler |
-| `code … end` | the words between, compiled, as an xt: pushed at the top level, compiled as a literal in a definition |
+| `code … end` | the words between, compiled, as an xt: pushed at the top level, compiled as a literal in a definition. The xt keeps those words, as read (`Xt::words`), so an application can send it elsewhere and compile it again (`code` WORDS `end`, read there), so long as `code` and `end` themselves opened and closed it |
 | `tick NAME` | NAME's xt, likewise |
+| `XT is NAME`, `action-of NAME` | the word `defer` made, NAME, runs XT from then on; the xt it runs, likewise (Forth's `is` and `action-of`) |
 | `postpone NAME` | in a definition: what NAME does when compiled, done when the definition runs |
 | `X literal` | in a definition: X, pushed when it runs |
 | `recurse`, `leave-definition` | in a definition: a call to itself; a return now, its loops left |
@@ -128,6 +130,7 @@ which only its own code's words resolve; `end` closes the innermost.
 | `fetch store fill copy-cells` | addr -- x / x addr -- / addr u x -- / from to u -- | a cell read, written; x in u cells; u cells copied, overlapping or not (Forth's `@ ! fill move`) |
 | `create NAME`, `does`, `body-of` | -- / -- / xt -- addr | a word that gives where the data space goes on; in a definition, the rest of it what the word `create` made last does, its address pushed first; the address a `create`d word gives (Forth's `>body`) |
 | `variable NAME`, `constant NAME` | -- / x -- | a word that gives the address of a cell of its own; a word that gives x |
+| `defer NAME` | -- | a word that runs the xt `is` gives it (none yet: it fails `unset`), so code compiled before runs the one given last |
 | `base`, `number` | -- addr / s -- n | the address of the base `number` reads and `digit` writes in (10 to begin with); the integer s writes in it, or after Forth's prefixes `#`, `$` and `%` in base 10, 16 or 2 |
 | `kind` | x -- name | `integer`, `boolean`, `string`, `list`, `address`, `xt`, or the host's |
 | `string` | x -- s | as `print` shows it: a list's elements with spaces |
@@ -140,6 +143,7 @@ which only its own code's words resolve; `end` closes the innermost.
 | `next-word` | -- s | the next word of the input, for a word that reads one |
 | `immediate` | -- | the word defined last runs while compiling |
 | `compiling`, `start-compiling` | -- flag / -- | whether words are compiled; compile again |
+| `compile-call` | xt -- | a call to xt compiled into the definition open, though its words are run (Forth's `compile,`) |
 | `evaluate` | s -- | reads s as a source file is read, here; only where the host enables it |
 
 The standard library adds, among others: `dup swap over rot nip -rot

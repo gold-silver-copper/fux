@@ -3,31 +3,32 @@
 //! fux's own screens. All of it in the client: the server is sent typed
 //! actions, and keys only as literal input to a pane.
 //!
-//! A binding runs fuxth: its code is compiled and run by the client, fresh,
-//! each time its keys are typed, the client itself its `me`. The default
+//! A binding runs fuxth: its code value is compiled and run by the client,
+//! fresh, each time its keys are typed, the client itself its `me`. The default
 //! bindings are a config too, `script/keys.fux`, run on `Keymap::default`
 //! before the user's.
 use crate::screens::{Effect, HIDE};
 use fux_vt::keys::{Key, KeyPress, Keystroke, Modifiers};
 use fux_wire::act::ScreenAct;
 use fux_wire::act::{Act, Column, ColumnEntry, Edit, Hint, LineAct, ListAct, Move, Panel};
+use fux_wire::callback::Code;
 use fux_wire::words::quote;
 
-/// What a key runs: fuxth code, what the column says it does, and the
+/// What a key runs: a code value, what the column says it does, and the
 /// group the column lists it under.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
-    pub code: String,
+    pub code: Code,
     pub label: String,
     pub group: String,
 }
 
 impl Binding {
     /// What `bind` makes of `code`, or `bind-root` if `root`: labelled with
-    /// its code, in its word's group.
-    pub fn new(code: String, root: bool) -> Self {
+    /// its words, in its word's group.
+    pub fn new(code: Code, root: bool) -> Self {
         Self {
-            label: code.clone(),
+            label: code.text(),
             code,
             group: Self::group_of(root).to_owned(),
         }
@@ -43,8 +44,8 @@ impl Binding {
     /// that word gives.
     fn line(&self, keys: &str, root: bool) -> String {
         let word = if root { "bind-root" } else { "bind" };
-        let mut line = format!("str {} str {} {word}", quote(keys), quote(&self.code));
-        if self.label != self.code {
+        let mut line = format!("str {} code {} end {word}", quote(keys), self.code.text());
+        if self.label != self.code.text() {
             line += &format!("  str {} label", quote(&self.label));
         }
         if self.group != Self::group_of(root) {
@@ -456,7 +457,7 @@ impl Held {
                     return self.open(keymap, Vec::new(), 0);
                 }
                 match keymap.root_binding(press) {
-                    Some(binding) => vec![Effect::Run(binding.code.as_str().into())],
+                    Some(binding) => vec![Effect::Run(binding.code.clone().into())],
                     None => vec![Effect::Send(Act::Key(stroke))],
                 }
             }
@@ -498,7 +499,7 @@ impl Held {
                         HIDE
                     }
                 };
-                vec![shown, Effect::Run(binding.code.as_str().into())]
+                vec![shown, Effect::Run(binding.code.clone().into())]
             }
             Some(Node::Layer(_)) => {
                 let mut deeper = path;
@@ -596,7 +597,7 @@ impl Held {
                 binding,
                 repeat: false,
             }) => {
-                vec![HIDE, Effect::Run(binding.code.as_str().into())]
+                vec![HIDE, Effect::Run(binding.code.clone().into())]
             }
             Some(Node::Layer(_)) | None => {
                 let text = format!("{press} is not one of this mode's keys");
@@ -608,7 +609,8 @@ impl Held {
     fn watching(&mut self, keymap: &Keymap, press: KeyPress) -> Vec<Effect> {
         let prefixed = std::mem::take(self) == Held::Prefixed;
         if prefixed && press == KeyPress::char('d') {
-            return vec![Effect::Run("me detach".into())];
+            let detach = ["me", "detach"].map(String::from).into();
+            return vec![Effect::Run(Code { words: detach }.into())];
         }
         if !prefixed && Some(press) == keymap.prefix {
             *self = Held::Prefixed;
@@ -672,7 +674,8 @@ pub trait Named: Clone + PartialEq + 'static {
     const NAMES: &'static [(&'static str, Self)];
     const ESCAPE: Self;
 
-    fn source(&self) -> Option<&str> {
+    /// The code value it runs, if one.
+    fn source(&self) -> Option<&Code> {
         None
     }
 
@@ -803,7 +806,7 @@ impl<A: Named> Bindable for Table<A> {
             let label = label.as_ref().map(|l| format!("  str {} label", quote(l)));
             let label = label.unwrap_or_default();
             match act.source() {
-                Some(code) => format!("str {key} str {} bind-action{label}\n", quote(code)),
+                Some(code) => format!("str {key} code {} end bind-action{label}\n", code.text()),
                 None => format!("str {modal} str {key} str {} bind-in{label}\n", act.name()),
             }
         };
@@ -820,7 +823,7 @@ impl Named for ListAct {
         ("choose", ListAct::Choose), ("cancel", ListAct::Cancel),
     ];
     const ESCAPE: Self = ListAct::Cancel;
-    fn source(&self) -> Option<&str> {
+    fn source(&self) -> Option<&Code> {
         match self {
             Self::Action(action) => Some(&action.code),
             Self::Move(_) | Self::Choose | Self::Cancel => None,
@@ -948,7 +951,7 @@ mod tests {
             steps,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run("me zoom".into())
+                Effect::Run(crate::testing::code("me zoom").into())
             ]
         );
         assert_eq!(held, Held::Normal);
@@ -971,7 +974,9 @@ mod tests {
         let steps = held.press(&keymap, stroke("l")?, false);
         assert_eq!(
             steps,
-            [Effect::Run("me focused str right 1 move-border".into())]
+            [Effect::Run(
+                crate::testing::code("me focused str right 1 move-border").into()
+            )]
         );
         held.press(&keymap, stroke("Escape")?, false);
         assert_eq!(held, Held::Normal);
@@ -989,7 +994,10 @@ mod tests {
         ));
         held.press(&keymap, stroke("C-b")?, true);
         let steps = held.press(&keymap, stroke("d")?, true);
-        assert_eq!(steps, [Effect::Run("me detach".into())]);
+        assert_eq!(
+            steps,
+            [Effect::Run(crate::testing::code("me detach").into())]
+        );
         Ok(())
     }
 
@@ -999,7 +1007,10 @@ mod tests {
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
         let mut keymap = defaults()?;
-        keymap.bind_root(key("M-t")?, Binding::new("opts new-tab drop".into(), true))?;
+        keymap.bind_root(
+            key("M-t")?,
+            Binding::new(crate::testing::code("opts new-tab drop"), true),
+        )?;
         let entries = keymap.column(&[], 0).map(|c| c.entries).unwrap_or_default();
         let last = entries.len().saturating_sub(1);
         assert!(
@@ -1044,7 +1055,7 @@ mod tests {
             press("Enter")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run("opts new-tab drop".into())
+                Effect::Run(crate::testing::code("opts new-tab drop").into())
             ]
         );
         press("C-b")?;
@@ -1052,7 +1063,7 @@ mod tests {
             press("j")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run("me str down focus".into())
+                Effect::Run(crate::testing::code("me str down focus").into())
             ]
         );
         Ok(())
@@ -1063,18 +1074,24 @@ mod tests {
         let mut keymap = Keymap::default();
         keymap.bind(
             &keys("g n")?,
-            Binding::new("opts new-tab drop".into(), false),
+            Binding::new(crate::testing::code("opts new-tab drop"), false),
             false,
         )?;
         keymap.bind(
             &keys("y l")?,
-            Binding::new("me focused str right 1 move-border".into(), false),
+            Binding::new(
+                crate::testing::code("me focused str right 1 move-border"),
+                false,
+            ),
             true,
         )?;
-        keymap.bind_root(key("M-t")?, Binding::new("me zoom".into(), true))?;
+        keymap.bind_root(
+            key("M-t")?,
+            Binding::new(crate::testing::code("me zoom"), true),
+        )?;
         assert_eq!(
             keymap.describe(),
-            "unbind-all\nstr 'g n' str 'opts new-tab drop' bind\nstr 'y l' str 'me focused str right 1 move-border' bind  repeat\nstr M-t str 'me zoom' bind-root\n"
+            "unbind-all\nstr 'g n' code opts new-tab drop end bind\nstr 'y l' code me focused str right 1 move-border end bind  repeat\nstr M-t code me zoom end bind-root\n"
         );
         Ok(())
     }

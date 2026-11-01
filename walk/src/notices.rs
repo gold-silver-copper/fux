@@ -238,7 +238,7 @@ mod tests {
             "bundled initialization did not set shell",
             "only one pane",
             "C-b t q is not bound",
-            "bad_binding: nonsense: no such word; text is `str WORD`, in the binding for x (/w/config/fux/config.fux:3)",
+            "unknown_word: nonsense: no such word; text is `str WORD` (/w/config/fux/config.fux:3)",
             "unknown_word: nonsense: no such word; text is `str WORD` (prompt:1)",
             "unknown_word: nonsense: no such word; text is `str WO…",
         ] {
