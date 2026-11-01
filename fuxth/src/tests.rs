@@ -684,6 +684,70 @@ fn words_may_call_each_other_through_an_xt() -> Result<(), Error> {
 }
 
 #[test]
+fn a_deferred_word_runs_the_xt_given_last_where_calls_bind_early() -> Result<(), Error> {
+    let program = "defer shown define draw shown end define helper 1 end define draw2 helper end
+        code 1 end is shown draw draw2
+        define helper 2 end code 2 end is shown draw draw2";
+    assert_eq!(run(program)?, ints(&[1, 1, 2, 1]));
+    Ok(())
+}
+
+#[test]
+fn code_keeps_the_words_it_read_and_compiles_again_from_them() -> Result<(), Error> {
+    for (program, words) in [
+        (
+            "code 1 str 'a b' push end",
+            &["1", "str", "a b", "push"][..],
+        ),
+        (
+            "define f code 1 if 2 then end end f",
+            &["1", "if", "2", "then"],
+        ),
+        (
+            "code code 2 end execute end",
+            &["code", "2", "end", "execute"],
+        ),
+        ("code end", &[]),
+    ] {
+        let mut machine = compile(program)?;
+        assert_eq!(
+            machine.run(&mut Toy::default(), u64::MAX)?,
+            Outcome::Finished
+        );
+        let [Value::Xt(xt)] = machine.stack() else {
+            return Err(Error::new(Code::Type, "code gives one xt", None));
+        };
+        let read: Vec<&str> = xt
+            .words()
+            .unwrap_or_default()
+            .iter()
+            .map(|t| &*t.text)
+            .collect();
+        assert_eq!(read, words, "{program}");
+        // Compiled again, it runs as the first did.
+        let tokens = xt.words().unwrap_or_default().to_vec();
+        let mut again = with_stdlib();
+        let xt = again.compile_code(tokens, &mut Toy::default())?;
+        assert_eq!(xt.words().map(<[Token]>::len), Some(words.len()));
+    }
+    let mut machine = compile("1 tick dup")?;
+    machine.run(&mut Toy::default(), u64::MAX)?;
+    assert!(matches!(machine.stack(), [_, Value::Xt(xt)] if xt.words().is_none()));
+    // Words that close what they did not open, or leave open what they
+    // did, compile to no xt.
+    for words in [&["end", "1", "code"][..], &["1", "if"], &["end", "1"]] {
+        let tokens = token::arguments(words);
+        assert!(
+            with_stdlib()
+                .compile_code(tokens, &mut Toy::default())
+                .is_err(),
+            "{words:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_definition_may_hide_a_library_word() -> Result<(), Error> {
     let max = "define max drop drop 0 end list 3 9 2 end largest 1 2 max";
     assert_eq!(run(max)?, ints(&[9, 0]));
@@ -1067,6 +1131,8 @@ fn every_core_word_documents_its_effect_and_meaning() {
                         | Builtin::Create
                         | Builtin::Variable
                         | Builtin::Constant
+                        | Builtin::Defer
+                        | Builtin::CompileCall
                 ),
             "{}",
             builtin.name()

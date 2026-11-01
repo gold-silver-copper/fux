@@ -60,8 +60,9 @@ pub trait Host {
 /// Code: steps, each with the token it came from (none for a word of the
 /// core's or the host's own), how many `let` names of its own it keeps,
 /// the name it was defined with, a version of a machine's, where the
-/// machine keeps it (`Machine::version`), and, a word `create` made, where
-/// its data starts (`body-of`).
+/// machine keeps it (`Machine::version`); a word `create` made, where its
+/// data starts (`body-of`); a word `defer` made, the cell its action is in
+/// (`is`, `action-of`); and `code … end`'s, the words between, as read.
 #[derive(Clone, Debug)]
 pub(crate) struct Steps<A> {
     pub(crate) ops: Vec<Op<A>>,
@@ -70,6 +71,8 @@ pub(crate) struct Steps<A> {
     pub(crate) name: Rc<str>,
     pub(crate) index: usize,
     pub(crate) body: Option<Address>,
+    pub(crate) action: Option<Address>,
+    pub(crate) words: Option<Rc<[Token]>>,
 }
 
 impl<A> Steps<A> {
@@ -81,6 +84,8 @@ impl<A> Steps<A> {
             name,
             index: 0,
             body: None,
+            action: None,
+            words: None,
         }
     }
 
@@ -1552,7 +1557,11 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// The `n` cells from `at`, if the data space has them all.
-    fn cells(&mut self, at: Address, n: usize) -> Result<&mut [Option<Value<A>>], Error> {
+    pub(crate) fn cells(
+        &mut self,
+        at: Address,
+        n: usize,
+    ) -> Result<&mut [Option<Value<A>>], Error> {
         if Some(at.space()) != self.space_id {
             let why =
                 "an address of another machine's data space: it is used only where it was made";
@@ -2448,6 +2457,9 @@ builtins! { m host;
         { m.create(Builtin::Variable, None) }
     Constant "constant" [cold] (x: Any) "x --" "x constant NAME: a word that gives x"
         { m.create(Builtin::Constant, Some(x)) }
+    Defer "defer" [cold] () "--"
+        "defer NAME: a word that runs the xt is gives it, so code compiled before runs the one given last"
+        { m.create(Builtin::Defer, None) }
     BodyOf "body-of" [cold] (xt: Exec) "xt -- addr" "the address the word create made, xt, gives" {
         m.index_of(&xt)?;
         let at = xt.body.ok_or_else(|| {
@@ -2472,6 +2484,8 @@ builtins! { m host;
     }
     StartCompiling "start-compiling" [cold] () "--" "compile the words read again, into the definition open"
         { m.start_compiling() }
+    CompileCall "compile-call" [cold] (xt: Exec) "xt --" "a call to xt compiled into the definition open"
+        { m.compile_call(&xt) }
     Evaluate "evaluate" [hosted] (s: Str) "s --"
         "read s as a source file is read, and run it here" { m.evaluate(&s) }
     StopCompiling "stop-compiling" [immediate] () "--"
@@ -2493,6 +2507,10 @@ builtins! { m host;
     To "to" [immediate] () "x --" "x to NAME: the let name NAME gives x from then on"
         { m.set_name() }
     Tick "tick" [immediate] () "-- xt" "tick NAME: the xt of the word NAME" { m.tick() }
+    Is "is" [immediate] () "xt --" "xt is NAME: the word defer made, NAME, runs xt from then on"
+        { m.action(Builtin::Is, Builtin::Store) }
+    ActionOf "action-of" [immediate] () "-- xt" "action-of NAME: the xt the word defer made, NAME, runs"
+        { m.action(Builtin::ActionOf, Builtin::Fetch) }
     Postpone "postpone" [immediate] () "--"
         "postpone NAME: in a definition, what NAME does when compiled, done when the definition runs"
         { m.postpone() }

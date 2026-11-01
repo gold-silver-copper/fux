@@ -656,6 +656,64 @@ fn core_defining_words() {
     }
 }
 
+/// DEFER IS ACTION-OF (Core extensions) and COMPILE, as `defer is
+/// action-of compile-call`. Deviations: a deferred word given no xt, or a
+/// value of another kind, fails `unset` or `type` when run, as
+/// `action-of` fails `unset`, where Forth leaves these ambiguous;
+/// `compile-call` with no definition open fails `not_top_level`.
+#[test]
+fn core_deferred_words() {
+    for (program, left) in [
+        // T{ DEFER defer2 -> }T  T{ ' * ' defer2 DEFER! -> }T  T{ 2 3 defer2 -> 6 }T
+        // T{ ' + IS defer2 -> }T  T{ 1 2 defer2 -> 3 }T
+        (
+            "defer defer2 tick mul is defer2 2 3 defer2 tick add is defer2 1 2 defer2",
+            &[V::Int(6), V::Int(3)][..],
+        ),
+        // T{ : action-defer1 ACTION-OF defer1 ; -> }T  T{ ' * IS defer1 -> }T
+        // T{ ACTION-OF defer1 -> ' * }T  T{ action-defer1 -> ' * }T
+        // T{ ' + IS defer1 -> }T  T{ ACTION-OF defer1 -> ' + }T  T{ action-defer1 -> ' + }T
+        (
+            "defer defer1 define action-defer1 action-of defer1 end
+             tick mul is defer1 2 3 defer1
+             action-of defer1 tick mul eq action-defer1 tick mul eq
+             tick add is defer1 action-of defer1 tick add eq action-defer1 tick add eq",
+            &[
+                V::Int(6),
+                V::Bool(true),
+                V::Bool(true),
+                V::Bool(true),
+                V::Bool(true),
+            ],
+        ),
+        // T{ : is-defer5 IS defer5 ; -> }T  T{ ' * IS defer5 -> }T  T{ 2 3 defer5 -> 6 }T
+        // T{ ' + is-defer5 -> }T  T{ 1 2 defer5 -> 3 }T
+        (
+            "defer defer5 define is-defer5 is defer5 end
+             tick mul is defer5 2 3 defer5 tick add is-defer5 1 2 defer5",
+            &[V::Int(6), V::Int(3)],
+        ),
+        // :NONAME DUP + ; CONSTANT dup+  T{ : q dup+ COMPILE, ; -> }T
+        // T{ : as [ q ] ; -> }T  T{ 123 as -> 246 }T
+        (
+            "code dup add end constant dup-add define q dup-add compile-call end
+             define as stop-compiling q start-compiling end 123 as",
+            &[V::Int(246)],
+        ),
+    ] {
+        assert_eq!(fuxth(program, u64::MAX), mixed(left), "{program}");
+    }
+    for (program, code) in [
+        ("defer d d", "unset"),
+        ("defer d action-of d", "unset"),
+        ("defer d 5 is d d", "type"),
+        ("define w end tick w is w", "bad_name"),
+        ("tick dup compile-call", "not_top_level"),
+    ] {
+        assert!(ends(code)(&fuxth(program, u64::MAX)), "{program}");
+    }
+}
+
 /// FILL MOVE ERASE, as `fill copy-cells erase`, on cells, not characters.
 #[test]
 fn core_fill_and_move() {

@@ -38,11 +38,13 @@ frame is built as one string and written once.
 The keymap holds word names, so it binds late: redefining a command
 changes the next key press, with no rebinding. Calls inside definitions
 bind early, as in Forth, so a helper redefined later doesn't change a
-command compiled before it. At M-x:
+command compiled before it, unless the helper is deferred (`defer`), as
+`status-text` is. At M-x:
 
 ```text
 define cursor-down cursor-down cursor-down end   # Down now moves two lines
 str w first ctrl str save bind                   # C-w saves
+code str hello end is status-text                # the status row says hello
 row col                                          # what is left shows on the status row
 ```
 
