@@ -121,26 +121,19 @@ define listing
   sk str all eq sk str client eq or let clients
   clients sk str workspace eq or let whole
   sk str pane eq let one
-  list end let shown 0 let pi
+  # Workspaces come before those in them, tabs as shown: each workspace's row before its first tab's.
+  list end wss each str parent get wids swap index-of dup 0 lt if drop 0 else over swap at 1 add then push end let depths
+  0 let wi 0 let pi
   list
     s str tabs get each let t
       t str id get let tid
-      # Its workspaces in the snapshot, outermost first: a row for each not yet shown.
-      list end let chain t str workspace get let w
+      wids t str workspace get index-of let x
       whole if
-        begin wids w index-of dup 0 lt not while
-          wss swap at let r list w end chain cat let chain r str parent get let w
-        end drop
+        begin wi x gt not while
+          list depths wi at 0 do str '  ' loop wss wi at chooser-row last end glue wi 1 add let wi
+        end
       then
-      0 let k
-      begin k shown len lt k chain len lt and if shown k at chain k at eq else false then while
-        k 1 add let k
-      end
-      chain len k do
-        list list i 0 do str '  ' loop end glue wss wids chain i at index-of at chooser-row last end glue
-      loop
-      chain let shown
-      list chain len 0 do str '  ' loop end glue let indent
+      list whole if depths x at 1 add 0 do str '  ' loop then end glue let indent
       one not if list indent t chooser-row last end glue then
       one if str '' else list indent str '  ' end glue then let indent
       begin pi panes len lt if panes pi at str tab get tid eq else false then while
@@ -251,7 +244,7 @@ define dump-recipe
   wss each let w
     wids w str parent get index-of 0 lt if tops w push let tops else inner w push let inner then
   end
-  list end let made
+  0 let wi
   list
     str '#!/usr/bin/env -S fux --file' 10 char
     str '# fux: running this makes it again; its programs take the environment of the server that runs them.' 10 char
@@ -276,29 +269,28 @@ define dump-recipe
       tab str nodes get let nodes
       nodes 0 dump-first let first-pane
       panes ids first-pane index-of at let p
-      # Its workspaces, outermost first; those made by now are bound to a name.
-      list end let chain tab str workspace get let w
-      begin wids w index-of dup 0 lt not while
-        wss swap at let r list w end chain cat let chain r str parent get let w
-      end drop
-      -1 let k
-      chain len 0 do made chain i at index-of 0 lt not if i let k then loop
+      # Workspaces come before those in them, tabs as shown: those from wi to the tab's are made with it.
+      wids tab str workspace get index-of let x
       list
-        k 0 lt if str 'top ' else list str 'opts ' chain k at dump-id str ' in ' end glue then
-        chain len k 1 add do
-          wss wids chain i at index-of at
-          str name get dup kind str null eq if drop str new-workspace then dump-text str 'in '
-        loop
+        x wi lt if list str 'opts ' tab str workspace get dump-id str ' in ' end glue else
+          wss wi at str parent get let up
+          wids up index-of 0 lt if str 'top ' else list str 'opts ' up dump-id str ' in ' end glue then
+          x 1 add wi do
+            wss i at str name get dup kind str null eq if drop str new-workspace then dump-text str 'in '
+          loop
+        then
         tab str name get dup kind str null eq if drop else dump-text str 'name ' then
         tab str cols get string str ' ' tab str rows get string str ' size '
       end glue let prefix
       p prefix str new-tab dump-create
-      chain len 1 sub let d
-      d k gt if first-pane dump-id str ' workspace let ' chain d at dump-id 10 char then
-      begin d 1 sub let d d k gt while
-        chain d 1 add at dump-id str ' str parent get let ' chain d at dump-id 10 char
-      end
-      made chain cat let made
+      x wi lt not if
+        first-pane dump-id str ' workspace let ' wss x at str id get dump-id 10 char
+        x wi do
+          x wi add 1 sub i sub let k
+          wss k 1 add at str id get dump-id str ' str parent get let ' wss k at str id get dump-id 10 char
+        loop
+        x 1 add let wi
+      then
       tab str fit get str clients eq if first-pane dump-id str ' tab resize-auto' 10 char then
       list 0 end let pending
       begin pending len 0 gt while
@@ -347,17 +339,11 @@ define chooser-find
   list records each dup str id get string wanted eq if else drop then end end
   dup len 1 ne if str 'chooser target is absent or ambiguous' fail then first
 end
-# snapshot record -- row : a tab/workspace label with its pane summary, of the workspaces in it too
+# snapshot record -- row : a tab/workspace label with its pane summary
 define chooser-container-row
   let item let s item chooser-row let row
-  item str id get kind str tab eq if list item str id get end else
-    list end list item end
-    begin dup len 0 gt while
-      pop str children get each let c
-        c kind str tab eq if swap c push swap else s str workspaces get c chooser-find push then
-      end
-    end drop
-  then let tabs
+  item str id get kind str tab eq if list item str id get end
+  else item str children get then let tabs
   list s str panes get each let p
     tabs p str tab get contains if p chooser-row last then
   end end str ', ' join let names
