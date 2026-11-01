@@ -114,6 +114,8 @@ wire! {
         pub pane: Option<PaneId>,
         /// What it is shown in each stack and focuses in each tab.
         pub seats: Vec<Seat>,
+        /// What it is shown at each stack in the layouts of the tabs here.
+        pub choices: Vec<Choice>,
         pub opening: Option<u64>,
         pub mode: String,
     }
@@ -126,6 +128,19 @@ wire! {
         pub within: Option<AnyRef>,
         pub current: AnyRef,
         pub last: Option<AnyRef>,
+    }
+}
+
+wire! {
+    /// A client's choice at a stack in a tab's layout, at the tab's
+    /// `revision`: the stack, the child it is shown and the one before, as
+    /// indices of the tab's `nodes`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Choice {
+        pub revision: crate::command::LayoutRevision,
+        pub stack: u32,
+        pub current: u32,
+        pub last: Option<u32>,
     }
 }
 
@@ -251,6 +266,9 @@ impl Snapshot {
                     Node::Split { first, second, .. } => {
                         pending.extend([*second as usize, *first as usize]);
                     }
+                    Node::Stack { children } => {
+                        pending.extend(children.iter().rev().map(|c| *c as usize));
+                    }
                 }
             }
             if seen.iter().any(|visited| !visited) {
@@ -292,6 +310,21 @@ impl Snapshot {
                 .map(|(_, t)| *t);
             if c.workspace != tab_ws || c.tab != pane_tab {
                 return Err(bad());
+            }
+            // A choice is at a stack of a tab here, at its revision.
+            for choice in &c.choices {
+                let tab = self
+                    .tabs
+                    .iter()
+                    .find(|t| t.revision == Some(choice.revision));
+                let stack = tab.and_then(|t| t.nodes.get(choice.stack as usize));
+                let Some(Node::Stack { children }) = stack else {
+                    return Err(bad());
+                };
+                let child = |i: u32| children.contains(&i);
+                if !child(choice.current) || choice.last.is_some_and(|l| !child(l)) {
+                    return Err(bad());
+                }
             }
         }
         Ok(())

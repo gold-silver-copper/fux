@@ -1356,6 +1356,30 @@ fn bar_fields(
                         push(&mut parts, &mut room, label, attrs);
                     }
                 }
+                // Then the children of the stack nearest the focus, each by
+                // the pane shown first in it, the one shown marked.
+                let focus = session.focused(view.id);
+                let tab = session.shown_tab(view.id);
+                if let Some((focus, stack)) =
+                    focus.and_then(|f| Some((f, tab?.root().stack_of(f)?)))
+                {
+                    push(&mut parts, &mut room, "›".to_owned(), base);
+                    for child in stack.children() {
+                        let (id, current) = match child.contains(focus) {
+                            true => (focus, true),
+                            false => (child.first_shown(view.id), false),
+                        };
+                        let Some(p) = session.parts.panes().get(&id) else {
+                            continue;
+                        };
+                        let attrs = match current {
+                            true => view.presentation.styles.tab.attributes(),
+                            false => base,
+                        };
+                        let label = fux_wire::words::labelled(p.id(), &p.label());
+                        push(&mut parts, &mut room, format!(" {label} "), attrs);
+                    }
+                }
             }
             Field::Pane => {
                 if let Some(p) = session
@@ -1554,7 +1578,7 @@ fn unseen(session: &Session, view: &View, placement: &Placement) -> String {
     };
     let panes = match tab.zoomed() {
         Some(zoomed) => vec![zoomed],
-        None => tab.root().panes(),
+        None => tab.root().shown_panes(view.id),
     };
     let (mut cut, mut hidden) = (String::new(), String::new());
     for id in panes {

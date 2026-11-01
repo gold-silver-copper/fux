@@ -107,9 +107,11 @@ Client fit reports its retained size.
 `layout_revision` is `TAB:REVISION:RUN`, the native layout revision, or null if its
 counter is exhausted. Screen output does not change it. `nodes` uses the
 shared flat layout schema: the root is index zero, a leaf is a typed pane
-handle, and a split is `[AXIS, FIRST_SHARE, SECOND_SHARE, FIRST, SECOND]`.
-The axis is `horizontal` or `vertical`; shares are positive integers and
-children are indices in that same list. These values feed `arrange` directly. Every node is reachable once, with
+handle, a split is `[AXIS, FIRST_SHARE, SECOND_SHARE, FIRST, SECOND]`, and
+a stack is `["stack", [CHILD, ...]]`, two or more children each laid out on
+its whole rectangle, of which each client is shown one. The axis is
+`horizontal` or `vertical`; shares are positive integers and children are
+indices in that same list. These values feed `arrange` directly. Every node is reachable once, with
 one leaf per pane. Layout depth does not consume record nesting. Each change of
 a tab's layout (a split, a close, a move or swap, `arrange`, a reshape, its fit
 or size) emits one `laid_out` event with its new `layout_revision`; one whose panes
@@ -131,7 +133,12 @@ not saved process memory.
 
 Each client has `id`, `kind` (`terminal` or `headless`), `read_only`, physical
 `rows`/`cols`, `pane_rows`/`pane_cols`, optional `workspace`/`tab`/`pane`,
-`opening` (null without an open screen), and `mode`.
+`seats`, `choices`, `opening` (null without an open screen), and `mode`.
+Each of `seats` is what it is shown `in` a workspace (the server's, with
+`in` null) or focuses in a tab: `current`, and `last`, the one before.
+Each of `choices` is its child at a stack of a tab in the snapshot:
+`stack`, `current` and `last` index that tab's `nodes` at its
+`layout_revision`.
 
 All includes every root and view. Workspace includes its descendants, the
 workspaces in it at any depth with theirs, and views showing any of them; tab includes its whole tab and parent workspace reference.
@@ -464,8 +471,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":66,
- "server_release":"0.36.0","server_protocol":66,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":67,
+ "server_release":"0.36.0","server_protocol":67,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

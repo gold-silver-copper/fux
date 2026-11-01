@@ -957,19 +957,7 @@ fn paint(
     };
     let c = s.attach_as(attach, now).map_err(|e| e.to_string())?;
     if split {
-        let split = command::Command::Split {
-            options: pane_options(HISTORY)?,
-            axis: fux_wire::layout::Axis::Horizontal,
-            target: *s.parts.panes().keys().next().ok_or("no pane")?,
-            start: initial()?.start,
-            cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
-            shares: None,
-        };
-        s.run_command(
-            &split,
-            &fux_server::session::Origin::Cli(fux_server::session::Caller::default()),
-            now,
-        );
+        split_first(&mut s)?;
     }
     let panes: Vec<_> = s.parts.panes().keys().copied().collect();
     let mut shown = fux_server::render::Grid::default();
@@ -1196,21 +1184,38 @@ fn session(panes: usize) -> Result<fux_server::session::Session, String> {
     )
     .map_err(|e| e.to_string())?;
     for _ in 1..panes {
-        let split = command::Command::Split {
-            options: pane_options(HISTORY)?,
-            axis: fux_wire::layout::Axis::Horizontal,
-            target: *s.parts.panes().keys().next().ok_or("no pane")?,
-            start: initial()?.start,
-            cwd: Some(std::env::current_dir().map_err(|e| e.to_string())?),
-            shares: None,
-        };
-        s.run_command(
-            &split,
-            &fux_server::session::Origin::Cli(fux_server::session::Caller::default()),
-            now,
-        );
+        split_first(&mut s)?;
     }
     Ok(s)
+}
+
+/// Splits the first pane side by side, a shell in the new one, with the
+/// default options the workloads use: by the word, which every fux this
+/// compares reads alike, as it may not read the request.
+fn split_first(s: &mut fux_server::session::Session) -> Result<(), String> {
+    struct Answers<'s>(&'s mut fux_server::session::Session);
+    impl fux::script::Asks for Answers<'_> {
+        fn ask(
+            &mut self,
+            asked: &fux_wire::protocol::Asked,
+        ) -> Result<fux_wire::protocol::Reply, fux::script::Failed> {
+            Ok(self.0.answer(asked))
+        }
+    }
+    let pane = *s.parts.panes().keys().next().ok_or("no pane")?;
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cwd = fux_wire::words::quote(&cwd.to_string_lossy());
+    let source = format!(
+        "{pane} str horizontal axis str {cwd} cwd list str /bin/sh end shell-program split drop"
+    );
+    let tokens = fuxth::token::source("bench", &source).map_err(|e| e.to_string())?;
+    let mut machine = fux::script::compile(&tokens).map_err(|e| format!("{e:?}"))?;
+    let mut keymap = (fux::script::default_state().map_err(|e| e.to_string())?).draft();
+    let mut out = Vec::new();
+    let mut host = fux::script::Host::new(Default::default(), Some(&mut keymap), &mut out);
+    fux::script::run(&mut machine, &mut host, &mut Answers(s), None)
+        .map(drop)
+        .map_err(|e| format!("{e:?}"))
 }
 
 /// Waits armed one after another on the same session, each for this many

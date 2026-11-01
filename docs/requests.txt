@@ -5,7 +5,7 @@ Request::NextEvents scope: inspect::Scope, from: Option<events::Cursor>, timeout
 Command::Inspect scope: inspect::Scope, projection: inspect::Projection
 Command::KillServer
 Command::NewTab target: Vec<WsRef>, name: Option<String>, size: Size, cwd: Option<PathBuf>, start: Start, options: PaneOptions
-Command::Split axis: Axis, target: PaneId, start: Start, cwd: Option<PathBuf>, shares: Option<(NonZeroU32, NonZeroU32)>, options: PaneOptions
+Command::Split beside: Beside, target: PaneId, start: Start, cwd: Option<PathBuf>, options: PaneOptions
 Command::Respawn target: PaneId, kill: bool, argv: Option<Program>
 Command::Notify target: Option<AnyRef>, text: String
 Command::Resize what: Resized
@@ -45,6 +45,8 @@ Start::Shell argv: Program
 Start::Program argv: Program
 Program program: String, args: Vec<String>
 PaneOptions history_bytes: HistoryBytes, program_clipboard: bool, reflow: bool, alternate_scroll_lines: ScrollLines, picture_bytes: PictureBytes
+Beside::Split axis: Axis, shares: Option<(NonZeroU32, NonZeroU32)>
+Beside::Stack
 Axis::Horizontal
 Axis::Vertical
 Resized::Tabs target: AnyRef, size: Size
@@ -75,6 +77,7 @@ LayoutRevision tab: TabId, serial: u64, run: Run
 Run pid: u32, since: u64
 Node::Pane pane: PaneId
 Node::Split axis: Axis, first_share: NonZeroU32, second_share: NonZeroU32, first: u32, second: u32
+Node::Stack children: Vec<u32>
 PaneResize::Border direction: Direction, cells: u16
 PaneResize::To axis: Axis, extent: Extent
 Extent::Cells cells: u16

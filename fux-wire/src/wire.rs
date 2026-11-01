@@ -931,11 +931,10 @@ mod tests {
                 alternate_scroll_lines: crate::command::ScrollLines::new(5).ok_or("scroll")?,
                 picture_bytes: crate::command::PictureBytes::new(96 << 20).ok_or("pictures")?,
             },
-            axis: crate::layout::Axis::Vertical,
+            beside: crate::command::Beside::Split(crate::layout::Axis::Vertical, None),
             target: crate::id::PaneId::of(1),
             start: crate::command::Start::Shell(Program::new("/bin/sh".into(), Vec::new())?),
             cwd: Some(dir.clone()),
-            shares: None,
         };
         let read = Command::get(&mut Reader::new(&encode(&split))).ok();
         assert!(matches!(read, Some(Command::Split {

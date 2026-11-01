@@ -210,10 +210,15 @@ first argument names (`./proj.fux home`), else at the top.
 
 The server shows each client one workspace at a time, a workspace one of
 its tabs and workspaces, and a tab focuses one of its panes: each client its own at every
-level, each remembering the one it showed there before. `CLIENT HANDLE
+level, each remembering the one it showed there before. A tab's layout
+may hold stacks: `PANE stack` puts a new pane on that pane's rectangle,
+as `split` puts one beside it, and each client is shown one child of a
+stack, its own; every child keeps its size, so choosing one resizes no
+program. `CLIENT HANDLE
 show` shows a client a pane, tab or workspace, and each that holds it.
 `CLIENT HANDLE WAY step` shows it a sibling of the handle: `str next` or
-`str previous` among what holds it, going round; `str last`, the one it was
+`str previous` among what holds it (for a pane in a stack, the stack's
+children), going round; `str last`, the one it was
 shown there before; or for a pane `str left`, `str right`, `str up` or
 `str down`, its neighbour on the client's screen. Stepping to another pane
 of a zoomed tab ends the zoom. When what a client is shown closes, it is
@@ -336,7 +341,7 @@ prefix again sends it to the pane.
 | Key | Runs | Does |
 | --- | --- | --- |
 | `h` `j` `k` `l` | `me-focused str left step` … | focus the pane that way |
-| `o` / `q` | `me-focused str next step` / `me-focused str last step` | focus the next / last pane |
+| `o` / `q` | `me-focused str next step` / `me-focused str last step` | focus the next / last pane (in a stack, child) |
 | `v` / `s` | `me focused str horizontal axis split drop` / `… str vertical axis …` | split side by side / stacked |
 | `x` | `me-focused confirm-close` | close the pane (asks: `y` or Enter closes, `n` or Esc keeps it) |
 | `z` | `me focused zoom` | zoom the pane, or restore it, on every screen showing its tab |
