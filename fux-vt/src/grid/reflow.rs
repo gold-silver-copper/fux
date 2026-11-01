@@ -265,9 +265,10 @@ impl Grid {
                 if to >= taken {
                     break;
                 }
-                // A mark on a cell left out goes with the cell after it.
+                // A place on a cell left out goes with the cell after it;
+                // the cursors (the first two marks) keep the line's end.
                 let left_out = base.saturating_add(to);
-                for offset in &mut line.offsets {
+                for offset in line.offsets.iter_mut().skip(2) {
                     if *offset == Some(left_out) {
                         *offset = left_out.checked_add(1);
                     }

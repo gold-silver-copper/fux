@@ -362,6 +362,29 @@ fn command_marks_on_left_out_glyphs_keep_their_output() -> Result<(), Error> {
     Ok(())
 }
 
+/// At one column, a cursor on a wide glyph left out goes to the end of its
+/// line, the saved cursor too: what comes next starts a row of its own
+/// and overwrites nothing.
+#[test]
+fn a_cursor_on_a_left_out_glyph_goes_to_its_line_s_end() -> Result<(), Error> {
+    let options = crate::Options::new().set(crate::Feature::Reflow, true);
+    for (before, after) in [(&b"\r"[..], &b""[..]), (b"\r\x1b7\x1b[4;6H", b"\x1b8")] {
+        let mut p = crate::Parser::with_options(Size::of(4, 6), 1 << 16, options)?;
+        p.process("\u{754c}ab".as_bytes())?;
+        p.process(before)?;
+        p.resize(Size::of(4, 1))?;
+        p.process(after)?;
+        p.process(b"X")?;
+        let rows: Vec<String> = p.screen().rows().map(|r| r.cells_text()).collect();
+        assert_eq!(
+            rows.get(..3),
+            Some(&["a", "b", "X"].map(String::from)[..]),
+            "{before:?}"
+        );
+    }
+    Ok(())
+}
+
 /// The primary screen's saved cursor is the one `CSI ? 1049 l` restores,
 /// whatever DECSC saves on the alternate screen.
 #[test]
