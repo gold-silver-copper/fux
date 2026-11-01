@@ -122,7 +122,7 @@ define listing
   clients sk str workspace eq or let whole
   sk str pane eq let one
   # Workspaces come before those in them: a row before its first tab's.
-  list end wss each str parent get wids swap index-of dup 0 lt if drop 0 else over swap at 1 add then push end let depths
+  list -1 end wss each str parent get wids swap index-of 1 add over swap at 1 add push end let depths
   0 let wi 0 let pi
   list
     s str tabs get each let t
@@ -130,10 +130,10 @@ define listing
       wids t str workspace get index-of let x
       whole if
         begin wi x gt not while
-          list depths wi at 0 do str '  ' loop wss wi at chooser-row last end glue wi 1 add let wi
+          list depths wi 1 add at 0 do str '  ' loop wss wi at chooser-row last end glue wi 1 add let wi
         end
       then
-      list whole if depths x at 1 add 0 do str '  ' loop then end glue let indent
+      list whole if depths x 1 add at 1 add 0 do str '  ' loop then end glue let indent
       one not if indent t chooser-row last cat then
       one if str '' else indent str '  ' cat then let indent
       begin pi panes len lt if panes pi at str tab get tid eq else false then while
@@ -239,10 +239,9 @@ define dump-recipe
   list panes each str id get end end let ids
   recipe str workspaces get let wss
   list wss each str id get end end let wids
-  list end let tops list end let inner
-  wss each let w
-    wids w str parent get index-of 0 lt if tops w push let tops else inner w push let inner then
-  end
+  list end list end wss each
+    dup str parent get wids swap index-of 0 lt if rot swap push swap else push then
+  end let inner let tops
   0 let wi
   list
     str '#!/usr/bin/env -S fux --file
