@@ -18,7 +18,7 @@ impl Pid {
     }
 
     /// A child's ID.
-    pub fn of(child: &std::process::Child) -> Option<Pid> {
+    pub(crate) fn of(child: &std::process::Child) -> Option<Pid> {
         i32::try_from(child.id()).ok().and_then(Pid::from_raw)
     }
 
@@ -35,9 +35,9 @@ impl fmt::Display for Pid {
 
 /// Expands `/// doc, then Variant "NAME" SIGNAL, ...` to the enum `Signal` of those
 /// variants, `Signal::ALL` in that order, `raw` (each one's `libc::SIGNAL`)
-/// and `from_raw` (the variant of a number), `name` (its `NAME`) and `named`
-/// (the variant whose name, exactly as written, is given): `Term "TERM"
-/// SIGTERM,` gives `Signal::Term`, raw `libc::SIGTERM`, named "TERM".
+/// and `from_raw` (the variant of a number), and `name` (its `NAME`):
+/// `Term "TERM" SIGTERM,` gives `Signal::Term`, raw `libc::SIGTERM`,
+/// named "TERM".
 macro_rules! signals {
     ($(#[$doc:meta])* $($variant:ident $name:literal $raw:ident,)*) => {
         $(#[$doc])*
@@ -65,19 +65,10 @@ macro_rules! signals {
                 }
             }
 
-            /// Its name without `SIG`, as `named` takes it: `TERM`.
+            /// Its name without `SIG`: `TERM`.
             pub fn name(self) -> &'static str {
                 match self {
                     $(Signal::$variant => $name,)*
-                }
-            }
-
-            /// The signal a name names, written as `fux signal` takes it:
-            /// without `SIG`, in capitals (`TERM`).
-            pub fn named(name: &str) -> Option<Signal> {
-                match name {
-                    $($name => Some(Signal::$variant),)*
-                    _ => None,
                 }
             }
         }
@@ -136,14 +127,6 @@ pub fn kill_group(group: Pid, signal: Signal) -> Result<()> {
     check(unsafe { libc::killpg(group.as_raw(), signal.raw()) }).map(drop)
 }
 
-/// Whether a process `pid` exists: signal 0, which checks without sending.
-/// One this process may not signal exists too.
-pub fn exists(pid: Pid) -> bool {
-    // SAFETY: kill with signal 0 sends nothing and touches no memory.
-    let result = unsafe { libc::kill(pid.as_raw(), 0) };
-    result == 0 || Errno::last().raw() == libc::EPERM
-}
-
 /// This process's effective user ID.
 pub fn geteuid() -> u32 {
     // SAFETY: geteuid cannot fail and touches no memory.
@@ -152,7 +135,7 @@ pub fn geteuid() -> u32 {
 
 /// The CPU time the calling thread has used: time it spent waiting for a
 /// processor while other processes ran is not counted, so timing work on a
-/// busy machine measures the work. For fux-diff's `--speed`.
+/// busy machine measures the work. For fux-bench's timings.
 pub fn thread_cpu_time() -> Result<std::time::Duration> {
     let mut time = libc::timespec {
         tv_sec: 0,
@@ -305,7 +288,8 @@ pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
 
 /// The most processes a [`tree`] holds on Linux: a runaway tree is cut
 /// short here.
-pub const TREE_MAX: usize = 4096;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const TREE_MAX: usize = 4096;
 
 /// What a [`tree`] found, and whether it looked everywhere.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -321,7 +305,7 @@ pub struct Tree {
 pub enum Scan {
     #[default]
     Complete,
-    /// There may be more: past [`TREE_MAX`] on Linux, or a list that
+    /// There may be more: past `TREE_MAX` on Linux, or a list that
     /// filled its buffer on macOS.
     Truncated,
     /// The system refused a list, with this error; it read the others.
@@ -469,141 +453,6 @@ fn proc_path(pid: Pid, part: &str) -> Option<[u8; 64]> {
     Some(path)
 }
 
-#[cfg(not(target_os = "macos"))]
-fn proc_file(pid: Pid, part: &str) -> Option<std::fs::File> {
-    use std::os::fd::FromRawFd;
-    let path = proc_path(pid, part)?;
-    // SAFETY: the stack path is NUL-terminated; open only reads it.
-    let fd = unsafe { libc::open(path.as_ptr().cast(), libc::O_RDONLY | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return None;
-    }
-    // SAFETY: open returned this new descriptor, whose sole owner is File.
-    Some(unsafe { std::fs::File::from_raw_fd(fd) })
-}
-
-/// `pid`'s NUL-separated command line. Returned allocations remain charged
-/// to the caller; unavailable observations are unknown, not guessed.
-#[cfg(not(target_os = "macos"))]
-pub fn argv<A: crate::Allocation>(
-    pid: Pid,
-    budget: &mut A,
-) -> std::result::Result<Option<Vec<OsString>>, A::Error> {
-    let Some(file) = proc_file(pid, "cmdline") else {
-        return Ok(None);
-    };
-    argv_read(file, budget)
-}
-
-/// macOS does not reliably expose arguments to an unprivileged observer.
-#[cfg(target_os = "macos")]
-pub fn argv<A: crate::Allocation>(
-    _pid: Pid,
-    _budget: &mut A,
-) -> std::result::Result<Option<Vec<OsString>>, A::Error> {
-    Ok(None)
-}
-
-/// Reads NUL-separated arguments under the caller's shared grant. A raw
-/// buffer's old and replacement blocks, parsed slots and word bytes all
-/// coexist until conversion is complete, and are admitted before allocation.
-pub fn argv_read<A: crate::Allocation>(
-    mut file: impl std::io::Read,
-    budget: &mut A,
-) -> std::result::Result<Option<Vec<OsString>>, A::Error> {
-    let before = budget.remaining();
-    let mut raw = Vec::new();
-    let result = (|| {
-        let mut buffer = [0u8; 4096];
-        loop {
-            let count = match file.read(&mut buffer) {
-                Ok(n) => n,
-                Err(_) => return Ok(None),
-            };
-            if count == 0 {
-                break;
-            }
-            budget.reserve(&mut raw, count)?;
-            raw.extend_from_slice(buffer.get(..count).ok_or_else(A::exceeded)?);
-        }
-        if raw.is_empty() {
-            return Ok(None);
-        }
-        let line = raw.strip_suffix(&[0]).unwrap_or(&raw);
-        let mut words = budget.vector(line.split(|b| *b == 0).count())?;
-        for word in line.split(|b| *b == 0) {
-            words.push(budget.os_string(word)?);
-        }
-        Ok(Some(words))
-    })();
-    let capacity = raw.capacity();
-    drop(raw);
-    budget.release(capacity)?;
-    if !matches!(&result, Ok(Some(_))) {
-        budget.release(
-            before
-                .checked_sub(budget.remaining())
-                .ok_or_else(A::exceeded)?,
-        )?;
-    }
-    result
-}
-
-/// The observed program name, allocated under the caller's grant.
-#[cfg(not(target_os = "macos"))]
-pub fn name<A: crate::Allocation>(
-    pid: Pid,
-    budget: &mut A,
-) -> std::result::Result<Option<String>, A::Error> {
-    use std::io::Read;
-    let Some(mut file) = proc_file(pid, "comm") else {
-        return Ok(None);
-    };
-    let mut buffer = [0u8; 256];
-    let mut count = 0usize;
-    loop {
-        let room = buffer.get_mut(count..).ok_or_else(A::exceeded)?;
-        let read = match file.read(room) {
-            Ok(n) => n,
-            Err(_) => return Ok(None),
-        };
-        if read == 0 {
-            break;
-        }
-        count = count.checked_add(read).ok_or_else(A::exceeded)?;
-        if count == buffer.len() {
-            return Err(A::exceeded());
-        }
-    }
-    let text = buffer
-        .get(..count)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .map(|s| s.trim_end_matches('\n'));
-    text.filter(|s| !s.is_empty())
-        .map(|s| budget.string(s))
-        .transpose()
-}
-
-/// The observed program name, allocated under the caller's grant.
-#[cfg(target_os = "macos")]
-pub fn name<A: crate::Allocation>(
-    pid: Pid,
-    budget: &mut A,
-) -> std::result::Result<Option<String>, A::Error> {
-    let mut buffer = [0u8; 256];
-    let room = u32::try_from(buffer.len()).map_err(|_| A::exceeded())?;
-    // SAFETY: buffer is writable for room bytes; proc_name reads no other memory.
-    let written = unsafe { libc::proc_name(pid.as_raw(), buffer.as_mut_ptr().cast(), room) };
-    let Some(bytes) = usize::try_from(written)
-        .ok()
-        .and_then(|n| buffer.get(..n))
-        .filter(|s| !s.is_empty())
-    else {
-        return Ok(None);
-    };
-    budget.lossy(bytes).map(Some)
-}
-
 /// The observed current directory. Stack space handles ordinary paths;
 /// longer paths grow under the same grant, including replacement peaks.
 #[cfg(not(target_os = "macos"))]
@@ -711,10 +560,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn a_signal_is_found_again_by_its_number_and_its_name() {
+    fn a_signal_is_found_again_by_its_number() {
         for signal in Signal::ALL {
             assert_eq!(Signal::from_raw(signal.raw()), Some(signal));
-            assert_eq!(Signal::named(signal.name()), Some(signal));
         }
         assert_eq!(Signal::from_raw(libc::SIGSEGV), Some(Signal::Segv));
         assert_eq!(Signal::Usr1.name(), "USR1");
@@ -751,7 +599,6 @@ mod tests {
             .spawn()
             .map_err(|e| e.to_string())?;
         let pid = Pid::of(&child).ok_or("a pid")?;
-        assert!(exists(pid));
         assert_eq!(ended(pid), Ok(None));
         kill(pid, Signal::Stop).map_err(|e| e.to_string())?;
         std::thread::sleep(Duration::from_millis(200));
@@ -803,32 +650,6 @@ mod tests {
             assert!(!cut.add([pid]));
             assert_eq!((cut.pids.len(), cut.scan), (TREE_MAX, Scan::Truncated));
         }
-        Ok(())
-    }
-
-    /// Empty arguments are arguments.
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn argv_keeps_empty_arguments() -> std::result::Result<(), String> {
-        use std::io::Read;
-        use std::process::Stdio;
-        let script = "echo; read x";
-        let mut child = Command::new("sh")
-            .args(["-c", script, "", "head", "", "tail", ""])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        let pid = Pid::of(&child).ok_or("a pid")?;
-        // The shell runs, not the fork that has yet to become it.
-        let mut started = [0u8; 1];
-        let out = child.stdout.as_mut().ok_or("its stdout")?;
-        out.read_exact(&mut started).map_err(|e| e.to_string())?;
-        let read = argv(pid, &mut (1usize << 20)).map_err(|e| e.to_string());
-        let _ = child.kill();
-        let _ = child.wait();
-        let words = ["sh", "-c", script, "", "head", "", "tail", ""];
-        assert_eq!(read?, Some(words.map(OsString::from).to_vec()));
         Ok(())
     }
 

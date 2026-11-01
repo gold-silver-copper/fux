@@ -19,8 +19,8 @@ use std::process::{Child, Command};
 /// A step of opening a PTY that failed, and why.
 #[derive(Debug)]
 pub struct Error {
-    pub call: &'static str,
-    pub source: std::io::Error,
+    pub(crate) call: &'static str,
+    pub(crate) source: std::io::Error,
 }
 
 /// "grantpt: Permission denied (os error 13)".
@@ -507,7 +507,7 @@ mod tests {
         for first in [
             Ok(3),
             Err(Errno::INTR),
-            Err(Errno::MFILE),
+            Err(Errno::from_raw(libc::EMFILE)),
             Err(Errno::AGAIN),
         ] {
             assert_eq!(redrive_script(&[first]), (first, 1, vec![]), "{first:?}");

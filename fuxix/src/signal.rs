@@ -77,7 +77,7 @@ static RUNNING: AtomicUsize = AtomicUsize::new(0);
 /// caught and does nothing. This fails with `NOSPC` when 64 notices are
 /// held already, leaving the signal as it was, and with `INVAL` for a
 /// signal that can't be caught (`KILL`, `STOP`).
-pub fn notify(signal: Signal, write: OwnedFd) -> Result<Notice> {
+pub(crate) fn notify(signal: Signal, write: OwnedFd) -> Result<Notice> {
     crate::io::set_nonblocking(&write, true)?;
     let fd = write.as_raw_fd();
     let slot = SLOTS
@@ -101,7 +101,7 @@ pub fn notify(signal: Signal, write: OwnedFd) -> Result<Notice> {
 
 /// A signal's arrivals written to a pipe, from [`notify`]; dropped, they
 /// stop.
-pub struct Notice {
+pub(crate) struct Notice {
     slot: &'static Slot,
     /// Held for the handler to write to, and closed on drop.
     _write: OwnedFd,
