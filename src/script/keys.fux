@@ -7,8 +7,8 @@ str C-b prefix
 
 # -- client pane : the client whose key runs this, and the pane it focuses
 define me-focused me me focused end
-# client handle -- : out of the handle's workspace: what holds it shows the client the one it showed before, else the next
-define outer workspace let ws let c str no_workspace try c ws str last step catch drop c ws str next step end end
+# client handle -- : out of the handle's workspace: what holds it shows the client the one it showed before, else the next; at the top none holds it, which refuses
+define outer workspace dup str parent get kind str null eq if str 'none holds it' fail then let ws let c str no_workspace try c ws str last step catch drop c ws str next step end end
 # handle -- workspace : the first workspace in the handle's, a level in
 define inner workspace str children get let kids list kids each dup kind str workspace eq if else drop then end end dup len 0 eq if str 'none is in it' fail then first end
 
