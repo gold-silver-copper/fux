@@ -4,7 +4,7 @@ Request::Wait wait: Wait
 Request::NextEvents scope: inspect::Scope, from: Option<events::Cursor>, timeout: Limit
 Command::Inspect scope: inspect::Scope, projection: inspect::Projection
 Command::KillServer
-Command::NewTab target: Option<WsRef>, name: Option<String>, size: Size, cwd: Option<PathBuf>, start: Start, options: PaneOptions
+Command::NewTab target: Vec<WsRef>, name: Option<String>, size: Size, cwd: Option<PathBuf>, start: Start, options: PaneOptions
 Command::Split axis: Axis, target: PaneId, start: Start, cwd: Option<PathBuf>, shares: Option<(NonZeroU32, NonZeroU32)>, options: PaneOptions
 Command::Respawn target: PaneId, kill: bool, argv: Option<Program>
 Command::Notify target: Option<AnyRef>, text: String
@@ -13,7 +13,7 @@ Command::SendMouse target: PaneId, mouse: Mouse, row: u16, col: u16
 Command::Kill target: Option<AnyRef>
 Command::Signal target: PaneId, signal: fuxix::process::Signal
 Command::Rename target: AnyRef, name: String
-Command::MovePane target: PaneId, to: MoveTo
+Command::Move target: AnyRef, to: MoveTo
 Command::SwapPane target: PaneId, with: SwapWith
 Command::Arrange target: TabId, revision: LayoutRevision, nodes: Vec<layout::Node>
 Command::ResizePane target: PaneId, by: PaneResize
@@ -68,6 +68,7 @@ MoveTo::Workspace workspace: WsRef
 MoveTo::NewTab
 MoveTo::NewWorkspace
 MoveTo::Beside direction: Direction
+MoveTo::Top
 SwapWith::Pane id: PaneId
 SwapWith::Toward direction: Direction
 LayoutRevision tab: TabId, serial: u64, run: Run

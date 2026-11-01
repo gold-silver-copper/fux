@@ -4,12 +4,13 @@
 //! the terminal's attributes at their default, which the next one assumes.
 use crate::session::Session;
 use crate::view::{Mode, View};
-use crate::workspace::Child;
+use crate::workspace::{Child, Node, Tab, Workspace};
 use fux_vt::clusters;
 use fux_vt::sixel::Picture;
 use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};
 use fux_wire::act::{List, Panel};
 use fux_wire::answer::sgr;
+use fux_wire::command::AnyRef;
 use fux_wire::id::ClientId;
 use fux_wire::id::PaneId;
 use fux_wire::layout::{Axis, Placement, Rect};
@@ -1310,35 +1311,44 @@ fn bar_fields(
         }
         match field {
             Field::Workspace => {
-                if let Some(ws) = session.shown_workspace(view.id) {
+                if let Some(place) = session.place(view.id) {
+                    // The path of workspaces down to the one shown: `proj › agent1`.
+                    let path = session.parts.path(place.ws).into_iter();
+                    let labels: Vec<_> = (path.filter_map(|ws| session.workspace(ws)))
+                        .map(Workspace::label)
+                        .collect();
                     push(
                         &mut parts,
                         &mut room,
-                        format!(" {} ", ws.label()),
+                        format!(" {} ", labels.join(" › ")),
                         base.with_bold(true),
                     );
                 }
             }
             Field::Tabs => {
                 if let Some(ws) = session.shown_workspace(view.id) {
-                    let current = ws.tab_of(view.id).map(|t| t.id());
-                    for (i, tab) in ws.tabs().iter().enumerate() {
+                    let current = ws.tab_of(view.id).map(|t| AnyRef::Tab(t.id()));
+                    let rang = |tab: &Tab| tab.seat(view.id).is_some_and(|s| s.rang);
+                    for (i, child) in ws.stack().children().iter().enumerate() {
                         if room == 0 {
                             break;
                         }
-                        let rang =
-                            tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id()) != current;
+                        // A workspace in it rang if a tab in it did.
+                        let (label, rang) = match child {
+                            Node::Tab(tab) => (tab.label(session.parts.panes()), rang(tab)),
+                            Node::Workspace(inner) => {
+                                let tabs = session.parts.tabs_in(Some(inner.id()));
+                                (inner.label(), tabs.into_iter().any(|(_, t)| rang(t)))
+                            }
+                        };
+                        let rang = rang && Some(child.id()) != current;
                         let number = if view.presentation.bar.tab_numbers() {
                             format!("{} ", i.saturating_add(1))
                         } else {
                             String::new()
                         };
-                        let label = format!(
-                            " {number}{}{} ",
-                            tab.label(session.parts.panes()),
-                            if rang { "!" } else { "" }
-                        );
-                        let attrs = if Some(tab.id()) == current {
+                        let label = format!(" {number}{label}{} ", if rang { "!" } else { "" });
+                        let attrs = if Some(child.id()) == current {
                             view.presentation.styles.tab.attributes()
                         } else {
                             base

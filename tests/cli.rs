@@ -518,7 +518,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
     client.wait_for("$")?;
     let json = server.ok(&["ls", "json"])?;
     for field in [
-        "\"tabs\":[\"@1\"]",
+        "\"children\":[\"@1\"]",
         "\"workspace\":\"+1\"",
         "\"tab\":\"@1\"",
         "\"panes\":[{\"id\":\"%1\"",

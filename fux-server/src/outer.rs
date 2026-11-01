@@ -407,25 +407,26 @@ impl Session {
     }
 
     /// Pane `id`'s program rang the bell or sent a notification. Each
-    /// client showing its workspace is told so in a brief notice
+    /// client showing its workspace, or one holding it, is told so in a brief notice
     /// (`View::alert`), the notification's text if it sent one; a bell
     /// rings each, at most once every [`BELL_GAP`], and marks the tab in the
     /// bar of each not shown it until it shows it.
     pub(crate) fn alert(&mut self, id: PaneId, bell: bool, notified: Option<Said>, now: Instant) {
-        let Some(ws) =
-            (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
-        else {
+        let Some((ws, tab)) = self.locate(id) else {
             return;
         };
-        // Each client showing the workspace, and whether it is shown the tab.
-        let viewers: BTreeMap<ClientId, bool> = (self
-            .viewers(fux_wire::command::AnyRef::Workspace(ws.id())))
-        .into_iter()
-        .map(|c| (c, ws.tab_of(c).is_some_and(|t| t.holds(id))))
-        .collect();
+        // Each client shown the workspace, one in it or one holding it, and
+        // whether it is shown the tab.
+        let related = |c: &ClientId| {
+            let at = self.place(*c).map(|p| p.ws);
+            at.is_some_and(|at| self.parts.within(at, ws) || self.parts.within(ws, at))
+        };
+        let viewers: BTreeMap<ClientId, bool> = (self.views.keys().copied().filter(related))
+            .map(|c| (c, self.shows(c, tab)))
+            .collect();
         let panes = self.parts.panes();
-        let rang = (ws.tabs().iter().find(|t| t.holds(id)))
-            .map_or_else(String::new, |t| format!("bell in {}", t.label(panes)));
+        let rang =
+            (self.tab(tab)).map_or_else(String::new, |t| format!("bell in {}", t.label(panes)));
         let notice = (notified.zip(panes.get(&id))).map(|(said, p)| {
             format!(
                 "{}: {}",
@@ -433,7 +434,7 @@ impl Session {
                 said.as_str()
             )
         });
-        let Some(tab) = (self.locate(id)).and_then(|(_, tab)| self.parts.tab_mut(tab)) else {
+        let Some(tab) = self.parts.tab_mut(tab) else {
             return;
         };
         let mut rung = Vec::new();
@@ -954,6 +955,27 @@ mod tests {
         assert!(sent(&mut s, c).is_empty());
         assert!(!tab_label(&s, c).contains('!'));
         assert_eq!(sent(&mut s, d), [BELL.to_vec()]);
+        Ok(())
+    }
+
+    /// A bell in a workspace in the one a client is shown rings it and
+    /// marks the workspace it rang in, until it shows the tab that rang.
+    #[test]
+    fn a_bell_in_a_workspace_inside_rings_and_marks_it_for_its_holders_clients() -> Outcome {
+        let (mut s, c) = session()?;
+        crate::session::testing::output_as(&mut s, Some(c), crate::session::testing::BAR_ROW)?;
+        run(&mut s, "opts 80 24 size +1 in str agent1 in new-tab")?;
+        let _ = (s.before_paint(c), sent(&mut s, c));
+        s.out(PaneId::of(2), b"\x07");
+        assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
+        let bar = tab_label(&s, c);
+        assert!(bar.contains(" agent1! "), "{bar}");
+        for shown in ["str agent1 workspace", "%1"] {
+            run(&mut s, &format!("str c1 client {shown} show"))?;
+            let _ = s.before_paint(c);
+        }
+        let bar = tab_label(&s, c);
+        assert!(bar.contains(" agent1 ") && !bar.contains('!'), "{bar}");
         Ok(())
     }
 

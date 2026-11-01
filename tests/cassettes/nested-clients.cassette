@@ -1,0 +1,50 @@
+# fux cassette 1
+# guards: two clients shown different workspaces nested in one project step
+#   among their own siblings, each with its own place, and the project's
+#   words cover what is in the workspaces in it
+$ fux opts str home in 80 24 size new-tab >/dev/null
+$ fux opts str proj in str agent1 in str a name 80 24 size new-tab >/dev/null
+$ fux opts str proj in str agent2 in str b name 80 24 size new-tab >/dev/null
+$ fux opts str agent2 in str c name 80 24 size new-tab >/dev/null
+$ clients() { fux ls str clients get len; }
+$ fux opts str agent1 in 100 30 size attach >/dev/null &
+$ until [ "$(clients)" = 1 ]; do sleep 0.05; done
+$ fux opts str agent2 in 60 20 size attach >/dev/null &
+$ until [ "$(clients)" = 2 ]; do sleep 0.05; done
+$ where() { for c in c1 c2; do echo "$c $(fux str $c client focused workspace str name get) $(fux str $c client focused tab str name get)"; done; }
+$ where
+  = ca agent1 a
+  = cb agent2 b
+  ~ ca agent1 a
+  ~ cb agent2 b
+$ C=$(fux str proj workspace info str cursor get)
+$ fux str c1 client str agent1 workspace str next step; fux str c2 client str b tab str next step; where
+  = ca agent2 b
+  = cb agent2 c
+  ~ ca agent2 b
+  ~ cb agent2 c
+$ fux str c1 client str agent2 workspace str last step; where
+  = ca agent1 a
+  = cb agent2 c
+  ~ ca agent1 a
+  ~ cb agent2 c
+$ fux str proj workspace tabs each str name get print end
+  = a
+  = b
+  = c
+  ~ a
+  ~ b
+  ~ c
+$ fux str proj workspace str "$C" 0 next-events str events get each dup str event get str shown eq if str client get print else drop then end
+  = ca
+  = ca
+  = cb
+  = cb
+  = ca
+  = ca
+  ~ ca
+  ~ ca
+  ~ cb
+  ~ cb
+  ~ ca
+  ~ ca
