@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// How many data spaces were made, which names each: a machine's, and
-/// its copies'.
-static SPACES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// its copies'. It stops at `DATA_SPACES`, and never wraps around.
+static SPACES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// What runs the application's words.
 pub trait Host {
@@ -425,7 +425,7 @@ pub struct Machine<A> {
     /// the first `base`'s, and which data space it is, which its
     /// addresses carry.
     space: Vec<Option<Value<A>>>,
-    space_id: u64,
+    space_id: Option<u32>,
     /// What application words give, kept between calls.
     out: Vec<Value<A>>,
     /// Steps taken in all, through every run.
@@ -472,7 +472,7 @@ impl<A: AppValue> Machine<A> {
             returns: Vec::new(),
             digits: String::new(),
             space: vec![Some(Value::Int(10))],
-            space_id: SPACES.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            space_id: data_space(),
             out: Vec::new(),
             steps: 0,
             chars: Vec::new(),
@@ -1535,13 +1535,25 @@ impl<A: AppValue> Machine<A> {
     }
 
     /// Where the data space goes on: the address `store-next` stores at.
-    pub(crate) fn next_address(&self) -> Address {
-        Address::new(self.space_id, self.space.len())
+    pub(crate) fn next_address(&self) -> Result<Address, Error> {
+        self.address(self.space.len())
+    }
+
+    /// The address of this machine's cell `at`: none if every data space
+    /// id was given before this machine was made (`data_space`), or `at`
+    /// is past what an address says, which `grow` refuses to reach.
+    fn address(&self, at: usize) -> Result<Address, Error> {
+        let Some(space) = self.space_id else {
+            let why = "every data space id was given before this machine was made";
+            return Err(self.fail(Code::IdsExhausted, why));
+        };
+        let why = "a cell past what an address says";
+        Address::new(space, at).ok_or_else(|| self.fail(Code::Memory, why))
     }
 
     /// The `n` cells from `at`, if the data space has them all.
-    fn cells(&mut self, at: &Address, n: usize) -> Result<&mut [Option<Value<A>>], Error> {
-        if at.space() != self.space_id {
+    fn cells(&mut self, at: Address, n: usize) -> Result<&mut [Option<Value<A>>], Error> {
+        if Some(at.space()) != self.space_id {
             let why =
                 "an address of another machine's data space: it is used only where it was made";
             return Err(self.fail(Code::InvalidAddress, why));
@@ -1621,8 +1633,13 @@ impl<A: AppValue> Machine<A> {
         Ok(())
     }
 
-    /// Room for `n` more cells, unless the allocator refuses it.
+    /// Room for `n` more cells, unless the allocator refuses it, or an
+    /// address can't say the last (past 2^40 cells, more than memory holds).
     fn grow(&mut self, n: usize) -> Result<(), Error> {
+        if Address::new(0, self.space.len().saturating_add(n)).is_none() {
+            let why = format!("{n} more cells: past the 2^40 an address says");
+            return Err(self.fail(Code::Memory, why));
+        }
         let reserved = self.space.try_reserve(n);
         reserved.map_err(|e| self.fail(Code::Memory, format!("{n} more cells: {e}")))
     }
@@ -1661,7 +1678,7 @@ impl<A: AppValue> Machine<A> {
             }
             (Number::Addr(a), Number::Addr(b)) if sub => {
                 let why = "two addresses of different machines' data spaces";
-                let apart = a.cells_from(&b);
+                let apart = a.cells_from(b);
                 Value::Int(apart.ok_or_else(|| self.fail(Code::InvalidAddress, why))?)
             }
             (Number::Int(a), Number::Int(b)) => Value::Int(match sub {
@@ -1693,8 +1710,17 @@ impl<A: AppValue> Machine<A> {
             .and_then(|to| usize::try_from(to).ok());
         let why = || format!("address {} moved {n} cells is no address", at.at());
         let to = to.ok_or_else(|| self.fail(Code::InvalidAddress, why()))?;
-        Ok(Value::Addr(Address::new(at.space(), to)))
+        let to =
+            Address::new(at.space(), to).ok_or_else(|| self.fail(Code::InvalidAddress, why()))?;
+        Ok(Value::Addr(to))
     }
+}
+
+/// A new data space's id, unless every one was given.
+fn data_space() -> Option<u32> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let next = |n: u32| n.checked_add(1).filter(|n| *n <= crate::value::DATA_SPACES);
+    SPACES.fetch_update(Relaxed, Relaxed, next).ok()
 }
 
 /// Which step of which code, or which word of which source read.
@@ -2328,7 +2354,7 @@ builtins! { m host;
         Ok(())
     }
     NextAddress "next-address" [cold] () "-- addr" "the address where the data space goes on, which store-next stores at" {
-        let at = m.next_address();
+        let at = m.next_address()?;
         m.push(Value::Addr(at));
         Ok(())
     }
@@ -2342,33 +2368,33 @@ builtins! { m host;
         Ok(())
     }
     Fetch "fetch" [cold] (at: Addr) "addr -- x" "the value stored in the cell at addr" {
-        let value = m.cells(&at, 1)?.first().cloned().flatten();
+        let value = m.cells(at, 1)?.first().cloned().flatten();
         let value = value.ok_or_else(|| m.fail(Code::Unset, "the cell has no value stored yet"))?;
         m.push(value);
         Ok(())
     }
     Store "store" [cold] (x: Any, at: Addr) "x addr --" "x stored in the cell at addr" {
-        if let Some(cell) = m.cells(&at, 1)?.first_mut() {
+        if let Some(cell) = m.cells(at, 1)?.first_mut() {
             *cell = Some(x);
         }
         Ok(())
     }
     Fill "fill" [cold] (at: Addr, n: Int, x: Any) "addr u x --" "x stored in the u cells from addr" {
         let n = m.count(Builtin::Fill, n)?;
-        m.cells(&at, n)?.fill(Some(x));
+        m.cells(at, n)?.fill(Some(x));
         Ok(())
     }
     CopyCells "copy-cells" [cold] (from: Addr, to: Addr, n: Int) "from to u --"
         "the u cells from `from` copied to the u from `to`, which may overlap them" {
         let n = m.count(Builtin::CopyCells, n)?;
-        m.cells(&from, n)?;
-        m.cells(&to, n)?;
+        m.cells(from, n)?;
+        m.cells(to, n)?;
         m.copy_cells(from.at(), to.at(), n);
         Ok(())
     }
     Base "base" [cold] () "-- addr"
         "the address of the base number reads and digit writes in, 10 to begin with" {
-        let at = Address::new(m.space_id, 0);
+        let at = m.address(0)?;
         m.push(Value::Addr(at));
         Ok(())
     }
@@ -2424,7 +2450,7 @@ builtins! { m host;
         { m.create(Builtin::Constant, Some(x)) }
     BodyOf "body-of" [cold] (xt: Exec) "xt -- addr" "the address the word create made, xt, gives" {
         m.index_of(&xt)?;
-        let at = xt.body.clone().ok_or_else(|| {
+        let at = xt.body.ok_or_else(|| {
             let why = "body-of takes the xt of a word create made, and this is none";
             m.fail(Code::Type, why)
         })?;

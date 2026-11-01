@@ -572,10 +572,15 @@ pub struct Read {
     pub deadline: std::time::Instant,
 }
 
+/// The code of every id of a kind given.
+fn exhausted() -> fux_wire::code::Code {
+    fux_wire::code::Raise::IdsExhausted.into()
+}
+
 fn reply(batch: Result<Batch, String>) -> fux_wire::protocol::Reply {
     match batch {
         Ok(batch) => fux_wire::protocol::Body::Events(Box::new(batch)).into(),
-        Err(why) => fux_wire::protocol::Reply::failed(fux_wire::code::Code::IdsExhausted, why),
+        Err(why) => fux_wire::protocol::Reply::failed(exhausted(), why),
     }
 }
 
@@ -592,7 +597,7 @@ impl Read {
         let journal = session.parts.journal();
         if journal.exhausted {
             return Some(fux_wire::protocol::Reply::failed(
-                fux_wire::code::Code::IdsExhausted,
+                exhausted(),
                 "journal cursor IDs exhausted",
             ));
         }

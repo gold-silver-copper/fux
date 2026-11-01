@@ -113,6 +113,9 @@ codes! {
     /// The OS refused memory for what was asked: more cells of the data
     /// space, or what a host's word asked for.
     Memory "memory" -8,
+    /// Every id of a kind has been given: a machine's data space, or one
+    /// of the application's own.
+    IdsExhausted "ids_exhausted",
     /// `fail`: the program stopped itself, saying why.
     Fail "fail" -2,
     /// `abort`: the program stopped itself.

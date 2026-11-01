@@ -61,30 +61,45 @@ pub enum Value<A> {
 /// integer never becomes one. A machine takes only its own data space's,
 /// as it runs only its own xts; a copy of a machine has the same data
 /// space's identity, so the addresses copied with it stay its own. The
-/// two are behind one pointer, so no value is larger for them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Address(Rc<(u64, usize)>);
+/// two are one word, so no value is larger for them and making one
+/// allocates nothing: the cell in the low `CELL_BITS` bits, the data
+/// space above.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Address(u64);
+
+/// How many bits say which cell: 2^40 cells are more than any machine's
+/// memory holds (16 bytes or more each), so a data space never reaches
+/// more before its allocator refuses it. The 24 above say which data space.
+const CELL_BITS: u32 = 40;
+/// The bits that say which cell.
+const CELL_MASK: u64 = 0xFF_FFFF_FFFF;
+/// How many data spaces there may be in a process: 2^24.
+pub(crate) const DATA_SPACES: u32 = 0x100_0000;
 
 impl Address {
-    pub(crate) fn new(space: u64, at: usize) -> Self {
-        Self(Rc::new((space, at)))
+    /// The address of cell `at` of data space `space`, if they fit: `at`
+    /// below 2^40, `space` below `DATA_SPACES`.
+    pub(crate) fn new(space: u32, at: usize) -> Option<Self> {
+        let at = u64::try_from(at).ok().filter(|at| *at <= CELL_MASK)?;
+        let space = (space < DATA_SPACES).then_some(u64::from(space))?;
+        Some(Self(space.checked_shl(CELL_BITS)? | at))
     }
 
     /// Which data space it is of.
-    pub(crate) fn space(&self) -> u64 {
-        self.0.0
+    pub(crate) fn space(self) -> u32 {
+        u32::try_from(self.0.checked_shr(CELL_BITS).unwrap_or(0)).unwrap_or(u32::MAX)
     }
 
     /// Which cell it is.
-    pub(crate) fn at(&self) -> usize {
-        self.0.1
+    pub(crate) fn at(self) -> usize {
+        usize::try_from(self.0 & CELL_MASK).unwrap_or(usize::MAX)
     }
 
     /// How many cells on from `other` it is, if they are of one data
     /// space. An address is from 0 to the largest integer
     /// (`Machine::moved_by`), so this never wraps.
-    pub(crate) fn cells_from(&self, other: &Address) -> Option<i64> {
-        let at = |a: &Address| i64::try_from(a.at()).unwrap_or(i64::MAX);
+    pub(crate) fn cells_from(self, other: Address) -> Option<i64> {
+        let at = |a: Address| i64::try_from(a.at()).unwrap_or(i64::MAX);
         (self.space() == other.space()).then(|| at(self).wrapping_sub(at(other)))
     }
 }

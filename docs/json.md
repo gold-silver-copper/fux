@@ -387,7 +387,7 @@ the program itself (`usage`, `require`, `open_quote`, `unknown_word`,
 - reaching a server: `no_server`, `mismatch`, `client`;
 - what a command names: `no_pane`, `no_tab`, `no_workspace`, `no_client`,
   `no_target`, `stray_pane`, `no_field`, `nothing_there`,
-  `name_taken`, `ids_exhausted`, `bad_value`, `usage`;
+  `name_taken`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `stale`, `no_marks`, `start`, `size`, `mouse`, `signal`,
   `not_headless`, `own_server`, `people_attached`;
@@ -398,8 +398,8 @@ the program itself (`usage`, `require`, `open_quote`, `unknown_word`,
 - the language's own: `require`, `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `type`, `div_by_zero`, `overflow`,
-  `unset`, `unused`, `range`, `invalid_address`, `memory`, `fail`, `abort`,
-  `quit`, `thrown`, `too_long`, `bad_codes`, `contract`;
+  `unset`, `unused`, `range`, `invalid_address`, `memory`, `ids_exhausted`,
+  `fail`, `abort`, `quit`, `thrown`, `too_long`, `bad_codes`, `contract`;
 - the language's for a host that reads input (the fuxth runner), which
   fux gives only when a program throws their numbers: `interrupt` (-28),
   `end_of_input` (-39, though -39 throws `open_quote`), `unsupported` (-21).

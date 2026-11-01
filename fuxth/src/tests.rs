@@ -1621,6 +1621,29 @@ fn an_address_of_another_machine_is_refused() -> Result<(), Error> {
     Ok(())
 }
 
+/// An address is one word, its data space's id beside its cell, so making
+/// one allocates nothing and no value is larger for it; a data space grows
+/// no further than its addresses can say, and ids end, never wrap.
+#[test]
+fn an_address_is_one_word() -> Result<(), Error> {
+    use crate::value::DATA_SPACES;
+    assert_eq!(std::mem::size_of::<Address>(), 8);
+    assert_eq!(std::mem::size_of::<Value<()>>(), 16);
+    let last = Address::new(DATA_SPACES.saturating_sub(1), 0xFF_FFFF_FFFF);
+    assert_eq!(
+        last.map(|a| (a.space(), a.at())),
+        Some((0xFF_FFFF, 0xFF_FFFF_FFFF))
+    );
+    assert_eq!(Address::new(DATA_SPACES, 0), None);
+    assert_eq!(Address::new(0, 0x100_0000_0000), None);
+    let past = run("str all try 1099511627775 allot catch end next-address next-address sub")?;
+    assert!(
+        matches!(past.as_slice(), [Value::Failure(f), Value::Int(0)] if f.error.code == Code::Memory),
+        "{past:?}"
+    );
+    Ok(())
+}
+
 /// Lists in code in lists, however deep, are let go without a recursion.
 #[test]
 fn lists_and_code_nested_alternately_are_let_go_on_a_small_stack() -> Result<(), String> {

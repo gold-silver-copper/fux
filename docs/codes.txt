@@ -11,7 +11,6 @@ stray_pane 1 try
 no_field 1 try
 nothing_there 1 try
 name_taken 1 try
-ids_exhausted 1 try
 bad_value 1 try
 usage 2 try
 not_running 1 try
@@ -56,6 +55,7 @@ unused 1 try
 range 1 try -24
 invalid_address 1 try -9
 memory 1 try -8
+ids_exhausted 1 try
 fail 1 try -2
 abort 1 try -1
 quit 1 try -56
