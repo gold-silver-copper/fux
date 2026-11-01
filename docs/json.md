@@ -403,7 +403,10 @@ the program itself (`usage`, `require`, `open_quote`, `unknown_word`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `type`, `div_by_zero`, `overflow`,
   `unset`, `unused`, `range`, `fail`, `abort`, `quit`, `thrown`, `too_long`,
-  `bad_codes`, `contract`.
+  `bad_codes`, `contract`;
+- the language's for a host that reads input (the fuxth runner), which
+  fux gives only when a program throws their numbers: `interrupt` (-28),
+  `end_of_input` (-39, though -39 throws `open_quote`), `unsupported` (-21).
 
 fux sets no limits of its own: memory, time and steps are the user's and
 the OS's to bound (`ulimit`, cgroups, `timeout`), and a program that loops
