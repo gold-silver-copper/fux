@@ -53,13 +53,13 @@ impl Session {
         })
     }
 
-    /// One pane's facts observation, alone: what a capture holds, and a
-    /// live `get` reads a field of.
-    pub fn observed(&self, id: PaneId) -> Result<inspect::Pane, Error> {
+    /// One pane's observation, alone, as `projection` asks: what a
+    /// capture holds (its facts), and a live `get` reads a field of.
+    pub fn observed(&self, id: PaneId, projection: &Projection) -> Result<inspect::Pane, Error> {
         let pane = self.pane(id)?;
         let (_, tab) = self.locate(id).ok_or(Error::NoPane(id))?;
         let at = self.tab(tab).and_then(|t| self.sized(t).rect(id));
-        self.observe(pane, tab, at, &Projection::Facts)
+        self.observe(pane, tab, at, projection)
     }
 
     pub(super) fn inspect(&self, scope: Scope, projection: Projection) -> Result<Body, Error> {

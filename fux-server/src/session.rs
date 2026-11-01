@@ -2439,7 +2439,7 @@ impl Session {
                     ));
                 }
                 let cursor = self.parts.journal().end(self.run);
-                let observed = self.observed(pane.id())?;
+                let observed = self.observed(pane.id(), &fux_wire::inspect::Projection::Facts)?;
                 let captured = crate::capture::pane(observed, pane, cursor, history, view)?;
                 Ok(Body::Capture(Box::new(captured)).into())
             }
@@ -3036,11 +3036,21 @@ impl Session {
         let no_field = || fail(Raise::NoField, format!("{target} has no field {field:?}"));
         let value = match target {
             AnyRef::Pane(id) => {
-                let observed = self.observed(id)?;
+                // A field of its topology, read without its process or
+                // terminal, else of its facts.
+                let observed = self.observed(id, &fux_wire::inspect::Projection::Topology)?;
                 match field {
                     "tab" => return Ok(Body::Found(AnyRef::Tab(observed.tab))),
                     "version" => Json::str(observed.version.to_string()),
-                    _ => observed.fact(field).cloned().ok_or_else(no_field)?,
+                    _ => match observed.fact(field) {
+                        Some(fact) => fact.clone(),
+                        None => (self
+                            .observed(id, &fux_wire::inspect::Projection::Facts)?
+                            .facts
+                            .into_iter())
+                        .find_map(|(k, v)| (k == field).then_some(v))
+                        .ok_or_else(no_field)?,
+                    },
                 }
             }
             AnyRef::Tab(id) => {
@@ -7188,7 +7198,10 @@ mod tests {
         let (mut s, _) = attached(6, 30)?;
         run(&mut s, "%1 str horizontal axis split drop")?;
         s.out(PaneId::of(1), b"hi\x1b]2;title\x07\x1b[?1h");
-        for (name, _) in s.observed(PaneId::of(1))?.facts {
+        for (name, _) in s
+            .observed(PaneId::of(1), &fux_wire::inspect::Projection::Facts)?
+            .facts
+        {
             let read =
                 |s: &mut Session, from: &str| output(s, &format!("{from} str {name} get json"));
             let listed = read(&mut s, "%1 info str panes get first")?;
@@ -7210,7 +7223,10 @@ mod tests {
     fn the_json_help_names_every_pane_field() -> TestResult {
         let (s, _) = attached(4, 30)?;
         let pane = *s.parts.panes().keys().next().ok_or("no pane")?;
-        for (name, _) in s.observed(pane)?.facts {
+        for (name, _) in s
+            .observed(pane, &fux_wire::inspect::Projection::Facts)?
+            .facts
+        {
             let named = include_str!("../../docs/json.md").contains(&format!("`{name}`"));
             assert!(named, "docs/json.md does not name a pane's {name:?}");
         }

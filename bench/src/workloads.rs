@@ -1340,7 +1340,8 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
     }
     if !baseline {
         let pane = s.parts.panes().get(&id).ok_or("no pane")?;
-        let observed = s.observed(id).map_err(|e| e.to_string())?;
+        let facts = fux_wire::inspect::Projection::Facts;
+        let observed = s.observed(id, &facts).map_err(|e| e.to_string())?;
         let capture = fux_server::capture::pane(
             observed,
             pane,
