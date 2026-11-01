@@ -134,8 +134,8 @@ define listing
         end
       then
       list whole if depths x at 1 add 0 do str '  ' loop then end glue let indent
-      one not if list indent t chooser-row last end glue then
-      one if str '' else list indent str '  ' end glue then let indent
+      one not if indent t chooser-row last cat then
+      one if str '' else indent str '  ' cat then let indent
       begin pi panes len lt if panes pi at str tab get tid eq else false then while
         panes pi at let p
         list indent p chooser-row last str ' '
@@ -275,7 +275,7 @@ dup len 0 gt if first let taken opts taken in taken name 80 24 size str / cwd ne
       x wi lt if tab str workspace get else wss wi at str parent get then let up
       x 1 add wi max let upto
       list
-        wids up index-of 0 lt if str 'top ' else list str 'opts ' up dump-id str ' in ' end glue then
+        wids up index-of 0 lt if str 'top ' else str 'opts ' up dump-id cat str ' in ' cat then
         upto wi do wss i at str name get dup kind str null eq if drop str new-workspace then dump-text str 'in ' loop
         tab str name get dup kind str null eq if drop else dump-text str 'name ' then
         tab str cols get string str ' ' tab str rows get string str ' size '
