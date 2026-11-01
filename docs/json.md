@@ -281,7 +281,7 @@ status naming the whole.
 `json`, and its fields with `get`, are all of it:
 
 ```json
-{"events":[{"event":"bell","pane":"%3","tab":"@2","workspace":"+2","origin":{"kind":"program","pane":"%3","generation":0},"next":"42:7-1f"}],"next":"42:7-1f","missed":0,"status":"continuing","reason":null}
+{"events":[{"event":"bell","pane":"%3","tab":"@2","workspace":"+2","origin":{"kind":"program","pane":"%3","generation":0},"seq":41,"next":"42:7-1f"}],"first":"0:7-1f","next":"42:7-1f","missed":0,"status":"continuing","reason":null}
 ```
 
 Left at a command line's end, it prints its events alone, a JSON object a
@@ -299,8 +299,10 @@ changes to that client's view and seats.
 Each batch holds every matching event from its cursor to the journal's end
 (or to the event that ends its scope). `next`
 is exactly the consumed journal prefix, including filtered entries. It can
-advance with no matching events. Each event also has its own continuation
-`next`. A count of matches is never a cursor. In fuxth, subject and origin
+advance with no matching events. Each event also has its own number,
+`seq`, and its continuation `next`, one past it. `first` is the oldest
+entry the journal still holds (`next` when it holds none): a cursor before
+it has missed entries. A count of matches is never a cursor. In fuxth, subject and origin
 handles retain their server run; JSON renders them as short IDs for display.
 The cursor remains run-qualified when exported as text.
 
@@ -316,7 +318,7 @@ closes the pending read. Status is:
 | `continuing` | progress; read again from `next`, even with no matches |
 | `timeout` | no matching event before the deadline; `next` includes filtered progress; no readiness claim |
 | `gone` | the scoped object closed; the final close is included when retained |
-| `stopped` | the server stopped; `reason` says why |
+| `stopped` | the server stopped; `reason` says why, and the batch ends with its `stopped` entry |
 
 The journal keeps the last `journal-entries` entries (16,384 unless the
 client that started the server set it otherwise), its ring, evicting the
@@ -379,12 +381,13 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `notification` | `text`, optional `truncated` |
 | `title` | `title`, optional `truncated` |
 | `resized` | pane `cols`, `rows` |
+| `stopped` | `reason`; the run's last entry, which every scope reads and which ends every read |
 
 `SCOPE str CURSOR events` is a library program over `next-events`, as
 `journalctl -f --after-cursor`: it prints the scope's events after CURSOR
 (an empty one starts now), one JSON object a line, each with its `next`,
 until the scope is gone (its close the last line, when retained) or the
-server stops. A timeout prints nothing; it waits again. Its consumer
+server stops (its `stopped` entry the last line). A timeout prints nothing; it waits again. Its consumer
 bounds it (`head -n`, `timeout`, `jq 'first(…)'`) and keeps it (`>> FILE`,
 `tee`), and restarts from the last line's `next`: `missed` then counts the
 entries evicted since, including nonmatches. Loss fails it (`fail`, on
@@ -448,8 +451,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":64,
- "server_release":"0.36.0","server_protocol":64,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":65,
+ "server_release":"0.36.0","server_protocol":65,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain

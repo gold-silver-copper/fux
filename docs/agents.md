@@ -181,15 +181,17 @@ panes as it begins and answers changes in watch order, not exit chronology.
   let seen seen string print seen version print
   ```
 - **What changes anywhere:** `SCOPE str CURSOR events` prints the scope's
-  events after CURSOR, one JSON object a line, each with its `next`, until
-  the scope is gone or the server stops, as `journalctl -f` does; an empty
+  events after CURSOR, one JSON object a line, each with its `seq` and
+  `next`, until the scope is gone or the server stops (its `stopped`
+  entry the last line), as `journalctl -f` does; an empty
   cursor starts now. Bound it with `head -n`, `timeout` or `jq`, keep it
   with `>> FILE` or `tee`, and restart from the last line's `next`.
   Take the cursor before launching jobs to observe their first recorded
   exit; group waits do not give exit chronology. Lost entries (`missed`)
   fail it on stderr: resnapshot. Events invalidate state, and do not
   replicate live OS facts. `all str CURSOR SECONDS next-events` returns one
-  batch: its events, exact `next`, `missed` and status (`json`); left at
+  batch: its events, the oldest entry still held (`first`), exact
+  `next`, `missed` and status (`json`); left at
   the end, it prints its events alone, and fails on `missed`.
 
   ```sh

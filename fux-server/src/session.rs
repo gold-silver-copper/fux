@@ -34,8 +34,8 @@ pub enum Outgoing {
     /// (`send-keys` to a client), its screen ended by the server, or its
     /// detach, saying why.
     To(ClientId, ToAttached<'static>),
-    /// Stop the server, saying why.
-    Shutdown(String),
+    /// Stop the server, saying why, as this actor.
+    Shutdown(String, fux_wire::events::Actor),
 }
 
 /// A closed pane's program, hung up and given until the deadline to exit;
@@ -1604,7 +1604,7 @@ impl Session {
                 .join("; ");
             if !told.is_empty() {
                 if failed && self.parts.panes().is_empty() {
-                    self.outbox.push(Outgoing::Shutdown(told.clone()));
+                    self.shut_down(told.clone());
                 }
                 notice = Some((told, failed));
             }
@@ -1660,10 +1660,16 @@ impl Session {
         self.views.keys().copied().filter(shown).collect()
     }
 
+    /// Asks the server to stop, saying why, as the journal's actor now.
+    fn shut_down(&mut self, reason: String) {
+        let actor = self.parts.journal().current_actor();
+        self.outbox.push(Outgoing::Shutdown(reason, actor));
+    }
+
     fn after_close(&mut self, now: Instant) {
         let shutting = (self.outbox.iter()).any(|o| matches!(o, Outgoing::Shutdown { .. }));
         if self.parts.panes().is_empty() && !shutting {
-            (self.outbox).push(Outgoing::Shutdown("the last pane closed".into()));
+            self.shut_down("the last pane closed".into());
         }
         self.touch();
         self.settle(now);
@@ -2407,7 +2413,7 @@ impl Session {
             }
             Origin::Cli(_) => "stopped by fux kill-server",
         };
-        self.outbox.push(Outgoing::Shutdown(reason.into()));
+        self.shut_down(reason.into());
         Ok(Reply::default())
     }
 
@@ -4991,7 +4997,7 @@ mod tests {
                 assert!(session.pane(id).is_err());
             }
             if last {
-                assert!(session.outbox.iter().any(|out| matches!(out, Outgoing::Shutdown(why) if why.contains(&fuxix::Errno::INVAL.to_string()))));
+                assert!(session.outbox.iter().any(|out| matches!(out, Outgoing::Shutdown(why, _) if why.contains(&fuxix::Errno::INVAL.to_string()))));
             }
         }
         Ok(())
@@ -6220,7 +6226,7 @@ mod tests {
                     {
                         Some(b.to_vec())
                     }
-                    Outgoing::To(..) | Outgoing::Shutdown(_) => None,
+                    Outgoing::To(..) | Outgoing::Shutdown(..) => None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -6444,7 +6450,7 @@ mod tests {
                     Outgoing::To(c, ToAttached::Paint(b)) if b.starts_with(b"\x1b]52;c;") => {
                         Some(*c)
                     }
-                    Outgoing::To(..) | Outgoing::Shutdown(_) => None,
+                    Outgoing::To(..) | Outgoing::Shutdown(..) => None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -8299,11 +8305,7 @@ mod journal_tests {
             "history_budget",
             "history_cleared",
         ] {
-            assert!(
-                !named(&b, name).is_empty(),
-                "missing {name}: {}",
-                b.json().render()
-            );
+            assert!(!named(&b, name).is_empty(), "missing {name}: {b:?}");
         }
         let from = b.next;
         s.detach(client, Instant::now());
@@ -8443,8 +8445,7 @@ mod journal_tests {
                     .batch(s.parts.journal(), true)?;
                 assert!(
                     !named(&b, "shown").is_empty(),
-                    "departure from {scope:?}: {}",
-                    b.json().render()
+                    "departure from {scope:?}: {b:?}"
                 );
                 assert!(named(&b, "resized").is_empty());
             }
