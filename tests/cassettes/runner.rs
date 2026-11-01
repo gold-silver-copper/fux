@@ -1557,7 +1557,8 @@ fn monitor(
         }
         let code = code(&call.err);
         match (call.status, &code) {
-            (0, _) => {}
+            // 141: its stdout's reader went, said nowhere.
+            (0 | 141, _) => {}
             (1 | 2 | 4 | 124, Some(name)) => match name.parse::<Code>() {
                 Ok(c) if i64::from(c.status().get()) == call.status => {}
                 Ok(_) => problems.push(format!(
