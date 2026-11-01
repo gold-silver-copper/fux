@@ -259,12 +259,12 @@ pub(super) fn pane_fact(value: &Json, run: Option<Run>) -> Result<V, Failure> {
 /// A pane's observation as a record: its `id`, `tab` and `version`, then
 /// its facts (`pane_fact`).
 fn pane(p: &inspect::Pane, run: Run) -> Result<V, Failure> {
-    let mut fields = Vec::with_capacity(p.facts.len().saturating_add(3));
+    let mut fields = Vec::with_capacity(48);
     fields.push(("id".to_owned(), id(AnyRef::Pane(p.id), run)));
     fields.push(("tab".to_owned(), id(AnyRef::Tab(p.tab), run)));
     fields.push(("version".to_owned(), Value::str(p.version.to_string())));
-    for (key, value) in &p.facts {
-        fields.push((key.clone(), pane_fact(value, Some(run))?));
+    for (key, value) in p.fields() {
+        fields.push((key.to_owned(), pane_fact(&value, Some(run))?));
     }
     Builder.finish(fields, None)
 }
@@ -547,8 +547,13 @@ pub(super) fn answer_field(
                 (Of::Pane { wrap_pending, .. }, Some(F::WrapPending)) => {
                     Ok(Value::Bool(*wrap_pending))
                 }
-                (Of::Pane { pane: p, .. }, None) => {
-                    (p.fact(field)).map_or_else(|| Err(absent()), |v| pane_fact(v, run))
+                (Of::Pane { pane: p, read, .. }, None) => {
+                    let read = read.iter().find(|(k, _)| k == field).map(|(_, v)| v);
+                    let fields = || p.fields().into_iter().find(|(k, _)| *k == field);
+                    match read {
+                        Some(v) => pane_fact(v, run),
+                        None => fields().map_or_else(|| Err(absent()), |(_, v)| pane_fact(&v, run)),
+                    }
                 }
                 (Of::Client { client, .. }, Some(F::Client)) => {
                     Ok(Value::App(Fux::Client(*client, run)))

@@ -5,6 +5,7 @@ use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::layout::Node;
 use crate::wire::wire;
+use std::borrow::Cow;
 
 /// Nesting of records and their lists; layout trees are flat.
 pub const DEPTH: u8 = 32;
@@ -62,26 +63,127 @@ wire! {
     }
 }
 wire! {
-    /// A pane's observation, read in one server turn: its identity, its
-    /// tab and its version, then its facts, in order (`Session::observe`):
-    /// `name`, `label`, `title`, `rows`, `cols`, `row`, `col`; but in a
-    /// topology, its `program`, `launch` and terminal's facts; a recipe's
-    /// `cwd` last. A capture adds what it read of the screen.
+    /// A pane's observation, read in one server turn (`Session::observe`):
+    /// its identity, tab and version, its name, label, title, size and
+    /// place; but in a topology, its program, launch and terminal's facts;
+    /// a recipe's, also where its program is now. `fields` gives it flat.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Pane {
         pub id: PaneId,
         pub tab: TabId,
         pub version: Version,
-        pub facts: Vec<(String, Json)>,
+        pub name: Option<String>,
+        pub label: String,
+        pub title: String,
+        pub rows: u16,
+        pub cols: u16,
+        /// Where it is in its tab, as it is sized; none if it has no place.
+        pub row: Option<u16>,
+        pub col: Option<u16>,
+        /// None in a topology.
+        pub facts: Option<Facts>,
+        /// Where it is now, which only the recipe reads.
+        pub cwd: Option<Directory>,
     }
+}
+wire! {
+    /// What a pane holds and was started as: its program, by generation
+    /// (null while a respawn is under way); its launch; and its terminal's
+    /// facts and its options, in order.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Facts {
+        pub program: Json,
+        pub launch: Launch,
+        pub terminal: Vec<(String, Json)>,
+    }
+}
+wire! {
+    /// What it was started as, a shell or a program, and where; its
+    /// program's `argv` says with what.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Launch {
+        pub shell: bool,
+        pub cwd: Path,
+    }
+}
+wire! {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Directory { Known(path: Path), Unknown, Failed(errno: i32), }
+}
+wire! {
+    /// Exact OS bytes, never lossily converted to text.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Path { Utf8(text: String), Bytes(bytes: Vec<u8>), }
 }
 
 impl Pane {
-    pub fn fact(&self, name: &str) -> Option<&Json> {
-        self.facts
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, v)| v)
+    /// Its fields after `id`, `tab` and `version`, in order, as `json`
+    /// gives them: what a snapshot's record and a capture hold.
+    pub fn fields(&self) -> Vec<(&str, Cow<'_, Json>)> {
+        let place = |at: Option<u16>| Cow::Owned(at.map_or(Json::Null, Json::int));
+        let mut fields = vec![
+            (
+                "name",
+                Cow::Owned(self.name.as_deref().map_or(Json::Null, Json::str)),
+            ),
+            ("label", Cow::Owned(Json::str(self.label.as_str()))),
+            ("title", Cow::Owned(Json::str(self.title.as_str()))),
+            ("rows", Cow::Owned(Json::int(self.rows))),
+            ("cols", Cow::Owned(Json::int(self.cols))),
+            ("row", place(self.row)),
+            ("col", place(self.col)),
+        ];
+        if let Some(facts) = &self.facts {
+            fields.push(("program", Cow::Borrowed(&facts.program)));
+            fields.push(("launch", Cow::Owned(facts.launch.json())));
+            let terminal = facts.terminal.iter();
+            fields.extend(terminal.map(|(k, v)| (k.as_str(), Cow::Borrowed(v))));
+        }
+        if let Some(cwd) = &self.cwd {
+            fields.push(("cwd", Cow::Owned(cwd.json())));
+        }
+        fields
+    }
+}
+
+impl Launch {
+    pub fn json(&self) -> Json {
+        let choice = if self.shell { "shell" } else { "program" };
+        Json::object(vec![
+            ("choice", Json::str(choice)),
+            ("cwd", self.cwd.json()),
+        ])
+    }
+}
+
+impl Directory {
+    /// Null when the OS says none.
+    pub fn json(&self) -> Json {
+        match self {
+            Directory::Known(path) => {
+                Json::object(vec![("status", Json::str("known")), ("path", path.json())])
+            }
+            Directory::Unknown => Json::Null,
+            Directory::Failed(errno) => Json::object(vec![
+                ("status", Json::str("failed")),
+                ("operation", Json::str("cwd")),
+                ("errno", Json::int(*errno)),
+            ]),
+        }
+    }
+}
+
+impl Path {
+    /// UTF-8 as itself, else its bytes in hex.
+    pub fn json(&self) -> Json {
+        let (encoding, text) = match self {
+            Path::Utf8(text) => ("utf8", text.clone()),
+            Path::Bytes(bytes) => ("hex", bytes.iter().map(|b| format!("{b:02x}")).collect()),
+        };
+        Json::object(vec![
+            ("encoding", Json::str(encoding)),
+            ("text", Json::str(text)),
+        ])
     }
 }
 
@@ -277,8 +379,8 @@ impl Snapshot {
         for p in &self.panes {
             if p.version.run != self.run
                 || p.version.pane != p.id
-                || p.fact("program").is_some() != (self.projection != Projection::Topology)
-                || p.fact("cwd").is_some() != (self.projection == Projection::Recipe)
+                || p.facts.is_some() != (self.projection != Projection::Topology)
+                || p.cwd.is_some() != (self.projection == Projection::Recipe)
             {
                 return Err(bad());
             }

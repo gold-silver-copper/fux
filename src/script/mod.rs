@@ -2292,20 +2292,37 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// A pane's observation of these facts, in tab `@1`.
-    fn observed(version: super::Version, facts: Vec<(String, Json)>) -> fux_wire::inspect::Pane {
+    /// A pane's observation, in tab `@1`, of these terminal facts.
+    fn observed(version: super::Version, terminal: Vec<(String, Json)>) -> fux_wire::inspect::Pane {
+        let launch = fux_wire::inspect::Launch {
+            shell: false,
+            cwd: fux_wire::inspect::Path::Utf8("/".into()),
+        };
         fux_wire::inspect::Pane {
             id: version.pane,
             tab: fux_wire::id::TabId::of(1),
             version,
-            facts,
+            name: None,
+            label: String::new(),
+            title: String::new(),
+            rows: 24,
+            cols: 80,
+            row: None,
+            col: None,
+            facts: Some(fux_wire::inspect::Facts {
+                program: Json::Null,
+                launch,
+                terminal,
+            }),
+            cwd: None,
         }
     }
 
     fn large_plain(version: super::Version) -> fux_wire::answer::Captured {
         fux_wire::answer::Captured {
             of: fux_wire::answer::Of::Pane {
-                pane: observed(version, Vec::new()),
+                pane: Box::new(observed(version, Vec::new())),
+                read: Vec::new(),
                 wrap_pending: false,
             },
             screen_cursor: None,
@@ -2491,7 +2508,11 @@ pub(crate) mod tests {
         );
         let capture = fux_wire::answer::Captured {
             of: fux_wire::answer::Of::Pane {
-                pane: observed(version, vec![("last_status".into(), Json::Int(7))]),
+                pane: Box::new(observed(
+                    version,
+                    vec![("last_status".into(), Json::Int(7))],
+                )),
+                read: Vec::new(),
                 wrap_pending: false,
             },
             screen_cursor: None,

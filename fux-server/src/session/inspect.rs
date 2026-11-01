@@ -12,10 +12,10 @@ use fux_wire::wire::Memory;
 use std::collections::BTreeMap;
 
 impl Session {
-    /// A pane's observation, read in this turn, as `projection` asks (the
-    /// order `inspect::Pane` says): where it is in its tab, `at`; but in a
-    /// topology, its program, launch and terminal's facts; a recipe's, also
-    /// where its program is now, which `dump` starts a shell in.
+    /// A pane's observation, read in this turn, as `projection` asks:
+    /// where it is in its tab, `at`; but in a topology, its program, launch
+    /// and terminal's facts; a recipe's, also where its program is now,
+    /// which `dump` starts a shell in.
     fn observe(
         &self,
         pane: &Pane,
@@ -23,43 +23,76 @@ impl Session {
         at: Option<Rect>,
         projection: &Projection,
     ) -> Result<inspect::Pane, Error> {
-        let place = |at: Option<u16>| at.map_or(Json::Null, Json::int);
-        let mut facts = vec![
-            ("name", pane.name().map_or(Json::Null, Json::str)),
-            ("label", Json::str(format!("{}", pane.display_label()))),
-            ("title", Json::str(pane.title().as_str())),
-            ("rows", Json::int(pane.size().rows())),
-            ("cols", Json::int(pane.size().cols())),
-            ("row", place(at.as_ref().map(Rect::y))),
-            ("col", place(at.as_ref().map(Rect::x))),
-        ];
-        if *projection != Projection::Topology {
-            facts.push(("program", crate::capture::program(pane)?));
-            facts.push(("launch", crate::capture::launch(pane)));
-            facts.extend(crate::capture::state(pane)?);
-        }
-        if *projection == Projection::Recipe {
-            let dir = self.dir_with(pane.id(), &mut Memory)?;
-            let dir = dir
-                .as_ref()
-                .map(|d| d.as_deref().map(std::path::Path::as_os_str));
-            facts.push(("cwd", crate::capture::directory(dir.map_err(|e| e.raw()))));
-        }
+        let facts = if *projection == Projection::Topology {
+            None
+        } else {
+            let terminal = crate::capture::TERMINAL.iter();
+            Some(inspect::Facts {
+                program: crate::capture::program(pane)?,
+                launch: crate::capture::launch(pane),
+                terminal: terminal.map(|(k, f)| ((*k).to_owned(), f(pane))).collect(),
+            })
+        };
+        let cwd = if *projection == Projection::Recipe {
+            Some(match self.dir_with(pane.id(), &mut Memory)? {
+                Ok(Some(dir)) => inspect::Directory::Known(crate::capture::path(dir.as_os_str())),
+                Ok(None) => inspect::Directory::Unknown,
+                Err(errno) => inspect::Directory::Failed(errno.raw()),
+            })
+        } else {
+            None
+        };
         Ok(inspect::Pane {
             id: pane.id(),
             tab,
             version: pane.version(self.run),
-            facts: facts.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+            name: pane.name().map(str::to_owned),
+            label: format!("{}", pane.display_label()),
+            title: pane.title().as_str().to_owned(),
+            rows: pane.size().rows(),
+            cols: pane.size().cols(),
+            row: at.as_ref().map(Rect::y),
+            col: at.as_ref().map(Rect::x),
+            facts,
+            cwd,
         })
     }
 
-    /// One pane's observation, alone, as `projection` asks: what a
-    /// capture holds (its facts), and a live `get` reads a field of.
-    pub fn observed(&self, id: PaneId, projection: &Projection) -> Result<inspect::Pane, Error> {
+    /// One pane's facts observation, alone: what a capture holds.
+    pub fn observed(&self, id: PaneId) -> Result<inspect::Pane, Error> {
         let pane = self.pane(id)?;
         let (_, tab) = self.locate(id).ok_or(Error::NoPane(id))?;
         let at = self.tab(tab).and_then(|t| self.sized(t).rect(id));
-        self.observe(pane, tab, at, projection)
+        self.observe(pane, tab, at, &Projection::Facts)
+    }
+
+    /// One field of a pane's facts observation, read alone from what
+    /// `observe` reads it from, as `inspect::Pane::fields` gives it: a
+    /// version or program read lays out no tab and reads no pictures.
+    pub(super) fn observed_field(&self, id: PaneId, field: &str) -> Result<Option<Body>, Error> {
+        let pane = self.pane(id)?;
+        let tab = || self.locate(id).map(|(_, tab)| tab).ok_or(Error::NoPane(id));
+        let at = || Ok::<_, Error>(self.tab(tab()?).and_then(|t| self.sized(t).rect(id)));
+        let place = |at: Option<u16>| at.map_or(Json::Null, Json::int);
+        let value = match field {
+            "id" => return Ok(Some(Body::Found(AnyRef::Pane(id)))),
+            "tab" => return Ok(Some(Body::Found(AnyRef::Tab(tab()?)))),
+            "version" => Json::str(pane.version(self.run).to_string()),
+            "name" => pane.name().map_or(Json::Null, Json::str),
+            "label" => Json::str(format!("{}", pane.display_label())),
+            "title" => Json::str(pane.title().as_str()),
+            "rows" => Json::int(pane.size().rows()),
+            "cols" => Json::int(pane.size().cols()),
+            "row" => place(at()?.as_ref().map(Rect::y)),
+            "col" => place(at()?.as_ref().map(Rect::x)),
+            "program" => crate::capture::program(pane)?,
+            "launch" => crate::capture::launch(pane).json(),
+            _ => match crate::capture::TERMINAL.iter().find(|(k, _)| *k == field) {
+                Some((_, fact)) => fact(pane),
+                None => return Ok(None),
+            },
+        };
+        Ok(Some(Body::Field(value)))
     }
 
     pub(super) fn inspect(&self, scope: Scope, projection: Projection) -> Result<Body, Error> {

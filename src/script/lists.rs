@@ -101,8 +101,9 @@ fn held(answer: &super::Answer) -> Vec<String> {
         super::Answer::Capture(c) => {
             let mut fields: Vec<String> = names(CaptureField::ALL);
             fields.extend(names(CapturedField::ALL));
-            if let fux_wire::answer::Of::Pane { pane, .. } = &c.of {
-                fields.extend(pane.facts.iter().map(|(name, _)| name.clone()));
+            if let fux_wire::answer::Of::Pane { pane, read, .. } = &c.of {
+                fields.extend(pane.fields().into_iter().map(|(name, _)| name.to_owned()));
+                fields.extend(read.iter().map(|(name, _)| name.clone()));
             }
             fields
         }
@@ -127,7 +128,7 @@ fn held(answer: &super::Answer) -> Vec<String> {
 fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     use super::testing::{InProcess, attached, evaluate};
     use fux_wire::answer::{Change, Ended, PaneAnswer};
-    use fux_wire::inspect::{Projection, Scope};
+    use fux_wire::inspect::{Directory, Path, Projection, Scope};
     let (mut session, client) = attached(24, 80)?;
     let now = std::time::Instant::now();
     let replies = [
@@ -178,15 +179,12 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("{name}: {:?}", reply.response).into());
         };
         // Every directory a launch can observe, one pane each.
-        use std::os::unix::ffi::OsStrExt;
         let observed = [
-            fux_server::capture::directory(Ok(Some(std::ffi::OsStr::from_bytes(&[0xff])))),
-            fux_server::capture::directory(Err(2)),
+            Directory::Known(Path::Bytes(vec![0xff])),
+            Directory::Failed(2),
         ];
-        let cwds = (s.panes.iter_mut())
-            .flat_map(|p| &mut p.facts)
-            .filter(|(k, _)| k == "cwd");
-        for ((_, cwd), observed) in cwds.zip(observed) {
+        let cwds = s.panes.iter_mut().filter_map(|p| p.cwd.as_mut());
+        for (cwd, observed) in cwds.zip(observed) {
             *cwd = observed;
         }
         let snapshot = record::snapshot(*s).map_err(|e| e.message)?;

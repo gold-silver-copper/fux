@@ -138,12 +138,12 @@ fn changed_lines<'a>(
 }
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
-/// once with its observation (`observed`, `Session::observe`), and after
-/// its facts the `journal`'s cursor: `events` from that cursor reads the pane's journal
+/// once with its observation (`observed`, `Session::observe`) and the
+/// `journal`'s cursor: `events` from that cursor reads the pane's journal
 /// entries after this read; a change only to the screen shows in versions
 /// and captures.
 pub fn pane(
-    mut observed: fux_wire::inspect::Pane,
+    observed: fux_wire::inspect::Pane,
     pane: &Pane,
     journal: fux_wire::events::Cursor,
     history: Option<usize>,
@@ -182,7 +182,7 @@ pub fn pane(
     let wrapped = read
         .clone()
         .map(|(_, (row, _))| Json::Bool(row.continues()));
-    let read_here = [
+    let here = [
         ("cursor", Json::str(journal.to_string())),
         // The history rows kept above the first row read: history it was
         // not asked for (rows a range leaves out are not counted).
@@ -190,9 +190,9 @@ pub fn pane(
         ("wrapped_rows", Json::Array(wrapped.collect())),
         ("links", links(read.clone(), selection.start, view)),
     ];
-    (observed.facts).extend(read_here.map(|(k, v)| (k.to_owned(), v)));
     let of = Of::Pane {
-        pane: observed,
+        pane: Box::new(observed),
+        read: here.map(|(k, v)| (k.to_owned(), v)).into(),
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
     };
     let since = keep.map(|_| selection.start);
@@ -692,153 +692,128 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
     ]))
 }
 
-/// What is known of a pane's terminal, for `json`: the modes that say how
-/// its program takes input, the input queued for it, and the cell its
-/// program is told, by its tab's host (`Session::host_panes`).
-pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::code::Error> {
-    let screen = pane.screen();
-    let cell = screen.graphics().cell();
-    let last_status = screen.commands().last_status;
-    let mouse = screen.mouse_protocol_mode();
-    let bracketed_paste = screen.mode(Mode::BracketedPaste);
-    let pictures = Json::Array(screen.pictures().map(picture).collect());
-    let notification = pane.alerts.last.as_ref();
-    // The fields whose value the program sent more of than is kept.
-    let cut = [
-        ("title", pane.title().cut()),
-        ("notification", notification.is_some_and(|n| n.cut())),
-    ];
-    let truncated = cut.into_iter().filter(|(_, cut)| *cut);
-    let cut_fields = truncated.map(|(field, _)| Json::str(field)).collect();
-    let losses = pane.lost();
-    let lost = Json::object(vec![
-        ("copies_cut", Json::uint(losses.copies_cut)),
-        ("copies_not_text", Json::uint(losses.copies_not_text)),
-        ("pictures", Json::uint(losses.pictures)),
-        ("memory", Json::uint(losses.memory)),
-    ]);
-    let cell = match cell {
+/// How one fact of a pane is read.
+pub(crate) type Fact = fn(&Pane) -> Json;
+
+/// What is known of a pane's terminal, for `json`, each fact read alone
+/// (a live `get` reads one): the modes that say how its program takes
+/// input, the input queued for it, and the cell its program is told, by
+/// its tab's host (`Session::host_panes`); and the pane's options.
+pub(crate) const TERMINAL: &[(&str, Fact)] = &[
+    ("alt_screen", |p| {
+        Json::Bool(p.screen().mode(Mode::AlternateScreen))
+    }),
+    // What it asked for: whether a move without a button is reported.
+    ("mouse_mode", |p| match p.screen().mouse_protocol_mode() {
+        MouseProtocolMode::None => Json::Null,
+        MouseProtocolMode::Press => Json::str("press"),
+        MouseProtocolMode::PressRelease => Json::str("press_release"),
+        MouseProtocolMode::Highlight => Json::str("highlight"),
+        MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
+        MouseProtocolMode::AnyMotion => Json::str("any_motion"),
+    }),
+    // How it asked for mouse reports to be spelled.
+    ("mouse_encoding", |p| {
+        Json::str(match p.screen().mouse_protocol_encoding() {
+            MouseProtocolEncoding::Default => "default",
+            MouseProtocolEncoding::Utf8 => "utf8",
+            MouseProtocolEncoding::Sgr => "sgr",
+            MouseProtocolEncoding::Urxvt => "urxvt",
+        })
+    }),
+    ("bracketed_paste", |p| {
+        Json::Bool(p.screen().mode(Mode::BracketedPaste))
+    }),
+    ("focus_events", |p| {
+        Json::Bool(p.screen().mode(Mode::FocusReporting))
+    }),
+    ("app_cursor", |p| {
+        Json::Bool(p.screen().mode(Mode::ApplicationCursor))
+    }),
+    ("app_keypad", |p| {
+        Json::Bool(p.screen().mode(Mode::ApplicationKeypad))
+    }),
+    ("keyboard_flags", |p| {
+        Json::int(p.screen().kitty_keyboard_flags())
+    }),
+    ("pictures", |p| {
+        Json::Array(p.screen().pictures().map(picture).collect())
+    }),
+    ("lost", |p| {
+        let losses = p.lost();
+        Json::object(vec![
+            ("copies_cut", Json::uint(losses.copies_cut)),
+            ("copies_not_text", Json::uint(losses.copies_not_text)),
+            ("pictures", Json::uint(losses.pictures)),
+            ("memory", Json::uint(losses.memory)),
+        ])
+    }),
+    ("cell", |p| match p.screen().graphics().cell() {
         Some(cell) => Json::object(vec![
             ("width", Json::int(cell.width())),
             ("height", Json::int(cell.height())),
         ]),
         None => Json::Null,
-    };
-    let values = [
-        ("alt_screen", Json::Bool(screen.mode(Mode::AlternateScreen))),
-        // What it asked for: whether a move without a button is reported.
-        (
-            "mouse_mode",
-            match mouse {
-                MouseProtocolMode::None => Json::Null,
-                MouseProtocolMode::Press => Json::str("press"),
-                MouseProtocolMode::PressRelease => Json::str("press_release"),
-                MouseProtocolMode::Highlight => Json::str("highlight"),
-                MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
-                MouseProtocolMode::AnyMotion => Json::str("any_motion"),
-            },
-        ),
-        // How it asked for mouse reports to be spelled.
-        (
-            "mouse_encoding",
-            Json::str(match screen.mouse_protocol_encoding() {
-                MouseProtocolEncoding::Default => "default",
-                MouseProtocolEncoding::Utf8 => "utf8",
-                MouseProtocolEncoding::Sgr => "sgr",
-                MouseProtocolEncoding::Urxvt => "urxvt",
-            }),
-        ),
-        ("bracketed_paste", Json::Bool(bracketed_paste)),
-        (
-            "focus_events",
-            Json::Bool(screen.mode(Mode::FocusReporting)),
-        ),
-        (
-            "app_cursor",
-            Json::Bool(screen.mode(Mode::ApplicationCursor)),
-        ),
-        (
-            "app_keypad",
-            Json::Bool(screen.mode(Mode::ApplicationKeypad)),
-        ),
-        ("keyboard_flags", Json::int(screen.kitty_keyboard_flags())),
-        ("pictures", pictures),
-        ("lost", lost),
-        ("cell", cell),
-        ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
-        ("history_bytes", Json::count(pane.history_bytes())),
-        (
-            "program_clipboard",
-            Json::Bool(pane.options().program_clipboard),
-        ),
-        ("reflow", Json::Bool(pane.options().reflow)),
-        (
-            "alternate_scroll_lines",
-            Json::count(usize::from(pane.options().alternate_scroll_lines.get())),
-        ),
-        (
-            "picture_bytes",
-            Json::count(pane.options().picture_bytes.get()),
-        ),
-        ("history_lines", Json::count(screen.history_len())),
-        ("command_running", Json::Bool(pane.command_running())),
-        ("last_status", last_status.map_or(Json::Null, Json::int)),
-        ("last_output", output_range(screen)),
-        ("bells", Json::uint(pane.alerts.rung)),
-        (
-            "notification",
-            notification.map_or(Json::Null, |n| Json::str(n.as_str())),
-        ),
-        ("truncated", Json::Array(cut_fields)),
-        // Input accepted and not yet written to its terminal.
-        ("input_queued", Json::count(pane.input().len())),
-    ];
-    Ok(values.into())
-}
+    }),
+    ("cursor_visible", |p| {
+        Json::Bool(p.screen().mode(Mode::ShowCursor))
+    }),
+    ("history_bytes", |p| Json::count(p.history_bytes())),
+    ("program_clipboard", |p| {
+        Json::Bool(p.options().program_clipboard)
+    }),
+    ("reflow", |p| Json::Bool(p.options().reflow)),
+    ("alternate_scroll_lines", |p| {
+        Json::count(usize::from(p.options().alternate_scroll_lines.get()))
+    }),
+    ("picture_bytes", |p| {
+        Json::count(p.options().picture_bytes.get())
+    }),
+    ("history_lines", |p| Json::count(p.screen().history_len())),
+    ("command_running", |p| Json::Bool(p.command_running())),
+    ("last_status", |p| {
+        p.screen()
+            .commands()
+            .last_status
+            .map_or(Json::Null, Json::int)
+    }),
+    ("last_output", |p| output_range(p.screen())),
+    ("bells", |p| Json::uint(p.alerts.rung)),
+    ("notification", |p| {
+        let notification = p.alerts.last.as_ref();
+        notification.map_or(Json::Null, |n| Json::str(n.as_str()))
+    }),
+    // The fields whose value the program sent more of than is kept.
+    ("truncated", |p| {
+        let cut = [
+            ("title", p.title().cut()),
+            (
+                "notification",
+                p.alerts.last.as_ref().is_some_and(|n| n.cut()),
+            ),
+        ];
+        let truncated = cut.into_iter().filter(|(_, cut)| *cut);
+        Json::Array(truncated.map(|(field, _)| Json::str(field)).collect())
+    }),
+    // Input accepted and not yet written to its terminal.
+    ("input_queued", |p| Json::count(p.input().len())),
+];
 
-/// What a pane was started as, for `json`: a shell or a program, and
-/// where; its program's `argv` says with what.
-pub(crate) fn launch(pane: &Pane) -> Json {
-    let shell = matches!(pane.runs, crate::pane::Runs::Shell(_));
-    Json::object(vec![
-        ("choice", Json::str(if shell { "shell" } else { "program" })),
-        ("cwd", path(pane.runs.launch().cwd.as_os_str())),
-    ])
-}
-
-/// Where a pane's program is now, for `json`, as the OS said: null when
-/// it says none.
-pub fn directory(dir: Result<Option<&std::ffi::OsStr>, i32>) -> Json {
-    match dir {
-        Ok(Some(dir)) => Json::object(vec![("status", Json::str("known")), ("path", path(dir))]),
-        Ok(None) => Json::Null,
-        Err(errno) => Json::object(vec![
-            ("status", Json::str("failed")),
-            ("operation", Json::str("cwd")),
-            ("errno", Json::int(errno)),
-        ]),
+/// What a pane was started as: a shell or a program, and where.
+pub(crate) fn launch(pane: &Pane) -> fux_wire::inspect::Launch {
+    fux_wire::inspect::Launch {
+        shell: matches!(pane.runs, crate::pane::Runs::Shell(_)),
+        cwd: path(pane.runs.launch().cwd.as_os_str()),
     }
 }
 
-/// Exact OS bytes, never lossily converted to text: UTF-8 as itself, else
-/// in hex.
-fn path(value: &std::ffi::OsStr) -> Json {
+/// Exact OS bytes, never lossily converted to text.
+pub(crate) fn path(value: &std::ffi::OsStr) -> fux_wire::inspect::Path {
     use std::os::unix::ffi::OsStrExt;
-    let hex = || {
-        value
-            .as_bytes()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
-    };
-    let (encoding, text) = match value.to_str() {
-        Some(text) => ("utf8", text.to_owned()),
-        None => ("hex", hex()),
-    };
-    Json::object(vec![
-        ("encoding", Json::str(encoding)),
-        ("text", Json::str(text)),
-    ])
+    match value.to_str() {
+        Some(text) => fux_wire::inspect::Path::Utf8(text.to_owned()),
+        None => fux_wire::inspect::Path::Bytes(value.as_bytes().to_vec()),
+    }
 }
 
 /// Where a picture is, for `json`: its top row (negative once scrolled
@@ -896,20 +871,32 @@ mod tests {
         Ok(fux_wire::events::Cursor { seq, run })
     }
 
-    /// A capture of `pane` alone, its observation its terminal's facts.
+    /// A capture of `pane` alone, as of a pane in no tab.
     fn captured(
         pane: &crate::pane::Pane,
         journal: fux_wire::events::Cursor,
         history: Option<usize>,
         view: CaptureView,
     ) -> Result<fux_wire::answer::Captured, fux_wire::code::Error> {
+        let terminal = super::TERMINAL.iter();
+        let facts = fux_wire::inspect::Facts {
+            program: super::program(pane)?,
+            launch: super::launch(pane),
+            terminal: terminal.map(|(k, f)| ((*k).to_owned(), f(pane))).collect(),
+        };
         let observed = fux_wire::inspect::Pane {
             id: pane.id(),
             tab: fux_wire::id::TabId::of(1),
             version: pane.version(journal.run),
-            facts: (super::state(pane)?.into_iter())
-                .map(|(k, v)| (k.to_owned(), v))
-                .collect(),
+            name: None,
+            label: String::new(),
+            title: String::new(),
+            rows: pane.size().rows(),
+            cols: pane.size().cols(),
+            row: None,
+            col: None,
+            facts: Some(facts),
+            cwd: None,
         };
         super::pane(observed, pane, journal, history, view)
     }
@@ -918,9 +905,10 @@ mod tests {
     fn recipe_paths_keep_exact_os_bytes() {
         use std::os::unix::ffi::OsStrExt;
         let raw = std::ffi::OsStr::from_bytes(b"/a\xff/b");
-        let path = r#"{"encoding":"hex","text":"2f61ff2f62"}"#;
-        let known = format!(r#"{{"status":"known","path":{path}}}"#);
-        assert_eq!(super::directory(Ok(Some(raw))).render(), known);
+        let path = super::path(raw);
+        assert_eq!(path, fux_wire::inspect::Path::Bytes(b"/a\xff/b".to_vec()));
+        let json = r#"{"encoding":"hex","text":"2f61ff2f62"}"#;
+        assert_eq!(path.json().render(), json);
     }
 
     /// A capture as printed.

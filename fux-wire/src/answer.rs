@@ -3,9 +3,11 @@
 use crate::code::Code;
 use crate::command::Version;
 use crate::id::{ClientId, PaneId};
+use crate::json::Json;
 use crate::wire::{closed_wire, wire, wire_enum};
 use fux_vt::{Attributes, Blink, Color, Rgb, UnderlineStyle};
 use fuxix::process::{Signal, Status};
+use std::borrow::Cow;
 
 wire! {
     /// What one pane answers, of an action or a wait on it.
@@ -276,14 +278,14 @@ wire! {
 }
 
 wire! {
-    /// What a capture read: a pane, its observation read with it (its
-    /// facts, then what the capture read beside its lines, the journal's
-    /// `cursor` first) and its pending wrap; or a client's terminal, of
-    /// its size.
+    /// What a capture read: a pane, its observation read with it, what
+    /// the capture read beside its lines (`read`: the journal's `cursor`
+    /// first) and its pending wrap; or a client's terminal, of its size.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Of {
         Pane {
-            pane: crate::inspect::Pane,
+            pane: Box<crate::inspect::Pane>,
+            read: Vec<(String, Json)>,
             /// A glyph went into the last column: the next one goes on the
             /// next line, though the cursor shows on this one's last cell.
             wrap_pending: bool,
@@ -443,12 +445,21 @@ impl Captured {
         };
         Captured {
             of: Of::Pane {
-                pane: crate::inspect::Pane {
+                pane: Box::new(crate::inspect::Pane {
                     id: version.pane,
                     tab: crate::id::TabId::of(1),
                     version,
-                    facts: Vec::new(),
-                },
+                    name: None,
+                    label: String::new(),
+                    title: String::new(),
+                    rows: 40,
+                    cols: 120,
+                    row: None,
+                    col: None,
+                    facts: None,
+                    cwd: None,
+                }),
+                read: Vec::new(),
                 wrap_pending: false,
             },
             screen_cursor: None,
@@ -488,13 +499,18 @@ impl Captured {
     /// JSON directly from the capture: no second graph of owned run objects.
     pub fn write_json(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         match &self.of {
-            Of::Pane { pane, wrap_pending } => {
+            Of::Pane {
+                pane,
+                read,
+                wrap_pending,
+            } => {
                 let (id, tab, version) = (pane.id, pane.tab, pane.version);
                 write!(
                     out,
                     "{{\"id\":\"{id}\",\"tab\":\"{tab}\",\"version\":\"{version}\""
                 )?;
-                for (key, value) in &pane.facts {
+                let read = read.iter().map(|(k, v)| (k.as_str(), Cow::Borrowed(v)));
+                for (key, value) in pane.fields().into_iter().chain(read) {
                     out.write_char(',')?;
                     crate::json::write_str(out, key)?;
                     out.write_char(':')?;
