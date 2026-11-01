@@ -264,17 +264,16 @@ define dump-recipe
           list
             str 'opts '
             opens if
-              ws str name get dup kind str null eq if drop else dump-text str 'in ' then
+              ws str name get dup kind str null eq if drop str new-workspace then dump-text str 'in '
             else ws str id get dump-id str ' in ' then
+            tab str name get dup kind str null eq if drop else dump-text str 'name ' then
             tab str cols get string str ' ' tab str rows get string str ' size '
           end glue let prefix
-          p prefix opens ws str name get kind str null eq and
-            if str new-workspace else str new-tab then dump-create
+          p prefix str new-tab dump-create
           opens if
             first-pane dump-id str ' workspace let ' ws str id get dump-id 10 char
             false let opens
           then
-          first-pane dump-id str ' tab' cat tab str name get dump-name
           tab str fit get str clients eq if first-pane dump-id str ' tab resize-auto' 10 char then
           list 0 end let pending
           begin pending len 0 gt while

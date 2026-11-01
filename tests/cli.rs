@@ -70,7 +70,9 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.words("opts 80 24 size str other name new-workspace")?;
     let clash = server.fux(&["str", "other", "workspace", "str", "work2", "rename"])?;
     assert!(
-        clash.stderr.contains("a workspace is named"),
+        clash
+            .stderr
+            .contains("+1, a workspace, is named \"work2\" already"),
         "{}",
         clash.stderr
     );

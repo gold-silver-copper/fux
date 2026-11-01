@@ -18,7 +18,6 @@ use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
 use fux_wire::json::{Fields, Json};
 use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
-use fux_wire::words::joined;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -323,18 +322,6 @@ pub struct Session {
     pub(crate) test_keymap: fux::client_state::Draft,
 }
 
-/// The one item of `items`; of several, why not: `many` says it from how
-/// many there are and their ids.
-fn one<T: Copy + std::fmt::Display>(
-    items: &[T],
-    many: impl FnOnce(usize, String) -> String,
-) -> Result<T, Error> {
-    match items {
-        [item] => Ok(*item),
-        items => Err(fail(Raise::NoTarget, many(items.len(), joined(items, " ")))),
-    }
-}
-
 /// A value a command can't take, as `Usage` says why.
 fn bad_value(usage: command::Usage) -> Error {
     fail(Raise::BadValue, usage.to_string())
@@ -495,15 +482,15 @@ impl Session {
                 Raise::BadValue,
                 "new-workspace is a creation destination, not an existing workspace",
             )),
-            WsRef::Id(id) => self.workspace(*id).ok_or(Error::NoWorkspace(*id)),
-            WsRef::Name(name) => (self
-                .parts
-                .workspaces()
-                .iter()
-                .find(|w| w.name() == Some(name.as_str())))
-            .ok_or_else(|| fail(Raise::NoWorkspace, format!("no workspace named {name:?}"))),
+            WsRef::Id(id) => Ok(self.workspace(*id).ok_or(Error::NoWorkspace(*id))?.id()),
+            WsRef::Name(name) => match self.named(name) {
+                Some(AnyRef::Workspace(id)) => Ok(id),
+                _ => Err(fail(
+                    Raise::NoWorkspace,
+                    format!("no workspace named {name:?}"),
+                )),
+            },
         }
-        .map(|w| w.id())
     }
     /// `target`, if it is there; else why not.
     pub fn there(&self, target: AnyRef) -> Result<AnyRef, Error> {
@@ -766,21 +753,29 @@ impl Session {
         })
     }
 
-    /// Refuses a name given to a tab (other than `except`, being renamed)
-    /// that `str NAME tab` could not find it by: one a target reads as an id, or
-    /// one another tab has.
-    fn check_tab_name(&self, name: &str, except: Option<TabId>) -> Result<(), Error> {
+    /// The workspace, tab or pane named `name`: one at most, as every
+    /// name is checked by `check_free` as it is given.
+    fn named(&self, name: &str) -> Option<AnyRef> {
+        let workspaces = self.parts.workspaces();
+        let workspace = workspaces.iter().find(|w| w.name() == Some(name));
+        let tab = || (workspaces.iter().flat_map(Workspace::tabs)).find(|t| t.name() == Some(name));
+        let pane = || (self.parts.panes().values()).find(|p| p.name() == Some(name));
+        (workspace.map(|w| AnyRef::Workspace(w.id())))
+            .or_else(|| tab().map(|t| AnyRef::Tab(t.id())))
+            .or_else(|| pane().map(|p| AnyRef::Pane(p.id())))
+    }
+
+    /// Refuses `name` for `naming` (none: one not made yet) if it cannot be
+    /// given: one a target reads as an id, or one another workspace, tab or
+    /// pane has, since the three share one namespace.
+    fn check_free(&self, name: &str, naming: Option<AnyRef>) -> Result<(), Error> {
         check_name(name)?;
-        // A workspace's name finds the workspace, never this tab.
-        if self
-            .parts
-            .workspaces()
-            .iter()
-            .any(|w| w.name() == Some(name))
-        {
-            return Err(Error::NameTaken(name.to_owned()));
+        match self.named(name) {
+            Some(holder) if Some(holder) != naming => {
+                Err(Error::NameTaken(name.to_owned(), holder))
+            }
+            _ => Ok(()),
         }
-        no_tab_named(self.parts.workspaces(), name, except)
     }
 
     /// What `id`, written `text`, stands for as a `kind`: itself; a pane's
@@ -823,42 +818,22 @@ impl Session {
         }
         match kind {
             Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(here.caller_pane()?)?.id())),
-            Kind::Pane => self.pane_named(text).map(AnyRef::Pane),
-            Kind::Tab => {
-                let tabs: Vec<TabId> = self
-                    .parts
-                    .workspaces()
-                    .iter()
-                    .flat_map(Workspace::tabs)
-                    .filter(|tab| tab.name() == Some(text))
-                    .map(Tab::id)
-                    .collect();
-                if tabs.is_empty() {
-                    return Err(fail(Raise::NoTab, format!("no tab named {text:?}")));
-                }
-                one(&tabs, |n, ids| {
-                    format!("{text:?} names {n} tabs ({ids}): use an id")
-                })
-                .map(AnyRef::Tab)
-            }
+            // Its given name: never its display label or title.
+            Kind::Pane | Kind::Tab => (self.named(text))
+                .filter(|found| found.kind() == kind)
+                .ok_or_else(|| {
+                    let code = match kind {
+                        Kind::Pane => Raise::NoPane,
+                        Kind::Tab => Raise::NoTab,
+                        Kind::Workspace => Raise::NoWorkspace,
+                    };
+                    fail(code, format!("no {} named {text:?}", kind.name()))
+                }),
             Kind::Workspace => {
                 let ws = command::parse_workspace(text).map_err(bad_value)?;
                 Ok(AnyRef::Workspace(self.ws_target(Some(&ws), here)?))
             }
         }
-    }
-
-    /// The pane given `name`: never its display label or title.
-    fn pane_named(&self, name: &str) -> Result<PaneId, Error> {
-        let panes: Vec<PaneId> = (self.parts.panes().values())
-            .filter(|p| p.name() == Some(name))
-            .map(|p| p.id())
-            .collect();
-        if panes.is_empty() {
-            return Err(fail(Raise::NoPane, format!("no pane named {name:?}")));
-        }
-        let many = |n, ids| format!("{name:?} names {n} panes ({ids}): use an id");
-        one(&panes, many)
     }
 
     /// The tabs `target` is or holds: a pane's own, a tab, or a
@@ -1095,7 +1070,7 @@ impl Session {
         now: Instant,
     ) -> Result<Place, Error> {
         if let Some(name) = &name {
-            check_workspace_name(name, self.parts.workspaces())?;
+            self.check_free(name, None)?;
         }
         // The IDs are taken before the pane starts, so that none can run out
         // after, and are committed once it has.
@@ -1127,12 +1102,19 @@ impl Session {
         new: NewPane<'_>,
         now: Instant,
     ) -> Result<Place, Error> {
+        if let Some(name) = &name {
+            self.check_free(name, None)?;
+        }
         let id = match (self.ws_target(ws, here), ws) {
             (Ok(id), _) => id,
             (Err(_), Some(WsRef::New)) => {
                 return self.create_workspace(None, name, fit, new, now);
             }
             (Err(_), Some(WsRef::Name(ws_name))) => {
+                if name.as_ref() == Some(ws_name) {
+                    let why = format!("a workspace and its tab cannot both be named {ws_name:?}");
+                    return Err(fail(Raise::NameTaken, why));
+                }
                 return self.create_workspace(Some(ws_name.clone()), name, fit, new, now);
             }
             (Err(error), _) => return Err(error),
@@ -2359,9 +2341,6 @@ impl Session {
                 options,
             } => {
                 let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), here)?;
-                if let Some(name) = name {
-                    self.check_tab_name(name, None)?;
-                }
                 let new = NewPane::new(start, &cwd, *options, sized);
                 // A workspace named that is not there is made, its first tab
                 // this one.
@@ -2855,18 +2834,13 @@ impl Session {
     }
 
     fn rename(&mut self, target: AnyRef, name: String) -> Result<(), Error> {
-        check_name(&name)?;
+        self.check_free(&name, Some(target))?;
         match target {
             AnyRef::Pane(p) => self.pane_mut(p)?.rename(name),
             AnyRef::Tab(t) => {
-                self.check_tab_name(&name, Some(t))?;
                 self.parts.give_tab_name(t, name).ok_or(Error::NoTab(t))?;
             }
             AnyRef::Workspace(id) => {
-                // The one named (there: `Rename` checks it first), and the
-                // others, whose names it cannot take.
-                let others = self.parts.workspaces().iter().filter(|w| w.id() != id);
-                check_workspace_name(&name, others)?;
                 self.parts
                     .rename_workspace(id, name)
                     .ok_or(Error::NoWorkspace(id))?;
@@ -3189,7 +3163,9 @@ fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
         return Err(fail(Raise::BadName, "a name cannot be empty or blank"));
     }
-    if name.starts_with(['%', '@', '+']) {
+    // An id's sigils, and what a destination reads as the request for a
+    // fresh workspace.
+    if name.starts_with(['%', '@', '+']) || name == "new-workspace" {
         return Err(Error::NameReadAsTarget(name.to_owned()));
     }
     // Control characters, and the invisible ones that change how text
@@ -3201,48 +3177,6 @@ fn check_name(name: &str) -> Result<(), Error> {
         return Err(fail(Raise::BadName, message));
     }
     Ok(())
-}
-
-/// Refuses a workspace name any of `others` has: a workspace is found by
-/// its name.
-fn check_workspace_name<'a>(
-    name: &str,
-    others: impl IntoIterator<Item = &'a Workspace>,
-) -> Result<(), Error> {
-    check_name(name)?;
-    // check_name refused ID sigils; the remaining reserved destination
-    // is the explicit request to create an unnamed workspace.
-    if name == "new-workspace" {
-        return Err(Error::NameReadAsTarget(name.to_owned()));
-    }
-    let others: Vec<&Workspace> = others.into_iter().collect();
-    if others.iter().any(|ws| ws.name() == Some(name)) {
-        return Err(Error::NameTaken(name.to_owned()));
-    }
-    // A tab's name too: the workspace's would hide it from `str NAME tab`.
-    no_tab_named(others, name, None)
-}
-
-/// That no tab of `workspaces` but `except` was given the name `name`; else
-/// why not, with those tabs and their panes.
-fn no_tab_named<'a>(
-    workspaces: impl IntoIterator<Item = &'a Workspace>,
-    name: &str,
-    except: Option<TabId>,
-) -> Result<(), Error> {
-    let tabs: Vec<&Tab> = (workspaces.into_iter())
-        .flat_map(Workspace::tabs)
-        .filter(|t| t.name() == Some(name) && Some(t.id()) != except)
-        .collect();
-    if tabs.is_empty() {
-        return Ok(());
-    }
-    // A tab with such a name: `str NAME tab` would not know which, so the
-    // program is not started. The tabs, then their panes.
-    let panes = (tabs.iter()).flat_map(|t| t.root().panes());
-    let tabs = tabs.iter().map(|t| t.id()).collect();
-    let panes: Vec<PaneId> = panes.collect();
-    Err(Error::TabNameTaken(name.to_owned(), tabs, panes))
 }
 
 /// The item after the one at `index` among `items`, or before it, going
@@ -7349,7 +7283,99 @@ mod tests {
             output(&mut s, "@1 str name get @2 str name get")?,
             "given\ntab-2\n"
         );
-        assert!(s.dump_recipe(None)?.contains("str 'tab-2' rename"));
+        assert!(s.dump_recipe(None)?.contains("str 'tab-2' name"));
+        Ok(())
+    }
+
+    /// What a refused name leaves as it was: every workspace, tab and pane,
+    /// their names and layout revisions, the journal's cursor, and the ids
+    /// to come.
+    fn named_state(s: &Session) -> Result<(Box<fux_wire::inspect::Snapshot>, Ids), String> {
+        use fux_wire::inspect::{Projection, Scope};
+        let topology = s.inspect(Scope::All, Projection::Topology);
+        let Body::Snapshot(snapshot) = topology.map_err(|e| e.to_string())? else {
+            return Err("a snapshot".into());
+        };
+        Ok((snapshot, s.ids.clone()))
+    }
+
+    /// Gap 6: two panes and their workspace were given one name, and `str
+    /// NAME pane` then failed as ambiguous. A name names one thing.
+    #[test]
+    fn a_name_names_one_pane_tab_or_workspace() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "str %1 pane str horizontal axis split drop")?;
+        run(&mut s, "str %1 pane str shared-name rename")?;
+        for source in [
+            "str %2 pane str shared-name rename",
+            "str @1 tab str shared-name rename",
+            "str +1 workspace str shared-name rename",
+        ] {
+            let refused = output(&mut s, source).err().ok_or(source)?;
+            let taken = refused.starts_with("name_taken:") && refused.contains("%1, a pane,");
+            assert!(taken, "{refused}");
+        }
+        assert_eq!(output(&mut s, "str shared-name pane")?, "%1\n");
+        assert!(output(&mut s, "str shared-name tab").is_err());
+        Ok(())
+    }
+
+    /// Every way a name is given refuses one a workspace, tab or pane
+    /// already has, before anything changes: creating, renaming, and
+    /// replaying a dump beside what it was dumped from.
+    #[test]
+    fn a_taken_name_is_refused_before_anything_changes() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "str +1 workspace str ws rename str @1 tab str tab rename str %1 pane str pane rename",
+        )?;
+        let dump = s.dump_recipe(None)?;
+        let before = named_state(&s)?;
+        for source in [
+            "opts 80 24 size str pane name new-workspace",
+            "opts 80 24 size str ws in str pane name new-tab",
+            // A workspace `in` names that is not there is made by its name.
+            "opts 80 24 size str tab in new-tab",
+            "opts 80 24 size str fresh in str fresh name new-tab",
+            "str %1 pane str ws rename",
+            "str @1 tab str pane rename",
+            "str +1 workspace str tab rename",
+            &dump,
+        ] {
+            let refused = output(&mut s, source).err().ok_or(source)?;
+            assert!(refused.starts_with("name_taken:"), "{source}: {refused}");
+            assert_eq!(named_state(&s)?, before, "{source}");
+        }
+        // Its own name is still its own.
+        run(
+            &mut s,
+            "str %1 pane str pane rename str @1 tab str tab rename",
+        )?;
+        Ok(())
+    }
+
+    /// The name a config gives the first workspace (`attach-defaults`) goes
+    /// to an empty server, where nothing can have it; it is then taken.
+    #[test]
+    fn a_configs_first_workspace_name_is_taken() -> TestResult {
+        let mut s = Session::new(
+            "/nonexistent/fux.sock".into(),
+            false,
+            command::Run::now().ok_or("clock")?,
+            fux::script::default_state()?.preferences.journal_entries,
+        );
+        let initial = command::InitialWorkspace {
+            options: fux::script::default_state()?.preferences.pane_options(),
+            name: Some("main".into()),
+            start: command::Start::Shell(command::Program::new("/bin/sh".into(), Vec::new())?),
+            cwd: std::env::current_dir()?,
+        };
+        s.start_now(sized(24, 80)?, &initial)?;
+        let refused = output(&mut s, "str %1 pane str main rename").err();
+        let taken =
+            |why: &String| why.starts_with("name_taken:") && why.contains("+1, a workspace,");
+        assert!(refused.is_some_and(|why| taken(&why)));
         Ok(())
     }
 

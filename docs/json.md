@@ -19,7 +19,7 @@ for `id`, `name`, `label` and `pid` (it says `pane`):
 | Field | Value |
 | --- | --- |
 | `id` | `"%3"` |
-| `name` | its given name (`rename`), else `null` |
+| `name` | its given name (`rename`), else `null`; no other workspace, tab or pane has it |
 | `label` | display text: its given name, else title, launch program basename, or id; never a lookup name |
 | `title` | what the program set (OSC 0 or 2), else `""`, without control characters |
 | `rows`, `cols` | its size |
