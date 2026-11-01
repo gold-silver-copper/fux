@@ -272,20 +272,20 @@ define dump-recipe
       # Workspaces come before those in them, tabs as shown: those from wi to the tab's are made with it.
       wids tab str workspace get index-of let x
       x wi lt if tab str workspace get else wss wi at str parent get then let up
-      x 1 add wi max let to
+      x 1 add wi max let upto
       list
         wids up index-of 0 lt if str 'top ' else list str 'opts ' up dump-id str ' in ' end glue then
-        to wi do wss i at str name get dup kind str null eq if drop str new-workspace then dump-text str 'in ' loop
+        upto wi do wss i at str name get dup kind str null eq if drop str new-workspace then dump-text str 'in ' loop
         tab str name get dup kind str null eq if drop else dump-text str 'name ' then
         tab str cols get string str ' ' tab str rows get string str ' size '
       end glue let prefix
       p prefix str new-tab dump-create
-      to wi gt if
-        list first-pane dump-id str ' workspace' to wi do
+      upto wi gt if
+        list first-pane dump-id str ' workspace' upto wi do
           str ' dup let ' wss x wi add i sub at str id get dump-id str ' str parent get'
         loop str ' drop' 10 char end glue
       then
-      to let wi
+      upto let wi
       tab str fit get str clients eq if first-pane dump-id str ' tab resize-auto' 10 char then
       list 0 end let pending
       begin pending len 0 gt while
