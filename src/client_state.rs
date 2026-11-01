@@ -23,6 +23,7 @@ impl ClientState {
             config: self.config.clone(),
             preferences: self.preferences.clone().into(),
             attach: Some(self.attach.clone()),
+            rebound: false,
         }
     }
 }
@@ -42,9 +43,16 @@ pub struct Draft {
     pub config: Option<Config>,
     pub preferences: PreferenceDraft,
     pub attach: Option<AttachDefaults>,
+    /// Whether a key word ran, even if it changed nothing.
+    pub rebound: bool,
 }
 
 impl Draft {
+    /// Whether a setter or a key word ran since it was drafted.
+    pub fn changed(&self) -> bool {
+        self.rebound || self.preferences.changed()
+    }
+
     pub fn initialized(&self) -> bool {
         self.attach.is_some()
     }

@@ -2273,6 +2273,7 @@ impl Host<'_> {
             return Err(refused_context());
         }
         let state = self.state.as_deref_mut().ok_or_else(refused_context)?;
+        state.rebound = true;
         let refused = |why: String| fail(Raise::BadBinding, why);
         let keymap = &mut state.keys;
         let mut pressed = || crate::keymap::keys(&string(&next()?)?).map_err(refused);

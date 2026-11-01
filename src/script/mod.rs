@@ -977,9 +977,10 @@ pub trait Asks {
         Ok(())
     }
 
-    /// Pending preferences must arrive before a later server operation.
+    /// Pending preferences and keys must arrive before a later server
+    /// operation, a relayed read of them among them.
     fn checkpoint(&mut self, draft: &mut Draft, context: Context) -> Result<(), Failed> {
-        if draft.preferences.changed() {
+        if draft.changed() {
             self.commit(draft, context)?;
         }
         Ok(())

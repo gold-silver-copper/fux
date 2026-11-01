@@ -735,6 +735,15 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     eventually("Escape leaving the map", || {
         Ok(read("keys")?.starts_with(r#"{"at":"","#))
     })?;
+    // A key bound, then read, in one program at its prompt: the read finds
+    // it, as pending keys are committed before the program asks anything.
+    terminal.type_bytes(b"\x02e")?;
+    terminal.wait_for("Enter accept")?;
+    terminal.type_bytes(
+        b"str 'C-b y' code me focused zoom end bind  \
+          me keys json str 'C-b y' contains if str read-back-new else str read-back-old then print\r",
+    )?;
+    terminal.wait_for("read-back-new")?;
     terminal.type_bytes(b"\x02d")?;
     terminal.wait_exit()?;
     let gone = server.fux(&["str", &id, "client", "keys"])?;
