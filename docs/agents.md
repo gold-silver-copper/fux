@@ -536,7 +536,7 @@ read-file`. `X warn` prints on stderr:
   `opts str work in attach` requires that workspace to exist. Without a target,
   attach uses the first stored workspace; a writable attach carries its launch,
   which only an empty server starts, serialized by the server. One viewport
-  supplies the pane size after subtracting the bar. Watchers never create.
+  supplies the pane size (less a bar row, if its bar has one). Watchers never create.
   `opts str work in attach-defaults` is a local preference; explicit attach
   operands win. A fresh typing client loads config edits; existing clients
   keep their frozen configuration.
@@ -547,7 +547,7 @@ read-file`. `X warn` prints on stderr:
   grid holds, from `COLS ROWS size` or the server), and nothing changes; so is a split
   or a move that would hide a pane on the tab's own size or on a screen
   showing it (but one that sizes nothing: that only watches, or has no
-  room below its bar).
+  room below a bar row).
 - To keep what a program writes, run it under `script` in its pane, so it
   still writes to a terminal (a pipe, as with `tee`, changes what it
   writes): `agent-opts str script program str -q arg str -e arg str -f arg str
