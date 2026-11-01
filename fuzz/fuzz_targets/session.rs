@@ -173,11 +173,9 @@ fn size(rows: u8, cols: u8) -> (u16, u16) {
     (1 + u16::from(rows) % 60, 1 + u16::from(cols) % 200)
 }
 
-/// Words that read files, which a program typed at a prompt is not run
-/// with: a fuzzer finds /dev/zero. And the words that loop or recurse,
-/// with which a program typed at a prompt might never end: fux leaves
-/// stopping one to its user.
-const READS: &[&str] = &["check", "begin", "define"];
+/// The words that loop or recurse, with which a program typed at a prompt
+/// might never end: fux leaves stopping one to its user.
+const LOOPS: &[&str] = &["begin", "define"];
 
 /// What anyone can tell apart: the session's items, each client's mode,
 /// notice and screen, and each client's keymap and keys.
@@ -302,7 +300,7 @@ impl Run {
             None => failed.to_string(),
         };
         let tokens = job.tokens().map_err(|e| told(e.into()))?;
-        if tokens.iter().any(|t| READS.contains(&&*t.text)) {
+        if tokens.iter().any(|t| LOOPS.contains(&&*t.text)) {
             return Err("reads a file, or may not end".to_owned());
         }
         let mut machine = job.machine(self.keymap.config.as_ref()).map_err(told)?;

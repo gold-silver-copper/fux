@@ -13,10 +13,22 @@ define line text str Enter key send-keys end
 define agent-opts opts str agent in end
 # -- answer : a tab with a shell, in workspace agent, on the size of the tab fux runs in (from outside fux: opts 80 24 size str agent in new-tab)
 define shell agent-opts new-tab end
+# x kinds about -- x : x, if its kind is one of kinds (names between spaces); else fails, saying it takes about
+define assert-kind
+  let about words over kind contains not if
+    kind let got list str 'takes ' about str '; its kind is ' got end concat fail
+  then
+end
 # scope -- record : the facts of a pane, tab, workspace or all of the session
-define info str facts snapshot end
+define info
+  str 'pane tab workspace answer closed-answer all' str 'a pane, tab, workspace or all' assert-kind
+  str facts snapshot
+end
 # pane-builder -- pane-builder : capture: all the history first
-define all-history 9223372036854775807 history end
+define all-history
+  str 'pane answer closed-answer pane-request' str 'a pane or a request on one' assert-kind
+  9223372036854775807 history
+end
 # pane-or-seen -- list : the five counts of a pane or held version: respawns screen bells done ended
 define counts
   version str : split-on 1 at str . split-on let parts
@@ -291,7 +303,10 @@ define dump-recipe
   end glue
 end
 # scope -- text : a tab, workspace or all, as one bounded recipe making new processes; the complete source is built before output
-define dump str recipe snapshot dump-recipe string end
+define dump
+  str 'pane tab workspace answer closed-answer all' str 'a pane, tab, workspace or all' assert-kind
+  str recipe snapshot dump-recipe string
+end
 
 # way -- way : a checked layout axis, independent of how many panes there are
 define layout-axis
@@ -376,7 +391,7 @@ define events str '' 30 0 events-since drop end
 
 # tab -- tab revision list : one topology observation's tab, revision and panes in tree order
 define layout-current
-  str topology snapshot let observed
+  str tab str 'a tab' assert-kind str topology snapshot let observed
   observed str tabs get first let tab
   tab str id get tab str layout_revision get
   list observed str panes get each str id get end end

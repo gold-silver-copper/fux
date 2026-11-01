@@ -418,19 +418,22 @@ mod tests {
         Ok(())
     }
 
+    /// A callback is admitted on its source, and its words check their
+    /// actual arguments as it runs, as does its end: it leaves nothing.
     #[test]
-    fn callbacks_check_actual_kinds_and_empty_results_before_and_after_execution() -> TestResult {
+    fn callbacks_fail_on_actual_kinds_and_values_left_as_they_run() -> TestResult {
         let context = context()?;
         for (payload, code) in [
             (Data::Text("host".into()), "1 roll drop 1 add drop"),
             (Data::Int(1), "2drop 7"),
         ] {
             assert!(
-                admit(list(payload, code), None, &context).is_err(),
+                admit(list(payload.clone(), code), None, &context).is_ok(),
                 "{code}"
             );
+            let job = Job::call(&Callback::from(code), [Data::Null, payload]);
+            assert!(run(&job).is_err(), "{code}");
         }
-        // The checker deliberately cannot know a list's elements or loop count.
         let callback = Callback::from("nip first 1 add drop");
         let job = Job::call(
             &callback,

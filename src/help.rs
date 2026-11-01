@@ -87,7 +87,8 @@ Driving programs from a script or an agent: `fux help agents`; one word:
     let core = fuxth::Builtin::ALL.map(fuxth::Builtin::name).join(" ");
     let language = format!(
         "The language: {}; the core's words {core}; and the libraries below, written in \
-         fuxth. Mistakes every run would make are refused before anything runs.",
+         fuxth. Each word checks its values as it runs, and fails there if it has too \
+         few or one of a kind it doesn't take; the words before it have already acted.",
         shapes.join(", ")
     );
     let words = language.split(' ').map(|w| w.replace('\u{a0}', " "));
@@ -95,15 +96,14 @@ Driving programs from a script or an agent: `fux help agents`; one word:
     out.push_str(
         "
 
-Effects read `inputs -- outputs`; `a>b` maps input kind a to output kind b.
-Alternative kinds retain their distinctions; requests must reach an action.
+Effects read `inputs -- outputs`; a request must reach an action.
 wait and send-keys leave an answer for a pane, and answers for a tab or
 workspace (send-keys: or a client), which no word that wants a pane takes.
 ",
     );
     let names = crate::script::NAMES
         .iter()
-        .map(|(name, _, said)| format!("{name}: {said}."))
+        .map(|(name, said)| format!("{name}: {said}."))
         .collect::<Vec<_>>()
         .join(" ");
     out.push_str(&wrapped(names.split(' ').map(str::to_owned), "\n", 74));

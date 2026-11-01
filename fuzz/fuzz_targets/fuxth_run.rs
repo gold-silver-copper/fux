@@ -3,10 +3,8 @@
 //! standard library with two host words, `ask` and `maybe` (see `fuxth_host.rs`).
 //! - Compiling and running never panic, and a run ends within its limits.
 //! - Every error is at a line of the source or the standard library.
-//! - A program the checker lets through never finds its host giving more
-//!   or fewer values than the vocabulary says (`contract`), and never fails
-//!   for too few values where its depth was known to be enough: an error
-//!   from the run is one the checker could not rule out.
+//! - A run never fails `contract`, which only an application's mistake
+//!   in its vocabulary gives.
 #[path = "fuxth_host.rs"]
 mod host;
 use libfuzzer_sys::fuzz_target;

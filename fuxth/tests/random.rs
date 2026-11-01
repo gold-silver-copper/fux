@@ -1,8 +1,7 @@
-//! fuxth held to a second interpreter on random programs: the same ends,
-//! paused at every step or not, and a program refused before it runs only
-//! when the step it names would surely fail.
+//! fuxth on random programs: they end the same paused at every step or
+//! not, and rewritten in ways that mean the same.
 mod common;
-use common::{Ended, Gen, Naive, Rng, fuxth};
+use common::{Ended, Gen, Rng, fuxth};
 
 /// Programs per test: enough to reach every word in many places, quick in
 /// a debug build.
@@ -15,86 +14,6 @@ fn program(rng: &mut Rng, seed: u64) -> String {
     } else {
         Gen::new(rng).typed_program()
     }
-}
-
-/// What happened over many programs, to show the test reached each kind.
-#[derive(Default, Debug)]
-struct Seen {
-    left: usize,
-    failed: usize,
-    refused: usize,
-    endless: usize,
-}
-
-#[test]
-fn fuxth_ends_as_the_naive_interpreter_does() {
-    let mut seen = Seen::default();
-    let mut wrong = Vec::new();
-    for seed in 0..PROGRAMS {
-        let mut rng = Rng::new(seed);
-        let text = program(&mut rng, seed);
-        let ran = fuxth(&text, u64::MAX);
-        let (naive, trace) = Naive::run(&text);
-        match (&ran, &naive) {
-            (Ended::Refused(code, line), naive) => {
-                seen.refused = seen.refused.saturating_add(1);
-                // Refused only if reaching that step surely fails: there,
-                // as it says, or (a call) somewhere in what it calls, the
-                // first time the run reaches it. A failure later, at
-                // another step, excuses nothing.
-                // A refusal promises the step fails, not with which code:
-                // the run may meet another mistake there first (an index
-                // past the end before the element's kind).
-                let failed_so = trace.fails_at(*line);
-                if trace.reached.contains(line) && !failed_so {
-                    wrong.push(format!(
-                        "seed {seed}: refused {code} at line {line}, which ran: {naive:?}\n{text}"
-                    ));
-                }
-                if !matches!(code.as_str(), "stack_underflow" | "type" | "overflow") {
-                    wrong.push(format!("seed {seed}: refused for {code}\n{text}"));
-                }
-            }
-            (Ended::Endless, _) | (_, Ended::Endless) => {
-                seen.endless = seen.endless.saturating_add(1);
-            }
-            (ran, naive) => {
-                // A failure inside a library word is placed at the
-                // program's step when the word is copied in, and inside
-                // the library (line 0) when called: the same failure.
-                let (ran, naive) = match (ran, naive) {
-                    (Ended::Failed(a, x), Ended::Failed(b, y)) if *x == 0 || *y == 0 => {
-                        (&Ended::Failed(a.clone(), 0), &Ended::Failed(b.clone(), 0))
-                    }
-                    _ => (ran, naive),
-                };
-                match ran {
-                    Ended::Left(..) => seen.left = seen.left.saturating_add(1),
-                    Ended::Failed(..) | Ended::Refused(..) | Ended::Endless => {
-                        seen.failed = seen.failed.saturating_add(1);
-                    }
-                }
-                if ran != naive {
-                    wrong.push(format!(
-                        "seed {seed}: fuxth {ran:?}, naive {naive:?}\n{text}"
-                    ));
-                }
-            }
-        }
-        if wrong.len() > 3 {
-            break;
-        }
-    }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
-    assert!(
-        seen.endless < usize::try_from(PROGRAMS / 10).unwrap_or(usize::MAX),
-        "{seen:?}"
-    );
-    // Every kind of end, often.
-    let share = |n: u64| usize::try_from(PROGRAMS / n).unwrap_or(usize::MAX);
-    assert!(seen.left > share(5), "{seen:?}");
-    assert!(seen.failed > share(20), "{seen:?}");
-    assert!(seen.refused > share(10), "{seen:?}");
 }
 
 /// Stopping after every step, and going on, changes nothing: every step,
@@ -150,13 +69,15 @@ fn rewrites_that_mean_the_same_end_the_same() {
             rewritten.extend(extra.iter().map(|s| (*s).to_owned()));
         }
         let rewritten = rewritten.join("\n");
-        assert!(
-            agrees(&rewritten, &left),
+        assert_eq!(
+            fuxth(&rewritten, u64::MAX),
+            left,
             "seed {seed}\n{text}\n---\n{rewritten}"
         );
         if let Some(inlined) = inline(&lines) {
-            assert!(
-                agrees(&inlined, &left),
+            assert_eq!(
+                fuxth(&inlined, u64::MAX),
+                left,
                 "seed {seed}\n{text}\n---\n{inlined}"
             );
         }
@@ -166,21 +87,6 @@ fn rewrites_that_mean_the_same_end_the_same() {
         checked > usize::try_from(PROGRAMS / 5).unwrap_or(usize::MAX),
         "{checked}"
     );
-}
-
-/// Whether `text` leaves `left`; or is refused for a step no run reaches,
-/// a step that would surely fail but sits where nothing goes (a branch
-/// whose test is always false, once a definition's body is in place of
-/// its call and the depth there is known).
-fn agrees(text: &str, left: &Ended) -> bool {
-    match fuxth(text, u64::MAX) {
-        got @ Ended::Left(..) => got == *left,
-        Ended::Refused(_, line) => {
-            let (naive, trace) = Naive::run(text);
-            naive == *left && !trace.reached.contains(&line)
-        }
-        Ended::Failed(..) | Ended::Endless => false,
-    }
 }
 
 /// The program with each call of its first definition replaced by the

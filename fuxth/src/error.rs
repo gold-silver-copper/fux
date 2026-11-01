@@ -53,9 +53,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// What a step takes, as a value of another kind is told it: the same
-/// words whether the checker finds it before the run or the machine during
-/// it.
+/// What a step takes, as a value of another kind is told it.
 #[derive(Clone, Copy)]
 pub(crate) enum Wants {
     /// What `if` and `until` take.
@@ -115,16 +113,15 @@ pub(crate) enum Floor {
     Try,
 }
 
-/// What too few values says, the checker's and the machine's alike: "takes
-/// 2 values, and the stack has 1". `takes` says how it takes them ("takes",
-/// "needs at least"), `has` how many the stack has, `inside` the block it
-/// is in, if one starts it empty.
-pub(crate) fn underflow(takes: &str, n: usize, has: &str, inside: Option<Floor>) -> String {
+/// What too few values says: "takes 2 values, and the stack has 1".
+/// `has` is how many the stack has, `inside` the block it is in, if one
+/// starts it empty.
+pub(crate) fn underflow(n: usize, has: usize, inside: Option<Floor>) -> String {
     let values = if n == 1 { "value" } else { "values" };
     let inside = match inside {
         Some(Floor::List) => " (inside list … end, which starts with an empty stack)",
         Some(Floor::Try) => " (inside try … catch, which starts with an empty stack)",
         None => "",
     };
-    format!("{takes} {n} {values}, and the stack has {has}{inside}")
+    format!("takes {n} {values}, and the stack has {has}{inside}")
 }

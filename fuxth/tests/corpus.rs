@@ -1,10 +1,10 @@
-//! A corpus of programs from outside the repo, held to the same checks as
+//! A corpus of programs from outside the repo, held to the same check as
 //! the random ones: `FUXTH_CORPUS=DIR cargo test -p fuxth --test corpus`
 //! runs every `*.fux` under DIR (in folders, as `program.fux`) whole, a
-//! step at a time and 7 at a time, and against the second interpreter.
-//! Without the variable it does nothing.
+//! step at a time and 7 at a time, which must end the same. Without the
+//! variable it does nothing.
 mod common;
-use common::{Ended, Naive, fuxth};
+use common::{Ended, fuxth};
 
 #[test]
 fn a_corpus_ends_the_same_every_way() -> std::io::Result<()> {
@@ -39,20 +39,6 @@ fn a_corpus_ends_the_same_every_way() -> std::io::Result<()> {
                     ));
                 }
             }
-        }
-        let (naive, trace) = Naive::run(&text);
-        match (&whole, &naive) {
-            (Ended::Endless, _) | (_, Ended::Endless) => {}
-            (Ended::Refused(code, line), naive) => {
-                let failed = trace.fails_at(*line);
-                if trace.reached.contains(line) && !failed {
-                    wrong.push(format!(
-                        "{name}: refused {code} at {line}, but the naive run {naive:?}"
-                    ));
-                }
-            }
-            (a, b) if a != b => wrong.push(format!("{name}: fuxth {a:?}, naive {b:?}")),
-            _ => {}
         }
     }
     assert!(

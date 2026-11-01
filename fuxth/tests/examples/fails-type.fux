@@ -1,0 +1,4 @@
+# A string is never an integer: add fails as it runs.
+# fails: type
+str five
+1 add

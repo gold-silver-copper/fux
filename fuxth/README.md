@@ -24,20 +24,12 @@ line, the deepest first; `print` prints a value at once.
   `div` truncates toward zero), booleans (never integers), strings (their
   elements are one-character strings), lists (of any values, lists included,
   nested however deep), and the application's own.
-- **Checked before it runs.** The whole program is compiled first. An unknown
-  word or an unclosed block is an error before anything happens (told with
-  a word in scope spelt nearly so, or `str WORD` for text); so is a step
-  that every run reaching it would fail: a word given fewer values than the
-  stack surely holds, or a value of a kind it never takes (`str a 1 add`, or
-  a kind the application's word doesn't take, as its vocabulary says), and
-  a value the application says must be used left at the end (`unused`). A
-  number written just before `pick` or `roll` is part of the step. The
-  checker follows depths as ranges and kinds as sets through branches,
-  loops, `list`, `each` and definitions (each summed up once by what it
-  uses and leaves, whatever kinds it is given); not values (`1 0 div` fails
-  as it runs), list elements' kinds, top-level names read inside a
-  definition, or kinds deeper than the top 32. What it can't know is never
-  an error, and steps no run reaches aren't checked.
+- **Each word checks its own values as it runs.** The whole program is
+  compiled first, so an unknown word or an unclosed block is an error before
+  anything happens (`str WORD` is text). A word given too few values, or a
+  value of a kind it doesn't take (`str a 1 add`), fails when it runs: what
+  ran before it has happened. A value the application says must be used,
+  left at the end, fails the end (`unused`).
 - **Recursion in last place loops**: a call that is a definition's last step
   replaces its caller's frame.
 - **Pauses for its host.** An application word can suspend the run while the
@@ -65,7 +57,7 @@ line, the deepest first; `print` prints a value at once.
 | `begin … FLAG until` | the body, until FLAG is true |
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |
 | `SEQ each … end` | the body once per element of a string or list, the element pushed; the body sees the whole stack |
-| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top; a failure of a code the application declares with `carries` may carry a value instead of the message (`Machine::raise_with`). A carried value must match the explicit declaration for its registered code; an undeclared or wrong payload is an uncatchable `contract` failure before recovery. Duplicate `carries` declarations are refused. The message is the failure's own, as its word or `fail` gave it (`Error::message`), with no place, word or host's telling added: only a failure that ends the program is said where, by its host (`Error::located`). A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`) is refused before the program runs, unless the application's words raise it as they run; one found compiling is never caught. Checked as `if … else … then`: the two ways join after `end` |
+| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top; an application's failure may carry a value instead of the message (`Machine::raise`'s `carried`). The message is the failure's own, as its word or `fail` gave it (`Error::message`), with no place, word or host's telling added: only a failure that ends the program is said where, by its host (`Error::located`). A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`) is refused when compiling, unless the application's words raise it as they run; one found compiling is never caught |
 
 | Word | Stack | |
 |---|---|---|
@@ -98,16 +90,10 @@ Files are split as a shell splits a line: quotes, backslashes, and `#`
 comments at a word's start. `quote (s -- s)` builds one source token that
 reads back unchanged, including empty text and embedded newlines.
 
-Hosts can constrain a library definition's inputs before compiling its
-callers: `compiler.inputs("dump", "scope")?`. The names use the host
-vocabulary, deepest input first. Known disjoint kinds fail preflight;
-uncertain inputs are checked before the definition's body runs. Outputs
-continue to use the checker's inferred summary. This adds no parsing word.
-
 `require shared/words.fux` inserts the file at that position before the
-whole program is checked. Quote paths with spaces: `require 'shared keys.fux'`.
+whole program is compiled. Quote paths with spaces: `require 'shared keys.fux'`.
 Canonical paths are included once per image, including symlink spellings;
-cycles are errors. Nothing runs if an imported file fails to compile or check.
+cycles are errors. Nothing runs if an imported file fails to compile.
 There is no search path, extension inference, network loader or namespace.
 
 ## Embedding
@@ -116,11 +102,8 @@ There is no search path, extension inference, network loader or namespace.
 use fuxth::{Code, Compiler, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary, token};
 
 let mut words = Vocabulary::default();
-words.kind("ticket", "a ticket")?;               // a kind of the application's values
-words.name("n", "integer", "an integer")?;       // a name effects use, for kinds
-let ask = words.add("ask", "n -- ticket")?;       // takes an integer, gives a ticket
+let ask = words.add("ask", "n -- ticket")?;       // takes one value, gives a ticket
 words.raises(Code::Host("refused"))?;            // a failure of its words, for `try`
-words.carries(Code::Host("refused"), "ticket")?; // which a handler may get as a ticket
 let mut compiler = Compiler::new(words);
 compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
 compiler.add(&token::source("script.fux", "3 ask")?)?;
@@ -129,28 +112,22 @@ loop {
     match machine.run(&mut my_host, 10_000)? {
         Outcome::Finished => break,
         Outcome::Suspended(request) => { /* do it, then */ machine.push(answer); }
-        // or, if doing it failed: machine.raise(failure)?;
-        // or, carrying a value for a try's handler: machine.raise_with(failure, value)?;
+        // or, if doing it failed: machine.raise(failure, None)?;
+        // or, carrying a value for a try's handler: machine.raise(failure, Some(value))?;
         Outcome::Paused => { /* check for Ctrl-C */ }
     }
 }
 ```
 
-The application names its kinds (`kind`: as its values' `AppValue::name`
-says them, and as an error does), may say a kind's values must be used, and
-names sets of kinds for its effects (`name`: `"pane answer"`; `from>to` for
-a kind that becomes another when passed through, `x secs -- x`). Each word's
-effect is read strictly, in the names of kinds (`integer`, `boolean`,
-`string`, `list`, `any`, the application's, and its names): a name before
-the `--` is what a place takes, after it what one gives, and a name on both
-sides passes the kind it was given through. `taken_as("pane", "answer")`,
-said before any word, takes and gives a kind's values where a word's
-effect names another (a name of effects reads each kind as itself).
-Each name means one thing: a second kind or name of one spelling, a
-second word of a name (the core's and the parsing words' among them) or
-a code declared twice is refused (`contract`), so a host adds each once
-and keeps the id `add` gave. The checker follows those kinds, as it does
-the core's, and refuses only what surely fails.
+A word's effect names what it takes before the `--` and what it gives
+after: the machine hands the host as many values as there are names before
+the `--`, the deepest first, after checking the stack has them
+(`stack_underflow`). What kinds they are is the host's to check, as the
+core's words check theirs (`type`). The application may say a kind's values
+must be used (`must_use`, by its values' `AppValue::name`). Each name means
+one thing: a second word of a name (the core's and the parsing words' among
+them) or a code declared twice is refused (`contract`), so a host adds each
+once and keeps the id `add` gave.
 
 Application values report their nesting `depth`, so an opaque record can't
 hide its children from the nesting bound, and write their text with
@@ -160,14 +137,12 @@ The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
 host pushes before running the machine again, or its failure is what the
-host raises there (`machine.raise(failure)`), caught by a `try` as one at
+host raises there (`machine.raise(failure, carried)`), caught by a `try` as one at
 once would be; `machine.at()` is the token of the word it stopped at. The
 codes of its words' failures are the vocabulary's (`raises`), for a `try` to
 name: its own (`Code::Host`), and any of the language's found only compiling
 or at a program's end that its words raise as they run (`Code::Unused`).
-A `Failure` may name a word of its own, one in a program the word was given. `print(line)` prints. A word
-gives as many values as its vocabulary says, of the kinds it says: the checker counts on it, and the machine fails a run
-with `contract` if a host gives otherwise, when it returns or resumes. A word that is one step (`dup`
+A `Failure` may name a word of its own, one in a program the word was given. `print(line)` prints. A word that is one step (`dup`
 is `0 pick`) is copied in where it is called, so a mistake in it is placed
 at the call. A failed `add` leaves the compiler as it was.
 `Compiler::definitions` is a compiler for a program of its own that sees
@@ -190,8 +165,8 @@ expanded tokens and their source chains and can cross threads; `tokens()`
 replays it without IO. Save it for later definitions-only compilations.
 
 `Compiler::add` and `library` have no loader and explicitly refuse `require`.
-This includes the standalone `run` example and the in-memory differential and
-fuzz embeddings; filesystem-enabled scripts can run with `fux --file FILE`.
+This includes the standalone `run` example and the in-memory test and fuzz
+embeddings; filesystem-enabled scripts can run with `fux --file FILE`.
 
 For help, [`Builtin`] and [`Parsing`] are the core's words and the parsing
 words: each has `ALL`, `name()` and `named(name)`, a built-in its `effect()`
@@ -209,13 +184,10 @@ a block open as the library begins or ends. A list's values are
   with.
 - `tests/standard.rs`: cases from the Forth 2012 core tests and Exercism's
   Forth exercise, in fuxth's words, with where fuxth parts from them.
-- `tests/differential.rs`: random programs run by fuxth and by a second, plain
-  interpreter, which must agree; paused at every step or not, which must not
-  matter; and rewritten in ways that mean the same.
-- `tests/gforth.rs`: random integer programs against gforth, when there is one
-  (`FUXTH_GFORTH`).
+- `tests/random.rs`: random programs, which end the same paused at every
+  step or not, and rewritten in ways that mean the same.
 - `tests/corpus.rs`: any directory of programs (`FUXTH_CORPUS`) held to the
-  same checks.
+  same pausing check.
 - Fuzz targets in fux's `fuzz/`: `fuxth_tokens`, `fuxth_run`, `fuxth_pause`.
 
 ## License

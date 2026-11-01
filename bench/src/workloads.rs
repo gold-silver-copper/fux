@@ -46,7 +46,7 @@
 //!   its answer and when it is due
 //!   after each 64 KiB tick (in 16 KiB reads) of the recordings: the server's
 //!   look at each output while a wait is armed.
-//! - `script/compile`: fuxth's checker and compiler on command lines an
+//! - `script/compile`: fuxth's compiler on command lines an
 //!   agent sends (`fux::script::compile`), over and over: what every
 //!   `fux WORDS` does before it runs.
 //!
@@ -236,7 +236,7 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
         ),
         spec(
             "cli/library".into(),
-            "one cold vocabulary, standard library, bundled library and checker preparation".into(),
+            "one cold vocabulary, standard library and bundled library".into(),
         ),
     ];
     for layer in ["vt", "pane"] {
@@ -351,7 +351,7 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
         ),
         (
             "script/compile",
-            "fuxth's checker and compiler on five command lines, including a bound action, 2000 times",
+            "fuxth's compiler on five command lines, including a bound action, 2000 times",
         ),
     ] {
         out.push(spec(name.into(), about.into()));

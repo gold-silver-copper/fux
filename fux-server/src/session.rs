@@ -7426,8 +7426,6 @@ mod tests {
             assert!(option.contains("(use: a capture option, PANE "), "{option}");
             assert!(option.contains(&format!("; e.g. {shown})")), "{option}");
         }
-        let missing = failed(&mut s, "str /no/such/file.fux str program check");
-        assert!(missing.contains("No such file"), "{missing}");
         let split = failed(&mut s, "str 'two\nlines' fail");
         assert!(split.ends_with(r"two\nlines"), "{split}");
         let version = failed(&mut s, "str 1.2.3 changed wait");

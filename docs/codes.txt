@@ -34,7 +34,6 @@ not_here 1 try
 not_config 1 try
 config 1 try
 bad_binding 1 try
-check 1 try
 read 1 try
 unset_var 1 try
 output 1 try

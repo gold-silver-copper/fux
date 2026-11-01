@@ -28,57 +28,6 @@ fn bare(kind: &str) -> &str {
         .unwrap_or(kind)
 }
 
-/// Expands `Variant "said", ...`, a row for each variant of `Value`, to the
-/// enum `Kind` of those variants; `of`, a value's; `bit`, its bit in a
-/// set of kinds; and `said`, each one's column:
-/// `Int "an integer",` gives `Kind::Int`, said "an integer".
-macro_rules! kinds {
-    ($($variant:ident $said:literal,)*) => {
-        /// What kind a value is, without what an application's value holds.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub(crate) enum Kind {
-            $($variant,)*
-        }
-
-        impl Kind {
-            pub(crate) const ALL: [Kind; [$($said),*].len()] = [$(Kind::$variant),*];
-
-            /// Its bit, in a set of kinds: an application's value's is
-            /// the first of the bits its kinds take (`check::HOST`).
-            pub(crate) const fn bit(self) -> u32 {
-                1 << self as u32
-            }
-
-            pub(crate) fn of<A>(value: &Value<A>) -> Kind {
-                match value {
-                    $(Value::$variant(_) => Kind::$variant,)*
-                }
-            }
-
-            /// As an error says it: "an integer". An application's value
-            /// says its own kind, where the value is known.
-            pub(crate) fn said(self) -> &'static str {
-                match self {
-                    $(Kind::$variant => $said,)*
-                }
-            }
-
-            /// As an effect names it: "integer".
-            pub(crate) fn name(self) -> &'static str {
-                bare(self.said())
-            }
-        }
-    };
-}
-
-kinds! {
-    Int "an integer",
-    Bool "a boolean",
-    Str "a string",
-    List "a list",
-    App "an application value",
-}
-
 #[derive(Clone, Debug)]
 pub enum Value<A> {
     Int(i64),
@@ -278,7 +227,10 @@ impl<A: AppValue> Value<A> {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::App(a) => a.kind(),
-            Self::Int(_) | Self::Bool(_) | Self::Str(_) | Self::List(_) => Kind::of(self).said(),
+            Self::Int(_) => "an integer",
+            Self::Bool(_) => "a boolean",
+            Self::Str(_) => "a string",
+            Self::List(_) => "a list",
         }
     }
 
