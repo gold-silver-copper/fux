@@ -149,17 +149,6 @@ impl Builder {
             }
         }
     }
-    fn path(&mut self, path: &inspect::Path) -> Result<V, Failure> {
-        let (encoding, text) = match path {
-            inspect::Path::Utf8(text) => ("utf8", self.text(text)?),
-            inspect::Path::Bytes(bytes) => {
-                let text: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-                ("hex", self.text(&text)?)
-            }
-        };
-        let encoding = self.text(encoding)?;
-        self.record([("encoding", encoding), ("text", text)])
-    }
 }
 
 pub(super) fn from_fields(fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
@@ -265,6 +254,19 @@ pub(super) fn pane_fact(value: &Json, run: Option<Run>) -> Result<V, Failure> {
         out.push((key.to_owned(), value));
     }
     b.finish(out, None)
+}
+
+/// A pane's observation as a record: its `id`, `tab` and `version`, then
+/// its facts (`pane_fact`).
+fn pane(p: &inspect::Pane, run: Run) -> Result<V, Failure> {
+    let mut fields = Vec::with_capacity(p.facts.len().saturating_add(3));
+    fields.push(("id".to_owned(), id(AnyRef::Pane(p.id), run)));
+    fields.push(("tab".to_owned(), id(AnyRef::Tab(p.tab), run)));
+    fields.push(("version".to_owned(), Value::str(p.version.to_string())));
+    for (key, value) in &p.facts {
+        fields.push((key.clone(), pane_fact(value, Some(run))?));
+    }
+    Builder.finish(fields, None)
 }
 
 pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
@@ -395,34 +397,7 @@ pub(super) fn snapshot(s: inspect::Snapshot) -> Result<V, Failure> {
             "zoomed" => t.zoomed.map(|p| id(AnyRef::Pane(p),run)).unwrap_or_else(null)
         }
     })?;
-    let panes = b.list(&s.panes, |b,p| {
-        let base = [
-            ("id", id(AnyRef::Pane(p.id),run)), ("tab", id(AnyRef::Tab(p.tab),run)),
-            ("name", b.optional(p.name.as_deref())?), ("label", b.text(&p.label)?), ("title", b.text(&p.title)?),
-            ("rows", number(p.rows)?), ("cols", number(p.cols)?),
-            ("row", p.row.map(number).unwrap_or_else(|| Ok(null()))?), ("col", p.col.map(number).unwrap_or_else(|| Ok(null()))?),
-            ("version", b.text(&p.version.to_string())?),
-        ];
-        let mut fields = Vec::with_capacity(base.len().saturating_add(4));
-        for (key, value) in base { fields.push((key.to_owned(), value)); }
-        if let Some(program) = &p.program { fields.push(("program".to_owned(), pane_fact(program, Some(run))?)); }
-        if let Some(state) = &p.state { fields.push(("state".to_owned(), b.json(state, 0)?)); }
-        if let Some(l) = &p.launch {
-            let launch = record! { b; "choice" => b.text(if l.shell { "shell" } else { "program" })?,
-                "cwd" => b.path(&l.cwd)?
-            }?;
-            fields.push(("launch".to_owned(), launch));
-        }
-        if let Some(cwd) = &p.cwd {
-            let cwd = match cwd {
-                inspect::Directory::Known(path) => record! { b; "status" => b.text("known")?, "path" => b.path(path)? }?,
-                inspect::Directory::Unknown => null(),
-                inspect::Directory::Failed(errno) => record! { b; "status" => b.text("failed")?, "operation" => b.text("cwd")?, "errno" => number(*errno)? }?,
-            };
-            fields.push(("cwd".to_owned(), cwd));
-        }
-        b.finish(fields, None)
-    })?;
+    let panes = b.list(&s.panes, |_, p| pane(p, run))?;
     let clients = b.list(&s.clients, |b,c| record! { b;
         "id" => Value::App(Fux::Client(c.id,Some(run))), "kind" => b.text(if c.terminal { "terminal" } else { "headless" })?,
         "terminal" => b.json(&c.terminal_facts, 0)?, "output" => b.json(&c.output, 0)?,
@@ -491,8 +466,6 @@ fields!(
 fields!(
     /// A capture's own: `styles` only of one read with styles.
     CaptureField {
-        ScreenRows "screen_rows",
-        ScreenCols "screen_cols",
         ScreenCursor "screen_cursor",
         Lines "lines",
         Styles "styles",
@@ -500,13 +473,16 @@ fields!(
     }
 );
 fields!(
-    /// What a capture read: a pane's (and then its state's fields), or a
-    /// client's.
+    /// What a capture read: a pane's (and then its observation's facts),
+    /// or a client's, of its size.
     CapturedField {
-        Pane "pane",
+        Id "id",
+        Tab "tab",
         Version "version",
         WrapPending "wrap_pending",
         Client "client",
+        ScreenRows "screen_rows",
+        ScreenCols "screen_cols",
     }
 );
 
@@ -561,28 +537,44 @@ pub(super) fn answer_field(
             }
             let named = CapturedField::named(field);
             match (&c.of, named) {
-                (Of::Pane { version, .. }, Some(CapturedField::Pane)) => {
-                    Ok(Value::App(Fux::Pane(version.pane, Some(version.run))))
+                (Of::Pane { pane, .. }, Some(CapturedField::Id)) => {
+                    Ok(id(AnyRef::Pane(pane.id), pane.version.run))
                 }
-                (Of::Pane { version, .. }, Some(CapturedField::Version)) => {
-                    b.text(&version.to_string())
+                (Of::Pane { pane, .. }, Some(CapturedField::Tab)) => {
+                    Ok(id(AnyRef::Tab(pane.tab), pane.version.run))
+                }
+                (Of::Pane { pane, .. }, Some(CapturedField::Version)) => {
+                    b.text(&pane.version.to_string())
                 }
                 (Of::Pane { wrap_pending, .. }, Some(CapturedField::WrapPending)) => {
                     Ok(Value::Bool(*wrap_pending))
                 }
-                (Of::Pane { state, .. }, None) => state
-                    .iter()
-                    .find(|(name, _)| name == field)
-                    .map(|(_, v)| pane_fact(v, run))
+                (Of::Pane { pane, .. }, None) => pane
+                    .fact(field)
+                    .map(|v| pane_fact(v, run))
                     .unwrap_or_else(|| Err(absent())),
-                (Of::Client(client), Some(CapturedField::Client)) => {
+                (Of::Client { client, .. }, Some(CapturedField::Client)) => {
                     Ok(Value::App(Fux::Client(*client, run)))
                 }
-                (Of::Pane { .. }, Some(CapturedField::Client))
+                (Of::Client { rows, .. }, Some(CapturedField::ScreenRows)) => number(*rows),
+                (Of::Client { cols, .. }, Some(CapturedField::ScreenCols)) => number(*cols),
+                (
+                    Of::Pane { .. },
+                    Some(
+                        CapturedField::Client
+                        | CapturedField::ScreenRows
+                        | CapturedField::ScreenCols,
+                    ),
+                )
                 | (
-                    Of::Client(_),
+                    Of::Client { .. },
                     None
-                    | Some(CapturedField::Pane | CapturedField::Version | CapturedField::WrapPending),
+                    | Some(
+                        CapturedField::Id
+                        | CapturedField::Tab
+                        | CapturedField::Version
+                        | CapturedField::WrapPending,
+                    ),
                 ) => Err(absent()),
             }
         }
@@ -598,8 +590,6 @@ fn capture_field(
     field: CaptureField,
 ) -> Option<Result<V, Failure>> {
     Some(match field {
-        CaptureField::ScreenRows => number(c.screen_rows),
-        CaptureField::ScreenCols => number(c.screen_cols),
         CaptureField::ScreenCursor => match c.screen_cursor {
             Some((row, col)) => b.list(&[row, col], |_, n| number(*n)),
             None => Ok(null()),

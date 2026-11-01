@@ -62,46 +62,26 @@ wire! {
     }
 }
 wire! {
+    /// A pane's observation, read in one server turn: its identity, its
+    /// tab and its version, then its facts, in order (`Session::observe`):
+    /// `name`, `label`, `title`, `rows`, `cols`, `row`, `col`; but in a
+    /// topology, its `program`, `launch` and terminal's facts; a recipe's
+    /// `cwd` last. A capture adds what it read of the screen.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Pane {
         pub id: PaneId,
         pub tab: TabId,
-        pub name: Option<String>,
-        pub label: String,
-        pub title: String,
-        pub rows: u16,
-        pub cols: u16,
-        /// Where it is in its tab, as it is sized; none if it has no place.
-        pub row: Option<u16>,
-        pub col: Option<u16>,
         pub version: Version,
-        /// Its program, by generation: none in a topology, null while a
-        /// respawn is under way.
-        pub program: Option<Json>,
-        pub state: Option<Json>,
-        pub launch: Option<Launch>,
-        /// Where it is now, which only the recipe reads.
-        pub cwd: Option<Directory>,
+        pub facts: Vec<(String, Json)>,
     }
 }
-wire! {
-    /// What it was started as, a shell or a program, and where; its
-    /// program's `argv` says with what.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Launch {
-        pub shell: bool,
-        pub cwd: Path,
+
+impl Pane {
+    pub fn fact(&self, name: &str) -> Option<&Json> {
+        self.facts.iter().find(|(key, _)| key == name).map(|(_, v)| v)
     }
 }
-wire! {
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum Directory { Known(path: Path), Unknown, Failed(errno: i32), }
-}
-wire! {
-    /// Exact OS bytes, never lossily converted to text.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum Path { Utf8(text: String), Bytes(bytes: Vec<u8>), }
-}
+
 wire! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Client {
@@ -294,10 +274,8 @@ impl Snapshot {
         for p in &self.panes {
             if p.version.run != self.run
                 || p.version.pane != p.id
-                || p.program.is_some() != (self.projection != Projection::Topology)
-                || p.state.is_some() != (self.projection != Projection::Topology)
-                || p.launch.is_some() != (self.projection != Projection::Topology)
-                || p.cwd.is_some() != (self.projection == Projection::Recipe)
+                || p.fact("program").is_some() != (self.projection != Projection::Topology)
+                || p.fact("cwd").is_some() != (self.projection == Projection::Recipe)
             {
                 return Err(bad());
             }

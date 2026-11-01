@@ -208,18 +208,18 @@ define dump-name
 end
 # pane-record prefix action -- source : one complete creation, including its saved options and launch role
 define dump-create
-  let action let prefix let p p str launch get let launch p str state get let state
+  let action let prefix let p p str launch get let launch
   p str program get dup kind str null eq if
     list p str id get string str ' holds no program while a respawn lets its old one go: dump it once the new one takes its place' end glue fail
   then str argv get let argv
   list
     p dump-warnings
     prefix
-    state str history_bytes get string str ' history-bytes '
-    state str reflow get string str ' reflow '
-    state str alternate_scroll_lines get string str ' alternate-scroll-lines '
-    state str picture_bytes get string str ' picture-bytes '
-    state str program_clipboard get string str ' program-clipboard '
+    p str history_bytes get string str ' history-bytes '
+    p str reflow get string str ' reflow '
+    p str alternate_scroll_lines get string str ' alternate-scroll-lines '
+    p str picture_bytes get string str ' picture-bytes '
+    p str program_clipboard get string str ' program-clipboard '
     p dump-cwd let cwd
     cwd str encoding get str utf8 eq if cwd str text get dump-text str 'cwd ' then
     launch str choice get str shell eq if

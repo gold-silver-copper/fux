@@ -2724,7 +2724,11 @@ mod tests {
         let version: fux_wire::command::Version =
             "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
         let mut capture = fux_wire::answer::Captured::default_styled(version);
-        capture.of = fux_wire::answer::Of::Client(fux_wire::id::ClientId::of(1));
+        capture.of = fux_wire::answer::Of::Client {
+            client: fux_wire::id::ClientId::of(1),
+            rows: 40,
+            cols: 120,
+        };
         for answer in [
             super::super::Answer::Pane(fux_wire::answer::PaneAnswer::Closed(version.pane)),
             super::super::Answer::Capture(Box::new(capture)),

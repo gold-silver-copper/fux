@@ -7,6 +7,6 @@ $ fux "${V%%:*}" 20 until-ended drop
 $ fux "${V%%:*}" all-history capture json len 1000000 gt
   = true
   ~ true
-$ fux "${V%%:*}" all-history capture json 0 9 slice
-  = {"pane":"
-  ~ {"pane":"
+$ fux "${V%%:*}" all-history capture json 0 8 slice
+  = {"id":"%
+  ~ {"id":"%

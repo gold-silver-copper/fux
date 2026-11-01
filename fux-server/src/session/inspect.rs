@@ -2,7 +2,8 @@ use super::{Error, Session};
 use crate::view::ClientKind;
 use crate::workspace::{Child, Fit};
 use fux_wire::command::AnyRef;
-use fux_wire::id::PaneId;
+use crate::pane::Pane;
+use fux_wire::id::{PaneId, TabId};
 use fux_wire::inspect::{self, Projection, Scope, Snapshot};
 use fux_wire::json::Json;
 use fux_wire::layout::{Node, Rect};
@@ -11,6 +12,54 @@ use fux_wire::wire::Memory;
 use std::collections::BTreeMap;
 
 impl Session {
+    /// A pane's observation, read in this turn, as `projection` asks (the
+    /// order `inspect::Pane` says): where it is in its tab, `at`; but in a
+    /// topology, its program, launch and terminal's facts; a recipe's, also
+    /// where its program is now, which `dump` starts a shell in.
+    fn observe(
+        &self,
+        pane: &Pane,
+        tab: TabId,
+        at: Option<Rect>,
+        projection: &Projection,
+    ) -> Result<inspect::Pane, Error> {
+        let place = |at: Option<u16>| at.map_or(Json::Null, Json::int);
+        let mut facts = vec![
+            ("name", pane.name().map_or(Json::Null, Json::str)),
+            ("label", Json::str(format!("{}", pane.display_label()))),
+            ("title", Json::str(pane.title().as_str())),
+            ("rows", Json::int(pane.size().rows())),
+            ("cols", Json::int(pane.size().cols())),
+            ("row", place(at.as_ref().map(Rect::y))),
+            ("col", place(at.as_ref().map(Rect::x))),
+        ];
+        if *projection != Projection::Topology {
+            facts.push(("program", crate::capture::program(pane)?));
+            facts.push(("launch", crate::capture::launch(pane)));
+            facts.extend(crate::capture::state(pane)?);
+        }
+        if *projection == Projection::Recipe {
+            let dir = self.dir_with(pane.id(), &mut Memory)?;
+            let dir = dir.as_ref().map(|d| d.as_deref().map(std::path::Path::as_os_str));
+            facts.push(("cwd", crate::capture::directory(dir.map_err(|e| e.raw()))));
+        }
+        Ok(inspect::Pane {
+            id: pane.id(),
+            tab,
+            version: pane.version(self.run),
+            facts: facts.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+        })
+    }
+
+    /// One pane's facts observation, alone: what a capture holds, and a
+    /// live `get` reads a field of.
+    pub fn observed(&self, id: PaneId) -> Result<inspect::Pane, Error> {
+        let pane = self.pane(id)?;
+        let (_, tab) = self.locate(id).ok_or(Error::NoPane(id))?;
+        let at = self.tab(tab).and_then(|t| self.sized(t).rect(id));
+        self.observe(pane, tab, at, &Projection::Facts)
+    }
+
     pub(super) fn inspect(&self, scope: Scope, projection: Projection) -> Result<Body, Error> {
         if let Projection::Field(field) = &projection {
             let Scope::Target(target) = scope else {
@@ -77,44 +126,7 @@ impl Session {
                     continue;
                 };
                 let pane = self.parts.panes().get(id).ok_or(Error::NoPane(*id))?;
-                let (state, launch) = if projection == Projection::Topology {
-                    (None, None)
-                } else {
-                    let fields = crate::capture::state(pane)?;
-                    let fields = fields.into_iter().map(|(k, v)| (k.to_owned(), v));
-                    let launch = inspect::Launch {
-                        shell: matches!(pane.runs, crate::pane::Runs::Shell(_)),
-                        cwd: path(pane.runs.launch().cwd.as_os_str()),
-                    };
-                    (Some(Json::Object(fields.collect())), Some(launch))
-                };
-                let program =
-                    (projection != Projection::Topology).then(|| crate::capture::program(pane));
-                let cwd = if projection == Projection::Recipe {
-                    Some(match self.dir_with(*id, &mut Memory)? {
-                        Ok(Some(dir)) => inspect::Directory::Known(path(dir.as_os_str())),
-                        Ok(None) => inspect::Directory::Unknown,
-                        Err(errno) => inspect::Directory::Failed(errno.raw()),
-                    })
-                } else {
-                    None
-                };
-                let fact = inspect::Pane {
-                    id: *id,
-                    tab: tab.id(),
-                    name: pane.name().map(str::to_owned),
-                    label: format!("{}", pane.display_label()),
-                    title: pane.title().as_str().to_owned(),
-                    rows: pane.size().rows(),
-                    cols: pane.size().cols(),
-                    row: at.get(id).map(Rect::y),
-                    col: at.get(id).map(Rect::x),
-                    version: pane.version(self.run),
-                    program: program.transpose()?,
-                    state,
-                    launch,
-                    cwd,
-                };
+                let fact = self.observe(pane, tab.id(), at.get(id).copied(), &projection)?;
                 snapshot.panes.push(fact);
             }
             let size = tab.fit().size();
@@ -217,22 +229,3 @@ impl Session {
     }
 }
 
-fn path(value: &std::ffi::OsStr) -> inspect::Path {
-    use std::os::unix::ffi::OsStrExt;
-    match value.to_str() {
-        Some(text) => inspect::Path::Utf8(text.to_owned()),
-        None => inspect::Path::Bytes(value.as_bytes().to_vec()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recipe_paths_keep_exact_os_bytes() {
-        use std::os::unix::ffi::OsStrExt;
-        let raw = std::ffi::OsStr::from_bytes(b"/a\xff/b");
-        assert_eq!(path(raw), inspect::Path::Bytes(b"/a\xff/b".to_vec()));
-    }
-}

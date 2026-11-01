@@ -134,6 +134,7 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     else {
         return Err(format!("not a listing: {:?}", reply));
     };
-    assert!(snapshot.panes.iter().all(|p| p.name.is_none()));
+    let unnamed = |p: &fux_wire::inspect::Pane| p.fact("name") == Some(&fux_wire::json::Json::Null);
+    assert!(snapshot.panes.iter().all(unnamed));
     Ok(())
 }

@@ -172,9 +172,9 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     assert!(history.contains("line1\n"), "{history}");
     let json = server.ok(&["str", "%1", "pane", "capture", "json"])?;
     assert!(
-        json.starts_with(
-            "{\"pane\":\"%1\",\"screen_rows\":6,\"screen_cols\":30,\"screen_cursor\":["
-        ),
+        json.starts_with("{\"id\":\"%1\",\"tab\":\"@1\",")
+            && json.contains(",\"rows\":6,\"cols\":30,")
+            && json.contains(",\"screen_cursor\":["),
         "{json}"
     );
     assert!(json.contains("\"line8\""), "{json}");

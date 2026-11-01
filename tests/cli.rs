@@ -257,7 +257,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     assert_eq!(left, "3\na b\n%1\n@1\n");
     let record = server.ok(&["str", "%1", "pane", "info", "json"])?;
     assert!(
-        record.contains(r#""panes":[{"id":"%1","tab":"@1","name":null"#),
+        record.contains(r#""panes":[{"id":"%1","tab":"@1","version":"%1:"#),
         "{record}"
     );
     assert_eq!(

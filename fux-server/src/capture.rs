@@ -138,10 +138,12 @@ fn changed_lines<'a>(
 }
 
 /// A pane's screen, and `history` rows before it, as `view` asks, read
-/// once with its version, the `journal`'s cursor and state (`state`):
-/// `events` from that cursor reads the pane's journal entries after this
-/// read; a change only to the screen shows in versions and captures.
+/// once with its observation (`observed`, `Session::observe`) and the
+/// `journal`'s cursor: `events` from that cursor reads the pane's journal
+/// entries after this read; a change only to the screen shows in versions
+/// and captures.
 pub fn pane(
+    mut observed: fux_wire::inspect::Pane,
     pane: &Pane,
     journal: fux_wire::events::Cursor,
     history: Option<usize>,
@@ -175,12 +177,9 @@ pub fn pane(
     let keep = keep.as_deref();
     let read = (read.enumerate())
         .filter(move |(at, _)| keep.is_none_or(|keep| keep.get(*at) == Some(&true)));
-    let mut fields = vec![
-        ("cursor", Json::str(journal.to_string())),
-        ("title", Json::str(pane.title().as_str())),
-        ("program", program(pane)?),
-    ];
-    fields.extend(state(pane)?);
+    let facts = &mut observed.facts;
+    facts.insert(0, ("cursor".to_owned(), Json::str(journal.to_string())));
+    let mut fields = Vec::with_capacity(3);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     fields.push(("above", above.map_or(Json::Null, Json::count)));
@@ -191,13 +190,13 @@ pub fn pane(
         .map(|(_, (row, _))| Json::Bool(row.continues()));
     fields.push(("wrapped_rows", Json::Array(wrapped.collect())));
     fields.push(("links", links(read.clone(), selection.start, view)));
+    facts.extend(fields.into_iter().map(|(k, v)| (k.to_owned(), v)));
     let of = Of::Pane {
-        version: pane.version(journal.run),
+        pane: observed,
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
-        state: fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
     };
     let since = keep.map(|_| selection.start);
-    Ok(build(read, of, (screen.size().into(), cursor), view, since))
+    Ok(build(read, of, cursor, view, since))
 }
 
 /// The capture of the rows `read`, each with its place among them; read
@@ -206,7 +205,7 @@ pub fn pane(
 fn build<'a>(
     read: impl Iterator<Item = (usize, (Row<'a>, std::ops::Range<usize>))> + Clone,
     of: Of,
-    (size, cursor): ((u16, u16), Option<(u16, u16)>),
+    cursor: Option<(u16, u16)>,
     view: CaptureView,
     since: Option<usize>,
 ) -> Captured {
@@ -248,7 +247,7 @@ fn build<'a>(
     });
     Captured {
         changed_rows,
-        ..captured(of, size, cursor, lines, styles, view)
+        ..captured(of, cursor, lines, styles, view)
     }
 }
 
@@ -622,7 +621,8 @@ fn links<'a>(
 
 /// What a client's terminal shows, row by row.
 pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
-    let of = Of::Client(client);
+    let (rows, cols) = (grid.rows, grid.cols);
+    let of = Of::Client { client, rows, cols };
     let mut lines = Vec::with_capacity(usize::from(grid.rows));
     for y in 0..grid.rows {
         let text: String = grid
@@ -639,8 +639,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
         full: true,
         ..CaptureView::default()
     };
-    let size = (grid.rows, grid.cols);
-    captured(of, size, grid.cursor, lines, Vec::new(), view)
+    captured(of, grid.cursor, lines, Vec::new(), view)
 }
 
 /// The program a pane holds, for `json`: its pane and generation, the argv
@@ -799,6 +798,41 @@ pub(crate) fn state(pane: &Pane) -> Result<Vec<(&'static str, Json)>, fux_wire::
     Ok(fields)
 }
 
+/// What a pane was started as, for `json`: a shell or a program, and
+/// where; its program's `argv` says with what.
+pub(crate) fn launch(pane: &Pane) -> Json {
+    let shell = matches!(pane.runs, crate::pane::Runs::Shell(_));
+    Json::object(vec![
+        ("choice", Json::str(if shell { "shell" } else { "program" })),
+        ("cwd", path(pane.runs.launch().cwd.as_os_str())),
+    ])
+}
+
+/// Where a pane's program is now, for `json`, as the OS said: null when
+/// it says none.
+pub fn directory(dir: Result<Option<&std::ffi::OsStr>, i32>) -> Json {
+    match dir {
+        Ok(Some(dir)) => Json::object(vec![("status", Json::str("known")), ("path", path(dir))]),
+        Ok(None) => Json::Null,
+        Err(errno) => Json::object(vec![
+            ("status", Json::str("failed")),
+            ("operation", Json::str("cwd")),
+            ("errno", Json::int(errno)),
+        ]),
+    }
+}
+
+/// Exact OS bytes, never lossily converted to text: UTF-8 as itself, else
+/// in hex.
+fn path(value: &std::ffi::OsStr) -> Json {
+    use std::os::unix::ffi::OsStrExt;
+    let (encoding, text) = match value.to_str() {
+        Some(text) => ("utf8", text.to_owned()),
+        None => ("hex", value.as_bytes().iter().map(|b| format!("{b:02x}")).collect()),
+    };
+    Json::object(vec![("encoding", Json::str(encoding)), ("text", Json::str(text))])
+}
+
 /// Where a picture is, for `json`: its top row (negative once scrolled
 /// above the screen), first column, the cells it covers, its first rows
 /// that are gone (`cropped`: scrolled off a region's top or a screen's
@@ -819,7 +853,6 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json {
 /// The capture of `lines`, with the styles their runs name.
 fn captured(
     of: Of,
-    (screen_rows, screen_cols): (u16, u16),
     screen_cursor: Option<(u16, u16)>,
     lines: Vec<Line>,
     styles: Vec<Attributes>,
@@ -827,8 +860,6 @@ fn captured(
 ) -> Captured {
     Captured {
         of,
-        screen_rows,
-        screen_cols,
         screen_cursor,
         lines,
         styles,
@@ -857,6 +888,24 @@ mod tests {
         Ok(fux_wire::events::Cursor { seq, run })
     }
 
+    /// A capture of `pane` alone, its observation its terminal's facts.
+    fn captured(
+        pane: &crate::pane::Pane,
+        journal: fux_wire::events::Cursor,
+        history: Option<usize>,
+        view: CaptureView,
+    ) -> Result<fux_wire::answer::Captured, fux_wire::code::Error> {
+        let observed = fux_wire::inspect::Pane {
+            id: pane.id(),
+            tab: fux_wire::id::TabId::of(1),
+            version: pane.version(journal.run),
+            facts: (super::state(pane)?.into_iter())
+                .map(|(k, v)| (k.to_owned(), v))
+                .collect(),
+        };
+        super::pane(observed, pane, journal, history, view)
+    }
+
     /// A capture as printed.
     trait Printed {
         fn text(&self) -> Result<String, std::fmt::Error>;
@@ -877,7 +926,7 @@ mod tests {
     ) -> Result<String, Box<dyn std::error::Error>> {
         let journal = journal()?;
         let mut json = String::new();
-        super::pane(pane, journal, history, view)?.write_json(&mut json)?;
+        captured(pane, journal, history, view)?.write_json(&mut json)?;
         Ok(json)
     }
 
@@ -937,8 +986,8 @@ mod tests {
             } else {
                 r#"{"row":0,"col":0,"len":4,"uri":"https://x.test"}"#
             };
-            let tail = format!(r#""wrapped_rows":[{want}],"links":[{links}]}}"#);
-            assert!(json.ends_with(&tail), "{json}");
+            let tail = format!(r#""wrapped_rows":[{want}],"links":[{links}],"#);
+            assert!(json.contains(&tail), "{json}");
         }
         Ok(())
     }
@@ -998,9 +1047,9 @@ mod tests {
             pane.read_unread();
         }
         assert!(pane.screen().history_len().saturating_mul(200) > 16 << 20);
-        let capture = super::pane(&pane, journal()?, Some(usize::MAX), CaptureView::default())?;
+        let capture = captured(&pane, journal()?, Some(usize::MAX), CaptureView::default())?;
         assert!(capture.lines.len() > 80_000);
-        let full = super::pane(
+        let full = captured(
             &pane,
             journal()?,
             Some(100_000),
@@ -1041,7 +1090,7 @@ mod tests {
         let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
             let mut pane = pane(3, 5, 0)?;
             pane.output(output.as_bytes());
-            Ok(super::pane(&pane, journal()?, None, join)?.text()?)
+            Ok(captured(&pane, journal()?, None, join)?.text()?)
         };
         // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
         let first = |output| {
@@ -1068,7 +1117,7 @@ mod tests {
                 wrapped,
                 ..CaptureView::default()
             };
-            Ok(super::pane(&pane, journal, None, view)?.text()?)
+            Ok(captured(&pane, journal, None, view)?.text()?)
         };
         assert_eq!(capture((2, 3), false)?, "abcdefghijklm");
         assert_eq!(capture((0, 2), false)?, "top\nabcdefghijklm");
@@ -1096,7 +1145,7 @@ mod tests {
         let mut pane = pane(3, 5, 0)?;
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
-        let text = super::pane(&pane, journal()?, None, view)?.text()?;
+        let text = captured(&pane, journal()?, None, view)?.text()?;
         assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
@@ -1119,7 +1168,7 @@ mod tests {
                 wrapped: flags & 8 != 0,
                 ..CaptureView::default()
             };
-            let got = super::pane(&pane, journal, None, view)?;
+            let got = captured(&pane, journal, None, view)?;
             let styled = view.styles || view.marks;
             let actual: Vec<(String, u32)> = got
                 .lines
@@ -1183,7 +1232,7 @@ mod tests {
             ..CaptureView::default()
         };
         let journal = journal()?;
-        let got = super::pane(&pane, journal, None, marks)?;
+        let got = captured(&pane, journal, None, marks)?;
         assert_eq!(got.text()?, "x\u{0600} ");
         assert_eq!(
             got.lines
@@ -1212,7 +1261,7 @@ mod tests {
             ..CaptureView::default()
         };
         let journal = journal()?;
-        let got = super::pane(&pane, journal, None, marks)?;
+        let got = captured(&pane, journal, None, marks)?;
         let colour = |n| fux_vt::Attributes::new(fux_vt::Color::Idx(n), fux_vt::Color::Default);
         assert_eq!(got.styles, (0..20).map(colour).collect::<Vec<_>>());
         let line = got.lines.first().ok_or("a line")?;
@@ -1259,7 +1308,7 @@ mod tests {
         };
         let journal = journal()?;
         let body =
-            fux_wire::protocol::Body::Capture(Box::new(super::pane(&pane, journal, None, view)?));
+            fux_wire::protocol::Body::Capture(Box::new(captured(&pane, journal, None, view)?));
         assert_eq!(
             Reader::new(&encode(&body)).whole::<fux_wire::protocol::Body>()?,
             body
@@ -1284,7 +1333,7 @@ mod tests {
         }
         assert!(pane.screen().history_len() > 0);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
-        let text = super::pane(&pane, journal()?, None, view)?.text()?;
+        let text = captured(&pane, journal()?, None, view)?.text()?;
         assert_eq!(text, "hello");
         let range = |pane: &crate::pane::Pane| {
             let json = json(pane, None, CaptureView::default())?;
@@ -1299,7 +1348,7 @@ mod tests {
         // A running command's row is whole, its cursor at the start of it
         // too (a progress line it rewrites).
         pane.output(b"\r\n$ \x1b]133;C\x07step 1\r");
-        let text = super::pane(&pane, journal()?, None, view)?.text()?;
+        let text = captured(&pane, journal()?, None, view)?.text()?;
         assert_eq!(text, "step 1");
         assert_eq!(
             range(&pane)?,
@@ -1347,7 +1396,7 @@ mod tests {
             assert_eq!(pane.command_running(), !ended);
             let json = json(&pane, None, CaptureView::default())?;
             assert!(json.contains(&format!(r#""last_output":{want}"#)), "{json}");
-            let text = super::pane(&pane, journal()?, None, view)?.text()?;
+            let text = captured(&pane, journal()?, None, view)?.text()?;
             assert_eq!(text, read, "{output:?}");
         }
         Ok(())
@@ -1367,7 +1416,7 @@ mod tests {
         let json = json(&pane, None, CaptureView::default())?;
         let want = r#""last_output":{"start":[0,2],"end":[1,9]}"#;
         assert!(json.contains(want), "{json}");
-        let text = super::pane(&pane, journal()?, None, view)?.text()?;
+        let text = captured(&pane, journal()?, None, view)?.text()?;
         assert_eq!(text, "abcdefghijklmnopLINKED");
         Ok(())
     }
@@ -1387,7 +1436,7 @@ mod tests {
             ..CaptureView::default()
         };
         Ok(
-            match super::pane(pane, journal()?, Some(usize::MAX), view) {
+            match captured(pane, journal()?, Some(usize::MAX), view) {
                 Ok(got) => Ok((got.text()?, got.changed_rows.ok_or("changed_rows")?)),
                 Err(error) => Err(error.code()),
             },
@@ -1493,12 +1542,13 @@ mod tests {
             };
             let json = json(&pane, None, view)?;
             let from = json.find(r#""wrapped_rows""#).ok_or(json.clone())?;
-            Ok::<_, Box<dyn std::error::Error>>(json.get(from..).unwrap_or_default().to_owned())
+            let to = json.find(r#","wrap_pending""#).ok_or(json.clone())?;
+            Ok::<_, Box<dyn std::error::Error>>(json.get(from..to).unwrap_or_default().to_owned())
         };
         let link = r#"{"row":3,"col":0,"len":1,"uri":"https://b.test"}"#;
-        let want = format!(r#""wrapped_rows":[false,false],"links":[{link}]}}"#);
+        let want = format!(r#""wrapped_rows":[false,false],"links":[{link}]"#);
         assert_eq!(tail(before)?, want);
-        assert_eq!(tail(pane.version(run))?, r#""wrapped_rows":[],"links":[]}"#);
+        assert_eq!(tail(pane.version(run))?, r#""wrapped_rows":[],"links":[]"#);
         Ok(())
     }
 
@@ -1513,7 +1563,7 @@ mod tests {
             marks: true,
             ..CaptureView::default()
         };
-        let got = super::pane(&pane, journal()?, None, marks)?;
+        let got = captured(&pane, journal()?, None, marks)?;
         assert_eq!(got.text()?, "a ⟨dim⟩⟦⟨both⟩rev⟧ z");
         Ok(())
     }

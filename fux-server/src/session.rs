@@ -16,7 +16,7 @@ use fux_wire::command::{
     PaneResize, Request, Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
-use fux_wire::json::{Fields, Json};
+use fux_wire::json::Json;
 use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2439,7 +2439,8 @@ impl Session {
                     ));
                 }
                 let cursor = self.parts.journal().end(self.run);
-                let captured = crate::capture::pane(pane, cursor, history, view)?;
+                let observed = self.observed(pane.id())?;
+                let captured = crate::capture::pane(observed, pane, cursor, history, view)?;
                 Ok(Body::Capture(Box::new(captured)).into())
             }
             &Command::Reorder { ref target, toward } => {
@@ -3024,27 +3025,6 @@ impl Session {
     // ------------------------------------------------------------------ ls
 
     /// A pane's state, as `ls json` has it.
-    fn pane_json<'a>(&'a self, p: &'a Pane) -> Result<Fields, Error> {
-        let tab = self.locate(p.id()).and_then(|(_, tab)| self.tab(tab));
-        let at = tab.and_then(|tab| self.sized(tab).rect(p.id()));
-        let values = [
-            ("id", Json::str(format!("{}", p.id()))),
-            ("name", p.name().map_or(Json::Null, Json::str)),
-            ("label", Json::str(format!("{}", p.display_label()))),
-            ("title", Json::str(p.title().as_str())),
-            ("rows", Json::int(p.size().rows())),
-            ("cols", Json::int(p.size().cols())),
-            ("row", at.map_or(Json::Null, |r| Json::int(r.y()))),
-            ("col", at.map_or(Json::Null, |r| Json::int(r.x()))),
-            ("version", Json::str(format!("{}", p.version(self.run)))),
-            ("program", crate::capture::program(p)?),
-        ];
-        let mut fields = Vec::with_capacity(values.len());
-        fields.extend(values);
-        fields.extend(crate::capture::state(p)?);
-        Ok(fields)
-    }
-
     fn field(&self, target: AnyRef, field: &str) -> Result<Body, Error> {
         if field == "id" {
             return Ok(Body::Found(target));
@@ -3056,20 +3036,11 @@ impl Session {
         let no_field = || fail(Raise::NoField, format!("{target} has no field {field:?}"));
         let value = match target {
             AnyRef::Pane(id) => {
-                let pane = self.pane(id)?;
+                let observed = self.observed(id)?;
                 match field {
-                    "name" => pane.name().map_or(Json::Null, Json::str),
-                    "label" => Json::str(format!("{}", pane.display_label())),
-                    "rows" => Json::int(pane.size().rows()),
-                    "cols" => Json::int(pane.size().cols()),
-                    "version" => Json::str(format!("{}", pane.version(self.run))),
-                    "program" => crate::capture::program(pane)?,
-                    _ => self
-                        .pane_json(pane)?
-                        .into_iter()
-                        .find(|(k, _)| *k == field)
-                        .map(|(_, v)| v)
-                        .ok_or_else(no_field)?,
+                    "tab" => return Ok(Body::Found(AnyRef::Tab(observed.tab))),
+                    "version" => Json::str(observed.version.to_string()),
+                    _ => observed.fact(field).cloned().ok_or_else(no_field)?,
                 }
             }
             AnyRef::Tab(id) => {
@@ -3867,11 +3838,15 @@ mod tests {
                     .iter_mut()
                     .find(|p| p.id == PaneId::of(2))
                     .ok_or("pane")?;
-                pane.program = Some(Json::Object(vec![
-                    ("pid".into(), pid.map_or(Json::Null, Json::Int)),
-                    ("exited".into(), exited.clone()),
-                    ("signal".into(), signal.clone()),
-                ]));
+                let program = pane.facts.iter_mut().find(|(k, _)| k == "program");
+                *program.ok_or("program")? = (
+                    "program".into(),
+                    Json::Object(vec![
+                        ("pid".into(), pid.map_or(Json::Null, Json::Int)),
+                        ("exited".into(), exited.clone()),
+                        ("signal".into(), signal.clone()),
+                    ]),
+                );
                 snapshot.validate()?;
                 let mut out = Vec::new();
                 fux::script::testing::held_reply(
@@ -3954,7 +3929,11 @@ mod tests {
                     t.nodes = vec![fux_wire::layout::Node::Pane(PaneId::of(id))];
                     p.id = PaneId::of(id);
                     p.tab = t.id;
-                    p.label = p.id.to_string();
+                    for (key, value) in &mut p.facts {
+                        if key == "label" {
+                            *value = Json::str(p.id.to_string());
+                        }
+                    }
                     p.version.pane = p.id;
                     w.children.push(AnyRef::Tab(t.id));
                     snapshot.tabs.push(t);
@@ -4383,19 +4362,22 @@ mod tests {
                 Some((12, 12))
             );
             for pane in &snapshot.panes {
-                assert_eq!(pane.state.is_some(), projection != Projection::Topology);
-                assert_eq!(pane.cwd.is_some(), projection == Projection::Recipe);
-                if let Some(launch) = &pane.launch {
-                    assert!(launch.shell);
-                    let Some(Json::Object(program)) = &pane.program else {
+                let launch = pane.fact("launch");
+                assert_eq!(launch.is_some(), projection != Projection::Topology);
+                assert_eq!(pane.fact("cwd").is_some(), projection == Projection::Recipe);
+                if let Some(Json::Object(launch)) = launch {
+                    let choice = launch.iter().find(|(k, _)| k == "choice");
+                    assert_eq!(choice.map(|(_, v)| v), Some(&Json::str("shell")));
+                    let Some(Json::Object(program)) = pane.fact("program") else {
                         return Err("no program".into());
                     };
                     let argv = program.iter().find(|(k, _)| k == "argv");
                     assert!(matches!(argv, Some((_, Json::Array(a))) if !a.is_empty()));
                 }
             }
-            if let Some(launch) = snapshot.panes.first_mut().and_then(|p| p.launch.as_mut()) {
-                launch.cwd = fux_wire::inspect::Path::Bytes(vec![255; 70_000]);
+            // A launch directory of 70,000 bytes not UTF-8, in hex.
+            if let Some(pane) = snapshot.panes.first_mut() {
+                pane.facts.push(("cwd".into(), Json::str("ff".repeat(70_000))));
             }
             let bytes = fux_wire::wire::encode(&*snapshot);
             assert_eq!(
@@ -7198,8 +7180,8 @@ mod tests {
     #[test]
     fn the_json_help_names_every_pane_field() -> TestResult {
         let (s, _) = attached(4, 30)?;
-        let pane = s.parts.panes().values().next().ok_or("no pane")?;
-        for (name, _) in s.pane_json(pane)? {
+        let pane = *s.parts.panes().keys().next().ok_or("no pane")?;
+        for (name, _) in s.observed(pane)?.facts {
             let named = include_str!("../../docs/json.md").contains(&format!("`{name}`"));
             assert!(named, "docs/json.md does not name a pane's {name:?}");
         }
@@ -7689,7 +7671,7 @@ mod tests {
         assert!(output(&mut s, "str cat pane").is_err());
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
         let json = output(&mut s, "%1 capture json")?;
-        assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
+        assert!(json.starts_with(r#"{"id":"%1""#), "{json}");
         Ok(())
     }
 
@@ -8493,16 +8475,17 @@ mod tests {
             s.panes
                 .iter()
                 .map(|p| {
-                    let state = p.state.as_ref();
-                    let options = [
+                    [
+                        "name",
+                        "launch",
+                        "cwd",
                         "history_bytes",
                         "program_clipboard",
                         "reflow",
                         "alternate_scroll_lines",
                         "picture_bytes",
                     ]
-                    .map(|key| state.and_then(|s| s.get(key)).cloned());
-                    (p.name.clone(), p.launch.clone(), p.cwd.clone(), options)
+                    .map(|key| p.fact(key).cloned())
                 })
                 .collect::<Vec<_>>()
         };
