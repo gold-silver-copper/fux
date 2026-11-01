@@ -1267,7 +1267,7 @@ struct Snapshot {
 
 struct Pane {
     version: Version,
-    /// `exited` and `signal`, as fux printed them.
+    /// Its program's `exited` and `signal`, as fux printed them.
     end: String,
     pid: Option<i32>,
 }
@@ -1293,14 +1293,15 @@ impl Snapshot {
         };
         let pane = |p: &Json| -> Result<Pane, String> {
             let version = p.get("version").map(Json::text).unwrap_or_default();
+            let program = |key| p.get("program").and_then(|program| program.get(key));
             Ok(Pane {
                 version: (version.parse::<Version>().ok())
                     .filter(|v| v.run == run)
                     .ok_or(format!("an ls's version {version:?}"))?,
-                end: [p.get("exited"), p.get("signal")]
+                end: [program("exited"), program("signal")]
                     .map(|j| j.map(Json::render).unwrap_or_default())
                     .join(" "),
-                pid: p.get("pid").and_then(|pid| pid.text().parse().ok()),
+                pid: program("pid").and_then(|pid| pid.text().parse().ok()),
             })
         };
         Ok(Snapshot {

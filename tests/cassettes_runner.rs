@@ -17,7 +17,7 @@ mod runner {
         fn ls(cursor: u64, panes: &[&str]) -> Result<Snapshot, String> {
             let panes: Vec<String> = (panes.iter())
                 .map(|v| {
-                    format!(r#"{{"id":"%1","version":"{v}","exited":0,"signal":null,"pid":null}}"#)
+                    format!(r#"{{"id":"%1","version":"{v}","program":{{"exited":0,"signal":null,"pid":null}}}}"#)
                 })
                 .collect();
             Snapshot::read(&format!(
