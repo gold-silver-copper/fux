@@ -1360,7 +1360,11 @@ fn an_xt_of_another_machine_is_refused() -> Result<(), Error> {
     let mut copy = a.clone();
     copy.read(token::source("t", "execute")?, None);
     assert_eq!(copy.run(&mut Toy::default(), u64::MAX)?, Outcome::Finished);
-    assert_eq!(copy.stack().last(), Some(&Value::Int(3)), "a copy made after it runs it");
+    assert_eq!(
+        copy.stack().last(),
+        Some(&Value::Int(3)),
+        "a copy made after it runs it"
+    );
     let mut b = compile("define c 5 end")?;
     assert_eq!(b.run(&mut Toy::default(), u64::MAX)?, Outcome::Finished);
     b.push(xt);
@@ -1374,7 +1378,10 @@ fn an_xt_of_another_machine_is_refused() -> Result<(), Error> {
 #[test]
 fn lists_and_code_nested_alternately_are_let_go_on_a_small_stack() -> Result<(), String> {
     let nest = "code stop-compiling swap start-compiling literal end list end swap push\n";
-    let text = format!("list end\n{}drop", nest.repeat(20_000));
+    let text = format!(
+        "list end\n{}drop",
+        std::iter::repeat_n(nest, 20_000).collect::<String>()
+    );
     std::thread::Builder::new()
         .stack_size(128 << 10)
         .spawn(move || -> Result<(), String> {
@@ -1395,12 +1402,21 @@ fn lists_and_code_nested_alternately_are_let_go_on_a_small_stack() -> Result<(),
 #[test]
 fn a_count_before_a_jump_target_is_not_folded() -> Result<(), Error> {
     let branches = "define f if 3 else 2 then pick end";
-    assert_eq!(run(&format!("{branches} 1 2 3 4 true f"))?, ints(&[1, 2, 3, 4, 1]));
-    assert_eq!(run(&format!("{branches} 1 2 3 4 false f"))?, ints(&[1, 2, 3, 4, 2]));
+    assert_eq!(
+        run(&format!("{branches} 1 2 3 4 true f"))?,
+        ints(&[1, 2, 3, 4, 1])
+    );
+    assert_eq!(
+        run(&format!("{branches} 1 2 3 4 false f"))?,
+        ints(&[1, 2, 3, 4, 2])
+    );
     // Each pass of the loop takes its count from the stack.
     let looped = "define g 0 begin pick 1 add nip dup 3 eq 0 swap until drop end 1 g";
     let mut machine = compile(looped)?;
-    assert_eq!(machine.run(&mut Toy::default(), 100_000)?, Outcome::Finished);
+    assert_eq!(
+        machine.run(&mut Toy::default(), 100_000)?,
+        Outcome::Finished
+    );
     assert_eq!(machine.stack(), ints(&[3]).as_slice());
     let codes = "define h if str fail else str timeout then try 1 catch end end";
     assert_eq!(code(run(codes)), Some("bad_codes"));

@@ -617,6 +617,39 @@ fn an_argument_that_is_not_text_is_refused() -> Outcome {
     Ok(())
 }
 
+/// `write` and `emit` deliver their text as they run, with no line end:
+/// a reader has it while the program is still running.
+#[test]
+fn write_and_emit_deliver_as_they_run() -> Outcome {
+    use std::io::Read;
+    for (words, said) in [(&["str", "x", "write"][..], b"x"), (&["120", "emit"], b"x")] {
+        let mut child = std::process::Command::new(fux())
+            .args(words)
+            .args(["begin", "false", "until"])
+            .env_remove("FUX_SOCKET")
+            .env_remove("FUX_PANE")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(e)?;
+        let mut stdout = child.stdout.take().ok_or("no stdout")?;
+        let reader = std::thread::spawn(move || {
+            let mut got = [0u8; 1];
+            stdout.read_exact(&mut got).map(|()| got)
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !reader.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let finished = reader.is_finished();
+        child.kill().map_err(e)?;
+        child.wait().map_err(e)?;
+        assert!(finished, "{words:?}: nothing delivered while it ran");
+        let got = reader.join().map_err(|_| "the reader failed")?.map_err(e)?;
+        assert_eq!(&got, said, "{words:?}");
+    }
+    Ok(())
+}
+
 /// Output that cannot be written fails where it is written, with
 /// `output`: what comes after it never runs, and a stream ends.
 #[cfg(target_os = "linux")]

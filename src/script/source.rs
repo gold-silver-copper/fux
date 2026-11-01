@@ -76,13 +76,20 @@ impl Frozen {
 }
 
 /// Where a program's `include` and `require` read files: the file system,
-/// relative to the directory fux started in, each file it read kept; or a
-/// config's sources only, as they were read.
+/// relative to the directory fux started in, each file it read kept; a
+/// config's sources only, replayed in the order they were read; or none.
 pub struct Files {
     cwd: io::Result<PathBuf>,
-    frozen: Option<Config>,
+    /// A config's sources, and how many of its resolutions and reads were
+    /// replayed.
+    frozen: Option<(Config, usize, usize)>,
+    /// No file is read: a key's or a prompt's program.
+    sealed: bool,
     resolved: Vec<(String, Option<PathBuf>, PathBuf)>,
     read: Vec<(PathBuf, String)>,
+    /// Marked before a file that may not read the same again (a pipe) is
+    /// read: the command line's program then isn't run again elsewhere.
+    pub(super) acted: Option<super::Acted>,
 }
 
 impl Default for Files {
@@ -90,28 +97,42 @@ impl Default for Files {
         Self {
             cwd: std::env::current_dir(),
             frozen: None,
+            sealed: false,
             resolved: Vec::new(),
             read: Vec::new(),
+            acted: None,
         }
     }
 }
 
 impl Files {
-    /// Only `config`'s sources, as they were read.
+    /// Only `config`'s sources, as they were read, in order.
     pub(super) fn frozen(config: Config) -> Self {
         Self {
-            frozen: Some(config),
+            frozen: Some((config, 0, 0)),
+            ..Self::default()
+        }
+    }
+
+    /// None at all.
+    pub(super) fn sealed() -> Self {
+        Self {
+            sealed: true,
             ..Self::default()
         }
     }
 
     /// The file `path` names, as one identity: its canonical path.
     pub(super) fn resolve(&mut self, path: &str, from: Option<&Path>) -> Result<PathBuf, String> {
-        if let Some(frozen) = &self.frozen {
-            let found = frozen
+        if self.sealed {
+            return Err("a key's or prompt's program reads no files".to_owned());
+        }
+        if let Some((config, at, _)) = &mut self.frozen {
+            let found = config
                 .resolved
-                .iter()
-                .find(|(p, f, _)| p == path && f.as_deref() == from);
+                .get(*at)
+                .filter(|(p, f, _)| p == path && f.as_deref() == from);
+            *at = at.saturating_add(1);
             return found
                 .map(|(.., file)| file.clone())
                 .ok_or_else(|| unread(path));
@@ -135,13 +156,20 @@ impl Files {
         Ok(file)
     }
 
-    /// The text of the file `resolve` gave.
+    /// The text of the file `resolve` gave: replayed, the next one the
+    /// config read.
     pub(super) fn read(&mut self, path: &Path) -> Result<String, String> {
-        if let Some(frozen) = &self.frozen {
-            let found = frozen.read.iter().find(|(p, _)| p == path);
+        if let Some((config, _, at)) = &mut self.frozen {
+            let found = config.read.get(*at).filter(|(p, _)| p == path);
+            *at = at.saturating_add(1);
             return found
                 .map(|(_, text)| text.clone())
                 .ok_or_else(|| unread(&path.display().to_string()));
+        }
+        if let Some(acted) = &self.acted
+            && !path.metadata().is_ok_and(|m| m.is_file())
+        {
+            acted.mark();
         }
         let text = read(path).map_err(|e| e.to_string())?;
         self.read.push((path.to_owned(), text.clone()));
@@ -150,7 +178,7 @@ impl Files {
 }
 
 fn unread(path: &str) -> String {
-    format!("{path}: the config read no such file")
+    format!("{path}: not read so when the config was")
 }
 
 #[cfg(test)]
@@ -321,6 +349,34 @@ mod tests {
         assert!(run(&f.0).is_err());
         let directory = f.write("dir.fux", &format!("require {}", f.0.display()))?;
         assert!(run(&directory).is_err());
+        Ok(())
+    }
+
+    /// A config's reads are replayed in the order they were made: a file
+    /// read twice, its text different each time, replays both texts.
+    #[test]
+    fn a_frozen_config_replays_its_reads_in_order() -> TestResult {
+        let file = PathBuf::from("/c/child.fux");
+        let config = Frozen {
+            resolved: vec![
+                ("child.fux".into(), None, file.clone()),
+                ("child.fux".into(), None, file.clone()),
+            ],
+            read: vec![
+                (file.clone(), "define answer 41 end".into()),
+                (file.clone(), "define answer 42 end".into()),
+            ],
+            ..Frozen::text("config", "include child.fux include child.fux")
+        };
+        let mut files = Files::frozen(std::sync::Arc::new(config));
+        for text in ["define answer 41 end", "define answer 42 end"] {
+            let path = files.resolve("child.fux", None)?;
+            assert_eq!(files.read(&path)?, text);
+        }
+        assert!(
+            files.resolve("child.fux", None).is_err(),
+            "read no more than it did"
+        );
         Ok(())
     }
 

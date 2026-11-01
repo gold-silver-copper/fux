@@ -428,6 +428,15 @@ impl<'a> Host<'a> {
         }
     }
 
+    /// A key's or a prompt's host: its program reads no files (its
+    /// config's definitions are read already).
+    pub(crate) fn job(context: Context, state: &'a mut Draft, out: &'a mut dyn Write) -> Self {
+        Self {
+            files: source::Files::sealed(),
+            ..Self::new(context, Some(state), out)
+        }
+    }
+
     /// Ordinary CLI commands need no keys or preference initialization.
     fn prepare(&mut self) -> Result<(), Failed> {
         if self.cli
@@ -1598,6 +1607,7 @@ fn ran(
     }
     let closed = out.closed.clone();
     let mut host = Host::cli(client::context(), &mut state, out);
+    host.files.acted = Some(acted.clone());
     let mut cli = Cli {
         server: Server {
             follow: rerun.map_or(Follow::Never, |rerun| Follow::Command {

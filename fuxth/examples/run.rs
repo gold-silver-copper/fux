@@ -35,7 +35,9 @@ impl Host for Bare {
 
     fn write(&mut self, text: &str) -> Result<(), Failure> {
         let mut out = std::io::stdout().lock();
-        write!(out, "{text}").map_err(|e| Failure::new(fuxth::Code::Host("output"), e.to_string()))
+        write!(out, "{text}")
+            .and_then(|()| out.flush())
+            .map_err(|e| Failure::new(fuxth::Code::Host("output"), e.to_string()))
     }
 }
 

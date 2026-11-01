@@ -1243,8 +1243,11 @@ impl fuxth::Host for Host<'_> {
     type Value = Fux;
     type Request = Ask;
 
+    /// Written and flushed: `write` and `emit` deliver without a line end.
     fn write(&mut self, text: &str) -> Result<(), Failure> {
-        write!(self.out, "{text}").map_err(|e| fail(Raise::Output, e.to_string()))
+        (self.out.write_all(text.as_bytes()))
+            .and_then(|()| self.out.flush())
+            .map_err(|e| fail(Raise::Output, e.to_string()))
     }
 
     fn resolve(
