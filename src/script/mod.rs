@@ -734,10 +734,7 @@ fn configured_machine(config: &Config, mut machine: Machine<Fux>) -> Result<Mach
 fn keyed() -> Result<Machine<Fux>, Failed> {
     let mut machine = base()?;
     machine.read(token::source("keys.fux", KEYS)?, None);
-    let mut draft = Draft::default();
-    let mut out = io::sink();
-    let mut host = Host::new(Context::default(), Some(&mut draft), &mut out);
-    run(&mut machine, &mut host, &mut ConfigOnly::default(), None)?;
+    quiet(&mut machine, Some(&mut Draft::default()), false)?;
     machine.clear();
     Ok(machine)
 }
@@ -1637,7 +1634,7 @@ fn run_config_on(config: source::Frozen, defaults: &ClientState) -> Result<Clien
     let mut draft = defaults.draft();
     let mut machine = client_base(None)?;
     machine.read(config.tokens()?, config.path.clone());
-    let files = quiet(machine, Some(&mut draft), false)?;
+    let files = quiet(&mut machine, Some(&mut draft), false)?;
     draft.config = Some(Arc::new(config.with(files)));
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
@@ -1645,23 +1642,18 @@ fn run_config_on(config: source::Frozen, defaults: &ClientState) -> Result<Clien
 /// Runs config code with only local reads and draft mutations, in a
 /// client's dictionary.
 fn run_quiet(tokens: &[Token], state: Option<&mut Draft>, diagnostics: bool) -> Result<(), Failed> {
-    quiet(compiled(None, tokens)?, state, diagnostics).map(drop)
+    quiet(&mut compiled(None, tokens)?, state, diagnostics).map(drop)
 }
 
 /// Runs `machine`'s config code as `run_quiet` does: the files it read.
 fn quiet(
-    mut machine: Machine<Fux>,
+    machine: &mut Machine<Fux>,
     state: Option<&mut Draft>,
     diagnostics: bool,
 ) -> Result<source::Files, Failed> {
     let mut out = io::sink();
     let mut host = Host::new(Context::default(), state, &mut out);
-    run(
-        &mut machine,
-        &mut host,
-        &mut ConfigOnly { diagnostics },
-        None,
-    )?;
+    run(machine, &mut host, &mut ConfigOnly { diagnostics }, None)?;
     Ok(host.files)
 }
 

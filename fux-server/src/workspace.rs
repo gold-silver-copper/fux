@@ -88,15 +88,6 @@ pub struct Stack<C: Child> {
 }
 
 impl<C: Child> Stack<C> {
-    /// `first` alone, shown to each of `clients`.
-    fn of(first: C, clients: impl Iterator<Item = ClientId>) -> Stack<C> {
-        let shown = clients.map(|c| (c, Shown::on(first.id()))).collect();
-        Stack {
-            children: vec![first],
-            shown,
-        }
-    }
-
     pub fn children(&self) -> &[C] {
         &self.children
     }
@@ -119,20 +110,11 @@ impl<C: Child> Stack<C> {
         self.get(self.shown.get(&client)?.current)
     }
 
-    /// The clients shown something here.
-    fn clients(&self) -> impl Iterator<Item = ClientId> + '_ {
-        self.shown.keys().copied()
-    }
-
     /// `client` is shown the first child, unless it is shown one.
     fn attach(&mut self, client: ClientId) {
         if let Some(first) = self.children.first().map(C::id) {
             self.shown.entry(client).or_insert(Shown::on(first));
         }
-    }
-
-    fn forget(&mut self, client: ClientId) {
-        self.shown.remove(&client);
     }
 
     /// Shows `client` child `id`, if it is one.
@@ -141,10 +123,6 @@ impl<C: Child> Stack<C> {
         if let Some(shown) = self.shown.get_mut(&client).filter(|_| child) {
             shown.show(id);
         }
-    }
-
-    fn push(&mut self, child: C) {
-        self.children.push(child);
     }
 
     /// Takes child `id` out: each client it was shown to is shown the one
@@ -273,10 +251,6 @@ impl Seat {
 }
 
 impl Workspace {
-    pub fn id(&self) -> WsId {
-        self.id
-    }
-
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
@@ -329,10 +303,6 @@ impl Tab {
             seats: clients.map(|c| (c, Seat::on(pane))).collect(),
             typist: None,
         }
-    }
-
-    pub fn id(&self) -> TabId {
-        self.id
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -578,42 +548,6 @@ impl Parts {
         place_of(&self.workspaces, client)
     }
 
-    /// The children of what holds `of`, in order, and what `client` is
-    /// shown of them: a tab's panes, a workspace's tabs, or the
-    /// workspaces.
-    pub fn siblings(
-        &self,
-        of: AnyRef,
-        client: ClientId,
-    ) -> Option<(Vec<AnyRef>, Option<Shown<AnyRef>>)> {
-        fn among<C: Child>(
-            stack: &Stack<C>,
-            client: ClientId,
-            id: impl Fn(C::Id) -> AnyRef,
-        ) -> (Vec<AnyRef>, Option<Shown<AnyRef>>) {
-            let children = stack.children.iter().map(|c| id(c.id())).collect();
-            (children, stack.shown(client).map(|s| s.map(id)))
-        }
-        Some(match of {
-            AnyRef::Pane(pane) => {
-                let (ws, tab) = self.locate(pane)?;
-                let tab = self.workspaces.get(ws)?.tabs.get(tab)?;
-                let panes = tab.root.panes().into_iter().map(AnyRef::Pane).collect();
-                let seat = tab.seat(client).map(|s| s.focus.map(AnyRef::Pane));
-                (panes, seat)
-            }
-            AnyRef::Tab(tab) => {
-                let ws = self
-                    .workspaces
-                    .children
-                    .iter()
-                    .find(|w| w.tabs.get(tab).is_some())?;
-                among(&ws.tabs, client, AnyRef::Tab)
-            }
-            AnyRef::Workspace(_) => among(&self.workspaces, client, AnyRef::Workspace),
-        })
-    }
-
     /// Tab `id`, to change what events do not tell: its bell marks, its
     /// fit. One tab at a time, and none is made but here, so none is put
     /// in another's place (`mem::swap`), its panes moved with no journal
@@ -627,7 +561,7 @@ impl Parts {
     /// (none, with the last workspace gone).
     fn viewing<R>(&mut self, change: impl FnOnce(&mut Parts) -> R) -> R {
         let places = |parts: &Parts| -> BTreeMap<ClientId, _> {
-            let clients = parts.workspaces.clients();
+            let clients = parts.workspaces.shown.keys().copied();
             clients
                 .map(|c| (c, place_of(&parts.workspaces, c)))
                 .collect()
@@ -650,8 +584,8 @@ impl Parts {
     }
 
     /// A client attaches: it is shown each workspace's first tab and each
-    /// tab's first pane, and then `at`, if given, and each that holds it.
-    pub(crate) fn attach(&mut self, client: ClientId, at: Option<AnyRef>) {
+    /// tab's first pane, and then `at` and each that holds it.
+    pub(crate) fn attach(&mut self, client: ClientId, at: AnyRef) {
         self.viewing(|parts| {
             parts.workspaces.attach(client);
             for w in &mut parts.workspaces.children {
@@ -661,9 +595,7 @@ impl Parts {
                     tab.seats.entry(client).or_insert(Seat::on(first));
                 }
             }
-            if let Some(at) = at {
-                parts.show_path(client, at);
-            }
+            parts.show_path(client, at);
         });
     }
 
@@ -680,9 +612,9 @@ impl Parts {
 
     /// A client detaches: nothing names it.
     pub(crate) fn forget(&mut self, client: ClientId) {
-        self.workspaces.forget(client);
+        self.workspaces.shown.remove(&client);
         for w in &mut self.workspaces.children {
-            w.tabs.forget(client);
+            w.tabs.shown.remove(&client);
             for tab in &mut w.tabs.children {
                 tab.seats.remove(&client);
                 tab.typist = tab.typist.filter(|t| *t != client);
@@ -886,10 +818,14 @@ impl Parts {
             .push(Event::Workspace(id, Change::Created(name.clone())));
         self.journal
             .push(Event::Tab((id, tab), Change::Created(tab_name.clone())));
-        let clients: Vec<ClientId> = self.workspaces.clients().collect();
+        let clients: Vec<ClientId> = self.workspaces.shown.keys().copied().collect();
         let first = Tab::new(tab, tab_name, fit, clients.iter().copied(), pane);
-        let tabs = Stack::of(first, clients.into_iter());
-        self.workspaces.push(Workspace { id, name, tabs });
+        let shown = clients.into_iter().map(|c| (c, Shown::on(tab))).collect();
+        let tabs = Stack {
+            children: vec![first],
+            shown,
+        };
+        (self.workspaces.children).push(Workspace { id, name, tabs });
     }
 
     /// Adds tab `id` to workspace `ws`, with optional name `name`,
@@ -919,10 +855,10 @@ impl Parts {
         fit: Fit,
         pane: PaneId,
     ) -> Option<()> {
-        let clients: Vec<ClientId> = self.workspaces.clients().collect();
+        let clients: Vec<ClientId> = self.workspaces.shown.keys().copied().collect();
         let workspace = self.workspaces.get_mut(ws)?;
         let tab = Tab::new(id, name.clone(), fit, clients.into_iter(), pane);
-        workspace.tabs.push(tab);
+        workspace.tabs.children.push(tab);
         self.journal
             .push(Event::Tab((ws, id), Change::Created(name)));
         Some(())

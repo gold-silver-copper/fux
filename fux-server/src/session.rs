@@ -4,7 +4,7 @@ use crate::pane::{self, Pane, PaneMut, Process, Runs};
 use crate::process::{self, Child};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Waiting, Watches};
-use crate::workspace::{Destination, Fit, Parts, Split, Tab, Workspace};
+use crate::workspace::{Child as _, Destination, Fit, Parts, Split, Tab, Workspace};
 use fux_vt::Size;
 use fux_vt::keys::Direction;
 use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
@@ -445,11 +445,6 @@ impl Session {
     pub fn shown_workspace(&self, client: ClientId) -> Option<&Workspace> {
         self.parts.stack().current(client)
     }
-    /// The clients showing workspace `ws`.
-    pub(crate) fn showing(&self, ws: WsId) -> impl Iterator<Item = ClientId> + '_ {
-        let shows = move |c: &ClientId| self.shown_workspace(*c).is_some_and(|w| w.id() == ws);
-        self.views.keys().copied().filter(shows)
-    }
     /// The tab client `client` shows.
     pub fn shown_tab(&self, client: ClientId) -> Option<&Tab> {
         self.shown_workspace(client)?.tab_of(client)
@@ -702,7 +697,7 @@ impl Session {
         let left = left.told();
         if !left.is_empty() {
             let told = format!("{id} respawned{left}");
-            for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
+            for client in self.viewers(AnyRef::Pane(id)) {
                 self.notify_to(client, told.clone(), true);
             }
         }
@@ -1225,12 +1220,9 @@ impl Session {
                     })?;
                     self.start(size, initial, now)?;
                 }
-                (self
-                    .parts
-                    .workspaces()
-                    .first()
-                    .map(|w| AnyRef::Workspace(w.id())))
-                .ok_or_else(|| fail(Raise::NoWorkspace, "the server has no workspace"))?
+                let first = self.parts.workspaces().first().map(|w| w.id());
+                let why = "the server has no workspace";
+                AnyRef::Workspace(first.ok_or_else(|| fail(Raise::NoWorkspace, why))?)
             }
         };
         let id = self.ids.client()?;
@@ -1258,7 +1250,7 @@ impl Session {
         let runs_in = self.parts.panes().iter().find(|(_, pane)| leads(pane));
         view.runs_in = runs_in.map(|(id, _)| *id);
         self.views.insert(id, view);
-        self.parts.attach(id, Some(at));
+        self.parts.attach(id, at);
         self.view_event(id, crate::journal::ViewChange::Attached);
         self.ask(id, crate::outer::QUERIES);
         self.settle(now);
@@ -1438,8 +1430,7 @@ impl Session {
             .map(Pane::id)
             .collect();
         for id in stale {
-            let tab = self.locate(id).map(|(_, tab)| tab);
-            for client in self.viewers(tab) {
+            for client in self.viewers(AnyRef::Pane(id)) {
                 if let Some(view) = self.views.get_mut(&client) {
                     view.dirty = true;
                 }
@@ -1598,7 +1589,7 @@ impl Session {
     pub fn close_pane(&mut self, id: PaneId, why: Option<String>, now: Instant) {
         // Who sees the pane is known before its tab can go: a tab its
         // closing empties takes its viewers elsewhere.
-        let viewers = self.viewers(self.locate(id).map(|(_, t)| t));
+        let viewers = self.viewers(AnyRef::Pane(id));
         let mut notice = None;
         if let Some(mut pane) = self.parts.close_pane(id) {
             // Closed for its program's end (a reason given), or by fux.
@@ -1629,7 +1620,7 @@ impl Session {
 
     /// Removes a tab and whatever panes are in it (`Parts::remove_tab`).
     fn remove_tab(&mut self, tab: TabId, now: Instant) {
-        let viewers = self.viewers(Some(tab));
+        let viewers = self.viewers(AnyRef::Tab(tab));
         for gone in self.parts.remove_tab(tab) {
             self.end_pane(gone, true, &viewers, now);
         }
@@ -1658,10 +1649,15 @@ impl Session {
         }
     }
 
-    /// The clients showing tab `tab`.
-    fn viewers(&self, tab: Option<TabId>) -> Vec<ClientId> {
-        let shows = |c: &ClientId| tab.is_some_and(|t| self.shows(*c, t));
-        self.views.keys().copied().filter(shows).collect()
+    /// The clients shown `of`, a tab or workspace, or a pane's tab.
+    pub(crate) fn viewers(&self, of: AnyRef) -> Vec<ClientId> {
+        let of = match of {
+            AnyRef::Pane(p) => self.locate(p).map(|(_, tab)| AnyRef::Tab(tab)),
+            AnyRef::Tab(_) | AnyRef::Workspace(_) => Some(of),
+        };
+        let at = |p: Place| [AnyRef::Tab(p.tab), AnyRef::Workspace(p.ws)].map(Some);
+        let shown = |c: &ClientId| self.place(*c).is_some_and(|p| at(p).contains(&of));
+        self.views.keys().copied().filter(shown).collect()
     }
 
     fn after_close(&mut self, now: Instant) {
@@ -1713,7 +1709,7 @@ impl Session {
             self.read_left(id, false, now);
         }
         self.read_with(id, |p| p.release_frame(now), now);
-        let viewers = self.viewers(self.locate(id).map(|(_, tab)| tab));
+        let viewers = self.viewers(AnyRef::Pane(id));
         let Some(mut pane) = self.parts.pane_mut(id) else {
             return;
         };
@@ -1888,14 +1884,14 @@ impl Session {
     /// repainted and told what it refused (`tell_refused`).
     fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut PaneMut<'_>), now: Instant) {
         let place = self.locate(id);
-        let viewers = self.viewers(place.map(|(_, tab)| tab));
+        let viewers = self.viewers(AnyRef::Pane(id));
         let labelled = place.and_then(|(ws, tab)| {
             let tab = self.tab(tab)?;
             let pane = self.parts.panes().get(&id)?;
             if tab.name().is_some() || tab.root().first_pane() != id || pane.name().is_some() {
                 return None;
             }
-            let others: Vec<ClientId> = (self.showing(ws))
+            let others: Vec<ClientId> = (self.viewers(AnyRef::Workspace(ws)).into_iter())
                 .filter(|client| !viewers.contains(client))
                 .collect();
             (!others.is_empty()).then(|| (pane.label().into_owned(), others))
@@ -1942,7 +1938,7 @@ impl Session {
             .collect();
         let mut told = false;
         for id in untold {
-            let viewers = self.viewers(self.locate(id).map(|(_, tab)| tab));
+            let viewers = self.viewers(AnyRef::Pane(id));
             told |= self.tell_refused(id, &viewers);
         }
         told
@@ -2244,11 +2240,7 @@ impl Session {
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
-                    Some(target) => match self.there(*target)? {
-                        AnyRef::Pane(p) => self.viewers(self.locate(p).map(|(_, t)| t)),
-                        AnyRef::Tab(t) => self.viewers(Some(t)),
-                        AnyRef::Workspace(w) => self.showing(w).collect(),
-                    },
+                    Some(target) => self.viewers(self.there(*target)?),
                 };
                 for client in to {
                     self.notify_to(client, text.clone(), false);
@@ -2649,9 +2641,9 @@ impl Session {
         here: Here,
         now: Instant,
     ) -> Result<Reply, Error> {
-        let (client, place) = match (client, here) {
-            (Some(c), _) => (c, self.place(c).ok_or(Error::NoClient(c))?),
-            (None, Here::Client(client, place)) => (client, place),
+        let client = match (client, here) {
+            (Some(c), _) => self.views.get(&c).ok_or(Error::NoClient(c))?.id,
+            (None, Here::Client(client, _)) => client,
             (None, Here::Cli(..)) => {
                 return Err(fail(
                     Raise::NoTarget,
@@ -2691,7 +2683,7 @@ impl Session {
             ClientAction::Show(target) => self.there(target)?,
             ClientAction::Step { from, way } => self.step(view()?, self.there(from)?, way)?,
         };
-        self.follow(Here::Client(client, place), to);
+        self.parts.show(client, to);
         Ok(Reply::default())
     }
 
@@ -2824,23 +2816,46 @@ impl Session {
     /// next or previous among what holds it, going round, the one it was
     /// shown there before, or a pane's neighbour on its screen.
     fn step(&self, view: &View, from: AnyRef, way: Way) -> Result<AnyRef, Error> {
-        let (siblings, shown) =
-            (self.parts.siblings(from, view.id)).ok_or(Error::NoClient(view.id))?;
         let kind = from.kind();
+        let (within, siblings): (_, Vec<AnyRef>) = match from {
+            AnyRef::Pane(p) => {
+                let tab = Some(AnyRef::Tab(self.locate(p).ok_or(Error::NoPane(p))?.1));
+                (
+                    tab,
+                    (self.panes_of(tab)?.into_iter().map(AnyRef::Pane)).collect(),
+                )
+            }
+            AnyRef::Tab(t) => {
+                let ws = Some(AnyRef::Workspace(self.tab_workspace(t)?));
+                (
+                    ws,
+                    (self.tabs_of(ws)?.into_iter().map(AnyRef::Tab)).collect(),
+                )
+            }
+            AnyRef::Workspace(_) => {
+                let workspaces = self.parts.workspaces().iter();
+                (
+                    None,
+                    workspaces.map(|w| AnyRef::Workspace(w.id())).collect(),
+                )
+            }
+        };
         match (way, from) {
             (Way::Step(toward), _) => {
                 let index = siblings.iter().position(|s| *s == from);
                 let next = round(&siblings, index.unwrap_or(0), toward);
                 next.copied().ok_or(Error::OnlyOne(kind))
             }
-            (Way::Last, _) => (shown.and_then(|s| s.last)).ok_or_else(|| {
-                let code = match kind {
-                    Kind::Pane => Raise::NoPane,
-                    Kind::Tab => Raise::NoTab,
-                    Kind::Workspace => Raise::NoWorkspace,
-                };
-                fail(code, format!("no previously shown {}", kind.name()))
-            }),
+            (Way::Last, _) => (self.seats(view.id).into_iter())
+                .find_map(|seat| seat.last.filter(|_| seat.within == within))
+                .ok_or_else(|| {
+                    let code = match kind {
+                        Kind::Pane => Raise::NoPane,
+                        Kind::Tab => Raise::NoTab,
+                        Kind::Workspace => Raise::NoWorkspace,
+                    };
+                    fail(code, format!("no previously shown {}", kind.name()))
+                }),
             (Way::Toward(direction), AnyRef::Pane(from)) => {
                 let tab = self.locate(from).and_then(|(_, tab)| self.root(tab));
                 let placement = tab.map(|root| layout::place(root, view.pane_area()));

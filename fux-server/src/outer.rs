@@ -25,6 +25,7 @@
 use crate::pane::{PaneMut, Said};
 use crate::session::{Outgoing, Session};
 use crate::view::{ClientKind, View};
+use crate::workspace::Child;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
 use fux_vt::keys::decode::Reply;
@@ -417,9 +418,11 @@ impl Session {
             return;
         };
         // Each client showing the workspace, and whether it is shown the tab.
-        let viewers: BTreeMap<ClientId, bool> = (self.showing(ws.id()))
-            .map(|c| (c, ws.tab_of(c).is_some_and(|t| t.holds(id))))
-            .collect();
+        let viewers: BTreeMap<ClientId, bool> = (self
+            .viewers(fux_wire::command::AnyRef::Workspace(ws.id())))
+        .into_iter()
+        .map(|c| (c, ws.tab_of(c).is_some_and(|t| t.holds(id))))
+        .collect();
         let panes = self.parts.panes();
         let rang = (ws.tabs().iter().find(|t| t.holds(id)))
             .map_or_else(String::new, |t| format!("bell in {}", t.label(panes)));

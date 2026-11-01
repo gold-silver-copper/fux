@@ -1,6 +1,6 @@
 use super::{Error, Session};
 use crate::view::{ClientKind, Mode};
-use crate::workspace::{Fit, Shown};
+use crate::workspace::{Child, Fit, Shown};
 use fux_wire::command::AnyRef;
 use fux_wire::id::ClientId;
 use fux_wire::inspect::{self, Projection, Scope, Snapshot};
@@ -196,12 +196,10 @@ impl Session {
         }
         Ok(Body::Snapshot(Box::new(snapshot)))
     }
-}
 
-impl Session {
     /// What `client` is shown of the workspaces, of each workspace's tabs
     /// and of each tab's panes, in that order.
-    fn seats(&self, client: ClientId) -> Vec<inspect::Seat> {
+    pub(super) fn seats(&self, client: ClientId) -> Vec<inspect::Seat> {
         let seat = |within, shown: Option<Shown<AnyRef>>| {
             shown.map(|Shown { current, last }| inspect::Seat {
                 within,

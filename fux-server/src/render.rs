@@ -4,6 +4,7 @@
 //! the terminal's attributes at their default, which the next one assumes.
 use crate::session::Session;
 use crate::view::{Mode, View};
+use crate::workspace::Child;
 use fux_vt::clusters;
 use fux_vt::sixel::Picture;
 use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};
