@@ -226,6 +226,7 @@ macro_rules! side {
                             data: data.bytes.to_vec(),
                         },
                         vt::Event::ColorQuery { number, bel } => Heard::ColorQuery { number, bel },
+                        vt::Event::CommandStarted => Heard::CommandStarted,
                         vt::Event::CommandEnded(status) => Heard::CommandEnded(status),
                     });
                 }
