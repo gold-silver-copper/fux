@@ -16,7 +16,9 @@ case $fuxth in */*) [ "${fuxth#/}" = "$fuxth" ] && fuxth=$PWD/$fuxth ;; esac
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT
-limit=()
+# A word that runs the rest, so an empty array never expands under set -u
+# (bash before 4.4 calls it unbound): `timeout` where there is one.
+limit=(command)
 command -v timeout >/dev/null && limit=(timeout 10)
 mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 export -f mode

@@ -27,13 +27,14 @@ spelled as commands, and a file is your own redirect:
 `FUX_SOCKET` names the server every `fux` command talks to. `fux start`
 makes the socket's directory, only you allowed in (mode 0700), and
 refuses one anyone else may open. A server of your own keeps your panes
-apart from anyone else's; stop it with `kill`.
+apart from anyone else's; stop it with `kill` on its process, which macOS
+leaves out of `status`: there `lsof -t` names it from the socket.
 
 ```sh
 (
   export FUX_SOCKET="$PWD/mine/fux.sock"
   fux status > /dev/null 2>&1 || fux start
-  kill "$(fux status str server_pid get)"
+  kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
 )
 ```
 
@@ -221,7 +222,7 @@ fux str work workspace dump > work.fux
   export FUX_SOCKET="$PWD/copy/fux.sock"
   fux start
   fux --file work.fux
-  kill "$(fux status str server_pid get)"
+  kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
 )
 ```
 

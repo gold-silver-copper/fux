@@ -450,9 +450,12 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
         };
         assert_eq!(repl.wait_for(&expected)?, expected);
     }
-    // Ctrl-C stops a runaway, and the REPL goes on.
-    repl.type_in("begin false until\n")?;
+    // Ctrl-C stops a runaway, and the REPL goes on. It is typed once the
+    // runaway runs: before the REPL reads its line, the terminal would
+    // discard the line with the Ctrl-C.
+    repl.type_in("str running print begin false until\n")?;
     repl.wait_for("begin false until\r\n")?;
+    repl.wait_for("running\r\n")?;
     repl.type_in("\x03")?;
     let stopped = repl.wait_for("ok\r\n")?;
     assert!(stopped.contains("fuxth: interrupt: "), "{stopped:?}");
