@@ -4,8 +4,8 @@
 # b e -- b^e
 define power
   dup 0 eq if 2drop 1 else
-  dup 2 mod 0 eq if 2 div swap dup mul swap power
-  else over swap 1 sub power mul then then
+  dup 2 mod 0 eq if 2 div swap dup mul swap recurse
+  else over swap 1 sub recurse mul then then
 end
 
 7 0 power

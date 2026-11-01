@@ -38,7 +38,8 @@ macro_rules! codes {
 
             /// Whether a word can raise it as the program runs, so that a
             /// `try` may catch it: in plain fuxth; a host may declare that
-            /// its words raise more (`Vocabulary::raises`).
+            /// its words raise more (`Vocabulary::raises`). The reader's are raised
+            /// as a source is read, by `evaluate` and `include` too.
             pub fn raised(self) -> bool {
                 match self {
                     $(Code::$variant => codes!(@raised $($found)?),)*
@@ -51,20 +52,20 @@ macro_rules! codes {
 
 codes! {
     /// A source cannot be required, or its imports form a cycle.
-    Require "require" [found],
+    Require "require",
     /// A quote is never closed.
-    OpenQuote "open_quote" [found],
+    OpenQuote "open_quote",
     /// A word no definition, builtin or application gives.
-    UnknownWord "unknown_word" [found],
+    UnknownWord "unknown_word",
     /// A parsing word at the end of the program, with nothing to read.
-    MissingToken "missing_token" [found],
+    MissingToken "missing_token",
     /// A name for `define` or `let` that is taken, a number, or a parsing
     /// word.
-    BadName "bad_name" [found],
+    BadName "bad_name",
     /// `define` inside a definition or a block.
-    NotTopLevel "not_top_level" [found],
+    NotTopLevel "not_top_level",
     /// `end`, `else`, `then` or `until` with nothing open for it.
-    Unmatched "unmatched" [found],
+    Unmatched "unmatched",
     /// A definition or block still open at the end.
     Unclosed "unclosed" [found],
     /// A word given fewer values than it takes.
@@ -88,7 +89,7 @@ codes! {
     Fail "fail",
     /// A `try`'s codes not a string written just before it, or naming a
     /// code no word raises.
-    BadCodes "bad_codes" [found],
+    BadCodes "bad_codes",
     /// A value nested deeper than its application carries it (its wire).
     TooLong "too_long",
     /// An application word gave more or fewer values than its vocabulary

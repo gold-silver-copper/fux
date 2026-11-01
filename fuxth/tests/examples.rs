@@ -2,7 +2,7 @@
 //! it leaves (`# expect: …`), or the error it fails with (`# fails: CODE`).
 mod common;
 use common::Toy;
-use fuxth::{Compiler, Machine, Outcome, STDLIB, Vocabulary, token};
+use fuxth::{Machine, Outcome, STDLIB, Vocabulary, token};
 
 /// How a program ended.
 #[derive(Debug, PartialEq)]
@@ -12,21 +12,18 @@ enum Ended {
 }
 
 fn run(name: &str, text: &str) -> Ended {
-    let mut compiler = Compiler::new(Vocabulary::default());
-    let compiled = token::source("stdlib.fux", STDLIB)
-        .and_then(|tokens| compiler.add(&tokens))
-        .and_then(|()| token::source(name, text))
-        .and_then(|tokens| compiler.add(&tokens))
-        .and_then(|()| compiler.finish());
-    let program = match compiled {
-        Ok(program) => program,
+    let mut machine = Machine::new(Vocabulary::default());
+    let read = machine
+        .library("stdlib.fux", STDLIB)
+        .and_then(|_| token::source(name, text));
+    match read {
+        Ok(tokens) => machine.read(tokens, None),
         Err(e) => return Ended::Failed(e.code.name().to_owned()),
-    };
-    let mut machine = Machine::new(program);
+    }
     let mut host = Toy::default();
     match machine.run(&mut host, 50_000_000) {
         Ok(Outcome::Finished) => {
-            let left: Vec<String> = (host.printed.iter().cloned())
+            let left: Vec<String> = (host.printed.iter().map(|p| p.trim_end().to_owned()))
                 .chain(
                     machine
                         .stack()

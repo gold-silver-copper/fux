@@ -3,7 +3,7 @@
 
 # a b n -- fib, stepping a b to b a+b until n is 1; b is the answer, and
 # the next number, which may not fit, is never made
-define fib-step dup 1 eq if drop nip else -rot swap over add rot 1 sub fib-step then end
+define fib-step dup 1 eq if drop nip else -rot swap over add rot 1 sub recurse then end
 # n -- fib(n)
 define fib dup 0 eq if else 0 1 rot fib-step then end
 

@@ -5,7 +5,7 @@
 define no-divisor-from
   2dup dup mul lt if 2drop true else
   2dup mod 0 eq if 2drop false else
-  1 add no-divisor-from then then
+  1 add recurse then then
 end
 # n -- flag
 define prime dup 2 lt if drop false else 2 no-divisor-from then end

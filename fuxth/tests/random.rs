@@ -117,7 +117,7 @@ fn inline(lines: &[&str]) -> Option<String> {
     }
     let end = end?;
     let body = lines.get(start.checked_add(2)?..end)?;
-    if body.contains(&name) {
+    if body.contains(&name) || body.contains(&"recurse") {
         return None;
     }
     let mut out = Vec::new();

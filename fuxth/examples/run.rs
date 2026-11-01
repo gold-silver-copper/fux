@@ -3,8 +3,7 @@
 //! value a line; an error is printed as `fuxth: CODE: MESSAGE` and the
 //! status is 1. `cargo run --release -p fuxth --example run -- FILE`
 use fuxth::{
-    AppValue, Args, Compiler, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary,
-    token,
+    AppValue, Args, Done, Failure, Host, Machine, Outcome, STDLIB, Value, Vocabulary, token,
 };
 use std::io::Write;
 
@@ -34,10 +33,9 @@ impl Host for Bare {
         ))
     }
 
-    fn print(&mut self, line: &str) -> Result<(), Failure> {
+    fn write(&mut self, text: &str) -> Result<(), Failure> {
         let mut out = std::io::stdout().lock();
-        writeln!(out, "{line}")
-            .map_err(|e| Failure::new(fuxth::Code::Host("output"), e.to_string()))
+        write!(out, "{text}").map_err(|e| Failure::new(fuxth::Code::Host("output"), e.to_string()))
     }
 }
 
@@ -45,7 +43,7 @@ fn shown(value: &Value<Nothing>) -> String {
     match value {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
-        Value::Str(_) | Value::List(_) | Value::App(_) => {
+        Value::Str(_) | Value::List(_) | Value::App(_) | Value::Xt(_) | Value::Mark(_) => {
             value.text().unwrap_or_else(|f| f.message)
         }
     }
@@ -53,15 +51,13 @@ fn shown(value: &Value<Nothing>) -> String {
 
 fn run(path: &str) -> Result<Vec<String>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("read: {path}: {e}"))?;
-    // This in-memory embedding deliberately supplies no require loader.
-    let mut compiler = Compiler::new(Vocabulary::default());
-    let compiled = token::source("stdlib.fux", STDLIB)
-        .and_then(|t| compiler.add(&t))
-        .and_then(|()| token::source(path, &text))
-        .and_then(|t| compiler.add(&t))
-        .and_then(|()| compiler.finish());
-    let program = compiled.map_err(|e| e.to_string())?;
-    let mut machine = Machine::new(program);
+    // This in-memory embedding deliberately reads no required files.
+    let mut machine = Machine::new(Vocabulary::default());
+    machine
+        .library("stdlib.fux", STDLIB)
+        .map_err(|e| e.to_string())?;
+    let tokens = token::source(path, &text).map_err(|e| e.to_string())?;
+    machine.read(tokens, None);
     // A program that never ends is stopped as any program is: Ctrl-C.
     loop {
         match machine.run(&mut Bare, u64::MAX) {
