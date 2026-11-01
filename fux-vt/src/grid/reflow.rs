@@ -265,6 +265,13 @@ impl Grid {
                 if to >= taken {
                     break;
                 }
+                // A mark on a cell left out goes with the cell after it.
+                let left_out = base.saturating_add(to);
+                for offset in &mut line.offsets {
+                    if *offset == Some(left_out) {
+                        *offset = left_out.checked_add(1);
+                    }
+                }
                 from = to.saturating_add(1);
             }
             base = base.saturating_add(len);
