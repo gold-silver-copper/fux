@@ -107,8 +107,8 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
             client: None,
         },
     };
-    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
-    stream.write_all(&request.encode().map_err(e)?).map_err(e)?;
+    stream.write_all(&hello.encode()).map_err(e)?;
+    stream.write_all(&request.encode()).map_err(e)?;
     stream.shutdown(std::net::Shutdown::Write).map_err(e)?;
     let mut answer = Vec::new();
     stream.read_to_end(&mut answer).map_err(e)?;

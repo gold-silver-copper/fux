@@ -217,7 +217,7 @@ fux agent-opts 80 24 size str sh program str -c arg str 'echo hello; sleep 1' ar
 A script plays well with the shell. `args` gives the arguments after
 `--file FILE`, `input` the rest of stdin, `read-file` a file's text (UTF-8),
 `getenv` a variable (one not set fails `unset_var`, never
-an empty string); `warn` prints on stderr, and `N exit` ends the program
+an empty string; in a binding, the attached terminal's); `warn` prints on stderr, and `N exit` ends the program
 with exit status N:
 
 ```sh
@@ -310,7 +310,7 @@ prefix again sends it to the pane.
 | `x` | `me me focused confirm-close` | close the pane (asks: `y` or Enter closes, `n` or Esc keeps it) |
 | `z` | `me zoom` | zoom the pane, or restore it |
 | `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
-| `c` | `me edit-history` | the pane's history in `$EDITOR`, in a split that closes when the editor exits |
+| `c` | `me edit-history` | the pane's history in your `$EDITOR`, at its end, in a split that closes when the editor exits |
 | `n` / `b` | `me str next step-tab` / `me str previous step-tab` | next / previous tab |
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
@@ -368,7 +368,7 @@ For example, bind `str 't q' str 'me str last step-tab' bind` in your config.
   `client payload`. The move/swap choosers capture their source once, and
   every row carries its destination handle. Immutable scalars,
   typed handles, records, null and lists are admitted; unfinished
-  requests are refused. The whole screen must fit one 1 MiB frame.
+  requests are refused.
   The receiver checks its own dictionary and each actual payload kind;
   runtime checks cover dynamic fields and require an empty result stack.
   Stale handles refuse rather than selecting a replacement with the same label.
@@ -407,9 +407,11 @@ the lowest number.
 
 ### Copying and pasting
 
-`C-b c` opens the focused pane's history in your editor (`$EDITOR`, else
-`vi`), in a split that closes when the editor exits: search, select and copy
-there (`me edit-history`, a library word).
+`C-b c` opens the focused pane's history in your editor (the attached
+terminal's `$EDITOR`, else `vi`) at its last line, in a split titled
+`history` that closes when the editor exits: search, select and copy there
+(`me edit-history`, a library word). The editor is given `+LINE` before the
+file, as `vi`, `vim`, `nvim`, `nano` and `emacs` all take it.
 
 A program in a pane that copies with OSC 52, as Neovim and Helix do, copies
 to the terminals showing that tab whose `terminal-clipboard` is on
@@ -897,8 +899,8 @@ to `fux.log` beside it.
   file makes one server its owner.
 - Every peer must run as the server's own user (`SO_PEERCRED` on Linux,
   `getpeereid` on macOS); others, root included, are refused.
-- Messages are length-prefixed and at most 1 MiB, checked before anything
-  is made for one.
+- Frames are length-prefixed and at most 1 MiB, checked before anything
+  is made for one; a longer message goes as several.
 
 Anyone who can open the socket can run anything as you (`new-tab`,
 `send-keys`). As with tmux, the socket's permissions are the access

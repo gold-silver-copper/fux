@@ -171,7 +171,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         let Some(pane) = session.parts.panes().get(&id) else {
             continue;
         };
-        if !shows_pictures(session, id) {
+        if !shows_pictures(session, id) || view.runs_in == Some(id) {
             continue;
         }
         for shown in pane.screen().pictures().filter(|s| s.cell == cell) {
@@ -331,7 +331,7 @@ type RowKey = Option<(fux_vt::RowId, u64)>;
 /// size, each pane's place, program (`Pane::starts`) and window size, the
 /// separators, and the focused pane, which colours them. None for a client
 /// shown no tab, or with a pane in colours of its own (`recolour`), whose
-/// rows depend on more than their keys.
+/// rows depend on more than their keys, or its own pane (`View::runs_in`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Frame {
     rows: u16,
@@ -357,7 +357,7 @@ impl Frame {
         for (id, rect) in &placement.panes {
             let pane = session.parts.panes().get(id)?;
             let screen = pane.screen();
-            if own_colours(screen) {
+            if own_colours(screen) || view.runs_in == Some(*id) {
                 return None;
             }
             panes.push((*id, pane.respawns, *rect, screen.size().into()));
@@ -985,6 +985,9 @@ pub fn compose_held(
         }
         grid.memo = None;
     }
+    // The cursor and the mouse are no pane's while the client's own has
+    // the focus (`View::runs_in`).
+    let focus = focus.filter(|focus| view.runs_in != Some(*focus));
     // The cursor: the focused pane's, but only in normal mode: none under
     // an overlay, nor in a repeat mode, whose keys are fux's.
     if let Some(focus) = focus
@@ -1103,6 +1106,18 @@ fn put_panes(
             grid.blank(*rect);
             continue;
         };
+        if view.runs_in == Some(*id) {
+            grid.blank(*rect);
+            let text = clusters("this client");
+            grid.text_cells(
+                rect.y(),
+                rect.x(),
+                text,
+                Attributes::default(),
+                rect.right(),
+            );
+            continue;
+        }
         let screen = pane.screen();
         // A pane whose program changed its colours is drawn in them.
         let colours = own_colours(screen).then_some(screen);

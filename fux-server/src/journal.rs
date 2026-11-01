@@ -365,7 +365,7 @@ pub fn every_kind(
         Told::Done(Some(i32::MIN)),
         Told::Resized(size),
         // The most a pane's budget is (`command::HistoryBytes`).
-        Told::HistoryBudget(1 << 30),
+        Told::HistoryBudget(isize::MAX.unsigned_abs()),
         Told::HistoryCleared,
         ended(fux_wire::answer::Ended::Lost),
         ended(fux_wire::answer::Ended::Exited(i32::MIN)),

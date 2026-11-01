@@ -273,7 +273,7 @@ words! {
         Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and the client's shell or explicit launch" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
         Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (new-tab, new-workspace, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Program Arg];
         Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
-        Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; as much as one request (1 MiB) carries" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
+        Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
         Reading Capture "capture" "capture-source -- capture-source" "a pane screen with its options, or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
@@ -293,9 +293,9 @@ words! {
         Changing Move "move" "pane where --" "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down" "fux %3 str new-tab move" [];
         Changing SwapWith "swap-with" "pane counterpart --" "swap a pane with another pane or its neighbour: left right up down" "fux %3 %4 swap-with" [];
         Changing Reorder "reorder" "handle way --" "move one place: next or previous" "fux @2 str next reorder" [];
-        Changing HistoryBudget "history-budget" "pane integer --" "change this pane's history budget in bytes (0 to 1 GiB); lowering evicts old rows" "fux %3 4194304 history-budget" [];
+        Changing HistoryBudget "history-budget" "pane integer --" "change this pane's history budget in bytes; lowering evicts old rows" "fux %3 4194304 history-budget" [];
         Changing ClearHistory "clear-history" "pane --" "drop the pane's history" "fux %3 clear-history" [];
-        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
+        Clients Attach "attach" "attachable --" "show the server in this terminal (bare fux uses default-attach); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux @2 attach (or bare fux, which runs default-attach)" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients Show "show" "client handle --" "show and follow a pane, tab or workspace" "fux str c1 client %3 show" [];
         Clients StepTab "step-tab" "client way --" "show the next, previous or last visited tab" "fux str c1 client str next step-tab" [];
@@ -326,7 +326,7 @@ words! {
         Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux agent-opts 80 24 size str ./app program new-tab";
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux agent-opts str /srv cwd 80 24 size str ./app program new-tab";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell; its pane stays once it exits" "fux agent-opts 80 24 size str ./app program new-tab";
-        Starting HistoryBytes "history-bytes" "x integer -- x" "history budget for the new pane, in bytes (0 to 1 GiB)" "fux agent-opts 0 history-bytes str /bin/cat program new-tab";
+        Starting HistoryBytes "history-bytes" "x integer -- x" "history budget for the new pane, in bytes" "fux agent-opts 0 history-bytes str /bin/cat program new-tab";
         Starting Reflow "reflow" "x boolean -- x" "whether the new pane rewraps primary-screen lines on resize" "fux agent-opts false reflow str /bin/cat program new-tab";
         Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" "arrows per alternate-screen wheel action (0 to 32767)" "fux agent-opts 3 alternate-scroll-lines str /bin/cat program new-tab";
         Starting PictureBytes "picture-bytes" "x integer -- x" "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux agent-opts 0 picture-bytes str /bin/cat program new-tab";
@@ -2633,57 +2633,6 @@ mod tests {
             let value = Value::App(Fux::Answer(Rc::new(answer), Some(version.run)));
             let refused = super::version(&value).err().map(|f| f.code);
             assert_eq!(refused, Some(fuxth::Code::Type), "{}", value.kind());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn options_past_a_launch_frame_are_refused_before_they_are_copied() -> TestResult {
-        let allocator = fux_vt_peak::ThreadPeak;
-        let list = |item: &str, n| {
-            let list = fuxth::List::new(vec![Value::str(item); n]);
-            Ok::<_, String>(Value::List(std::rc::Rc::new(list)))
-        };
-        let big = std::iter::repeat_n('x', 1 << 20).collect::<String>();
-        // 8 MiB of options on a pane; a list of the same 8 MiB, past a
-        // launch frame.
-        let request_of = |argv| Opts {
-            on: Some(On::Target(AnyRef::Pane(fux_wire::id::PaneId::of(1)))),
-            argv,
-            ..Opts::default()
-        };
-        let unique = || {
-            Value::App(Fux::Opts(std::rc::Rc::new(request_of(vec![
-                big.clone();
-                8
-            ]))))
-        };
-        let fresh = || Value::App(Fux::Opts(std::rc::Rc::default()));
-        let bad = fail(Raise::BadValue, "").code;
-        // An option on what `values` give, or an action consuming them.
-        for (step, values, code) in [
-            (Ok(Opt::ShellProgram), vec![fresh(), list(&big, 8)?], bad),
-            (Err(Act::Respawn), vec![unique()], bad),
-        ] {
-            let mut values = values.into_iter();
-            let mut next = || {
-                values
-                    .next()
-                    .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
-            };
-            let mut sink = Vec::new();
-            let mut host = Host::new(fux_wire::protocol::Context::default(), None, &mut sink);
-            let base = allocator.live();
-            allocator.reset_peak();
-            let refused = match step {
-                Ok(opt) => modify(opt, &mut next).err(),
-                Err(act) => {
-                    let word = Word::Act(act);
-                    host.dispatch(word, &mut next, &mut Vec::new()).err()
-                }
-            };
-            assert_eq!(refused.map(|f| f.code), Some(code), "{step:?}");
-            assert!(allocator.peak().saturating_sub(base) < 64 << 10, "{step:?}");
         }
         Ok(())
     }

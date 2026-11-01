@@ -10,8 +10,9 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// A pane's checked history budget, in bytes.
-pub type HistoryBytes = Number<0, { 1 << 30 }>;
+/// A pane's history budget, in bytes: the user's to size, up to the most
+/// memory one allocation may hold.
+pub type HistoryBytes = Number<0, { isize::MAX.unsigned_abs() }>;
 
 /// The events a server's journal keeps, from its start: a reader further
 /// behind is told how many it missed.
@@ -103,9 +104,6 @@ impl Program {
         {
             return Err(format!("{word:?}: a program's word holds no NUL"));
         }
-        if !Self::fits(std::iter::once(&program).chain(&args).map(String::as_str)) {
-            return Err("program argv exceeds the launch frame limit".to_owned());
-        }
         Ok(Program { program, args })
     }
 
@@ -116,15 +114,6 @@ impl Program {
         argv.rotate_left(first);
         let program = argv.pop().unwrap_or_default();
         Program::new(program, argv)
-    }
-
-    /// Whether `words` fit a launch frame: checked while they are borrowed,
-    /// before any is copied.
-    pub fn fits<'a>(words: impl Iterator<Item = &'a str>) -> bool {
-        let frame = words.fold(4usize, |n, word| {
-            n.saturating_add(4).saturating_add(word.len())
-        });
-        frame <= crate::protocol::MAX_PAYLOAD
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &str> {

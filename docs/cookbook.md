@@ -93,8 +93,9 @@ fux str shell pane 2 quiet string
 
 ## Paste a file
 
-The file's text goes to the program whole, as a paste (bracketed if the
-program asked for it).
+The file's text goes to the program whole, as one paste (bracketed if the
+program asked for it), however long it is. A paste into an attached
+terminal arrives whole too.
 
 ```sh
 printf 'echo pasted\n' > lines.txt
@@ -193,7 +194,8 @@ fux str work workspace dump > work.fux
 
 The config is fuxth that each terminal runs as it attaches;
 `fux list-keys` prints the bundled keys as config lines. `edit-history`
-opens the focused pane's history in `$EDITOR`, bundled on `C-b c`. This
+opens the focused pane's history in this terminal's `$EDITOR` (else `vi`)
+at its last line, bundled on `C-b c`. This
 config moves the prefix to `C-a`, binds `edit-history` on `e` too, and
 binds a word of its own on `v`.
 

@@ -376,11 +376,10 @@ impl Fixture {
                 .map_err(|e| e.to_string())?
                 .preferences
                 .presentation(),
+            ancestry: Vec::new(),
         };
         for frame in [hello.encode(), attach.encode()] {
-            stream
-                .write_all(&frame.map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
+            stream.write_all(&frame).map_err(|e| e.to_string())?;
         }
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))

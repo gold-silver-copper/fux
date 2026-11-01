@@ -50,7 +50,7 @@ impl<'a> Reader<'a> {
         &mut self,
         mut read: impl FnMut(&mut Self) -> Result<T, Error>,
     ) -> Result<Vec<T>, Error> {
-        let count = u32::get(self)? as usize;
+        let count = length(self)?;
         if count > self.0.len() {
             return Err(Error::Truncated);
         }
@@ -196,17 +196,39 @@ impl Wire for bool {
     }
 }
 
+/// A count or a length: four bytes; or, for one of `u32::MAX` or more,
+/// `u32::MAX` and then eight, so any length a value may have goes whole,
+/// and a shorter one as it always has (a `Hello`'s, which every version
+/// reads).
+fn put_length(length: usize, out: &mut impl Sink) {
+    match u32::try_from(length) {
+        Ok(short) if short < u32::MAX => short.put(out),
+        _ => {
+            u32::MAX.put(out);
+            length.put(out);
+        }
+    }
+}
+
+/// A count or a length, as `put_length` writes it.
+fn length(r: &mut Reader<'_>) -> Result<usize, Error> {
+    match u32::get(r)? {
+        u32::MAX => usize::get(r),
+        short => usize::try_from(short).map_err(|_| Error::Bad("count")),
+    }
+}
+
 /// Values, after their count: a list's, variables', a system string's
 /// bytes.
 fn put_list<T: Wire>(items: &[T], out: &mut impl crate::wire::Sink) {
-    u32::try_from(items.len()).unwrap_or(u32::MAX).put(out);
+    put_length(items.len(), out);
     for item in items {
         item.put(out);
     }
 }
 
 fn put_bytes(bytes: &[u8], out: &mut impl Sink) {
-    u32::try_from(bytes.len()).unwrap_or(u32::MAX).put(out);
+    put_length(bytes.len(), out);
     out.extend_from_slice(bytes);
 }
 
@@ -215,7 +237,7 @@ impl Wire for String {
         put_bytes(self.as_bytes(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let len = u32::get(r)? as usize;
+        let len = length(r)?;
         let bytes = r.bytes(len)?;
         let text = std::str::from_utf8(bytes).map_err(|_| Error::NotUtf8)?;
         Ok(text.to_owned())
@@ -818,6 +840,31 @@ mod tests {
         assert_eq!(dot.map(|k| encode(&k)), Some(text(".")));
     }
 
+    /// A length goes whole whatever its size: as four bytes below
+    /// `u32::MAX`, as it always has, and as twelve from there, never cut
+    /// short; one claiming more than the bytes left is refused.
+    #[test]
+    fn a_length_of_any_size_goes_whole() -> TestResult {
+        let most = usize::try_from(u32::MAX)?;
+        for (n, bytes) in [
+            (0, 4),
+            (most - 1, 4),
+            (most, 12),
+            (most + 1, 12),
+            (usize::MAX, 12),
+        ] {
+            let mut out = Vec::new();
+            put_length(n, &mut out);
+            assert_eq!(out.len(), bytes, "{n}");
+            assert_eq!(length(&mut Reader::new(&out)), Ok(n));
+        }
+        let mut claim = Vec::new();
+        put_length(most + 1, &mut claim);
+        claim.extend_from_slice(b"short");
+        assert_eq!(Reader::new(&claim).whole::<String>(), Err(Error::Truncated));
+        Ok(())
+    }
+
     #[test]
     fn numeric_tokens_round_trip() -> TestResult {
         fn token<T: Wire + std::str::FromStr + std::fmt::Debug + PartialEq>(
@@ -915,7 +962,7 @@ mod tests {
         let encoded = encode(&policy);
         assert_eq!(Reader::new(&encoded).whole::<PaneOptions>(), Ok(policy));
         let mut invalid = Vec::new();
-        ((1usize << 30) + 1).put(&mut invalid);
+        usize::MAX.put(&mut invalid);
         false.put(&mut invalid);
         assert_eq!(
             Reader::new(&invalid).whole::<PaneOptions>(),

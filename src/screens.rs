@@ -11,7 +11,6 @@ use fux_vt::keys::decode::Input;
 use fux_vt::keys::{KeyPress, Keystroke};
 use fux_wire::act::{Act, LineAct, List, ListAct, Panel, ScreenAct};
 use fux_wire::callback::{Callback, Data, ListScreen, Open, Prompt};
-use fux_wire::protocol::MAX_FRAME;
 
 /// One of a client's screens, or none: its keys then go through its
 /// bindings, in the middle of what `Held` says. So nothing is held for the
@@ -57,7 +56,7 @@ impl Display {
             .ok_or_else(|| "screen opening ids exhausted".into())
     }
 
-    /// Open a new instance, if it fits the frame it is shown in.
+    /// Open a new instance.
     pub fn open(&mut self, screen: Screen, modes: &Modes) -> Vec<Act> {
         let opening = match self.next() {
             Ok(opening) => opening,
@@ -66,11 +65,6 @@ impl Display {
         let Some(act) = screen.panel(modes).map(ScreenAct::Show) else {
             return Vec::new();
         };
-        if !fits(&act) {
-            let text =
-                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
-            return vec![Act::Notice { text, error: true }];
-        }
         self.opening = opening;
         self.screen = screen;
         vec![Act::Screen { opening, act }]
@@ -244,16 +238,11 @@ impl Screen {
         match input {
             Input::Key(stroke) => self.key(keymap, stroke, read_only),
             Input::Reply(reply) => send(Act::Reply(reply)),
-            Input::Paste(_) | Input::PasteTooLong if read_only => {
-                send(crate::keymap::watching(keymap))
-            }
+            Input::Paste(_) if read_only => send(crate::keymap::watching(keymap)),
             Input::FocusIn | Input::FocusOut | Input::Mouse(_) if read_only => Vec::new(),
             Input::Paste(text) => self.paste(&keymap.modes, &text),
-            Input::PasteTooLong => {
-                let limit = fux_vt::keys::decode::PASTE_LIMIT / 1024;
-                let text = format!("paste exceeds {limit} KiB; discarded");
-                send(Act::Notice { text, error: true })
-            }
+            // Never: the client's decoder keeps a paste of any length.
+            Input::PasteTooLong => Vec::new(),
             Input::FocusIn => send(Act::Focus(true)),
             Input::FocusOut => send(Act::Focus(false)),
             Input::Mouse(_) if self.is_open() => Vec::new(),
@@ -341,18 +330,11 @@ impl Screen {
                 std::iter::once(HIDE).chain(job.map(Effect::Run)).collect()
             }
             LineAct::Edit(edit) => {
-                let before = prompt.line.clone();
-                let mut refused = prompt.line.edit(&edit).err();
+                let refused = prompt.line.edit(&edit).err();
                 *self = Self::Prompt(prompt);
-                let mut shown = self.panel(modes).map(ScreenAct::Show);
-                if shown.as_ref().is_some_and(|act| !fits(act)) {
-                    if let Self::Prompt(prompt) = self {
-                        prompt.line = before;
-                    }
-                    shown = self.panel(modes).map(ScreenAct::Show);
-                    refused = Some(past_a_frame());
-                }
-                let shown = shown.map(Effect::Screen);
+                let shown = self
+                    .panel(modes)
+                    .map(|p| Effect::Screen(ScreenAct::Show(p)));
                 shown.into_iter().chain(refused.map(refusal)).collect()
             }
         }
@@ -362,19 +344,6 @@ impl Screen {
 /// A line's refusal of an edit, told as an error's notice.
 fn refusal(text: String) -> Effect {
     Effect::Send(Act::Notice { text, error: true })
-}
-
-/// Whether `act` fits the one frame it is sent to the server in.
-fn fits(act: &ScreenAct) -> bool {
-    use fux_wire::protocol::{AttachedFrame, Frame};
-    let act = act.clone();
-    let frame = AttachedFrame::Act(Box::new(Act::Screen { opening: 0, act }));
-    frame.encode().is_ok()
-}
-
-/// Why an edit that would take a line past its frame was refused.
-fn past_a_frame() -> String {
-    format!("a line holds what one frame ({MAX_FRAME} bytes) does: nothing was typed")
 }
 
 #[cfg(test)]
@@ -517,38 +486,6 @@ mod tests {
             screen: None,
         };
         assert_eq!(ran, [Effect::Screen(ScreenAct::Hide), Effect::Run(job)]);
-        Ok(())
-    }
-
-    /// An edit that would take a prompt's line past the frame it is
-    /// shown in is refused, the line as it was: a display is never too
-    /// large to send.
-    #[test]
-    fn an_edit_past_a_frame_is_refused() -> Result<(), String> {
-        let modes = crate::script::default_state()
-            .map(|state| state.keys)
-            .map_err(|e| e.to_string())?
-            .modes;
-        let title = std::iter::repeat_n('t', fux_wire::protocol::MAX_FRAME - 2048).collect();
-        let mut screen = Screen::Prompt(Prompt {
-            title,
-            line: Line::new(String::new()),
-            action: None,
-        });
-        assert!(
-            screen
-                .panel(&modes)
-                .is_some_and(|p| fits(&ScreenAct::Show(p)))
-        );
-        let typed = std::iter::repeat_n('x', 4096).collect();
-        let edit = LineAct::Edit(fux_wire::act::Edit::Insert(typed));
-        let Screen::Prompt(prompt) = &screen else {
-            return Err("not a prompt".into());
-        };
-        let prompt = prompt.clone();
-        let effects = screen.prompt(&modes, prompt, edit);
-        assert!(effects.contains(&refusal(past_a_frame())), "{effects:?}");
-        assert!(matches!(&screen, Screen::Prompt(p) if p.line.before().is_empty()));
         Ok(())
     }
 

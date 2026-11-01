@@ -464,7 +464,7 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
         version: "0".into(),
         role: Role::Command,
     };
-    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+    stream.write_all(&hello.encode()).map_err(e)?;
     let ls = Asked {
         after: None,
         request: Request::Do(Cmd::Inspect {
@@ -473,7 +473,7 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
         }),
         context: Context::default(),
     };
-    let ls = ls.encode().map_err(e)?;
+    let ls = ls.encode();
     stream.set_nonblocking(true).map_err(e)?;
     let (mut sent, mut at) = (0, 0);
     while sent < MOST {

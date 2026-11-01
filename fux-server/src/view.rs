@@ -1,6 +1,6 @@
 //! One attached client's own view of the shared state.
 use fux_wire::act::Panel;
-use fux_wire::id::{ClientId, TabId, WsId};
+use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::Rect;
 use fux_wire::presentation::Presentation;
 
@@ -66,6 +66,13 @@ pub struct View {
     /// It only watches (`watch`): its keys and clicks do nothing but
     /// detach it.
     pub read_only: bool,
+    /// The pane its client runs in, if one of this server's: the one whose
+    /// program is among its ancestors (`Attach::ancestry`), or leads its
+    /// session. Composed from
+    /// the client's own screen it would draw itself forever, and typed into
+    /// it would read its own keys back, so it shows as a placeholder
+    /// (`render`) and takes none of the client's input (`input`).
+    pub runs_in: Option<PaneId>,
 }
 
 impl View {
@@ -87,6 +94,7 @@ impl View {
             last_bell: None,
             title: None,
             read_only: false,
+            runs_in: None,
         }
     }
 
