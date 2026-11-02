@@ -576,7 +576,7 @@ pub fn start_server(
     let mut child = command.spawn().map_err(failed("starting a server"))?;
     let mut said = Vec::new();
     if let Some(stdout) = child.stdout.take() {
-        let line = io::BufReader::new(stdout.take(64)).read_until(b'\n', &mut said);
+        let line = io::BufReader::new(stdout.take(64 << 10)).read_until(b'\n', &mut said);
         line.map_err(failed("reading the server"))?;
     }
     // Dropping a `Child` neither waits for nor kills it.
@@ -584,7 +584,12 @@ pub fn start_server(
         return Ok(());
     }
     let status = child.wait().map_err(failed("waiting for the server"))?;
-    let why = format!("the server exited ({status}); see {}", log.display());
+    // A server that refused to start says why.
+    let refused = String::from_utf8_lossy(&said);
+    let why = match refused.trim_end().strip_prefix("fux server: ") {
+        Some(why) => why.to_owned(),
+        None => format!("the server exited ({status}); see {}", log.display()),
+    };
     Err(Error::Failed(why))
 }
 
@@ -1620,7 +1625,13 @@ fn attached(
         if is(STREAM) && !read_more(stream, decoder)? {
             let welcomed = keyboard.is_some();
             let ended = last_frames(stream, decoder, welcomed, output.as_deref_mut());
-            return ended.unwrap_or_else(|| Ok("the server closed the connection".into()));
+            // A server that stops says so first (`Exit`): without a word,
+            // it crashed, its run waiting for the next, or this
+            // connection's own process ended.
+            let crashed = "the connection to the fux server ended without a word: it, or the \
+                           server, crashed; `fux` attaches again, and takes a crashed server's \
+                           panes back";
+            return ended.unwrap_or_else(|| Ok(crashed.into()));
         }
     }
 }

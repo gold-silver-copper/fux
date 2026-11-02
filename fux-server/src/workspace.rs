@@ -10,10 +10,10 @@
 //!
 //! [`Parts`] holds them with the journal of what happened to them: what
 //! events tell is changed only here, by methods that journal the change
-//! as they make it, and by a pane's own, which a [`PaneMut`] gives the
-//! journal at the pane's place.
+//! as they make it, and by what each pane tells, which the session
+//! journals at the pane's place as it updates its copy (`copy`).
+use crate::copy::Copy as Pane;
 use crate::journal::{Change, Close, Event, Journal, PaneEvent, ViewChange};
-use crate::pane::{Pane, PaneMut};
 use fux_wire::command::{AnyRef, Sibling};
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
@@ -30,6 +30,7 @@ pub trait Child {
 
 /// Children shown one at a time: each attached client is shown its own,
 /// while there is any.
+#[derive(Clone)]
 pub struct Stack<C: Child> {
     children: Vec<C>,
     shown: BTreeMap<ClientId, Shown<C::Id>>,
@@ -91,6 +92,7 @@ impl<C: Child> Stack<C> {
 }
 
 /// A workspace's child: one of its tabs, or a workspace in it.
+#[derive(Clone)]
 pub enum Node {
     Tab(Tab),
     Workspace(Workspace),
@@ -108,6 +110,7 @@ impl Child for Node {
 
 /// A workspace and its children, of which it always has one or more: each
 /// is made with one, and closes as its last leaves.
+#[derive(Clone)]
 pub struct Workspace {
     /// Given as it is made, and never changed: its events' place.
     id: WsId,
@@ -122,6 +125,7 @@ impl Child for Workspace {
     }
 }
 
+#[derive(Clone)]
 pub struct Tab {
     /// Given as it is made, and never changed: its events' place.
     id: TabId,
@@ -501,8 +505,13 @@ pub struct Parts {
     /// Each in one tab: a pane is added in its place and leaves with it.
     panes: BTreeMap<PaneId, Pane>,
     journal: Journal,
-    /// Panes given input since the last sweep; at most one entry per pane.
-    input: BTreeSet<PaneId>,
+}
+
+/// A tree as it was, to be put back (`Parts::structure`).
+pub(crate) struct Structure {
+    workspaces: Stack<Workspace>,
+    names: BTreeMap<PaneId, Option<String>>,
+    parents: BTreeMap<WsId, WsId>,
 }
 
 /// The workspaces a kill closes as it empties them: none (it kills a pane
@@ -627,7 +636,6 @@ impl Parts {
             },
             panes: BTreeMap::new(),
             journal: Journal::new(journal),
-            input: BTreeSet::new(),
         }
     }
 
@@ -1040,54 +1048,47 @@ impl Parts {
         &self.journal
     }
 
+    /// Its journal's entries from `mark` on let go (`Journal::truncate`).
+    pub(crate) fn truncate_journal(&mut self, mark: fux_wire::events::Seq) {
+        self.journal.truncate(mark);
+    }
+
     /// The workspace and tab that hold pane `pane`.
     pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
         (self.find_tab(&mut |t| t.holds(pane))).map(|(ws, t)| (ws, t.id))
     }
 
-    /// Pane `id`, to change.
-    pub fn pane_mut(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
+    /// Pane `id`, to change as its pane tells (`Session::told`).
+    pub(crate) fn pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
+        self.panes.get_mut(&id)
+    }
+
+    /// Pane `id`, told it is at `at` and what it told there: journaled at
+    /// its place, as `actor`, and its copy changed to match, in one step.
+    pub(crate) fn told(
+        &mut self,
+        id: PaneId,
+        told: crate::journal::Told,
+        actor: Actor,
+        counts: fux_wire::command::Counts,
+    ) -> Option<()> {
         let at = self.locate(id)?;
-        Some(PaneMut::new(
-            self.panes.get_mut(&id)?,
-            at,
-            &mut self.journal,
-            &mut self.input,
-        ))
+        let pane = self.panes.get_mut(&id)?;
+        pane.told(&told, counts);
+        let event = Event::Pane((at, id), PaneEvent::Told(told));
+        self.journal.push_from(event, actor);
+        Some(())
     }
 
-    /// Changes each pane with `change`, tab by tab: each at the place it
-    /// is found, not looked for again.
-    pub fn each_pane_mut(&mut self, mut change: impl FnMut(&mut PaneMut<'_>)) {
-        let Parts {
-            workspaces,
-            panes,
-            journal,
-            input,
-        } = self;
-        for ws in &workspaces.children {
-            ws.each(&mut |ws| {
-                for tab in ws.tabs() {
-                    for id in tab.root.panes() {
-                        if let Some(pane) = panes.get_mut(&id) {
-                            change(&mut PaneMut::new(pane, (ws.id, tab.id), journal, input));
-                        }
-                    }
-                }
-            });
+    /// Names pane `id` `name`: journaled, if it is another.
+    pub(crate) fn rename_pane(&mut self, id: PaneId, name: String) -> Option<()> {
+        let at = self.locate(id)?;
+        let pane = self.panes.get_mut(&id)?;
+        if pane.rename(name.clone()) {
+            let told = PaneEvent::Told(crate::journal::Told::Renamed(name));
+            self.journal.push(Event::Pane((at, id), told));
         }
-    }
-
-    /// Writes only newly queued input. An unwritable remainder waits for
-    /// PTY readiness, rather than being retried by every unrelated event.
-    pub(crate) fn write_input(&mut self) -> bool {
-        let mut wrote = false;
-        while let Some(id) = self.input.pop_first() {
-            if let Some(pane) = self.panes.get_mut(&id) {
-                wrote |= pane.write_input();
-            }
-        }
-        wrote
+        Some(())
     }
 
     /// Adds workspaces `made`, each in the one before and the first in
@@ -1269,7 +1270,6 @@ impl Parts {
                 Some(rest) => tab.edit(&mut parts.journal, at.0, |root| *root = rest),
                 None => parts.drop_tab(at.1, Close::Emptied, Killing::None),
             }
-            parts.input.remove(&id);
             parts.panes.remove(&id)
         })
     }
@@ -1283,7 +1283,6 @@ impl Parts {
         let panes = t.root.panes();
         self.viewing(|parts| {
             for &pane in &panes {
-                parts.input.remove(&pane);
                 let closed = PaneEvent::Closed(Close::Killed);
                 (parts.journal).push(Event::Pane(((ws, tab), pane), closed));
             }
@@ -1510,36 +1509,133 @@ impl Parts {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session::testing::{run, started};
-    use std::time::Instant;
+impl Parts {
+    /// Its tree, as its run's record holds it (`record`).
+    pub(crate) fn record(&self) -> Vec<crate::record::Workspace> {
+        fn ws(of: &Workspace, panes: &BTreeMap<PaneId, Pane>) -> crate::record::Workspace {
+            use crate::record::Child as Recorded;
+            let children = (of.children.children.iter()).map(|child| match child {
+                Node::Tab(tab) => Recorded::Tab(crate::record::Tab {
+                    id: tab.id,
+                    name: tab.name.clone(),
+                    nodes: tab.root.nodes(),
+                    revision: tab.revision,
+                    fixed: matches!(tab.fit, Fit::Fixed(_)),
+                    size: tab.fit.size(),
+                    zoomed: tab.zoomed,
+                    panes: (tab.root.panes().into_iter())
+                        .filter_map(|p| Some(panes.get(&p)?.record()))
+                        .collect(),
+                }),
+                Node::Workspace(inner) => Recorded::Workspace(ws(inner, panes)),
+            });
+            crate::record::Workspace {
+                id: of.id,
+                name: of.name.clone(),
+                children: children.collect(),
+            }
+        }
+        (self.workspaces.children.iter())
+            .map(|w| ws(w, &self.panes))
+            .collect()
+    }
 
-    #[test]
-    fn only_new_input_schedules_a_pane_for_the_sweep() -> Result<(), String> {
-        let mut session = started()?;
-        run(&mut session, "%1 str horizontal axis split drop")?;
-        let one = PaneId::of(1);
-        let two = PaneId::of(2);
-        let now = Instant::now();
-        session.output(one, b"\x1b[6n", now);
-        assert_eq!(session.parts.input, BTreeSet::from([one]));
-        assert!(!session.parts.write_input(), "no processes in this session");
-        session.parts.each_pane_mut(|p| p.keeps_size());
-        session.output(two, b"plain output", now);
-        assert!(session.parts.input.is_empty(), "old input is left to poll");
-        session
-            .parts
-            .pane_mut(two)
-            .ok_or("pane")?
-            .push_with(|_, bytes| bytes.extend_from_slice(b"key"));
-        assert_eq!(session.parts.input, BTreeSet::from([two]));
-        session.parts.close_pane(two, Close::Killed).ok_or("pane")?;
-        assert!(
-            session.parts.input.is_empty(),
-            "closed panes leave no entries"
-        );
-        Ok(())
+    /// Its tree as it is: what `restructure` puts back.
+    pub(crate) fn structure(&self) -> Structure {
+        Structure {
+            workspaces: self.workspaces.clone(),
+            names: (self.panes.iter())
+                .map(|(id, pane)| (*id, pane.name().map(str::to_owned)))
+                .collect(),
+            parents: self.journal.nesting(),
+        }
+    }
+
+    /// Copies of panes closed, put back as a change is undone (`restructure`
+    /// places them again).
+    pub(crate) fn put_back(&mut self, panes: Vec<Pane>) {
+        for pane in panes {
+            self.panes.insert(pane.id(), pane);
+        }
+    }
+
+    /// Its tree as `structure` took it, the names its panes had then: the
+    /// panes made since are let go, and their ids given back.
+    pub(crate) fn restructure(&mut self, structure: Structure) -> Vec<PaneId> {
+        self.workspaces = structure.workspaces;
+        let made: Vec<PaneId> = (self.panes.keys())
+            .filter(|id| !structure.names.contains_key(id))
+            .copied()
+            .collect();
+        for id in &made {
+            self.panes.remove(id);
+        }
+        for (id, name) in structure.names {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                pane.renamed(name);
+            }
+        }
+        self.journal.renest(structure.parents);
+        made
+    }
+
+    /// The tree `workspaces` records (`record`), holding `panes`, its
+    /// journal keeping `journal` events, no client shown it yet: as a
+    /// server takes a run back.
+    pub(crate) fn restore(
+        journal: fux_wire::command::JournalEntries,
+        workspaces: &[crate::record::Workspace],
+        panes: BTreeMap<PaneId, Pane>,
+    ) -> Result<Parts, fux_wire::code::Error> {
+        fn ws(
+            parts: &mut Parts,
+            recorded: &crate::record::Workspace,
+            parent: Option<WsId>,
+        ) -> Result<Workspace, fux_wire::code::Error> {
+            use crate::record::Child as Recorded;
+            parts.journal.nest(recorded.id, parent);
+            let mut children = Vec::new();
+            for child in &recorded.children {
+                children.push(match child {
+                    Recorded::Tab(tab) => {
+                        let panes: Vec<PaneId> = tab.panes.iter().map(|p| p.id).collect();
+                        let fit = match tab.fit_fixed() {
+                            true => Fit::Fixed(tab.size),
+                            false => Fit::Clients(tab.size),
+                        };
+                        Node::Tab(Tab {
+                            id: tab.id,
+                            name: tab.name.clone(),
+                            root: fux_wire::layout::from_nodes(&tab.nodes, &panes)?,
+                            revision: tab.revision,
+                            changed: true,
+                            fit,
+                            zoomed: tab.zoomed,
+                            seats: BTreeMap::new(),
+                            typist: None,
+                        })
+                    }
+                    Recorded::Workspace(inner) => {
+                        Node::Workspace(ws(parts, inner, Some(recorded.id))?)
+                    }
+                });
+            }
+            Ok(Workspace {
+                id: recorded.id,
+                name: recorded.name.clone(),
+                children: Stack {
+                    children,
+                    shown: BTreeMap::new(),
+                },
+            })
+        }
+        let mut parts = Parts::new(journal);
+        let mut top = Vec::new();
+        for recorded in workspaces {
+            top.push(ws(&mut parts, recorded, None)?);
+        }
+        parts.workspaces.children = top;
+        parts.panes = panes;
+        Ok(parts)
     }
 }

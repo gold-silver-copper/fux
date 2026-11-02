@@ -628,11 +628,19 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
     let mut b = server.attach(8, 60)?;
     a.wait_for("$")?;
     b.wait_for("$")?;
-    server.ok(&["str c1 client str F5 key send-keys drop"])?;
+    // Its id as it was welcomed: two clients attaching at once are given
+    // theirs in the order their connections' processes reach the server.
+    let id = a.id.clone().ok_or("a's id")?;
+    // Answered once its client took the keys, so it is pumped meanwhile.
+    let mut sending = server.spawn(&[&format!("str {id} client str F5 key send-keys drop")])?;
     eventually("committed title before the wait finishes", || {
         a.pump()?;
         b.pump()?;
         Ok(String::from_utf8_lossy(&a.painted).contains("\x1b]2;"))
+    })?;
+    eventually("the keys taken", || {
+        a.pump()?;
+        Ok(sending.try_wait().map_err(e)?.is_some_and(|s| s.success()))
     })?;
     assert!(!String::from_utf8_lossy(&b.painted).contains("\x1b]2;"));
     Ok(())

@@ -20,6 +20,7 @@ pub struct Notice {
 
 /// What a view shows over its panes: nothing, or one of its client's
 /// screens (the client owns it, and the server draws it).
+#[derive(Clone)]
 pub enum Mode {
     Normal,
     Panel(Panel),
@@ -55,6 +56,7 @@ pub enum ClientKind {
     Headless,
 }
 
+#[derive(Clone)]
 pub struct View {
     /// This connection's committed presentation, supplied at attach.
     pub presentation: Presentation,

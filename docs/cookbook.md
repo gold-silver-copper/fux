@@ -249,6 +249,50 @@ timeout 2 fux str shell pane str 'never shown' 600 shows || [ $? -eq 124 ]
 fux opts str work in 80 24 size str timeout program str 2 arg str sleep arg str 600 arg new-tab 60 until-ended str program get str exited get
 ```
 
+## Cap one pane's memory
+
+Each pane runs in a process of its own (`fux __pane`), its program's
+parent, which holds its terminal: its screen, its history and the input
+waiting for its program. fux sets no limit of its own; the system's caps
+that process, and one past its cap ends alone. Its pane reads
+`read_failed`, saying how its process ended, then its program's end; the
+server and every other pane go on. `prlimit` (Linux) caps one pane's
+address space:
+
+```sh
+P=$(ps -o ppid= -p "$(fux str shell pane str program get str pid get)" | tr -d ' ')
+prlimit --pid "$P" --as=$((2 << 30))
+```
+
+To cap a whole run, start its server in a scope of its own:
+`systemd-run --user --scope -p MemoryMax=4G -p OOMPolicy=continue fux
+start`. `OOMPolicy=continue` keeps the scope when the OOM killer ends a
+process in it, which is then the biggest, the pane that flooded, rather
+than every process in it.
+
+## Take a crashed server's panes back
+
+A server killed with `kill -9`, or by the OOM killer, ends alone: its
+panes' processes wait, with their programs, beside its socket. `fux start`
+on that socket takes them back, as they were: their ids, names, screens
+and programs. Its journal is new: a cursor from before is refused,
+saying what was lost.
+
+```sh
+(
+  export FUX_SOCKET="$PWD/crash/fux.sock"
+  fux start
+  fux opts str work in 80 24 size str sleep program str 600 arg new-tab str sleeper rename > /dev/null
+  P=$(fux str sleeper pane str program get str pid get)
+  kill -9 "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
+  while fux status > /dev/null 2>&1; do sleep 0.1; done
+  fux start
+  fux ls listing
+  [ "$(fux str sleeper pane str program get str pid get)" = "$P" ]
+  fux kill-server
+)
+```
+
 ## A project with agent workspaces
 
 A workspace holds tabs and workspaces. `in` again names a workspace in the

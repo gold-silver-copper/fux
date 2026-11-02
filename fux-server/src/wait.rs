@@ -12,10 +12,11 @@
 //! and when its time is up (`Waiting::due`); so too a respawn under way,
 //! answered once it is done.
 use crate::after;
-use crate::pane::Pane;
+use crate::copy::Copy as Pane;
+use crate::link::Answered;
 use crate::session::Session;
 use fux_wire::answer::{Change, PaneAnswer, PaneResults};
-use fux_wire::command::{Counts, Run, Version};
+use fux_wire::command::{Counts, Program, Run, Version};
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::protocol::Reply;
 use std::time::{Duration, Instant};
@@ -42,16 +43,8 @@ pub enum Waiting {
     Events(crate::journal::Read),
     /// A wait (`wait`, or an action given wait words).
     Change(Watch),
-    /// A respawn whose pane's old program left output still read, in
-    /// turns, before the new one takes over (`Session::respawn`): answered
-    /// `reply` once its pane has been respawned `respawns` times, a failure
-    /// if the pane closes first. Nothing else ends it: a respawn under way
-    /// is the pane's, done whether or not the one who asked stays.
-    Respawn {
-        pane: PaneId,
-        respawns: u64,
-        reply: Reply,
-    },
+    /// What panes were asked, answered as they answer (`Pending`).
+    Asked(Pending),
     /// What only a client knows (`keys`, `preferences`), asked of it with
     /// the number `asked`: its `Answer` with that number replies
     /// (`Server`); a failure if it goes first.
@@ -78,23 +71,16 @@ impl Waiting {
         match self {
             Waiting::Events(read) => Some(read.deadline),
             Waiting::Change(watch) => watch.deadline.map(|(at, _)| at),
-            Waiting::Respawn { .. } | Waiting::Read { .. } => None,
+            Waiting::Asked(_) | Waiting::Read { .. } => None,
         }
     }
 
     /// Its answer, if it has one at `now`.
-    pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Reply> {
+    pub fn answer(&mut self, session: &mut Session, now: Instant) -> Option<Reply> {
         match self {
             Waiting::Events(read) => read.answer(session, now),
             Waiting::Change(watch) => watch.answer(session, now),
-            Waiting::Respawn {
-                pane: id,
-                respawns,
-                reply,
-            } => match session.parts.panes().get(id) {
-                None => Some(PaneResults::One(PaneAnswer::Closed(*id)).into()),
-                Some(pane) => (pane.respawns >= *respawns).then(|| reply.clone()),
-            },
+            Waiting::Asked(pending) => pending.answer(session),
             Waiting::Read { client, .. } => (!session.views.contains_key(client)).then(|| {
                 let why = format!("{client} detached before it answered");
                 Reply::failed(fux_wire::code::Code::NoClient, why)
@@ -103,11 +89,51 @@ impl Waiting {
     }
 }
 
+/// Questions asked of panes (`Session::ask`), each pane's by its number,
+/// answered once every one is, as `form` makes their answers one.
+pub struct Pending {
+    pub asks: Vec<(PaneId, u64)>,
+    form: Form,
+}
+
+/// How the answers of a `Pending` make its reply.
+#[derive(Clone, Debug)]
+pub enum Form {
+    /// One pane's answer is the reply.
+    One,
+    /// Each pane's, of a tab's or workspace's: the versions of those that
+    /// took it; if one refused, the first refusal, saying which took it
+    /// (D-120 (4)).
+    Many,
+    /// A capture's: its place, its name and the journal's cursor given it
+    /// as it comes (`Session::captured`).
+    Capture,
+    /// A respawn's: its pane's program takes these words, once it starts.
+    Respawn(Option<Program>),
+}
+
+impl Pending {
+    pub fn new(asks: Vec<(PaneId, u64)>, form: Form) -> Pending {
+        Pending { asks, form }
+    }
+
+    /// Its reply, once every pane answered: each answer taken.
+    fn answer(&mut self, session: &mut Session) -> Option<Reply> {
+        if !(self.asks.iter()).all(|(_, ask)| session.answered_yet(*ask)) {
+            return None;
+        }
+        let answers: Vec<(PaneId, Option<Answered>)> = (self.asks.iter())
+            .map(|(pane, ask)| (*pane, session.answer_to(*ask)))
+            .collect();
+        Some(session.replied(answers, &self.form))
+    }
+}
+
 /// A wait under way: what it watches, in the server run `run`.
 pub struct Watch {
     watches: Watches,
     run: Run,
-    /// When it answers a timeout (later while a pane is mid-frame), and
+    /// When it answers a timeout, and
     /// after how long, as the request says; with none, it waits until
     /// something changes.
     deadline: Option<(Instant, Duration)>,
@@ -116,19 +142,13 @@ pub struct Watch {
 impl Watch {
     /// Its answer, if it has one at `now`: each pane that changed, exited
     /// or closed, the first failing one's code naming the whole, each
-    /// failing one saying why; at its limit, each pane as it stands. A pane
-    /// part way through a frame has changed, though it answers only once
-    /// the frame is whole, the rest of which is read already: so it holds
-    /// the answer past the limit until then, rather than say it is
-    /// unchanged.
+    /// failing one saying why; at its limit, each pane as it stands.
     pub fn answer(&self, session: &Session, now: Instant) -> Option<Reply> {
         let pane = |id| session.parts.panes().get(id);
         let told: Vec<PaneAnswer> = (self.watches.all().iter())
             .filter_map(|(id, since)| told(*id, pane(id), *since, self.run))
             .collect();
-        let framing =
-            (self.watches.all().iter()).any(|(id, _)| pane(id).is_some_and(Pane::mid_frame));
-        let due = self.deadline.filter(|(at, _)| now >= *at && !framing);
+        let due = self.deadline.filter(|(at, _)| now >= *at);
         let told = match (told.is_empty(), due) {
             (false, _) => told,
             (true, Some((_, limit))) => (self.watches.all().iter())
@@ -163,10 +183,9 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Pane
         return Some(PaneAnswer::Closed(id));
     };
     let now = pane.counts();
-    // Part way through a frame (synchronized output, the rest of it already
-    // read and kept for the next turn): its screen is one the program never
-    // meant shown, so a wait answers once the frame is whole.
-    if now == since || pane.mid_frame() {
+    // A pane tells nothing part way through a frame (synchronized output):
+    // a frame's change comes whole (`Host::take`).
+    if now == since {
         return None;
     }
     // A program started again is a new one: what its counts are now says
@@ -188,45 +207,14 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Pane
     Some(PaneAnswer::Changed {
         version: pane.version(run),
         changed,
-        ended: (pane.process().exit_status()).filter(|_| new),
+        ended: pane.exit_status().filter(|_| new),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::pane::Pane;
-    use crate::pane::tests::Lone;
-    use fux_wire::command::{Counts, Run, Version};
+    use fux_wire::command::{Counts, Version};
     use fux_wire::id::PaneId;
-    use std::time::Instant;
-
-    /// A wait answers no change part way through a frame, and the frame's
-    /// whole screen once it is read.
-    #[test]
-    fn a_wait_answers_a_frame_whole() -> Result<(), Box<dyn std::error::Error>> {
-        let size = fux_vt::Size::new(50, 200)?;
-        let mut pane = Lone::new(Pane::new(
-            PaneId::of(1),
-            None,
-            crate::pane::tests::shell()?,
-            size,
-            crate::pane::tests::options(0)?,
-            Instant::now(),
-        )?)?;
-        let (since, run) = (pane.counts(), Run::now().ok_or("a clock")?);
-        let mut frame = b"\x1b[?2026h".to_vec();
-        frame.extend(crate::pane::tests::spends_the_budget(50, 200));
-        frame.extend_from_slice(b"DONE\x1b[?2026l");
-        pane.output(&frame);
-        assert!(pane.mid_frame());
-        assert!(super::told(pane.id(), Some(&pane.pane), since, run).is_none());
-        while pane.mid_frame() {
-            pane.read_unread();
-        }
-        let told = super::told(pane.id(), Some(&pane.pane), since, run).ok_or("no answer")?;
-        assert!(told.text().ends_with(" screen"), "{}", told.text());
-        Ok(())
-    }
 
     /// A version is written and read back as `PANE:COUNTS:RUN`, in one
     /// spelling only.

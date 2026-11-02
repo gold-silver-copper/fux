@@ -69,7 +69,16 @@ The server runs until its last pane closes, until `fux kill-server`
 (refused from its own panes and while a person's terminal is attached), or
 until SIGTERM, SIGINT or SIGHUP, which `kill` sends ([Security](#security)
 shows how on Linux and macOS). It then hangs up every pane, tells each
-attached terminal why, and removes its socket.
+attached terminal why, and removes its socket. Each pane runs in a process
+of its own (`fux __pane`), holding its terminal, and each client's
+connection in another (`fux __conn`), which composes its client's screen
+from the panes' screens it gets from them, and keeps what its client sends
+until the panes take it: a pane that floods its memory, or a client that
+stops reading, ends only its own process. The server holds the layout,
+names and the journal, and no screen or paste. A server that
+crashes, or is killed with `kill -9` or by the OOM killer, ends alone: its
+panes' processes wait, with their programs, and `fux start` on its socket
+takes the run back, as it was.
 Nothing is saved on its own ([Saved sessions](#saved-sessions)).
 
 ## Keys
@@ -313,8 +322,11 @@ dump starts new processes: it never brings back what a process held, its
 screen, its history or what ran in a shell, and it can repeat a program's
 side effects, so read it before you run it.
 
-Nothing is saved on its own: a server that stops or crashes takes its
-session with it. Detaching, or a client's crash, leaves the server and its
+Nothing is saved on its own: a server that stops takes its session with
+it. One that crashes leaves its panes waiting for the next `fux start` on
+its socket, which takes them back with their screens and ids (the
+cookbook's "Take a crashed server's panes back"); it keeps its run's own
+fux to do it with, so an upgrade waits for the next fresh run. Detaching, or a client's crash, leaves the server and its
 programs running. A command line against a server of another fux protocol
 runs again with that server's own binary, saying so on stderr; where that
 cannot be, it fails `mismatch`, saying why.

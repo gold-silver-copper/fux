@@ -151,7 +151,9 @@ codes! {
     NoServer "no_server" [asked],
     /// The client and the server speak different protocols.
     Mismatch "mismatch" [asked],
-    /// The client could not do its part: its socket, its terminal.
+    /// A part of fux's could not do its part: the client's socket or
+    /// terminal, or the server's run record (a change it could not record
+    /// is not made).
     Client "client" [asked],
     // What a command names.
     /// A pane named is not there.
@@ -209,6 +211,9 @@ codes! {
     Mouse "mouse" [asked],
     /// A signal that could not be sent.
     Signal "signal" [asked],
+    /// A pane's own process ended before it said whether it did what it
+    /// was asked: it may have.
+    Indeterminate "indeterminate" [asked],
     /// A client with a terminal, which sets its own size.
     NotHeadless "not_headless" [asked],
     /// `kill-server` from one of the server's own panes.

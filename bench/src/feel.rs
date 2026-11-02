@@ -20,9 +20,10 @@
 //!   sent, and the paints (fux begins each with `CSI ? 2026 h`; the
 //!   others may not), give the bandwidth.
 //! - **Footprint:** with the client idle at a shell, the CPU the server
-//!   and client use in 10 s; the server's resident memory, then with 4
-//!   more panes, then with 4 more whose 10,000 rows of history are full,
-//!   then with 50 panes.
+//!   and client use in 10 s; the server's memory, then with 4 more panes,
+//!   then with 4 more whose 10,000 rows of history are full, then with 50
+//!   panes. A server is every process of its own (`processes`): fux's
+//!   panes and connections are each one.
 use crate::helpers;
 use crate::terminal::Terminal;
 use std::fmt::Write as _;
@@ -332,12 +333,15 @@ impl Drop for Session {
         };
         match self.mux {
             Mux::Direct => {}
+            // A stop (SIGTERM) ends fux's run, panes and all, with its
+            // terminal attached, which `kill-server` refuses; a kill would
+            // leave its panes waiting for the next server.
             Mux::Fux => {
-                let socket = env.iter().any(|(k, _)| k == "FUX_SOCKET");
-                if let Some(fux) = env.iter().find(|(k, _)| k == "FUX_BIN").map(|(_, v)| v)
-                    && socket
+                if let Some(pid) = (self.server_pid)
+                    .and_then(|p| i32::try_from(p).ok())
+                    .and_then(fuxix::process::Pid::from_raw)
                 {
-                    run(fux, &["kill-server"]);
+                    let _ = fuxix::process::kill(pid, fuxix::process::Signal::Term);
                 }
             }
             Mux::Tmux => run(
@@ -490,7 +494,6 @@ fn start(
             }
             let socket = socket.to_string_lossy().into_owned();
             env.push(("FUX_SOCKET".into(), socket.clone()));
-            env.push(("FUX_BIN".into(), place.fux.clone()));
             let env_ref: Vec<(&str, &str)> =
                 env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             // fux's bar takes no row: the pane is the client's size.
@@ -833,6 +836,61 @@ fn usage(pid: u32) -> Option<(u64, f64)> {
     Some((rss, seconds))
 }
 
+/// A server's processes: it, and each process under it that runs its
+/// executable (fux's panes and client connections, each a process of its
+/// own), not the programs in its panes. Linux; elsewhere, the server alone.
+fn processes(server: u32) -> Vec<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let exe = |pid: u32| {
+        let meta = std::fs::metadata(format!("/proc/{pid}/exe")).ok()?;
+        Some((meta.dev(), meta.ino()))
+    };
+    let parent = |pid: u32| -> Option<u32> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit(')')
+            .next()?
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()
+    };
+    let (Some(own), Ok(entries)) = (exe(server), std::fs::read_dir("/proc")) else {
+        return vec![server];
+    };
+    let all: Vec<(u32, u32)> = (entries.flatten())
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .filter_map(|pid| Some((pid, parent(pid)?)))
+        .collect();
+    let mut found = vec![server];
+    let mut at = 0;
+    while let Some(&pid) = found.get(at) {
+        let children = all
+            .iter()
+            .filter(|(_, p)| *p == pid)
+            .map(|(child, _)| *child);
+        found.extend(children.filter(|child| exe(*child) == Some(own)));
+        at = at.saturating_add(1);
+    }
+    found
+}
+
+/// A process's memory in KiB, counting the pages it shares by the share
+/// it has of them (PSS), so that a server of many processes counts its
+/// binary once; its resident memory where the system says no PSS.
+fn kib(pid: u32) -> Option<u64> {
+    let pss = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok();
+    let pss = pss.as_deref().and_then(|text| {
+        let line = text.lines().find_map(|line| line.strip_prefix("Pss:"))?;
+        line.trim().trim_end_matches("kB").trim().parse().ok()
+    });
+    pss.or_else(|| usage(pid).map(|(rss, _)| rss))
+}
+
+/// A server's memory in KiB, every process of its own counted.
+fn server_kib(server: u32) -> u64 {
+    processes(server).into_iter().filter_map(kib).sum()
+}
+
 /// Context switches summed over every thread; unavailable without procfs.
 fn switches(pid: u32) -> Option<(u64, u64)> {
     let mut tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
@@ -1156,12 +1214,11 @@ fn wait_files(files: &[PathBuf], limit: Duration) -> bool {
     true
 }
 
-/// Memory: the server's resident memory now, with 4 more panes, and with 4
+/// Memory: the server's (`server_kib`) now, with 4 more panes, and with 4
 /// more of full history.
 fn memory(place: &Place, session: &Session) -> Result<serde_json::Value, String> {
     let pid = session.server_pid.ok_or("no server process")?;
-    let rss = || usage(pid).map(|(rss, _)| rss).unwrap_or(0);
-    let start = rss();
+    let start = server_kib(pid);
     let stage = |rows: u64| -> Result<u64, String> {
         let mut done = Vec::new();
         for _ in 0..4 {
@@ -1181,7 +1238,7 @@ fn memory(place: &Place, session: &Session) -> Result<serde_json::Value, String>
         }
         // What the programs wrote last may still be on its way.
         std::thread::sleep(Duration::from_secs(1));
-        Ok(rss())
+        Ok(server_kib(pid))
     };
     let empty = stage(0)?;
     let full = stage(HISTORY.saturating_add(50))?;
@@ -1190,11 +1247,11 @@ fn memory(place: &Place, session: &Session) -> Result<serde_json::Value, String>
         "server_kib_at_start": start,
         "kib_per_empty_pane": per(start, empty),
         "kib_per_pane_with_full_history": per(empty, full),
-        "client_kib": usage(session.terminal.pid()).map(|(rss, _)| rss),
+        "client_kib": kib(session.terminal.pid()),
     }))
 }
 
-/// The server's resident memory with 50 panes, each a shell at its prompt,
+/// The server's memory (`server_kib`) with 50 panes, each a shell at its prompt,
 /// in a session of its own.
 fn fifty(place: &Place, mux: Mux) -> Result<u64, String> {
     let session = start(place, mux, &[], None)?;
@@ -1203,7 +1260,7 @@ fn fifty(place: &Place, mux: Mux) -> Result<u64, String> {
     }
     std::thread::sleep(Duration::from_secs(2));
     let pid = session.server_pid.ok_or("no server process")?;
-    usage(pid).map(|(rss, _)| rss).ok_or("no memory".into())
+    Ok(server_kib(pid))
 }
 
 pub fn run(options: &Options) -> Result<bool, String> {
@@ -1424,17 +1481,25 @@ fn measure(
             .collect::<Result<_, _>>()?;
         std::thread::sleep(Duration::from_secs(2));
         let cpu = |s: &Session| -> f64 {
-            [s.server_pid, Some(s.terminal.pid())]
-                .into_iter()
-                .flatten()
+            let server = s.server_pid.map(processes).unwrap_or_default();
+            (server.into_iter().chain([s.terminal.pid()]))
                 .filter_map(usage)
                 .map(|(_, cpu)| cpu)
                 .sum()
         };
+        // Its processes' switches summed: none if any can't be read.
+        let server_switches = |server: u32| {
+            processes(server)
+                .into_iter()
+                .try_fold((0u64, 0u64), |(v, i), pid| {
+                    let (pv, pi) = switches(pid)?;
+                    Some((v.checked_add(pv)?, i.checked_add(pi)?))
+                })
+        };
         let idle = |s: &Session| {
             (
                 cpu(s),
-                s.server_pid.and_then(switches),
+                s.server_pid.and_then(server_switches),
                 switches(s.terminal.pid()),
             )
         };

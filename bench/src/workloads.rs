@@ -845,18 +845,10 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
             painted: 0,
         });
     }
-    // What it tells goes in a journal of its own, as in a session.
-    let kept = fux::script::default_state()
-        .map_err(|e| e.to_string())?
-        .preferences
-        .journal_entries;
-    let mut journal = fux_server::journal::Journal::new(kept);
-    let at = (
-        "+1".parse().map_err(|_| "+1")?,
-        "@1".parse().map_err(|_| "@1")?,
-    );
-    let mut queued_input = std::collections::BTreeSet::new();
-    let mut pane = fux_server::pane::PaneMut::new(&mut pane, at, &mut journal, &mut queued_input);
+    // What it tells is kept, as its process keeps it for its server.
+    let (mut told, mut queued_input) = (Vec::new(), false);
+    let server = fux_wire::events::Actor::Server;
+    let mut pane = fux_server::pane::PaneMut::new(&mut pane, server, &mut told, &mut queued_input);
     for load in loads {
         pane.resize(
             fux_vt::Size::new(load.rows, load.cols).map_err(|e| e.to_string())?,
@@ -907,7 +899,6 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     }
     let mut shown = fux_server::render::Grid::default();
     let mut spare = fux_server::render::Grid::default();
-    let mut placement = fux_wire::layout::Placement::default();
     let mut buffer = Vec::new();
     let mut have = false;
     let (mut painted, mut frames) = (0usize, 0usize);
@@ -923,9 +914,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         s.acts(c, vec![fux_wire::act::Act::Key(press.into())], now);
         // What the PTY would carry to the program, and its echo back.
         let typed = s
-            .parts
-            .pane_mut(pane)
-            .map(|mut p| p.drain_input())
+            .host_mut(pane, |h| h.pane_mut().drain_input(), now)
             .unwrap_or_default();
         black_box(&typed);
         let glyph = char::from(key).encode_utf8(&mut echo);
@@ -935,11 +924,9 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         if let Some(view) = s.views.get_mut(&c) {
             view.dirty = false;
         }
-        let Some(view) = s.views.get(&c) else {
+        if !fux_server::render::compose_into(&s, c, &mut spare).map_err(|e| e.to_string())? {
             continue;
-        };
-        fux_server::render::compose_view(&s, view, &mut spare, &mut placement)
-            .map_err(|e| e.to_string())?;
+        }
         // Every key changes the screen: painted without asking whether it
         // did, as `paint_into` finds what changed.
         fux_server::render::paint_into(&shown, have, &spare, &mut buffer);
@@ -978,7 +965,6 @@ fn paint(
     let panes: Vec<_> = s.parts.panes().keys().copied().collect();
     let mut shown = fux_server::render::Grid::default();
     let mut spare = fux_server::render::Grid::default();
-    let mut placement = fux_wire::layout::Placement::default();
     let mut buffer = Vec::new();
     let (mut painted, mut frames, mut units, mut have) = (0usize, 0usize, 0usize, false);
     while units < total {
@@ -994,18 +980,19 @@ fn paint(
                         unread(&mut s);
                     }
                     units = units.saturating_add(read.len());
-                    let dirty = s.views.get(&c).is_some_and(|v| v.dirty);
+                    // Each read's screens go to the client's connection,
+                    // which composes it again (`fux_server::conn`).
                     if let Some(view) = s.views.get_mut(&c) {
                         view.dirty = false;
                     }
-                    if baseline || !dirty {
+                    if baseline {
                         continue;
                     }
-                    let Some(view) = s.views.get(&c) else {
+                    if !fux_server::render::compose_into(&s, c, &mut spare)
+                        .map_err(|e| e.to_string())?
+                    {
                         continue;
-                    };
-                    fux_server::render::compose_view(&s, view, &mut spare, &mut placement)
-                        .map_err(|e| e.to_string())?;
+                    }
                     if have && spare == shown {
                         continue;
                     }
@@ -1284,7 +1271,7 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
             if baseline {
                 continue;
             }
-            black_box(waiting.answer(&s, now));
+            black_box(waiting.answer(&mut s, now));
             black_box(waiting.due());
         }
     }
@@ -1339,16 +1326,20 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
         fed = fed.saturating_add(bytes.len());
     }
     if !baseline {
-        let pane = s.parts.panes().get(&id).ok_or("no pane")?;
         let observed = s.observed(id).map_err(|e| e.to_string())?;
-        let capture = fux_server::capture::pane(
-            observed,
-            pane,
-            s.parts.journal().end(s.run),
-            Some(usize::MAX),
-            command::CaptureView::default(),
-        )
-        .map_err(|e| e.to_string())?;
+        let cursor = s.parts.journal().end(s.run);
+        let now = std::time::Instant::now();
+        let capture = s
+            .host_mut(
+                id,
+                |h| {
+                    let view = command::CaptureView::default();
+                    fux_server::capture::pane(observed, h.pane(), cursor, Some(usize::MAX), view)
+                },
+                now,
+            )
+            .ok_or("no pane")?
+            .map_err(|e| e.to_string())?;
         black_box(fux_wire::wire::encode(&capture));
     }
     Ok(Done {
@@ -1389,7 +1380,9 @@ fn unread(s: &mut fux_server::session::Session) {
     loop {
         let waiting: Vec<_> = (s.timers())
             .filter_map(|(_, timer)| {
-                matches!(timer, fux_server::session::Timer::Unread(_)).then_some(timer)
+                let unread = fux_server::host::Timer::Unread;
+                matches!(timer, fux_server::session::Timer::Pane(_, t) if t == unread)
+                    .then_some(timer)
             })
             .collect();
         if waiting.is_empty() {

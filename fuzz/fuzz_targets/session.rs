@@ -14,6 +14,7 @@
 //! to it (`ToAttached::Keys`).
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
+use std::time::Instant;
 
 use fux::client_state::ClientState;
 use fux::keymap::Held;
@@ -21,7 +22,7 @@ use fux::screens::{Dispatch, Job, Program, Screen};
 use fux::script::testing::InProcess;
 use fux::script::{AsClient, Host, run};
 use fux_server::outer;
-use fux_server::render::{Grid, compose_view, paint_into};
+use fux_server::render::{Grid, compose_into, paint_into};
 use fux_server::session::{Outgoing, Session};
 use fux_server::view::Mode;
 use fux_server::workspace::Child as _;
@@ -35,16 +36,10 @@ use libfuzzer_sys::fuzz_target;
 
 /// The client's screen as it should look now, in a grid of its own.
 fn compose(s: &Session, c: ClientId) -> Option<Grid> {
-    let view = s.views.get(&c)?;
     let mut grid = Grid::default();
-    let result = compose_view(
-        s,
-        view,
-        &mut grid,
-        &mut fux_wire::layout::Placement::default(),
-    );
+    let result = compose_into(s, c, &mut grid);
     assert!(result.is_ok(), "{result:?}");
-    Some(grid)
+    result.ok()?.then_some(grid)
 }
 
 /// The bytes that turn `old` (or nothing) into `new`.
@@ -225,7 +220,7 @@ struct Run {
     keys: BTreeMap<ClientId, Keys>,
     /// Each client's grids as the server keeps them: composed into the
     /// spare, painted against the shown, swapped.
-    grids: BTreeMap<ClientId, (Grid, Grid, fux_wire::layout::Placement, bool)>,
+    grids: BTreeMap<ClientId, (Grid, Grid, bool)>,
     shut: bool,
 }
 
@@ -496,6 +491,8 @@ impl Run {
                 panic!("an attachment reply from the session")
             }
             Outgoing::Shutdown { .. } => self.shut = true,
+            // Bodies are kept by connections, of which this has none.
+            Outgoing::Keys(..) => {}
             Outgoing::To(client, ToAttached::Open(open)) => {
                 let context = Context {
                     client: Some(client),
@@ -552,18 +549,14 @@ impl Run {
         let clients: Vec<ClientId> = self.s.views.keys().copied().collect();
         self.grids.retain(|c, _| clients.contains(c));
         for c in clients {
-            let (spare, shown, placement, painted) = self.grids.entry(c).or_insert_with(|| {
-                (
-                    Grid::default(),
-                    Grid::default(),
-                    fux_wire::layout::Placement::default(),
-                    false,
-                )
-            });
-            let Some(view) = self.s.views.get(&c) else {
+            let (spare, shown, painted) = self
+                .grids
+                .entry(c)
+                .or_insert_with(|| (Grid::default(), Grid::default(), false));
+            if !self.s.views.contains_key(&c) {
                 continue;
-            };
-            let result = compose_view(&self.s, view, spare, placement);
+            }
+            let result = compose_into(&self.s, c, spare);
             assert!(result.is_ok(), "{result:?}");
             let whole = compose(&self.s, c);
             assert!(
@@ -725,29 +718,40 @@ impl Run {
         let view = self.s.views.get(&client);
         let normal = view.is_some_and(|v| matches!(v.mode, Mode::Normal));
         let focus = self.s.focused(client).filter(|_| normal);
-        self.s.parts.each_pane_mut(|pane| {
-            let (id, heard) = (pane.id(), pane.drain_input());
-            let asked = pane.screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
-            assert!(
-                heard.is_empty() || (Some(id) == focus && asked),
-                "{id} heard {heard:?} from {report:?}"
-            );
-        });
+        let now = Instant::now();
+        self.s.each_host_mut(
+            |host| {
+                let (id, heard) = (host.id(), host.pane_mut().drain_input());
+                let asked =
+                    host.pane().screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
+                assert!(
+                    heard.is_empty() || (Some(id) == focus && asked),
+                    "{id} heard {heard:?} from {report:?}"
+                );
+            },
+            now,
+        );
     }
 
     fn drain_panes(&mut self) {
-        self.s.parts.each_pane_mut(|pane| drop(pane.drain_input()));
+        let now = Instant::now();
+        self.s
+            .each_host_mut(|host| drop(host.pane_mut().drain_input()), now);
     }
 
     fn assert_no_pane_input(&mut self, key: fux_vt::keys::KeyPress) {
-        self.s.parts.each_pane_mut(|pane| {
-            let queued = pane.drain_input();
-            let id = pane.id();
-            assert!(
-                queued.is_empty(),
-                "{key} in a repeat mode reached {id}: {queued:?}"
-            );
-        });
+        let now = Instant::now();
+        self.s.each_host_mut(
+            |host| {
+                let queued = host.pane_mut().drain_input();
+                let id = host.id();
+                assert!(
+                    queued.is_empty(),
+                    "{key} in a repeat mode reached {id}: {queued:?}"
+                );
+            },
+            now,
+        );
     }
 
     /// What anyone can tell apart, as `State` lists it.

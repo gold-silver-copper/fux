@@ -23,6 +23,7 @@ start 1 try
 size 1 try
 mouse 1 try
 signal 1 try
+indeterminate 1 try
 not_headless 1 try
 own_server 1 try
 people_attached 1 try

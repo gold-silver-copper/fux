@@ -150,6 +150,10 @@ impl Journal {
     pub(crate) fn nesting(&self) -> BTreeMap<WsId, WsId> {
         self.parents.clone()
     }
+    /// The workspaces nested as `nesting` said, again.
+    pub(crate) fn renest(&mut self, parents: BTreeMap<WsId, WsId>) {
+        self.parents = parents;
+    }
     /// The workspaces holding those `event` names, beyond them, nested as
     /// `parents` says.
     fn within_of(event: &Event, parents: &BTreeMap<WsId, WsId>) -> Vec<WsId> {
@@ -214,17 +218,25 @@ impl Journal {
         }
         self.entries.push_back(Entry { seq, event, actor });
     }
-    pub(crate) fn teller(&mut self, at: PaneAt, generation: u64) -> Teller<'_> {
-        Teller {
-            at,
-            generation,
-            journal: self,
-        }
-    }
     pub fn end(&self, run: Run) -> Cursor {
         Cursor {
             seq: self.next,
             run,
+        }
+    }
+    /// Where its next entry goes: what `truncate` takes it back to.
+    pub(crate) fn mark(&self) -> Seq {
+        self.next
+    }
+    /// Its entries from `mark` on, never read, let go: a change undone
+    /// before it was told (`Session::transact`). What they evicted is gone.
+    pub(crate) fn truncate(&mut self, mark: Seq) {
+        while self.entries.back().is_some_and(|entry| entry.seq >= mark) {
+            self.entries.pop_back();
+        }
+        self.within.retain(|seq, _| *seq < mark);
+        if mark < self.next {
+            self.next = mark;
         }
     }
     /// The oldest entry it still holds, or its end when it holds none.
@@ -243,17 +255,33 @@ impl Journal {
 /// A pane's place: its workspace and tab, and the pane.
 pub type PaneAt = ((WsId, TabId), PaneId);
 
-/// The journal at a pane's place: what a pane's methods that change what
-/// events tell write to, at once, through a `pane::PaneMut`, which makes
-/// it from the pane's own id. Only the session's parts, which hold the
-/// session's journal, give one on it.
+/// What a pane tells of itself, in order, each with who caused it: what
+/// a pane's methods that change what events tell write to, at once,
+/// through a `pane::PaneMut`. Its process sends them on to the server
+/// (`host`), which journals them at the pane's place.
 pub struct Teller<'a> {
-    at: PaneAt,
+    pane: PaneId,
     generation: u64,
-    journal: &'a mut Journal,
+    /// Who causes what the pane does for a request.
+    actor: Actor,
+    told: &'a mut Vec<(Told, Actor)>,
 }
 
-impl Teller<'_> {
+impl<'a> Teller<'a> {
+    pub(crate) fn new(
+        pane: PaneId,
+        generation: u64,
+        actor: Actor,
+        told: &'a mut Vec<(Told, Actor)>,
+    ) -> Self {
+        Teller {
+            pane,
+            generation,
+            actor,
+            told,
+        }
+    }
+
     /// The pane tells `what`.
     pub(crate) fn tell(&mut self, what: Told) {
         let actor = match what {
@@ -264,17 +292,16 @@ impl Teller<'_> {
             | Told::Done(_)
             | Told::HungUp
             | Told::ReadFailed(_)
-            | Told::Exited(_) => Actor::Program(self.at.1, self.generation),
+            | Told::Exited(_) => Actor::Program(self.pane, self.generation),
             Told::Renamed(_)
             | Told::Respawned { .. }
             | Told::Resized(_)
             | Told::HistoryBudget(_)
             | Told::HistoryCleared
             | Told::Input { .. }
-            | Told::Signalled { .. } => self.journal.current_actor(),
+            | Told::Signalled { .. } => self.actor,
         };
-        self.journal
-            .push_from(Event::Pane(self.at, PaneEvent::Told(what)), actor);
+        self.told.push((what, actor));
     }
 }
 
@@ -355,8 +382,9 @@ pub enum Told {
     HistoryCleared,
     /// Its program closed its terminal and runs on.
     HungUp,
-    /// Reading its program's terminal failed unexpectedly, so.
-    ReadFailed(fuxix::Errno),
+    /// Reading its program's terminal failed unexpectedly, so; or its
+    /// pane's own process ended, so (`Session::pane_lost`).
+    ReadFailed(String),
     /// A request's input was queued for its program `generation`: how it
     /// came, how many bytes, and the version `expect` admitted it at, if
     /// it did; never what it says.
@@ -385,6 +413,25 @@ pub enum Sent {
     Paste,
     Mouse,
 }
+
+wired!(Told {
+    Renamed(name),
+    Respawned { left, generation },
+    Bell,
+    Notification(said),
+    Title(said),
+    CommandStarted,
+    Done(status),
+    Resized(size),
+    HistoryBudget(bytes),
+    HistoryCleared,
+    HungUp,
+    ReadFailed(error),
+    Input { kind, bytes, expected, generation },
+    Signalled { signal, generation },
+    Exited(end),
+});
+wired!(Sent { Keys, Paste, Mouse });
 
 /// An event's fields after its name and place.
 type Fields = Vec<(&'static str, Json)>;
@@ -461,7 +508,7 @@ impl Told {
             Told::HungUp => ("hung_up", Vec::new()),
             Told::ReadFailed(error) => (
                 "read_failed",
-                vec![("read_error", Json::str(error.to_string()))],
+                vec![("read_error", Json::str(error.clone()))],
             ),
             Told::Input {
                 kind,
@@ -625,7 +672,7 @@ pub fn every_kind(
         Told::HistoryBudget(isize::MAX.unsigned_abs()),
         Told::HistoryCleared,
         Told::HungUp,
-        Told::ReadFailed(fuxix::Errno::SRCH),
+        Told::ReadFailed(fuxix::Errno::SRCH.to_string()),
         // The most a fuxth integer says, as it reads them.
         Told::Input {
             kind: Sent::Keys,
@@ -741,7 +788,9 @@ impl Reader {
         let next = from.unwrap_or(end);
         if next.run != run {
             return Err(format!(
-                "{next} is from another server run, not this one ({run})"
+                "{next} is not this server's journal ({run}): a journal ends with its server \
+                 process, and one that takes a run back after a crash keeps one of its own, \
+                 so what came between is lost; take a new snapshot"
             ));
         }
         if next.seq > end.seq {
@@ -930,7 +979,7 @@ impl Read {
             Scope::Target(target) => session.holder(target).is_some(),
             Scope::Client(client) => session.views.contains_key(&client),
         };
-        if reader.next == journal.end(session.run) && exists && now < self.deadline {
+        if reader.next == journal.end(session.journal_run) && exists && now < self.deadline {
             return None;
         }
         let mut batch = match reader.batch(journal, exists) {
@@ -1197,7 +1246,7 @@ mod tests {
         }
         for _ in 0..3 {
             assert!(
-                waiting.answer(&session, now).is_none(),
+                waiting.answer(&mut session, now).is_none(),
                 "unrelated entries ended the wait"
             );
         }
@@ -1331,9 +1380,9 @@ mod tests {
             waiting.due(),
             Some(crate::after(now, Duration::from_secs(5)))
         );
-        assert!(waiting.answer(&session, now).is_none());
+        assert!(waiting.answer(&mut session, now).is_none());
         let answer = waiting
-            .answer(&session, crate::after(now, Duration::from_secs(5)))
+            .answer(&mut session, crate::after(now, Duration::from_secs(5)))
             .ok_or("timeout")?;
         let Response::Returned(Body::Events(batch)) = answer.response else {
             return Err("batch".into());
@@ -1343,7 +1392,7 @@ mod tests {
         let journal = session.parts.journal_mut();
         journal.push_from(Event::Stopped("test".into()), Actor::Outside);
         journal.push(bell(1));
-        let answer = waiting.answer(&session, now).ok_or("stopped")?;
+        let answer = waiting.answer(&mut session, now).ok_or("stopped")?;
         let Response::Returned(Body::Events(stopped)) = answer.response else {
             return Err("stopped batch".into());
         };

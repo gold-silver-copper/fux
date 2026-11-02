@@ -88,6 +88,23 @@ pub struct Ids {
 }
 
 impl Ids {
+    /// The last id of each kind given: pane, tab, workspace, client.
+    pub fn given(&self) -> Vec<u32> {
+        vec![self.pane, self.tab, self.workspace, self.client]
+    }
+
+    /// Ids that go on from those `given` gave last, as a run taken back
+    /// after its server's crash does.
+    pub fn after(given: &[u32]) -> Ids {
+        let last = |i: usize| given.get(i).copied().unwrap_or(0);
+        Ids {
+            pane: last(0),
+            tab: last(1),
+            workspace: last(2),
+            client: last(3),
+        }
+    }
+
     pub fn pane(&mut self) -> Result<PaneId, Error> {
         take(&mut self.pane, "pane").map(PaneId)
     }
