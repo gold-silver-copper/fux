@@ -178,9 +178,10 @@ fux 1.0 is reached when all of these hold:
 Bounded journal batches read by cursor, with `missed` counts, count as
 complete.
 
-Then fux's public words, record fields, events and error codes freeze. Bug
-fixes, library definitions and internals stay free. Only a new thing, fact
-or event needs the owner.
+Reaching it is a checkpoint, not a freeze (D-118): fux stays in active
+development. When the owner declares the freeze, fux's public words, record
+fields, events and error codes freeze; bug fixes, library definitions and
+internals stay free, and only a new thing, fact or event needs the owner.
 
 The machine numbers hold throughout:
 
