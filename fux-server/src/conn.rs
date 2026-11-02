@@ -795,7 +795,11 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
     let mut out = ByteQueue::default();
     let mut composer = Composer::new(Instant::now());
     let mut want = Want::Hello;
-    let (mut answered, mut unflushed, mut shut, mut closing) = (false, false, false, false);
+    let (mut answered, mut shut, mut closing) = (false, false, false);
+    // Bytes its server sent its client, not all written yet: its server is
+    // told once they are (`Flushed`). Its own paints and replies are no
+    // news to it.
+    let mut unflushed = false;
     // Its client shut its side, and its server is told so once what it
     // sent before is taken (`Shut`).
     let (mut ended, mut told_shut) = (false, false);
@@ -870,7 +874,6 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
         // Its screen, once its client took the last.
         if composer.due(out.is_empty()).is_some_and(|at| at <= now) {
             composer.paint(&mut out, now)?;
-            unflushed = true;
         }
         // What waits for its client, as far as it takes it.
         if !write(&client, &mut out) {
@@ -997,7 +1000,7 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                         typing = None;
                     }
                     out.push(&made);
-                    (unflushed, making) = (true, false);
+                    making = false;
                 }
             }
         }
@@ -1022,7 +1025,7 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                                 |e| !matches!(e, Errand::Keys { token: t, .. } if *t == token),
                             );
                             out.push(&typed(*run, Some(client)));
-                            (typing, unflushed, making) = (None, true, false);
+                            (typing, making) = (None, false);
                         }
                     }
                     Ok(Some(ToConn::Typed { token })) => {
@@ -1030,7 +1033,7 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                             && asked == token
                         {
                             out.push(&typed(*run, None));
-                            (typing, unflushed, making) = (None, true, false);
+                            (typing, making) = (None, false);
                         }
                     }
                     Ok(Some(message)) => backlog.push_back(message),
@@ -1048,7 +1051,7 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                 };
                 let frame = ToAttached::Keys(inputs);
                 out.push_with(|frames| frame.encode_into(frames));
-                (keys, unflushed) = (None, true);
+                keys = None;
             }
             let Some(message) = backlog.pop_front() else {
                 break;
