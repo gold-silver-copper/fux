@@ -3,7 +3,6 @@
 //! takes the run back after a crash finds every id, name and layout anyone
 //! saw. Its recovery state, read by no one else: fux's own, changing with
 //! it (`socket::panes`).
-use crate::copy::Copy as Pane;
 use fux_wire::command::Run;
 use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
@@ -35,7 +34,7 @@ pub enum Child {
 wired!(Child { Tab(t), Workspace(w) });
 
 /// A tab: its layout, its revision, how it is sized, its zoomed pane, and
-/// its panes' names.
+/// its panes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
     pub id: TabId,
@@ -45,9 +44,28 @@ pub struct Tab {
     pub fixed: bool,
     pub size: fux_vt::Size,
     pub zoomed: Option<PaneId>,
-    pub names: Vec<(PaneId, Option<String>)>,
+    pub panes: Vec<Pane>,
 }
-wired!(struct Tab { id, name, nodes, revision, fixed, size, zoomed, names });
+wired!(struct Tab { id, name, nodes, revision, fixed, size, zoomed, panes });
+
+/// A pane, as much as its server keeps: enough to make its copy again
+/// should its own process be gone when a server takes the run back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pane {
+    pub id: PaneId,
+    pub name: Option<String>,
+    /// Its role: a shell, which closes as it ends, or a program, which
+    /// stays.
+    pub shell: bool,
+    pub argv: fux_wire::command::Program,
+    pub cwd: std::path::PathBuf,
+    pub options: fux_wire::command::PaneOptions,
+    pub size: fux_vt::Size,
+    pub respawns: u64,
+    /// How its program ended, if it has, and the counts it ended at.
+    pub ended: Option<(fux_wire::command::Counts, fux_wire::answer::Ended)>,
+}
+wired!(struct Pane { id, name, shell, argv, cwd, options, size, respawns, ended });
 
 impl Tab {
     /// Whether it keeps its size, whatever shows it.
@@ -90,36 +108,16 @@ pub fn write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&new, path)
 }
 
-/// The panes a record holds, each by its tab.
-pub fn panes(workspaces: &[Workspace]) -> Vec<(TabId, PaneId)> {
+/// The panes a record holds.
+pub fn panes(workspaces: &[Workspace]) -> Vec<&Pane> {
     let mut panes = Vec::new();
     for ws in workspaces {
         for child in &ws.children {
             match child {
-                Child::Tab(tab) => {
-                    panes.extend(tab.names.iter().map(|(pane, _)| (tab.id, *pane)));
-                }
+                Child::Tab(tab) => panes.extend(&tab.panes),
                 Child::Workspace(inner) => panes.extend(self::panes(std::slice::from_ref(inner))),
             }
         }
     }
     panes
-}
-
-/// Its name, as the record holds it, of each pane `panes` holds.
-pub fn named(workspaces: &[Workspace], panes: &mut std::collections::BTreeMap<PaneId, Pane>) {
-    for ws in workspaces {
-        for child in &ws.children {
-            match child {
-                Child::Tab(tab) => {
-                    for (id, name) in &tab.names {
-                        if let (Some(pane), Some(name)) = (panes.get_mut(id), name) {
-                            pane.rename(name.clone());
-                        }
-                    }
-                }
-                Child::Workspace(inner) => named(std::slice::from_ref(inner), panes),
-            }
-        }
-    }
 }

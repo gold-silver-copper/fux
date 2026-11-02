@@ -30,6 +30,7 @@ pub trait Child {
 
 /// Children shown one at a time: each attached client is shown its own,
 /// while there is any.
+#[derive(Clone)]
 pub struct Stack<C: Child> {
     children: Vec<C>,
     shown: BTreeMap<ClientId, Shown<C::Id>>,
@@ -91,6 +92,7 @@ impl<C: Child> Stack<C> {
 }
 
 /// A workspace's child: one of its tabs, or a workspace in it.
+#[derive(Clone)]
 pub enum Node {
     Tab(Tab),
     Workspace(Workspace),
@@ -108,6 +110,7 @@ impl Child for Node {
 
 /// A workspace and its children, of which it always has one or more: each
 /// is made with one, and closes as its last leaves.
+#[derive(Clone)]
 pub struct Workspace {
     /// Given as it is made, and never changed: its events' place.
     id: WsId,
@@ -122,6 +125,7 @@ impl Child for Workspace {
     }
 }
 
+#[derive(Clone)]
 pub struct Tab {
     /// Given as it is made, and never changed: its events' place.
     id: TabId,
@@ -501,6 +505,13 @@ pub struct Parts {
     /// Each in one tab: a pane is added in its place and leaves with it.
     panes: BTreeMap<PaneId, Pane>,
     journal: Journal,
+}
+
+/// A tree as it was, to be put back (`Parts::structure`).
+pub(crate) struct Structure {
+    workspaces: Stack<Workspace>,
+    names: BTreeMap<PaneId, Option<String>>,
+    parents: BTreeMap<WsId, WsId>,
 }
 
 /// The workspaces a kill closes as it empties them: none (it kills a pane
@@ -1037,6 +1048,11 @@ impl Parts {
         &self.journal
     }
 
+    /// Its journal's entries from `mark` on let go (`Journal::truncate`).
+    pub(crate) fn truncate_journal(&mut self, mark: fux_wire::events::Seq) {
+        self.journal.truncate(mark);
+    }
+
     /// The workspace and tab that hold pane `pane`.
     pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
         (self.find_tab(&mut |t| t.holds(pane))).map(|(ws, t)| (ws, t.id))
@@ -1507,8 +1523,8 @@ impl Parts {
                     fixed: matches!(tab.fit, Fit::Fixed(_)),
                     size: tab.fit.size(),
                     zoomed: tab.zoomed,
-                    names: (tab.root.panes().into_iter())
-                        .map(|p| (p, panes.get(&p).and_then(|p| p.name().map(str::to_owned))))
+                    panes: (tab.root.panes().into_iter())
+                        .filter_map(|p| Some(panes.get(&p)?.record()))
                         .collect(),
                 }),
                 Node::Workspace(inner) => Recorded::Workspace(ws(inner, panes)),
@@ -1524,10 +1540,40 @@ impl Parts {
             .collect()
     }
 
+    /// Its tree as it is: what `restructure` puts back.
+    pub(crate) fn structure(&self) -> Structure {
+        Structure {
+            workspaces: self.workspaces.clone(),
+            names: (self.panes.iter())
+                .map(|(id, pane)| (*id, pane.name().map(str::to_owned)))
+                .collect(),
+            parents: self.journal.nesting(),
+        }
+    }
+
+    /// Its tree as `structure` took it, the names its panes had then: the
+    /// panes made since are let go, and their ids given back.
+    pub(crate) fn restructure(&mut self, structure: Structure) -> Vec<PaneId> {
+        self.workspaces = structure.workspaces;
+        let made: Vec<PaneId> = (self.panes.keys())
+            .filter(|id| !structure.names.contains_key(id))
+            .copied()
+            .collect();
+        for id in &made {
+            self.panes.remove(id);
+        }
+        for (id, name) in structure.names {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                pane.renamed(name);
+            }
+        }
+        self.journal.renest(structure.parents);
+        made
+    }
+
     /// The tree `workspaces` records (`record`), holding `panes`, its
     /// journal keeping `journal` events, no client shown it yet: as a
-    /// server takes a run back. Each pane it holds and `panes` does not is
-    /// gone: it ended while no server ran.
+    /// server takes a run back.
     pub(crate) fn restore(
         journal: fux_wire::command::JournalEntries,
         workspaces: &[crate::record::Workspace],
@@ -1544,7 +1590,7 @@ impl Parts {
             for child in &recorded.children {
                 children.push(match child {
                     Recorded::Tab(tab) => {
-                        let panes: Vec<PaneId> = tab.names.iter().map(|(p, _)| *p).collect();
+                        let panes: Vec<PaneId> = tab.panes.iter().map(|p| p.id).collect();
                         let fit = match tab.fit_fixed() {
                             true => Fit::Fixed(tab.size),
                             false => Fit::Clients(tab.size),

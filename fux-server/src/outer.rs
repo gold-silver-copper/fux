@@ -122,7 +122,7 @@ pub const REPORTS_ON: &[u8] = b"\x1b[?2031h\x1b[?996n";
 pub const SCHEME_QUERY: &[u8] = b"\x1b[?996n";
 
 /// One client's terminal, as fux has learned it.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Terminal {
     pub colours: Colours,
     /// Scheme answers (`CSI ? 996 n`) asked for and not given yet: a

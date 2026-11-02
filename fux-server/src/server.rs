@@ -620,10 +620,12 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
     crate::socket::private_directory(socket, true).map_err(Error::Socket)?;
     let panes = crate::socket::panes(socket.path());
     let exe = panes.join("exe");
-    let record = crate::record::read(&panes.join("run")).map_err(Error::Refused)?;
-    match &record {
-        // A run to take back runs the fux it started with (D-124 (7)).
-        Some(_) if !exe.exists() => {
+    // A run to take back runs the fux it started with (D-124 (7)), chosen
+    // by the run's file alone: its record is that fux's to read, in its
+    // own format.
+    let recorded = panes.join("run").exists();
+    match recorded {
+        true if !exe.exists() => {
             let why = format!(
                 "the fux the run on {} runs, {}, is gone",
                 socket.path().display(),
@@ -631,7 +633,7 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
             );
             return Err(Error::Refused(stranded(&panes, &why)));
         }
-        Some(_) if std::env::current_exe().ok().as_deref() != Some(exe.as_path()) => {
+        true if std::env::current_exe().ok().as_deref() != Some(exe.as_path()) => {
             use std::os::unix::process::CommandExt;
             let error = std::process::Command::new(&exe)
                 .args(std::env::args_os().skip(1))
@@ -641,15 +643,15 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
                 exe.display()
             )));
         }
-        Some(_) => {}
-        None if !waiting(&panes).is_empty() => {
+        true => {}
+        false if !waiting(&panes).is_empty() => {
             let why = format!(
                 "the record of the run on {} is gone",
                 socket.path().display()
             );
             return Err(Error::Refused(stranded(&panes, &why)));
         }
-        None => {}
+        false => {}
     }
     let mut session = Session::new(socket.path().to_owned(), true, run, journal);
     session.exe = Some(exe.clone());
@@ -660,10 +662,12 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
     // Under the socket's lock, the one server of the socket: a run whose
     // server crashed is taken back before anyone is served; else a new one
     // begins.
-    match crate::record::read(&panes.join("run")).map_err(Error::Refused)? {
+    match crate::record::read(&panes.join("run"))
+        .map_err(|e| Error::Refused(stranded(&panes, &e)))?
+    {
         Some(record) => session
             .resume(record, Instant::now())
-            .map_err(|e| Error::Refused(format!("taking the run back: {e}")))?,
+            .map_err(|e| Error::Refused(stranded(&panes, &format!("taking the run back: {e}"))))?,
         None => pin(&panes, &exe).map_err(Error::Setup)?,
     }
     // A server starts with nothing in it: the first client to attach
@@ -727,9 +731,8 @@ fn waiting(panes: &std::path::Path) -> Vec<(String, Option<fuxix::process::Pid>)
         if name.parse::<u32>().is_err() {
             continue;
         }
-        if let Ok(stream) = UnixStream::connect(entry.path()) {
-            let pid = fuxix::socket::peer(&stream).ok().and_then(|peer| peer.pid);
-            waiting.push((name, pid));
+        if let Some(pid) = crate::link::Link::who(&entry.path()) {
+            waiting.push((name, fuxix::process::Pid::from_raw(pid)));
         }
     }
     waiting

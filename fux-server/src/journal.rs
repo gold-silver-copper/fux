@@ -150,6 +150,10 @@ impl Journal {
     pub(crate) fn nesting(&self) -> BTreeMap<WsId, WsId> {
         self.parents.clone()
     }
+    /// The workspaces nested as `nesting` said, again.
+    pub(crate) fn renest(&mut self, parents: BTreeMap<WsId, WsId>) {
+        self.parents = parents;
+    }
     /// The workspaces holding those `event` names, beyond them, nested as
     /// `parents` says.
     fn within_of(event: &Event, parents: &BTreeMap<WsId, WsId>) -> Vec<WsId> {
@@ -218,6 +222,21 @@ impl Journal {
         Cursor {
             seq: self.next,
             run,
+        }
+    }
+    /// Where its next entry goes: what `truncate` takes it back to.
+    pub(crate) fn mark(&self) -> Seq {
+        self.next
+    }
+    /// Its entries from `mark` on, never read, let go: a change undone
+    /// before it was told (`Session::transact`). What they evicted is gone.
+    pub(crate) fn truncate(&mut self, mark: Seq) {
+        while self.entries.back().is_some_and(|entry| entry.seq >= mark) {
+            self.entries.pop_back();
+        }
+        self.within.retain(|seq, _| *seq < mark);
+        if mark < self.next {
+            self.next = mark;
         }
     }
     /// The oldest entry it still holds, or its end when it holds none.

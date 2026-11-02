@@ -181,6 +181,17 @@ impl Here<'_> {
     }
 }
 
+/// What a change undoes, taken before it (`Session::transact`).
+struct Undo {
+    structure: crate::workspace::Structure,
+    ids: Ids,
+    views: BTreeMap<ClientId, View>,
+    journal: fux_wire::events::Seq,
+    outbox: usize,
+    /// The last question asked of a pane before it.
+    asked: u64,
+}
+
 /// A program whose pane's own process ended first, adopted by the server
 /// (`fuxix::process::adopt_orphans`): reaped, its status told; killed once
 /// its grace is over, as a closed pane's program is.
@@ -247,6 +258,11 @@ pub struct Session {
     /// is still written: not once the run ends (`unrecord`).
     recorded: Vec<u8>,
     recording: bool,
+    /// What it tells its panes while a change may still be undone
+    /// (`transact`): told once the change is recorded, else never.
+    staged: Option<Vec<(PaneId, ToPane)>>,
+    /// Why a change could not be recorded, which undoes it (`transact`).
+    unrecorded: Option<Error>,
     /// Programs adopted from panes whose own processes ended first.
     pub orphans: Vec<Orphan>,
     /// Where `size_panes` lays out each tab; reused by every settle.
@@ -355,6 +371,8 @@ impl Session {
             entries: journal,
             recorded: Vec::new(),
             recording: true,
+            staged: None,
+            unrecorded: None,
             orphans: Vec::new(),
             placed: Placement::default(),
             laid: BTreeMap::new(),
@@ -511,7 +529,9 @@ impl Session {
 
     /// Says `message` to pane `id`'s own process, if it has one.
     pub(crate) fn tell_pane(&mut self, id: PaneId, message: ToPane, now: Instant) {
-        if let Some(link) = self.links.get_mut(&id) {
+        if let Some(staged) = &mut self.staged {
+            staged.push((id, message));
+        } else if let Some(link) = self.links.get_mut(&id) {
             link.send(id, message, now, &mut self.inbox);
         }
     }
@@ -1287,18 +1307,20 @@ impl Session {
             .map(|(id, _)| *id)
             .ok_or(Error::NoWorkspaceGiven)?;
         let tab = ids.tab()?;
-        let (pane, link) = self.new_pane(&mut ids, new, now)?;
+        let (pane, begin) = self.new_pane(&mut ids, new)?;
         let place = Place {
             ws,
             tab,
             pane: pane.id(),
         };
-        if let Err(pane) = (self.parts).add_workspaces(parent, made, (tab, tab_name, fit), pane) {
-            self.unlink(pane.id(), link, true, now);
+        if (self.parts)
+            .add_workspaces(parent, made, (tab, tab_name, fit), pane)
+            .is_err()
+        {
             return Err(parent.map_or(Error::NoWorkspaceGiven, Error::NoWorkspace));
         }
-        self.linked(place.pane, link, now);
         self.ids = ids;
+        self.start_pane(place.pane, begin, now)?;
         Ok(place)
     }
 
@@ -1382,28 +1404,22 @@ impl Session {
         self.workspace(id).ok_or(Error::NoWorkspace(id))?;
         let mut ids = self.ids.clone();
         let tab = ids.tab()?;
-        let (pane, link) = self.new_pane(&mut ids, new, now)?;
+        let (pane, begin) = self.new_pane(&mut ids, new)?;
         let made = Place {
             ws: id,
             tab,
             pane: pane.id(),
         };
-        if let Err(pane) = self.parts.add_tab((id, tab), name, fit, pane) {
-            self.unlink(pane.id(), link, true, now);
+        if self.parts.add_tab((id, tab), name, fit, pane).is_err() {
             return Err(Error::NoWorkspace(id));
         }
-        self.linked(made.pane, link, now);
         self.ids = ids;
+        self.start_pane(made.pane, begin, now)?;
         Ok(made)
     }
 
     /// A new pane, its ID taken from `ids`, running what `new` says.
-    fn new_pane(
-        &self,
-        ids: &mut Ids,
-        new: NewPane<'_>,
-        now: Instant,
-    ) -> Result<(Pane, Link), Error> {
+    fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>) -> Result<(Pane, Begin), Error> {
         let start = new.start;
         let launch = pane::Launch {
             argv: start.argv().clone(),
@@ -1444,16 +1460,7 @@ impl Session {
             socket: self.launch.clone(),
             exe: self.exe.clone(),
         };
-        // A server's panes are processes of their own; a session that
-        // starts no programs holds its panes itself.
-        let link = match (&self.launch, &self.exe) {
-            (Some(socket), Some(exe)) => {
-                let at = crate::socket::panes(socket).join(id.number().to_string());
-                Link::start(exe, &at, begin)
-            }
-            _ => crate::host::Host::begin(begin, now).map(|host| Link::Local(Box::new(host))),
-        };
-        Ok((pane, link.map_err(|why| fail(Raise::Start, why))?))
+        Ok((pane, begin))
     }
 
     /// Pane `id`'s link, its pane placed: what it told as it began is
@@ -1539,7 +1546,7 @@ impl Session {
     pub fn attach_as(&mut self, attach: Attach, now: Instant) -> Result<ClientId, Error> {
         let client = self.ids.clone().client()?;
         let previous = self.parts.actor(fux_wire::events::Actor::Client(client));
-        let result = self.attach_checked(attach, now);
+        let result = self.transact(now, |s| s.attach_checked(attach, now));
         self.parts.actor(previous);
         result
     }
@@ -1804,7 +1811,9 @@ impl Session {
         self.size_panes(now);
         self.host_panes(now);
         self.pump(now);
-        self.write_record();
+        if let Err(error) = self.commit() {
+            log!("{error}");
+        }
     }
 
     /// Its run ends: its record and its fux go, so no server takes back the
@@ -1819,14 +1828,15 @@ impl Session {
         self.recording = false;
     }
 
-    /// Its run's record, written whole if it changed (`record`), as the
-    /// session settles: before anything that changed it is told. A failed
-    /// write is logged, and tried again at the next change: the change is
-    /// made all the same, and a crash before then takes back the tree as
-    /// it was written last.
-    fn write_record(&mut self) {
+    /// Its run's record, written whole if it changed (`record`): before
+    /// anything that changed it is told (D-124 (3)). One that can't be
+    /// written fails, and the change it was for is undone (`transact`);
+    /// outside a change, a pane's end say, it is logged, and the record
+    /// stays as it was: a server taking the run back finds such a pane
+    /// gone.
+    fn commit(&mut self) -> Result<(), Error> {
         let Some(socket) = self.launch.as_ref().filter(|_| self.recording) else {
-            return;
+            return Ok(());
         };
         let record = crate::record::Record {
             run: self.run,
@@ -1835,19 +1845,130 @@ impl Session {
         };
         let bytes = fux_wire::wire::encode(&record);
         if bytes == self.recorded {
-            return;
+            return Ok(());
         }
         let path = crate::socket::panes(socket).join("run");
         match crate::record::write(&path, &bytes) {
-            Ok(()) => self.recorded = bytes,
-            Err(error) => log!("writing the run's record, {}: {error}", path.display()),
+            Ok(()) => {
+                self.recorded = bytes;
+                Ok(())
+            }
+            Err(error) => {
+                let why = format!(
+                    "the run's record, {}, could not be written ({error}): nothing changed",
+                    path.display()
+                );
+                if self.staged.is_some() {
+                    self.unrecorded = Some(fail(Raise::Client, why.clone()));
+                }
+                Err(fail(Raise::Client, why))
+            }
+        }
+    }
+
+    /// Makes a change (`change`), told only once its record is written: one
+    /// that can't be is undone, as though never made, and fails. What the
+    /// change tells its panes waits till then.
+    fn transact<T>(
+        &mut self,
+        now: Instant,
+        change: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        // Only a run with a record has one to write first: a session that
+        // starts no programs (the tests', the tools') records nothing.
+        if self.staged.is_some() || self.launch.is_none() || !self.recording {
+            return change(self);
+        }
+        let undo = Undo {
+            structure: self.parts.structure(),
+            ids: self.ids.clone(),
+            views: self.views.clone(),
+            journal: self.parts.journal().mark(),
+            outbox: self.outbox.len(),
+            asked: self.asked_pane,
+        };
+        self.staged = Some(Vec::new());
+        let mut done = change(self);
+        if self.unrecorded.is_none()
+            && let Err(error) = self.commit()
+        {
+            done = Err(error);
+        }
+        let staged = self.staged.take().unwrap_or_default();
+        match self.unrecorded.take() {
+            Some(error) => {
+                self.roll_back(undo, now);
+                Err(error)
+            }
+            None => {
+                for (id, message) in staged {
+                    self.tell_pane(id, message, now);
+                }
+                done
+            }
+        }
+    }
+
+    /// A change undone (`transact`): the tree, ids, views and names as they
+    /// were, what it journaled, queued for clients or asked of panes let go
+    /// untold, and the panes it made closed.
+    fn roll_back(&mut self, undo: Undo, now: Instant) {
+        let made = self.parts.restructure(undo.structure);
+        self.ids = undo.ids;
+        self.views = undo.views;
+        self.parts.truncate_journal(undo.journal);
+        self.outbox.truncate(undo.outbox);
+        self.asks.retain(|ask, _| *ask <= undo.asked);
+        self.answers.retain(|ask, _| *ask <= undo.asked);
+        self.inbox.retain(|(id, _)| !made.contains(id));
+        for id in made {
+            if let Some(link) = self.links.remove(&id) {
+                self.unlink(id, link, true, now);
+            }
+        }
+        for view in self.views.values_mut() {
+            view.dirty = true;
+        }
+        if let Err(error) = self.commit() {
+            log!("{error}");
+        }
+    }
+
+    /// Pane `id`, placed, starts: its place and id written in the record
+    /// first, so that once its program runs a crash finds it there
+    /// (D-124 (3)); a crash before leaves a pane the next server finds
+    /// gone. One that can't start fails, and undoes the change.
+    fn start_pane(&mut self, id: PaneId, begin: Begin, now: Instant) -> Result<(), Error> {
+        self.commit()?;
+        let link = match (&self.launch, &self.exe) {
+            (Some(socket), Some(exe)) => {
+                let at = crate::socket::panes(socket).join(id.number().to_string());
+                Link::start(exe, &at, begin)
+            }
+            _ => crate::host::Host::begin(begin, now).map(|host| Link::Local(Box::new(host))),
+        };
+        match link {
+            Ok(link) => {
+                self.linked(id, link, now);
+                Ok(())
+            }
+            Err(why) => {
+                match self.staged.is_some() {
+                    true => self.unrecorded = Some(fail(Raise::Start, why.clone())),
+                    false => self.close_pane(id, None, now),
+                }
+                Err(fail(Raise::Start, why))
+            }
         }
     }
 
     /// Takes back the run `record` holds, whose server crashed (D-124):
     /// each of its panes still waiting, at its place, with its name, its
-    /// ids and versions going on; those gone close, as their programs'
-    /// ends would have closed them, as does a shell that ended meanwhile.
+    /// ids and versions going on. One whose own process is gone stays as
+    /// its record keeps it: ended, if it had, else its program lost as
+    /// though its process had died under this server (`pane_lost`), and
+    /// then its role's rule, as a shell that ended meanwhile closes. One
+    /// that answers but can't be taken refuses the run: it may still run.
     /// Its journal starts afresh, this server's own (D-124 (5)).
     pub fn resume(&mut self, record: crate::record::Record, now: Instant) -> Result<(), Error> {
         let Some(socket) = self.launch.clone() else {
@@ -1861,38 +1982,51 @@ impl Session {
         self.ids = Ids::after(&record.ids);
         let mut copies = BTreeMap::new();
         let mut links = Vec::new();
-        let listed = crate::record::panes(&record.workspaces);
-        for &(_, id) in &listed {
+        let mut lost = Vec::new();
+        for recorded in crate::record::panes(&record.workspaces) {
+            let id = recorded.id;
             let at = panes.join(id.number().to_string());
-            match Link::take(&at, record.run) {
-                Ok((link, greeting)) => match Pane::greeted(greeting) {
-                    Ok(copy) => {
-                        copies.insert(id, copy);
-                        links.push((id, link));
+            let copy = match Link::take(&at, record.run) {
+                Ok((link, greeting)) => {
+                    links.push((id, link));
+                    let mut copy = Pane::greeted(greeting);
+                    if let (Ok(copy), Some(name)) = (&mut copy, &recorded.name) {
+                        copy.rename(name.clone());
                     }
-                    Err(error) => log!("{id}: not taken back: its copy: {error}"),
-                },
-                Err(why) => log!("{id}: not taken back: {why}"),
-            }
+                    copy
+                }
+                Err(crate::link::Untaken::Gone(why)) => {
+                    log!("{id}: its own process is gone: {why}");
+                    if recorded.ended.is_none() {
+                        lost.push(id);
+                    }
+                    Pane::recorded(recorded)
+                }
+                // A pane that answers may still run: never taken for ended.
+                Err(crate::link::Untaken::Unknown(why)) => {
+                    return Err(fail(Raise::Start, format!("{id} answers, but: {why}")));
+                }
+            };
+            let copy = copy.map_err(|e| fail(Raise::Start, format!("{id}: its copy: {e}")))?;
+            copies.insert(id, copy);
         }
-        crate::record::named(&record.workspaces, &mut copies);
         self.parts = Parts::restore(self.entries, &record.workspaces, copies)?;
         for (id, link) in links {
             self.linked(id, link, now);
         }
-        for &(_, id) in &listed {
-            let Some(pane) = self.parts.panes().get(&id) else {
-                log!("{id} ended while no server ran");
-                self.close_pane(id, Some("ended while no server ran".into()), now);
-                continue;
+        for id in lost {
+            self.pane_lost(id, "its pane's own process ended while no server ran", now);
+        }
+        let shells: Vec<(PaneId, Ended)> = (self.parts.panes().values())
+            .filter(|pane| matches!(pane.runs, Runs::Shell(_)))
+            .filter_map(|pane| Some((pane.id(), pane.exit_status()?)))
+            .collect();
+        for (id, ended) in shells {
+            let end = pane::End {
+                ended,
+                left: pane::Left::default(),
             };
-            if let (Runs::Shell(_), Some(ended)) = (&pane.runs, pane.exit_status()) {
-                let end = pane::End {
-                    ended,
-                    left: pane::Left::default(),
-                };
-                self.program_ended(id, end, now);
-            }
+            self.program_ended(id, end, now);
         }
         self.recorded.clear();
         self.settle(now);
@@ -2237,7 +2371,7 @@ impl Session {
     /// which the server asks for its answer until it has one. Event reads
     /// use the same bounded wait; commands run at once.
     pub fn begin(&mut self, request: Request, origin: &Origin, now: Instant) -> Begun {
-        self.begin_request(request, origin, now)
+        self.transact(now, |s| s.begin_request(request, origin, now))
             .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)))
     }
 
@@ -2760,14 +2894,13 @@ impl Session {
         let (split, size) = self.split_size(target, beside)?;
         let mut ids = self.ids.clone();
         let new = NewPane::new(start, &cwd, options, (size, self.graphics(target).cell()));
-        let (pane, link) = self.new_pane(&mut ids, new, now)?;
+        let (pane, begin) = self.new_pane(&mut ids, new)?;
         let new = pane.id();
-        if let Err(pane) = self.parts.split(pane, split) {
-            self.unlink(pane.id(), link, true, now);
+        if self.parts.split(pane, split).is_err() {
             return Err(Error::NoPane(target));
         }
-        self.linked(new, link, now);
         self.ids = ids;
+        self.start_pane(new, begin, now)?;
         for client in followers {
             self.parts.show(client, AnyRef::Pane(new));
         }

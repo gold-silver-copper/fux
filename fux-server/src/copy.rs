@@ -132,11 +132,54 @@ impl Copy {
         Ok(copy)
     }
 
+    /// Pane `recorded`, as its run's record keeps it, its own process gone
+    /// while no server ran: as it ended, if it had; else running, at the
+    /// respawns it was at, its screen blank.
+    pub fn recorded(recorded: &crate::record::Pane) -> Result<Copy, fux_vt::Error> {
+        let launch = crate::pane::Launch {
+            argv: recorded.argv.clone(),
+            cwd: recorded.cwd.clone(),
+        };
+        let runs = match recorded.shell {
+            true => Runs::Shell(launch),
+            false => Runs::Explicit(launch),
+        };
+        let mut copy = Copy::new(recorded.id, runs, recorded.size, recorded.options)?;
+        copy.name = recorded.name.clone();
+        copy.respawns = recorded.respawns;
+        copy.counts.respawns = recorded.respawns;
+        if let Some((counts, ended)) = recorded.ended {
+            copy.counts = counts;
+            copy.state = State::Exited(ended);
+        }
+        Ok(copy)
+    }
+
+    /// It as its run's record keeps it (`Copy::recorded`).
+    pub fn record(&self) -> crate::record::Pane {
+        let launch = self.runs.launch();
+        crate::record::Pane {
+            id: self.id,
+            name: self.name.clone(),
+            shell: matches!(self.runs, Runs::Shell(_)),
+            argv: launch.argv.clone(),
+            cwd: launch.cwd.clone(),
+            options: self.options,
+            size: self.size(),
+            respawns: self.respawns,
+            ended: self.exit_status().map(|ended| (self.counts, ended)),
+        }
+    }
+
     pub fn id(&self) -> PaneId {
         self.id
     }
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
+    }
+    /// Its name as it was, put back: none too.
+    pub(crate) fn renamed(&mut self, name: Option<String>) {
+        self.name = name;
     }
     /// Names it `name`: whether that is another.
     pub(crate) fn rename(&mut self, name: String) -> bool {

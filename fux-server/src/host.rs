@@ -268,7 +268,7 @@ impl Host {
             }
             ToPane::Close { closed } => self.close(closed, now),
             // Taken back as its link begins (`serve`).
-            ToPane::Take { .. } => {}
+            ToPane::Take { .. } | ToPane::Who => {}
         }
     }
 
@@ -1132,6 +1132,7 @@ impl Host {
         crate::link::Greeting {
             protocol: crate::link::PANE_PROTOCOL,
             id: pane.id(),
+            pid: i32::try_from(std::process::id()).unwrap_or(0),
             run: self.run,
             respawns: pane.respawns,
             shell: matches!(pane.runs, Runs::Shell(_)),
@@ -1648,6 +1649,10 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
                             waiting = true;
                         }
                         link = Some(end);
+                    }
+                    Ok(Some(ToPane::Who)) => {
+                        end.send(&FromPane::Greeting(Box::new(host.greeting())));
+                        let _ = end.flush_all();
                     }
                     Ok(None) if !closed => asking = Some(end),
                     Ok(_) | Err(_) => {}

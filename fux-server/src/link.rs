@@ -218,6 +218,9 @@ pub enum ToPane {
     Take {
         run: Run,
     },
+    /// Who it is, asked of one waiting (`Link::who`): it greets, and is
+    /// not taken.
+    Who,
 }
 wired!(ToPane {
     Begin(b),
@@ -229,6 +232,7 @@ wired!(ToPane {
     Taken,
     Close { closed },
     Take { run },
+    Who,
 });
 
 /// A pane's screen, as the server keeps a copy of it (`copy`): the bytes
@@ -546,7 +550,15 @@ impl Link {
             let doing = doing.to_owned();
             move |e: std::io::Error| format!("{doing} {socket}: {e}")
         };
-        // One left by a pane of a run that ended is no one's now.
+        // One a process still listens at is a pane's, whatever the record
+        // says: never let go as debris. One no one does was left by a pane
+        // that ended.
+        if UnixStream::connect(socket).is_ok() {
+            return Err(format!(
+                "a pane's process listens at {} already",
+                socket.display()
+            ));
+        }
         let _ = std::fs::remove_file(socket);
         let listener =
             std::os::unix::net::UnixListener::bind(socket).map_err(at("binding its socket"))?;
@@ -599,28 +611,30 @@ impl Link {
 
     /// Takes back the pane whose process listens at `socket`, waiting for
     /// a server since its own crashed (D-124): what it says it is, if it is
-    /// a pane of run `run` and speaks this pane protocol, and its link.
-    pub fn take(socket: &std::path::Path, run: Run) -> Result<(Link, Greeting), String> {
-        let stream = UnixStream::connect(socket).map_err(|e| format!("reaching it: {e}"))?;
-        let pid = fuxix::socket::peer(&stream)
-            .ok()
-            .and_then(|peer| peer.pid)
-            .ok_or("its process has no pid")?;
-        let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
+    /// a pane of run `run` and speaks this pane protocol, and its link. One
+    /// no process listens for is gone; one that answers but can't be taken
+    /// is not (`Untaken`).
+    pub fn take(socket: &std::path::Path, run: Run) -> Result<(Link, Greeting), Untaken> {
+        let stream = UnixStream::connect(socket).map_err(|e| Untaken::Gone(e.to_string()))?;
+        let unknown = |why: String| Untaken::Unknown(why);
+        let mut end = End::new(stream).map_err(|e| unknown(format!("its link: {e}")))?;
         end.send(&ToPane::Take { run });
-        end.flush_all().map_err(|e| format!("its link: {e}"))?;
+        end.flush_all()
+            .map_err(|e| unknown(format!("its link: {e}")))?;
         let greeting = match end.wait::<FromPane>() {
             Ok(Some(FromPane::Greeting(greeting))) => greeting,
-            Ok(Some(_)) => return Err("its first word was no greeting".to_owned()),
-            Ok(None) => return Err("it is no pane of this run".to_owned()),
-            Err(error) => return Err(format!("its link: {error}")),
+            Ok(Some(_)) => return Err(unknown("its first word was no greeting".to_owned())),
+            Ok(None) => return Err(unknown("it is no pane of this run".to_owned())),
+            Err(error) => return Err(unknown(format!("its link: {error}"))),
         };
         if greeting.protocol != PANE_PROTOCOL {
-            return Err(format!(
+            return Err(unknown(format!(
                 "it speaks pane protocol {}, not {PANE_PROTOCOL}",
                 greeting.protocol
-            ));
+            )));
         }
+        let pid = fuxix::process::Pid::from_raw(greeting.pid)
+            .ok_or_else(|| unknown(format!("its greeting names pid {}", greeting.pid)))?;
         let mut remote = Remote {
             end,
             pid,
@@ -629,8 +643,42 @@ impl Link {
             ended: None,
             first: None,
         };
-        remote.first = Some(first(&mut remote.end)?);
+        remote.first = Some(first(&mut remote.end).map_err(unknown)?);
         Ok((Link::Remote(remote), *greeting))
+    }
+
+    /// The pid of the pane process waiting at `socket`, as the system says
+    /// (`SO_PEERCRED`), else as it says itself; none if none answers.
+    pub fn who(socket: &std::path::Path) -> Option<i32> {
+        let stream = UnixStream::connect(socket).ok()?;
+        if let Some(pid) = fuxix::socket::peer(&stream).ok().and_then(|peer| peer.pid) {
+            return Some(pid.as_raw());
+        }
+        let mut end = End::new(stream).ok()?;
+        end.send(&ToPane::Who);
+        end.flush_all().ok()?;
+        match end.wait::<FromPane>() {
+            Ok(Some(FromPane::Greeting(greeting))) => Some(greeting.pid),
+            Ok(_) | Err(_) => None,
+        }
+    }
+}
+
+/// Why a pane waiting for a server was not taken back.
+#[derive(Debug)]
+pub enum Untaken {
+    /// No process listens at its socket: it ended.
+    Gone(String),
+    /// One does, and could not be taken: it may still run.
+    Unknown(String),
+}
+
+impl std::fmt::Display for Untaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Untaken::Gone(why) => write!(f, "gone: {why}"),
+            Untaken::Unknown(why) => f.write_str(why),
+        }
     }
 }
 
@@ -653,6 +701,9 @@ pub const PANE_PROTOCOL: u32 = 1;
 pub struct Greeting {
     pub protocol: u32,
     pub id: PaneId,
+    /// Its own process's pid, which a system that names no peer's (macOS)
+    /// tells no other way.
+    pub pid: i32,
     pub run: Run,
     pub respawns: u64,
     pub shell: bool,
@@ -669,7 +720,7 @@ pub struct Greeting {
     pub read_error: Option<String>,
 }
 wired!(struct Greeting {
-    protocol, id, run, respawns, shell, argv, cwd, options, size, title, counts, ended, hung_up,
+    protocol, id, pid, run, respawns, shell, argv, cwd, options, size, title, counts, ended, hung_up,
     read_error,
 });
 
