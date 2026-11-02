@@ -795,6 +795,11 @@ pub fn wait(listener: std::os::unix::net::UnixListener, server: UnixStream) -> R
     let mut link = End::new(server).map_err(|e| format!("its server: {e}"))?;
     let mut buffer = [0u8; 4096];
     let mut said = Vec::new();
+    // Its server takes no more clients itself from now on.
+    link.send(&FromConn::Waiting);
+    if link.flush_all().is_err() {
+        return Ok(());
+    }
     loop {
         let mut fds = [
             PollFd::new(&listener, Events::IN),
@@ -834,24 +839,23 @@ pub fn wait(listener: std::os::unix::net::UnixListener, server: UnixStream) -> R
             // Out of descriptors, say: its server starts another later.
             Err(e) => return Err(format!("accept: {e}")),
         };
-        let euid = fuxix::process::geteuid();
-        match fuxix::socket::peer(&client).map(|peer| peer.uid) {
-            Ok(uid) if uid == euid => {
-                drop(listener);
-                let null =
-                    std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-                fuxix::io::redirect_stdout(&null).map_err(|e| format!("its stdout: {e}"))?;
-                link.send(&FromConn::Accepted);
-                return serve(client, link, said);
-            }
-            Ok(uid) => {
-                log!("refused a connection from uid {uid}; only uid {euid} may use this server");
-            }
-            Err(error) => {
-                log!("refused a connection whose peer could not be identified: {error}");
-            }
+        if let Some(why) = crate::socket::stranger(&client) {
+            log!("{why}");
+            continue;
         }
+        drop(listener);
+        let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        fuxix::io::redirect_stdout(&null).map_err(|e| format!("its stdout: {e}"))?;
+        link.send(&FromConn::Accepted);
+        return serve(client, link, said);
     }
+}
+
+/// A connection's process for a client its server took itself (`fux __conn
+/// taken`): its client on `client`, its server on `server`.
+pub fn taken(client: UnixStream, server: UnixStream) -> Result<(), String> {
+    let link = End::new(server).map_err(|e| format!("its server: {e}"))?;
+    serve(client, link, Vec::new())
 }
 
 /// The loop of a client's connection's own process: its client on

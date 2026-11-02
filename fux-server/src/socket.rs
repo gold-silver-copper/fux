@@ -350,6 +350,21 @@ pub fn listened(path: &Path) -> bool {
     }
 }
 
+/// Why the client on `stream` is refused, if it is: it is not the server's
+/// own user's, or its user can't be told.
+pub fn stranger(stream: &std::os::unix::net::UnixStream) -> Option<String> {
+    let euid = geteuid();
+    match fuxix::socket::peer(stream).map(|peer| peer.uid) {
+        Ok(uid) if uid == euid => None,
+        Ok(uid) => Some(format!(
+            "refused a connection from uid {uid}; only uid {euid} may use this server"
+        )),
+        Err(error) => Some(format!(
+            "refused a connection whose peer could not be identified: {error}"
+        )),
+    }
+}
+
 /// Whether process `pid` is gone: it has no session, or, on Linux, it is a
 /// zombie, whose descriptors are closed.
 fn gone(pid: fuxix::process::Pid) -> bool {

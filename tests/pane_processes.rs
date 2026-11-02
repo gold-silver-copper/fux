@@ -97,15 +97,18 @@ fn children(pid: i32, word: &str) -> Vec<i32> {
         .collect()
 }
 
-/// The processes of the server `pid`'s connections that took a client: not
-/// the one waiting for the next, which holds the server's socket on its
-/// stdout (`Server::spare`).
+/// The processes of the server `pid`'s connections that have a client:
+/// those it took itself (`__conn taken`), and those that took one at its
+/// socket, whose stdout then points elsewhere; not the one waiting for the
+/// next, which holds the socket on its stdout (`Server::spare`).
 #[cfg(target_os = "linux")]
 fn connections(pid: i32) -> Vec<i32> {
+    let taken = children(pid, "taken");
     (children(pid, "__conn").into_iter())
         .filter(|conn| {
-            std::fs::read_link(format!("/proc/{conn}/fd/1"))
-                .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
+            taken.contains(conn)
+                || std::fs::read_link(format!("/proc/{conn}/fd/1"))
+                    .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
         })
         .collect()
 }
