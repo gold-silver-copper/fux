@@ -579,6 +579,18 @@ crate::wire::shaped!(
 );
 
 impl Counts {
+    /// Each count by its name, in the order they are written, `ended` 0
+    /// or 1: what a pane's records and its answers hold by name.
+    pub fn named(self) -> [(&'static str, u64); 5] {
+        [
+            ("respawns", self.respawns),
+            ("screen", self.screen),
+            ("bells", self.bells),
+            ("done", self.done),
+            ("ended", u64::from(self.ended)),
+        ]
+    }
+
     /// Whether a pane now at `self` can ever have been at `then`: an
     /// earlier program's, or this one's with no count above its own now.
     pub fn had(self, then: Counts) -> bool {

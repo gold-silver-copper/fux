@@ -23,11 +23,6 @@ define all-history
   str 'pane answer closed-answer pane-request' str 'a pane or a request on one' assert-kind
   9223372036854775807 history
 end
-# pane-or-seen -- list : the five counts of a pane or held version: respawns screen bells done ended
-define counts
-  version str : split-on 1 at str . split-on let parts
-  list parts each str '#' swap cat number end end
-end
 # pane-or-observation -- capture : retain a pane capture without refreshing it, otherwise sample a pane or single answer; client captures and requests are refused
 define observed
   dup kind str capture eq if else
@@ -39,7 +34,7 @@ end
 define shows
   let secs let needle observed
   begin dup string needle contains not while
-    dup counts 4 at 1 eq if str 'program ended before the text showed' fail then
+    dup str ended get 1 eq if str 'program ended before the text showed' fail then
     changed secs timeout wait capture
   end
 end
@@ -55,22 +50,20 @@ end
 # pane-or-observation secs -- capture : checks ended first, even with unknown status; follows the pane across respawns; timeout is per change
 define until-ended
   let secs observed
-  begin dup counts 4 at 1 eq not while changed secs timeout wait capture end
+  begin dup str ended get 1 eq not while changed secs timeout wait capture end
 end
-# pane-or-seen index amount secs -- observation : growth within one program generation, failing across respawn; index 1..4, nonnegative amount; a bare pane is sampled first; timeout is per change
+# pane-or-observation count amount secs -- observation : growth of one count (screen, bells, done or ended) within one program generation, failing across respawn; nonnegative amount; a bare pane is sampled first; timeout is per change
 define grows
-  let secs let amount let index
-  index 1 lt index 4 gt or if str 'count index must be 1..4' fail then
+  let secs let amount let counted
+  str 'screen bells done ended' fields counted contains not if str 'grows counts screen, bells, done or ended' fail then
   amount 0 lt if str 'count growth must be nonnegative' fail then
   dup kind str pane eq if observed then
-  dup counts let before
-  before 0 at let generation
-  before index at amount add let goal
-  goal before index at lt if str 'count growth past what an integer holds' fail then
+  dup str respawns get let generation
+  dup counted get amount add let goal
+  goal over counted get lt if str 'count growth past what an integer holds' fail then
   begin
-    dup counts let now
-    now 0 at generation ne if str 'program respawned during count wait' fail then
-    now index at goal lt
+    dup str respawns get generation ne if str 'program respawned during count wait' fail then
+    dup counted get goal lt
   while changed secs timeout wait end
 end
 # client -- : its focused pane's history in this client's $EDITOR (else vi), opened at its last line (+LINE, which vi, vim, nvim, nano and emacs take), in a split titled history and closed when the editor exits; after a failure, Enter closes it. env(1) gives the program the pane's id and the editor, and "${FUX:-fux}" is the server's fux

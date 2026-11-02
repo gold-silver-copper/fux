@@ -2603,7 +2603,7 @@ pub(crate) mod tests {
             ..Context::default()
         };
         let other = "%1:0.0.0.0.0:1-0";
-        let code = format!("str {other} version str {other} counts");
+        let code = format!("str {other} version");
         let mut machine = compile(&fuxth::token::source("key", &code)?)?;
         let mut out = Vec::new();
         let mut host = Host::new(context, None, &mut out);
@@ -2611,12 +2611,10 @@ pub(crate) mod tests {
         let text: Vec<String> = (left.iter().map(Value::text))
             .collect::<Result<_, _>>()
             .map_err(|f| f.message)?;
-        assert_eq!(text, [other, "0 0 0 0 0"]);
+        assert_eq!(text, [other]);
         Ok(())
     }
 
-    /// A version's counts are decimal, as the server writes them, whatever
-    /// base the program reads its own numbers in.
     /// `word` and `dictionary` read the program's own dictionary, with
     /// no server: a word's record says where it came from, what it declares,
     /// what made it and what it can fail with, and the program's words come
@@ -2669,21 +2667,6 @@ pub(crate) mod tests {
         let mut machine = compile(&fuxth::token::source("cli", "str nosuch word")?)?;
         let failed = run(&mut machine, &mut host, &mut ConfigOnly::default(), None).err();
         assert_eq!(failed.map(|f| f.code), Some(Code::from(Raise::UnknownWord)));
-        Ok(())
-    }
-
-    #[test]
-    fn counts_read_a_version_in_decimal_whatever_the_base() -> TestResult {
-        use super::*;
-        let code = "hex str %1:0.1552.0.0.0:1-0 counts 2 base store str 101 number";
-        let mut machine = compile(&fuxth::token::source("key", code)?)?;
-        let mut out = Vec::new();
-        let mut host = Host::new(Context::default(), None, &mut out);
-        let left = run(&mut machine, &mut host, &mut ConfigOnly::default(), None)?;
-        let text: Vec<String> = (left.iter().map(Value::text))
-            .collect::<Result<_, _>>()
-            .map_err(|f| f.message)?;
-        assert_eq!(text, ["0 1552 0 0 0", "5"]);
         Ok(())
     }
 

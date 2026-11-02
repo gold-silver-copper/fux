@@ -451,12 +451,17 @@ macro_rules! fields {
 }
 
 fields!(
-    /// A held action's or wait's answer on one pane: `changed`, and
-    /// `exited` or `signal` as its program ended, only of a wait that saw
-    /// a change.
+    /// A held action's or wait's answer on one pane: its version's counts
+    /// by name; `changed`, and `exited` or `signal` as its program ended,
+    /// only of a wait that saw a change.
     AnswerField {
         Pane "pane",
         Version "version",
+        Respawns "respawns",
+        Screen "screen",
+        Bells "bells",
+        Done "done",
+        Ended "ended",
         Status "status",
         Changed "changed",
         Exited "exited",
@@ -502,7 +507,7 @@ pub(super) fn answer_field(
     };
     match answer {
         super::Answer::Pane(answer) => {
-            let field = AnswerField::named(field).ok_or_else(absent)?;
+            let (name, field) = (field, AnswerField::named(field).ok_or_else(absent)?);
             let (changed, ended) = match answer {
                 PaneAnswer::Changed { changed, ended, .. } => (Some(changed), *ended),
                 PaneAnswer::Acted(_) | PaneAnswer::Closed(_) | PaneAnswer::TimedOut { .. } => {
@@ -515,6 +520,15 @@ pub(super) fn answer_field(
                     .version()
                     .map(|v| b.text(&v.to_string()))
                     .unwrap_or_else(|| Err(absent())),
+                AnswerField::Respawns
+                | AnswerField::Screen
+                | AnswerField::Bells
+                | AnswerField::Done
+                | AnswerField::Ended => {
+                    let counts = answer.version().ok_or_else(absent)?.counts.named();
+                    let count = counts.into_iter().find(|(count, _)| *count == name);
+                    number(count.ok_or_else(absent)?.1)
+                }
                 AnswerField::Status => number(answer.failure().map_or(0, |c| c.status().get())),
                 AnswerField::Changed => {
                     let changed = changed.ok_or_else(absent)?;

@@ -754,7 +754,6 @@ pub(crate) fn terminal(fact: Terminal, p: &Pane) -> Json {
             .last_status
             .map_or(Json::Null, Json::int),
         Terminal::LastOutput => output_range(p.screen()),
-        Terminal::Bells => Json::uint(p.alerts.rung),
         Terminal::Notification => {
             let notification = p.alerts.last.as_ref();
             notification.map_or(Json::Null, |n| Json::str(n.as_str()))
@@ -1320,7 +1319,7 @@ mod tests {
         let range = |pane: &crate::pane::Pane| {
             let json = json(pane, None, CaptureView::default())?;
             let from = json.find(r#""last_output""#).ok_or(json.clone())?;
-            let to = json.find(r#","bells""#).ok_or(json.clone())?;
+            let to = json.find(r#","notification""#).ok_or(json.clone())?;
             Ok::<_, Box<dyn std::error::Error>>(json.get(from..to).unwrap_or_default().to_owned())
         };
         assert_eq!(

@@ -26,6 +26,7 @@ order:
 | `id` | `"%3"` (a handle in fuxth) |
 | `tab` | the tab it is in, `"@2"` (a handle in fuxth) |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help agents` says what each counts) |
+| `respawns`, `screen`, `bells`, `done`, `ended` | its version's counts, by name: its program's respawns; its screen's revision; bells and notifications rung, shell commands ended (OSC 133 `D`) and whether it ended (0 or 1), since it started |
 | `name` | its given name (`rename`), else `null`; no other workspace, tab or pane has it |
 | `label` | display text: its given name, else title, launch program basename, or id; never a lookup name |
 | `title` | what the program set (OSC 0 or 2), else `""`, without control characters |
@@ -54,7 +55,6 @@ order:
 | `command_running` | a shell command runs (OSC 133 marks) |
 | `last_status` | the last shell command's status, else `null` |
 | `last_output` | where `last-output` reads, `{"start":[ROW,COL],"end":[ROW,COL]}`: from the last command's output start mark (OSC 133 C) up to its end mark (D), a running one's through its cursor's row, each end within its row's width (a resize may leave a mark past it: then the range is empty there, `start` and `end` alike); rows count from the screen's top, those above it (in history) negative. `null` where no command was marked, or its rows are gone (let go from history, or under the alternate screen) |
-| `bells` | bells and notifications rung since it started |
 | `notification` | the last notification's text, else `null`, without control characters |
 | `truncated` | which of `"title"` and `"notification"`, in that order, were cut, else `[]`: the fields above that the program sent more of than fux-vt keeps of a string (64 KiB), the rest dropped (`["notification"]`, `["title","notification"]`) |
 | `input_queued` | bytes of input fux accepted for its program and has not yet written to its terminal |
@@ -301,7 +301,8 @@ of them in layout order, `["%3","%4"]`.
 
 `json` of an action's answer (`send-keys`, `send-mouse`,
 `signal`, `split`, `new-tab`, `respawn`) is
-`{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":0}`: its pane's version from
+`{"pane":"%3","version":"%3:0.57.0.3.0:RUN","respawns":0,"screen":57,"bells":0,"done":3,"ended":0,"status":0}`
+(the version's counts by name, as a pane's): its pane's version from
 just before it acted, or as a new pane starts: one object for an action
 or wait on a pane, an array for one on a tab or workspace, however many
 panes it has or answered.
@@ -310,15 +311,15 @@ A `wait` answers each pane whose version differs from the one it waited
 from (its program's end too):
 
 ```json
-{"pane":"%3","version":"%3:0.61.1.4.0:RUN","changed":["screen","bell","done"],"status":0}
-{"pane":"%4","version":"%4:0.12.0.0.1:RUN","changed":["screen"],"exited":5,"signal":null,"status":0}
-{"pane":"%5","version":"%5:0.9.0.0.1:RUN","changed":[],"exited":null,"signal":15,"status":0}
-{"pane":"%2","version":"%2:1.3.0.0.0:RUN","changed":["respawned"],"status":0}
+{"pane":"%3","version":"%3:0.61.1.4.0:RUN","respawns":0,"screen":61,"bells":1,"done":4,"ended":0,"changed":["screen","bell","done"],"status":0}
+{"pane":"%4","version":"%4:0.12.0.0.1:RUN","respawns":0,"screen":12,"bells":0,"done":0,"ended":1,"changed":["screen"],"exited":5,"signal":null,"status":0}
+{"pane":"%5","version":"%5:0.9.0.0.1:RUN","respawns":0,"screen":9,"bells":0,"done":0,"ended":1,"changed":[],"exited":null,"signal":15,"status":0}
+{"pane":"%2","version":"%2:1.3.0.0.0:RUN","respawns":1,"screen":3,"bells":0,"done":0,"ended":0,"changed":["respawned"],"status":0}
 ```
 
 `changed` lists `screen`, `bell` and `done` (a count of the version that
 grew), or `respawned` (the program started again: its counts but
-`RESPAWNS` start afresh). When the program ended, both `exited` and `signal`
+`respawns` start afresh). When the program ended, both `exited` and `signal`
 are present, with inapplicable values `null`. `exited` is the program's status
 if it ended since (`null` if it was signalled or its status was lost),
 `signal` the signal that killed it; a wait from a version that already holds its end waits for
@@ -327,7 +328,7 @@ holds is read on, so `screen` and `bell` can still grow, and an ended pane is
 frozen once its terminal is drained.
 
 A wait that fails (124 nothing changed, 4 its pane closed) answers too,
-with its status: `{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":124}`,
+with its status: `{"pane":"%3","version":"%3:0.57.0.3.0:RUN",…,"status":124}`,
 the version it is still at; `{"pane":"%3","status":4}`, its pane closed.
 Uncaught, it ends the program with that status, stdout getting nothing
 more, and says why on stderr, one line, `fux: CODE: MESSAGE`, then the
@@ -521,8 +522,8 @@ Of the language's own, fux's words give `unused`, `unknown_word` and
 ## `status`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":73,
- "server_release":"0.36.0","server_protocol":73,"server_pid":4242,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","release":"0.36.0","protocol":74,
+ "server_release":"0.36.0","server_protocol":74,"server_pid":4242,"compatible":true}
 ```
 
 `status` returns an ordinary record with these locally readable fields. Plain
