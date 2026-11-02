@@ -70,7 +70,7 @@ pub enum Fux {
     /// What the server said: a capture or a wait's outcome.
     Answer(Rc<Answer>, Option<Run>),
     /// A code value another client sent, as its words: `execute` compiles
-    /// them in this program's dictionary as it runs them (#370's rule).
+    /// them in this program's dictionary, then runs them (`Ask::Code`).
     Code(Rc<fux_wire::callback::Code>),
 }
 
@@ -105,11 +105,6 @@ impl AppValue for Fux {
             Fux::Answer(answer, _) => answer.names().0,
             Fux::Code(_) => "code",
         }
-    }
-
-    fn words(&self) -> Option<&[String]> {
-        let Fux::Code(code) = self else { return None };
-        Some(&code.words)
     }
 
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), fuxth::Failure> {
@@ -350,6 +345,9 @@ pub enum Ask {
     /// The program's own dictionary's records: the word a name names
     /// (`word`), or every word (`dictionary`).
     Dictionary(Option<String>),
+    /// A code value another client sent (`Fux::Code`), `execute`d: made
+    /// in the program's dictionary as #370 makes a callback's, then run.
+    Code(Rc<fux_wire::callback::Code>),
 }
 
 /// The keys of a binding just made.
@@ -1302,6 +1300,16 @@ fn steps(
             Outcome::Suspended(Ask::Dictionary(name)) => {
                 let records = dictionary(machine, name.as_deref());
                 pushed(machine, records)?
+            }
+            Outcome::Suspended(Ask::Code(code)) => {
+                // Compiled with the run set aside, which it can't touch.
+                let aside = machine.set_aside();
+                let xt = code_value(machine, &code, stop);
+                machine.take_back(aside);
+                let ran = xt.and_then(|xt| machine.execute(xt).map_err(|e| uncaught(machine, e)));
+                if let Err(failed) = ran {
+                    pushed(machine, Err(failed))?
+                }
             }
         }
     }

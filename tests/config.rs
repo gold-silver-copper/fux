@@ -712,6 +712,7 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
          str 'C-b g s' code say-ran end bind\n\
          define take end  str 'C-b g r' code take end bind\n\
          str 'C-b g y' code stop-compiling digits-begin start-compiling end bind\n\
+         str 'C-b g n' code me focused swap rename end bind\n\
          str 'C-b g t' code str ran-by-the-reader print end bind\n\
          str history-bytes 4096 set\n",
     )?;
@@ -747,6 +748,14 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     };
     let last = ["last", "str", "keymap", "get", "last"];
     assert_eq!(code(&last, &["execute"])?.trim(), "ran-by-the-reader");
+    // A word compiled before the code is read runs it as `execute` does.
+    let early = [
+        &["define", "run-code", "execute", "end"].map(str::to_owned)[..],
+        &program(&last, &["run-code"]),
+    ]
+    .concat();
+    let early: Vec<&str> = early.iter().map(String::as_str).collect();
+    assert_eq!(server.ok(&early)?.trim(), "ran-by-the-reader");
     // `C-b x` runs `me-focused confirm-close`, `me-focused` a word of the
     // bundled keys', which a client's dictionary has and the command
     // line's lacks: a code value here too, which fails as it is executed.
@@ -798,6 +807,29 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     eventually("Escape leaving the map", || {
         Ok(read("keys")?.starts_with(r#"{"at":"","#))
     })?;
+    // A read code value is a callback too: `C-b g n`'s, the prompt's.
+    let opens = [
+        "str",
+        &id,
+        "client",
+        "str",
+        "Reuse",
+        "str",
+        "named-by-prompt",
+    ];
+    let reuse = program(&["last", "str", "keymap", "get", "4", "at"], &["prompt"]);
+    let reuse = [
+        &opens[..],
+        &reuse.iter().map(String::as_str).collect::<Vec<_>>(),
+    ]
+    .concat();
+    server.ok(&reuse)?;
+    terminal.wait_for("Reuse")?;
+    terminal.type_bytes(b"\r")?;
+    let name = ["str", &id, "client", "focused", "str", "name", "get"];
+    eventually("the prompt's callback ran", || {
+        Ok(server.ok(&name)?.trim() == "named-by-prompt")
+    })?;
     // In the client, `C-b g s`'s word is its config's, and runs.
     terminal.type_bytes(b"\x02e")?;
     terminal.wait_for("Enter accept")?;
@@ -809,6 +841,15 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
         terminal.pump();
         Ok(String::from_utf8_lossy(&terminal.output).contains("ran-in-the-client"))
     })?;
+    // And bound again, as it came: `C-b g t`'s code on `C-b Q`.
+    terminal.type_bytes(b"\x02e")?;
+    terminal.wait_for("Enter accept")?;
+    terminal.type_bytes(
+        b"str 'C-b Q' me keys str keymap get first str keymap get last str keymap get last \
+          str code get bind\r",
+    )?;
+    let rebound = r#"{"kind":"binding","key":"Q","code":"str ran-by-the-reader print""#;
+    eventually("C-b Q bound", || Ok(read("keys")?.contains(rebound)))?;
     // A key bound, then read, in one program at its prompt: the read finds
     // it, as pending keys are committed before the program asks anything.
     // What it prints is joined as it runs, so the line typed never shows

@@ -33,8 +33,13 @@ fn fail() -> Failure {
 }
 
 /// `v` as a code value goes on the wire: the words of `code … end`'s xt,
-/// which only it keeps, and only when `code` WORDS `end` makes it again.
+/// which only it keeps, and only when `code` WORDS `end` makes it again;
+/// or the words of one another client sent.
 pub(super) fn code(v: &Value<Fux>) -> Result<Code, Failure> {
+    // One another client sent goes on as it came.
+    if let Value::App(Fux::Code(code)) = v {
+        return Ok((**code).clone());
+    }
     let Value::Xt(xt) = v else {
         let why = format!("takes code … end, not {}", v.kind());
         return Err(Failure::new(fuxth::Code::Type, why));
@@ -543,6 +548,61 @@ mod tests {
             let refused = admit(prompt(args), None, &context, None).err();
             assert!(refused.is_some_and(|e| e.message.contains("different server runs")));
         }
+        Ok(())
+    }
+
+    /// A code value another client sent compiles where `execute` runs it
+    /// as a callback's does: its words ask nothing of the server and read
+    /// no file as they compile, and a stop stops them; the run executing
+    /// it, number text and the return stack too, goes on as it was.
+    #[test]
+    fn a_sent_code_value_compiles_at_execute_as_a_callbacks_does() -> TestResult {
+        let run = |program: &str, words: &str, stop: Option<&crate::script::Stop>| {
+            let tokens = crate::script::token::source("t", program).map_err(|e| e.to_string())?;
+            let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+            let sent = Rc::new(crate::testing::code(words));
+            machine.push(Value::App(Fux::Code(sent)));
+            let mut out = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut out);
+            crate::script::run(&mut machine, &mut host, &mut NoRequests, stop)
+                .map_err(|e| e.to_string())
+        };
+        let kept = "digits-begin str kept holds 7 to-return execute from-return 0 digits-end";
+        let ran = run(kept, "1 2 add", None)?;
+        assert_eq!(ran, [Value::Int(3), Value::Int(7), Value::str("kept")]);
+        let asks = run(
+            "define ask-it %1 str x rename end immediate execute",
+            "ask-it",
+            None,
+        );
+        assert!(
+            asks.as_ref()
+                .is_err_and(|e| e.contains("ask nothing of the server")),
+            "{asks:?}"
+        );
+        let dir = fuxix::file::scratch()?.join(format!("sent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join("action.fux");
+        std::fs::write(&file, "str read")?;
+        let reads = run("execute", &format!("include {}", file.display()), None);
+        std::fs::remove_dir_all(&dir)?;
+        assert!(
+            reads.as_ref().is_err_and(|e| e.contains("reads no files")),
+            "{reads:?}"
+        );
+        let stop = crate::script::Stop::default();
+        let stopper = stop.clone();
+        let stopping = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            stopper.stop();
+        });
+        let spins = run(
+            "define spin begin again end immediate execute",
+            "spin",
+            Some(&stop),
+        );
+        stopping.join().map_err(|_| "the stopping thread")?;
+        assert!(spins.is_err() && stop.stopped(), "{spins:?}");
         Ok(())
     }
 

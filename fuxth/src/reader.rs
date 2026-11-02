@@ -1318,33 +1318,6 @@ impl<A: AppValue> Machine<A> {
         Ok(())
     }
 
-    /// `execute` of a code value that came as `words`: they are read next,
-    /// where it runs, as `code` WORDS `end execute`, so they compile in
-    /// this dictionary now and run, as the program's own source would.
-    /// Refused while code is compiled, which they would join.
-    pub(crate) fn read_code(&mut self, words: &[String]) -> Result<(), Error> {
-        if self.compiling || !self.building.is_empty() {
-            let why = "a code value's words are read only where no code is being compiled";
-            return Err(self.fail(Code::NotTopLevel, why));
-        }
-        // Said where `execute` runs.
-        let place = self.at().map_or_else(
-            || token::Place::Line {
-                source: std::sync::Arc::from("code"),
-                line: 1,
-            },
-            |t| t.place,
-        );
-        let word = |text: &str| Token {
-            text: Rc::from(text),
-            place: place.clone(),
-        };
-        let words = words.iter().map(String::as_str);
-        let tokens = ["code"].into_iter().chain(words).chain(["end", "execute"]);
-        self.read(tokens.map(word).collect(), None);
-        Ok(())
-    }
-
     /// Code left open at the end, said at its innermost mark.
     pub(crate) fn unclosed(&self) -> Error {
         let mark = self.stack.iter().rev().find_map(|value| match value {

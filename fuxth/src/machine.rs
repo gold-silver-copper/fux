@@ -61,6 +61,15 @@ pub trait Host {
             "this host reads no source files",
         ))
     }
+    /// What to wait for while the host makes `value`, a code value of its
+    /// own (another machine's, sent as its words), into an xt of this
+    /// machine's: `execute` waits for it, and the host runs the xt
+    /// (`Machine::execute`). None for any other value, which `execute`
+    /// refuses.
+    fn code(&mut self, value: &Self::Value) -> Option<Self::Request> {
+        let _ = value;
+        None
+    }
 }
 
 /// Code: steps, each with the token it came from (none for a word of the
@@ -460,6 +469,28 @@ impl std::fmt::Display for Definition<'_> {
             }
         }
     }
+}
+
+/// What a machine was running, set aside (`Machine::set_aside`).
+pub struct Aside<A> {
+    stack: Vec<Value<A>>,
+    frames: Vec<Frame>,
+    locals: Vec<Option<Value<A>>>,
+    marks: Vec<(usize, Body)>,
+    iters: Vec<(Sequence<A>, usize, usize)>,
+    loops: Vec<Loop>,
+    returns: Vec<Value<A>>,
+    building: Vec<Building<A>>,
+    compiling: bool,
+    made: Option<Vec<(usize, usize)>>,
+    digits: String,
+    out: Vec<Value<A>>,
+    actions: Vec<(Step, Token)>,
+    raised: Vec<Token>,
+    last: Option<(usize, usize, usize)>,
+    read_last: Option<Token>,
+    read_here: bool,
+    empty: bool,
 }
 
 /// A machine: its dictionary and what it is running.
@@ -959,6 +990,82 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
+    /// `execute` of a value of the host's: what to wait for while the host
+    /// makes it, a code value, an xt; else its refusal.
+    #[cold]
+    #[inline(never)]
+    fn host_code<H: Host<Value = A>>(&mut self, host: &mut H) -> Result<H::Request, Error> {
+        let value = self.pop()?;
+        let request = if let Value::App(app) = &value {
+            host.code(app)
+        } else {
+            None
+        };
+        request.ok_or_else(|| self.not_executed(&value))
+    }
+
+    fn not_executed(&self, value: &Value<A>) -> Error {
+        let wants = Wants::Takes(Builtin::Execute, "an xt or a code value");
+        self.refused(Some(wants), value.kind(), false)
+    }
+
+    /// Runs `xt`, as `execute` does: the xt a host made of a code value
+    /// (`Host::code`), run next, before the step after `execute`.
+    pub fn execute(&mut self, xt: Value<A>) -> Result<(), Error> {
+        let Value::Xt(Xt(code)) = xt else {
+            return Err(self.not_executed(&xt));
+        };
+        self.enter(&code)
+    }
+
+    /// What the machine is running, set aside, so that it is at rest with
+    /// its dictionary, to compile code (`Host::code`); `take_back` puts it
+    /// back as it was, and drops whatever ran between.
+    pub fn set_aside(&mut self) -> Aside<A> {
+        use std::mem::take;
+        Aside {
+            stack: take(&mut self.stack),
+            frames: take(&mut self.frames),
+            locals: take(&mut self.locals),
+            marks: take(&mut self.marks),
+            iters: take(&mut self.iters),
+            loops: take(&mut self.loops),
+            returns: take(&mut self.returns),
+            building: take(&mut self.building),
+            compiling: take(&mut self.compiling),
+            made: take(&mut self.made),
+            digits: take(&mut self.digits),
+            out: take(&mut self.out),
+            actions: take(&mut self.actions),
+            raised: take(&mut self.raised),
+            last: take(&mut self.last),
+            read_last: take(&mut self.read_last),
+            read_here: take(&mut self.read_here),
+            empty: take(&mut self.empty),
+        }
+    }
+
+    pub fn take_back(&mut self, aside: Aside<A>) {
+        self.stack = aside.stack;
+        self.frames = aside.frames;
+        self.locals = aside.locals;
+        self.marks = aside.marks;
+        self.iters = aside.iters;
+        self.loops = aside.loops;
+        self.returns = aside.returns;
+        self.building = aside.building;
+        self.compiling = aside.compiling;
+        self.made = aside.made;
+        self.digits = aside.digits;
+        self.out = aside.out;
+        self.actions = aside.actions;
+        self.raised = aside.raised;
+        self.last = aside.last;
+        self.read_last = aside.read_last;
+        self.read_here = aside.read_here;
+        self.empty = aside.empty;
+    }
+
     /// Runs `code`, one of this machine's, in a frame of its own.
     pub(crate) fn enter(&mut self, code: &Rc<Steps<A>>) -> Result<(), Error> {
         let index = self.index_of(code)?;
@@ -1054,6 +1161,12 @@ impl<A: AppValue> Machine<A> {
                     // whole, which the CPU can't forward (counting to a
                     // million: +7% cycles on fewer instructions).
                     Op::Push(value) => self.stack.extend_from_slice(std::slice::from_ref(value)),
+                    // A code value of the host's is made into an xt by it.
+                    Op::Builtin(Builtin::Execute)
+                        if matches!(self.stack.last(), Some(Value::App(_))) =>
+                    {
+                        return self.host_code(host).map(Outcome::Suspended);
+                    }
                     Op::Builtin(builtin) => {
                         self.builtin(*builtin, host)?;
                         if self.frames.len() != depth {
@@ -2638,22 +2751,8 @@ builtins! { m host;
     Quit "quit" [cold] () "--" raises(Quit) "stop the program: the failure quit, -56 throw" {
         m.throw(Value::Int(-56))
     }
-    Execute "execute" [cold] (xt: Any) "xt --" raises(any) "run the word xt is, or what a code value of the host's words make, read here" {
-        match xt {
-            Value::Xt(Xt(code)) => m.enter(&code),
-            Value::App(ref code) if let Some(words) = code.words() => m.read_code(words),
-            other @ (Value::Int(_)
-            | Value::Bool(_)
-            | Value::Str(_)
-            | Value::List(_)
-            | Value::App(_)
-            | Value::Mark(_)
-            | Value::Failure(_)
-            | Value::Addr(_)) => {
-                let wants = Wants::Takes(Builtin::Execute, "an xt or a code value");
-                Err(m.refused(Some(wants), other.kind(), false))
-            }
-        }
+    Execute "execute" [cold] (xt: Any) "xt --" raises(any) "run the word xt is, or the code a code value of the host's makes here" {
+        m.execute(xt)
     }
     Create "create" [cold] () "--" raises(MissingToken BadName IdsExhausted Memory)
         "create NAME: a word that gives the address where the data space goes on, for the data stored after (store-next, allot)"

@@ -565,11 +565,13 @@ whether it `repeat`s and has a `keymap` of its own, as deep as the keys go.
 
 A `code` is a code value: the client sends its words, and reading it
 compiles nothing. `execute` compiles them in the dictionary of the
-program that runs it, as it runs them (`… str code get execute`), so a
-word that dictionary lacks fails then, `unknown_word`: the command line
-lacks the bundled keys' helpers (`me-focused`) and the client's config's
-words, which a key's or the prompt's program has. `json` writes it as its
-words, and passed on to another client it goes as they came.
+program that runs it, as a callback's code is compiled (asking nothing of
+the server, reading no file, stopped by a stop), then runs them
+(`… str code get execute`). A word that dictionary lacks fails there,
+`unknown_word`: the command line lacks the bundled keys' helpers
+(`me-focused`) and the client's config's words, which a key's or the
+prompt's program has. `json` writes it as its words, and a callback,
+`bind` or another client takes it as they came.
 `preferences` lists each preference's `name`, its `value` as `set` takes
 it, and its `type` as `fux help set` says it.
 

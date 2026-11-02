@@ -24,12 +24,6 @@ pub trait AppValue: Clone + PartialEq {
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         out.write_str(self.kind()).map_err(|_| unwritten())
     }
-    /// Its words, if it is a code value that came as words, made in no
-    /// machine yet: `execute` reads them where it runs, as `code` WORDS
-    /// `end` reads its words, and runs what they make.
-    fn words(&self) -> Option<&[String]> {
-        None
-    }
 }
 
 /// A kind said without its article: "an integer" as "integer".

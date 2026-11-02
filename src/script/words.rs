@@ -354,7 +354,7 @@ words! {
         Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it, a pane's stacks too" "fux str c1 client %3 show" [];
         Clients Step "step" "client handle way --" raises(Type asks) "show a client the next, previous or last shown of the handle's siblings (a pane's: the children of the stack nearest it, else its tab's panes shown), or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux str c1 client @2 str next step" [];
         Clients Detach "detach" "client --" raises(Type asks) "detach a client" "fux str c1 client detach" [];
-        Clients Keymap "keys" "client -- record" raises(Type asks) "the client's keys, as it answers: at, the keys it has typed into the map it is in; keymap, its keys from the root, each one that runs a binding (kind binding: key, code, label, group) or holds a map of more (kind map: key, repeat, keymap), at any depth; list and line, its screens' keys (key, action or code, label). Each code is a code value of its words, which reading compiles nothing of: execute compiles them in this program's dictionary and runs them, failing there for a word it lacks" "fux str c1 client keys str keymap get first json" [];
+        Clients Keymap "keys" "client -- record" raises(Type asks) "the client's keys, as it answers: at, the keys it has typed into the map it is in; keymap, its keys from the root, each one that runs a binding (kind binding: key, code, label, group) or holds a map of more (kind map: key, repeat, keymap), at any depth; list and line, its screens' keys (key, action or code, label). Each code is a code value of its words, which reading compiles nothing of: execute compiles them in this program's dictionary, as a callback's are, and runs them, failing there for a word it lacks; a callback or bind takes it as it came" "fux str c1 client keys str keymap get first json" [];
         Clients Preferences "preferences" "client -- list" raises(Type asks) "each of the client's preferences, as it answers: its name, its value as set takes it, and its type" "fux str c1 client preferences json" [];
         Server Start "start" "--" raises(NotHere asks) "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
@@ -1318,6 +1318,11 @@ impl fuxth::Host for Host<'_> {
     type Value = Fux;
     type Request = Ask;
 
+    fn code(&mut self, value: &Fux) -> Option<Ask> {
+        let Fux::Code(code) = value else { return None };
+        Some(Ask::Code(std::rc::Rc::clone(code)))
+    }
+
     /// Written and flushed: `write` and `emit` deliver without a line end.
     fn write(&mut self, text: &str) -> Result<(), Failure> {
         (self.out.write_all(text.as_bytes()))
@@ -2227,7 +2232,7 @@ impl Host<'_> {
     /// (`[captured arguments, code … end]`), never a string.
     fn action(&mut self, value: &Value<Fux>) -> Result<fux_wire::callback::Callback, Failure> {
         let (code, args) = match value {
-            Value::Xt(_) => (super::callback::code(value)?, Vec::new()),
+            Value::Xt(_) | Value::App(Fux::Code(_)) => (super::callback::code(value)?, Vec::new()),
             // What the pair holds, checked as such: its code's own
             // requirement is told.
             Value::List(v) => self.held(match v.items() {
