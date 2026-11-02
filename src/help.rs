@@ -178,52 +178,65 @@ pub fn explain(name: &str) -> Option<String> {
     guide(name).or_else(|| word(name))
 }
 
-/// One word at length: its stack effect, what it does, and an example.
+/// One word at length, as its record (`str NAME word`) says it: its stack
+/// effect, its documentation, and a library's code as written.
 fn word(name: &str) -> Option<String> {
-    if let Some(word) = Word::named(name) {
-        let row = word.row();
-        let mut out = format!("{}  ( {} )\n\n{}.\n", row.name, row.effect, row.about);
-        if let Some(usage) = crate::script::usage(name) {
-            out.push_str(&format!("\n{usage}\n"));
-        }
-        if let Word::Act(act) = word
-            && let Some(takes) = act.takes()
-        {
-            // What they go on: options, for what makes its own pane.
-            let on = match takes.after {
-                After::Opts => "opts",
-                After::Pane => "the pane",
-                After::Either => "the pane (or opts)",
-            };
-            out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
-            for option in takes.options.iter().map(|o| Word::Opt(*o).row()) {
-                let (name, effect, about) = (option.name, option.effect, option.about);
-                out.push_str(&format!("  {name:<14} {effect:<26} {about}\n"));
-            }
-        }
-        if word == Word::Act(Act::Set) {
-            out.push_str(&settings());
-        } else if word == Word::Act(Act::Json) {
-            out.push_str(&format!("\n{JSON}"));
-        }
-        return Some(out);
+    let machine = crate::script::base().ok()?;
+    let definition = machine.definition(name)?;
+    let effect = definition.effect.unwrap_or_default();
+    let mut out = format!("{name}  ( {effect} )\n\n{}\n", documentation(&definition)?);
+    if definition.origin == fuxth::Origin::Library {
+        let docs = crate::script::docs();
+        let doc = docs.iter().rev().find(|doc| doc.name == name)?;
+        let code = doc.code.replace('\n', "\n  ");
+        out.push_str(&format!("Written in fuxth:\n\n  {code}\n"));
     }
-    if let Some(doc) = crate::script::docs().iter().find(|doc| doc.name == name) {
-        let (effect, about, code) = (&doc.effect, &doc.about, doc.code.replace('\n', "\n  "));
-        return Some(format!(
-            "{name}  ( {effect} )\n\n{about}.\nWritten in fuxth:\n\n  {code}\n"
-        ));
-    }
-    let builtin = fuxth::Builtin::named(name).filter(|b| !b.hosted())?;
-    let runs = match builtin.immediate() {
-        true => " It runs as it is read, even while a definition is compiled.",
-        false => "",
+    Some(out)
+}
+
+/// A word's documentation, which its record and `fux help NAME` give: what
+/// it does; for fux's own, how it is used, its options, and `set`'s
+/// settings or `json`'s guide; for the core's, whether it runs as it is
+/// read. None for the program's own, which declare none.
+pub fn documentation(definition: &fuxth::Definition<'_>) -> Option<String> {
+    use fuxth::Origin;
+    let name = definition.name;
+    let Some(word) = Word::named(name).filter(|_| definition.origin == Origin::Host) else {
+        let about = definition.about?;
+        let runs = match definition.immediate {
+            true => " It runs as it is read, even while a definition is compiled.",
+            false => "",
+        };
+        return Some(match definition.origin {
+            Origin::Core => format!("{about}. One of the core's words.{runs}"),
+            Origin::Host | Origin::Library | Origin::Program => format!("{about}."),
+        });
     };
-    Some(format!(
-        "{name}  ( {} )\n\n{}. One of the core's words.{runs}\n",
-        builtin.effect(),
-        builtin.about()
-    ))
+    let mut out = format!("{}.\n", word.row().about);
+    if let Some(usage) = crate::script::usage(name) {
+        out.push_str(&format!("\n{usage}\n"));
+    }
+    if let Word::Act(act) = word
+        && let Some(takes) = act.takes()
+    {
+        // What they go on: options, for what makes its own pane.
+        let on = match takes.after {
+            After::Opts => "opts",
+            After::Pane => "the pane",
+            After::Either => "the pane (or opts)",
+        };
+        out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
+        for option in takes.options.iter().map(|o| Word::Opt(*o).row()) {
+            let (name, effect, about) = (option.name, option.effect, option.about);
+            out.push_str(&format!("  {name:<14} {effect:<26} {about}\n"));
+        }
+    }
+    if word == Word::Act(Act::Set) {
+        out.push_str(&settings());
+    } else if word == Word::Act(Act::Json) {
+        out.push_str(&format!("\n{JSON}"));
+    }
+    Some(out.trim_end().to_owned())
 }
 
 /// Local settings and their bundled initialization source.

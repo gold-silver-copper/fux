@@ -370,7 +370,7 @@ words! {
         Config ListKeys "list-keys" "--" raises(Config Output) "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux list-keys" [];
         Config KeyNames "key-names" "--" raises(Output) "the names keys go by" "fux key-names" [];
         Help Help "help" "--" raises(Output) "the words, under their headings" "fux help" [];
-        Help Word "word" "word -- record" raises(Type UnknownWord) "the dictionary's record of the word named so now: its name, provenance (core, fux, library, or run for this program's own), effect, documentation, definition (its words as read, or native) and codes (what it can fail with as it runs, or null where unknown)" "fux str dup word str definition get" [];
+        Help Word "word" "word -- record" raises(Type UnknownWord) "the dictionary's record of the word named so now: its name, provenance (core, fux, library, or run for this program's own), effect, documentation (all help says of it), definition (its words as read, or native) and codes (what it can fail with as it runs, or null where unknown)" "fux str dup word str definition get" [];
         Help Dictionary "dictionary" "-- list" raises() "a record of each word in this program's dictionary now, as word gives it, in the order they were defined" "fux dictionary | jq -r 'select(.provenance == \"run\") | .name'" [];
         Help Explain "explain" "word --" raises(Type UnknownWord Output) "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes typing read shells programs servers); or guide, all of it" "fux str capture explain" [];
     }

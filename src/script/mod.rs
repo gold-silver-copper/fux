@@ -599,7 +599,7 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
 }
 
 /// The bundled dictionary.
-fn base() -> Result<Machine<Fux>, Failed> {
+pub(crate) fn base() -> Result<Machine<Fux>, Failed> {
     READY.with(|ready| ready.as_ref().map(|(m, _)| m.clone()).map_err(Clone::clone))
 }
 
@@ -2619,13 +2619,14 @@ pub(crate) mod tests {
     /// base the program reads its own numbers in.
     /// `word` and `dictionary` read the program's own dictionary, with
     /// no server: a word's record says where it came from, what it declares,
-    /// what made it and what it can fail with, and the program's words come
-    /// last, each once.
+    /// all help says of it, what made it and what it can fail with, and the
+    /// program's words come last, each once.
     #[test]
     fn the_dictionary_is_the_programs_own_as_records() -> TestResult {
         use super::*;
         let code = "define sq dup mul end define sq2 sq end define sq 0 end
-            str sq word str dup word str split word str add word dictionary";
+            str sq word str dup word str split word str add word dictionary
+            str capture word str documentation get";
         let mut machine = compile(&fuxth::token::source("cli", code)?)?;
         let mut out = Vec::new();
         let mut host = Host::new(Context::default(), None, &mut out);
@@ -2635,7 +2636,7 @@ pub(crate) mod tests {
             .map(|v| words::json_text(v).text())
             .collect::<Result<_, _>>()
             .map_err(|f| f.message)?;
-        let [sq, dup, split, add, dictionary] = json.as_slice() else {
+        let [sq, dup, split, add, dictionary, capture] = json.as_slice() else {
             return Err(format!("{json:?}").into());
         };
         let record = |name: &str, provenance: &str, effect: &str, about: &str, definition: &str| {
@@ -2645,7 +2646,7 @@ pub(crate) mod tests {
         };
         let sq_now = record("sq", "run", "null", "null", "define sq 0 end") + "[]}";
         assert_eq!(*sq, sq_now);
-        let a = "\"a copy of the top\"";
+        let a = "\"a copy of the top.\"";
         assert_eq!(
             *dup,
             record("dup", "library", "\"a -- a a\"", a, "define dup 0 pick end")
@@ -2665,6 +2666,15 @@ pub(crate) mod tests {
                 record("sq2", "run", "null", "null", "define sq2 sq end")
             )),
             "{dictionary}"
+        );
+        // Its documentation is what help says, usage and options too.
+        let help = crate::help::explain("capture").unwrap_or_default();
+        let (_, said) = help.split_once("\n\n").unwrap_or_default();
+        let said_json = words::json_text(&Value::str(said.trim_end())).text();
+        assert_eq!(said_json.map_err(|f| f.message)?, *capture);
+        assert!(
+            said.contains("\nuse: ") && said.contains("\n  last-output "),
+            "{said}"
         );
         let mut machine = compile(&fuxth::token::source("cli", "str nosuch word")?)?;
         let failed = run(&mut machine, &mut host, &mut ConfigOnly::default(), None).err();
