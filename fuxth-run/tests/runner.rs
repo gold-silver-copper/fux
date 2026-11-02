@@ -3,7 +3,7 @@ use fuxix::poll::{Events, PollFd, poll};
 use fuxix::terminal::Size;
 use std::io::Write;
 use std::num::NonZeroU16;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -292,8 +292,6 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
 /// typed into it.
 struct Terminal {
     master: fuxix::pty::Master,
-    /// The program's side, for `stty` to read its modes.
-    tty: OwnedFd,
     child: std::process::Child,
     seen: String,
 }
@@ -311,7 +309,6 @@ impl Terminal {
             .map(Size::from)
             .ok_or("size")?;
         let (master, slave) = fuxix::pty::open(size).map_err(e)?;
-        let tty = slave.as_fd().try_clone_to_owned().map_err(e)?;
         let (child, _) = slave
             .spawn(argv, |command| {
                 command.current_dir(dir);
@@ -319,7 +316,6 @@ impl Terminal {
             .map_err(e)?;
         Ok(Self {
             master,
-            tty,
             child,
             seen: String::new(),
         })
@@ -375,14 +371,19 @@ impl Terminal {
     }
 
     /// Whether the terminal edits a line at a time (`icanon`) and echoes
-    /// (`echo`), as `stty -a` says.
+    /// (`echo`), as `stty -a` says of the master, which reads the modes
+    /// set on the program's side. Not of that side: once the program, its
+    /// session's leader, has ended, macOS revokes it.
     fn modes(&self) -> Result<(bool, bool), String> {
-        let tty = self.tty.try_clone().map_err(e)?;
+        let master = self.master.as_fd().try_clone_to_owned().map_err(e)?;
         let out = Command::new("stty")
             .arg("-a")
-            .stdin(Stdio::from(tty))
+            .stdin(Stdio::from(master))
             .output()
             .map_err(e)?;
+        if !out.status.success() {
+            return Err(format!("stty -a: {}", text(&out.stderr)));
+        }
         let said = String::from_utf8_lossy(&out.stdout);
         let on = |flag| {
             said.split(|c: char| c.is_whitespace() || c == ';')
