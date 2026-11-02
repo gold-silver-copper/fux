@@ -22,7 +22,8 @@
 //! from another terminal showing the tab or kept from an earlier host. A
 //! pane with no host is answered no colour it did not set, as no one knows
 //! what it is shown on.
-use crate::pane::{PaneMut, Said};
+use crate::link::Hosting;
+use crate::pane::Said;
 use crate::session::{Outgoing, Session};
 use crate::view::{ClientKind, View};
 use crate::workspace::Child;
@@ -294,60 +295,13 @@ impl Session {
         }
     }
 
-    /// Tells the panes client `client` hosts of the scheme
-    /// change it reported, if one is waiting: each whose program set mode
-    /// 2031 gets `CSI ? 997 ; n n`.
+    /// The scheme change client `client` reported, if one is waiting, is
+    /// told now: its colours are in. Each pane it hosts is told it with
+    /// them as the session settles (`Session::host_panes`), each whose
+    /// program set mode 2031 getting `CSI ? 997 ; n n`.
     fn tell_change(&mut self, client: ClientId) {
-        let Some(scheme) = self
-            .views
-            .get_mut(&client)
-            .and_then(|v| v.terminal.change.take())
-        else {
-            return;
-        };
-        let listening: Vec<PaneId> = (self.parts.panes().iter())
-            .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
-            .map(|(id, _)| *id)
-            .filter(|id| {
-                let tab = self.locate(*id).map(|(_, t)| t);
-                self.host(tab) == Some(client)
-            })
-            .collect();
-        for id in listening {
-            self.tell_scheme(id, scheme);
-        }
-    }
-
-    /// Tells each pane whose program takes scheme reports (mode 2031) the
-    /// scheme of its host's terminal, if it was told another
-    /// or none, with no change of its own waiting (`tell_change`): it was
-    /// shown on another terminal, or on none, when its own changed or it
-    /// asked; or its report was refused. Run as the session settles, and
-    /// as a program reads its input, which makes room for a refused one.
-    pub(crate) fn tell_schemes(&mut self) {
-        let due: Vec<(PaneId, Scheme)> = (self.parts.panes().iter())
-            .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
-            .filter_map(|(id, p)| {
-                let tab = self.locate(*id).map(|(_, t)| t);
-                let terminal = &self.views.get(&self.host(tab)?)?.terminal;
-                let scheme = terminal.colours.scheme?;
-                let due = terminal.change.is_none() && p.scheme_told != Some(scheme);
-                due.then_some((*id, scheme))
-            })
-            .collect();
-        for (id, scheme) in due {
-            self.tell_scheme(id, scheme);
-        }
-    }
-
-    /// Pane `id`'s program is told the scheme is `scheme`, if it takes
-    /// input (`refuses_input`) and its queue takes the report; one refused
-    /// is sent again once there is room (`tell_schemes`).
-    fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
-        if let Some(mut pane) = self.parts.pane_mut(id)
-            && crate::session::refuses_input(&pane).is_none()
-        {
-            pane.offer_scheme(scheme);
+        if let Some(view) = self.views.get_mut(&client) {
+            view.terminal.change = None;
         }
     }
 
@@ -391,18 +345,26 @@ impl Session {
             .map_or_else(Graphics::default, Terminal::graphics)
     }
 
-    /// Pane `id`, told what its host's terminal said (see the module
+    /// What pane `id` is told its host's terminal said (see the module
     /// documentation): its colours, its palette whole, entries it did not
-    /// say cleared, and what it draws: with no host, no sixel and no cell,
-    /// so a program there draws in text, which a capture reads. With no
-    /// such pane, nothing; and whether its cell is another, its terminal
-    /// to be sized for it.
-    pub(crate) fn hosted(&mut self, id: PaneId) -> Option<(PaneMut<'_>, bool)> {
-        let (colours, palette, graphics) = (self.host_terminal(id))
+    /// say cleared, its scheme, and what it draws: with no host, no sixel
+    /// and no cell, so a program there draws in text, which a capture
+    /// reads. None while its host's scheme change waits for its colours
+    /// (`tell_change`): it is told the change with them.
+    pub(crate) fn hosting(&self, id: PaneId) -> Option<Hosting> {
+        let terminal = self.host_terminal(id);
+        if terminal.is_some_and(|t| t.change.is_some()) {
+            return None;
+        }
+        let (colours, palette, graphics) = (terminal)
             .map_or_else(Default::default, |t| (t.colours, t.palette, t.graphics()));
-        let mut pane = self.parts.pane_mut(id)?;
-        let retold = pane.host(colours, palette, graphics);
-        Some((pane, retold))
+        Some(Hosting {
+            foreground: colours.foreground,
+            background: colours.background,
+            scheme: colours.scheme,
+            palette: palette.to_vec(),
+            draws: graphics.into(),
+        })
     }
 
     /// Pane `id`'s program rang the bell or sent a notification. Each
@@ -535,8 +497,8 @@ mod tests {
 
     /// What pane `pane`'s program was answered, taken.
     fn answered(s: &mut Session, pane: u32) -> String {
-        let bytes = (s.parts.pane_mut(PaneId::of(pane)))
-            .map(|mut p| p.drain_input())
+        let now = Instant::now();
+        let bytes = (s.host_mut(PaneId::of(pane), |h| h.pane_mut().drain_input(), now))
             .unwrap_or_default();
         String::from_utf8_lossy(&bytes).into_owned()
     }
@@ -622,8 +584,8 @@ mod tests {
     fn a_panes_cell_is_its_hosts() -> Outcome {
         let (mut s, c) = session()?;
         let cell = |s: &mut Session| {
-            s.out(PaneId::of(1), b"");
-            (s.parts.panes().get(&PaneId::of(1))).and_then(|p| p.screen().graphics().cell())
+            let told = |h: &mut crate::host::Host| h.pane().screen().graphics().cell();
+            s.host_mut(PaneId::of(1), told, Instant::now()).flatten()
         };
         assert_eq!(cell(&mut s), None);
         // No colours said: its cell still is.
@@ -731,22 +693,26 @@ mod tests {
         let size = fux_vt::Size::new(4, 20).map_err(|e| e.to_string())?;
         let child =
             crate::process::spawn(&argv, std::path::Path::new("/"), (&[], &[]), (size, None))?;
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        let _ = pane.set_process(crate::pane::Process::Reading(child));
+        let now = Instant::now();
+        let process = crate::pane::Process::Reading(child);
+        (s.host_mut(id, |h| drop(h.set_process(process)), now)).ok_or("the pane")?;
         let rows_cols = s
             .parts
             .panes()
             .get(&id)
             .map(|p| p.size())
             .ok_or("the pane")?;
-        let pixels = |s: &Session| {
-            let pane = s.parts.panes().get(&id)?;
-            let (_, pixels) = fuxix::terminal::window_size(&pane.process().child()?.master)?;
-            pixels.map(|p| (p.width.get(), p.height.get()))
+        let pixels = |s: &mut Session| {
+            let size = |h: &mut crate::host::Host| {
+                let master = &h.pane().process().child()?.master;
+                let (_, pixels) = fuxix::terminal::window_size(master)?;
+                pixels.map(|p| (p.width.get(), p.height.get()))
+            };
+            s.host_mut(id, size, Instant::now()).flatten()
         };
         s.input(c, b"\x1b[6;0;0t");
         assert!(s.views.get(&c).is_some_and(|v| v.notice.is_none()));
-        assert_eq!(pixels(&s), None, "no cell said");
+        assert_eq!(pixels(&mut s), None, "no cell said");
         s.input(c, b"\x1b[6;20;10t");
         let whole = |w: u16, h: u16| {
             Some((
@@ -754,19 +720,18 @@ mod tests {
                 h.checked_mul(rows_cols.rows())?,
             ))
         };
-        assert_eq!(pixels(&s), whole(10, 20));
+        assert_eq!(pixels(&mut s), whole(10, 20));
         s.input(c, b"\x1b[6;24;12t");
-        assert_eq!(pixels(&s), whole(12, 24));
+        assert_eq!(pixels(&mut s), whole(12, 24));
         let notice = |s: &mut Session| (s.views.get_mut(&c)).and_then(|v| v.notice.take());
         s.input(c, b"\x1b[6;5;1t");
         assert!(notice(&mut s).is_some_and(|n| n.text.contains("1x5")));
         assert!(s.views.get(&c).is_some_and(|v| v.terminal.cell.is_none()));
-        assert_eq!(pixels(&s), None, "no cell told");
+        assert_eq!(pixels(&mut s), None, "no cell told");
         s.input(c, b"\x1b[6;5;1t");
         assert!(notice(&mut s).is_none(), "told once");
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        if let crate::pane::Process::Reading(child) = pane.set_process(crate::pane::Process::Absent)
-        {
+        let absent = |h: &mut crate::host::Host| h.set_process(crate::pane::Process::Absent);
+        if let Some(crate::pane::Process::Reading(child)) = s.host_mut(id, absent, Instant::now()) {
             drop(child.master);
             if let Err(pid) = child.leader.finish() {
                 crate::process::reaped(pid);
@@ -804,7 +769,8 @@ mod tests {
         let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
         let refused = |s: &mut Session| {
             s.out(PaneId::of(1), picture);
-            (s.parts.panes().get(&PaneId::of(1))).map(|p| p.lost().pictures)
+            let lost = |h: &mut crate::host::Host| h.pane().lost().pictures;
+            s.host_mut(PaneId::of(1), lost, Instant::now())
         };
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         assert_eq!(refused(&mut s), Some(0));

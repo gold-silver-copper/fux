@@ -49,10 +49,12 @@ pub fn main() -> ExitCode {
         let why = format!("an argument is not text: {}", arg.display());
         script::Failed::new(code::Code::Usage, why)
     });
-    if let Ok(args) = &args
-        && let Some((SERVE, rest)) = args.split_first().map(|(a, rest)| (a.as_str(), rest))
-    {
-        return serve(rest);
+    if let Ok(args) = &args {
+        match args.split_first().map(|(a, rest)| (a.as_str(), rest)) {
+            Some((SERVE, rest)) => return serve(rest),
+            Some((fux_server::link::PANE, [])) => return pane(),
+            _ => {}
+        }
     }
     let ran = match args {
         // It tells its own failure.
@@ -95,6 +97,26 @@ fn serve(args: &[String]) -> ExitCode {
     match server::serve(&socket, journal) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(error.to_string()),
+    }
+}
+
+/// A pane's own process, started by its server (`link::Link::start`), its
+/// link on stdin.
+fn pane() -> ExitCode {
+    use std::os::fd::AsFd;
+    let link = std::io::stdin()
+        .as_fd()
+        .try_clone_to_owned()
+        .map(std::os::unix::net::UnixStream::from);
+    let served = link
+        .map_err(|e| format!("its link: {e}"))
+        .and_then(fux_server::host::serve);
+    match served {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let _ = writeln!(std::io::stderr(), "fux pane: {error}");
+            ExitCode::from(1)
+        }
     }
 }
 

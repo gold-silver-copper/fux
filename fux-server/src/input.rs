@@ -6,6 +6,7 @@ use crate::session::Session;
 use crate::view::Mode;
 use fux_vt::keys::Keystroke;
 use fux_vt::keys::mouse::{MouseAction, MouseEvent};
+use crate::link::Typed;
 use fux_wire::act::{Act, ScreenAct};
 use fux_wire::id::ClientId;
 use std::time::Instant;
@@ -34,12 +35,10 @@ impl Session {
             if !self.views.contains_key(&client) {
                 break;
             }
-            shown |= self.act(client, act);
+            shown |= self.act(client, act, now);
         }
-        // What a pane lost is told (`tell_lost`), each kind once a run.
         // Keys a pane's program reads show when its output does: nothing
         // to paint or settle until then.
-        shown |= self.tell_lost();
         // Another client typing hosts the tab's panes, which the settle
         // tells them, painting the tab again where that changed what they
         // are told (`Session::host_panes`).
@@ -59,7 +58,7 @@ impl Session {
     }
 
     /// One action: whether it may have changed what the client shows.
-    fn act(&mut self, client: ClientId, act: Act) -> bool {
+    fn act(&mut self, client: ClientId, act: Act, now: Instant) -> bool {
         match act {
             Act::Presentation(presentation) => {
                 let bell = presentation.bell;
@@ -72,12 +71,12 @@ impl Session {
                     self.parts.clear_bells(client);
                 }
             }
-            Act::Key(stroke) => return self.key(client, stroke),
-            Act::Paste(text) => self.paste(client, &text),
+            Act::Key(stroke) => return self.key(client, stroke, now),
+            Act::Paste(text) => self.paste(client, text, now),
             // A focus change or a mouse report for the program shows
             // nothing until it answers, but its refusal.
-            Act::Focus(gained) => return self.focus_event(client, gained),
-            Act::Mouse(event) => return self.mouse(client, event),
+            Act::Focus(gained) => return self.focus_event(client, gained, now),
+            Act::Mouse(event) => return self.mouse(client, event, now),
             Act::Reply(reply) => self.terminal_reply(client, reply),
             // The client's screen, drawn as it says. A notice from before
             // the screen opened or closed is old news; one the screen's
@@ -120,7 +119,7 @@ impl Session {
     /// A key for the focused pane. Whether it may have changed what the
     /// client shows: one typed with no notice showing shows nothing until
     /// the program answers.
-    fn key(&mut self, client: ClientId, stroke: Keystroke) -> bool {
+    fn key(&mut self, client: ClientId, stroke: Keystroke, now: Instant) -> bool {
         let Some(view) = self.views.get_mut(&client) else {
             return false;
         };
@@ -138,39 +137,33 @@ impl Session {
         if ended {
             self.view_event(client, crate::journal::ViewChange::Screen(None));
         }
-        // Encoded as its program asked.
-        let refused = self.type_in(client, |screen, out| {
-            fux_vt::keys::encode::key_bytes(stroke, screen.key_mode(), out)
-        });
+        // Encoded as its program asked, by its pane.
+        let refused = self.type_in(client, Typed::Key(stroke), now);
         shown || refused
     }
 
-    /// Types into the client's focused pane what `write` makes for its
-    /// screen: a key or a paste, as its program asked (`put_in`).
-    fn type_in(
-        &mut self,
-        client: ClientId,
-        write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
-    ) -> bool {
+    /// Types into the client's focused pane: a key or a paste, as its
+    /// program asked (`put_in`).
+    fn type_in(&mut self, client: ClientId, typed: Typed, now: Instant) -> bool {
         let Some(pane) = self.focused(client) else {
             return false;
         };
         self.typed(client);
-        self.put_in(client, pane, write)
+        self.put_in(client, pane, typed, now)
     }
 
-    /// Queues for pane `pane`'s program what `write` makes for its screen,
-    /// as `send-keys` does (`live_pane_mut`). Each piece refused, its
-    /// program not running or its input queue refusing (`InputQueue`), is
-    /// told to `client`, which sent it, the first of a run too; whether
-    /// one was.
+    /// Sends pane `pane` what client `client` typed, which the pane encodes
+    /// as its program asked, or refuses, telling `client` why
+    /// (`link::FromPane::Refused`). Its own pane would hand it back what it
+    /// typed, again and again: refused here, as one this client runs in;
+    /// whether it was.
     fn put_in(
         &mut self,
         client: ClientId,
         pane: fux_wire::id::PaneId,
-        write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
+        typed: Typed,
+        now: Instant,
     ) -> bool {
-        // Its own pane would hand it back what it typed, again and again.
         if self
             .views
             .get(&client)
@@ -180,15 +173,11 @@ impl Session {
             self.notify_to(client, why, true);
             return true;
         }
-        let why = match self.live_pane_mut(pane).map(|mut p| p.push_with(write)) {
-            Ok(()) => return false,
-            Err(refused) => refused.to_string(),
-        };
-        self.notify_to(client, why, true);
-        true
+        self.to_pane(pane, crate::link::ToPane::Typed { client, typed }, now);
+        false
     }
 
-    fn paste(&mut self, client: ClientId, text: &str) {
+    fn paste(&mut self, client: ClientId, text: String, now: Instant) {
         let Some(view) = self.views.get_mut(&client) else {
             return;
         };
@@ -197,33 +186,28 @@ impl Session {
             return;
         }
         view.notice = None;
-        let _ = self.type_in(client, |screen, out| {
-            fux_vt::keys::encode::paste(text, screen.mode(fux_vt::Mode::BracketedPaste), out)
-        });
+        let _ = self.type_in(client, Typed::Paste(text), now);
     }
 
     /// The outer terminal gained or lost focus: the client's focused pane
-    /// hears of it, if it asked and its program takes input (`put_in`): a
-    /// pane whose program ended is not told, nor its viewer refused.
-    fn focus_event(&mut self, client: ClientId, gained: bool) -> bool {
+    /// hears of it, if it asked and its program takes input: a pane whose
+    /// program ended is not told, nor its viewer refused.
+    fn focus_event(&mut self, client: ClientId, gained: bool, now: Instant) -> bool {
         let Some(pane) = self.focused(client) else {
             return false;
         };
-        let asked = self.parts.panes().get(&pane);
-        let asked = asked.filter(|p| crate::session::refuses_input(p).is_none());
-        let report = asked.and_then(|p| p.screen().focus_report(gained));
-        report.is_some_and(|r| self.put_in(client, pane, |_, out| out.extend_from_slice(r)))
+        self.put_in(client, pane, Typed::Focus(gained), now)
     }
 
     /// A mouse report from the client's terminal, which reports only while
     /// its focused pane's program asked for it (`render::mouse_level`):
-    /// moved to the pane's cells and encoded as the program asked. fux has
-    /// no mouse actions of its own: a report outside the focused pane is
-    /// dropped, except that the motion and release of a press made inside
-    /// are kept to the pane's edge, so the program never sees a button left
-    /// down. One that arrives as an overlay opens is dropped. One the
-    /// pane refuses is told (`put_in`); whether it was.
-    fn mouse(&mut self, client: ClientId, event: MouseEvent) -> bool {
+    /// moved to the pane's cells, for its pane to encode as the program
+    /// asked. fux has no mouse actions of its own: a report outside the
+    /// focused pane is dropped, except that the motion and release of a
+    /// press made inside are kept to the pane's edge, so the program never
+    /// sees a button left down. One that arrives as an overlay opens is
+    /// dropped. One the pane refuses is told (`put_in`); whether it was.
+    fn mouse(&mut self, client: ClientId, event: MouseEvent, now: Instant) -> bool {
         let Some(view) = self.views.get(&client) else {
             return false;
         };
@@ -259,16 +243,7 @@ impl Session {
         let (row, col) = rect.clamp(event.row, event.col);
         let event = MouseEvent { row, col, ..event };
         self.typed(client);
-        let Some(pane_screen) = self.parts.panes().get(&pane) else {
-            return false;
-        };
-        let Some(reports) = pane_screen
-            .screen()
-            .encode_mouse(event, pane_screen.options().alternate_scroll_lines)
-        else {
-            return false;
-        };
-        self.put_in(client, pane, |_, out| out.extend(reports.flatten()))
+        self.put_in(client, pane, Typed::Mouse(event), now)
     }
 }
 
@@ -336,9 +311,8 @@ mod tests {
 
     /// The input waiting for a pane, taken.
     fn queued(s: &mut Session, pane: u32) -> Vec<u8> {
-        (s.parts.pane_mut(PaneId::of(pane)))
-            .map(|mut p| p.drain_input())
-            .unwrap_or_default()
+        let now = std::time::Instant::now();
+        (s.host_mut(PaneId::of(pane), |h| h.pane_mut().drain_input(), now)).unwrap_or_default()
     }
 
     /// The input waiting for the client's focused pane, taken.
@@ -557,7 +531,7 @@ mod tests {
     /// edits already in flight when that opening ended.
     #[test]
     fn stale_screen_actions_cannot_change_a_new_opening() -> Outcome {
-        use fux_wire::act::{Act, ScreenAct};
+    use fux_wire::act::{Act, ScreenAct};
         let (mut s, c) = session()?;
         s.out(PaneId::of(1), b"first\r\nlast");
         let panel = Panel::Prompt {

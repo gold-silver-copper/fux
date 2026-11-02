@@ -1,5 +1,5 @@
 use super::{Error, Session};
-use crate::pane::Pane;
+use crate::copy::Copy as Pane;
 use crate::view::ClientKind;
 use crate::workspace::{Child, Fit};
 use fux_wire::command::AnyRef;
@@ -23,18 +23,7 @@ impl Session {
         at: Option<Rect>,
         projection: &Projection,
     ) -> Result<inspect::Pane, Error> {
-        let facts = if *projection == Projection::Topology {
-            None
-        } else {
-            let terminal = inspect::Terminal::ALL.iter().copied();
-            Some(inspect::Facts {
-                program: crate::capture::program(pane)?,
-                launch: crate::capture::launch(pane),
-                terminal: terminal
-                    .map(|t| (t, crate::capture::terminal(t, pane)))
-                    .collect(),
-            })
-        };
+        let facts = (*projection != Projection::Topology).then(|| pane.facts().clone());
         let cwd = if *projection == Projection::Recipe {
             Some(match self.dir_with(pane.id(), &mut Memory)? {
                 Ok(Some(dir)) => inspect::Directory::Known(crate::capture::path(dir.as_os_str())),
@@ -87,13 +76,13 @@ impl Session {
             "cols" => Json::int(pane.size().cols()),
             "row" => place(at()?.as_ref().map(Rect::y)),
             "col" => place(at()?.as_ref().map(Rect::x)),
-            "program" => crate::capture::program(pane)?,
-            "launch" => crate::capture::launch(pane).json(),
+            "program" => pane.facts().program.clone(),
+            "launch" => pane.facts().launch.json(),
             _ => {
                 let count = pane.counts().named().into_iter().find(|(n, _)| *n == field);
                 match (count, inspect::Terminal::named(field)) {
                     (Some((_, n)), _) => Json::uint(n),
-                    (None, Some(fact)) => crate::capture::terminal(fact, pane),
+                    (None, Some(fact)) => pane.terminal(fact),
                     (None, None) => return Ok(None),
                 }
             }

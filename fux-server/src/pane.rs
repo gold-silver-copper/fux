@@ -1,13 +1,14 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::after;
-use crate::journal::{Journal, Sent, Teller, Told};
+use crate::journal::{Sent, Teller, Told};
 use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Pid};
 use fux_vt::bytes::ByteQueue;
 use fux_vt::{Event, Feature, Screen, Size};
 use fux_wire::answer::Ended;
-use fux_wire::id::{PaneId, TabId, WsId};
-use std::collections::{BTreeSet, VecDeque};
+use fux_wire::events::Actor;
+use fux_wire::id::PaneId;
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 /// How long a frame drawn in synchronized output is held before it is
@@ -439,12 +440,14 @@ impl Runs {
 }
 
 /// A program's file name, or the program as given if it has none.
-fn basename(program: &str) -> &str {
+pub(crate) fn basename(program: &str) -> &str {
     std::path::Path::new(program)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(program)
 }
+
+wired!(struct Said { text, cut });
 
 /// What a program rang or announced since it started: bells, and desktop
 /// notifications (OSC 9, 777, 99) with the last one's text.
@@ -662,36 +665,34 @@ struct Pending {
     since: Instant,
 }
 
-/// A pane to change, with a journal at its place: what its methods do
-/// that events tell is journaled as they do it, at its own id. It reads
-/// as a `Pane` and changes it only by its own methods, one for each thing
-/// the session changes: it gives no `&mut Pane`, so its pane is never put
-/// in another's place behind its teller, nor wrapped on another journal.
-/// A pane of the session's is had only from the session's parts, which
-/// alone hold the session's journal (`Parts::pane_mut`); one made on
-/// another journal (a bench's, a pane not yet placed) tells only that.
+/// A pane to change, telling what it does: what its methods do that
+/// events tell is told as they do it (`Teller`). It reads as a `Pane` and
+/// changes it only by its own methods, one for each thing its process
+/// changes: it gives no `&mut Pane`, so its pane is never put in
+/// another's place behind its teller.
 pub struct PaneMut<'a> {
     pane: &'a mut Pane,
     tell: Teller<'a>,
-    input: &'a mut BTreeSet<PaneId>,
+    /// Set when new input waits to be written.
+    input: &'a mut bool,
 }
 
 impl<'a> PaneMut<'a> {
     fn queued(&mut self) {
         if std::mem::take(&mut self.pane.input.touched) && !self.pane.input.is_empty() {
-            self.input.insert(self.pane.id);
+            *self.input = true;
         }
     }
 
-    /// `pane`, in tab `at`, telling `journal`; new input is noted in
-    /// `input` for its next sweep.
+    /// `pane`, telling `told` what it does, for a request of `actor`'s;
+    /// new input is noted in `input`.
     pub fn new(
         pane: &'a mut Pane,
-        at: (WsId, TabId),
-        journal: &'a mut Journal,
-        input: &'a mut BTreeSet<PaneId>,
+        actor: Actor,
+        told: &'a mut Vec<(Told, Actor)>,
+        input: &'a mut bool,
     ) -> Self {
-        let tell = journal.teller((at, pane.id), pane.respawns);
+        let tell = Teller::new(pane.id, pane.respawns, actor, told);
         Self { pane, tell, input }
     }
     pub fn output(&mut self, bytes: &[u8], now: Instant) {
@@ -721,7 +722,7 @@ impl<'a> PaneMut<'a> {
     /// the terminal of the program it runs or one it left
     /// (`Session::read_left`).
     pub(crate) fn tell_read_failed(&mut self, error: fuxix::Errno) {
-        self.tell.tell(Told::ReadFailed(error));
+        self.tell.tell(Told::ReadFailed(error.to_string()));
     }
     /// Reading its program's terminal failed so: told, the program no
     /// longer read, the cause kept.
@@ -743,9 +744,6 @@ impl<'a> PaneMut<'a> {
         let result = self.pane.respawned(fresh, process, &mut self.tell);
         self.queued();
         result
-    }
-    pub fn rename(&mut self, name: String) {
-        self.pane.rename(name, &mut self.tell);
     }
     pub fn exit(&mut self, ended: Ended) -> (End, Process) {
         self.pane.exit(ended, &mut self.tell)
@@ -926,6 +924,8 @@ impl Left {
     }
 }
 
+wired!(struct Left { input });
+
 /// How a program ended, and what it left: made once, as it ends
 /// (`Pane::ended`), and journaled and told from that one value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -933,6 +933,8 @@ pub struct End {
     pub ended: Ended,
     pub left: Left,
 }
+
+wired!(struct End { ended, left });
 
 /// What is said of a pane where no shell command was ever marked.
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
@@ -1319,7 +1321,7 @@ impl Pane {
         // In-band resize: the report follows the PTY's new size, never
         // precedes it (references/modern/mode_2048_in_band_resize.md). A
         // program that takes no input is sent none.
-        let takes = crate::session::refuses_input(self).is_none();
+        let takes = crate::host::refuses_input(self).is_none();
         if let Some(report) = self.parser.resize_report().filter(|_| takes) {
             self.input.push(report);
         }
@@ -1625,23 +1627,14 @@ impl Pane {
         self.name.as_deref()
     }
 
-    /// Names it `name`: said, if it is another.
-    fn rename(&mut self, name: String, tell: &mut Teller<'_>) {
-        if self.name.as_ref() != Some(&name) {
-            tell.tell(Told::Renamed(name.clone()));
-            self.name = Some(name);
-        }
-    }
-
     pub fn process(&self) -> &Process {
         &self.process
     }
 
     /// A pane made with no program runs `child`: one not yet in the
     /// session.
-    pub fn running(mut self, child: Child) -> Self {
+    pub fn run(&mut self, child: Child) {
         self.process = Process::Reading(child);
-        self
     }
 
     /// The program's terminal hung up: it is read no more, and waits to be
@@ -1904,12 +1897,11 @@ pub(crate) mod tests {
         .and_then(Lone::new)
     }
 
-    /// A pane alone, for tests of it: what it tells goes in a journal of
-    /// its own, at a place of its own.
+    /// A pane alone, for tests of it: what it tells is kept, in order.
     pub(crate) struct Lone {
         pub pane: Pane,
-        pub journal: Journal,
-        queued_input: BTreeSet<PaneId>,
+        pub told: Vec<(Told, Actor)>,
+        queued_input: bool,
     }
 
     impl std::ops::Deref for Lone {
@@ -1927,21 +1919,31 @@ pub(crate) mod tests {
 
     impl Lone {
         pub(crate) fn new(pane: Pane) -> Result<Self, Box<dyn std::error::Error>> {
-            let kept = fux_wire::command::JournalEntries::new(1 << 14).ok_or("journal")?;
             Ok(Self {
                 pane,
-                journal: Journal::new(kept),
-                queued_input: BTreeSet::new(),
+                told: Vec::new(),
+                queued_input: false,
             })
         }
         pub(crate) fn placed(&mut self) -> PaneMut<'_> {
-            let at = (WsId::of(1), TabId::of(1));
             PaneMut::new(
                 &mut self.pane,
-                at,
-                &mut self.journal,
+                Actor::Server,
+                &mut self.told,
                 &mut self.queued_input,
             )
+        }
+        /// What it told, journaled at a place of its own.
+        pub(crate) fn journal(&self) -> Result<crate::journal::Journal, Box<dyn std::error::Error>> {
+            use fux_wire::id::{TabId, WsId};
+            let kept = fux_wire::command::JournalEntries::new(1 << 14).ok_or("journal")?;
+            let mut journal = crate::journal::Journal::new(kept);
+            let at = ((WsId::of(1), TabId::of(1)), self.pane.id);
+            for (told, actor) in &self.told {
+                let event = crate::journal::PaneEvent::Told(told.clone());
+                journal.push_from(crate::journal::Event::Pane(at, event), *actor);
+            }
+            Ok(journal)
         }
         pub(crate) fn output(&mut self, bytes: &[u8]) {
             self.placed().output(bytes, Instant::now());
@@ -2504,16 +2506,21 @@ pub(crate) mod tests {
         for split in 0..=output.len() {
             let mut pane = pane(3, 30, 1 << 10)?;
             let run = "1-0".parse().map_err(|()| "a run")?;
-            let mut stream = crate::journal::Reader::new(
-                fux_wire::inspect::Scope::All,
-                &pane.journal,
-                run,
-                None,
-            )?;
             let (first, second) = output.split_at_checked(split).ok_or("a split")?;
             pane.output(first);
             pane.output(second);
-            let (said, _) = stream.lines(&pane.journal, |_| None);
+            let journal = pane.journal()?;
+            let from = fux_wire::events::Cursor {
+                seq: fux_wire::events::Seq(0),
+                run,
+            };
+            let mut stream = crate::journal::Reader::new(
+                fux_wire::inspect::Scope::All,
+                &journal,
+                run,
+                Some(from),
+            )?;
+            let (said, _) = stream.lines(&journal, |_| None);
             assert_eq!(said, expected, "split at {split}");
         }
         Ok(())

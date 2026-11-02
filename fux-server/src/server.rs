@@ -1,12 +1,10 @@
-//! The server: one thread (but for fuxix's watchdog while a PTY opens on
-//! macOS), one `poll` loop over the listening socket, a signal pipe, every
-//! client and every pane's PTY.
+//! The server: one thread, one `poll` loop over the listening socket, a
+//! signal pipe, every client and every pane's link to its own process.
 use crate::after;
 use crate::journal::Detach;
-use crate::pane::{Pane, Process};
-use crate::process::Pid;
+use crate::link::{Link, Read};
 use crate::render::{self, Grid};
-use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer, Within};
+use crate::session::{Begun, Caller, Origin, Outgoing, Session, Timer, Within};
 use crate::socket::{Endpoint, SocketPath};
 use crate::wait::Waiting;
 use fux_vt::bytes::ByteQueue;
@@ -38,18 +36,8 @@ const PAINT: Duration = Duration::from_millis(16);
 /// `PAINT`. A program's output in a few bursts, as a screen redrawn is,
 /// shows when it ends; a flood, never quiet so long, keeps to `PAINT`.
 const QUIET: Duration = Duration::from_millis(1);
-/// A read shorter than this ends the pane's turn, leaving the next to poll.
-/// This is a fairness rule: the audit measured echo beside a flood at
-/// 0.28–0.41 ms with it, versus 0.53–0.84 ms reading on to EAGAIN or 64 KiB.
-/// It says nothing about whether the terminal still has bytes to read.
-const SHORT_READ: usize = 512;
-/// Output read from one pane per tick, so one busy pane cannot starve others.
-const PANE_READ: usize = 64 * 1024;
-/// The pane read slice; one read keeps this size even when storage is shared.
-const PANE_CHUNK: usize = 16 * 1024;
-/// Shared storage for client reads and the smaller pane read slice.
+/// Shared storage for client and pane link reads.
 const READ_BUFFER: usize = 64 * 1024;
-const _: () = assert!(PANE_CHUNK <= READ_BUFFER);
 /// Bytes read from one client per tick, so one client cannot hold up the
 /// others: a frame larger than this is read over several ticks.
 const CONN_READ: usize = 256 * 1024;
@@ -114,7 +102,8 @@ enum Phase {
 #[derive(Clone, Copy)]
 enum Wake {
     Session(Timer),
-    /// A closed pane's program's grace is over: it is killed.
+    /// A program adopted from a pane whose own process ended has had its
+    /// grace: it is killed.
     Grace,
     /// The listener's rest is over.
     Listen,
@@ -223,8 +212,6 @@ struct Attached {
     /// The pictures its terminal was last sent, as they show there, and
     /// their sixel data.
     pictures: Vec<render::Visible>,
-    /// Complete pane pictures, before feedback or a panel hides any.
-    pane_pictures: Vec<render::Visible>,
     sixels: render::Sixels,
 }
 
@@ -288,7 +275,6 @@ impl Attached {
             spare: Grid::default(),
             placement: Placement::default(),
             pictures: Vec::new(),
-            pane_pictures: Vec::new(),
             sixels: render::Sixels::default(),
             clock: PaintClock {
                 next: now,
@@ -496,9 +482,6 @@ pub struct Server {
     phase: Phase,
     conns: Vec<Conn>,
     children: fuxix::signal::Pipe,
-    /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
-    /// says they have.
-    killed: Vec<Pid>,
     stops: fuxix::signal::Pipe,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
@@ -577,7 +560,6 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
         },
         conns: Vec::new(),
         children,
-        killed: Vec::new(),
         stops,
         read_buffer,
         paint_buffer: Vec::new(),
@@ -623,6 +605,7 @@ enum Slot {
     Children,
     Stops,
     Conn(usize),
+    /// A pane's link, open or closing (`Session::ending`).
     Pane(PaneId),
 }
 
@@ -634,8 +617,8 @@ impl Server {
                 return;
             };
             if matches!(self.phase, Phase::Stopping(_))
-                && self.session.dying.is_empty()
-                && self.killed.is_empty()
+                && self.session.links.is_empty()
+                && self.session.ending.is_empty()
                 && self.conns.iter().all(|c| c.out.is_empty())
             {
                 self.finish();
@@ -692,8 +675,7 @@ impl Server {
         }
         changed |= self.answer_waits(now);
         let answered_at = self.session.parts.journal().end(self.session.run);
-        let wrote = self.session.parts.write_input();
-        self.wrote_input(wrote);
+        self.flush_links();
         // Only the deadline survives compaction, never connection indices.
         self.close_conns();
         // Delivery can detach a client, resize its panes or start shutdown.
@@ -713,7 +695,7 @@ impl Server {
     fn wakes(&self) -> impl Iterator<Item = (Instant, Wake)> + '_ {
         let session = (self.session.timers()).map(|(at, timer)| (at, Wake::Session(timer)));
         let grace =
-            (self.session.dying.iter().map(|d| d.deadline).min()).map(|at| (at, Wake::Grace));
+            (self.session.orphans.iter().map(|o| o.deadline).min()).map(|at| (at, Wake::Grace));
         let phase = match self.phase {
             Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
             Phase::Stopping(by) => Some((by, Wake::Stop)),
@@ -739,11 +721,11 @@ impl Server {
         match wake {
             Wake::Session(timer) => self.session.fire(timer, now),
             Wake::Grace => {
-                let (due, dying) = mem::take(&mut self.session.dying)
-                    .into_iter()
-                    .partition(|d| d.deadline <= now);
-                self.session.dying = dying;
-                self.killed.extend(due.into_iter().filter_map(Dying::kill));
+                for orphan in self.session.orphans.iter_mut().filter(|o| o.deadline <= now) {
+                    // The server's child, unreaped: its pid is its own.
+                    let _ = fuxix::process::kill(orphan.pid, fuxix::process::Signal::Kill);
+                    orphan.deadline = after(now, STOP_WAIT);
+                }
             }
             Wake::Listen => {
                 if let Phase::Serving { resting, .. } = &mut self.phase {
@@ -772,7 +754,7 @@ impl Server {
             let Stage::Waiting(waiting) = &mut conn.stage else {
                 continue;
             };
-            if let Some(outcome) = waiting.answer(&self.session, now) {
+            if let Some(outcome) = waiting.answer(&mut self.session, now) {
                 conn.answer(&mut self.session, outcome, now);
                 answered = true;
             }
@@ -840,18 +822,17 @@ impl Server {
             }
             add(PollFd::new(&conn.stream, flags), Slot::Conn(i));
         }
-        for (id, pane) in self.session.parts.panes() {
-            if let Process::Reading(child) = &pane.process() {
-                // Output waiting to be read (`Pane::has_unread`) is read
-                // first: until it is, no more is taken from the program.
-                let mut flags = match pane.has_unread() {
-                    true => PollFlags::HUP,
-                    false => PollFlags::IN,
-                };
-                if !pane.input().is_empty() {
+        let links = (self.session.links.iter())
+            .chain(self.session.ending.iter().map(|(id, link)| (id, link)));
+        for (id, link) in links {
+            if let Link::Remote(remote) = link
+                && !remote.closed
+            {
+                let mut flags = PollFlags::IN;
+                if !remote.end.out.is_empty() {
                     flags |= PollFlags::OUT;
                 }
-                add(PollFd::new(&child.master, flags), Slot::Pane(*id));
+                add(PollFd::new(&remote.end.stream, flags), Slot::Pane(*id));
             }
         }
         // A connection with frames waiting is served this round: the poll
@@ -961,20 +942,9 @@ impl Server {
         let Some(view) = session.views.get(&client) else {
             return;
         };
-        // A pane part way through a frame shows as it was last painted
-        // (render::compose_held), its pictures too.
-        let placed = attached.placement.panes.clone();
-        let painted = (attached.known).then_some(render::Painted {
-            grid: &attached.shown,
-            panes: &placed,
-        });
-        if let Err(error) = render::compose_held(
-            session,
-            view,
-            &mut attached.spare,
-            &mut attached.placement,
-            painted,
-        ) {
+        if let Err(error) =
+            render::compose_view(session, view, &mut attached.spare, &mut attached.placement)
+        {
             let text = format!("rendering {client}: {error}");
             conn.exit(session, Detach::Failed, &text, now);
             return;
@@ -987,30 +957,7 @@ impl Server {
         // new, is sent after the text.
         let mut pictures = render::pictures(session, client, &attached.placement);
         let known = attached.known;
-        for &(id, rect) in &attached.placement.panes {
-            if session.parts.panes().get(&id).is_some_and(Pane::mid_frame) {
-                pictures.retain(|p| p.pane != id);
-                let (rows, cols) = (attached.spare.rows, attached.spare.cols);
-                let painted = render::Painted {
-                    grid: &attached.shown,
-                    panes: &placed,
-                };
-                if known
-                    && render::shows_pictures(session, id)
-                    && painted.kept(id, rect, rows, cols)
-                {
-                    pictures.extend(
-                        attached
-                            .pane_pictures
-                            .iter()
-                            .filter(|p| p.pane == id)
-                            .cloned(),
-                    );
-                }
-            }
-        }
         let cover = render::bar_cover(session, view, &attached.placement);
-        attached.pane_pictures = pictures.clone();
         if !view.mode.is_normal() {
             pictures.clear();
         } else if let Some(cover) = cover {
@@ -1476,121 +1423,88 @@ impl Server {
         }
     }
 
+    /// Pane `id`'s link is ready: what its process said is taken in, in
+    /// order, and what is queued for it written.
     fn serve_pane(&mut self, id: PaneId, flags: PollFlags, now: Instant) {
-        let wrote = flags.intersects(PollFlags::OUT)
-            && (self.session.parts.pane_mut(id)).is_some_and(|mut p| p.write_input());
-        self.wrote_input(wrote);
-        if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
-            self.read_pane(id, |fd, bytes| fuxix::io::read(fd, bytes), now);
-        }
-    }
-
-    /// A program read input if `wrote`, making room in its queue: a scheme
-    /// report refused for want of it is sent now (`Session::tell_schemes`),
-    /// not at the next change that settles the session.
-    fn wrote_input(&mut self, wrote: bool) {
-        if wrote {
-            self.session.tell_schemes();
-        }
-    }
-
-    fn read_pane(
-        &mut self,
-        id: PaneId,
-        mut read: impl FnMut(&fuxix::pty::Master, &mut [u8]) -> Result<usize, Errno>,
-        now: Instant,
-    ) {
-        let mut total = 0;
-        let ended = loop {
-            if total >= PANE_READ {
-                break false;
-            }
-            let Some(pane) = self.session.parts.panes().get(&id) else {
-                return;
-            };
-            // Output already waits: it is read before any more is taken.
-            if pane.has_unread() {
-                break false;
-            }
-            let Process::Reading(child) = &pane.process() else {
-                return;
-            };
-            let Some(buffer) = self.read_buffer.get_mut(..PANE_CHUNK) else {
-                log!("pane read buffer is shorter than {PANE_CHUNK} bytes");
-                return;
-            };
-            match read(&child.master, buffer) {
-                Err(Errno::AGAIN) => break false,
-                Err(Errno::INTR) => continue,
-                // EIO: the slave side is closed; the program is gone.
-                Ok(0) | Err(Errno::IO) => break true,
-                Err(error) => {
-                    self.session.read_failed(id, error, now);
-                    break false;
-                }
-                Ok(n) => {
-                    // Past PANE_READ by at most one buffer, when the loop ends.
-                    total = total.saturating_add(n);
-                    self.session
-                        .output(id, self.read_buffer.get(..n).unwrap_or_default(), now);
-                    // A short read yields to other work. Poll decides
-                    // when to read again; full reads go on.
-                    if n < SHORT_READ {
-                        break false;
-                    }
-                }
-            }
+        let session = &mut self.session;
+        let link = (session.links.get_mut(&id))
+            .or_else(|| (session.ending.iter_mut()).find_map(|(e, l)| (*e == id).then_some(l)));
+        let Some(Link::Remote(remote)) = link else {
+            return;
         };
-        if total > 0 {
+        let mut closed = false;
+        if flags.intersects(PollFlags::OUT) && remote.end.flush().is_err() {
+            closed = true;
+        }
+        if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR)
+            && remote.end.read(self.read_buffer.as_mut_slice()) == Read::Closed
+        {
+            closed = true;
+        }
+        let mut heard = Vec::new();
+        loop {
+            match remote.end.next() {
+                Ok(Some(report)) => heard.push(report),
+                Ok(None) => break,
+                Err(error) => {
+                    log!("{id}'s own process sent a bad frame: {error}");
+                    closed = true;
+                    break;
+                }
+            }
+        }
+        for report in heard {
+            self.session.heard(id, report);
+        }
+        self.session.pump(now);
+        // Its output paints the clients showing it, a keystroke's echo at
+        // once (`PaintClock`).
+        for id in mem::take(&mut self.session.updated) {
             for attached in self.conns.iter_mut().filter_map(Conn::attached) {
                 attached.clock.output(id, now);
             }
         }
-        if ended {
-            self.reap(now);
-            // Hung up, unless its exit is being told (the rest of its
-            // output still to read): then it exited, and did not hang up.
-            if let Some(mut pane) = self.session.parts.pane_mut(id)
-                && pane.exiting.is_none()
+        if closed {
+            self.session.link_closed(id, now);
+        }
+    }
+
+    /// Writes what is queued for each pane's process, as far as its link
+    /// takes it now: the rest as the link takes more.
+    fn flush_links(&mut self) {
+        let session = &mut self.session;
+        let links = (session.links.values_mut()).chain(session.ending.iter_mut().map(|(_, l)| l));
+        for link in links {
+            if let Link::Remote(remote) = link
+                && !remote.closed
             {
-                pane.stop_reading();
+                let _ = remote.end.flush();
             }
         }
     }
 
-    /// Checks every killed program and every pane's, since signals
-    /// coalesce, and reaps the orphans the server adopted, every child
-    /// that is no pane's leader.
+    /// Reaps each pane's own process and each program adopted from one
+    /// that ended (`Session::children`), since signals coalesce, and the
+    /// other orphans the server adopted.
     fn reap(&mut self, now: Instant) {
-        self.reap_killed();
-        let session = &self.session;
-        let leaders: Vec<Pid> = (session.children())
-            .map(|child| child.leader.pid())
-            .chain(self.killed.iter().copied())
-            .collect();
-        fuxix::process::reap_orphans(|pid| leaders.contains(&pid));
-        let exited: Vec<(PaneId, fux_wire::answer::Ended)> = (self.session.parts.panes().iter())
-            .filter_map(|(id, pane)| Some((*id, pane.process().child()?.leader.exited()?)))
-            .collect();
-        for (id, status) in exited {
-            self.session.exited(id, status, now);
+        let children = self.session.children();
+        for pid in &children {
+            if let Ok(Some(status)) = fuxix::process::reap(*pid) {
+                self.session.reaped(*pid, status, now);
+            }
         }
+        let children = self.session.children();
+        fuxix::process::reap_orphans(|pid| children.contains(&pid));
     }
 
-    fn reap_killed(&mut self) {
-        self.killed.retain(|pid| !crate::process::reaped(*pid));
-    }
-
-    /// Kills every closed pane's program, and waits for them, at most a
-    /// second: a process stuck in the kernel is left to init rather than
-    /// hold the server's exit.
+    /// Waits for the panes' own processes, told to end, at most a second: one
+    /// stuck in the kernel is left to init rather than hold the server's
+    /// exit. Each ends its program as it ends.
     fn finish(&mut self) {
-        let dying = mem::take(&mut self.session.dying);
-        self.killed
-            .extend(dying.into_iter().filter_map(Dying::kill));
         for _ in 0..500 {
-            self.reap_killed();
-            if self.killed.is_empty() {
+            self.flush_links();
+            self.reap(Instant::now());
+            if self.session.children().is_empty() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -1843,7 +1757,6 @@ mod tests {
                 phase: Phase::Stopping(Instant::now()),
                 conns: vec![conn],
                 children: fuxix::signal::Pipe::new(&[])?,
-                killed: Vec::new(),
                 stops: fuxix::signal::Pipe::new(&[])?,
                 read_buffer: read_buffer()?,
                 paint_buffer: Vec::new(),
@@ -1854,303 +1767,6 @@ mod tests {
             },
             peer,
         ))
-    }
-
-    #[test]
-    fn feedback_restores_complete_pictures_while_the_frame_stays_held()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (mut server, _peer) = server()?;
-        let client = *server.session.views.keys().next().ok_or("client")?;
-        let pane = *server.session.parts.panes().keys().next().ok_or("pane")?;
-        let view = server.session.views.get_mut(&client).ok_or("view")?;
-        view.terminal.sixel = Some(true);
-        view.terminal.cell = fux_vt::CellSize::new(12, 12);
-        server.session.settled();
-        server.paint(0, Instant::now());
-        let picture = crate::test_picture::solid(12, 24, [true, true, true])?;
-        // Under the corner the notice will cover.
-        let full = vec![
-            render::Visible {
-                pane,
-                area: (8, 35, 2, 1),
-                crop: (0, 0, 12, 24),
-                picture: std::sync::Arc::clone(&picture),
-            },
-            render::Visible {
-                pane,
-                area: (9, 36, 1, 1),
-                crop: (0, 0, 12, 12),
-                picture,
-            },
-        ];
-        let attached = server
-            .conns
-            .first_mut()
-            .and_then(Conn::attached)
-            .ok_or("attached")?;
-        attached.pictures = full.clone();
-        attached.pane_pictures = full.clone();
-        let mut frame = b"\x1b[?2026h".to_vec();
-        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
-        frame.extend_from_slice(b"\x1b[?2026l");
-        server.session.out(pane, &frame);
-        assert!(
-            server
-                .session
-                .parts
-                .panes()
-                .get(&pane)
-                .is_some_and(Pane::mid_frame)
-        );
-        server.session.notify_to(client, "feedback", true);
-        server.paint(0, Instant::now());
-        let covered = &server
-            .conns
-            .first_mut()
-            .and_then(Conn::attached)
-            .ok_or("attached")?
-            .pictures;
-        assert_eq!(covered.len(), 1);
-        assert_eq!(covered.first().map(|p| p.crop.3), Some(12));
-        let out = &mut server.conns.first_mut().ok_or("connection")?.out;
-        out.take(out.len());
-        server.session.views.get_mut(&client).ok_or("view")?.notice = None;
-        server.paint(0, Instant::now());
-        assert!(
-            server
-                .session
-                .parts
-                .panes()
-                .get(&pane)
-                .is_some_and(Pane::mid_frame)
-        );
-        let restored = &server
-            .conns
-            .first_mut()
-            .and_then(Conn::attached)
-            .ok_or("attached")?
-            .pictures;
-        assert!(
-            restored == &full,
-            "the complete picture crops were not restored"
-        );
-        let (sent, _) = sent(server.conns.first().ok_or("connection")?);
-        assert!(
-            String::from_utf8_lossy(&sent).contains("\x1bP"),
-            "restored pixels were not sent"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn no_output_paints_keep_only_the_latest_complete_hidden_row()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for clear_without_output in [false, true] {
-            let (mut server, _peer) = server()?;
-            let client = *server.session.views.keys().next().ok_or("client")?;
-            let pane = *server.session.parts.panes().keys().next().ok_or("pane")?;
-            crate::session::testing::output_as(
-                &mut server.session,
-                Some(client),
-                "str styles list list str bar str default str default end list str notice str default str default end end set",
-            )?;
-            server.session.out(pane, b"\x1b[10;1H\x1b]8;;https://example.test/old\x1b\\old A\x1b]8;;\x1b\\\x1b[5 q\x1b]12;#123456\x07");
-            if clear_without_output {
-                server.session.out(pane, b"\x1b[?25l");
-            }
-            server.paint(0, Instant::now());
-            // A notice a cell narrower than the screen covers its row.
-            let feedback = "-------------------------------feedback";
-            server.session.notify_to(client, feedback, false);
-            server.paint(0, Instant::now());
-            let attached = server
-                .conns
-                .first_mut()
-                .and_then(Conn::attached)
-                .ok_or("attached")?;
-            let expected = if clear_without_output {
-                attached.shown.row_text(9)
-            } else {
-                "completed B".to_owned()
-            };
-            let clock = attached.clock.next;
-            let uri = if clear_without_output {
-                ""
-            } else {
-                "https://example.test/latest"
-            };
-            // The bar fills its trailing cell with a literal space, so the
-            // identical-content case writes that cell too, without erasing it.
-            let (text, erase) = if clear_without_output {
-                (format!("{expected} "), "")
-            } else {
-                (expected.clone(), "\x1b[K")
-            };
-            let update = format!("\x1b[10;1H\x1b[0m\x1b]8;;{uri}\x1b\\{text}\x1b]8;;\x1b\\{erase}");
-            server.session.out(pane, update.as_bytes());
-            server.paint(0, Instant::now());
-            assert!(
-                server.paint_buffer.is_empty(),
-                "the completed hidden update should need no bytes"
-            );
-            assert_eq!(
-                server
-                    .conns
-                    .first_mut()
-                    .and_then(Conn::attached)
-                    .ok_or("attached")?
-                    .clock
-                    .next,
-                clock
-            );
-            if clear_without_output {
-                server.session.views.get_mut(&client).ok_or("view")?.notice = None;
-                server.paint(0, Instant::now());
-                assert!(
-                    server.paint_buffer.is_empty(),
-                    "identical visible content should need no bytes: {:?}",
-                    String::from_utf8_lossy(&server.paint_buffer)
-                );
-                assert_eq!(
-                    server
-                        .conns
-                        .first_mut()
-                        .and_then(Conn::attached)
-                        .ok_or("attached")?
-                        .clock
-                        .next,
-                    clock
-                );
-            }
-            let mut frame = b"\x1b[?2026h\x1b[2 q\x1b]12;#ffffff\x07".to_vec();
-            frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
-            frame.extend_from_slice(b"\x1b[?2026l");
-            server.session.out(pane, &frame);
-            assert!(
-                server
-                    .session
-                    .parts
-                    .panes()
-                    .get(&pane)
-                    .is_some_and(Pane::mid_frame)
-            );
-            server.session.views.get_mut(&client).ok_or("view")?.notice = None;
-            server.paint(0, Instant::now());
-            let shown = &server
-                .conns
-                .first_mut()
-                .and_then(Conn::attached)
-                .ok_or("attached")?
-                .shown;
-            assert_eq!(shown.row_text(9), expected);
-            let cursor = if clear_without_output {
-                None
-            } else {
-                Some((9, 11))
-            };
-            assert_eq!(shown.cursor, cursor);
-            let link = if clear_without_output {
-                None
-            } else {
-                Some("https://example.test/latest")
-            };
-            assert_eq!(shown.link(9, 0).map(|(_, link)| link.uri()), link);
-            if !clear_without_output {
-                assert_eq!(shown.modes.cursor_shape, fux_vt::CursorShape::BlinkingBar);
-                assert_eq!(
-                    shown.modes.cursor_colour,
-                    Some(fux_vt::Rgb {
-                        r: 0x12,
-                        g: 0x34,
-                        b: 0x56
-                    })
-                );
-            }
-            assert!((0..shown.rows).all(|y| !shown.row_text(y).contains('X')));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn a_live_read_failure_is_told_and_journaled_at_once() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let (mut server, _peer) = server()?;
-        let id = *server.session.parts.panes().keys().next().ok_or("pane")?;
-        let client = *server.session.views.keys().next().ok_or("client")?;
-        let size = server.session.parts.panes().get(&id).ok_or("pane")?.size();
-        let child = crate::process::spawn(
-            &["/bin/sh".into(), "-c".into(), "read line".into()],
-            std::path::Path::new("/"),
-            (&[], &[]),
-            (size, None),
-        )?;
-        server
-            .session
-            .parts
-            .pane_mut(id)
-            .ok_or("pane")?
-            .set_process(Process::Reading(child));
-        if let Some(view) = server.session.views.get_mut(&client) {
-            view.notice = None;
-            view.dirty = false;
-        }
-        let from = server.session.parts.journal().end(server.session.run);
-        server.read_pane(
-            id,
-            |_, bytes| {
-                assert_eq!(bytes.len(), PANE_CHUNK);
-                Err(Errno::SRCH)
-            },
-            Instant::now(),
-        );
-        let told = crate::journal::Reader::new(
-            fux_wire::inspect::Scope::All,
-            server.session.parts.journal(),
-            server.session.run,
-            Some(from),
-        )?
-        .batch(server.session.parts.journal(), true)?
-        .events;
-        let notice = server
-            .session
-            .views
-            .get(&client)
-            .and_then(|view| view.notice.clone());
-        let dirty = server
-            .session
-            .views
-            .get(&client)
-            .is_some_and(|view| view.dirty);
-        let capture = crate::session::testing::output(&mut server.session, "%1 capture json");
-        let info = crate::session::testing::output(&mut server.session, "%1 info json");
-        server
-            .session
-            .end_program(id, fux_wire::answer::Ended::Exited(0));
-        server.finish();
-        let notice = notice.ok_or("read failure was not delivered")?;
-        assert!(
-            notice.error && notice.text.contains(&Errno::SRCH.to_string()),
-            "{notice:?}"
-        );
-        assert!(dirty);
-        let error = fux_wire::json::Json::str(Errno::SRCH.to_string());
-        let failed = fux_wire::json::Json::object(vec![
-            ("event", fux_wire::json::Json::str("read_failed")),
-            ("read_error", error),
-        ]);
-        assert!(
-            matches!(&told[..], [one] if one.data == failed
-                && one.origin == fux_wire::events::Actor::Program(id, 0)),
-            "{told:?}"
-        );
-        for json in [capture?, info?] {
-            let value = fux_wire::json::Json::str(Errno::SRCH.to_string()).render();
-            let failed = format!(
-                r#""state":"read_failed","exited":null,"signal":null,"read_error":{value}"#
-            );
-            assert!(json.contains(&failed), "{json}");
-        }
-        Ok(())
     }
 
     #[cfg(feature = "checks")]
@@ -2241,7 +1857,6 @@ mod tests {
             conns,
             children: fuxix::signal::Pipe::new(&[])?,
             stops: fuxix::signal::Pipe::new(&[])?,
-            killed: Vec::new(),
             read_buffer: read_buffer()?,
             paint_buffer: Vec::new(),
             slots: Vec::new(),
@@ -2364,12 +1979,8 @@ mod tests {
                 assert!(
                     server
                         .session
-                        .parts
-                        .panes()
-                        .get(&PaneId::of(1))
+                        .host_mut(PaneId::of(1), |h| h.pane().input().len(), Instant::now())
                         .ok_or("pane")?
-                        .input()
-                        .len()
                         <= KEYS
                 );
                 server.serve_conn(1, PollFlags::IN, Instant::now());
@@ -2386,10 +1997,8 @@ mod tests {
             server.serve_conn(0, PollFlags::IN, Instant::now());
             let got = server
                 .session
-                .parts
-                .pane_mut(PaneId::of(1))
-                .ok_or("pane")?
-                .drain_input();
+                .host_mut(PaneId::of(1), |h| h.pane_mut().drain_input(), Instant::now())
+                .ok_or("pane")?;
             let mut expected = vec![b'a'; KEYS];
             expected.push(b'Z');
             assert_eq!(got, expected, "partition {partition}");
@@ -2412,12 +2021,8 @@ mod tests {
         assert!(
             server
                 .session
-                .parts
-                .panes()
-                .get(&PaneId::of(1))
+                .host_mut(PaneId::of(1), |h| h.pane().input().is_empty(), Instant::now())
                 .ok_or("pane")?
-                .input()
-                .is_empty()
         );
         Ok(())
     }
@@ -2641,10 +2246,8 @@ mod tests {
                 }
                 Ok(server
                     .session
-                    .parts
-                    .pane_mut(PaneId::of(1))
-                    .ok_or("pane")?
-                    .drain_input())
+                    .host_mut(PaneId::of(1), |h| h.pane_mut().drain_input(), Instant::now())
+                    .ok_or("pane")?)
             });
             let result = (|| -> Result<Reply, String> {
                 let mut asks = fux::script::Server::new(path);

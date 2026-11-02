@@ -1,10 +1,11 @@
 //! The server's state: workspaces, tabs, panes and the clients' views, and
 //! every command that changes them.
+use crate::copy::Copy as Pane;
 use crate::journal::{Detach, ViewChange};
-use crate::pane::{self, Pane, PaneMut, Process, Runs};
-use crate::process::{self, Child};
+use crate::link::{Answered, Ask, Begin, FromPane, Hosting, Link, Remote, ToPane};
+use crate::pane::{self, Runs};
 use crate::view::{ClientKind, Mode, View};
-use crate::wait::{Waiting, Watches};
+use crate::wait::{Form, Pending, Waiting, Watches};
 use crate::workspace::{Child as _, Destination, Fit, Killing, Parts, Split, Tab, Workspace};
 use fux_vt::Size;
 use fux_vt::keys::Direction;
@@ -12,17 +13,17 @@ use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
 use fux_wire::code::{Error, Raise, fail};
 use fux_wire::command::Start;
 use fux_wire::command::{
-    self, AnyRef, Beside, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo,
+    self, AnyRef, Beside, ClientAction, Command, Extent, Input, Kind, Members, MoveTo,
     PaneResize, Request, Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
 use fux_wire::json::Json;
 use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
-use fux_wire::protocol::{Attach, Body, Reply, Response, ToAttached};
+use fux_wire::protocol::{Attach, Body, Reply, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 mod inspect;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// What the server must do outside the session.
 #[derive(Debug, PartialEq, Eq)]
@@ -38,33 +39,11 @@ pub enum Outgoing {
     Shutdown(String, fux_wire::events::Actor),
 }
 
-/// A closed pane's program, hung up and given until the deadline to exit;
-/// then its terminal is closed and its group killed.
-pub struct Dying {
-    pub child: Child,
-    pub deadline: Instant,
-}
-
-impl Dying {
-    /// Kills the program, its terminal closed first (a dying writer can hold
-    /// on to it); its leader, if it has yet to exit.
-    pub fn kill(self) -> Option<process::Pid> {
-        drop(self.child.master);
-        self.child.leader.finish().err()
-    }
-}
-
 /// Something the session waits for until a moment (`Session::timers`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Timer {
-    /// A pane's frame of synchronized output is read, ended or not
-    /// (`Pane::frame_deadline`).
-    Frame(PaneId),
-    /// A pane's output, waiting since the parser did all the work one call
-    /// may, is read on (`Pane::read_unread`): due at once, after the
-    /// server's other work of this turn. A respawn under way in the pane
-    /// takes its turn too (`Session::after_turn`).
-    Unread(PaneId),
+    /// A pane held in this process (`Link::Local`) has something to do.
+    Pane(PaneId, crate::host::Timer),
     /// A client's alert notice ends (`View::alert`).
     Notice(ClientId),
 }
@@ -202,45 +181,13 @@ impl Here<'_> {
     }
 }
 
-impl From<pane::Error> for Error {
-    fn from(error: pane::Error) -> Self {
-        match error {
-            pane::Error::Terminal { .. } => fail(Raise::Start, error.to_string()),
-        }
-    }
-}
-
-/// Why `pane`'s program takes no input, if it takes none: the one check
-/// of input typed or sent, of the reports (mouse, focus) a terminal is
-/// asked to make for it, so that a pane none could reach asks for none,
-/// and of those fux queues it unasked (in-band resize, colour scheme), so
-/// that none waits for a program respawned there.
-pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
-    let why = match pane.process() {
-        Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
-        Process::ReadFailed(_, error) => {
-            return Some(fail(
-                Raise::NotRunning,
-                format!("{}: reading program terminal failed: {error}", pane.id()),
-            ));
-        }
-        Process::Respawning => {
-            "it is respawning: no program of its own reads input till it is done"
-        }
-        Process::Exited(status) => return Some(ended(pane.id(), *status)),
-        Process::Absent | Process::Reading(_) => return None,
-    };
-    Some(fail(Raise::NotRunning, format!("{}: {why}", pane.id())))
-}
-
-/// `pane`'s program has ended, with `status`: it takes no input.
-fn ended(pane: PaneId, status: Ended) -> Error {
-    let was = match status {
-        Ended::Exited(_) | Ended::Lost => "",
-        Ended::Signalled(_) => "was ",
-    };
-    let told = format!("the program in {pane} {was}{}", answer::told(status));
-    fail(Raise::NotRunning, told)
+/// A program whose pane's own process ended first, adopted by the server
+/// (`fuxix::process::adopt_orphans`): reaped, its status told; killed once
+/// its grace is over, as a closed pane's program is.
+pub struct Orphan {
+    pub pane: PaneId,
+    pub pid: fuxix::process::Pid,
+    pub deadline: Instant,
 }
 
 /// What a command line from the CLI begins: its outcome, now, or a wait
@@ -250,29 +197,12 @@ pub enum Begun {
     Waiting(Box<Waiting>),
 }
 
-/// A respawn under way: the pane made for the program started, and the
-/// program, which take the place of the pane's own once all its old
-/// program left is read, in turns as any pane's output is
-/// (`Session::after_turn`). The new program's output waits on its
-/// terminal till then. If the pane closes first, the respawn is abandoned
-/// (`Session::end_pane`), and said to be.
-struct Replacement {
-    actor: fux_wire::events::Actor,
-    fresh: Pane,
-    process: Process,
-    /// The program it is respawned over, while what it left on its
-    /// terminal is still being read (`Session::read_left`).
-    old: Option<Child>,
-    /// When the old program's grace after the hangup ends: then it is
-    /// killed, and what it left is still read. `None` once it is.
-    grace: Option<Instant>,
-    /// When it began: its turns are due from then, a frame the old program
-    /// holds, with nothing else to read, read by one.
-    since: Instant,
+/// What a command run gives: its reply now, or what its panes were asked,
+/// answered as they answer.
+enum Done {
+    Now(Reply),
+    Asked(Pending),
 }
-
-/// How long a closing pane's processes have to exit after the hangup.
-pub const GRACE: Duration = Duration::from_millis(100);
 
 pub struct Session {
     /// Its workspaces, tabs and panes, and the journal of what happened to
@@ -289,13 +219,25 @@ pub struct Session {
     /// every version's, by which a wait tells its own.
     pub run: command::Run,
     pub outbox: Vec<Outgoing>,
-    /// Closed panes' programs: a pane respawned twice in its grace has two.
-    pub dying: Vec<Dying>,
-    /// Each respawn under way, by its pane: one at a time in a pane.
-    respawning: BTreeMap<PaneId, Replacement>,
-    /// Programs whose exit is told, their terminal still read till it is
-    /// empty or closed (`read_left`); then their pane is frozen (D-90).
-    leftover: BTreeMap<PaneId, Child>,
+    /// Each pane's link to its own process, by its pane; and those of
+    /// panes closed, till their processes end (`Session::ending`).
+    pub links: BTreeMap<PaneId, Link>,
+    pub ending: Vec<(PaneId, Link)>,
+    /// The panes whose screens came since the server last looked: their
+    /// output, which paints the clients showing them (`Server::paint`).
+    pub updated: BTreeSet<PaneId>,
+    /// What panes told that is still to be taken in (`Session::pump`), in
+    /// order.
+    inbox: std::collections::VecDeque<(PaneId, FromPane)>,
+    pumping: bool,
+    /// Each question asked of a pane not yet answered, by its number, with
+    /// its pane; and the answers come, till their waits take them.
+    asks: BTreeMap<u64, PaneId>,
+    answers: BTreeMap<u64, Answered>,
+    /// The last question's number.
+    asked_pane: u64,
+    /// Programs adopted from panes whose own processes ended first.
+    pub orphans: Vec<Orphan>,
     /// Where `size_panes` lays out each tab; reused by every settle.
     placed: Placement,
     /// How each tab was laid out at the last settle (`tell_laid_out`).
@@ -313,6 +255,11 @@ pub struct Session {
     pub(crate) test_keys: BTreeMap<ClientId, testing::Keys>,
     #[cfg(test)]
     pub(crate) test_keymap: fux::client_state::Draft,
+}
+
+/// What a pane whose own process ended can't be asked to do.
+fn lost(pane: PaneId) -> Error {
+    fail(Raise::NotRunning, format!("{pane}: its own process ended"))
 }
 
 /// A value a command can't take, as `Usage` says why.
@@ -385,9 +332,15 @@ impl Session {
             exe: std::env::current_exe().ok(),
             run,
             outbox: Vec::new(),
-            dying: Vec::new(),
-            respawning: BTreeMap::new(),
-            leftover: BTreeMap::new(),
+            links: BTreeMap::new(),
+            updated: BTreeSet::new(),
+            ending: Vec::new(),
+            inbox: std::collections::VecDeque::new(),
+            pumping: false,
+            asks: BTreeMap::new(),
+            answers: BTreeMap::new(),
+            asked_pane: 0,
+            orphans: Vec::new(),
             placed: Placement::default(),
             laid: BTreeMap::new(),
             ids: Ids::default(),
@@ -512,12 +465,14 @@ impl Session {
                     .pane()
                     .filter(|p| {
                         caller.gave.is_some_and(|(_, generation)| {
-                            let current = self
-                                .respawning
-                                .get(p)
-                                .map(|new| &new.fresh)
-                                .or_else(|| self.parts.panes().get(p));
-                            current.is_some_and(|pane| pane.respawns == generation)
+                            // Or the program a respawn under way started.
+                            self.parts.panes().get(p).is_some_and(|pane| {
+                                let current = match pane.respawning {
+                                    true => pane.respawns.checked_add(1),
+                                    false => Some(pane.respawns),
+                                };
+                                current == Some(generation)
+                            })
                         })
                     })
                     .map(|p| (p, self.locate(p).map(|(ws, _)| ws)));
@@ -537,213 +492,415 @@ impl Session {
         self.parts.panes().get(&id).ok_or(Error::NoPane(id))
     }
 
-    fn pane_mut(&mut self, id: PaneId) -> Result<PaneMut<'_>, Error> {
-        self.parts.pane_mut(id).ok_or(Error::NoPane(id))
+    // ------------------------------------------------------------ panes
+
+    /// Says `message` to pane `id`'s own process, if it has one.
+    pub(crate) fn to_pane(&mut self, id: PaneId, message: ToPane, now: Instant) {
+        if let Some(link) = self.links.get_mut(&id) {
+            link.send(id, message, now, &mut self.inbox);
+        }
     }
 
-    /// Starts `launch` as pane `id`'s program, in its `cwd` at `size` in
-    /// cells of `cell`, if panes start real processes: in the server's
-    /// environment, told of its server (`FUX_PANE`, `FUX_SOCKET`,
-    /// `FUX_SERVER`, and `FUX`, the fux running it, unset if it cannot be
-    /// had).
-    fn spawn(
-        &self,
-        id: PaneId,
-        generation: u64,
-        launch: &pane::Launch,
-        size: (Size, Option<fux_vt::CellSize>),
-    ) -> Result<Option<Child>, Error> {
-        let Some(socket) = &self.launch else {
-            return Ok(None);
-        };
-        let mut vars: Vec<(&str, std::ffi::OsString)> = vec![
-            ("FUX_PANE", format!("{id}:{generation}").into()),
-            ("FUX_SOCKET", socket.as_os_str().to_owned()),
-            ("FUX_SERVER", self.run.to_string().into()),
-        ];
-        vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
-        // No `FUX` to give: not one the server was started with either.
-        let unset: &[&str] = match self.exe {
-            Some(_) => &[],
-            None => &["FUX"],
-        };
-        let child = process::spawn(&launch.argv.argv(), &launch.cwd, (&vars, unset), size)
-            .map_err(|m| fail(Raise::Start, m))?;
-        Ok(Some(child))
-    }
-
-    /// Starts the program pane `id` ran again in it: its words, or `argv`
-    /// if given, where it ran; first
-    /// hanging up the one there with `kill`, else refused while it runs.
-    /// What the old program left is read before the new one takes its
-    /// place, its exit told if one waits on that, in as many turns as that
-    /// takes: till then the respawn is under way (`Replacement`), and
-    /// another refused. Its answer, the version the pane starts at, waits
-    /// for it (`Waiting::Respawn`).
-    fn respawn(
-        &mut self,
-        id: PaneId,
-        kill: bool,
-        argv: Option<&command::Program>,
-        now: Instant,
-    ) -> Result<Reply, Error> {
+    /// Asks pane `id` `what`, as the journal's actor now: the question's
+    /// number, which its answer carries (`Waiting::Asked`). A pane whose
+    /// own process is gone is asked nothing: what it can't do, it is told.
+    fn ask_pane(&mut self, id: PaneId, what: Ask, now: Instant) -> Result<u64, Error> {
         let pane = self.pane(id)?;
-        let Runs::Explicit(launch) = &pane.runs else {
-            let message =
-                format!("{id} runs a shell; respawn restarts a program a pane was started with");
-            return Err(fail(Raise::NotRun, message));
-        };
-        if self.respawning.contains_key(&id) {
-            let message =
-                format!("{id} is respawning already: what its program left is still being read");
-            return Err(fail(Raise::StillRunning, message));
+        if !self.links.contains_key(&id) {
+            return Err(pane.refuses_input().unwrap_or_else(|| lost(id)));
         }
-        // One whose exit waits on what it left has ended.
-        if pane.process().child().is_some() && pane.exiting.is_none() && !kill {
-            let message = format!("the program in {id} still runs; `kill-first` ends it first");
-            return Err(fail(Raise::StillRunning, message));
-        }
-        let mut launch = launch.clone();
-        if let Some(argv) = argv {
-            launch.argv = argv.clone();
-        }
-        // The program it starts is told its host's cell.
-        let graphics = self.graphics(id);
-        let size = (pane.size(), graphics.cell());
-        let respawns = pane.respawns.checked_add(1).ok_or_else(|| {
-            fail(
-                Raise::IdsExhausted,
-                format!("{id}'s program generations exhausted"),
-            )
-        })?;
-        let exiting = pane.exiting;
-        // All that can refuse it is done before its program starts, which
-        // nothing can then leave running.
-        let runs = Runs::Explicit(launch.clone());
-        let mut fresh = Pane::new(id, None, runs, size.0, pane.options(), now)?;
-        fresh.respawns = respawns;
-        // Its program starts sized in that cell, so no resize is due.
-        let _ = fresh.host(Default::default(), Default::default(), graphics);
-        let child = self.spawn(id, respawns, &launch, size)?;
-        // Once another started (a start refused leaves it running), its
-        // program is taken, and input is refused till the new one takes its
-        // place. One that runs is hung up; it, or one whose exit waits on
-        // what it left, is kept till what it left is read, over as many
-        // turns as that takes or its grace lasts (`read_left`); one done
-        // with is let go.
-        let draining = self.pane(id).is_ok_and(|p| p.draining);
-        let mut old = None;
-        let taken = self.pane_mut(id).ok().and_then(|mut p| p.let_go());
-        if let Some(mut child) = taken.or_else(|| self.leftover.remove(&id)) {
-            if exiting.is_none() {
-                child.leader.closed();
-                child.leader.hang_up();
-            }
-            match exiting.is_none() || draining {
-                true => old = Some(child),
-                false => self.dying.push(Dying {
-                    child,
-                    deadline: now,
-                }),
-            }
-        }
-        let started = fresh.version(self.run);
-        let process = child.map_or(Process::Absent, Process::Reading);
-        let since = now;
-        let new = Replacement {
-            actor: self.parts.journal().current_actor(),
-            fresh,
-            process,
-            old,
-            grace: Some(crate::after(now, GRACE)),
-            since,
-        };
-        self.respawning.insert(id, new);
-        if let Ok(mut pane) = self.pane_mut(id) {
-            pane.drain(true);
-        }
-        self.read_left(id, true, now);
-        self.after_turn(id, now);
-        Ok(acted(started))
+        self.asked_pane = self.asked_pane.wrapping_add(1);
+        let ask = self.asked_pane;
+        self.asks.insert(ask, id);
+        let actor = self.parts.journal().current_actor();
+        self.to_pane(id, ToPane::Ask { ask, actor, what }, now);
+        Ok(ask)
     }
 
-    /// What ends a turn of pane `id`'s reads: once nothing read waits, a
-    /// program that exited with output unread exits, and a respawn under
-    /// way takes its place, once a frame its old program holds is read
-    /// too, by a turn of its own (`fire`).
-    fn after_turn(&mut self, id: PaneId, now: Instant) {
-        let respawning = self.respawning.contains_key(&id);
-        let waits = |p: &&Pane| p.has_unread() || respawning && p.frame_deadline().is_some();
-        let Some(pane) = self.parts.panes().get(&id).filter(|p| !waits(p)) else {
-            return;
+    /// The answer to question `ask`, if it came, taken.
+    pub(crate) fn answer_to(&mut self, ask: u64) -> Option<Answered> {
+        self.answers.remove(&ask)
+    }
+
+    /// Whether question `ask` is answered, or never will be.
+    pub(crate) fn answered_yet(&self, ask: u64) -> bool {
+        !self.asks.contains_key(&ask)
+    }
+
+    /// The reply of the questions `answers` answer, as `form` makes them
+    /// one (`Pending`). A question its pane never answered (its process
+    /// ended first) is `indeterminate`.
+    pub(crate) fn replied(&mut self, answers: Vec<(PaneId, Option<Answered>)>, form: &Form) -> Reply {
+        let unanswered = |pane: PaneId| crate::link::Refusal {
+            code: fux_wire::code::Code::Indeterminate,
+            message: format!("{pane} never answered: it may have acted"),
         };
-        if let Some(ended) = pane.exiting {
-            self.exited(id, ended, now);
-        }
-        // A respawn takes its place once what the old program left is read.
-        if self.parts.panes().get(&id).is_some_and(|p| p.draining) {
-            return;
-        }
-        let Some(mut new) = self.respawning.remove(&id) else {
-            return;
-        };
-        let actor = self.parts.actor(new.actor);
-        let Some(mut pane) = self.parts.pane_mut(id) else {
-            self.parts.actor(actor);
-            self.end(new.process, true, now);
-            return;
-        };
-        // At the pane's size and history now, which may have changed while
-        // it waited.
-        let size = pane.size();
-        new.fresh.set_history_bytes(pane.options().history_bytes);
-        let (old, left) = pane.respawned(new.fresh, new.process);
-        pane.resize(size, now);
-        // An exit that came while it was no pane's program is told now: the
-        // server looks for exits as they are signalled (`Server::reap`).
-        let exited = pane.process().child().and_then(|c| c.leader.exited());
-        self.parts.actor(actor);
-        self.end(old, true, now);
-        let left = left.told();
-        if !left.is_empty() {
-            let told = format!("{id} respawned{left}");
-            for client in self.viewers(AnyRef::Pane(id)) {
-                self.notify_to(client, told.clone(), true);
+        if let Form::Respawn(_) = form {
+            for (pane, _) in &answers {
+                if let Some(copy) = self.parts.pane_mut(*pane) {
+                    copy.respawning = false;
+                }
             }
         }
-        if let Some(ended) = exited {
-            self.exited(id, ended, now);
+        let mut reply = match form {
+            Form::Many => {
+                let (mut took, mut sent, mut refused) = (Vec::new(), Vec::new(), None);
+                for (pane, answer) in answers {
+                    match answer {
+                        Some(Answered::Acted(version)) => {
+                            took.push(PaneAnswer::Acted(version));
+                            sent.push(pane.to_string());
+                        }
+                        Some(Answered::Refused(refusal)) => _ = refused.get_or_insert(refusal),
+                        Some(Answered::Done | Answered::Captured(_)) => {}
+                        None => _ = refused.get_or_insert_with(|| unanswered(pane)),
+                    }
+                }
+                match refused {
+                    None => PaneResults::Many(took).into(),
+                    Some(refusal) if sent.is_empty() => Reply::failed(refusal.code, refusal.message),
+                    Some(refusal) => {
+                        let message = format!("{}; already sent to {}", refusal.message, sent.join(" "));
+                        Reply::failed(refusal.code, message)
+                    }
+                }
+            }
+            Form::One | Form::Capture | Form::Respawn(_) => {
+                let Some((pane, answer)) = answers.into_iter().next() else {
+                    return Reply::default();
+                };
+                match answer {
+                    Some(Answered::Acted(version)) => {
+                        if let (Form::Respawn(Some(argv)), Some(copy)) = (form, self.parts.pane_mut(pane))
+                            && let Runs::Explicit(launch) = &mut copy.runs
+                        {
+                            launch.argv = argv.clone();
+                        }
+                        acted(version)
+                    }
+                    Some(Answered::Done) => Reply::default(),
+                    Some(Answered::Captured(captured)) => self.captured(pane, *captured),
+                    Some(Answered::Refused(refusal)) => Reply::failed(refusal.code, refusal.message),
+                    None => {
+                        let refusal = unanswered(pane);
+                        Reply::failed(refusal.code, refusal.message)
+                    }
+                }
+            }
+        };
+        reply.run = Some(self.run);
+        reply
+    }
+
+    /// Pane `pane`'s capture, as its process made it, given its place,
+    /// name and label, which are the server's, and the journal's cursor as
+    /// it came: `events` from it reads what the pane told after the
+    /// capture, as the pane told everything before it first.
+    fn captured(&self, pane: PaneId, mut captured: fux_wire::answer::Captured) -> Reply {
+        if let fux_wire::answer::Of::Pane { pane: observed, read, .. } = &mut captured.of {
+            if let Some((_, tab)) = self.locate(pane) {
+                observed.tab = tab;
+                let at = self.tab(tab).and_then(|t| self.sized(t).rect(pane));
+                observed.row = at.as_ref().map(Rect::y);
+                observed.col = at.as_ref().map(Rect::x);
+            }
+            if let Some(copy) = self.parts.panes().get(&pane) {
+                observed.name = copy.name().map(str::to_owned);
+                observed.label = format!("{}", copy.display_label());
+            }
+            let cursor = self.parts.journal().end(self.run).to_string();
+            for (key, value) in read.iter_mut() {
+                if key == "cursor" {
+                    *value = Json::str(cursor.clone());
+                }
+            }
         }
-        // Hosted as its pane is now.
+        Body::Capture(Box::new(captured)).into()
+    }
+
+    /// Forgets the answers to `asks`, whose wait is gone.
+    pub fn forget(&mut self, asks: &[(PaneId, u64)]) {
+        for (_, ask) in asks {
+            self.answers.remove(ask);
+        }
+    }
+
+    /// What pane `id`'s own process said, to take in (`pump`).
+    pub fn heard(&mut self, id: PaneId, report: FromPane) {
+        self.inbox.push_back((id, report));
+    }
+
+    /// Takes in what panes told, in order, each as it came (`told`): one a
+    /// pane held in this process told at once too.
+    pub fn pump(&mut self, now: Instant) {
+        if std::mem::replace(&mut self.pumping, true) {
+            return;
+        }
+        while let Some((id, report)) = self.inbox.pop_front() {
+            self.told(id, report, now);
+        }
+        // What closed panes answered is in: those done are let go.
+        self.reap_ending();
+        self.pumping = false;
+    }
+
+    /// Pane `id` told `report`. An event is journaled as its copy takes
+    /// what it changed, in one step (`Parts::told`); its screen goes onto
+    /// its copy, and the views showing it are painted again. A pane closed
+    /// tells nothing more but its answers.
+    fn told(&mut self, id: PaneId, report: FromPane, now: Instant) {
+        if let FromPane::Answer { ask, answer } = report {
+            if self.asks.remove(&ask).is_some() {
+                self.answers.insert(ask, answer);
+            }
+            return;
+        }
+        if !self.parts.panes().contains_key(&id) {
+            return;
+        }
+        match report {
+            FromPane::Begun(_) | FromPane::Answer { .. } => {}
+            FromPane::Told {
+                told,
+                actor,
+                counts,
+            } => {
+                use crate::journal::Told;
+                let exited = match &told {
+                    Told::Exited(end) => Some(*end),
+                    _ => None,
+                };
+                // What shows: its title, in its viewers' bars and in those
+                // of its workspace's where it names its tab; whether its
+                // program takes the mouse.
+                let shows = matches!(
+                    told,
+                    Told::Resized(_)
+                        | Told::Exited(_)
+                        | Told::HungUp
+                        | Told::ReadFailed(_)
+                        | Told::Respawned { .. }
+                );
+                let title = matches!(told, Told::Title(_));
+                let labels = title.then(|| self.labels(id));
+                self.parts.told(id, told, actor, counts);
+                if shows {
+                    self.touch();
+                }
+                if let Some((was, viewers)) = labels {
+                    let changed = self.labels(id).0 != was;
+                    let others = viewers.filter(|_| changed).unwrap_or_default();
+                    for client in self.viewers(AnyRef::Pane(id)).into_iter().chain(others) {
+                        if let Some(view) = self.views.get_mut(&client) {
+                            view.dirty = true;
+                        }
+                    }
+                }
+                if let Some(end) = exited {
+                    self.program_ended(id, end, now);
+                }
+            }
+            FromPane::Update(update) => {
+                // Only a screen that changed paints its viewers: its facts
+                // alone show nowhere.
+                let painted = !update.screen.is_empty();
+                if let Some(pane) = self.parts.pane_mut(id) {
+                    pane.update(*update);
+                    if painted {
+                        self.updated.insert(id);
+                    }
+                }
+                for client in self.viewers(AnyRef::Pane(id)).into_iter().filter(|_| painted) {
+                    if let Some(view) = self.views.get_mut(&client) {
+                        view.dirty = true;
+                    }
+                }
+                self.to_pane(id, ToPane::Taken, now);
+            }
+            FromPane::Alert { bell, notified } => self.alert(id, bell, notified, now),
+            FromPane::Copied(text) => {
+                let viewers = self.viewers(AnyRef::Pane(id));
+                self.copied(&text, &viewers);
+            }
+            FromPane::Notice { text, error } => {
+                for client in self.viewers(AnyRef::Pane(id)) {
+                    self.notify_to(client, text.clone(), error);
+                }
+            }
+            FromPane::Refused { client, why } => self.notify_to(client, why, true),
+        }
+    }
+
+    /// Pane `id`'s label, and if it labels its tab (no name of the tab's or
+    /// its own, and first in it), the clients shown its workspace and not
+    /// the tab, whose bars show it.
+    fn labels(&self, id: PaneId) -> (String, Option<Vec<ClientId>>) {
+        let Some(pane) = self.parts.panes().get(&id) else {
+            return (String::new(), None);
+        };
+        let label = pane.label().into_owned();
+        let Some((ws, tab)) = self.locate(id) else {
+            return (label, None);
+        };
+        let names = self.tab(tab).is_none_or(|t| t.name().is_some() || t.root().first_pane() != id);
+        if names || pane.name().is_some() {
+            return (label, None);
+        }
+        let viewers = self.viewers(AnyRef::Pane(id));
+        let others = (self.viewers(AnyRef::Workspace(ws)).into_iter())
+            .filter(|client| !viewers.contains(client))
+            .collect();
+        (label, Some(others))
+    }
+
+    /// Pane `id`'s program ended so, its end told: a shell's pane closes,
+    /// and a program's stays, its last screen kept (the role rule).
+    fn program_ended(&mut self, id: PaneId, end: pane::End, now: Instant) {
+        let Some(pane) = self.parts.panes().get(&id) else {
+            return;
+        };
+        if let Runs::Shell(_) = pane.runs {
+            let left = end.left.told();
+            let why = answer::shell_status(end.ended).map_or_else(
+                || answer::told(end.ended),
+                |s| format!("exited with status {s}"),
+            );
+            self.close_pane(id, Some(format!("{why}{left}")), now);
+        }
+    }
+
+    /// The pids of the panes' own processes, linked or ending, not yet
+    /// reaped: the server's children it reaps by pid (`Server::reap`); and
+    /// the programs it adopted from those that ended (`Orphan`).
+    pub fn children(&self) -> Vec<fuxix::process::Pid> {
+        let remote = |link: &Link| match link {
+            Link::Remote(remote) => remote.ended.is_none().then_some(remote.pid),
+            Link::Local(_) => None,
+        };
+        (self.links.values().filter_map(remote))
+            .chain(self.ending.iter().filter_map(|(_, link)| remote(link)))
+            .chain(self.orphans.iter().map(|o| o.pid))
+            .collect()
+    }
+
+    /// Process `pid`, the server's child, was reaped, ending `status`: a
+    /// pane's own, or a program adopted from one (`Orphan`).
+    pub fn reaped(&mut self, pid: fuxix::process::Pid, status: fuxix::process::Status, now: Instant) {
+        if let Some(at) = self.orphans.iter().position(|o| o.pid == pid) {
+            let orphan = self.orphans.remove(at);
+            self.orphan_ended(orphan.pane, Ended::from(status), now);
+            return;
+        }
+        let linked = (self.links.iter_mut().map(|(id, link)| (*id, link)))
+            .chain(self.ending.iter_mut().map(|(id, link)| (*id, link)));
+        for (id, link) in linked {
+            if let Link::Remote(remote) = link
+                && remote.pid == pid
+            {
+                remote.ended = Some(status);
+                self.gone(id, now);
+                return;
+            }
+        }
+    }
+
+    /// Pane `id`'s link closed.
+    pub fn link_closed(&mut self, id: PaneId, now: Instant) {
+        let linked = (self.links.get_mut(&id).into_iter())
+            .chain(self.ending.iter_mut().filter(|(e, _)| *e == id).map(|(_, l)| l));
+        for link in linked {
+            if let Link::Remote(remote) = link {
+                remote.closed = true;
+            }
+        }
+        self.gone(id, now);
+    }
+
+    /// Pane `id`'s own process is gone once its link closed and it was
+    /// reaped: a closed pane's link is let go, a pane's is lost.
+    fn gone(&mut self, id: PaneId, now: Instant) {
+        self.reap_ending();
+        let how = match self.links.get(&id) {
+            Some(Link::Remote(Remote {
+                closed: true,
+                ended: Some(status),
+                ..
+            })) => match status {
+                fuxix::process::Status::Exited(code) => format!("its pane's own process exited with status {code}"),
+                fuxix::process::Status::Signalled(signal) => {
+                    format!("its pane's own process was killed by signal {signal}")
+                }
+            },
+            Some(_) | None => return,
+        };
+        self.pane_lost(id, &how, now);
+    }
+
+    /// Pane `id`'s own process is gone, ending `how`. Its pane reads as its
+    /// program's terminal failing, saying how (`read_failed`); then its
+    /// program's end: its real status, once the server reaps it (it adopts
+    /// orphans), else none; then the role rule. Every question it was
+    /// asked and did not answer is `indeterminate`: it may have done it.
+    fn pane_lost(&mut self, id: PaneId, how: &str, now: Instant) {
+        self.links.remove(&id);
+        let unanswered: Vec<u64> = (self.asks.iter())
+            .filter(|(_, pane)| **pane == id)
+            .map(|(ask, _)| *ask)
+            .collect();
+        for ask in unanswered {
+            self.asks.remove(&ask);
+            let refusal = crate::link::Refusal {
+                code: fux_wire::code::Code::Indeterminate,
+                message: format!("{id}: {how} before it answered: it may have acted"),
+            };
+            self.answers.insert(ask, Answered::Refused(refusal));
+        }
+        let Some(pane) = self.parts.panes().get(&id) else {
+            return;
+        };
+        let (counts, generation, pid) = (pane.counts(), pane.respawns, pane.pid());
+        if pane.exit_status().is_none() {
+            let actor = fux_wire::events::Actor::Program(id, generation);
+            let told = crate::journal::Told::ReadFailed(how.to_owned());
+            self.parts.told(id, told, actor, counts);
+            match pid {
+                // Its program is the server's now, to reap, and kill once its
+                // grace is over; else its status is lost.
+                Some(pid) if fuxix::process::ended(pid).is_ok() => self.orphans.push(Orphan {
+                    pane: id,
+                    pid,
+                    deadline: crate::after(now, crate::host::GRACE),
+                }),
+                Some(_) | None => self.orphan_ended(id, Ended::Lost, now),
+            }
+        }
+        if let Some(pane) = self.parts.pane_mut(id) {
+            pane.lost();
+        }
         self.touch();
         self.settle(now);
     }
 
-    /// The process group `fux signal` signals in a pane: the terminal's
-    /// foreground group (a job its shell runs), or the program it was
-    /// started with; never the shell of a pane that runs one.
-    fn signalled(&self, target: PaneId) -> Result<process::Pid, Error> {
-        let pane = self.pane(target)?;
-        if let Process::Respawning = pane.process() {
-            let message = format!("{target} is respawning: no program is its own till it is done");
-            return Err(fail(Raise::StillRunning, message));
-        }
-        if let Some(status) = pane.process().exit_status() {
-            return Err(ended(pane.id(), status));
-        }
-        let program = match (&pane.runs, pane.process().child()) {
-            (Runs::Explicit(_), Some(child)) => Some(child.leader.pid()),
-            _ => None,
+    /// Pane `id`'s program, its pane's own process gone, ended `ended`: told,
+    /// then the role rule.
+    fn orphan_ended(&mut self, id: PaneId, ended: Ended, now: Instant) {
+        let Some(pane) = self.parts.panes().get(&id) else {
+            return;
         };
-        let job = pane.process().job().map_err(|errno| {
-            let why =
-                format!("{target}: its terminal does not say what runs in its foreground: {errno}");
-            fail(Raise::Signal, why)
-        })?;
-        job.or(program).ok_or_else(|| {
-            let message = format!("nothing is running in {} but its shell", pane.id());
-            fail(Raise::OnlyShell, message)
-        })
+        let (counts, generation) = (pane.counts(), pane.respawns);
+        let actor = fux_wire::events::Actor::Program(id, generation);
+        let end = pane::End {
+            ended,
+            left: pane::Left::default(),
+        };
+        let counts = fux_wire::command::Counts {
+            ended: true,
+            ..counts
+        };
+        self.parts.told(id, crate::journal::Told::Exited(end), actor, counts);
+        self.touch();
+        self.program_ended(id, end, now);
+        self.settle(now);
     }
 
     /// The workspace, tab or pane named `name`: one at most, as every
@@ -858,56 +1015,48 @@ impl Session {
     }
 
     /// Sends `inputs` to the programs of the panes `to` names, each encoded
-    /// as its program asked for keys (`bytes`): to one seen, only if it is
-    /// still at that version as they are queued, else none, failing
-    /// `stale`. That is all it promises: not what its program does next.
-    fn send_keys(&mut self, to: command::To, inputs: &[Input]) -> Result<Reply, Error> {
-        // Stale before it is judged live: a program's end is a change.
-        if let command::To::Seen(seen) = to {
-            self.counts_since(seen)?;
-            let now = self.pane(seen.pane)?.version(self.run);
-            if now != seen {
-                let why = format!("{} changed since {seen}: it is at {now}", seen.pane);
-                return Err(fail(Raise::Stale, why));
+    /// as its program asked for keys: to one seen, only if it is still at
+    /// that version as they are queued, else none, failing `stale`. Each
+    /// pane takes them or refuses on its own, as they reach it (D-120 (4)):
+    /// the answer says which took them. That is all it promises: not what
+    /// its program does next.
+    fn send_keys(&mut self, to: command::To, inputs: &[Input], now: Instant) -> Result<Pending, Error> {
+        let seen = match to {
+            command::To::Seen(seen) => {
+                self.counts_since(seen)?;
+                Some(seen)
             }
-        }
-        // Every pane must take them, or none is sent them: each one's are
-        // made first.
-        let (run, mut each) = (self.run, Vec::new());
-        for id in self.panes_of(Some(to.target()))? {
-            let pane = self.live_pane_mut(id)?;
-            let bytes = bytes(&pane, inputs);
-            each.push((pane.version(run), bytes));
-        }
-        let mut answers = each.iter().map(|(version, _)| PaneAnswer::Acted(*version));
-        let mut reply: Reply = match (to.target(), answers.next()) {
-            (AnyRef::Pane(_), Some(one)) => PaneResults::One(one),
-            (_, first) => PaneResults::Many(first.into_iter().chain(answers).collect()),
-        }
-        .into();
-        reply.run = Some(self.run);
-        let kind = match inputs.iter().any(|input| matches!(input, Input::Paste(_))) {
-            true => crate::journal::Sent::Paste,
-            false => crate::journal::Sent::Keys,
-        };
-        let expected = match to {
-            command::To::Seen(seen) => Some(seen),
             command::To::Now(_) => None,
         };
-        for (version, bytes) in &each {
-            self.pane_mut(version.pane)?.send(bytes, kind, expected);
+        let panes = self.panes_of(Some(to.target()))?;
+        let many = !matches!(to.target(), AnyRef::Pane(_));
+        let mut asks = Vec::new();
+        for id in panes {
+            let what = Ask::Keys {
+                inputs: inputs.to_vec(),
+                seen,
+            };
+            match self.ask_pane(id, what, now) {
+                Ok(ask) => asks.push((id, ask)),
+                // A pane none can reach refuses as it would.
+                Err(error) if many => asks.push((id, self.refused(error))),
+                Err(error) => return Err(error),
+            }
         }
-        Ok(reply)
+        let form = match many {
+            true => Form::Many,
+            false => Form::One,
+        };
+        Ok(Pending::new(asks, form))
     }
 
-    /// `pane_mut`, for input: a pane whose program takes none is refused
-    /// (`refuses_input`).
-    pub(crate) fn live_pane_mut(&mut self, id: PaneId) -> Result<PaneMut<'_>, Error> {
-        let pane = self.pane_mut(id)?;
-        match refuses_input(&pane) {
-            Some(refused) => Err(refused),
-            None => Ok(pane),
-        }
+    /// `error`, as the answer of a question no pane was asked.
+    fn refused(&mut self, error: Error) -> u64 {
+        self.asked_pane = self.asked_pane.wrapping_add(1);
+        let ask = self.asked_pane;
+        let refusal = crate::link::Refusal::from(error);
+        self.answers.insert(ask, Answered::Refused(refusal));
+        ask
     }
 
     /// The layout with a new pane `beside` `target`, and the size the new
@@ -989,15 +1138,8 @@ impl Session {
         pane: PaneId,
         budget: &mut A,
     ) -> Result<fuxix::Result<Option<PathBuf>>, A::Error> {
-        let Some(p) = self.parts.panes().get(&pane) else {
-            return Ok(Ok(None));
-        };
-        let child = p
-            .process()
-            .child()
-            .or_else(|| self.respawning.get(&pane)?.process.child());
-        match child {
-            Some(child) => fuxix::process::cwd_observed(child.leader.pid(), budget),
+        match self.parts.panes().get(&pane).and_then(Pane::pid) {
+            Some(pid) => fuxix::process::cwd_observed(pid, budget),
             None => Ok(Ok(None)),
         }
     }
@@ -1065,16 +1207,17 @@ impl Session {
             .map(|(id, _)| *id)
             .ok_or(Error::NoWorkspaceGiven)?;
         let tab = ids.tab()?;
-        let pane = self.new_pane(&mut ids, new, now)?;
+        let (pane, link) = self.new_pane(&mut ids, new, now)?;
         let place = Place {
             ws,
             tab,
             pane: pane.id(),
         };
         if let Err(pane) = (self.parts).add_workspaces(parent, made, (tab, tab_name, fit), pane) {
-            self.end(pane.into_process(), true, now);
+            self.unlink(pane.id(), link, true, now);
             return Err(parent.map_or(Error::NoWorkspaceGiven, Error::NoWorkspace));
         }
+        self.linked(place.pane, link, now);
         self.ids = ids;
         Ok(place)
     }
@@ -1159,38 +1302,100 @@ impl Session {
         self.workspace(id).ok_or(Error::NoWorkspace(id))?;
         let mut ids = self.ids.clone();
         let tab = ids.tab()?;
-        let pane = self.new_pane(&mut ids, new, now)?;
+        let (pane, link) = self.new_pane(&mut ids, new, now)?;
         let made = Place {
             ws: id,
             tab,
             pane: pane.id(),
         };
         if let Err(pane) = self.parts.add_tab((id, tab), name, fit, pane) {
-            self.end(pane.into_process(), true, now);
+            self.unlink(pane.id(), link, true, now);
             return Err(Error::NoWorkspace(id));
         }
+        self.linked(made.pane, link, now);
         self.ids = ids;
         Ok(made)
     }
 
     /// A new pane, its ID taken from `ids`, running what `new` says.
-    fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>, now: Instant) -> Result<Pane, Error> {
+    fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>, now: Instant) -> Result<(Pane, Link), Error> {
         let start = new.start;
         let launch = pane::Launch {
             argv: start.argv().clone(),
             cwd: new.cwd.to_path_buf(),
         };
-        let runs = match start {
-            Start::Shell(..) => Runs::Shell(launch.clone()),
-            Start::Program(..) => Runs::Explicit(launch.clone()),
+        let shell = matches!(start, Start::Shell(..));
+        let runs = match shell {
+            true => Runs::Shell(launch.clone()),
+            false => Runs::Explicit(launch.clone()),
         };
         let id = ids.pane()?;
-        let pane = Pane::new(id, None, runs, new.size, new.options, now)?;
-        let child = self.spawn(id, 0, &launch, (new.size, new.cell))?;
-        Ok(match child {
-            Some(child) => pane.running(child),
-            None => pane,
-        })
+        let pane = Pane::new(id, runs, new.size, new.options)
+            .map_err(|source| fail(Raise::Start, pane::Error::Terminal { size: new.size, source }.to_string()))?;
+        let draws = match new.cell {
+            Some(cell) => crate::link::Draws::Cell(cell.width(), cell.height()),
+            None => crate::link::Draws::Text,
+        };
+        let begin = Begin {
+            id,
+            run: self.run,
+            shell,
+            argv: launch.argv,
+            cwd: launch.cwd,
+            size: new.size,
+            options: new.options,
+            hosting: Hosting {
+                draws,
+                ..Hosting::default()
+            },
+            socket: self.launch.clone(),
+            exe: self.exe.clone(),
+        };
+        // A server's panes are processes of their own; a session that
+        // starts no programs holds its panes itself.
+        let link = match (&self.launch, &self.exe) {
+            (Some(_), Some(exe)) => Link::start(exe, begin),
+            _ => crate::host::Host::begin(begin, now).map(|host| Link::Local(Box::new(host))),
+        };
+        Ok((pane, link.map_err(|why| fail(Raise::Start, why))?))
+    }
+
+    /// Pane `id`'s link, its pane placed: what it told as it began is
+    /// taken in.
+    fn linked(&mut self, id: PaneId, mut link: Link, now: Instant) {
+        if let Link::Local(host) = &mut link {
+            Link::told(id, host, &mut self.inbox);
+        }
+        self.links.insert(id, link);
+        self.pump(now);
+    }
+
+    /// Ends a pane's link, its pane closed, by fux if `closed`: its
+    /// process is told, and kept till it ends (`Session::ending`).
+    fn unlink(&mut self, id: PaneId, mut link: Link, closed: bool, now: Instant) {
+        link.send(id, ToPane::Close { closed }, now, &mut self.inbox);
+        self.ending.push((id, link));
+    }
+
+    /// Lets go of every link of a closed pane whose process ended, or is
+    /// held here and done; and of their questions unanswered, which are
+    /// `indeterminate`.
+    pub fn reap_ending(&mut self) {
+        let (done, ending): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.ending).into_iter().partition(|(_, link)| match link {
+                Link::Remote(remote) => remote.closed && remote.ended.is_some(),
+                Link::Local(host) => host.finished(),
+            });
+        self.ending = ending;
+        for (id, _) in done {
+            let left: Vec<u64> = (self.asks.iter())
+                .filter(|(_, pane)| **pane == id)
+                .map(|(ask, _)| *ask)
+                .collect();
+            for ask in left {
+                self.asks.remove(&ask);
+            }
+        }
     }
 
     // ------------------------------------------------------------- clients
@@ -1302,10 +1507,11 @@ impl Session {
         // them may have gone). A headless client shows on no terminal, so on
         // none.
         let client = attach.ancestry.first();
-        let session = client.and_then(|pid| process::Pid::from_raw(i32::try_from(*pid).ok()?));
+        let session =
+            client.and_then(|pid| fuxix::process::Pid::from_raw(i32::try_from(*pid).ok()?));
         let session = session.and_then(fuxix::process::session);
         let leads = |pane: &Pane| {
-            let Some(leader) = pane.process().child().map(|c| c.leader.pid()) else {
+            let Some(leader) = pane.pid() else {
                 return false;
             };
             let descends =
@@ -1490,32 +1696,40 @@ impl Session {
         }
         self.outbox.extend(ended);
         self.size_panes(now);
-        self.host_panes();
-        self.tell_schemes();
-        self.tell_lost();
+        self.host_panes(now);
+        self.pump(now);
     }
 
-    /// Each pane whose program was told other graphics than its host's
-    /// terminal draws now (`graphics`) is told those: as a terminal says
-    /// its cell or sixel, or the pane's host changes (another typed there,
-    /// the host left or shows another tab, or there is none). A new cell,
-    /// unknown too, sizes its terminal in pixels, which signals its
-    /// program, not left till it writes; and the clients showing it are
-    /// painted again, as its pictures show only while its host draws sixel
-    /// (`render::pictures`).
-    fn host_panes(&mut self) {
-        let told = |p: &&Pane| self.graphics(p.id()) != p.screen().graphics();
-        let stale: Vec<PaneId> = (self.parts.panes().values().filter(told))
-            .map(Pane::id)
-            .collect();
-        for id in stale {
-            for client in self.viewers(AnyRef::Pane(id)) {
-                if let Some(view) = self.views.get_mut(&client) {
-                    view.dirty = true;
-                }
+    /// Each pane is told what its host's terminal said, as that changes
+    /// (`outer`): its colours, palette and scheme, and what it draws, which
+    /// sizes its terminal in pixels; and whether a client shows it. Its
+    /// host's terminal reporting a scheme change tells it nothing new till
+    /// the colours that come with it are in (`Session::tell_change`). The
+    /// clients showing a pane told another host are painted again, as its
+    /// pictures show only while its host draws sixel (`render::pictures`).
+    fn host_panes(&mut self, now: Instant) {
+        let ids: Vec<PaneId> = self.parts.panes().keys().copied().collect();
+        for id in ids {
+            let shown = !self.viewers(AnyRef::Pane(id)).is_empty();
+            let hosting = self.hosting(id);
+            let Some(pane) = self.parts.pane_mut(id) else {
+                continue;
+            };
+            let told_shown = std::mem::replace(&mut pane.shown, shown) != shown;
+            let hosting = hosting.filter(|h| pane.hosting.as_ref() != Some(h));
+            if let Some(hosting) = &hosting {
+                pane.hosting = Some(hosting.clone());
             }
-            if let Some((mut pane, true)) = self.hosted(id) {
-                pane.size_terminal();
+            if told_shown {
+                self.to_pane(id, ToPane::Shown(shown), now);
+            }
+            if let Some(hosting) = hosting {
+                for client in self.viewers(AnyRef::Pane(id)) {
+                    if let Some(view) = self.views.get_mut(&client) {
+                        view.dirty = true;
+                    }
+                }
+                self.to_pane(id, ToPane::Host(hosting), now);
             }
         }
     }
@@ -1567,20 +1781,15 @@ impl Session {
         }
         self.placed = placed;
         self.tell_laid_out(&sizes);
-        let mut resized = false;
+        // Each pane is told a size it was not told yet; it resizes as it
+        // reads its program's output, and tells so (`Told::Resized`).
         for (id, size) in sizes {
-            // A frame it holds is read as it resizes, as every read of
-            // its output is (`read_with`): its terminal's facts given it,
-            // its bells and copies taken.
-            if self.pane(id).is_ok_and(|p| p.size() != size) {
-                self.read_with(id, |pane| pane.resize(size, now), now);
-                resized = true;
-            } else if let Ok(mut pane) = self.pane_mut(id) {
-                pane.keeps_size();
+            if let Some(pane) = self.parts.pane_mut(id)
+                && pane.ask_size(size)
+            {
+                let actor = self.parts.journal().current_actor();
+                self.to_pane(id, ToPane::Resize { size, actor }, now);
             }
-        }
-        if resized {
-            self.touch();
         }
     }
 
@@ -1621,62 +1830,34 @@ impl Session {
 
     // ------------------------------------------------------------- closing
 
-    /// Hangs up a pane's process; it is killed and reaped after `GRACE`.
-    /// `closed`: fux closed it (`kill`, `kill-server`), not its program's
-    /// end: the rest of its session goes too.
-    fn end(&mut self, process: Process, closed: bool, now: Instant) {
-        if let Process::Reading(mut child)
-        | Process::HungUp(mut child)
-        | Process::ReadFailed(mut child, _) = process
-        {
-            if closed {
-                child.leader.closed();
-            }
-            child.leader.hang_up();
-            let deadline = crate::after(now, GRACE);
-            self.dying.push(Dying { child, deadline });
-        }
-    }
-
-    /// Every program started and not yet reaped: the panes', those
-    /// started for respawns under way, and the dying.
-    pub fn children(&self) -> impl Iterator<Item = &Child> {
-        let panes = (self.parts.panes().values()).filter_map(|p| p.process().child());
-        let replacements = (self.respawning.values())
-            .flat_map(|r| (r.process.child().into_iter()).chain(r.old.as_ref()));
-        (panes.chain(replacements).chain(self.leftover.values()))
-            .chain(self.dying.iter().map(|d| &d.child))
-    }
-
-    /// Removes a pane and its process. A tab its closing empties closes too,
-    /// as does a workspace left with no tabs.
+    /// Removes a pane, its process told to end. A tab its closing empties
+    /// closes too, as does a workspace left with no tabs.
     pub fn close_pane(&mut self, id: PaneId, why: Option<String>, now: Instant) {
         // Who sees the pane is known before its tab can go: a tab its
         // closing empties takes its viewers elsewhere.
         let viewers = self.viewers(AnyRef::Pane(id));
-        let mut notice = None;
         // Closed for its program's end (a reason given), or by fux.
         let closed = why.is_none();
         let close = match closed {
             true => crate::journal::Close::Killed,
             false => crate::journal::Close::Exited,
         };
-        if let Some(mut pane) = self.parts.close_pane(id, close) {
-            let failed = pane.has_terminal_errors();
+        let mut notice = None;
+        if let Some(pane) = self.parts.close_pane(id, close) {
+            // A program whose terminal could not be read says so as its
+            // pane closes, and as the server stops if it was the last.
+            let failed = (pane.read_error.as_ref())
+                .map(|error| format!("{id}: reading program terminal: {error}"));
             let status =
                 why.map(|why| format!("{} {why}", fux_wire::words::labelled(id, &pane.label())));
-            let told = status
-                .into_iter()
-                .chain(pane.take_terminal_errors())
-                .collect::<Vec<_>>()
-                .join("; ");
+            let told = status.into_iter().chain(failed.clone()).collect::<Vec<_>>().join("; ");
             if !told.is_empty() {
-                if failed && self.parts.panes().is_empty() {
+                if failed.is_some() && self.parts.panes().is_empty() {
                     self.shut_down(told.clone());
                 }
-                notice = Some((told, failed));
+                notice = Some((told, failed.is_some()));
             }
-            self.end_pane(pane, closed, &viewers, now);
+            self.end_pane(id, closed, now);
         }
         self.after_close(now);
         if let Some((told, failed)) = notice {
@@ -1689,32 +1870,15 @@ impl Session {
     /// Removes a tab and whatever panes are in it, killed as `killing`
     /// kills it (`Parts::remove_tab`).
     fn remove_tab(&mut self, tab: TabId, killing: Killing, now: Instant) {
-        let viewers = self.viewers(AnyRef::Tab(tab));
         for gone in self.parts.remove_tab(tab, killing) {
-            self.end_pane(gone, true, &viewers, now);
+            self.end_pane(gone.id(), true, now);
         }
     }
 
-    /// Ends the program of `pane`, closed (by fux if `closed`), and the one
-    /// a respawn under way there started, telling `viewers` the respawn
-    /// was abandoned.
-    fn end_pane(&mut self, pane: Pane, closed: bool, viewers: &[ClientId], now: Instant) {
-        let id = pane.id();
-        self.end(pane.into_process(), closed, now);
-        if let Some(child) = self.leftover.remove(&id) {
-            self.end(Process::Reading(child), closed, now);
-        }
-        let Some(abandoned) = self.respawning.remove(&id) else {
-            return;
-        };
-        self.end(abandoned.process, true, now);
-        if let Some(child) = abandoned.old {
-            let deadline = abandoned.grace.unwrap_or(now);
-            self.dying.push(Dying { child, deadline });
-        }
-        let told = format!("{id} closed while respawning: the program started for it was ended");
-        for client in viewers {
-            self.notify_to(*client, told.clone(), true);
+    /// Ends pane `id`'s process, its pane closed (by fux if `closed`).
+    fn end_pane(&mut self, id: PaneId, closed: bool, now: Instant) {
+        if let Some(link) = self.links.remove(&id) {
+            self.unlink(id, link, closed, now);
         }
     }
 
@@ -1748,192 +1912,46 @@ impl Session {
         self.settle(now);
     }
 
-    /// A pane's program exited with `status`: a shell's pane closes, and a
-    /// program's stays, the status kept, for its last screen to be read.
-    /// What either wrote as it exited may still be on its terminal, or
-    /// read and waiting for the pane's next turns (`Pane::has_unread`): it
-    /// is told exited once all of it is on its screen, its bells, titles
-    /// and notifications journaled, from the turn that reads the last of
-    /// it (`Session::fire`); a shell's pane then closes.
-    pub fn exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
-        let Some(generation) = self.parts.panes().get(&id).map(|p| p.respawns) else {
-            return;
-        };
-        let previous = self
-            .parts
-            .actor(fux_wire::events::Actor::Program(id, generation));
-        self.program_exited(id, ended, now);
-        self.parts.actor(previous);
+    /// Output from pane `id`'s program, as a pane held here reads it: for
+    /// the tests and the tools.
+    #[cfg(any(test, feature = "in-process"))]
+    pub fn output(&mut self, id: PaneId, bytes: &[u8], now: Instant) {
+        if let Some(Link::Local(host)) = self.links.get_mut(&id) {
+            host.output(bytes, now);
+            Link::told(id, host, &mut self.inbox);
+        }
+        self.pump(now);
     }
 
-    fn program_exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
-        let Some(pane) = self.parts.panes().get(&id) else {
-            return;
-        };
-        // Told once.
-        if pane.exiting.is_none() && pane.process().exit_status().is_some() {
-            return;
-        }
-        let first = pane.exiting.is_none();
-        // Once, at the first word of the exit, a turn's worth of its
-        // terminal read, and the status kept till what is read is on its
-        // screen; at each, a frame it holds read, one begun in output read
-        // since too. Its terminal is read on after its exit is told, a turn
-        // at a time, till it is empty or closed (D-90).
-        if first {
-            if let Some(mut pane) = self.parts.pane_mut(id) {
-                pane.exiting(ended);
-                pane.drain(true);
-            }
-            self.read_left(id, false, now);
-        }
-        self.read_with(id, |p| p.release_frame(now), now);
-        let viewers = self.viewers(AnyRef::Pane(id));
-        let Some(mut pane) = self.parts.pane_mut(id) else {
-            return;
-        };
-        if pane.has_unread() {
-            return;
-        }
-        let draining = pane.draining;
-        match pane.runs {
-            Runs::Shell(_) => {
-                let left = pane.ended(ended).left.told();
-                let why = answer::shell_status(ended).map_or_else(
-                    || answer::told(ended),
-                    |s| format!("exited with status {s}"),
-                );
-                self.close_pane(id, Some(format!("{why}{left}")), now);
-            }
-            Runs::Explicit(_) => {
-                // Its leader, exited and unreaped, is reaped with the dying.
-                let (end, gone) = pane.exit(ended);
-                let errors: Vec<_> = if viewers.is_empty() {
-                    Vec::new()
-                } else {
-                    pane.take_terminal_errors().collect()
-                };
-                if let Process::Reading(child)
-                | Process::HungUp(child)
-                | Process::ReadFailed(child, _) = gone
-                {
-                    match draining {
-                        true => _ = self.leftover.insert(id, child),
-                        false => self.dying.push(Dying {
-                            child,
-                            deadline: now,
-                        }),
-                    }
-                }
-                let status = format!("{id} {}{}", answer::told(end.ended), end.left.told());
-                let left = end.left != pane::Left::default() || !errors.is_empty();
-                let told = std::iter::once(status)
-                    .chain(errors)
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                for client in viewers {
-                    self.notify_to(client, told.clone(), left);
-                }
-                self.touch();
-            }
-        }
-    }
-
-    /// Reads a turn's worth of what pane `id`'s program left on its terminal
-    /// as it ends, or is respawned over (`Replacement::old`); the rest on
-    /// its next turns (`fire`), till its terminal is empty or closed. One
-    /// that goes on writing there is read for as long as it does, a turn
-    /// at a time, and holds up no other pane.
-    /// `empty_ends`: whether a turn that finds it empty ends that; the
-    /// read at an exit's first word does not, as the server's own read
-    /// may have just emptied it.
-    fn read_left(&mut self, id: PaneId, empty_ends: bool, now: Instant) {
-        self.read_left_with(id, empty_ends, |fd, bytes| fuxix::io::read(fd, bytes), now);
-    }
-
-    /// `read_left`, reading its terminal with `read`. A read that fails is
-    /// journaled at the pane, from the program whose terminal it is, the
-    /// one respawned over or that left a writer too; only the pane's own
-    /// program stops being read for it.
-    fn read_left_with(
+    /// Pane `id`, held here, to change as the tests and the tools do; what
+    /// it then tells is taken in.
+    #[cfg(any(test, feature = "in-process"))]
+    pub fn host_mut<T>(
         &mut self,
         id: PaneId,
-        empty_ends: bool,
-        mut read: impl FnMut(&fuxix::pty::Master, &mut [u8]) -> Result<usize, fuxix::Errno>,
+        change: impl FnOnce(&mut crate::host::Host) -> T,
         now: Instant,
-    ) {
-        if !self.pane(id).is_ok_and(|p| p.draining) {
-            return;
-        }
-        // A program respawned over that outlives its grace is killed; what
-        // it left on its terminal is read on.
-        if let Some(r) = self.respawning.get_mut(&id)
-            && r.grace.is_some_and(|grace| grace <= now)
-        {
-            r.grace = None;
-            if let Some(old) = &r.old {
-                old.leader.kill();
-            }
-        }
-        let old = self.respawning.get(&id).and_then(|r| r.old.as_ref());
-        let old = old.or(self.leftover.get(&id));
-        let own = old.is_none();
-        let child = old.or_else(|| self.pane(id).ok().and_then(|p| p.process().child()));
-        let (left, drain) = child.map_or((Vec::new(), Drain::Closed), |child| {
-            left_turn(|bytes| read(&child.master, bytes))
-        });
-        if !left.is_empty() {
-            self.output(id, &left, now);
-        }
-        match drain {
-            Drain::More => return,
-            Drain::Empty if !empty_ends => return,
-            Drain::Empty | Drain::Closed => {}
-            Drain::Failed(error) => {
-                if let Ok(mut pane) = self.pane_mut(id) {
-                    match own {
-                        true => pane.read_failed(error),
-                        false => pane.tell_read_failed(error),
-                    }
-                }
-            }
-        }
-        if let Ok(mut pane) = self.pane_mut(id) {
-            pane.drain(false);
-        }
-        if let Some(r) = self.respawning.get_mut(&id)
-            && let Some(child) = r.old.take()
-        {
-            let deadline = r.grace.unwrap_or(now);
-            self.dying.push(Dying { child, deadline });
-        }
-        if let Some(child) = self.leftover.remove(&id) {
-            let deadline = now;
-            self.dying.push(Dying { child, deadline });
-        }
-    }
-
-    /// Stops a failed reader and tells its viewers in this turn.
-    pub(crate) fn read_failed(&mut self, id: PaneId, error: fuxix::Errno, now: Instant) {
-        self.read_with(id, |pane| pane.read_failed(error), now);
-    }
-
-    /// Output from a pane's program.
-    pub fn output(&mut self, id: PaneId, bytes: &[u8], now: Instant) {
-        self.read_with(id, |pane| pane.output(bytes, now), now);
+    ) -> Option<T> {
+        let Some(Link::Local(host)) = self.links.get_mut(&id) else {
+            return None;
+        };
+        let changed = change(host);
+        Link::told(id, host, &mut self.inbox);
+        self.pump(now);
+        Some(changed)
     }
 
     /// Everything the session waits for, each with when it is due: the
     /// server polls no longer than the soonest, and fires those due
     /// (`Session::fire`).
     pub fn timers(&self) -> impl Iterator<Item = (Instant, Timer)> + '_ {
-        let panes = self.parts.panes().values().flat_map(|pane| {
-            let respawn = self.respawning.get(&pane.id()).map(|r| r.since);
-            // A respawn's turn reads a held frame: one parser call a round.
-            let frame = (pane.frame_deadline().filter(|_| respawn.is_none()))
-                .map(|at| (at, Timer::Frame(pane.id())));
-            let unread = (pane.unread_due().or(respawn)).map(|at| (at, Timer::Unread(pane.id())));
-            frame.into_iter().chain(unread)
+        let panes = self.links.iter().flat_map(|(id, link)| {
+            let timers = match link {
+                Link::Local(host) => Some(host.timers()),
+                Link::Remote(_) => None,
+            };
+            let id = *id;
+            (timers.into_iter().flatten()).map(move |(at, timer)| (at, Timer::Pane(id, timer)))
         });
         let notices = (self.views.values())
             .filter_map(|v| Some((v.notice.as_ref()?.until?, Timer::Notice(v.id))));
@@ -1952,119 +1970,14 @@ impl Session {
                     view.dirty = true;
                 }
             }
-            Timer::Frame(id) => self.read_with(id, |p| p.release_frame(now), now),
-            Timer::Unread(id) => {
-                // A respawn under way reads a frame its old program holds.
-                let frame = self.respawning.contains_key(&id)
-                    && self.pane(id).is_ok_and(|p| p.frame_deadline().is_some());
-                let left = self.pane(id).is_ok_and(|p| p.draining && !p.has_unread());
-                match left {
-                    true => self.read_left(id, true, now),
-                    false => self.read_with(
-                        id,
-                        |p| match frame {
-                            true => p.release_frame(now),
-                            false => p.read_unread(now),
-                        },
-                        now,
-                    ),
+            Timer::Pane(id, timer) => {
+                if let Some(Link::Local(host)) = self.links.get_mut(&id) {
+                    host.fire(timer, now);
+                    Link::told(id, host, &mut self.inbox);
                 }
-                self.after_turn(id, now);
+                self.pump(now);
             }
         }
-    }
-
-    /// Reads into pane `id` with `read`, as every read of a pane's output
-    /// does: its tab's host colours and palette given it first; after, its
-    /// bell rung and notification told, its copies made in order, and the views showing it
-    /// repainted and told what it refused (`tell_refused`).
-    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut PaneMut<'_>), now: Instant) {
-        let place = self.locate(id);
-        let viewers = self.viewers(AnyRef::Pane(id));
-        let labelled = place.and_then(|(ws, tab)| {
-            let tab = self.tab(tab)?;
-            let pane = self.parts.panes().get(&id)?;
-            if tab.name().is_some() || tab.root().first_pane() != id || pane.name().is_some() {
-                return None;
-            }
-            let others: Vec<ClientId> = (self.viewers(AnyRef::Workspace(ws)).into_iter())
-                .filter(|client| !viewers.contains(client))
-                .collect();
-            (!others.is_empty()).then(|| (pane.label().into_owned(), others))
-        });
-        let Some((mut pane, retold)) = self.hosted(id) else {
-            return;
-        };
-        read(&mut pane);
-        // Sized once for the new cell and what was read, a resize sized
-        // so already, which the system does not signal again.
-        if retold {
-            pane.size_terminal();
-        }
-        // Program copies go to viewers of the tab, including zoomed views
-        // and watchers, when this pane permits them. Invalid copies are
-        // counted and reported.
-        let (bell, notified, copies) = pane.take_read();
-        let changed_label = labelled.filter(|(was, _)| was != &*pane.label());
-        if bell || notified.is_some() {
-            self.alert(id, bell, notified, now);
-        }
-        for text in copies {
-            self.copied(&text, &viewers);
-        }
-        for view in self.views.values_mut() {
-            if viewers.contains(&view.id)
-                || changed_label
-                    .as_ref()
-                    .is_some_and(|(_, clients)| clients.contains(&view.id))
-            {
-                view.dirty = true;
-            }
-        }
-        self.tell_refused(id, &viewers);
-    }
-
-    /// Tells the clients showing each pane what it refused and has not
-    /// told (`tell_refused`); whether it told any. A pane no client shows
-    /// tells it once one does.
-    pub(crate) fn tell_lost(&mut self) -> bool {
-        let untold: Vec<PaneId> = (self.parts.panes().iter())
-            .filter(|(_, p)| p.loses() || p.has_terminal_errors())
-            .map(|(id, _)| *id)
-            .collect();
-        let mut told = false;
-        for id in untold {
-            let viewers = self.viewers(AnyRef::Pane(id));
-            told |= self.tell_refused(id, &viewers);
-        }
-        told
-    }
-
-    /// Tells `viewers`, the clients showing pane `id`, what it let go of
-    /// and has not told, each kind with how many (`Pane::take_untold`);
-    /// whether there was any. With no client showing it, it is kept for
-    /// one that does.
-    fn tell_refused(&mut self, id: PaneId, viewers: &[ClientId]) -> bool {
-        let pane = self.parts.pane_mut(id);
-        let Some(mut pane) =
-            pane.filter(|p| (p.loses() || p.has_terminal_errors()) && !viewers.is_empty())
-        else {
-            return false;
-        };
-        let mut notices = pane.take_untold().told(id, true);
-        // An exit reports terminal failures with its final status, after
-        // its remaining output and frame have been read.
-        if pane.exiting.is_none() {
-            notices.extend(pane.take_terminal_errors());
-        }
-        if notices.is_empty() {
-            return false;
-        }
-        let told = notices.join("; ");
-        for client in viewers {
-            self.notify_to(*client, told.clone(), true);
-        }
-        true
     }
 
     /// `text`, copied, goes to each client in `to` whose terminal delivery
@@ -2094,8 +2007,9 @@ impl Session {
     /// Everything the server shuts down: every pane is hung up.
     pub fn shutdown(&mut self, now: Instant) {
         for pane in self.parts.close_all() {
-            self.end_pane(pane, true, &[], now);
+            self.end_pane(pane.id(), true, now);
         }
+        self.pump(now);
     }
 
     // ------------------------------------------------------------ commands
@@ -2124,22 +2038,10 @@ impl Session {
                 return Ok(Begun::Waiting(Box::new(Waiting::Read { client, asked })));
             }
             Request::Do(command) => {
-                let reply = self.run_command(&command, origin, now);
-                // A respawn is answered once its pane is at the version it
-                // answers: at once, unless what the old program left is
-                // still being read.
-                let waiting = match (&command, &reply.response) {
-                    (
-                        Command::Respawn { .. },
-                        Response::Answered(PaneResults::One(PaneAnswer::Acted(started))),
-                    ) => Waiting::Respawn {
-                        pane: started.pane,
-                        respawns: started.counts.respawns,
-                        reply: reply.clone(),
-                    },
-                    _ => return Ok(Begun::Done(reply)),
-                };
-                return Ok(self.answered(waiting, now));
+                return Ok(match self.run(&command, origin, now) {
+                    Done::Now(reply) => Begun::Done(reply),
+                    Done::Asked(pending) => self.answered(Waiting::Asked(pending), now),
+                });
             }
             Request::Wait(wait) => wait,
             Request::NextEvents {
@@ -2182,7 +2084,7 @@ impl Session {
     }
 
     /// `waiting`'s answer, if it has one already at `now`; else the wait.
-    fn answered(&self, mut waiting: Waiting, now: Instant) -> Begun {
+    fn answered(&mut self, mut waiting: Waiting, now: Instant) -> Begun {
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
@@ -2228,12 +2130,29 @@ impl Session {
     }
 
     /// Runs a command, parsed already: from a line, a binding or a chooser.
+    /// One a pane answers is answered here only by a pane held here.
     pub fn run_command(&mut self, command: &Command, origin: &Origin, now: Instant) -> Reply {
+        match self.run(command, origin, now) {
+            Done::Now(reply) => reply,
+            Done::Asked(pending) => match self.answered(Waiting::Asked(pending), now) {
+                Begun::Done(reply) => reply,
+                Begun::Waiting(_) => Reply::failed(
+                    fux_wire::code::Code::NotHere,
+                    "its panes answer it in a server, not in this session",
+                ),
+            },
+        }
+    }
+
+    /// Runs a command: its reply now, or the questions its panes answer.
+    fn run(&mut self, command: &Command, origin: &Origin, now: Instant) -> Done {
         let actor = self.request_actor(origin);
         let previous = self.parts.actor(actor);
-        let outcome = self
-            .execute(command, origin, now)
-            .unwrap_or_else(|error| failure(error, origin, self));
+        let done = match self.asking(command, origin, now) {
+            Some(asked) => asked.map(Done::Asked),
+            None => self.execute(command, origin, now).map(Done::Now),
+        };
+        let outcome = done.unwrap_or_else(|error| Done::Now(failure(error, origin, self)));
         if !command.shows_nothing_new() {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
@@ -2241,6 +2160,76 @@ impl Session {
         self.settle(now);
         self.parts.actor(previous);
         outcome
+    }
+
+    /// The commands a pane does itself, asked of it: none, for another
+    /// command.
+    fn asking(
+        &mut self,
+        command: &Command,
+        origin: &Origin,
+        now: Instant,
+    ) -> Option<Result<Pending, Error>> {
+        let one = |session: &mut Self, target, what| {
+            let ask = session.ask_pane(target, what, now)?;
+            Ok(Pending::new(vec![(target, ask)], Form::One))
+        };
+        Some(match command {
+            &Command::SendKeys { to, ref inputs } => self.send_keys(to, inputs, now),
+            &Command::SendMouse {
+                target,
+                mouse,
+                row,
+                col,
+            } => one(self, target, Ask::Mouse { mouse, row, col }),
+            &Command::Signal { target, signal } => one(self, target, Ask::Signal(signal)),
+            &Command::ClearHistory { target } => one(self, target, Ask::ClearHistory),
+            &Command::HistoryBudget { target, bytes } => one(self, target, Ask::HistoryBytes(bytes)),
+            &Command::Respawn {
+                target,
+                kill,
+                ref argv,
+            } => {
+                let what = Ask::Respawn {
+                    kill,
+                    argv: argv.clone(),
+                };
+                let asked = self.ask_pane(target, what, now);
+                if let (Ok(_), Some(copy)) = (&asked, self.parts.pane_mut(target)) {
+                    copy.respawning = true;
+                }
+                asked.map(|ask| Pending::new(vec![(target, ask)], Form::Respawn(argv.clone())))
+            }
+            &Command::CapturePane {
+                target,
+                history,
+                view,
+            } => self.capture(target, history, view, now),
+            _ => {
+                let _ = origin;
+                return None;
+            }
+        })
+    }
+
+    /// `capture` of pane `target`, asked of it: its own screen, live.
+    fn capture(
+        &mut self,
+        target: PaneId,
+        history: Option<usize>,
+        view: command::CaptureView,
+        now: Instant,
+    ) -> Result<Pending, Error> {
+        if let Some(since) = view.since {
+            self.counts_since(since)?;
+            if since.pane != target {
+                let why = format!("{since} is {}'s version, not {target}'s", since.pane);
+                return Err(fail(Raise::BadValue, why));
+            }
+        }
+        let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
+        let ask = self.ask_pane(target, Ask::Capture { history, view, tab }, now)?;
+        Ok(Pending::new(vec![(target, ask)], Form::Capture))
     }
 
     pub(crate) fn request_actor(&self, origin: &Origin) -> fux_wire::events::Actor {
@@ -2329,11 +2318,6 @@ impl Session {
                 self.follow(here, AnyRef::Tab(made.tab));
                 Ok(acted(self.pane(made.pane)?.version(self.run)))
             }
-            &Command::Respawn {
-                target,
-                kill,
-                ref argv,
-            } => self.respawn(target, kill, argv.as_ref(), now),
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
@@ -2360,12 +2344,6 @@ impl Session {
                 self.resize(client, size.rows(), size.cols(), now)?;
                 Ok(Reply::default())
             }
-            &Command::SendMouse {
-                target,
-                mouse,
-                row,
-                col,
-            } => self.send_mouse(target, mouse, row, col),
             &Command::Split {
                 beside,
                 target,
@@ -2381,14 +2359,6 @@ impl Session {
                 now,
             ),
 
-            &Command::Signal { target, signal } => {
-                let group = self.signalled(target)?;
-                let version = self.pane(target)?.version(self.run);
-                fuxix::process::kill_group(group, signal)
-                    .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))?;
-                self.pane_mut(target)?.tell_signalled(signal);
-                Ok(acted(version))
-            }
             &Command::Kill { target } => self.kill(target, now).map(|()| Reply::default()),
             Command::Rename { target, name } => {
                 let target = self.there(*target)?;
@@ -2410,46 +2380,13 @@ impl Session {
                 Ok(Reply::default())
             }
             &Command::ResizePane { target, by } => self.resize_pane(target, by),
-            &Command::ClearHistory { target } => {
-                self.pane_mut(target)?.clear_history();
-                Ok(Reply::default())
-            }
             &Command::Zoom { target } => {
                 self.parts.zoom(target).ok_or(Error::NoPane(target))?;
                 Ok(Reply::default())
             }
-            &Command::SendKeys { to, ref inputs } => self.send_keys(to, inputs),
-            &Command::CapturePane {
-                target,
-                history,
-                view,
-            } => {
-                if let Some(since) = view.since {
-                    self.counts_since(since)?;
-                    if since.pane != target {
-                        let why = format!("{since} is {}'s version, not {target}'s", since.pane);
-                        return Err(fail(Raise::BadValue, why));
-                    }
-                }
-                let pane = self.pane(target)?;
-                if view.source == command::Source::LastOutput && !pane.marked() {
-                    return Err(fail(
-                        Raise::NoMarks,
-                        format!("{target}: {}", pane::UNMARKED),
-                    ));
-                }
-                let cursor = self.parts.journal().end(self.run);
-                let observed = self.observed(pane.id())?;
-                let captured = crate::capture::pane(observed, pane, cursor, history, view)?;
-                Ok(Body::Capture(Box::new(captured)).into())
-            }
             &Command::Reorder { ref target, toward } => {
                 let target = self.there(*target)?;
                 self.reorder(target, toward).map(|()| Reply::default())
-            }
-            &Command::HistoryBudget { target, bytes } => {
-                self.pane_mut(target)?.set_history_bytes(bytes);
-                Ok(Reply::default())
             }
             Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
             &Command::Members { target, members } => {
@@ -2462,6 +2399,17 @@ impl Session {
                 Ok(Body::Handles(ids).into())
             }
             &Command::Client { client, ref action } => self.client(client, action, here, now),
+            // What a pane does itself is asked of it (`asking`), never here.
+            Command::SendKeys { .. }
+            | Command::SendMouse { .. }
+            | Command::Signal { .. }
+            | Command::Respawn { .. }
+            | Command::ClearHistory { .. }
+            | Command::HistoryBudget { .. }
+            | Command::CapturePane { .. } => Err(fail(
+                Raise::NotHere,
+                "a pane's own process does this, asked of it",
+            )),
         }
     }
 
@@ -2552,100 +2500,6 @@ impl Session {
         Ok(())
     }
 
-    /// `send-mouse`: `mouse` at `row` and `col` of pane `target`, encoded
-    /// as its program asked for mouse reports.
-    fn send_mouse(
-        &mut self,
-        target: PaneId,
-        mouse: Mouse,
-        row: u16,
-        col: u16,
-    ) -> Result<Reply, Error> {
-        use fux_vt::MouseProtocolMode as Asked;
-        use fux_vt::keys::mouse::MouseAction::{Motion, Press, Release};
-        let run = self.run;
-        let mut p = self.live_pane_mut(target)?;
-        let size = p.size();
-        if row >= size.rows() || col >= size.cols() {
-            let (rows, cols) = (size.rows(), size.cols());
-            let message = format!(
-                "{} is {cols}x{rows}: rows count 0-{} and columns 0-{}",
-                p.id(),
-                rows.saturating_sub(1),
-                cols.saturating_sub(1)
-            );
-            return Err(fail(Raise::Mouse, message));
-        }
-        let event = |action| fux_vt::keys::mouse::MouseEvent {
-            action,
-            mods: fux_vt::keys::Modifiers::default(),
-            row,
-            col,
-        };
-        // A click is a press and, where the program takes them (not in X10
-        // mode), a release; a move while a button is held is a drag.
-        // Released, or clicked, it is held no more; another button's release
-        // leaves it held. X10 reports presses alone: a click is its press,
-        // and a release or the wheel, which it cannot say, is refused.
-        let unheld = |button| p.mouse_held.filter(|held| *held != button);
-        let (events, held, beyond_x10) = match mouse {
-            Mouse::Click(button) => {
-                let button = button.reported();
-                let events = vec![event(Press(button)), event(Release(Some(button)))];
-                (events, unheld(button), false)
-            }
-            Mouse::Press(button) => {
-                let button = button.reported();
-                (vec![event(Press(button))], Some(button), false)
-            }
-            Mouse::Wheel(way) => (vec![event(Press(way.reported()))], p.mouse_held, true),
-            Mouse::Release(button) => {
-                let button = button.reported();
-                (vec![event(Release(Some(button)))], unheld(button), true)
-            }
-            Mouse::Move => (vec![event(Motion(p.mouse_held))], p.mouse_held, false),
-        };
-        let mode = p.screen().mouse_protocol_mode();
-        let x10 = mode == Asked::Press;
-        let pane = p.id();
-        if x10 && beyond_x10 {
-            let message = format!(
-                "the program in {pane} asked for X10 mouse reports: presses alone, no releases or wheel"
-            );
-            return Err(fail(Raise::Mouse, message));
-        }
-        let mut report = Vec::new();
-        for event in events {
-            let release = matches!(event.action, Release(_));
-            if let Some(chunks) = p
-                .screen()
-                .encode_mouse(event, p.options().alternate_scroll_lines)
-            {
-                report.extend(chunks.flatten());
-                continue;
-            }
-            if release && x10 {
-                continue;
-            }
-            let message = match (mode, event.action) {
-                (Asked::None, _) => {
-                    format!("the program in {pane} has not asked for mouse reports")
-                }
-                (_, Motion(_)) => format!(
-                    "the program in {pane} takes no motion here: with no button pressed it asked for none, \
-                     and asking for clicks alone (mode 1000) it takes no drags either"
-                ),
-                (_, Press(_) | Release(_)) => format!(
-                    "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
-                ),
-            };
-            return Err(fail(Raise::Mouse, message));
-        }
-        let version = p.version(run);
-        p.send_mouse(&report, held);
-        Ok(acted(version))
-    }
-
     /// `split` and `stack`: a new pane `beside` `target`, running `start`
     /// in `dir`.
     fn split(
@@ -2675,12 +2529,13 @@ impl Session {
         let (split, size) = self.split_size(target, beside)?;
         let mut ids = self.ids.clone();
         let new = NewPane::new(start, &cwd, options, (size, self.graphics(target).cell()));
-        let pane = self.new_pane(&mut ids, new, now)?;
+        let (pane, link) = self.new_pane(&mut ids, new, now)?;
         let new = pane.id();
         if let Err(pane) = self.parts.split(pane, split) {
-            self.end(pane.into_process(), true, now);
+            self.unlink(pane.id(), link, true, now);
             return Err(Error::NoPane(target));
         }
+        self.linked(new, link, now);
         self.ids = ids;
         for client in followers {
             self.parts.show(client, AnyRef::Pane(new));
@@ -2794,7 +2649,7 @@ impl Session {
     fn rename(&mut self, target: AnyRef, name: String) -> Result<(), Error> {
         self.check_free(&name, Some(target))?;
         match target {
-            AnyRef::Pane(p) => self.pane_mut(p)?.rename(name),
+            AnyRef::Pane(p) => self.parts.rename_pane(p, name).ok_or(Error::NoPane(p))?,
             AnyRef::Tab(t) => {
                 self.parts.give_tab_name(t, name).ok_or(Error::NoTab(t))?;
             }
@@ -3082,41 +2937,6 @@ fn found(found: AnyRef) -> Reply {
     Body::Found(found).into()
 }
 
-/// How a turn of reading what a program left on its terminal ended.
-#[derive(Debug, PartialEq, Eq)]
-enum Drain {
-    /// Some read: there may be more, which the next turn reads. A read
-    /// that finds nothing just after one that found some is no empty
-    /// terminal: a terminal is handed on a piece at a time.
-    More,
-    /// Nothing to read as the turn began.
-    Empty,
-    /// The terminal is closed.
-    Closed,
-    Failed(fuxix::Errno),
-}
-
-/// A turn's worth of what a terminal holds (`pane::SLICE`), read with
-/// `read`, and whether it may hold more.
-fn left_turn(mut read: impl FnMut(&mut [u8]) -> Result<usize, fuxix::Errno>) -> (Vec<u8>, Drain) {
-    let mut left = Vec::new();
-    let mut buffer = [0u8; pane::SLICE];
-    loop {
-        let room = pane::SLICE.saturating_sub(left.len());
-        let Some(bytes) = buffer.get_mut(..room).filter(|b| !b.is_empty()) else {
-            return (left, Drain::More);
-        };
-        match read(bytes) {
-            Ok(n) if n > 0 => left.extend_from_slice(bytes.get(..n).unwrap_or_default()),
-            Err(fuxix::Errno::INTR) => {}
-            Err(fuxix::Errno::AGAIN) if !left.is_empty() => return (left, Drain::More),
-            Err(fuxix::Errno::AGAIN) => return (left, Drain::Empty),
-            Ok(_) | Err(fuxix::Errno::IO) => return (left, Drain::Closed),
-            Err(error) => return (left, Drain::Failed(error)),
-        }
-    }
-}
-
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
         return Err(fail(Raise::BadName, "a name cannot be empty or blank"));
@@ -3368,7 +3188,8 @@ pub(crate) mod testing {
             id: fux_wire::id::PaneId,
             status: fux_wire::answer::Ended,
         ) {
-            self.exited(id, status, Instant::now())
+            let now = Instant::now();
+            self.host_mut(id, |host| host.exited(status, now), now);
         }
         pub(crate) fn settled(&mut self) {
             self.settle(Instant::now())
@@ -3405,9 +3226,10 @@ pub(crate) mod testing {
         /// Pane `id`'s screen made `size` alone, its place as it was, as a
         /// resize its screen refused leaves it.
         pub(crate) fn resize_screen(&mut self, id: fux_wire::id::PaneId, size: fux_vt::Size) {
-            if let Ok(mut pane) = self.pane_mut(id) {
-                pane.resize(size, Instant::now());
-            }
+            let now = Instant::now();
+            let actor = fux_wire::events::Actor::Server;
+            let resize = crate::link::ToPane::Resize { size, actor };
+            self.host_mut(id, |host| host.handle(resize, now), now);
         }
     }
 
@@ -3754,27 +3576,6 @@ pub(crate) mod testing {
     }
 }
 
-/// `inputs` as pane `p`'s program takes them: keys and pastes encoded as
-/// it asked for them, text and bytes as they are.
-fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
-    let screen = p.screen();
-    let mut bytes = Vec::new();
-    for input in inputs {
-        match input {
-            Input::Key(key) => {
-                fux_vt::keys::encode::key_bytes((*key).into(), screen.key_mode(), &mut bytes)
-            }
-            Input::Text(text) => bytes.extend_from_slice(text.as_bytes()),
-            Input::Paste(text) => {
-                let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
-                fux_vt::keys::encode::paste(text, bracketed, &mut bytes);
-            }
-            Input::Bytes(given) => bytes.extend_from_slice(given),
-        }
-    }
-    bytes
-}
-
 #[cfg(test)]
 mod tests {
     use crate::session::testing::TestResult;
@@ -3788,16 +3589,44 @@ mod tests {
         BAR_ROW, InProcess, attached, output, output_as, requests, run, said, started,
     };
     use super::*;
-    use crate::pane::Left;
+    use crate::pane::{Left, Process};
+    use crate::process;
     use fux_wire::code::Code;
+    use std::time::Duration;
     use std::num::NonZeroU32;
 
+    /// Pane `id`'s host, held here, changed by `change`: what it tells
+    /// then is taken in.
+    fn host<T>(
+        s: &mut Session,
+        id: PaneId,
+        change: impl FnOnce(&mut crate::host::Host) -> T,
+    ) -> Result<T, String> {
+        (s.host_mut(id, change, Instant::now())).ok_or_else(|| format!("{id} is held nowhere"))
+    }
+
+    /// What is queued for pane `id`'s program, taken as if written.
+    fn queued(s: &mut Session, id: PaneId) -> Result<Vec<u8>, String> {
+        host(s, id, |h| h.pane_mut().drain_input())
+    }
+
+    /// Kills and reaps every program the panes wait to end.
     fn reap(s: &mut Session) {
-        for dying in std::mem::take(&mut s.dying) {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
+        let ids: Vec<PaneId> = s.links.keys().copied().collect();
+        for id in ids {
+            let _ = host(s, id, crate::host::Host::end_dying);
+        }
+        for (_, link) in &mut s.ending {
+            if let Link::Local(host) = link {
+                host.end_dying();
             }
         }
+    }
+
+    /// Gives pane `id` `process`, as a test's pane runs a child of the
+    /// test's: the session starts none.
+    fn give(s: &mut Session, id: PaneId, process: crate::pane::Process) -> Result<(), String> {
+        host(s, id, |h| drop(h.set_process(process)))
     }
 
     #[test]
@@ -4978,35 +4807,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_fux_path_is_not_taken_from_the_starter() -> TestResult {
-        let mut s = started()?;
-        s.launch = Some("/nonexistent/fux.sock".into());
-        s.exe = None;
-        let launch = pane::Launch {
-            argv: command::Program::new(
-                "/bin/sh".into(),
-                vec!["-c".into(), "[ -z \"${FUX+x}\" ]".into()],
-            )?,
-            cwd: "/".into(),
-        };
-        let child = s
-            .spawn(PaneId::of(2), 0, &launch, (sized(24, 80)?, None))?
-            .ok_or("a child")?;
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut status = None;
-        while Instant::now() < deadline {
-            status = child.leader.exited();
-            if status.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let _ = child.leader.finish();
-        assert_eq!(status, Some(Ended::Exited(0)));
-        Ok(())
-    }
-
-    #[test]
     fn callerless_resize_uses_the_smallest_screen_in_either_attach_order() -> TestResult {
         for sizes in [[(20, 100), (30, 60)], [(30, 60), (20, 100)]] {
             let mut s = started()?;
@@ -5072,12 +4872,12 @@ mod tests {
             std::iter::repeat_n('x', 2 << 20).collect::<String>()
         );
         let to = command::To::Now(AnyRef::Pane(PaneId::of(1)));
-        s.send_keys(to, &[Input::Paste(text.clone())])?;
-        let queued = s
-            .parts
-            .pane_mut(PaneId::of(1))
-            .ok_or("no pane")?
-            .drain_input();
+        let command = Command::SendKeys {
+            to,
+            inputs: vec![Input::Paste(text.clone())],
+        };
+        s.command_now(&command, &Origin::Cli(Caller::default()));
+        let queued = queued(&mut s, PaneId::of(1))?;
         let expected = format!("\x1b[200~{}\x1b[201~", text.replace('\n', "\r"));
         assert!(queued == expected.as_bytes(), "the whole encoded paste");
         Ok(())
@@ -5108,7 +4908,7 @@ mod tests {
         // A test's session starts no program: one is put in the pane.
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        give(&mut s, id, Process::Reading(child))?;
         s.out(id, b"\x1b[?1000h\x1b[?1004h");
         let mouse = |s: &Session| crate::render::compose(s, c).map(|g| g.modes.mouse);
         assert_eq!(mouse(&s), Some(1000), "asked while it runs");
@@ -5135,8 +4935,7 @@ mod tests {
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        pane.exiting(fux_wire::answer::Ended::Exited(3));
+        host(&mut s, id, |h| h.pane_mut().exiting(Ended::Exited(3)))?;
         let lines = told(&mut s, |s| {
             let _ = run(s, "%2 kill-first respawn");
         });
@@ -5152,80 +4951,16 @@ mod tests {
     }
 
     #[test]
-    fn what_is_left_is_read_a_turn_at_a_time_to_its_end() -> TestResult {
-        // 2 MiB, then the end: all of it, a turn's worth each turn.
-        let total = 2usize << 20;
-        let (mut supplied, mut read, mut turns) = (0usize, 0usize, 0usize);
-        loop {
-            let (left, drain) = left_turn(|bytes| {
-                let n = bytes.len().min(total.saturating_sub(supplied));
-                supplied = supplied.saturating_add(n);
-                Ok(n)
-            });
-            assert!(left.len() <= pane::SLICE, "{} in a turn", left.len());
-            read = read.saturating_add(left.len());
-            turns = turns.saturating_add(1);
-            match drain {
-                Drain::More => {}
-                Drain::Closed => break,
-                Drain::Empty => return Err("empty before its end".into()),
-                Drain::Failed(error) => return Err(error.into()),
-            }
-        }
-        assert_eq!((read, turns), (total, total / pane::SLICE + 1));
-        let null = std::fs::File::open("/dev/null")?;
-        assert_eq!(
-            left_turn(|bytes| fuxix::io::read(&null, bytes)),
-            (Vec::new(), Drain::Closed)
-        );
-        // Found empty just after some was read, it may hold more: the next
-        // turn says; found empty as a turn begins, it is drained.
-        let mut reads = [Ok(1), Err(fuxix::Errno::AGAIN)].into_iter();
-        let mut read = |_: &mut [u8]| reads.next().unwrap_or(Err(fuxix::Errno::AGAIN));
-        assert_eq!(left_turn(&mut read), (vec![0], Drain::More));
-        assert_eq!(left_turn(&mut read), (Vec::new(), Drain::Empty));
-        Ok(())
-    }
-
-    #[test]
-    fn unexpected_terminal_read_errors_are_not_empty_output() -> TestResult {
-        let mut reads = [Ok(1), Err(fuxix::Errno::INTR), Err(fuxix::Errno::SRCH)].into_iter();
-        let (left, end) = left_turn(|bytes| {
-            if let Some(first) = bytes.first_mut() {
-                *first = b'x';
-            }
-            reads.next().ok_or(fuxix::Errno::SRCH)?
-        });
-        assert_eq!(
-            (left, end),
-            (b"x".to_vec(), Drain::Failed(fuxix::Errno::SRCH))
-        );
-        for end in [Ok(0), Err(fuxix::Errno::IO)] {
-            assert_eq!(left_turn(|_| end), (Vec::new(), Drain::Closed));
-        }
-        let empty = left_turn(|_| Err(fuxix::Errno::AGAIN));
-        assert_eq!(empty, (Vec::new(), Drain::Empty));
-        let directory = std::fs::File::open(".")?;
-        let (_, end) = left_turn(|bytes| fuxix::io::read(&directory, bytes));
-        assert!(matches!(end, Drain::Failed(_)), "{end:?}");
-        let (reader, _writer) = std::io::pipe()?;
-        fuxix::io::set_nonblocking(&reader, true)?;
-        assert_eq!(
-            left_turn(|bytes| fuxix::io::read(&reader, bytes)),
-            (Vec::new(), Drain::Empty)
-        );
+    fn unexpected_terminal_read_errors_are_told_once() -> TestResult {
         let (mut session, client) = attached(10, 40)?;
         let id = *session.parts.panes().keys().next().ok_or("pane")?;
-        session
-            .parts
-            .pane_mut(id)
-            .ok_or("pane")?
-            .read_failed(fuxix::Errno::SRCH);
-        assert!(session.tell_lost());
-        let view = session.views.get(&client).ok_or("client")?;
-        let notice = &view.notice.as_ref().ok_or("notice")?.text;
+        host(&mut session, id, |h| h.read_failed(fuxix::Errno::SRCH))?;
+        let view = session.views.get_mut(&client).ok_or("client")?;
+        let notice = view.notice.take().ok_or("notice")?.text;
         assert!(notice.contains("reading program terminal"), "{notice}");
-        assert!(!session.tell_lost());
+        session.out(id, b"more");
+        let view = session.views.get(&client).ok_or("client")?;
+        assert!(view.notice.is_none(), "told once");
         Ok(())
     }
 
@@ -5249,29 +4984,24 @@ mod tests {
                     argv: command::Program::new("/bin/sh".into(), Vec::new())?,
                     cwd: "/".into(),
                 });
-                let fresh = Pane::new(
+                let fresh = crate::pane::Pane::new(
                     id,
-                    Some("test".into()),
-                    runs,
+                    None,
+                    runs.clone(),
                     sized(9, 40)?,
                     crate::pane::tests::options(1024)?,
                     Instant::now(),
                 )?;
-                session
-                    .parts
-                    .pane_mut(id)
-                    .ok_or("pane")?
-                    .respawned(fresh, Process::Absent);
+                host(&mut session, id, |h| {
+                    drop(h.pane_mut().respawned(fresh, Process::Absent))
+                })?;
+                session.parts.pane_mut(id).ok_or("pane")?.runs = runs;
             }
             session.out(id, b"saved");
             if live {
-                session.read_failed(id, fuxix::Errno::SRCH, Instant::now());
+                host(&mut session, id, |h| h.read_failed(fuxix::Errno::SRCH))?;
             } else {
-                session
-                    .parts
-                    .pane_mut(id)
-                    .ok_or("pane")?
-                    .read_failed(fuxix::Errno::SRCH);
+                host(&mut session, id, |h| h.pane_mut().read_failed(fuxix::Errno::SRCH))?;
             }
             session.end_program(id, Ended::Exited(0));
             let notice = session
@@ -5288,7 +5018,8 @@ mod tests {
             assert!(notice.text.contains("exited"), "{notice:?}");
             assert_eq!(notice.text.matches("reading program terminal").count(), 1);
             if explicit {
-                assert_eq!(session.pane(id)?.read_error(), Some(fuxix::Errno::SRCH));
+                let error = Some(fuxix::Errno::SRCH.to_string());
+                assert_eq!(session.pane(id)?.read_error, error);
                 assert!(
                     session
                         .pane(id)?
@@ -5333,7 +5064,7 @@ mod tests {
         assert!(!copied(&s), "held");
         s.size_client(c, 30, 100)?;
         assert!(copied(&s));
-        assert!(!s.pane(id)?.bell, "rung");
+        assert!(!host(&mut s, id, |h| h.pane().bell)?, "rung");
         Ok(())
     }
 
@@ -5469,28 +5200,6 @@ mod tests {
         let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
         let size = tab.fit().size();
         assert_eq!((size.cols(), size.rows()), (200, 50));
-        Ok(())
-    }
-
-    #[test]
-    fn in_process_waits_answer_only_after_the_frame_is_released() -> TestResult {
-        for (budgeted, timeout) in [(true, 0), (false, 2)] {
-            let mut s = started()?;
-            let mut frame = b"\x1b[?2026h".to_vec();
-            if budgeted {
-                frame.extend(crate::pane::tests::spends_the_budget(24, 80));
-            }
-            frame.extend_from_slice(b"DONE");
-            if budgeted {
-                frame.extend_from_slice(b"\x1b[?2026l");
-            }
-            s.out(PaneId::of(1), &frame);
-            if budgeted {
-                assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
-            }
-            let answer = output(&mut s, &format!("%1 {timeout} timeout wait"))?;
-            assert!(answer.ends_with(" screen\n"), "{answer}");
-        }
         Ok(())
     }
 
@@ -5766,7 +5475,7 @@ mod tests {
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07");
         // Programs are started, as a server starts them.
-        s.launch = Some("/nonexistent/fux.sock".into());
+        host(&mut s, id, |h| h.starts(Some("/nonexistent/fux.sock".into())))?;
         let mut refused = String::new();
         let lines = told(&mut s, |s| {
             let respawn = run(s, "%2 str /no/such/bin program kill-first respawn");
@@ -5774,9 +5483,11 @@ mod tests {
         });
         assert!(refused.contains("/no/such/bin"), "{refused}");
         assert!(lines.is_empty(), "{lines}");
-        let pane = s.pane(id)?;
-        assert!(pane.frame_deadline().is_some() && pane.left == Left::default());
-        s.launch = None;
+        let held = host(&mut s, id, |h| {
+            h.pane().frame_deadline().is_some() && h.pane().left == Left::default()
+        })?;
+        assert!(held, "the frame still held, nothing left");
+        host(&mut s, id, |h| h.starts(None))?;
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
         let at = |what: &str| {
             lines
@@ -5810,8 +5521,9 @@ mod tests {
             if let Some(answer) = waiting.answer(s, Instant::now()) {
                 return Ok((answer, turns));
             }
-            assert!(s.timers().any(|t| t.1 == Timer::Unread(id)), "no turn due");
-            s.fire_now(Timer::Unread(id));
+            let unread = Timer::Pane(id, crate::host::Timer::Unread);
+            assert!(s.timers().any(|t| t.1 == unread), "no turn due");
+            s.fire_now(unread);
         }
         Err("never answered".into())
     }
@@ -5855,7 +5567,7 @@ mod tests {
             s.command_now(&here, &caller(0)).end().code(),
             Some(Code::StrayPane)
         );
-        assert!(s.respawning.contains_key(&id));
+        assert!(host(&mut s, id, |h| h.respawning())?);
         let (_, turns) = turns(&mut s, id, &mut waiting)?;
         assert!(turns > 1, "the old output needed {turns} turns");
         assert_eq!(
@@ -5905,17 +5617,15 @@ mod tests {
             "{:?}",
             again.end()
         );
-        assert_eq!(
-            s.respawning.get(&id).map(|r| r.fresh.history_bytes()),
-            Some(4096)
-        );
+        let fresh = host(&mut s, id, |h| h.replacement().map(|(_, bytes)| bytes))?;
+        assert_eq!(fresh, Some(4096));
         run(&mut s, "%2 128 history-budget")?;
         let (answer, turns) = turns(&mut s, id, &mut waiting)?;
         assert!(turns > 1, "read in {turns} turns");
         assert_eq!(answer.end(), fux_wire::protocol::End::Done);
+        assert_eq!(host(&mut s, id, |h| h.pane().history_bytes())?, 128);
         let pane = s.pane(id)?;
-        assert_eq!(answer, acted(pane.version(s.run)));
-        assert_eq!(pane.history_bytes(), 128);
+        assert_eq!(answer.response, acted(pane.version(s.run)).response);
         assert_eq!(pane.options().history_bytes.get(), 128);
         assert!(!pane.options().program_clipboard);
         assert!(!pane.options().reflow);
@@ -5945,34 +5655,31 @@ mod tests {
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(23, 80));
         // Programs are started, as a server starts them.
-        s.launch = Some("/nonexistent/fux.sock".into());
+        host(&mut s, id, |h| h.starts(Some("/nonexistent/fux.sock".into())))?;
         let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
-        s.launch = None;
+        host(&mut s, id, |h| h.starts(None))?;
         let Begun::Waiting(mut waiting) = begun else {
             return Err("answered before what was left was read".into());
         };
-        assert_eq!(s.children().count(), 1, "the program started for it");
+        let children = host(&mut s, id, |h| h.children().len())?;
+        assert_eq!(children, 1, "the program started for it");
         // The program it is respawned over, one that ignores the hangup,
         // as a respawn holds it while what it left is still read.
         let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
         let old = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         let old_pid = old.leader.pid();
-        (s.respawning.get_mut(&id).ok_or("the respawn")?).old = Some(old);
+        host(&mut s, id, |h| h.respawned_over(old))?;
         run(&mut s, "%2 kill")?;
-        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let answer = waiting.answer(&mut s, Instant::now()).ok_or("no answer")?;
+        let said = format!("{:?}", answer.end());
+        assert_eq!(answer.end().code(), Some(Code::Closed), "{said}");
+        assert!(said.contains("%2 closed while respawning"), "{said}");
+        let dying = s.ending.iter().map(|(_, link)| match link {
+            Link::Local(host) => host.dying(),
+            Link::Remote(_) => 0,
+        });
         assert_eq!(
-            answer.end().code(),
-            Some(Code::Closed),
-            "{:?}",
-            answer.end()
-        );
-        let said = (s.views.get(&c))
-            .and_then(|v| v.notice.clone())
-            .map(|n| n.text);
-        let said = said.unwrap_or_default();
-        assert!(said.starts_with("%2 closed while respawning"), "{said}");
-        assert_eq!(
-            s.dying.len(),
+            dying.sum::<usize>(),
             2,
             "the program started for it and the old, ended"
         );
@@ -6005,7 +5712,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         let now = Instant::now();
         let pane = s.pane(id)?;
-        let fresh = Pane::new(
+        let fresh = crate::pane::Pane::new(
             id,
             None,
             pane.runs.clone(),
@@ -6013,30 +5720,14 @@ mod tests {
             pane.options(),
             now,
         )?;
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        if let Process::Reading(child) = pane.set_process(Process::Respawning) {
-            s.dying.push(Dying {
-                child,
-                deadline: now,
-            });
-        }
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        pane.drain(true);
-        let new = Replacement {
-            actor: s.parts.journal().current_actor(),
-            fresh,
-            process: Process::Absent,
-            old: Some(old),
-            grace: Some(now),
-            since: now,
-        };
-        s.respawning.insert(id, new);
+        host(&mut s, id, |h| h.respawning_over(fresh, old, now))?;
         let lines = told(&mut s, |s| {
             for _ in 0..100 {
-                if !s.respawning.contains_key(&id) {
+                if !host(s, id, |h| h.respawning()).unwrap_or(false) {
                     break;
                 }
-                s.fire(Timer::Unread(id), crate::after(Instant::now(), GRACE));
+                let unread = Timer::Pane(id, crate::host::Timer::Unread);
+                s.fire(unread, crate::after(Instant::now(), crate::host::GRACE));
             }
         });
         reap(&mut s);
@@ -6063,11 +5754,12 @@ mod tests {
             let argv = ["/bin/cat".to_owned()];
             let size = (sized(24, 80)?, None);
             let child = process::spawn(&argv, Path::new("/"), (&[], &[]), size)?;
-            let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-            pane.set_process(Process::Reading(child));
-            if let Some(ended) = exiting {
-                pane.exiting(ended);
-            }
+            host(&mut s, id, |h| {
+                drop(h.set_process(Process::Reading(child)));
+                if let Some(ended) = exiting {
+                    h.pane_mut().exiting(ended);
+                }
+            })?;
             s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
             let mut stream = crate::journal::Reader::new(
                 fux_wire::inspect::Scope::All,
@@ -6086,7 +5778,7 @@ mod tests {
             };
             let sent = run(&mut s, "%2 str abc text send-keys");
             assert!(sent.is_err_and(|e| e.contains("respawning")));
-            let signalled = s.signalled(id).map(drop).map_err(|e| e.to_string());
+            let signalled = run(&mut s, "%2 str INT signal");
             assert!(signalled.is_err_and(|e| e.contains("respawning")));
             // Nor has it a program of its own till the new one takes its place.
             assert_eq!(output(&mut s, "%2 str program get json")?.trim(), "null");
@@ -6113,7 +5805,7 @@ mod tests {
             return Err("answered with a frame held".into());
         };
         let timers: Vec<Timer> = s.timers().map(|(_, timer)| timer).collect();
-        assert_eq!(timers, [Timer::Unread(id)]);
+        assert_eq!(timers, [Timer::Pane(id, crate::host::Timer::Unread)]);
         let (_, turns) = turns(&mut s, id, &mut waiting)?;
         assert_eq!(turns, 1);
         Ok(())
@@ -6155,28 +5847,32 @@ mod tests {
             None,
         )?;
         // Programs are started, as a server starts them.
-        s.launch = Some("/nonexistent/fux.sock".into());
+        host(&mut s, id, |h| h.starts(Some("/nonexistent/fux.sock".into())))?;
         let begun = s.begin_now(
             respawn_of(id, &["/bin/sh", "-c", "exit 0"])?,
             &Origin::Cli(Caller::default()),
         );
-        s.launch = None;
+        host(&mut s, id, |h| h.starts(None))?;
         let Begun::Waiting(mut waiting) = begun else {
             return Err("answered before what was left was read".into());
         };
-        let ended = |s: &Session| {
-            let replacement = s.respawning.get(&id).and_then(|r| r.process.child());
-            replacement.and_then(|c| c.leader.exited())
+        let ended = |s: &mut Session| {
+            host(s, id, |h| {
+                let replacement = h.replacement().and_then(|(child, _)| child);
+                replacement.and_then(|c| c.leader.exited())
+            })
         };
         let deadline = Instant::now() + Duration::from_secs(10);
-        while ended(&s).is_none() {
+        while ended(&mut s)?.is_none() {
             assert!(Instant::now() < deadline, "the program never ended");
             std::thread::sleep(Duration::from_millis(5));
         }
-        // The server reaps no orphan it holds: none but the children.
-        let started = s.respawning.get(&id).and_then(|r| r.process.child());
-        let started = started.map(|c| c.leader.pid());
-        assert!(s.children().any(|c| Some(c.leader.pid()) == started));
+        // A pane reaps no orphan it holds: none but its children.
+        let held = host(&mut s, id, |h| {
+            let started = h.replacement().and_then(|(child, _)| child).map(|c| c.leader.pid());
+            h.children().iter().any(|c| Some(*c) == started)
+        })?;
+        assert!(held);
         turns(&mut s, id, &mut waiting)?;
         let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
         let at = |what: &str| {
@@ -6203,11 +5899,10 @@ mod tests {
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         s.input(c, b"\x1b[6;20;10t");
         let id = PaneId::of(2);
-        s.launch = Some("/nonexistent/fux.sock".into());
-        (s.respawn(id, false, None, Instant::now()))?;
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        let size = pane.size();
-        let child = pane.set_process(Process::Absent);
+        host(&mut s, id, |h| h.starts(Some("/nonexistent/fux.sock".into())))?;
+        run(&mut s, "%2 respawn")?;
+        let size = s.pane(id)?.size();
+        let child = host(&mut s, id, |h| h.set_process(Process::Absent))?;
         let Process::Reading(child) = child else {
             return Err("no program started".into());
         };
@@ -6248,29 +5943,21 @@ mod tests {
         let size = s.pane(id)?.size();
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
-        let pixels = |pane: &Pane| {
-            let (_, pixels) = fuxix::terminal::window_size(&pane.process().child()?.master)?;
-            pixels.map(|p| (p.width.get(), p.height.get()))
+        give(&mut s, id, Process::Reading(child))?;
+        let pixels = |s: &mut Session| {
+            host(s, id, |h| {
+                let master = &h.pane().process().child()?.master;
+                let (_, pixels) = fuxix::terminal::window_size(master)?;
+                pixels.map(|p| (p.width.get(), p.height.get()))
+            })
         };
         let view = s.views.get_mut(&c).ok_or("the view")?;
         view.terminal.cell = fux_vt::CellSize::new(10, 20);
+        s.settled();
         let smaller = sized(10, 40)?;
-        let mut between = None;
-        let now = Instant::now();
-        s.read_with(
-            id,
-            |pane| {
-                between = pixels(pane);
-                pane.resize(smaller, now);
-            },
-            now,
-        );
-        assert_eq!(between, None, "not sized before the resize");
-        let pane = s.pane(id)?;
-        assert_eq!(pixels(pane), Some((400, 200)));
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        if let Process::Reading(child) = pane.set_process(Process::Absent) {
+        s.resize_screen(id, smaller);
+        assert_eq!(pixels(&mut s)?, Some((400, 200)));
+        if let Process::Reading(child) = host(&mut s, id, |h| h.set_process(Process::Absent))? {
             drop(child.master);
             if let Err(pid) = child.leader.finish() {
                 process::reaped(pid);
@@ -6286,25 +5973,25 @@ mod tests {
         let size = s.pane(id)?.size();
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
-        let winsize = |s: &Session| {
-            let pane = s.parts.panes().get(&id)?;
-            fuxix::terminal::window_size(&pane.process().child()?.master)
+        give(&mut s, id, Process::Reading(child))?;
+        let winsize = |s: &mut Session| {
+            host(s, id, |h| fuxix::terminal::window_size(&h.pane().process().child()?.master))
+                .ok()
+                .flatten()
         };
         s.input(c, b"\x1b[6;20;10t");
-        let told = winsize(&s);
+        let told = winsize(&mut s);
         assert!(told.is_some_and(|(_, pixels)| pixels.is_some()), "{told:?}");
         run(&mut s, "opts 80 24 size str other in new-tab drop")?;
         let show = |ws: &str| format!("str {c} client str {ws} workspace show");
-        let unknown = |s: &Session| winsize(s).is_some_and(|(_, pixels)| pixels.is_none());
+        let unknown = |s: &mut Session| winsize(s).is_some_and(|(_, pixels)| pixels.is_none());
         run(&mut s, &show("other"))?;
-        assert!(unknown(&s), "hidden");
+        assert!(unknown(&mut s), "hidden");
         run(&mut s, &show("+1"))?;
-        assert_eq!(winsize(&s), told, "shown again");
+        assert_eq!(winsize(&mut s), told, "shown again");
         s.detach_client(c);
-        assert!(unknown(&s), "detached");
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        if let Process::Reading(child) = pane.set_process(Process::Absent) {
+        assert!(unknown(&mut s), "detached");
+        if let Process::Reading(child) = host(&mut s, id, |h| h.set_process(Process::Absent))? {
             drop(child.master);
             if let Err(pid) = child.leader.finish() {
                 process::reaped(pid);
@@ -6341,9 +6028,7 @@ mod tests {
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let queue = |s: &mut Session, bytes: &[u8]| {
-            let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-            pane.push_with(|_, out| out.extend_from_slice(bytes));
-            Ok::<_, String>(())
+            host(s, id, |h| h.pane_mut().push_with(|_, out| out.extend_from_slice(bytes)))
         };
         queue(&mut s, b"abc")?;
         let json = output(&mut s, "%2 capture json")?;
@@ -6358,7 +6043,7 @@ mod tests {
             said.ends_with("; 3 bytes of input queued for it were never written to it"),
             "{said}"
         );
-        assert!(s.pane(id).is_ok_and(|p| p.input().is_empty()));
+        assert!(host(&mut s, id, |h| h.pane().input().is_empty())?);
         let json = output(&mut s, "%2 capture json")?;
         assert!(
             json.contains(r#""input_unread":3,"#) && json.contains(r#""input_queued":0,"#),
@@ -6368,7 +6053,7 @@ mod tests {
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         run(&mut s, "%2 respawn")?;
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        give(&mut s, id, Process::Reading(child))?;
         queue(&mut s, b"de")?;
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
         assert!(
@@ -6415,18 +6100,14 @@ mod tests {
         )?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
-        let queued = |s: &Session| {
-            s.pane(id)
-                .map(|p| p.input().len())
-                .map_err(|e| e.to_string())
-        };
+        let queued = |s: &mut Session| host(s, id, |h| h.pane().input().len());
         s.out(id, b"\x1b[?2048h\x1b[?2031h");
         s.end_program(id, Ended::Exited(0));
-        (s.parts.pane_mut(id).ok_or("the pane")?).resize(sized(10, 40)?, Instant::now());
+        s.resize_screen(id, sized(10, 40)?);
         s.input(c, b"\x1b[?997;1n");
-        assert_eq!(queued(&s)?, 0);
+        assert_eq!(queued(&mut s)?, 0);
         run(&mut s, "%2 respawn")?;
-        assert_eq!(queued(&s)?, 0);
+        assert_eq!(queued(&mut s)?, 0);
         Ok(())
     }
 
@@ -6457,17 +6138,11 @@ mod tests {
         let argv = ["/bin/cat".to_owned()];
         for _ in 0..2 {
             let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
-            let mut pane = s.parts.pane_mut(PaneId::of(2)).ok_or("the pane")?;
-            pane.set_process(Process::Reading(child));
+            give(&mut s, PaneId::of(2), Process::Reading(child))?;
             run(&mut s, "%2 kill-first respawn")?;
         }
-        let dying = std::mem::take(&mut s.dying);
-        let ended = dying.len();
-        for dying in dying {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
-            }
-        }
+        let ended = host(&mut s, PaneId::of(2), |h| h.dying())?;
+        reap(&mut s);
         assert_eq!(ended, 2);
         Ok(())
     }
@@ -6512,19 +6187,18 @@ mod tests {
                 let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
                 let child =
                     process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
-                (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
-                let exited = |s: &Session| {
-                    s.parts
-                        .panes()
-                        .get(&id)
-                        .and_then(|p| p.process().child()?.leader.exited())
+                give(&mut s, id, Process::Reading(child))?;
+                let exited = |s: &mut Session| {
+                    host(s, id, |h| h.pane().process().child()?.leader.exited())
+                        .ok()
+                        .flatten()
                         .is_some()
                 };
                 let until = crate::after(Instant::now(), Duration::from_secs(10));
-                while !exited(&s) && Instant::now() < until {
+                while !exited(&mut s) && Instant::now() < until {
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                assert!(exited(&s), "the child did not exit");
+                assert!(exited(&mut s), "the child did not exit");
             }
             let mut out = Vec::new();
             if budgeted {
@@ -6542,22 +6216,15 @@ mod tests {
             s.out(id, &out);
             s.end_program(id, Ended::Exited(0));
             if budgeted {
-                let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-                assert!(pane.has_unread(), "the budget stopped no call");
+                assert!(host(&mut s, id, |h| h.pane().has_unread())?, "the budget stopped no call");
                 assert!(
-                    pane.process().exit_status().is_none(),
+                    s.pane(id)?.exit_status().is_none(),
                     "exited with output unread"
                 );
             }
             let mut turns = 0u32;
-            while s
-                .parts
-                .panes()
-                .get(&id)
-                .is_some_and(|p| p.process().exit_status().is_none())
-                && turns < 10_000
-            {
-                s.fire_now(crate::session::Timer::Unread(id));
+            while s.pane(id)?.exit_status().is_none() && turns < 10_000 {
+                s.fire_now(Timer::Pane(id, crate::host::Timer::Unread));
                 turns = turns.saturating_add(1);
             }
             assert!(
@@ -6565,7 +6232,7 @@ mod tests {
                 "held={held}: exit was not immediate"
             );
             let pane = s.parts.panes().get(&id).ok_or("the pane")?;
-            assert_eq!(pane.process().exit_status(), Some(Ended::Exited(0)));
+            assert_eq!(pane.exit_status(), Some(Ended::Exited(0)));
             let text = pane
                 .screen()
                 .rows()
@@ -6591,15 +6258,15 @@ mod tests {
         let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         let writer = child.leader.pid();
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
-        let rows = s.parts.panes().get(&id).map(|p| p.screen().size().rows());
+        give(&mut s, id, Process::Reading(child))?;
+        let rows = s.parts.panes().get(&id).map(|p| p.size().rows());
         assert!(rows.is_some_and(|r| r >= 100), "{rows:?} rows");
         std::thread::sleep(Duration::from_millis(200));
         let exited = |s: &Session| {
             s.parts
                 .panes()
                 .get(&id)
-                .is_some_and(|p| p.process().exit_status().is_some())
+                .is_some_and(|p| p.exit_status().is_some())
         };
         // Told exited, as each reap of another child does, while what it
         // left goes on writing: the exit is told as its leader is reaped,
@@ -6607,7 +6274,7 @@ mod tests {
         let mut turns = 0u32;
         s.end_program(id, Ended::Exited(3));
         while !exited(&s) && turns < 10_000 {
-            s.fire_now(crate::session::Timer::Unread(id));
+            s.fire_now(Timer::Pane(id, crate::host::Timer::Unread));
             // As each reap of another child does.
             s.end_program(id, Ended::Exited(3));
             turns = turns.saturating_add(1);
@@ -6620,28 +6287,22 @@ mod tests {
         // Its terminal is read on, a turn at a time, others served between:
         // its screen's revision grows.
         for _ in 0..20 {
-            s.fire_now(crate::session::Timer::Unread(id));
+            s.fire_now(Timer::Pane(id, crate::host::Timer::Unread));
             run(&mut s, "%1 str x text send-keys")?;
         }
-        let read_on = s.leftover.contains_key(&id) && screen(&s)? > at_exit;
+        let read_on = host(&mut s, id, |h| h.leftover())? && screen(&s)? > at_exit;
         // Once the writing stops, its terminal drained, the pane is frozen.
         let _ = fuxix::process::kill_group(writer, fuxix::process::Signal::Kill);
         let mut drained = 0u32;
-        while s.leftover.contains_key(&id) && drained < 10_000 {
-            s.fire_now(crate::session::Timer::Unread(id));
+        while host(&mut s, id, |h| h.leftover())? && drained < 10_000 {
+            s.fire_now(Timer::Pane(id, crate::host::Timer::Unread));
             drained = drained.saturating_add(1);
         }
         let drained_at = screen(&s)?;
         for _ in 0..20 {
-            s.fire_now(crate::session::Timer::Unread(id));
+            s.fire_now(Timer::Pane(id, crate::host::Timer::Unread));
         }
-        let frozen = !s.leftover.contains_key(&id) && screen(&s)? == drained_at;
-        if let Some(child) = s.leftover.remove(&id) {
-            s.dying.push(Dying {
-                child,
-                deadline: Instant::now(),
-            });
-        }
+        let frozen = !host(&mut s, id, |h| h.leftover())? && screen(&s)? == drained_at;
         reap(&mut s);
         assert!(told, "not told exited in {turns} turns");
         assert!(
@@ -6672,12 +6333,12 @@ mod tests {
         let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         let pid = child.leader.pid();
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        give(&mut s, id, Process::Reading(child))?;
         s.end_program(id, Ended::Exited(0));
-        let left = s.leftover.contains_key(&id);
+        let left = host(&mut s, id, |h| h.leftover())?;
         let from = s.parts.journal().end(s.run);
         let fail = |_: &fuxix::pty::Master, _: &mut [u8]| Err(fuxix::Errno::SRCH);
-        s.read_left_with(id, true, fail, Instant::now());
+        host(&mut s, id, |h| h.read_left_with(true, fail, Instant::now()))?;
         let told = crate::journal::Reader::new(
             fux_wire::inspect::Scope::All,
             s.parts.journal(),
@@ -6687,19 +6348,9 @@ mod tests {
         .batch(s.parts.journal(), true)?
         .events;
         let pane = s.pane(id)?;
-        let after = (
-            pane.respawns,
-            pane.process().exit_status(),
-            pane.read_error(),
-        );
-        let drained = !s.leftover.contains_key(&id);
+        let after = (pane.respawns, pane.exit_status(), pane.read_error.clone());
+        let drained = !host(&mut s, id, |h| h.leftover())?;
         let _ = fuxix::process::kill_group(pid, fuxix::process::Signal::Kill);
-        if let Some(child) = s.leftover.remove(&id) {
-            s.dying.push(Dying {
-                child,
-                deadline: Instant::now(),
-            });
-        }
         reap(&mut s);
         assert!(left, "no writer left on its terminal");
         let failed = Json::object(vec![
@@ -6729,19 +6380,13 @@ mod tests {
         let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         let pid = child.leader.pid();
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        give(&mut s, id, Process::Reading(child))?;
         s.end_program(id, Ended::Exited(0));
-        let told = s.pane(id)?.process().exit_status().is_some();
-        let read_on = s.leftover.contains_key(&id);
-        s.fire_now(Timer::Unread(id));
-        let frozen = !s.leftover.contains_key(&id);
+        let told = s.pane(id)?.exit_status().is_some();
+        let read_on = host(&mut s, id, |h| h.leftover())?;
+        s.fire_now(Timer::Pane(id, crate::host::Timer::Unread));
+        let frozen = !host(&mut s, id, |h| h.leftover())?;
         let _ = fuxix::process::kill_group(pid, fuxix::process::Signal::Kill);
-        if let Some(child) = s.leftover.remove(&id) {
-            s.dying.push(Dying {
-                child,
-                deadline: Instant::now(),
-            });
-        }
         reap(&mut s);
         assert!(told, "the exit not told");
         assert!(read_on, "drained by the read at the exit");
@@ -6750,7 +6395,9 @@ mod tests {
     }
 
     #[test]
-    fn keys_for_several_panes_go_to_all_or_none() -> TestResult {
+    /// Keys for a tab's panes go to each that takes them, each on its own
+    /// (D-120 (4)): one refusing fails the whole, saying which took them.
+    fn keys_for_several_panes_go_to_each_that_takes_them() -> TestResult {
         let mut s = started()?;
         run(
             &mut s,
@@ -6759,17 +6406,16 @@ mod tests {
         // Its program has ended, and the pane stays: nothing takes input there.
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
         let sent = run(&mut s, "@1 str x text send-keys");
-        assert!(sent.is_err(), "refused");
-        let first = s.parts.panes().get(&PaneId::of(1)).ok_or("no %1")?;
-        assert_eq!(first.input().len(), 0, "the first pane got none");
+        let sent = sent.err().unwrap_or_default();
+        assert!(sent.starts_with("not_running: ") && sent.ends_with("; already sent to %1"), "{sent}");
+        assert_eq!(queued(&mut s, PaneId::of(1))?, b"x", "the first pane took them");
         Ok(())
     }
 
     #[test]
     fn keys_at_a_version_go_only_while_the_pane_is_at_it() -> TestResult {
         let mut s = started()?;
-        let queued =
-            |s: &mut Session| (s.parts.pane_mut(PaneId::of(1))).map(|mut p| p.drain_input());
+        let queued = |s: &mut Session| queued(s, PaneId::of(1)).ok();
         run(&mut s, "%1 capture expect str x text send-keys")?;
         assert_eq!(queued(&mut s), Some(b"x".to_vec()));
         let seen = s.pane(PaneId::of(1))?.version(s.run);
@@ -6803,21 +6449,16 @@ mod tests {
                 .collect::<String>()
                 .as_bytes(),
         );
-        let history = |s: &Session| {
-            s.parts
-                .panes()
-                .get(&PaneId::of(1))
-                .map(|p| p.screen().history_len())
-        };
-        assert!(history(&s) > Some(2));
+        let history = |s: &mut Session| host(s, PaneId::of(1), |h| h.pane().screen().history_len()).ok();
+        assert!(history(&mut s) > Some(2));
         // Two rows of four cells: 24 bytes a row and 8 a cell.
         run(&mut s, "%1 str horizontal axis 4096 history-bytes split")?;
-        let other = s.pane(PaneId::of(2))?.history_bytes();
+        let other = host(&mut s, PaneId::of(2), |h| h.pane().history_bytes())?;
         run(&mut s, "str history-bytes 0 set")?;
-        assert!(history(&s) > Some(2));
+        assert!(history(&mut s) > Some(2));
         run(&mut s, "%1 112 history-budget")?;
-        assert_eq!(s.pane(PaneId::of(2))?.history_bytes(), other);
-        assert_eq!(history(&s), Some(2));
+        assert_eq!(host(&mut s, PaneId::of(2), |h| h.pane().history_bytes())?, other);
+        assert_eq!(history(&mut s), Some(2));
         Ok(())
     }
 
@@ -6847,8 +6488,8 @@ mod tests {
         );
         s.out(PaneId::of(1), long.as_bytes());
         // Read a slice a turn, as the server does before it reads more.
-        while s.pane(PaneId::of(1))?.has_unread() {
-            s.fire_now(crate::session::Timer::Unread(PaneId::of(1)));
+        while host(&mut s, PaneId::of(1), |h| h.pane().has_unread())? {
+            s.fire_now(Timer::Pane(PaneId::of(1), crate::host::Timer::Unread));
         }
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.error && n.text.contains("copies (OSC 52) not made (1)")));
@@ -7279,9 +6920,9 @@ mod tests {
         let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Workspace(ws)), &origin) else {
             return Err("the workspace's wait answered at once".into());
         };
-        assert!(waiting.answer(&s, Instant::now()).is_none());
+        assert!(waiting.answer(&mut s, Instant::now()).is_none());
         s.out(PaneId::of(2), b"E");
-        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let answer = waiting.answer(&mut s, Instant::now()).ok_or("no answer")?;
         let text = said(&Ok(answer));
         assert!(text.starts_with("%2:") && !text.contains("%1"), "{text}");
         let Begun::Waiting(mut waiting) = s.begin_now(wait(AnyRef::Pane(PaneId::of(1))), &origin)
@@ -7289,7 +6930,7 @@ mod tests {
             return Err("the pane's wait answered at once".into());
         };
         run(&mut s, "str %1 pane kill")?;
-        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        let answer = waiting.answer(&mut s, Instant::now()).ok_or("no answer")?;
         assert_eq!(answer.end().code(), Some(Code::Closed), "{answer:?}");
         Ok(())
     }
@@ -7435,27 +7076,6 @@ mod tests {
         run(&mut s, "%2 kill")?;
         let closed = failed(&mut s, &format!("str {two} changed wait"));
         assert!(closed.starts_with("closed: "), "{closed}");
-        // A frame part read at the limit.
-        let mut frame = b"\x1b[?2026h".to_vec();
-        frame.extend(crate::pane::tests::spends_the_budget(23, 80));
-        frame.extend_from_slice(b"DONE\x1b[?2026l");
-        let since = of(&s, 1)?;
-        s.out(PaneId::of(1), &frame);
-        let wait = Request::Wait(command::Wait {
-            since: command::Since::Version(since),
-            timeout: Some(command::Limit::read(0)?),
-        });
-        let Begun::Waiting(mut waiting) = s.begin_now(wait, &Origin::Cli(Caller::default())) else {
-            return Err("a wait mid-frame answered at once".into());
-        };
-        let due = waiting.due().ok_or("a wait with no time")?;
-        while s.pane(PaneId::of(1))?.mid_frame() {
-            assert!(waiting.answer(&s, due).is_none());
-            s.fire_now(Timer::Unread(PaneId::of(1)));
-        }
-        let answer = waiting.answer(&s, due).ok_or("no answer")?;
-        let text = said(&Ok(answer));
-        assert!(text.ends_with(" screen"), "{text}");
         Ok(())
     }
 
@@ -9137,12 +8757,12 @@ mod journal_tests {
             Instant::now(),
         );
         for _ in 0..32 {
-            if !s.respawning.contains_key(&id) {
+            if s.host_mut(id, |h| h.respawning(), Instant::now()) != Some(true) {
                 break;
             }
-            s.fire(Timer::Unread(id), Instant::now());
+            s.fire(Timer::Pane(id, crate::host::Timer::Unread), Instant::now());
         }
-        assert!(!s.respawning.contains_key(&id));
+        assert_eq!(s.host_mut(id, |h| h.respawning(), Instant::now()), Some(false));
         let b = batch(&s, from)?;
         let actors: Vec<_> = named(&b, "renamed").iter().map(|e| e.origin).collect();
         assert_eq!(

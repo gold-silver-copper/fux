@@ -39,18 +39,6 @@ pub struct Grid {
     /// shows: grids compare equal whatever composed them, and a copy has
     /// none.
     memo: Option<Memo>,
-    /// The pane cells behind bar-off feedback, one bounded row, for a
-    /// synchronized frame held while that feedback comes and goes.
-    under_bar: Option<Box<UnderBar>>,
-}
-
-#[derive(Clone, Debug)]
-struct UnderBar {
-    row: u16,
-    cells: Cells,
-    links: Links,
-    cursor: Option<(u16, u16)>,
-    modes: Modes,
 }
 
 impl Clone for Grid {
@@ -58,7 +46,6 @@ impl Clone for Grid {
         Grid {
             cells: self.cells.clone(),
             links: self.links.clone(),
-            under_bar: self.under_bar.clone(),
             memo: None,
             ..*self
         }
@@ -176,40 +163,48 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         if !shows_pictures(session, id) || view.runs_in == Some(id) {
             continue;
         }
-        for shown in pane.screen().pictures().filter(|s| s.cell == cell) {
-            // The rows of the pane it is on, and the columns.
-            let end = shown
-                .row
-                .saturating_add(i64::from(shown.rows))
-                .min(i64::from(rect.h()));
-            let start = shown.row.saturating_add(i64::from(shown.cropped)).max(0);
-            let right = shown.col.saturating_add(shown.cols).min(rect.w());
-            let (Ok(top), Ok(bottom)) = (u16::try_from(start), u16::try_from(end)) else {
-                continue;
-            };
-            if bottom <= top || right <= shown.col {
-                continue;
-            }
-            let (rows, cols) = (bottom.saturating_sub(top), right.saturating_sub(shown.col));
-            let skipped = u32::try_from(start.saturating_sub(shown.row)).unwrap_or(0);
-            let (width, height) = (u32::from(cell.0), u32::from(cell.1));
-            visible.push(Visible {
-                pane: id,
-                area: (
-                    rect.y().saturating_add(top),
-                    rect.x().saturating_add(shown.col),
-                    rows,
-                    cols,
-                ),
-                crop: (
-                    0,
-                    skipped.saturating_mul(height),
-                    u32::from(cols).saturating_mul(width),
-                    u32::from(rows).saturating_mul(height),
-                ),
-                picture: Arc::clone(shown.picture),
-            });
+        visible.extend(placed(id, rect, pane.screen(), cell));
+    }
+    visible
+}
+
+/// The pictures pane `id`'s `screen` shows laid out in cells of `cell`,
+/// placed at `rect` and clipped to it.
+pub fn placed(id: PaneId, rect: Rect, screen: &Screen, cell: (u16, u16)) -> Vec<Visible> {
+    let mut visible = Vec::new();
+    for shown in screen.pictures().filter(|s| s.cell == cell) {
+        // The rows of the pane it is on, and the columns.
+        let end = shown
+            .row
+            .saturating_add(i64::from(shown.rows))
+            .min(i64::from(rect.h()));
+        let start = shown.row.saturating_add(i64::from(shown.cropped)).max(0);
+        let right = shown.col.saturating_add(shown.cols).min(rect.w());
+        let (Ok(top), Ok(bottom)) = (u16::try_from(start), u16::try_from(end)) else {
+            continue;
+        };
+        if bottom <= top || right <= shown.col {
+            continue;
         }
+        let (rows, cols) = (bottom.saturating_sub(top), right.saturating_sub(shown.col));
+        let skipped = u32::try_from(start.saturating_sub(shown.row)).unwrap_or(0);
+        let (width, height) = (u32::from(cell.0), u32::from(cell.1));
+        visible.push(Visible {
+            pane: id,
+            area: (
+                rect.y().saturating_add(top),
+                rect.x().saturating_add(shown.col),
+                rows,
+                cols,
+            ),
+            crop: (
+                0,
+                skipped.saturating_mul(height),
+                u32::from(cols).saturating_mul(width),
+                u32::from(rows).saturating_mul(height),
+            ),
+            picture: Arc::clone(shown.picture),
+        });
     }
     visible
 }
@@ -803,49 +798,6 @@ impl Grid {
         x
     }
 
-    /// Shows `area` as `shown`, a grid of the same size, shows it
-    /// (`compose_held`).
-    fn keep_area(&mut self, shown: &Grid, area: Rect) {
-        for y in area.rows() {
-            let under = shown.under_bar.as_deref().filter(|u| u.row == y);
-            for x in area.cols() {
-                let cell = under.map_or_else(|| shown.get(y, x), |u| u.cells.get(usize::from(x)));
-                if let Some(i) = self.index(y, x)
-                    && let Some(cell) = cell
-                {
-                    self.cells.set(i, cell);
-                    let link = under.map_or_else(|| shown.link(y, x), |u| u.links.at(0, x));
-                    self.links.set(y, x, link, self.cols);
-                }
-            }
-        }
-    }
-
-    fn pane_cursor(&self) -> (Option<(u16, u16)>, Modes) {
-        self.under_bar
-            .as_deref()
-            .filter(|u| u.cursor.is_some())
-            .map_or((self.cursor, self.modes), |u| (u.cursor, u.modes))
-    }
-
-    fn cover_bar(&mut self, row: u16) -> Result<(), fux_vt::Error> {
-        let mut under = UnderBar {
-            row,
-            cells: Cells::new(usize::from(self.cols))?,
-            links: Links::default(),
-            cursor: self.cursor.filter(|(y, _)| *y == row),
-            modes: self.modes,
-        };
-        for x in 0..self.cols {
-            if let Some(cell) = self.get(row, x) {
-                under.cells.set(usize::from(x), cell);
-            }
-            under.links.set(0, x, self.link(row, x), self.cols);
-        }
-        self.under_bar = Some(Box::new(under));
-        Ok(())
-    }
-
     fn fill(&mut self, area: Rect, style: Attributes) {
         let blank = CellRef::new(" ", false, style);
         for y in area.rows() {
@@ -873,6 +825,44 @@ fn pane_colours(attributes: Attributes, screen: &Screen) -> Attributes {
         .with_background(colour(attributes.background(), screen.dynamic_color(11)))
         .with_underline_color(colour(attributes.underline_color(), None))
         .with_inverse(attributes.inverse() != reverse)
+}
+
+/// The colours a pane's program set (`pane_colours`): DECSCNM, its default
+/// foreground and background (OSC 10, 11) and the palette entries it
+/// changed (OSC 4). The cursor's colour goes with the cursor (`Modes`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Own {
+    reverse: bool,
+    defaults: [Option<Rgb>; 2],
+    palette: Vec<(u8, Rgb)>,
+}
+
+impl Own {
+    /// What `screen`'s program set.
+    pub fn of(screen: &Screen) -> Own {
+        Own {
+            reverse: screen.mode(fux_vt::Mode::ReverseVideo),
+            defaults: [screen.dynamic_color(10), screen.dynamic_color(11)],
+            palette: (0..=u8::MAX)
+                .filter_map(|n| Some((n, screen.palette_color(n)?)))
+                .collect(),
+        }
+    }
+
+    /// Appends what sets them on a screen that has none.
+    pub fn put(&self, out: &mut Vec<u8>) {
+        if self.reverse {
+            out.extend_from_slice(b"\x1b[?5h");
+        }
+        for (number, rgb) in [10u8, 11].into_iter().zip(self.defaults) {
+            if let Some(Rgb { r, g, b }) = rgb {
+                let _ = write!(out, "\x1b]{number};#{r:02x}{g:02x}{b:02x}\x1b\\");
+            }
+        }
+        for (n, Rgb { r, g, b }) in &self.palette {
+            let _ = write!(out, "\x1b]4;{n};#{r:02x}{g:02x}{b:02x}\x1b\\");
+        }
+    }
 }
 
 /// Whether a pane is drawn in colours of its own (`pane_colours`): its
@@ -936,62 +926,20 @@ pub(crate) fn compose(session: &Session, client: ClientId) -> Option<Grid> {
 /// Composes a view's screen as it should look now into `grid`, whatever it
 /// held, laying out its panes in `placement`. The grid's cells and the
 /// placement are reused, not made again; the frame's memo, the bar's text
-/// and the like are made each time.
+/// and the like are made each time. A pane's screen comes a frame at a
+/// time (`host`), so a client is never painted half of one.
 pub fn compose_view(
     session: &Session,
     view: &View,
     grid: &mut Grid,
     placement: &mut Placement,
 ) -> Result<(), fux_vt::Error> {
-    compose_held(session, view, grid, placement, None)
-}
-
-/// What a client was last painted: the grid, and where each pane was on
-/// it. A pane part way through a frame (`Pane::mid_frame`) shows as it was
-/// there.
-#[derive(Clone, Copy)]
-pub struct Painted<'a> {
-    pub grid: &'a Grid,
-    pub panes: &'a [(PaneId, Rect)],
-}
-
-impl Painted<'_> {
-    /// Whether pane `id` was painted at `rect` on a grid of this size.
-    pub fn kept(&self, id: PaneId, rect: Rect, rows: u16, cols: u16) -> bool {
-        (self.grid.rows, self.grid.cols) == (rows, cols) && self.panes.contains(&(id, rect))
-    }
-}
-
-/// [`compose_view`], each pane part way through a frame shown as `painted`
-/// showed it where it is still in the same place, else blank, so a client
-/// is never painted half a frame; the rest of the screen, fux's bar and
-/// panels over it too, as it is, so one pane holds up no other
-/// (fux-vt/THREATS.md 4). Its cursor, if focused, is the one painted
-/// there, if any.
-pub fn compose_held(
-    session: &Session,
-    view: &View,
-    grid: &mut Grid,
-    placement: &mut Placement,
-    painted: Option<Painted<'_>>,
-) -> Result<(), fux_vt::Error> {
     session.placement_into(view, placement);
     let placement = &*placement;
     let tab = session.shown_tab(view.id);
     let focus = tab.and_then(|t| t.focus(view.id));
     put_panes(grid, session, view, placement, focus)?;
-    grid.under_bar = None;
     grid.cell_placement = view.presentation.cell_placement;
-    let held =
-        |id: &PaneId| (session.parts.panes().get(id)).is_some_and(crate::pane::Pane::mid_frame);
-    let kept = |id: PaneId, rect: Rect| painted.filter(|p| p.kept(id, rect, view.rows, view.cols));
-    for &(id, rect) in placement.panes.iter().filter(|(id, _)| held(id)) {
-        match kept(id, rect) {
-            Some(painted) => grid.keep_area(painted.grid, rect),
-            None => grid.blank(rect),
-        }
-        grid.memo = None;
-    }
     // The cursor and the mouse are no pane's while the client's own has
     // the focus (`View::runs_in`).
     let focus = focus.filter(|focus| view.runs_in != Some(*focus));
@@ -1014,21 +962,6 @@ pub fn compose_held(
             grid.modes.cursor_shape = screen.cursor_shape();
             grid.modes.cursor_colour = screen.dynamic_color(12);
         }
-        // Only where a pane's own cursor shows: in normal mode (none under
-        // an overlay).
-        if held(&focus) && view.mode.is_normal() {
-            let (cursor, modes) =
-                kept(focus, rect).map_or((None, Modes::default()), |p| p.grid.pane_cursor());
-            let at = cursor.filter(|&(y, x)| rect.contains(y, x));
-            grid.cursor = at;
-            let modes = if at.is_some() {
-                modes
-            } else {
-                Modes::default()
-            };
-            grid.modes.cursor_shape = modes.cursor_shape;
-            grid.modes.cursor_colour = modes.cursor_colour;
-        }
     }
     // The mouse: reported by the client's terminal only while the focused
     // pane's program asked for it, still takes input, and nothing of fux's
@@ -1040,7 +973,7 @@ pub fn compose_held(
         && let Some(focus) = focus
         && placement.rect(focus).is_some()
         && let Some(pane) = session.parts.panes().get(&focus)
-        && crate::session::refuses_input(pane).is_none()
+        && pane.refuses_input().is_none()
     {
         grid.modes.mouse = mouse_level(pane.screen().mouse_protocol_mode());
     }
@@ -1141,6 +1074,34 @@ fn put_panes(
     }
     separators(grid, placement, focus, view.presentation.styles);
     grid.memo = frame.map(|frame| Memo { frame, keys });
+    Ok(())
+}
+
+/// Pane `pane`'s screen alone on `grid`, at its size, with its cursor,
+/// cursor shape and colour and mouse tracking as its program set them:
+/// what its process sends the server, which paints it onto the server's
+/// copy (`host`, `copy`), the colours its program set with it (`Own`).
+pub fn pane_grid(pane: PaneId, screen: &Screen, grid: &mut Grid) -> Result<(), fux_vt::Error> {
+    let size = screen.size();
+    let (rows, cols) = (size.rows(), size.cols());
+    grid.reset(rows, cols, true)?;
+    grid.underline_styles = true;
+    let window = screen.window();
+    for (y, line) in (0..rows).zip(Rect::screen(rows, cols).lines()) {
+        draw_row(grid, pane, window.row(y), (line, window.cols()), None);
+    }
+    let (y, x) = screen.cursor_position();
+    // On a row drawn twice as wide, at its glyph's first half.
+    let x = match screen.line_rendition(y).is_double() {
+        true => x.saturating_mul(2),
+        false => x,
+    };
+    if screen.mode(fux_vt::Mode::ShowCursor) && y < rows && x < cols {
+        grid.cursor = Some((y, x));
+        grid.modes.cursor_shape = screen.cursor_shape();
+        grid.modes.cursor_colour = screen.dynamic_color(12);
+    }
+    grid.modes.mouse = mouse_level(screen.mouse_protocol_mode());
     Ok(())
 }
 
@@ -1541,9 +1502,8 @@ fn bar(
             let Some(cover) = off_cover(view, &unseen, start) else {
                 return Ok(());
             };
-            // Restore the covered pane cells on the next compose, including
-            // unchanged rows, and never expose a pane's cursor through it.
-            grid.cover_bar(y)?;
+            // The covered pane cells are composed again next time, unchanged
+            // rows too, and a pane's cursor never shows through it.
             grid.memo = None;
             grid.cursor = (grid.cursor).filter(|(y, x)| !cover.contains(*y, *x));
             cover
@@ -2476,129 +2436,6 @@ mod tests {
         Ok(())
     }
 
-    /// While a pane is part way through a frame, its cursor is the one the
-    /// client was last painted there, if any: focus moved away from it
-    /// takes the cursor to the pane focused, and focus moved onto it shows
-    /// none there till the frame is whole.
-    #[test]
-    fn a_held_pane_keeps_only_its_own_cursor() -> Result<(), String> {
-        let (mut s, c) = crate::session::testing::attached(10, 40)?;
-        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
-        s.out(PaneId::of(1), &frame_past_a_budget());
-        assert!(
-            s.parts
-                .panes()
-                .get(&PaneId::of(1))
-                .is_some_and(crate::pane::Pane::mid_frame)
-        );
-        let (held, other) = (place(&s, c, 1)?, place(&s, c, 2)?);
-        let panes = [(PaneId::of(1), held), (PaneId::of(2), other)];
-        let compose = |s: &Session, painted: &Grid| {
-            let mut grid = Grid::default();
-            let painted = Some(Painted {
-                grid: painted,
-                panes: &panes,
-            });
-            if let Some(view) = s.views.get(&c) {
-                let result = compose_held(s, view, &mut grid, &mut Placement::default(), painted);
-                assert!(result.is_ok(), "{result:?}");
-            }
-            grid
-        };
-        // Focus on %2, the cursor last painted in %1: %2's own.
-        let mut painted = compose(&s, &Grid::default());
-        painted.cursor = Some((held.y(), held.x()));
-        painted.modes.cursor_colour = Some([0, 255, 0].into());
-        let fresh = compose(&s, &painted);
-        assert!(
-            fresh.cursor.is_some_and(|(y, x)| other.contains(y, x)),
-            "{:?}",
-            fresh.cursor
-        );
-        assert_eq!(fresh.modes.cursor_colour, None);
-        // Focus on %1, the cursor last painted in %2: none.
-        crate::session::testing::run(&mut s, "str c1 client dup focused str next step")?;
-        painted.cursor = Some((other.y(), other.x()));
-        assert_eq!(compose(&s, &painted).cursor, None);
-        assert_eq!(compose(&s, &painted).modes.cursor_colour, None);
-        // And its own, as painted.
-        painted.cursor = Some((held.y(), held.x().saturating_add(1)));
-        assert_eq!(compose(&s, &painted).cursor, painted.cursor);
-        assert_eq!(
-            compose(&s, &painted).modes.cursor_colour,
-            painted.modes.cursor_colour
-        );
-        // But none under fux's own panel, as for any pane.
-        s.input(c, b"\x02x");
-        assert_eq!(compose(&s, &painted).cursor, None, "under a confirmation");
-        Ok(())
-    }
-
-    /// A frame whose reading spends more than a parser call's budget.
-    fn frame_past_a_budget() -> Vec<u8> {
-        let mut frame = b"\x1b[?2026h".to_vec();
-        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
-        frame.extend_from_slice(b"\x1b[?2026l");
-        frame
-    }
-
-    /// Where client `c` shows pane `%id`.
-    fn place(s: &Session, c: ClientId, id: u32) -> Result<Rect, String> {
-        let mut placement = Placement::default();
-        if let Some(view) = s.views.get(&c) {
-            s.placement_into(view, &mut placement);
-        }
-        placement
-            .rect(PaneId::of(id))
-            .ok_or_else(|| format!("%{id}'s place"))
-    }
-
-    /// A pane part way through a frame that the client was never painted
-    /// where it is (a client attached mid-frame, a layout changed) shows
-    /// blank, never half the frame; fux's own panels show over it.
-    #[test]
-    fn a_held_pane_not_painted_before_is_blank_under_fux_s_panels() -> Result<(), String> {
-        let (mut s, c) = crate::session::testing::attached(10, 40)?;
-        s.out(PaneId::of(1), &frame_past_a_budget());
-        assert!(
-            s.parts
-                .panes()
-                .get(&PaneId::of(1))
-                .is_some_and(crate::pane::Pane::mid_frame)
-        );
-        let compose = |s: &Session, painted: Option<Painted<'_>>| {
-            let mut grid = Grid::default();
-            if let Some(view) = s.views.get(&c) {
-                let result = compose_held(s, view, &mut grid, &mut Placement::default(), painted);
-                assert!(result.is_ok(), "{result:?}");
-            }
-            (0..grid.rows).map(|y| grid.row_text(y)).collect::<Vec<_>>()
-        };
-        let rows = compose(&s, None);
-        assert!(rows.iter().all(|r| !r.contains('X')), "{rows:#?}");
-        // A confirmation over it, painted as it was before (all X): shown.
-        let mut before = new_grid(10, 40);
-        let xs: String = std::iter::repeat_n('X', 40).collect();
-        for y in 0..9 {
-            before.text(y, 0, &xs, Attributes::default(), 40);
-        }
-        s.input(c, b"\x02x");
-        let panes = [(PaneId::of(1), place(&s, c, 1)?)];
-        let rows = compose(
-            &s,
-            Some(Painted {
-                grid: &before,
-                panes: &panes,
-            }),
-        );
-        assert!(rows.iter().any(|r| r.contains("close")), "{rows:#?}");
-        assert!(
-            rows.iter().any(|r| r.contains("XXXX")),
-            "the pane as painted: {rows:#?}"
-        );
-        Ok(())
-    }
-
     /// At the widest a terminal can be, the last column is u16::MAX - 1:
     /// one past it must stop a wide glyph, not overflow (in release, wrap).
     #[test]
@@ -2967,64 +2804,6 @@ mod tests {
     }
 
     #[test]
-    fn bar_feedback_preserves_the_row_behind_a_held_frame() -> Result<(), String> {
-        use crate::session::testing::attached;
-        let (mut session, client) = attached(4, 40)?;
-        session.out(
-            PaneId::of(1),
-            b"\x1b[4;1H\x1b]8;;https://example.test/\x1b\\old pane row\x1b]8;;\x1b\\",
-        );
-        session.out(PaneId::of(1), b"\x1b[5 q\x1b]12;#123456\x07");
-        let before = compose(&session, client).ok_or("before")?;
-        assert!(before.cursor.is_some_and(|(row, _)| row == 3));
-        let view = session.views.get(&client).ok_or("view")?;
-        let panes = session.placement(view).panes;
-        let mut frame = b"\x1b[?2026h\x1b[2 q\x1b]12;#ffffff\x07".to_vec();
-        frame.extend(frame_past_a_budget());
-        session.out(PaneId::of(1), &frame);
-        assert!(
-            session
-                .parts
-                .panes()
-                .get(&PaneId::of(1))
-                .is_some_and(crate::pane::Pane::mid_frame)
-        );
-        let held = |session: &Session, shown: &Grid| -> Result<Grid, String> {
-            let mut grid = Grid::default();
-            compose_held(
-                session,
-                session.views.get(&client).ok_or("view")?,
-                &mut grid,
-                &mut Placement::default(),
-                Some(Painted {
-                    grid: shown,
-                    panes: &panes,
-                }),
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(grid)
-        };
-        session.notify_to(client, "feedback", true);
-        let covered = held(&session, &before)?;
-        assert!(covered.row_text(3).contains("feedback"));
-        assert_eq!(covered.cursor, before.cursor, "outside the notice");
-        if let Some(view) = session.views.get_mut(&client) {
-            view.notice = None;
-        }
-        let restored = held(&session, &covered)?;
-        assert!(restored.row_text(3).contains("old pane row"));
-        assert!(!restored.row_text(3).contains('X'));
-        assert_eq!(restored.cursor, before.cursor);
-        assert_eq!(restored.modes.cursor_shape, before.modes.cursor_shape);
-        assert_eq!(restored.modes.cursor_colour, before.modes.cursor_colour);
-        assert_eq!(
-            restored.link(3, 0).map(|(_, link)| link.uri()),
-            Some("https://example.test/")
-        );
-        Ok(())
-    }
-
-    #[test]
     fn pictures_are_clipped_only_where_bar_feedback_covers_them() -> Result<(), String> {
         let (mut session, client) = crate::session::testing::attached(4, 40)?;
         session.notify_to(client, "refused", true);
@@ -3352,10 +3131,16 @@ mod tests {
         // set none, with no terminal's to give, answers nothing.
         s.out(PaneId::of(1), b"\x1b]4;1;#00ff00\x07");
         for (id, answer) in [(1, "\x1b]4;1;rgb:0000/ffff/0000\x07"), (2, "")] {
-            let mut pane = s.parts.pane_mut(PaneId::of(id)).ok_or("a pane")?;
-            pane.drain_input();
-            pane.output(b"\x1b]4;1;?\x07", Instant::now());
-            let asked = pane.drain_input();
+            let asked = s.host_mut(
+                PaneId::of(id),
+                |h| {
+                    h.pane_mut().drain_input();
+                    h.output(b"\x1b]4;1;?\x07", Instant::now());
+                    h.pane_mut().drain_input()
+                },
+                Instant::now(),
+            );
+            let asked = asked.ok_or("a pane")?;
             assert_eq!(String::from_utf8_lossy(&asked), answer, "pane {id}");
         }
         Ok(())

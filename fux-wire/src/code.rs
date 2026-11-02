@@ -209,6 +209,9 @@ codes! {
     Mouse "mouse" [asked],
     /// A signal that could not be sent.
     Signal "signal" [asked],
+    /// A pane's own process ended before it said whether it did what it
+    /// was asked: it may have.
+    Indeterminate "indeterminate" [asked],
     /// A client with a terminal, which sets its own size.
     NotHeadless "not_headless" [asked],
     /// `kill-server` from one of the server's own panes.
