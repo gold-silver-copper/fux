@@ -8,12 +8,14 @@ own keys. Every other `fux` command line is a short fuxth program, and so
 are fux's config, key bindings, command prompt and saved sessions.
 
 fux is made for agents first, and the same words serve people. A program
-driving fux reads every fact as a record, learns every change from a
-journal of events, and acts only on the screen it saw. fux reports facts
-(a version moved, a program exited with 7, a text is on the screen) and
-never judges whether a program is ready, idle or done. What the OS
-already does, the OS does: `env`, `timeout`, `kill`, `ps`, your
-terminal's clipboard and your editor.
+driving fux reads every fact as a record; learns every multiplexer and
+program-lifecycle change from a journal of events, and every screen
+change from versions and captures; gets live process facts from the OS;
+and acts only on the screen it saw. fux reports facts (a version moved,
+a program exited with 7, a text is on the screen) and never judges
+whether a program is ready, idle or done. What the OS already does, the
+OS does: `env`, `timeout`, `kill`, `ps`, your terminal's clipboard and
+your editor.
 
 fux is one binary for macOS and Linux, built with Rust 1.95 or later:
 `cargo install --locked fux`, or in a clone `cargo install --locked --path
@@ -65,8 +67,9 @@ starts a server. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until its last pane closes, until `fux kill-server`
 (refused from its own panes and while a person's terminal is attached), or
-until SIGTERM, SIGINT or SIGHUP: `kill "$(fux status str server_pid get)"`. It then hangs
-up every pane, tells each attached terminal why, and removes its socket.
+until SIGTERM, SIGINT or SIGHUP, which `kill` sends ([Security](#security)
+shows how on Linux and macOS). It then hangs up every pane, tells each
+attached terminal why, and removes its socket.
 Nothing is saved on its own ([Saved sessions](#saved-sessions)).
 
 ## Keys
@@ -238,15 +241,17 @@ The **journal** is the server's numbered events: panes, tabs and
 workspaces created, renamed, moved, closed, zoomed and laid out; programs
 that hung up, failed to read, exited or respawned; shell commands started
 and done; the input and signals requests sent; bells, titles and
-notifications; clients attached, shown and detached. `SCOPE str CURSOR events` prints them as they come, one JSON
-object a line, each with its `seq` and the `next` cursor, until the scope
-is gone or the server stops; an empty cursor starts now. Take the cursor
-from `ls` or from a capture, and you miss nothing between reading and
-following. A hook is an ordinary program reading this stream, and a log
-is your redirect (`>> FILE`). The journal keeps the last 16,384 events,
-a size the `journal-entries` setting gives a server as it starts;
-reading past what it still holds fails `missed`. `fux help json` lists
-every record and event ([docs/json.md](docs/json.md)).
+notifications; clients attached, shown and detached. A change only to a
+screen is no event: it shows as a new version and in captures. `SCOPE str
+CURSOR events` prints them as they come, one JSON object a line, each with
+its `seq` and the `next` cursor, until the scope is gone or the server
+stops; an empty cursor starts now. Take the cursor from `ls` or from a
+capture, and you miss nothing between reading and following. A hook is an
+ordinary program reading this stream, and a log is your redirect (`>>
+FILE`). The journal keeps the last 16,384 events, a size the
+`journal-entries` setting gives a server as it starts; reading past what
+it still holds fails `missed`. `fux help json` lists every record and
+event ([docs/json.md](docs/json.md)).
 
 ## Configuration
 
@@ -358,7 +363,7 @@ unanswered question stays unknown.
 | a time limit | `timeout(1)`, on a fux command or as a pane's program |
 | a file into a pane | `fux %2 input paste send-keys < FILE` |
 | what a pane runs, and where | `ps`, `/proc` and `pgrep` on its program's `foreground_group` (`fux help agents`) |
-| stopping a server, whatever it holds | `kill` on `status`'s `server_pid` (macOS: `lsof -t SOCKET`) |
+| stopping a server, whatever it holds | `kill` on its process ([Security](#security)) |
 | a log of a pane | `script(1)` as its program, so it still writes to a terminal (`fux help servers`) |
 | hooks | an ordinary program reading `events` |
 | scrollback, search and copy | your editor, on `C-b c` |
@@ -387,6 +392,14 @@ the socket's permissions are the access control. fux has no confinement:
 any client may act anywhere on its server. To keep an agent to panes of
 its own, give it a server of its own (`fux help agents`); both still run
 as you, so neither is kept from your own processes and files.
+
+`kill` on a server's process stops it, whatever it holds, even from its own
+panes. `status` gives its `server_pid` where the system says it (Linux);
+on macOS, `lsof -t` names it from the socket:
+
+```sh
+kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
+```
 
 ## Development
 

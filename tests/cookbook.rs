@@ -3,10 +3,11 @@
 //! order, each by a shell with `set -e -o pipefail` in one directory, on
 //! a private server, so every command's status counts; its `fux` blocks,
 //! which are configs, as a typing terminal runs one. Each must succeed: a
-//! recipe says the failures it expects (`|| [ $? -eq 124 ]`). The agent
-//! page (`fux help agents`) and the README run the same way, each on a
-//! server of its own, by a shell with `set -e` as an ordinary shell runs
-//! them. What they print is never compared.
+//! recipe says the failures it expects (`|| [ $? -eq 124 ]`). The README
+//! runs the same way, on a server of its own. The agent page (`fux help
+//! agents`) runs as an agent types it, in one shell with no server: it
+//! starts its own, and stops it. None has `XDG_RUNTIME_DIR`, and each has
+//! its `TMPDIR` in its directory. What they print is never compared.
 mod support;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -98,13 +99,13 @@ impl Drop for Started {
     }
 }
 
-/// Runs `script` by `sh` with `set` (`-e`, …) in `dir`, as a shell on
-/// `server` with this build's fux first on the PATH, in a process group
-/// of its own, which is killed once it ends or hangs, whatever it left
-/// running: its exit status and what it said.
+/// Runs `script` by `sh` with `-e -o pipefail` in `dir`, as a shell on
+/// `server` (or on none, when `cold`) with this build's fux first on the
+/// PATH, in a process group of its own, which is killed once it ends or
+/// hangs, whatever it left running: its exit status and what it said.
 fn run(
     sh: &str,
-    set: &[&str],
+    cold: bool,
     server: &Server,
     dir: &Path,
     i: usize,
@@ -115,13 +116,18 @@ fn run(
     let path = std::iter::once(bin.to_owned()).chain(std::env::split_paths(&path));
     let said = dir.join(format!(".recipe-{i}.out"));
     let file = std::fs::File::create(&said).map_err(e)?;
-    let mut child = Command::new(sh)
-        .args(set)
-        .args(["-c", script])
+    let mut command = Command::new(sh);
+    match cold {
+        true => command.env_remove("FUX_SOCKET"),
+        false => command.env("FUX_SOCKET", &server.socket),
+    };
+    let mut child = command
+        .args(["-e", "-o", "pipefail", "-c", script])
         .current_dir(dir)
         .process_group(0)
         .env("PATH", std::env::join_paths(path).map_err(e)?)
-        .env("FUX_SOCKET", &server.socket)
+        .env("TMPDIR", dir)
+        .env_remove("XDG_RUNTIME_DIR")
         .env("SHELL", "/bin/sh")
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
         .env_remove("FUX_PANE")
@@ -153,7 +159,7 @@ fn run(
 fn every_recipe_in_the_cookbook_runs() -> Outcome {
     let blocks = blocks(COOKBOOK)?;
     assert!(blocks.len() >= 10, "{} blocks", blocks.len());
-    for skipped in runs(blocks, &["-e", "-o", "pipefail"])? {
+    for skipped in runs(blocks, false)? {
         eprintln!("{skipped}");
     }
     Ok(())
@@ -161,7 +167,14 @@ fn every_recipe_in_the_cookbook_runs() -> Outcome {
 
 #[test]
 fn every_command_on_the_agent_page_runs() -> Outcome {
-    for skipped in runs(blocks(agent_page())?, &["-e"])? {
+    let mut script = String::new();
+    for (heading, lang, block) in blocks(agent_page())? {
+        match lang {
+            "sh" => script.push_str(&block),
+            _ => return Err(format!("{heading}: a {lang:?} block on the page")),
+        }
+    }
+    for skipped in runs(vec![("the agent page", "sh", script)], true)? {
         eprintln!("{skipped}");
     }
     Ok(())
@@ -169,18 +182,16 @@ fn every_command_on_the_agent_page_runs() -> Outcome {
 
 #[test]
 fn every_command_in_the_readme_runs() -> Outcome {
-    for skipped in runs(blocks(README)?, &["-e"])? {
+    for skipped in runs(blocks(README)?, false)? {
         eprintln!("{skipped}");
     }
     Ok(())
 }
 
-/// Runs `blocks` in order on a private server: each `sh` one by a shell
-/// with `set`, each `fux` one as a config. What it skipped, saying why.
-fn runs(
-    blocks: Vec<(&'static str, &'static str, String)>,
-    set: &[&str],
-) -> Result<Vec<String>, String> {
+/// Runs `blocks` in order on a private server, or on none when `cold`:
+/// each `sh` one by a shell, each `fux` one as a config. What it skipped,
+/// saying why.
+fn runs(blocks: Vec<(&str, &str, String)>, cold: bool) -> Result<Vec<String>, String> {
     let server = Server::start("")?;
     let dir = server.dir.join("recipes");
     std::fs::create_dir_all(&dir).map_err(e)?;
@@ -201,7 +212,7 @@ fn runs(
                     ));
                     continue;
                 }
-                let (status, said) = run(sh, set, &server, &dir, i, &block)?;
+                let (status, said) = run(sh, cold, &server, &dir, i, &block)?;
                 assert_eq!(status, 0, "{heading}:\n{block}\n{said}");
             }
             "fux" => {

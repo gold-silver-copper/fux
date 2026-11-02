@@ -7,10 +7,11 @@ WORD` says one word, `fux help json` every field.
 
 **A server of your own.** Every `fux` command talks to the server
 `FUX_SOCKET` names; a fux pane sets it to its own server's. Beside a
-person, use your own (`export FUX_SOCKET="$XDG_RUNTIME_DIR/fux/a.sock"`),
-so your panes and theirs stay apart, and start it if none answers:
+person, use your own, so your panes and theirs stay apart: a socket in a
+directory only you may open (export it in each later shell), started:
 
 ```sh
+export FUX_SOCKET="$(mktemp -d)/fux.sock"
 fux status > /dev/null 2>&1 || fux start
 ```
 
@@ -35,18 +36,20 @@ line typed shows `$((6*7))`, never `42`), `quiet` for N seconds of no
 change (a fact of the screen, not proof of an end), `until-ended` for
 the program's exit; each leaves what it saw. Their seconds bound each
 change, not the whole: `timeout 600 fux …` bounds a command (exit 124).
+Keys: `str C-c key send-keys` (`fux key-names` names them). To act only on
+the screen you read, give its version: `expect` sends nothing and fails
+`stale` if the pane changed since. A file's text goes as one paste.
 
 ```sh
 fux str sh1 pane str 'sleep 1; echo "built: $((6*7))"' line
 fux str sh1 pane str 'built: 42' 60 shows
 fux str sh1 pane 2 quiet
-fux opts str agent in 80 24 size str sh program str -c arg str 'exit 3' arg new-tab 60 until-ended str program get str exited get
+fux opts str jobs in 80 24 size str sh program str -c arg str 'exit 3' arg new-tab 60 until-ended str program get str exited get
+V=$(fux str sh1 pane capture version)
+fux str "$V" expect str 'echo yes' line
+printf 'echo pasted\n' > lines.txt
+fux str sh1 pane input paste send-keys < lines.txt
 ```
-
-Keys: `str C-c key send-keys` (`fux key-names` lists them); a file's text
-as one paste: `fux str sh1 pane input paste send-keys < FILE`. To act only
-on the screen you read, give its version: `fux str "$V" expect str y text
-send-keys` sends nothing and fails `stale` if the pane changed since.
 
 **Read it in one observation.** `capture` gives the screen as text,
 `100 history capture` with history, `last-output capture` the last shell
@@ -54,21 +57,18 @@ command's output (`fux help shells`). `capture json` is the pane's whole
 observation at one version: `lines`, `version`, `cursor`, `program` (`pid`,
 `state`, `exited`, `signal`, `foreground_group`), `last_status` and more.
 
-```sh
-fux str sh1 pane capture json | jq -c '{version, program, last_status}'
-```
-
 **Follow what changes.** A capture's `cursor` is the journal's place at
 that screen. `events` from it prints each later event of the pane (or of
 `all`), one JSON object a line with its `next`, until the scope is gone;
-`head`, `jq` or `timeout` ends it, `>> FILE` keeps it. An entry lost
-before it was read fails it (`missed`): capture again. A screen's change
-is no event: it shows as a new version.
+`head` (141 then), `jq` or `timeout` ends it, `>> FILE` keeps it. An entry
+lost before it was read fails it (`missed`): capture again. A screen's
+change is no event: it shows as a new version.
 
 ```sh
+fux str sh1 pane capture json | jq -c '{version, program, last_status}'
 C=$(fux str sh1 pane capture str cursor get)
 fux str sh1 pane str 'echo after' line
-fux str sh1 pane str "$C" events | head -n 1
+fux str sh1 pane str "$C" events | head -n 1 || [ $? -eq 141 ]
 ```
 
 **Leave the OS's work to the OS.** fux has no words for these:
@@ -78,21 +78,22 @@ fux str sh1 pane str "$C" events | head -n 1
 | a program's environment | `env(1)`: `str env program str PORT=8080 arg str ./app arg new-tab` |
 | a time limit | `timeout(1)`, on fux or in a pane: `str timeout program str 60 arg …` |
 | a file's text | `< FILE`, read by `input` |
-| what a pane runs, and where | its `program`'s `foreground_group` G: `ps -o comm=,args= -p G`, `readlink /proc/G/cwd`, `pgrep -a -g G` |
-| a server's stop | `kill "$(fux status str server_pid get)"`; macOS: `lsof -t "$FUX_SOCKET"` |
+| what a pane runs, and where | its `program`'s `foreground_group` G: `ps -o comm=,args= -p G`; Linux `readlink /proc/G/cwd`, `pgrep -a -g G`; macOS `lsof -a -p G -d cwd -Fn`, `pgrep -lf -g G` |
 | a log of what a program wrote | `script(1)` in its pane (`fux help servers`) |
 
-**Stop.** `fux str agent workspace kill` closes your workspace and all in
-it (a server stops with its last pane); kill your `events` readers by PID.
+**Stop.** Close your workspace and all in it; kill your `events` readers
+by PID. A server stops with its last pane, or with `kill` on its process,
+which macOS leaves out of `status`, where `lsof -t` names it:
 
-| fux exits | when |
-| --- | --- |
-| 0 | done, or what `N exit` gave |
-| 1 | refused: any other failure, `fux: CODE: MESSAGE` on stderr |
-| 2 | a mistake in the program: `usage`, `unknown_word`, `type`, … |
-| 4 | `closed`: the pane waited on closed |
-| 124 | `timeout`: unchanged, or the shell's `timeout` |
-| 141 | stdout's reader went (`\| head -n 1`), as for `cat`; nothing said |
+```sh
+fux str agent workspace kill
+kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
+```
+
+fux exits 0 when done (or with what `N exit` gave); 1 when refused, saying
+`fux: CODE: MESSAGE` on stderr; 2 for a mistake in the program (`usage`,
+`unknown_word`, `type` …); 4 if the pane waited on closed; 124 on
+`timeout`; 141, saying nothing, when stdout's reader went, as `cat` does.
 
 More: `fux help TOPIC` for `recipes`, `typing`, `read`, `shells`,
 `programs` and `servers`; `fux help guide` all of them; `fux help cookbook`.
