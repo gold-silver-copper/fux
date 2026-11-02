@@ -8173,6 +8173,74 @@ mod tests {
         Ok(())
     }
 
+    /// A capture's cursor is the journal's as its pane's answer is taken,
+    /// before what the pane told after it, though both came at once: from
+    /// it, what the capture did not see is read (D-120 (3)).
+    #[test]
+    fn a_captures_cursor_is_the_journals_as_its_answer_is_taken() -> TestResult {
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let view = command::CaptureView::default();
+        let tab = s.locate(id).map(|(_, tab)| tab).ok_or("its tab")?;
+        let now = Instant::now();
+        let what = Ask::Capture {
+            history: None,
+            view,
+            tab,
+            hold: false,
+        };
+        let ask = s.ask_pane(id, what, now)?;
+        // Told after its answer, read with it.
+        let actor = fux_wire::events::Actor::Program(id, 0);
+        let counts = s.pane(id)?.counts();
+        s.heard(
+            id,
+            FromPane::Told {
+                told: crate::journal::Told::Bell,
+                actor,
+                counts,
+                facts: None,
+            },
+        );
+        s.pump(now);
+        let Some(Answered::Captured(captured)) = s.answer_to(ask) else {
+            return Err("no capture".into());
+        };
+        let fux_wire::answer::Of::Pane { read, .. } = &captured.of else {
+            return Err("a client's capture".into());
+        };
+        let cursor = read
+            .iter()
+            .find(|(key, _)| key == "cursor")
+            .map(|(_, v)| v.render());
+        let cursor = cursor.ok_or("its cursor")?;
+        let after = output(&mut s, &format!("all str {cursor} 0 next-events"))?;
+        assert!(after.contains(r#""event":"bell""#), "{after}");
+        Ok(())
+    }
+
+    /// Questions whose asker is gone are waited for no more: an answer
+    /// that comes after is let go, not kept (D-123).
+    #[test]
+    fn questions_whose_asker_went_are_let_go() -> TestResult {
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let tab = s.locate(id).map(|(_, tab)| tab).ok_or("its tab")?;
+        let now = Instant::now();
+        let what = Ask::Capture {
+            history: None,
+            view: command::CaptureView::default(),
+            tab,
+            hold: false,
+        };
+        let ask = s.ask_pane(id, what, now)?;
+        s.abandon(&[(id, ask)], &[], now);
+        s.pump(now);
+        assert!(s.answered_yet(ask), "still waited for");
+        assert!(s.answer_to(ask).is_none(), "its answer kept");
+        Ok(())
+    }
+
     #[test]
     fn a_captures_cursor_is_the_screens() -> TestResult {
         let (mut s, _) = attached(10, 40)?;

@@ -132,10 +132,34 @@ impl Copy {
         copy.name = recorded.name.clone();
         copy.respawns = recorded.respawns;
         copy.counts.respawns = recorded.respawns;
+        copy.read_error.clone_from(&recorded.read_error);
+        let (mut state, mut exited, mut signal) = ("running", Json::Null, Json::Null);
         if let Some((counts, ended)) = recorded.ended {
             copy.counts = counts;
             copy.state = State::Exited(ended);
+            state = "ended";
+            match ended {
+                Ended::Exited(code) => exited = Json::int(code),
+                Ended::Signalled(number) => signal = Json::int(number),
+                Ended::Lost => {}
+            }
         }
+        // Its program's facts as the record keeps them: its process, and
+        // what that process knew, gone with its pane's.
+        let argv = copy.runs.launch().argv.iter().map(Json::str).collect();
+        let read_error = recorded.read_error.as_deref().map_or(Json::Null, Json::str);
+        copy.facts.program = Json::object(vec![
+            ("pane", Json::str(recorded.id.to_string())),
+            ("generation", Json::uint(recorded.respawns)),
+            ("argv", Json::Array(argv)),
+            ("pid", Json::Null),
+            ("state", Json::str(state)),
+            ("exited", exited),
+            ("signal", signal),
+            ("read_error", read_error),
+            ("input_unread", Json::count(0)),
+            ("foreground_group", Json::Null),
+        ]);
         copy
     }
 
@@ -152,6 +176,7 @@ impl Copy {
             size: self.size(),
             respawns: self.respawns,
             ended: self.exit_status().map(|ended| (self.counts, ended)),
+            read_error: self.read_error.clone(),
         }
     }
 

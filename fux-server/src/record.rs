@@ -62,10 +62,12 @@ pub struct Pane {
     pub options: fux_wire::command::PaneOptions,
     pub size: fux_vt::Size,
     pub respawns: u64,
-    /// How its program ended, if it has, and the counts it ended at.
+    /// How its program ended, if it has, and the counts it ended at; and
+    /// how reading its terminal failed, if it did.
     pub ended: Option<(fux_wire::command::Counts, fux_wire::answer::Ended)>,
+    pub read_error: Option<String>,
 }
-wired!(struct Pane { id, name, shell, argv, cwd, options, size, respawns, ended });
+wired!(struct Pane { id, name, shell, argv, cwd, options, size, respawns, ended, read_error });
 
 impl Tab {
     /// Whether it keeps its size, whatever shows it.

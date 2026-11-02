@@ -48,15 +48,29 @@ fn run(server: &Server, pane: &str) -> Result<String, String> {
     Ok(version.rsplit(':').next().unwrap_or_default().to_owned())
 }
 
-/// What a process's `/proc` stat says of it: its parent.
+/// Every process's pid, its parent's and its words, as `ps` says.
+fn processes() -> Vec<(i32, i32, String)> {
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,args="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    (String::from_utf8_lossy(&out.stdout).lines())
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let pid = words.next()?.parse().ok()?;
+            let parent = words.next()?.parse().ok()?;
+            Some((pid, parent, words.collect::<Vec<_>>().join(" ")))
+        })
+        .collect()
+}
+
+/// A process's parent, as `ps` says.
 fn parent(pid: i32) -> Result<i32, String> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(e)?;
-    let parent = stat
-        .rsplit(')')
-        .next()
-        .and_then(|r| r.split_whitespace().nth(1));
-    parent
-        .and_then(|p| p.parse().ok())
+    (processes().into_iter())
+        .find(|(p, ..)| *p == pid)
+        .map(|(_, parent, _)| parent)
         .ok_or_else(|| format!("{pid}'s parent"))
 }
 
@@ -75,19 +89,27 @@ fn own_process(server: &Server, pane: &str) -> Result<i32, String> {
     parent(program_pid(server, pane)?)
 }
 
-/// The processes whose parent is `pid` and whose argv holds `word`.
+/// The processes whose parent is `pid` and whose words hold `word`.
 fn children(pid: i32, word: &str) -> Vec<i32> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    (entries.flatten())
-        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
-        .filter(|child| parent(*child).ok() == Some(pid))
-        .filter(|child| {
-            std::fs::read(format!("/proc/{child}/cmdline"))
-                .is_ok_and(|argv| argv.split(|b| *b == 0).any(|arg| arg == word.as_bytes()))
-        })
+    (processes().into_iter())
+        .filter(|(_, parent, args)| *parent == pid && args.split(' ').any(|w| w == word))
+        .map(|(child, ..)| child)
         .collect()
+}
+
+/// The server's process.
+fn server_pid(server: &Server) -> Result<i32, String> {
+    i32::try_from(server.pid().ok_or("the server's pid")?).map_err(e)
+}
+
+/// The most memory a process held at once, in KiB (Linux's `VmHWM`).
+#[cfg(target_os = "linux")]
+fn peak_kib(pid: i32) -> Result<u64, String> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(e)?;
+    (status.lines())
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+        .ok_or_else(|| "its peak memory".to_owned())
 }
 
 /// The journal's entries from `cursor` on, as JSON lines.
@@ -102,6 +124,7 @@ fn kept(server: &Server) -> PathBuf {
 
 /// Caps `pid`'s address space at `more` bytes past what it has now
 /// (`prlimit`, util-linux): an allocation past it fails.
+#[cfg(target_os = "linux")]
 fn cap(pid: i32, more: u64) -> Outcome {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(e)?;
     let kib: u64 = (status.lines())
@@ -279,8 +302,8 @@ fn keys_for_a_tab_go_to_each_pane_that_takes_them() -> Outcome {
 
 /// 6. The server killed: its panes' programs go on; `start` takes the run
 ///    back, with its ids, layout, names and screens; a cursor from before is
-///    told what it lost; the attached client had said why it ended.
-#[cfg(target_os = "linux")]
+///    told what it lost; the attached client had said why it ended. On
+///    macOS, which names no socket's peer, too (D-124).
 #[test]
 fn a_crashed_servers_run_is_taken_back() -> Outcome {
     let started = Server::start("")?;
@@ -361,7 +384,6 @@ fn layout(server: &Server) -> Result<String, String> {
 
 /// 7. `kill-server` and SIGTERM end the run: no pane's process is left,
 ///    nor its record.
-#[cfg(target_os = "linux")]
 #[test]
 fn stopping_ends_the_run_and_its_pane_processes() -> Outcome {
     for stop in ["kill-server", "SIGTERM"] {
@@ -386,7 +408,6 @@ fn stopping_ends_the_run_and_its_pane_processes() -> Outcome {
 
 /// 8. A crashed server's run whose record, or whose fux, is gone: `start`
 ///    refuses, naming the panes that wait.
-#[cfg(target_os = "linux")]
 #[test]
 fn a_run_that_cannot_be_taken_back_is_refused_naming_its_panes() -> Outcome {
     for gone in ["run", "exe"] {
@@ -413,5 +434,372 @@ fn a_run_that_cannot_be_taken_back_is_refused_naming_its_panes() -> Outcome {
         );
         assert!(alive(own), "{gone}: the pane's process was ended");
     }
+    Ok(())
+}
+
+/// `fux ARGS…` against `server`, started: its stdin is a pipe.
+fn started(server: &Server, args: &[&str]) -> Result<std::process::Child, String> {
+    std::process::Command::new(fux())
+        .args(args)
+        .env("FUX_SOCKET", &server.socket)
+        .env("XDG_CONFIG_HOME", server.dir.join("config"))
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SERVER")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(e)
+}
+
+/// `fux ARGS…` against `server`, given `seconds` at most (`timeout`): its
+/// status, 124 if it took longer, and what it said.
+fn within(server: &Server, seconds: u32, args: &[&str]) -> Result<Output, String> {
+    let out = std::process::Command::new("timeout")
+        .arg(seconds.to_string())
+        .arg(fux())
+        .args(args)
+        .env("FUX_SOCKET", &server.socket)
+        .env("XDG_CONFIG_HOME", server.dir.join("config"))
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SERVER")
+        .output()
+        .map_err(e)?;
+    Ok(Output {
+        status: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
+/// Every process of a crashed server's run, killed as its test ends: the
+/// panes' processes and programs, which wait for no one now.
+fn reap_run(server: &Server) -> Result<Reap, String> {
+    let mut reap = Reap::default();
+    for (_, program) in server.panes()? {
+        reap.0.extend([program, parent(program)?]);
+    }
+    Ok(reap)
+}
+
+/// 9. A paste's body goes from its client's connection to its pane, never
+///    through the server (D-123): sent to a pane whose process reads
+///    nothing (stopped), it grows no memory of the server's.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paste_body_never_passes_through_the_server() -> Outcome {
+    use std::io::Write;
+    let server = Server::start("")?;
+    let sleeper = pane(&server, "a", &["sleep", "1000"])?;
+    let own = own_process(&server, &sleeper)?;
+    let pid = server_pid(&server)?;
+    let before = peak_kib(pid)?;
+    signal(own, Signal::Stop);
+    let mut sending = started(
+        &server,
+        &["str", &sleeper, "pane", "input", "paste", "send-keys"],
+    )?;
+    let body = vec![b'x'; 32 << 20];
+    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+    stdin.write_all(&body).map_err(e)?;
+    drop(stdin);
+    eventually("its connection to hold it", || {
+        Ok((children(pid, "__conn").into_iter())
+            .any(|conn| peak_kib(conn).is_ok_and(|k| k > 32 << 10)))
+    })?;
+    let grew = peak_kib(pid)?.saturating_sub(before);
+    signal(own, Signal::Cont);
+    let _ = sending.wait();
+    assert!(grew < 8 << 10, "the server grew {grew} KiB");
+    Ok(())
+}
+
+/// 10. A capture goes from its pane to the asking connection, never
+///     through the server (D-123): its whole history grows no memory of the
+///     server's.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_capture_never_passes_through_the_server() -> Outcome {
+    let server = Server::start("")?;
+    let words = [
+        &[
+            "opts",
+            "str",
+            "a",
+            "in",
+            "80",
+            "24",
+            "size",
+            "67108864",
+            "history-bytes",
+        ][..],
+        &program(&["sh", "-c", "seq 600000; echo all-out; sleep 1000"]),
+        &["new-tab"],
+    ]
+    .concat();
+    let lines = id(&server.ok(&words)?);
+    server.shows(&lines, "all-out")?;
+    let pid = server_pid(&server)?;
+    let before = peak_kib(pid)?;
+    let captured = server.ok(&["str", &lines, "pane", "all-history", "capture"])?;
+    assert!(captured.len() > 3 << 20, "{} bytes", captured.len());
+    let grew = peak_kib(pid)?.saturating_sub(before);
+    assert!(grew < 2 << 10, "the server grew {grew} KiB");
+    Ok(())
+}
+
+/// 11. A client's screen is composed by its connection, never by the
+///     server (D-123): one that watches at a size far past its tab's grows
+///     no memory of the server's.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_clients_screen_is_never_composed_in_the_server() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 80)?;
+    client.ready()?;
+    let pid = server_pid(&server)?;
+    let before = peak_kib(pid)?;
+    let mut watcher = server.watch(1500, 1500)?;
+    eventually("its connection to compose it", || {
+        watcher.pump()?;
+        Ok((children(pid, "__conn").into_iter())
+            .any(|conn| peak_kib(conn).is_ok_and(|k| k > 24 << 10)))
+    })?;
+    let grew = peak_kib(pid)?.saturating_sub(before);
+    assert!(grew < 8 << 10, "the server grew {grew} KiB");
+    Ok(())
+}
+
+/// 12. What a client types at a pane whose process reads nothing (stopped)
+///     waits with the client's connection: the server grows no queue for
+///     the pane.
+#[cfg(target_os = "linux")]
+#[test]
+fn typing_at_a_stopped_pane_grows_no_queue_in_the_server() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 80)?;
+    client.wait_for("$")?;
+    let own = own_process(&server, "%1")?;
+    let pid = server_pid(&server)?;
+    signal(own, Signal::Stop);
+    let before = peak_kib(pid)?;
+    for _ in 0..40 {
+        client.send(&[b'k'; 10_000])?;
+    }
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let grew = peak_kib(pid)?.saturating_sub(before);
+    signal(own, Signal::Cont);
+    assert!(grew < 2 << 10, "the server grew {grew} KiB");
+    Ok(())
+}
+
+/// 13. A client's connection ends with its server: one whose client
+///     stopped reading, with what it holds for it unsent, is gone at once
+///     once its server is (D-124 (6)).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_connection_ends_with_its_server_though_its_client_reads_nothing() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    let mut stuck = server.attach(10, 40)?;
+    stuck.wait_for("$")?;
+    let conn = (children(pid, "__conn").first().copied()).ok_or("its connection")?;
+    server.type_line("%1", r#"while :; do printf '\033]52;c;aGk=\a'; done"#)?;
+    eventually("its connection to hold copies", || {
+        Ok(peak_kib(conn)? > 8 << 10)
+    })?;
+    let _reap = reap_run(&server)?;
+    signal(pid, Signal::Kill);
+    eventually("its connection gone", || Ok(!alive(conn)))?;
+    drop(stuck);
+    Ok(())
+}
+
+/// 14. A close sent to a pane is a close though its server is gone by the
+///     time it reads it: a run stopped while a pane's process was stopped
+///     leaves no pane once that process goes on (D-124 (1)).
+#[test]
+fn a_close_read_after_its_server_went_ends_the_pane() -> Outcome {
+    let mut server = Server::start("")?;
+    let sleeper = pane(&server, "a", &["sleep", "1000"])?;
+    let own = own_process(&server, &sleeper)?;
+    let program = program_pid(&server, &sleeper)?;
+    let _reap = Reap(vec![own, program]);
+    signal(own, Signal::Stop);
+    signal(server_pid(&server)?, Signal::Term);
+    server.wait_exit()?;
+    signal(own, Signal::Cont);
+    eventually("its pane's process and program gone", || {
+        Ok(!alive(own) && !alive(program))
+    })
+}
+
+/// 15. A change whose record can't be written fails, and is not made: the
+///     tree a crash takes back is the one anyone saw (D-124 (3)).
+#[test]
+fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let shell = pane(server, "a", &["sh"])?;
+    server.ok(&["str", &shell, "pane", "str", "one", "rename"])?;
+    let blocked = kept(server).join("run.new");
+    std::fs::create_dir(&blocked).map_err(e)?;
+    let refused = server.fux(&["str", &shell, "pane", "str", "two", "rename"])?;
+    assert_ne!(refused.status, 0);
+    assert!(
+        refused.stderr.contains("could not be written"),
+        "{}",
+        refused.stderr
+    );
+    let listing = server.ok(&["ls", "listing"])?;
+    assert!(
+        listing.contains(" one ") && !listing.contains(" two "),
+        "{listing}"
+    );
+    std::fs::remove_dir(&blocked).map_err(e)?;
+    signal(server_pid(server)?, Signal::Kill);
+    server.ok(&["start"])?;
+    let listing = server.ok(&["ls", "listing"])?;
+    assert!(listing.contains(" one "), "{listing}");
+    Ok(())
+}
+
+/// 16. A pane's id and place are recorded before its program starts: one
+///     whose record can't be written starts nothing, and a socket a process
+///     still listens at is never taken for debris (D-124 (3)).
+#[test]
+fn a_pane_is_recorded_before_its_program_starts() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    let panes = children(pid, "__pane").len();
+    let blocked = kept(&server).join("run.new");
+    std::fs::create_dir(&blocked).map_err(e)?;
+    let refused = server.fux(
+        &[
+            &["opts", "str", "a", "in", "80", "24", "size"][..],
+            &program(&["sleep", "1001"]),
+            &["new-tab"],
+        ]
+        .concat(),
+    )?;
+    assert_ne!(refused.status, 0, "{}", refused.stdout);
+    assert_eq!(
+        children(pid, "__pane").len(),
+        panes,
+        "a pane's process started"
+    );
+    std::fs::remove_dir(&blocked).map_err(e)?;
+    // The next pane's socket, a process listening at it.
+    let next = kept(&server).join("2");
+    let listener = std::os::unix::net::UnixListener::bind(&next).map_err(e)?;
+    let refused = server.fux(
+        &[
+            &["opts", "str", "a", "in", "80", "24", "size"][..],
+            &program(&["sleep", "1002"]),
+            &["new-tab"],
+        ]
+        .concat(),
+    )?;
+    assert!(refused.stderr.contains("listens at"), "{}", refused.stderr);
+    assert!(next.exists(), "a live socket let go");
+    drop(listener);
+    Ok(())
+}
+
+/// 17. A takeover owes the pane nothing its last server did: a screen sent
+///     and never taken, then a frame part way through as the next server
+///     reaches it, still gives that one its first screen once the frame is
+///     whole (D-124).
+#[test]
+fn a_takeover_mid_frame_gets_its_first_screen() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let script = r#"sleep 2; printf hello; sleep 2; printf '\033[?2026hframe'; sleep 1000"#;
+    let framed = pane(server, "a", &["sh", "-c", script])?;
+    let _reap = reap_run(server)?;
+    let pid = server_pid(server)?;
+    // Its screen with hello is sent, and never taken; then its frame begins,
+    // which it holds a second (`FRAME_TIMEOUT`): the next server reaches it
+    // in that second.
+    signal(pid, Signal::Stop);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    signal(pid, Signal::Kill);
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let taken = within(server, 20, &["start"])?;
+    assert_eq!(taken.status, 0, "{}", taken.stderr);
+    assert!(server.ok(&["ls", "listing"])?.contains(&framed));
+    Ok(())
+}
+
+/// 18. A run takes back the fux it started with before its record is
+///     read: a record that fux alone can read is its to read (D-124 (7)).
+#[test]
+fn a_run_chooses_its_fux_before_reading_its_record() -> Outcome {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::start("")?;
+    let _reap = reap_run(&server)?;
+    let pid = server_pid(&server)?;
+    signal(pid, Signal::Kill);
+    eventually("the server gone", || Ok(!alive(pid)))?;
+    let kept = kept(&server);
+    // A record no fux of this build reads, and a run's fux that says it ran.
+    std::fs::write(kept.join("run"), b"a record of another fux's").map_err(e)?;
+    let ran = server.dir.join("ran");
+    let exe = kept.join("exe");
+    std::fs::remove_file(&exe).map_err(e)?;
+    let script = format!("#!/bin/sh\necho \"$@\" > '{}'\n", ran.display());
+    std::fs::write(&exe, script).map_err(e)?;
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    let _ = within(&server, 10, &["start"])?;
+    eventually("its own fux run", || Ok(ran.exists()))?;
+    let said = std::fs::read_to_string(&ran).map_err(e)?;
+    assert!(said.contains("__serve"), "{said}");
+    Ok(())
+}
+
+/// 19. A takeover keeps an ended program pane, by its role's rule: one
+///     that ended before the crash, and one whose process died while no
+///     server ran, both stay, ended; a shell closes (D-120 (6), D-124).
+#[test]
+fn a_takeover_keeps_ended_program_panes_by_their_role() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let ended = pane(server, "w", &["sleep", "1003"])?;
+    let lost = pane(server, "w", &["sleep", "1004"])?;
+    // A shell's pane, as no program is given.
+    let shell = id(&server.ok(&["opts", "str", "w", "in", "80", "24", "size", "new-tab"])?);
+    let _reap = reap_run(server)?;
+    signal(own_process(server, &ended)?, Signal::Kill);
+    eventually("its program ended", || {
+        let state = server.ok(&[
+            "str", &ended, "pane", "str", "program", "get", "str", "state", "get",
+        ])?;
+        Ok(state.trim() == "ended")
+    })?;
+    let (lost_own, shell_own) = (own_process(server, &lost)?, own_process(server, &shell)?);
+    let pid = server_pid(server)?;
+    signal(pid, Signal::Kill);
+    eventually("the server gone", || Ok(!alive(pid)))?;
+    signal(lost_own, Signal::Kill);
+    signal(shell_own, Signal::Kill);
+    eventually("their processes gone", || {
+        Ok(!alive(lost_own) && !alive(shell_own))
+    })?;
+    server.ok(&["start"])?;
+    let listing = server.ok(&["ls", "listing"])?;
+    for kept in [&ended, &lost] {
+        assert!(
+            listing.contains(&format!("    {kept} ")),
+            "{kept}: {listing}"
+        );
+        let state = server.ok(&[
+            "str", kept, "pane", "str", "program", "get", "str", "state", "get",
+        ])?;
+        assert_eq!(state.trim(), "ended", "{kept}");
+    }
+    assert!(!listing.contains(&format!("    {shell} ")), "{listing}");
     Ok(())
 }
