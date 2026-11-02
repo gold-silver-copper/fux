@@ -346,22 +346,19 @@ impl Through {
             self.session.output(self.pane, now, at);
             rest = later;
         }
-        self.session
-            .parts
-            .each_pane_mut(|pane| drop(pane.drain_input()));
+        (self.session).each_host_mut(|host| drop(host.pane_mut().drain_input()), at);
     }
 
     /// Whether the pane holds a frame of synchronized output.
-    pub fn held(&self) -> bool {
-        (self.session.parts.panes())
-            .get(&self.pane)
-            .is_some_and(|p| p.frame_deadline().is_some())
+    pub fn held(&mut self) -> bool {
+        let held = |h: &mut fux_server::host::Host| h.pane().frame_deadline().is_some();
+        (self.session.host_mut(self.pane, held, std::time::Instant::now())).unwrap_or(false)
     }
 
-    /// Releases a held frame, as the server does once its timeout passes.
+    /// Releases a held frame, as its pane does once its timeout passes.
     pub fn release(&mut self) {
         self.session.fire(
-            fux_server::session::Timer::Frame(self.pane),
+            fux_server::session::Timer::Pane(self.pane, fux_server::host::Timer::Frame),
             std::time::Instant::now(),
         );
     }

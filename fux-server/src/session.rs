@@ -1961,6 +1961,22 @@ impl Session {
         Some(changed)
     }
 
+    /// Each pane held here, changed with `change`, as the tools change them;
+    /// what each then tells is taken in.
+    #[cfg(any(test, feature = "in-process"))]
+    pub fn each_host_mut(&mut self, mut change: impl FnMut(&mut crate::host::Host), now: Instant) {
+        let ids: Vec<PaneId> = self.links.keys().copied().collect();
+        for id in ids {
+            self.host_mut(id, &mut change, now);
+        }
+    }
+
+    /// Pane `id`'s program, held here, ended so: as the tools end one.
+    #[cfg(any(test, feature = "in-process"))]
+    pub fn exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
+        self.host_mut(id, |host| host.exited(ended, now), now);
+    }
+
     /// Everything the session waits for, each with when it is due: the
     /// server polls no longer than the soonest, and fires those due
     /// (`Session::fire`).

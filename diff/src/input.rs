@@ -390,14 +390,9 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             std::time::Instant::now(),
         );
         let mut pane = b.map_err(|e| e.to_string())?;
-        let kept = fux_wire::command::JournalEntries::new(1 << 14).ok_or("journal")?;
-        let mut journal = fux_server::journal::Journal::new(kept);
-        let at = (
-            "+1".parse().map_err(|_| "+1")?,
-            "@1".parse().map_err(|_| "@1")?,
-        );
-        let mut queued_input = std::collections::BTreeSet::new();
-        let mut b = fux_server::pane::PaneMut::new(&mut pane, at, &mut journal, &mut queued_input);
+        let (mut told, mut queued_input) = (Vec::new(), false);
+        let server = fux_wire::events::Actor::Server;
+        let mut b = fux_server::pane::PaneMut::new(&mut pane, server, &mut told, &mut queued_input);
         let mut log = Vec::new();
         for _ in 0..r.below(60) {
             let next = match r.below(10) {

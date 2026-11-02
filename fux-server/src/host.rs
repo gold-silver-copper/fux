@@ -167,7 +167,7 @@ impl Host {
     }
 
     /// Its pane, to change, as `actor`'s request has it.
-    pub(crate) fn pane_mut(&mut self) -> PaneMut<'_> {
+    pub fn pane_mut(&mut self) -> PaneMut<'_> {
         PaneMut::new(&mut self.pane, self.actor, &mut self.told, &mut self.input)
     }
 

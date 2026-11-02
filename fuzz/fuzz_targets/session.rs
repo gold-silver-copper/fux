@@ -13,6 +13,7 @@
 //! the programs the session hands a client (`ToAttached::Open`) and keys sent
 //! to it (`ToAttached::Keys`).
 use std::collections::BTreeMap;
+use std::time::Instant;
 use std::num::NonZeroUsize;
 
 use fux::client_state::ClientState;
@@ -725,29 +726,33 @@ impl Run {
         let view = self.s.views.get(&client);
         let normal = view.is_some_and(|v| matches!(v.mode, Mode::Normal));
         let focus = self.s.focused(client).filter(|_| normal);
-        self.s.parts.each_pane_mut(|pane| {
-            let (id, heard) = (pane.id(), pane.drain_input());
-            let asked = pane.screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
+        let now = Instant::now();
+        self.s.each_host_mut(|host| {
+            let (id, heard) = (host.id(), host.pane_mut().drain_input());
+            let asked =
+                host.pane().screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
             assert!(
                 heard.is_empty() || (Some(id) == focus && asked),
                 "{id} heard {heard:?} from {report:?}"
             );
-        });
+        }, now);
     }
 
     fn drain_panes(&mut self) {
-        self.s.parts.each_pane_mut(|pane| drop(pane.drain_input()));
+        let now = Instant::now();
+        self.s.each_host_mut(|host| drop(host.pane_mut().drain_input()), now);
     }
 
     fn assert_no_pane_input(&mut self, key: fux_vt::keys::KeyPress) {
-        self.s.parts.each_pane_mut(|pane| {
-            let queued = pane.drain_input();
-            let id = pane.id();
+        let now = Instant::now();
+        self.s.each_host_mut(|host| {
+            let queued = host.pane_mut().drain_input();
+            let id = host.id();
             assert!(
                 queued.is_empty(),
                 "{key} in a repeat mode reached {id}: {queued:?}"
             );
-        });
+        }, now);
     }
 
     /// What anyone can tell apart, as `State` lists it.
