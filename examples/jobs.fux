@@ -6,10 +6,10 @@
 # with its pane and version, so the next starts at once
 define job json opts str agent in 80 24 size str sh program str -c arg str 'sleep 0.2; exit "$0"' arg swap arg new-tab end
 # answer -- answer: wait from an answer from before its pane's program
-# ended until it has (its version's last count is 1), however soon it
+# ended until it has (its `ended` count is 1), however soon it
 # did: a wait on an answer waits from the version it holds
 define until-ended
-  begin 600 timeout wait dup counts 4 at 1 eq until
+  begin 600 timeout wait dup str ended get 1 eq until
 end
 # answer -- status: once its pane's program has exited
 define exit-status until-ended str exited get end

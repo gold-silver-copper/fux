@@ -110,9 +110,9 @@ fails with 124 (`timeout`) if nothing changed in 600 s. A pane part way
 through a frame (synchronized output) whose rest fux already holds keeps
 the answer until the frame is read, then answers its change: a wait never
 says unchanged of a pane that changed. To bound a whole loop of waits,
-run it under `timeout 600 fux --file FILE` (124 too). `counts` gives five
-integers, RESPAWNS SCREEN BELLS DONE ENDED, from a live pane or the
-version an answer, capture or text holds: `A counts 3 at` is its `DONE`.
+run it under `timeout 600 fux --file FILE` (124 too). A pane, an answer
+and a capture name their version's counts, `respawns` `screen` `bells`
+`done` `ended`: `A str done get` is the `DONE` of the version A holds.
 
 A wait's text answer is its version, then what changed (`screen`, `bell`,
 `done`, `respawned`), then `exited N`, `killed by SIGNAME` (or `killed by
@@ -181,16 +181,16 @@ stays unknown.
   drop str answered
   ```
 - **A shell command's end, with marks** (`shells` says how to turn them
-  on): its version's `DONE` grows as one ends. Type the line at a prompt:
+  on): its `done` count grows as one ends. Type the line at a prompt:
   a command still running ends first, and counts. A line that runs nothing
-  (an empty line, a comment, a syntax error) ends no command, so `DONE`
+  (an empty line, a comment, a syntax error) ends no command, so `done`
   stays: for such a line, wait for the prompt's text instead. (A comment
   line ends a command in fish, which marks it, and in zsh, which runs `#`
   as a command unless `setopt interactive_comments`; a syntax error is
   tested in bash and zsh alone.)
 
   ```fux
-  %3 str 'make test' line 3 1 600 grows let finished
+  %3 str 'make test' line str done 1 600 grows let finished
   finished pane str last_status get print
   finished pane last-output capture
   ```
@@ -214,8 +214,8 @@ stays unknown.
   opts str agent in 80 24 size str cargo program str test arg new-tab
   600 until-ended str program get str exited get
   ```
-- **A bell or notification:** its version's `BELLS`, `counts 2 at`, grows,
-  as for a command's end.
+- **A bell or notification:** its `bells` count grows, as for a command's
+  end.
 - **A TUI's initial selection:** save as `selection.fux`; pass its pane
   as the first file argument. Here reverse video identifies the app's
   selection. That meaning belongs to this app, not to fux.
@@ -469,7 +469,7 @@ between steps:
 ```fux
 # test.fux: run the tests, wait until they end, read what they printed
 opts str agent in str tests name 80 24 size str cargo program str test arg new-tab   # its answer: %2:0.0.0.0.0:RUN
-begin 600 timeout wait dup counts 4 at 1 eq until  # ENDED, its last count, is 1
+begin 600 timeout wait dup str ended get 1 eq until  # its program ended
 all-history capture
 ```
 

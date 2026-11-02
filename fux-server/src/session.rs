@@ -6482,9 +6482,14 @@ mod tests {
             let alone = output(&mut s, "@1 str x text send-keys json")?;
             let mut expected = Vec::new();
             for id in s.root(TabId::of(1)).ok_or("layout")?.panes() {
+                let version = s.pane(id)?.version(s.run);
+                let counts = version
+                    .counts
+                    .named()
+                    .map(|(name, n)| format!(r#","{name}":{n}"#));
                 expected.push(format!(
-                    r#"{{"pane":"{id}","version":"{}","status":0}}"#,
-                    s.pane(id)?.version(s.run)
+                    r#"{{"pane":"{id}","version":"{version}"{},"status":0}}"#,
+                    counts.concat()
                 ));
             }
             assert_eq!(alone, format!("[{}]\n", expected.join(",")));
@@ -7309,52 +7314,43 @@ mod tests {
     }
 
     #[test]
-    fn counts_use_the_pane_version() -> TestResult {
+    fn counts_are_read_by_name_from_the_pane_version() -> TestResult {
         let (mut s, client) = attached(24, 80)?;
         let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
         s.out(PaneId::of(1), shown.as_bytes());
         let capture = format!("str {client} client capture");
         let text = output(&mut s, &format!("{capture} string"))?;
         assert_eq!(text.split_whitespace().next(), Some(shown));
-        for source in [
-            format!("{capture} counts"),
-            format!("list {capture} end first counts"),
-        ] {
-            let refused = output(&mut s, &source)
-                .err()
-                .ok_or("client capture text supplied invented counts")?;
-            assert!(refused.starts_with("type: "), "{refused}");
-        }
-        assert_eq!(
-            output(&mut s, &format!("str {shown} counts json"))?.trim(),
-            "[0,57,1,3,0]"
-        );
-        let counts = s.pane(PaneId::of(1))?.counts();
-        let expected = format!(
-            "[{},{},{},{},{}]",
-            counts.respawns,
-            counts.screen,
-            counts.bells,
-            counts.done,
-            u8::from(counts.ended)
-        );
+        let refused = output(&mut s, &format!("{capture} str done get"))
+            .err()
+            .ok_or("client capture supplied invented counts")?;
+        assert!(refused.starts_with("no_field: "), "{refused}");
+        let counts = s.pane(PaneId::of(1))?.counts().named();
+        let expected: Vec<String> = counts.iter().map(|(_, n)| n.to_string()).collect();
+        let expected = format!("[{}]", expected.join(","));
+        let read: Vec<String> = counts
+            .iter()
+            .map(|(name, _)| format!("o str {name} get"))
+            .collect();
+        let read = format!("let o list {} end json", read.join(" "));
         let baseline = output(&mut s, "%1 version")?;
         for source in [
-            "%1 counts json",
-            "%1 capture counts json",
-            "%1 str x text send-keys counts json",
-            "%1 capture let sample %1 kill sample counts json",
+            "%1",
+            "%1 capture",
+            "%1 str x text send-keys",
+            "%1 capture let sample %1 kill sample",
         ] {
-            assert_eq!(output(&mut s, source)?.trim(), expected, "{source}");
+            let source = format!("{source} {read}");
+            assert_eq!(output(&mut s, &source)?.trim(), expected, "{source}");
         }
         let closed = format!(
-            "str closed try str {} changed wait catch str value get end counts",
+            "str closed try str {} changed wait catch str value get end str done get",
             baseline.trim()
         );
         let refused = output(&mut s, &closed)
             .err()
             .ok_or("closed answer supplied invented counts")?;
-        assert!(refused.starts_with("type: "), "{refused}");
+        assert!(refused.starts_with("no_field: "), "{refused}");
         Ok(())
     }
 
