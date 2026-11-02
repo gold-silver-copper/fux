@@ -116,14 +116,19 @@ enum Wake {
     Look,
 }
 
-/// A client's connection: its socket, and where it is in its life.
+/// A client's connection: its link to its own process (`conn`), which
+/// decodes what its client sends and holds what is sent it (D-123); and
+/// where it is in its life.
 struct Conn {
-    stream: UnixStream,
+    link: crate::link::End,
+    /// The frames its client sent, whole, as its process sent them on.
     decoder: Decoder,
+    /// Frames for its client, till they go to its process.
     out: ByteQueue,
-    /// Where the last paint is in `out`: the bytes ahead of it, and its
-    /// own, not yet written.
-    paint: (usize, usize),
+    /// Its process has bytes its client has not taken yet.
+    pending: bool,
+    /// Its client sent what is no frame: it is read no more.
+    bad: bool,
     stage: Stage,
 }
 
@@ -198,21 +203,16 @@ struct Attached {
     /// Attached frames handled since Attach, refused ones too: what a
     /// job's fence waits for.
     processed: u64,
-    /// What the client's terminal shows, for diffing, while `known`.
-    shown: Grid,
-    /// Whether `shown` is what the terminal shows: if not (a new client, a
-    /// resize), the next paint is a full one.
+    /// Whether its process knows what the terminal shows: if not (a new
+    /// client, a resize), the next paint is a full one. The screen itself
+    /// is its process's.
     known: bool,
-    /// The grid the next paint is composed into, then swapped with `shown`:
-    /// the two are reused by every paint, as is the placement of its panes.
-    spare: Grid,
+    /// Where its panes were last placed.
     placement: Placement,
     /// When the next paint may be made.
     clock: PaintClock,
-    /// The pictures its terminal was last sent, as they show there, and
-    /// their sixel data.
-    pictures: Vec<render::Visible>,
-    sixels: render::Sixels,
+    /// The pictures whose sixel data its process was sent.
+    pictures: Vec<u64>,
 }
 
 /// When a client may be painted next: `PAINT` after its last paint, as a
@@ -250,32 +250,14 @@ impl PaintClock {
     }
 }
 
-/// Writes `out` to `fd`, nonblocking, as far as it takes it; false if the
-/// write failed. The memory a large write took is given back.
-fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
-    while !out.is_empty() {
-        match fuxix::io::write(&fd, out.as_slice()) {
-            Ok(0) | Err(Errno::AGAIN) => break,
-            Ok(n) => out.take(n),
-            Err(Errno::INTR) => continue,
-            Err(_) => return false,
-        }
-    }
-    out.shrink(CONN_KEEP);
-    true
-}
-
 impl Attached {
     fn new(client: ClientId, now: Instant) -> Attached {
         Attached {
             client,
             processed: 0,
-            shown: Grid::default(),
             known: false,
-            spare: Grid::default(),
             placement: Placement::default(),
             pictures: Vec::new(),
-            sixels: render::Sixels::default(),
             clock: PaintClock {
                 next: now,
                 due: now,
@@ -305,25 +287,51 @@ impl Attached {
 }
 
 impl Conn {
-    fn new(stream: UnixStream) -> Conn {
-        Conn {
-            stream,
+    /// A connection whose process is linked on `link`.
+    fn new(link: UnixStream) -> std::io::Result<Conn> {
+        Ok(Conn {
+            link: crate::link::End::new(link)?,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
-            paint: (0, 0),
+            pending: false,
+            bad: false,
             stage: Stage::Hello,
-        }
+        })
+    }
+
+    /// Starts the process of a connection accepted on `stream`, from
+    /// `exe`: `fux __conn`, the client on its stdin, its link on stdout.
+    fn start(stream: UnixStream, exe: &std::path::Path) -> std::io::Result<Conn> {
+        let (ours, theirs) = UnixStream::pair()?;
+        let child = std::process::Command::new(exe)
+            .arg(crate::link::CONN)
+            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                stream,
+            )))
+            .stdout(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                theirs,
+            )))
+            .spawn()?;
+        // Reaped as the server's other children are (`reap`); std never
+        // waits on a dropped child.
+        drop(child);
+        Conn::new(ours)
+    }
+
+    /// Whether all it sent its client was taken.
+    fn idle(&self) -> bool {
+        self.out.is_empty() && !self.pending
     }
 
     /// Whether what the client sends is read: by its stage, and for a
     /// command client only once its last answer is all written.
     fn reads(&self) -> bool {
-        self.stage.reads() && (self.out.is_empty() || !matches!(self.stage, Stage::Command))
+        self.stage.reads() && (self.idle() || !matches!(self.stage, Stage::Command))
     }
 
     /// Whether a frame it sent waits, read but not handled, for its next
     /// turn (`CONN_FRAMES`), or an error does: it is served as if readable,
-    /// though its socket may have nothing more.
+    /// though its link may have nothing more.
     fn frame_waits(&self) -> bool {
         self.reads() && self.decoder.ready().unwrap_or(true)
     }
@@ -339,7 +347,50 @@ impl Conn {
         let dirty = session.views.get(&attached.client)?.dirty;
         // A screen not known is painted whole, whether or not the view
         // changed: forgetting it is asking for that paint.
-        ((dirty || !attached.known) && self.out.is_empty()).then_some(attached.clock.due)
+        ((dirty || !attached.known) && self.idle()).then_some(attached.clock.due)
+    }
+
+    /// Tells its process `message`, after the frames queued before it.
+    fn tell_process(&mut self, message: &crate::link::ToConn) {
+        self.queue_out();
+        self.link.send(message);
+    }
+
+    /// Passes its process the frames queued for its client.
+    fn queue_out(&mut self) {
+        if !self.out.is_empty() {
+            let bytes = self.out.as_slice().to_vec();
+            self.out.take(bytes.len());
+            self.out.shrink(CONN_KEEP);
+            self.link.send(&crate::link::ToConn::Bytes(bytes));
+            self.pending = true;
+        }
+    }
+
+    /// What its process said: its client's frames, into `decoder`, and how
+    /// its client is; whether its client is gone, or shut its side.
+    fn hear(&mut self, buffer: &mut [u8]) -> bool {
+        use crate::link::FromConn;
+        let mut closed = self.link.read_up_to(buffer, CONN_READ) == crate::link::Read::Closed;
+        loop {
+            match self.link.next_message::<FromConn>() {
+                Ok(Some(FromConn::Frames(frames))) => self.decoder.push(&frames),
+                Ok(Some(FromConn::Flushed)) => self.pending = false,
+                Ok(Some(FromConn::Shut)) => closed = true,
+                Ok(Some(FromConn::Bad(why))) => {
+                    log!("a client sent a bad frame: {why}");
+                    self.bad = true;
+                    return true;
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    log!("a connection's process sent a bad frame: {error}");
+                    self.bad = true;
+                    return true;
+                }
+            }
+        }
+        closed
     }
 
     /// Whether `client` is attached here.
@@ -363,17 +414,29 @@ impl Conn {
         if matches!(self.stage, Stage::Dead) {
             return;
         }
+        let next_expects = match next {
+            Stage::Attaching => Some(crate::link::Expect::Attach),
+            Stage::Command => Some(crate::link::Expect::Asked),
+            Stage::Attached(_) => Some(crate::link::Expect::Attached),
+            Stage::Hello | Stage::Blocked(_) | Stage::Waiting(_) | Stage::Closing | Stage::Dead => {
+                None
+            }
+        };
+        let was_command = matches!(
+            self.stage,
+            Stage::Command | Stage::Blocked(_) | Stage::Waiting(_)
+        );
         if let Stage::Attached(attached) = mem::replace(&mut self.stage, next) {
             session.detach(attached.client, Detach::Disconnected, now);
-            // Cursor overrides are given back as the terminal's own;
-            // one never set is left as it was.
-            let mut cursor = Vec::new();
-            let initial = fux_vt::CursorShape::Initial;
-            render::cursor_shape(attached.shown.modes.cursor_shape, initial, &mut cursor);
-            render::cursor_colour(attached.shown.modes.cursor_colour, None, &mut cursor);
-            if !cursor.is_empty() {
-                Attached::paint(&mut self.out, &cursor);
-            }
+            // Its terminal's cursor overrides are given back as its own.
+            self.tell_process(&crate::link::ToConn::Detached);
+        }
+        match (&self.stage, next_expects) {
+            // A command client's next request is read once its answer is
+            // written (`answer`).
+            (Stage::Command, Some(_)) if was_command => {}
+            (_, Some(expect)) => self.tell_process(&crate::link::ToConn::Expect(expect)),
+            (_, None) => {}
         }
     }
 
@@ -427,6 +490,8 @@ impl Conn {
         if self.stage.asked() {
             self.enter(session, Stage::Command, now);
         }
+        // Its client's next request is read once it has this answer.
+        self.tell_process(&crate::link::ToConn::Answered);
     }
 
     /// Sends the connection's last frame, its client detached and its
@@ -434,6 +499,7 @@ impl Conn {
     fn end<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>, now: Instant) {
         self.enter(session, Stage::Closing, now);
         self.send(frame);
+        self.tell_process(&crate::link::ToConn::Close);
     }
 
     /// Detaches the client attached here for `why`, and ends it, telling
@@ -463,17 +529,13 @@ impl Conn {
         }
     }
 
-    /// Writes what waits for the client until it is all written or the
-    /// socket takes no more; a connection that fails is dead.
+    /// Passes its process what waits for its client, as far as its link
+    /// takes it; one whose process is gone is dead.
     fn flush(&mut self, session: &mut Session, now: Instant) {
-        let before = self.out.len();
-        if !write_out(&self.stream, &mut self.out) {
+        self.queue_out();
+        if self.link.flush().is_err() {
             self.enter(session, Stage::Dead, now);
         }
-        let written = before.saturating_sub(self.out.len());
-        let (ahead, paint) = self.paint;
-        let painted = written.saturating_sub(ahead);
-        self.paint = (ahead.saturating_sub(written), paint.saturating_sub(painted));
     }
 }
 
@@ -486,8 +548,8 @@ pub struct Server {
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
     read_buffer: Box<[u8; READ_BUFFER]>,
-    /// Where a paint is made before it is sent; reused by every paint.
-    paint_buffer: Vec<u8>,
+    /// Where each client's screen is composed, reused by every paint.
+    scratch: Grid,
     /// What each descriptor polled is, and then what is ready; reused by
     /// every tick.
     slots: Vec<Slot>,
@@ -554,17 +616,29 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
     match &record {
         // A run to take back runs the fux it started with (D-124 (7)).
         Some(_) if !exe.exists() => {
-            let why = format!("the fux the run on {} runs, {}, is gone", socket.path().display(), exe.display());
+            let why = format!(
+                "the fux the run on {} runs, {}, is gone",
+                socket.path().display(),
+                exe.display()
+            );
             return Err(Error::Refused(stranded(&panes, &why)));
         }
         Some(_) if std::env::current_exe().ok().as_deref() != Some(exe.as_path()) => {
             use std::os::unix::process::CommandExt;
-            let error = std::process::Command::new(&exe).args(std::env::args_os().skip(1)).exec();
-            return Err(Error::Refused(format!("running {}: {error}", exe.display())));
+            let error = std::process::Command::new(&exe)
+                .args(std::env::args_os().skip(1))
+                .exec();
+            return Err(Error::Refused(format!(
+                "running {}: {error}",
+                exe.display()
+            )));
         }
         Some(_) => {}
         None if !waiting(&panes).is_empty() => {
-            let why = format!("the record of the run on {} is gone", socket.path().display());
+            let why = format!(
+                "the record of the run on {} is gone",
+                socket.path().display()
+            );
             return Err(Error::Refused(stranded(&panes, &why)));
         }
         None => {}
@@ -597,7 +671,7 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
         children,
         stops,
         read_buffer,
-        paint_buffer: Vec::new(),
+        scratch: Grid::default(),
         slots: Vec::new(),
         pollfds: fuxix::poll::Poll::default(),
         ready: Vec::new(),
@@ -668,6 +742,19 @@ fn stranded(panes: &std::path::Path, why: &str) -> String {
     )
 }
 
+/// What tells a picture shown apart from another for a connection's
+/// process: its pixels, by the `Arc` that holds them, which no other
+/// picture can take while it shows, and the part of them shown.
+fn picture_id(picture: &render::Visible) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::sync::Arc::as_ptr(&picture.picture)
+        .addr()
+        .hash(&mut hasher);
+    picture.crop.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// The line that says the server listens, which the client that started
 /// it waits for (`client::start_server`): written on stdout, which then
 /// points at `/dev/null`, so the client's pipe closes and no descriptor
@@ -714,7 +801,7 @@ impl Server {
             if matches!(self.phase, Phase::Stopping(_))
                 && self.session.links.is_empty()
                 && self.session.ending.is_empty()
-                && self.conns.iter().all(|c| c.out.is_empty())
+                && self.conns.is_empty()
             {
                 self.finish();
                 return;
@@ -865,8 +952,15 @@ impl Server {
     /// Drops every connection that is dead, or closing with nothing left to
     /// send. Neither has a client attached: it was detached as it ended.
     fn close_conns(&mut self) {
-        self.conns.retain(|conn| {
-            conn.stage.reads() || matches!(conn.stage, Stage::Closing) && !conn.out.is_empty()
+        // One closing goes once its process, done with its client, closes
+        // its link (`read_conn`).
+        self.conns.retain_mut(|conn| {
+            let dead = matches!(conn.stage, Stage::Dead);
+            // What it was told before it died still goes, as far as it can.
+            if dead {
+                let _ = conn.link.flush();
+            }
+            !dead
         });
     }
 
@@ -906,21 +1000,13 @@ impl Server {
         );
         add(PollFd::new(self.stops.reader(), PollFlags::IN), Slot::Stops);
         for (i, conn) in self.conns.iter().enumerate() {
-            // A connection that is not read is polled only for what it
-            // has to write. One with nothing to write either (an attach
-            // held) asks for nothing: a hang-up is told unasked (POSIX),
-            // where the system tells one at all; else it is found as the
-            // connection is read again. Asking for a hang-up would not do:
-            // macOS then wakes for each byte waiting unread, and tells a
-            // peer that shut only its side as hung up.
-            let mut flags = match conn.reads() {
-                true => PollFlags::IN,
-                false => PollFlags::NONE,
-            };
-            if !conn.out.is_empty() {
+            // Its process's link is always read: what its client sent, and
+            // whether the client took what it was sent.
+            let mut flags = PollFlags::IN;
+            if !conn.out.is_empty() || !conn.link.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
-            add(PollFd::new(&conn.stream, flags), Slot::Conn(i));
+            add(PollFd::new(&conn.link.stream, flags), Slot::Conn(i));
         }
         let links = (self.session.links.iter())
             .chain(self.session.ending.iter().map(|(id, link)| (id, link)));
@@ -1038,85 +1124,65 @@ impl Server {
             return;
         };
         let client = attached.client;
-        let ahead = conn.out.len();
         // The title and bell marks first: the bar shows the marks.
         let before = session.before_paint(client);
         let Some(view) = session.views.get(&client) else {
             return;
         };
-        if let Err(error) =
-            render::compose_view(session, view, &mut attached.spare, &mut attached.placement)
+        // Composed here, in one grid every paint reuses; what the client
+        // shows is its connection's process's, which paints the difference.
+        let mut grid = mem::take(&mut self.scratch);
+        if let Err(error) = render::compose_view(session, view, &mut grid, &mut attached.placement)
         {
+            self.scratch = grid;
             let text = format!("rendering {client}: {error}");
             conn.exit(session, Detach::Failed, &text, now);
             return;
         }
-        if !before.is_empty() {
-            Attached::paint(&mut conn.out, &before);
-        }
-        // A picture gone or moved has its cells painted again, blank, which
-        // takes its pixels away; one whose cells this paint paints over, or
-        // new, is sent after the text.
         let mut pictures = render::pictures(session, client, &attached.placement);
-        let known = attached.known;
         let cover = render::bar_cover(session, view, &attached.placement);
         if !view.mode.is_normal() {
             pictures.clear();
         } else if let Some(cover) = cover {
             render::clip_bar_pictures(view, cover, &mut pictures);
         }
-        for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
-            attached.shown.forget_area(gone.area);
-        }
-        let send: Vec<bool> = (pictures.iter())
-            .map(|p| {
-                !known
-                    || attached.spare.clears(&attached.shown)
-                    || !attached.pictures.contains(p)
-                    || !attached.spare.same_in(&attached.shown, p.area)
+        let mut sixels = render::Sixels::default();
+        let shown: Vec<crate::link::Shown> = (pictures.iter())
+            .map(|picture| {
+                let id = picture_id(picture);
+                let data = (!attached.pictures.contains(&id)).then(|| {
+                    let mut data = Vec::new();
+                    sixels.picture_into(picture, &mut data);
+                    data
+                });
+                let (row, col, rows, cols) = picture.area;
+                crate::link::Shown {
+                    id,
+                    place: (row, col),
+                    size: (rows, cols),
+                    data,
+                }
             })
             .collect();
-        // The same screen as the client shows: nothing to send, not even
-        // the envelope, whose cursor hide and show would restart a blinking
-        // cursor.
-        self.paint_buffer.clear();
-        let changed = render::paint_into(
-            &attached.shown,
-            known,
-            &attached.spare,
-            &mut self.paint_buffer,
-        );
-        // Recovery state can change behind identical visible cells.
-        mem::swap(&mut attached.shown, &mut attached.spare);
-        let mut written = 0;
-        if changed {
-            Attached::paint(&mut conn.out, &self.paint_buffer);
-            attached.known = true;
-            attached.clock.painted(now);
-            // Written now rather than when the next poll says it can be: a
-            // keystroke's echo goes out a round sooner.
-            let before = conn.out.len();
-            conn.flush(session, now);
-            written = before.saturating_sub(conn.out.len());
-        }
-        let Stage::Attached(attached) = &mut conn.stage else {
-            return;
+        attached.pictures = shown.iter().map(|p| p.id).collect();
+        let forget = !attached.known;
+        attached.known = true;
+        attached.clock.painted(now);
+        let paint = crate::link::Paint {
+            before,
+            grid,
+            pictures: shown,
+            forget,
         };
-        let mut drawn = Vec::new();
-        for (picture, _) in pictures.iter().zip(&send).filter(|(_, send)| **send) {
-            attached.sixels.picture_into(picture, &mut drawn);
+        let message = crate::link::ToConn::Paint(Box::new(paint));
+        conn.tell_process(&message);
+        if let crate::link::ToConn::Paint(paint) = message {
+            self.scratch = paint.grid;
         }
-        if !drawn.is_empty() {
-            Attached::paint(&mut conn.out, &drawn);
-        }
-        attached.sixels.keep(&pictures);
-        attached.pictures = pictures;
-        // The paint, sixels and all, is no backlog of the client's.
-        let paint = conn.out.len().saturating_add(written).saturating_sub(ahead);
-        conn.paint = (
-            ahead.saturating_sub(written),
-            paint.saturating_sub(written.saturating_sub(ahead)),
-        );
+        // Its process told now rather than when the next poll says it can
+        // be: a keystroke's echo goes out a round sooner.
+        conn.pending = true;
+        conn.flush(session, now);
         if let Some(view) = session.views.get_mut(&client) {
             view.dirty = false;
         }
@@ -1184,10 +1250,28 @@ impl Server {
                     continue;
                 }
             }
-            if stream.set_nonblocking(true).is_err() {
+            let Some(exe) = self.session.exe.as_deref() else {
+                log!("no fux to start a connection's process with");
                 continue;
+            };
+            match Conn::start(stream, exe) {
+                Ok(conn) => self.conns.push(conn),
+                // Out of descriptors or processes, as an accept can be: the
+                // listener rests, and says so at most so often.
+                Err(e) => {
+                    if let Phase::Serving { resting, .. } = &mut self.phase {
+                        *resting = Some(after(now, ACCEPT_REST));
+                    }
+                    if self
+                        .accept_logged
+                        .is_none_or(|at| now.duration_since(at) >= REPORT_EVERY)
+                    {
+                        self.accept_logged = Some(now);
+                        log!("starting a connection's process: {e}");
+                    }
+                    return;
+                }
             }
-            self.conns.push(Conn::new(stream));
         }
     }
 
@@ -1196,22 +1280,10 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
-        let reads = conn.reads();
-        // One that is not read learns that its peer is gone by writing.
-        // A hang-up says only that nothing more comes (macOS says it of a
-        // peer that shut its side): one that is read once its answer is
-        // written takes what it sent first; one that is still not read,
-        // with nothing to write, is dead.
-        if flags.intersects(PollFlags::OUT) || (gone && !reads) {
+        if flags.intersects(PollFlags::OUT) {
             conn.flush(&mut self.session, now);
         }
-        if gone && !conn.reads() && conn.out.is_empty() {
-            conn.enter(&mut self.session, Stage::Dead, now);
-        }
-        // A command client whose answer is now written: its next request
-        // may already wait, read before.
-        if flags.intersects(PollFlags::IN) || gone || (!reads && conn.reads()) {
+        if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
             self.read_conn(index, now);
         }
         let eligible = self.conns.get(index).is_some_and(|conn| {
@@ -1233,52 +1305,44 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
+        let mut closed = conn.hear(self.read_buffer.as_mut_slice());
         // Held apart while the frames it lends are handled.
         let mut decoder = mem::take(&mut conn.decoder);
-        let (mut frames, mut read) = (0usize, 0usize);
-        let closed = 'read: loop {
-            while frames < CONN_FRAMES {
-                // Each frame is a new event: a previous request may have
-                // taken long enough to pass another request's deadline.
-                match self.take_frame(index, &mut decoder, Instant::now()) {
-                    Ok(true) => frames = frames.saturating_add(1),
-                    Ok(false) => break,
-                    Err(error) => {
-                        log!("a client sent a bad frame: {error}");
-                        break 'read true;
-                    }
+        let mut frames = 0usize;
+        while frames < CONN_FRAMES && self.conns.get(index).is_some_and(Conn::reads) {
+            // Each frame is a new event: a previous request may have taken
+            // long enough to pass another request's deadline.
+            match self.take_frame(index, &mut decoder, Instant::now()) {
+                Ok(true) => frames = frames.saturating_add(1),
+                Ok(false) => break,
+                Err(error) => {
+                    log!("a client sent a bad frame: {error}");
+                    closed = true;
+                    break;
                 }
             }
-            // A frame it sent may have ended it, or be answered yet unread.
-            let Some(conn) = self.conns.get_mut(index).filter(|c| c.reads()) else {
-                break false;
-            };
-            if frames >= CONN_FRAMES || read >= CONN_READ {
-                break false;
-            }
-            match fuxix::io::read(&conn.stream, self.read_buffer.as_mut_slice()) {
-                Ok(0) => break true,
-                Ok(n) => {
-                    read = read.saturating_add(n);
-                    decoder.push(self.read_buffer.get(..n).unwrap_or_default());
-                }
-                Err(Errno::AGAIN) => break false,
-                Err(Errno::INTR) => {}
-                Err(_) => break true,
-            }
-        };
+        }
         if let Some(conn) = self.conns.get_mut(index) {
             decoder.shrink(CONN_KEEP);
             conn.decoder = decoder;
             // A command client that shut its side still gets the answers
             // to what it asked.
             if closed {
-                let next = if matches!(conn.stage, Stage::Command) {
-                    Stage::Closing
-                } else {
-                    Stage::Dead
-                };
-                conn.enter(&mut self.session, next, now);
+                match conn.stage {
+                    Stage::Command if !conn.bad => {
+                        conn.enter(&mut self.session, Stage::Closing, now);
+                        conn.tell_process(&crate::link::ToConn::Close);
+                    }
+                    // Its last word goes on to its client: its process closes
+                    // its link once it is written.
+                    Stage::Dead | Stage::Closing => {}
+                    Stage::Command
+                    | Stage::Hello
+                    | Stage::Attaching
+                    | Stage::Attached(_)
+                    | Stage::Blocked(_)
+                    | Stage::Waiting(_) => conn.enter(&mut self.session, Stage::Dead, now),
+                }
             }
         }
     }
@@ -1708,7 +1772,7 @@ mod tests {
             assert_eq!(flow, ControlFlow::Continue(due), "armed {armed}");
             assert!(due.is_some_and(|at| at <= after(now, STOP_WAIT)));
             let mut decoder = Decoder::default();
-            decoder.push(server.conns.first().ok_or("worker")?.out.as_slice());
+            decoder.push(&client_bytes(server.conns.first().ok_or("worker")?));
             let part = match decoder.frame()? {
                 Some(ToCommand::Part(part)) => Some(part),
                 _ => None,
@@ -1802,7 +1866,7 @@ mod tests {
         server.conns.first_mut().ok_or("worker")?.stage = Stage::Waiting(Box::new(waiting));
         assert!(server.turn(late, &mut Vec::new()).is_continue());
         let mut decoder = Decoder::default();
-        decoder.push(server.conns.first().ok_or("worker")?.out.as_slice());
+        decoder.push(&client_bytes(server.conns.first().ok_or("worker")?));
         let Some(ToCommand::Part(part)) = decoder.frame()? else {
             return Err("wait was not answered".into());
         };
@@ -1825,6 +1889,8 @@ mod tests {
         let now = Instant::now();
         server.phase = Phase::Stopping(after(now, Duration::from_secs(10)));
         server.paint(1, now);
+        // Its process says the paint went out.
+        heard(&mut server, 1)?;
         let pane = PaneId::of(1);
         let echoed = after(now, Duration::from_millis(1));
         server.session.output(pane, b"echo", echoed);
@@ -1851,9 +1917,45 @@ mod tests {
     fn attached(now: Instant) -> Result<(Session, Conn, UnixStream), String> {
         let (session, client) = crate::session::testing::attached(10, 40)?;
         let (stream, peer) = UnixStream::pair().map_err(|e| e.to_string())?;
-        let mut conn = Conn::new(stream);
+        let mut conn =
+            linked(stream, Some(crate::link::Expect::Attached)).map_err(|e| e.to_string())?;
         conn.stage = Stage::Attached(Box::new(Attached::new(client, now)));
         Ok((session, conn, peer))
+    }
+
+    /// A connection whose process runs in a thread of the test's, its
+    /// client the far end of `client`, expecting `expect`'s frames.
+    /// What `conn` was given for its client, not yet passed on, and passed
+    /// to its process and not yet sent it.
+    fn client_bytes(conn: &Conn) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for message in conn.link.queued::<crate::link::ToConn>() {
+            if let crate::link::ToConn::Bytes(sent) = message {
+                bytes.extend_from_slice(&sent);
+            }
+        }
+        bytes.extend_from_slice(conn.out.as_slice());
+        bytes
+    }
+
+    /// Waits for connection `index`'s process to say what it has to, and
+    /// takes it in, as the server's next poll would.
+    fn heard(server: &mut Server, index: usize) -> Result<(), String> {
+        let conn = server.conns.get(index).ok_or("no connection")?;
+        let mut fds = [PollFd::new(&conn.link.stream, PollFlags::IN)];
+        fuxix::poll::poll(&mut fds, Some(Duration::from_secs(3))).map_err(|e| e.to_string())?;
+        server.read_conn(index, Instant::now());
+        Ok(())
+    }
+
+    fn linked(client: UnixStream, expect: Option<crate::link::Expect>) -> std::io::Result<Conn> {
+        let (link, theirs) = UnixStream::pair()?;
+        std::thread::spawn(move || crate::conn::serve(client, theirs));
+        let mut conn = Conn::new(link)?;
+        if let Some(expect) = expect {
+            conn.tell_process(&crate::link::ToConn::Expect(expect));
+        }
+        Ok(conn)
     }
 
     fn server() -> Result<(Server, UnixStream), Box<dyn std::error::Error>> {
@@ -1866,7 +1968,7 @@ mod tests {
                 children: fuxix::signal::Pipe::new(&[])?,
                 stops: fuxix::signal::Pipe::new(&[])?,
                 read_buffer: read_buffer()?,
-                paint_buffer: Vec::new(),
+                scratch: Grid::default(),
                 slots: Vec::new(),
                 pollfds: fuxix::poll::Poll::default(),
                 ready: Vec::new(),
@@ -1921,25 +2023,6 @@ mod tests {
 
     /// The frames waiting for the client: what is painted in them, and the
     /// `Exit`'s reason.
-    fn sent(conn: &Conn) -> (Vec<u8>, Option<String>) {
-        let mut decoder = Decoder::default();
-        decoder.push(conn.out.as_slice());
-        let mut painted = Vec::new();
-        let mut exit = None;
-        while let Ok(Some(frame)) = decoder.frame() {
-            match frame {
-                ToAttached::Paint(bytes) => painted.extend_from_slice(&bytes),
-                ToAttached::Exit(reason) => exit = Some(reason.to_owned()),
-                ToAttached::Welcome(..)
-                | ToAttached::Ended(_)
-                | ToAttached::Open(_)
-                | ToAttached::Keys(_)
-                | ToAttached::Read(..) => {}
-            }
-        }
-        (painted, exit)
-    }
-
     /// Worker first, source second, unrelated command third. No process or
     /// listener is started; each turn is chosen by the test.
     fn ordered_fixture() -> Result<(Server, Vec<UnixStream>, ClientId), Box<dyn std::error::Error>>
@@ -1948,14 +2031,12 @@ mod tests {
         let client = session.views.keys().next().copied().ok_or("no client")?;
         let command = || -> Result<(Conn, UnixStream), std::io::Error> {
             let (stream, peer) = UnixStream::pair()?;
-            stream.set_nonblocking(true)?;
-            let mut conn = Conn::new(stream);
+            let mut conn = linked(stream, Some(crate::link::Expect::Asked))?;
             conn.stage = Stage::Command;
             Ok((conn, peer))
         };
         let (worker, worker_peer) = command()?;
         let (unrelated, unrelated_peer) = command()?;
-        source.stream.set_nonblocking(true)?;
         let conns = vec![worker, source, unrelated];
         let peers = vec![worker_peer, peer, unrelated_peer];
         let server = Server {
@@ -1965,7 +2046,7 @@ mod tests {
             children: fuxix::signal::Pipe::new(&[])?,
             stops: fuxix::signal::Pipe::new(&[])?,
             read_buffer: read_buffer()?,
-            paint_buffer: Vec::new(),
+            scratch: Grid::default(),
             slots: Vec::new(),
             pollfds: fuxix::poll::Poll::default(),
             ready: Vec::new(),
@@ -2027,7 +2108,12 @@ mod tests {
             // A blocked worker must not force zero-time polls.
             let mut ready = Vec::new();
             server.poll(Some(Duration::ZERO), &mut ready);
-            assert!(!ready.iter().any(|(slot, _)| matches!(slot, Slot::Conn(0))));
+            assert!(
+                !ready
+                    .iter()
+                    .any(|(slot, flags)| matches!(slot, Slot::Conn(0))
+                        && flags.intersects(PollFlags::IN))
+            );
 
             let unrelated = Asked {
                 after: None,
@@ -2072,7 +2158,7 @@ mod tests {
                         assert!(server.conns.get(1).ok_or("source")?.frame_waits());
                     }
                     server.serve_conn(2, PollFlags::IN, Instant::now());
-                    assert!(!server.conns.get(2).ok_or("unrelated")?.out.is_empty());
+                    assert!(!client_bytes(server.conns.get(2).ok_or("unrelated")?).is_empty());
                 }
             }
             while matches!(server.unprocessed(&asked), Some(1..)) {
@@ -2128,7 +2214,7 @@ mod tests {
         );
         let conn = server.conns.first().ok_or("worker")?;
         assert!(matches!(conn.stage, Stage::Command));
-        assert!(!conn.out.is_empty());
+        assert!(!client_bytes(conn).is_empty());
         assert!(
             server
                 .session
@@ -2162,7 +2248,7 @@ mod tests {
                     .first()
                     .ok_or("worker")?
                     .shutdown(std::net::Shutdown::Both)?;
-                server.serve_conn(0, PollFlags::IN, Instant::now());
+                heard(&mut server, 0)?;
                 assert!(matches!(
                     server.conns.first().map(|c| &c.stage),
                     Some(Stage::Dead)
@@ -2181,7 +2267,10 @@ mod tests {
                         .decoder
                         .push(&AttachedFrame::Detach.encode());
                 }
-                server.serve_conn(1, PollFlags::IN, Instant::now());
+                match ending == "eof" {
+                    true => heard(&mut server, 1)?,
+                    false => server.serve_conn(1, PollFlags::IN, Instant::now()),
+                }
                 if let Some(source) = server.conns.get_mut(1) {
                     source.out = ByteQueue::default();
                 }
@@ -2190,7 +2279,7 @@ mod tests {
                 let conn = server.conns.first().ok_or("worker")?;
                 assert!(matches!(conn.stage, Stage::Command));
                 let mut decoder = Decoder::default();
-                decoder.push(conn.out.as_slice());
+                decoder.push(&client_bytes(conn));
                 let Some(ToCommand::Part(part)) = decoder.frame()? else {
                     return Err("no refusal".into());
                 };
@@ -2231,7 +2320,7 @@ mod tests {
             server.request(0, read, Context::default(), None, now);
             let source = server.conns.get_mut(1).ok_or("source")?;
             let mut decoder = Decoder::default();
-            decoder.push(source.out.as_slice());
+            decoder.push(&client_bytes(source));
             let mut asked = None;
             while let Some(frame) = decoder.frame::<ToAttached>()? {
                 if let ToAttached::Read(n, ClientRead::Keys) = frame {
@@ -2249,7 +2338,7 @@ mod tests {
             let conn = server.conns.first().ok_or("worker")?;
             assert!(matches!(conn.stage, Stage::Command));
             let mut decoder = Decoder::default();
-            decoder.push(conn.out.as_slice());
+            decoder.push(&client_bytes(conn));
             let Some(ToCommand::Part(part)) = decoder.frame()? else {
                 return Err("no reply".into());
             };
@@ -2274,7 +2363,7 @@ mod tests {
     /// Waits only for the worker socket: the test chooses every server turn.
     fn command_readable(server: &Server) -> Result<(), String> {
         let conn = server.conns.first().ok_or("worker")?;
-        let mut fds = [PollFd::new(&conn.stream, PollFlags::IN)];
+        let mut fds = [PollFd::new(&conn.link.stream, PollFlags::IN)];
         match fuxix::poll::poll(&mut fds, Some(Duration::from_secs(3))) {
             Ok(0) => Err("the worker did not ask".into()),
             Ok(_) => Ok(()),
@@ -2285,7 +2374,7 @@ mod tests {
     /// Handles and writes one greeting or reply without reading ahead into
     /// the next request, so a transport failure has an exact position.
     fn command_reply(server: &mut Server) -> Result<(), String> {
-        while server.conns.first().ok_or("worker")?.out.is_empty() {
+        while client_bytes(server.conns.first().ok_or("worker")?).is_empty() {
             command_readable(server)?;
             server.serve_conn(0, PollFlags::IN, Instant::now());
             if matches!(
@@ -2311,8 +2400,8 @@ mod tests {
             return Err("the worker did not connect".into());
         }
         let (stream, _) = listener.accept().map_err(|e| e.to_string())?;
-        stream.set_nonblocking(true).map_err(|e| e.to_string())?;
-        *server.conns.first_mut().ok_or("worker")? = Conn::new(stream);
+        let conn = linked(stream, None).map_err(|e| e.to_string())?;
+        *server.conns.first_mut().ok_or("worker")? = conn;
         command_reply(server)
     }
 
@@ -2342,6 +2431,7 @@ mod tests {
                         .conns
                         .first()
                         .ok_or("worker")?
+                        .link
                         .stream
                         .shutdown(std::net::Shutdown::Both)
                         .map_err(|e| e.to_string())?;
@@ -2493,46 +2583,6 @@ mod tests {
                 r#""stopped""#,
             ]
         );
-        Ok(())
-    }
-
-    #[test]
-    fn detaching_restores_only_an_explicit_cursor_colour() -> Result<(), String> {
-        for (colour, reset) in [
-            (None, &b""[..]),
-            (Some([0, 255, 0].into()), &b"\x1b]112\x1b\\"[..]),
-        ] {
-            let (mut session, mut conn, _peer) = attached(Instant::now())?;
-            if let Some(attached) = conn.attached() {
-                attached.shown.modes.cursor_colour = colour;
-            }
-            conn.end(&mut session, &ToAttached::Exit("detached"), Instant::now());
-            let (painted, exit) = sent(&conn);
-            assert_eq!(painted, reset);
-            assert_eq!(exit.as_deref(), Some("detached"));
-        }
-        Ok(())
-    }
-
-    /// A client let go gives its terminal the cursor's shape back as the
-    /// terminal's own (DECSCUSR 0, then xterm's 7) only if a pane set one:
-    /// by ctlseqs, 0 is a blinking block, which a terminal fux never told
-    /// otherwise was not asked to be.
-    #[test]
-    fn a_cursor_shape_is_given_back_only_once_one_was_set() -> Result<(), String> {
-        for (shape, given) in [
-            (fux_vt::CursorShape::Initial, ""),
-            (fux_vt::CursorShape::SteadyBar, "\x1b[0 q\x1b[7 q"),
-        ] {
-            let (mut session, mut conn, _peer) = attached(Instant::now())?;
-            if let Some(attached) = conn.attached() {
-                attached.shown.modes.cursor_shape = shape;
-            }
-            conn.end(&mut session, &ToAttached::Exit("detached"), Instant::now());
-            let (painted, exit) = sent(&conn);
-            assert_eq!(String::from_utf8_lossy(&painted), given, "{shape:?}");
-            assert_eq!(exit.as_deref(), Some("detached"));
-        }
         Ok(())
     }
 }

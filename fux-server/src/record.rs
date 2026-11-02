@@ -65,7 +65,9 @@ pub fn read(path: &std::path::Path) -> Result<Option<Record>, String> {
         Err(error) => return Err(format!("{}: {error}", path.display())),
     };
     let record = fux_wire::wire::Reader::new(&bytes).whole();
-    record.map(Some).map_err(|e| format!("{}: {e}", path.display()))
+    record
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Writes `bytes`, a record, to `path`, whole: to a file beside it renamed

@@ -479,10 +479,39 @@ fn draw_row(
 struct Links(Vec<Option<Vec<Link>>>);
 
 /// A cell's hyperlink, and the pane whose it is.
-type Link = Option<(PaneId, Hyperlink)>;
+type Link = Option<(PaneId, Linked)>;
+
+/// A hyperlink as a grid holds it: a pane's own, or as a grid sent to a
+/// connection's process has it (`wire`), told by its key and URI alike.
+#[derive(Clone, Debug)]
+pub enum Linked {
+    Vt(Hyperlink),
+    Sent { key: u64, uri: Arc<str> },
+}
+
+impl Linked {
+    pub fn key(&self) -> u64 {
+        match self {
+            Linked::Vt(link) => link.key(),
+            Linked::Sent { key, .. } => *key,
+        }
+    }
+    pub fn uri(&self) -> &str {
+        match self {
+            Linked::Vt(link) => link.uri(),
+            Linked::Sent { uri, .. } => uri,
+        }
+    }
+}
+
+impl PartialEq for Linked {
+    fn eq(&self, other: &Linked) -> bool {
+        (self.key(), self.uri()) == (other.key(), other.uri())
+    }
+}
 
 impl Links {
-    fn at(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
+    fn at(&self, y: u16, x: u16) -> Option<(PaneId, &Linked)> {
         let (pane, link) = self.row(y)?.get(usize::from(x))?.as_ref()?;
         Some((*pane, link))
     }
@@ -491,7 +520,7 @@ impl Links {
         self.0.get(usize::from(y))?.as_deref()
     }
     /// Gives cell `x` of row `y`, `cols` wide, `link`.
-    fn set(&mut self, y: u16, x: u16, link: Option<(PaneId, &Hyperlink)>, cols: u16) {
+    fn set(&mut self, y: u16, x: u16, link: Option<(PaneId, &Linked)>, cols: u16) {
         let y = usize::from(y);
         if link.is_none() && self.0.get(y).is_none_or(Option::is_none) {
             return;
@@ -538,7 +567,7 @@ impl Grid {
         })
     }
     /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
-    pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
+    pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &Linked)> {
         self.links.at(y, x)
     }
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
@@ -647,8 +676,11 @@ impl Grid {
             return;
         }
         for (gx, col) in (x..).zip(0..room) {
-            let link = row.link(usize::from(col)).map(|link| (pane, link));
-            self.links.set(y, gx, link, self.cols);
+            let link = row
+                .link(usize::from(col))
+                .map(|link| Linked::Vt(link.clone()));
+            self.links
+                .set(y, gx, link.as_ref().map(|link| (pane, link)), self.cols);
         }
     }
     /// `put_row` for a row drawn twice as wide (`fux_vt::LineRendition`),
@@ -687,8 +719,9 @@ impl Grid {
                     self.cells.set_attributes(i, cell.attributes());
                 }
             }
-            let link = row.link(col).map(|link| (pane, link));
-            self.links.set(y, gx, link, self.cols);
+            let link = row.link(col).map(|link| Linked::Vt(link.clone()));
+            self.links
+                .set(y, gx, link.as_ref().map(|link| (pane, link)), self.cols);
         }
     }
     /// Draws the first `width` cells of row `y` from column `x`, a pane's
@@ -805,6 +838,81 @@ impl Grid {
                 self.set(y, x, blank);
             }
         }
+    }
+}
+
+/// A grid on the wire, as the server sends a client's connection's process
+/// each screen it composes for it (`conn`): its cells, a cluster each with
+/// its width, its links, its cursor and modes, and how the client's
+/// terminal draws.
+impl fux_wire::wire::Wire for Grid {
+    fn put(&self, out: &mut impl fux_wire::wire::Sink) {
+        (self.rows, self.cols).put(out);
+        for y in 0..self.rows {
+            for x in 0..self.cols {
+                let cell = self.get(y, x).unwrap_or_default();
+                let width = match (cell.is_wide_continuation(), cell.is_wide()) {
+                    (true, _) => 0u8,
+                    (false, false) => 1,
+                    (false, true) => 2,
+                };
+                width.put(out);
+                if width > 0 {
+                    cell.contents().to_owned().put(out);
+                    cell.attributes().put(out);
+                }
+                let link = self.link(y, x);
+                let link = link.map(|(pane, link)| (pane, link.key(), link.uri().to_owned()));
+                link.put(out);
+            }
+        }
+        self.cursor.put(out);
+        let Modes {
+            cursor_shape,
+            cursor_colour,
+            mouse,
+        } = self.modes;
+        (cursor_shape.number(), cursor_colour, mouse).put(out);
+        (self.underline_styles, self.cell_placement).put(out);
+    }
+
+    fn get(r: &mut fux_wire::wire::Reader<'_>) -> Result<Self, fux_wire::wire::Error> {
+        use fux_wire::wire::Error;
+        let (rows, cols) = <(u16, u16)>::get(r)?;
+        let mut grid = Grid::new(rows, cols).map_err(|_| Error::Bad("a grid's size"))?;
+        for y in 0..rows {
+            for x in 0..cols {
+                let cell = match u8::get(r)? {
+                    0 => None,
+                    width => Some((width == 2, String::get(r)?, Attributes::get(r)?)),
+                };
+                match &cell {
+                    None => grid.set(y, x, CellRef::wide_continuation()),
+                    Some((wide, text, attributes)) => {
+                        grid.set(y, x, CellRef::new(text, *wide, *attributes));
+                    }
+                }
+                if let Some((pane, key, uri)) = Option::<(PaneId, u64, String)>::get(r)? {
+                    let link = Linked::Sent {
+                        key,
+                        uri: Arc::from(uri),
+                    };
+                    grid.links.set(y, x, Some((pane, &link)), cols);
+                }
+            }
+        }
+        grid.cursor = Option::get(r)?;
+        let (shape, cursor_colour, mouse) = <(u16, Option<Rgb>, u16)>::get(r)?;
+        let cursor_shape = (CursorShape::ALL.iter().copied())
+            .find(|s| s.number() == shape)
+            .ok_or(Error::Bad("a cursor shape"))?;
+        grid.modes = Modes {
+            cursor_shape,
+            cursor_colour,
+            mouse,
+        };
+        (grid.underline_styles, grid.cell_placement) = <(bool, bool)>::get(r)?;
+        Ok(grid)
     }
 }
 
@@ -1748,7 +1856,7 @@ fn column(grid: &mut Grid, view: &View, column: &fux_wire::act::Column) {
 /// Its `id` is the pane's and the link's key there, so that no two panes'
 /// links are one, and a link painted in pieces is one, as the spec asks of
 /// a multiplexer (`references/modern/osc8_hyperlinks.md`).
-fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, &Hyperlink)>) {
+fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, &Linked)>) {
     match link {
         Some((pane, link)) => {
             let (key, uri) = (link.key(), link.uri());

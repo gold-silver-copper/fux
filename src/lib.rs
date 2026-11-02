@@ -53,6 +53,7 @@ pub fn main() -> ExitCode {
         match args.split_first().map(|(a, rest)| (a.as_str(), rest)) {
             Some((SERVE, rest)) => return serve(rest),
             Some((fux_server::link::PANE, [])) => return pane(),
+            Some((fux_server::link::CONN, [])) => return conn(),
             _ => {}
         }
     }
@@ -120,6 +121,29 @@ fn pane() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let _ = writeln!(std::io::stderr(), "fux pane: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// A client's connection's own process, started by its server
+/// (`server::Conn::start`): the client on stdin, its link on stdout.
+fn conn() -> ExitCode {
+    use std::os::fd::AsFd;
+    let socket = |fd: std::os::fd::BorrowedFd<'_>| {
+        fd.try_clone_to_owned()
+            .map(std::os::unix::net::UnixStream::from)
+    };
+    let client = socket(std::io::stdin().as_fd());
+    let server = socket(std::io::stdout().as_fd());
+    let served = match (client, server) {
+        (Ok(client), Ok(server)) => fux_server::conn::serve(client, server),
+        (Err(e), _) | (_, Err(e)) => Err(format!("its sockets: {e}")),
+    };
+    match served {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let _ = writeln!(std::io::stderr(), "fux connection: {error}");
             ExitCode::from(1)
         }
     }

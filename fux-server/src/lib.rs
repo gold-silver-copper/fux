@@ -64,6 +64,7 @@ macro_rules! wired {
 }
 
 pub mod capture;
+pub mod conn;
 pub mod copy;
 pub mod host;
 mod input;

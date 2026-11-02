@@ -1851,7 +1851,10 @@ impl Session {
     /// Its journal starts afresh, this server's own (D-124 (5)).
     pub fn resume(&mut self, record: crate::record::Record, now: Instant) -> Result<(), Error> {
         let Some(socket) = self.launch.clone() else {
-            return Err(fail(Raise::Start, "a session that starts no programs takes back none"));
+            return Err(fail(
+                Raise::Start,
+                "a session that starts no programs takes back none",
+            ));
         };
         let panes = crate::socket::panes(&socket);
         self.run = record.run;
@@ -2271,9 +2274,13 @@ impl Session {
                         "event scope was never issued by this server run",
                     ));
                 }
-                let reader =
-                    crate::journal::Reader::new(scope, self.parts.journal(), self.journal_run, from)
-                        .map_err(|why| fail(Raise::BadValue, why))?;
+                let reader = crate::journal::Reader::new(
+                    scope,
+                    self.parts.journal(),
+                    self.journal_run,
+                    from,
+                )
+                .map_err(|why| fail(Raise::BadValue, why))?;
                 let read = crate::journal::Read::new(reader, crate::after(now, timeout.duration()));
                 return Ok(self.answered(Waiting::Events(read), now));
             }

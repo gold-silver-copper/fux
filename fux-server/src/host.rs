@@ -1582,7 +1582,8 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             Some(_) => Events::IN | Events::OUT,
             None => Events::NONE,
         };
-        let ends = (link.as_ref().map(|end| &end.stream)).or(asking.as_ref().map(|end| &end.stream));
+        let ends =
+            (link.as_ref().map(|end| &end.stream)).or(asking.as_ref().map(|end| &end.stream));
         let none = &listener;
         match ends {
             Some(stream) => fds.push(PollFd::new(stream, linked | Events::IN)),

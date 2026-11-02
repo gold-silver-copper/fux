@@ -406,15 +406,38 @@ impl End {
     /// Reads what the socket holds, at most `buffer` at a time, until it
     /// would wait.
     pub fn read(&mut self, buffer: &mut [u8]) -> Read {
-        loop {
+        self.read_up_to(buffer, usize::MAX)
+    }
+
+    /// `read`, till `limit` bytes are read, the rest left for the next.
+    pub fn read_up_to(&mut self, buffer: &mut [u8], limit: usize) -> Read {
+        let mut read = 0usize;
+        while read < limit {
             match fuxix::io::read(&self.stream, buffer) {
                 Ok(0) => return Read::Closed,
-                Ok(n) => self.decoder.push(buffer.get(..n).unwrap_or_default()),
+                Ok(n) => {
+                    read = read.saturating_add(n);
+                    self.decoder.push(buffer.get(..n).unwrap_or_default());
+                }
                 Err(fuxix::Errno::INTR) => {}
                 Err(fuxix::Errno::AGAIN) => return Read::More,
                 Err(_) => return Read::Closed,
             }
         }
+        Read::More
+    }
+
+    /// The messages queued to go, as the other end will read them: for the
+    /// tests.
+    #[cfg(test)]
+    pub fn queued<T: Wire>(&self) -> Vec<T> {
+        let mut decoder = Decoder::default();
+        decoder.push(self.out.as_slice());
+        let mut queued = Vec::new();
+        while let Ok(Some(message)) = decoder.frame::<Message<T>>() {
+            queued.push(message.0);
+        }
+        queued
     }
 
     /// The next whole message come, if one is.
@@ -513,7 +536,11 @@ impl Link {
     /// the next one would if this one crashed (D-124), in a session of its
     /// own; and waits for its first word: why it did not start, if it did
     /// not.
-    pub fn start(exe: &std::path::Path, socket: &std::path::Path, begin: Begin) -> Result<Link, String> {
+    pub fn start(
+        exe: &std::path::Path,
+        socket: &std::path::Path,
+        begin: Begin,
+    ) -> Result<Link, String> {
         let at = |doing: &str| {
             let socket = socket.display().to_string();
             let doing = doing.to_owned();
@@ -528,7 +555,9 @@ impl Link {
         let mut command = std::process::Command::new(exe);
         command
             .arg(PANE)
-            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(listener)))
+            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                listener,
+            )))
             .stdout(std::process::Stdio::null());
         fuxix::process::lead_session(&mut command, false);
         let child = command
@@ -647,3 +676,90 @@ wired!(struct Greeting {
 /// How the server starts a pane's own process: `fux __pane`, its link on
 /// stdin. No help lists it.
 pub const PANE: &str = "__pane";
+
+/// From the server to a client's connection's own process (D-123, `conn`).
+#[derive(Debug)]
+pub enum ToConn {
+    /// Bytes for its client: frames, as the client protocol has them.
+    Bytes(Vec<u8>),
+    /// What its client is to send next: the frames it decodes.
+    Expect(Expect),
+    /// The answer to its client's request is all sent: once the client
+    /// has it, its next request is read.
+    Answered,
+    /// A screen for its attached client, sent it as it differs from what
+    /// the client shows.
+    Paint(Box<Paint>),
+    /// Its client is detached: its terminal is given back its own cursor
+    /// shape and configured colour, where they were set.
+    Detached,
+    /// Its last word is sent: it ends once its client has it all.
+    Close,
+}
+wired!(ToConn { Bytes(b), Expect(e), Answered, Paint(p), Detached, Close });
+
+/// The frames a connection's client sends next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expect {
+    Attach,
+    Asked,
+    Attached,
+}
+wired!(Expect {
+    Attach,
+    Asked,
+    Attached
+});
+
+/// A screen composed for an attached client: what its terminal is sent
+/// first (its title, its bell marks taken), the screen, and its pictures,
+/// each with the sixel data that draws it at its place, the first time it
+/// is sent this client. `forget`: what the client shows is not known (it
+/// resized), and is painted whole.
+#[derive(Debug)]
+pub struct Paint {
+    pub before: Vec<u8>,
+    pub grid: crate::render::Grid,
+    pub pictures: Vec<Shown>,
+    pub forget: bool,
+}
+wired!(struct Paint { before, grid, pictures, forget });
+
+/// A picture an attached client is shown: its identity, the cells of its
+/// screen it takes (top row, first column, rows, columns), and, the first
+/// time, its sixel data.
+#[derive(Clone, Debug)]
+pub struct Shown {
+    pub id: u64,
+    pub place: (u16, u16),
+    pub size: (u16, u16),
+    pub data: Option<Vec<u8>>,
+}
+wired!(struct Shown { id, place, size, data });
+
+impl Shown {
+    /// The cells it takes: top row, first column, rows, columns.
+    pub fn area(&self) -> (u16, u16, u16, u16) {
+        (self.place.0, self.place.1, self.size.0, self.size.1)
+    }
+}
+
+/// From a client's connection's own process to the server.
+#[derive(Debug)]
+pub enum FromConn {
+    /// Whole frames its client sent, each decoded as the frame expected:
+    /// sent again as they came, for the server to take.
+    Frames(Vec<u8>),
+    /// Everything sent for its client was written to it.
+    Flushed,
+    /// Its client shut its side: it sends no more.
+    Shut,
+    /// Its client sent what is no frame of those expected: why. It reads
+    /// it no more.
+    Bad(String),
+}
+wired!(FromConn { Frames(f), Flushed, Shut, Bad(why) });
+
+/// How the server starts a client's connection's own process: `fux
+/// __conn`, the client's socket on stdin, its link on stdout.
+pub const CONN: &str = "__conn";
