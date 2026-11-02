@@ -45,13 +45,13 @@ reference.
 
 | Thing | What it is | Identity | Lifetime |
 |---|---|---|---|
-| server | owns everything for one run | its socket and its run | start until told to stop |
+| server | owns everything for one run; a crashed server process is replaced by the next `fux start`, and the run goes on (D-124) | its socket and its run | start until told to stop |
 | workspace | an ordered group of tabs and workspaces, seen one at a time (tmux: session) | `+N` plus run; a name or none | until its last child closes |
 | tab | panes laid out together, split side by side or stacked one at a time, seen one at a time (tmux: window) | `@N` plus run; a name or none | until its last pane closes |
 | pane | a terminal that outlives its programs | `%N` plus run; a name or none | until killed |
 | program | one run of a process in a pane; a respawn is the next generation | pane plus generation | start to exit |
 | client | an attached terminal, or a headless stand-in | `cN` plus run | attach to detach |
-| journal | the numbered, bounded events of one run | the run | the run's |
+| journal | the numbered, bounded events of one server process in a run | the run and its server process | that process's |
 | dictionary | the words one fuxth run can call | one per run | the run's |
 | word | a named fuxth definition | its name plus which definition | its dictionary's |
 
