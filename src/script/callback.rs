@@ -321,7 +321,7 @@ mod tests {
             }
             .into(),
         })?;
-        let mut values = crate::script::answered(reply)?;
+        let mut values = crate::script::answered(reply, &mut no_code)?;
         let root = values.pop().ok_or("snapshot")?;
         let payload = data(&root).map_err(|e| e.message)?;
         let bytes = fux_wire::wire::encode(&payload);

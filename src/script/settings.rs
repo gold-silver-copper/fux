@@ -1,7 +1,7 @@
 //! Checked fuxth values for local preferences and request options.
 use super::Fux;
+use fux_wire::callback::Data;
 use fux_wire::command::{Number, Program};
-use fux_wire::json::Json;
 use fuxth::Value;
 
 /// A local setting's type, read once as `set` is given it, and written
@@ -9,7 +9,7 @@ use fuxth::Value;
 pub(crate) trait Reads: Sized {
     fn takes() -> String;
     fn read(value: &Value<Fux>) -> Result<Self, Unread>;
-    fn json(&self) -> Json;
+    fn data(&self) -> Data;
     fn update(value: &Value<Fux>, _previous: Option<&Self>) -> Result<Self, Unread> {
         Self::read(value)
     }
@@ -117,8 +117,8 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
         (usize::try_from(n).ok().and_then(Number::new))
             .ok_or_else(|| format!("{n} is out of range, {MIN} to {MAX}").into())
     }
-    fn json(&self) -> Json {
-        Json::count(self.get())
+    fn data(&self) -> Data {
+        Data::count(self.get())
     }
 }
 
@@ -133,8 +133,8 @@ impl Reads for bool {
         };
         Ok(*b)
     }
-    fn json(&self) -> Json {
-        Json::Bool(*self)
+    fn data(&self) -> Data {
+        Data::Bool(*self)
     }
 }
 
@@ -146,8 +146,8 @@ impl Reads for Program {
     fn read(value: &Value<Fux>) -> Result<Program, Unread> {
         Ok(Program::from_argv(strings(value)?)?)
     }
-    fn json(&self) -> Json {
-        Json::Array(self.argv().into_iter().map(Json::String).collect())
+    fn data(&self) -> Data {
+        Data::List(self.argv().into_iter().map(Data::Text).collect())
     }
 }
 
@@ -162,8 +162,8 @@ impl Reads for fux_wire::command::ScrollLines {
             .and_then(Self::new)
             .ok_or_else(|| format!("{n} is out of range, 0 to 32767").into())
     }
-    fn json(&self) -> Json {
-        Json::int(self.get())
+    fn data(&self) -> Data {
+        Data::int(self.get())
     }
 }
 
@@ -209,12 +209,12 @@ fn colour(value: &Value<Fux>) -> Result<fux_vt::Color, Unread> {
     }
 }
 /// A colour as `colour` reads it.
-fn colour_json(colour: fux_vt::Color) -> Json {
+fn colour_data(colour: fux_vt::Color) -> Data {
     match colour {
-        fux_vt::Color::Default => Json::str("default"),
-        fux_vt::Color::Idx(n) => Json::int(n),
+        fux_vt::Color::Default => Data::text("default"),
+        fux_vt::Color::Idx(n) => Data::int(n),
         fux_vt::Color::Rgb(fux_vt::Rgb { r, g, b }) => {
-            Json::String(format!("#{r:02x}{g:02x}{b:02x}"))
+            Data::Text(format!("#{r:02x}{g:02x}{b:02x}"))
         }
     }
 }
@@ -226,7 +226,7 @@ impl Reads for fux_wire::presentation::Styles {
     fn read(value: &Value<Fux>) -> Result<Self, Unread> {
         Self::update(value, None)
     }
-    fn json(&self) -> Json {
+    fn data(&self) -> Data {
         let row = |name: &str| {
             let style = self.role(name)?;
             let flags = [
@@ -238,12 +238,12 @@ impl Reads for fux_wire::presentation::Styles {
             let flags = flags
                 .into_iter()
                 .filter(|(_, on)| *on)
-                .map(|(f, _)| Json::str(f));
-            let colours = [colour_json(style.foreground), colour_json(style.background)];
-            let row = [Json::str(name)].into_iter().chain(colours).chain(flags);
-            Some(Json::Array(row.collect()))
+                .map(|(f, _)| Data::text(f));
+            let colours = [colour_data(style.foreground), colour_data(style.background)];
+            let row = [Data::text(name)].into_iter().chain(colours).chain(flags);
+            Some(Data::List(row.collect()))
         };
-        Json::Array(Self::NAMES.iter().filter_map(|name| row(name)).collect())
+        Data::List(Self::NAMES.iter().filter_map(|name| row(name)).collect())
     }
     fn update(value: &Value<Fux>, previous: Option<&Self>) -> Result<Self, Unread> {
         let rows = items(value)?;
@@ -366,7 +366,7 @@ impl Reads for fux_wire::presentation::Bar {
             )?)
         })
     }
-    fn json(&self) -> Json {
+    fn data(&self) -> Data {
         use fux_wire::presentation::{BarPosition, Field};
         let position = match self.position() {
             BarPosition::Top => "top",
@@ -375,18 +375,18 @@ impl Reads for fux_wire::presentation::Bar {
         };
         let fields = |fields: &[Field]| {
             let field = |field: &Field| match field {
-                Field::Workspace => Json::str("workspace"),
-                Field::Tabs => Json::str("tabs"),
-                Field::Pane => Json::str("pane"),
-                Field::Slot(id) => Json::Array(vec![Json::str("slot"), Json::int(*id)]),
+                Field::Workspace => Data::text("workspace"),
+                Field::Tabs => Data::text("tabs"),
+                Field::Pane => Data::text("pane"),
+                Field::Slot(id) => Data::List(vec![Data::text("slot"), Data::int(*id)]),
             };
-            Json::Array(fields.iter().map(field).collect())
+            Data::List(fields.iter().map(field).collect())
         };
-        Json::Array(vec![
-            Json::str(position),
+        Data::List(vec![
+            Data::text(position),
             fields(self.left()),
             fields(self.right()),
-            Json::Bool(self.tab_numbers()),
+            Data::Bool(self.tab_numbers()),
         ])
     }
 }
@@ -415,11 +415,11 @@ impl Reads for fux_wire::presentation::Slots {
             Ok(Self::new(values)?)
         })
     }
-    fn json(&self) -> Json {
+    fn data(&self) -> Data {
         let ids = (0..u8::try_from(Self::MAX).unwrap_or(u8::MAX)).filter_map(|id| {
             let text = self.text(id)?;
-            Some(Json::Array(vec![Json::int(id), Json::str(text)]))
+            Some(Data::List(vec![Data::int(id), Data::text(text)]))
         });
-        Json::Array(ids.collect())
+        Data::List(ids.collect())
     }
 }

@@ -254,19 +254,19 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         &record::from_json(&status).map_err(|e| e.message)?,
         &mut lines,
     );
-    // What a client answers of its own: every kind of key it binds, and
-    // its preferences.
+    // What a client answers of its own: every kind of key it binds, its
+    // code values compiled in its dictionary, and its preferences.
     let state = super::default_state()?;
+    let mut machine = super::client_base(None)?;
     let own = [
         ("keys", state.keys.record(&[])),
         ("preferences", state.preferences.record()),
     ];
-    for (path, json) in own {
-        records(
-            path,
-            &record::from_json(&json).map_err(|e| e.message)?,
-            &mut lines,
-        );
+    for (path, data) in own {
+        let value = super::callback::value(&data, &mut |code| {
+            super::code_value(&mut machine, code, None)
+        })?;
+        records(path, &value, &mut lines);
     }
     let batch = fux_server::journal::every_kind_read(run)?;
     let events = record::events(batch).map_err(|e| e.message)?;

@@ -60,11 +60,15 @@ events.events[][view_resized]: event pane tab workspace client cols rows origin 
 events.events[][zoomed]: event pane tab workspace origin seq next
 events.events[][zoomed]: event tab workspace pane origin seq next
 events: events first next missed status reason
-keys.keymap[][binding]: kind keys code label group
-keys.keymap[][line]: kind keys action code label
-keys.keymap[][list]: kind keys action code label
-keys.keymap[][map]: kind keys repeat
-keys: at keymap
+keys.keymap[].keymap[].keymap[].keymap[][binding]: kind key code label group
+keys.keymap[].keymap[].keymap[][binding]: kind key code label group
+keys.keymap[].keymap[].keymap[][map]: kind key repeat keymap
+keys.keymap[].keymap[][binding]: kind key code label group
+keys.keymap[].keymap[][map]: kind key repeat keymap
+keys.keymap[][map]: kind key repeat keymap
+keys.line[]: key action code label
+keys.list[]: key action code label
+keys: at keymap list line
 preferences[]: name value type
 snapshot.facts.clients[].choices[]: layout_revision stack current last
 snapshot.facts.clients[].output: graphics underline_styles clipboard kitty_flags_requested

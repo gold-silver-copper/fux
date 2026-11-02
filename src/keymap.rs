@@ -16,8 +16,7 @@ use crate::screens::{Effect, HIDE};
 use fux_vt::keys::{Key, KeyPress, Keystroke, Modifiers};
 use fux_wire::act::ScreenAct;
 use fux_wire::act::{Act, Column, ColumnEntry, Edit, Hint, LineAct, ListAct, Move, Panel};
-use fux_wire::callback::Code;
-use fux_wire::json::Json;
+use fux_wire::callback::{Code, Data};
 use fux_wire::words::quote;
 
 /// What a key runs: a code value, what the column says it does, and the
@@ -113,6 +112,29 @@ impl Map {
         all
     }
 
+    /// Its keys, as the `keys` record gives them, in the order first bound:
+    /// each its `key`, and what it runs (kind `binding`: its `code`, `label`
+    /// and `group`) or holds (kind `map`: whether it `repeat`s, and that
+    /// map's own `keymap`).
+    fn record(&self) -> Data {
+        let entry = |(key, entry): &(KeyPress, Entry)| match entry {
+            Entry::Run(binding) => Data::record([
+                ("kind", Data::text("binding")),
+                ("key", Data::text(key.to_string())),
+                ("code", Data::Code(binding.code.clone())),
+                ("label", Data::text(&binding.label)),
+                ("group", Data::text(&binding.group)),
+            ]),
+            Entry::Map(map) => Data::record([
+                ("kind", Data::text("map")),
+                ("key", Data::text(key.to_string())),
+                ("repeat", Data::Bool(map.repeat)),
+                ("keymap", map.record()),
+            ]),
+        };
+        Data::List(self.keys.iter().map(entry).collect())
+    }
+
     /// Its first binding, depth first, whose group titles it.
     fn first(&self) -> Option<&Binding> {
         self.all().into_iter().find_map(|(_, entry)| match entry {
@@ -175,6 +197,24 @@ impl Map {
     }
 }
 
+impl Entry {
+    /// How many keys deep it reaches: one for a binding.
+    fn depth(&self) -> usize {
+        match self {
+            Entry::Run(_) => 1,
+            Entry::Map(map) => {
+                let deepest = map.keys.iter().map(|(_, entry)| entry.depth()).max();
+                deepest.unwrap_or_default().saturating_add(1)
+            }
+        }
+    }
+}
+
+/// The most keys a binding may be typed with: a key `n` deep is a record
+/// `2n + 1` deep in the `keys` record, its fields one deeper, and the wire
+/// carries that record `DEPTH + 1` deep at most.
+pub const DEEPEST: usize = (fux_wire::callback::DEPTH as usize - 1) / 2;
+
 /// Keys as they are written: `C-b t n`.
 pub fn keys_text(keys: &[KeyPress]) -> String {
     keys.iter()
@@ -224,6 +264,12 @@ impl Keymap {
         let escape = |k: &KeyPress| k.plain_key() == Some(Key::Escape);
         if keys.iter().skip(1).any(escape) {
             return Err("Escape leaves a map of keys; it cannot be bound in one".to_owned());
+        }
+        let deep = (keys.len().saturating_sub(1)).saturating_add(entry.depth());
+        if deep > DEEPEST {
+            return Err(format!(
+                "a key {deep} deep is past the {DEEPEST} the keys record carries"
+            ));
         }
         self.root.put(keys, keys, entry)
     }
@@ -368,30 +414,17 @@ impl Keymap {
             .collect()
     }
 
-    /// The `keys` record: the keys a client holding `at` has typed into
-    /// the map it is in, and every key it binds, depth first, each map
-    /// before its keys, then its screens' keys: a list, not a tree, so its
-    /// depth is the keymap's own.
-    pub fn record(&self, at: &[KeyPress]) -> Json {
-        let text = |keys: &[KeyPress]| Json::str(keys_text(keys));
-        let mut keymap: Vec<Json> = (self.root.all().into_iter())
-            .map(|(keys, entry)| match entry {
-                Entry::Run(binding) => Json::object(vec![
-                    ("kind", Json::str("binding")),
-                    ("keys", text(&keys)),
-                    ("code", Json::str(binding.code.text())),
-                    ("label", Json::str(&binding.label)),
-                    ("group", Json::str(&binding.group)),
-                ]),
-                Entry::Map(map) => Json::object(vec![
-                    ("kind", Json::str("map")),
-                    ("keys", text(&keys)),
-                    ("repeat", Json::Bool(map.repeat)),
-                ]),
-            })
-            .collect();
-        keymap.extend(self.modes.record());
-        Json::object(vec![("at", text(at)), ("keymap", Json::Array(keymap))])
+    /// The `keys` record, as a client answers it: `at`, the keys a client
+    /// holding `at` has typed into the map it is in; `keymap`, its root
+    /// map's keys (`Map::record`); then the keys of each of its screens,
+    /// `list` and `line`.
+    pub fn record(&self, at: &[KeyPress]) -> Data {
+        let mut fields = vec![
+            ("at".to_owned(), Data::text(keys_text(at))),
+            ("keymap".to_owned(), self.root.record()),
+        ];
+        fields.extend(self.modes.record());
+        Data::Record { of: None, fields }
     }
 }
 
@@ -627,11 +660,10 @@ impl Modes {
             .collect()
     }
 
-    /// Every key, as the `keys` record lists them.
-    fn record(&self) -> Vec<Json> {
+    /// Each screen's keys, as the `keys` record lists them, by its name.
+    fn record(&self) -> impl Iterator<Item = (String, Data)> {
         self.tables()
-            .flat_map(|(name, table)| table.record(name))
-            .collect()
+            .map(|(name, table)| (name.to_owned(), table.record()))
     }
 }
 
@@ -730,9 +762,9 @@ pub trait Bindable {
     fn label(&mut self, key: KeyPress) -> Option<&mut Option<String>>;
     /// Its keys as config lines, for the screen named `modal`.
     fn lines(&self, modal: &str) -> String;
-    /// Its keys as the `keys` record lists them: each of `kind` the screen
-    /// named `modal`, with its action's name or its code.
-    fn record(&self, modal: &'static str) -> Vec<Json>;
+    /// Its keys as the `keys` record lists them: each its `key`, its
+    /// `action`'s name or its `code`, and its `label`.
+    fn record(&self) -> Data;
 }
 
 impl<A: Named> Bindable for Table<A> {
@@ -784,22 +816,21 @@ impl<A: Named> Bindable for Table<A> {
         self.0.iter().map(line).collect()
     }
 
-    fn record(&self, modal: &'static str) -> Vec<Json> {
-        let text = |text: Option<String>| text.map_or(Json::Null, Json::String);
+    fn record(&self) -> Data {
+        let text = |text: Option<String>| text.map_or(Data::Null, Data::Text);
         let entry = |(key, act, label): &(KeyPress, A, Option<String>)| {
-            let code = act.source().map(Code::text);
-            Json::object(vec![
-                ("kind", Json::str(modal)),
-                ("keys", Json::str(key.to_string())),
+            let code = act.source().cloned();
+            Data::record([
+                ("key", Data::text(key.to_string())),
                 (
                     "action",
                     text(code.is_none().then(|| act.name().to_owned())),
                 ),
-                ("code", text(code)),
+                ("code", code.map_or(Data::Null, Data::Code)),
                 ("label", text(label.clone())),
             ])
         };
-        self.0.iter().map(entry).collect()
+        Data::List(self.0.iter().map(entry).collect())
     }
 }
 
@@ -1084,6 +1115,21 @@ mod tests {
             keymap.describe(),
             "unbind-all\nstr 'C-b g n' code opts new-tab drop end bind\nstr 'C-b y l' code me focused str right 1 move-border end bind\nstr M-t code me focused zoom end bind\nstr 'C-b y' repeat\n"
         );
+        Ok(())
+    }
+
+    /// Keys bind as deep as their record goes on the wire and back, and no
+    /// deeper, bound or moved there.
+    #[test]
+    fn keys_bind_as_deep_as_their_record_goes_on_the_wire() -> crate::TestResult {
+        let mut keymap = Keymap::default();
+        let zoom = || Binding::new(crate::testing::code("me focused zoom"));
+        keymap.bind(&vec![key("a")?; DEEPEST], zoom())?;
+        let record = keymap.record(&[]);
+        let bytes = fux_wire::wire::encode(&record);
+        assert_eq!(fux_wire::wire::Reader::new(&bytes).whole::<Data>()?, record);
+        assert!(keymap.bind(&vec![key("b")?; DEEPEST + 1], zoom()).is_err());
+        assert!(keymap.move_keys(&keys("a")?, &keys("c d")?).is_err());
         Ok(())
     }
 

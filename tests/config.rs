@@ -698,12 +698,15 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
 }
 
 /// Another program reads a client's keys and preferences from the client
-/// itself: a binding two maps deep, the map the client is in now, and a
-/// preference's name, value and type.
+/// itself: the keymap nested, a binding two maps deep, the map the client
+/// is in now, and a preference's name, value and type. A binding's code is
+/// a code value, made in the reader's dictionary, which runs it; one of
+/// words the reader lacks is the failure that says so, with its words.
 #[test]
 fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     let server = Server::start(
         "str 'C-b g u' code me focused zoom end bind  str 'C-b g' repeat\n\
+         str 'C-b g t' code str ran-by-the-reader print end bind\n\
          str history-bytes 4096 set\n",
     )?;
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
@@ -717,13 +720,29 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     let read = |what: &str| server.ok(&["str", &id, "client", what, "json"]);
     let keys = read("keys")?;
     for said in [
-        r#"{"at":"","keymap":[{"kind":"map","keys":"C-b","repeat":false},"#,
-        r#"{"kind":"map","keys":"C-b g","repeat":true}"#,
-        r#"{"kind":"binding","keys":"C-b g u","code":"me focused zoom","label":"me focused zoom","group":"Other"}"#,
-        r#"{"kind":"line","keys":"Enter","action":"submit","code":null,"label":"accept"}"#,
+        r#"{"at":"","keymap":[{"kind":"map","key":"C-b","repeat":false,"keymap":["#,
+        r#"{"kind":"map","key":"g","repeat":true,"keymap":[{"kind":"binding","key":"u","code":"me focused zoom","label":"me focused zoom","group":"Other"},"#,
+        r#"{"key":"Enter","action":"submit","code":null,"label":"accept"}"#,
     ] {
         assert!(keys.contains(said), "{said} in {keys}");
     }
+    // A binding of the map `C-b`, the root's first key, its code's value
+    // then `then` run on it.
+    let code = |keys: &[&str], then: &[&str]| {
+        let read = ["str", &id, "client", "keys", "str", "keymap", "get"];
+        let mut program = [&read[..], &["first", "str", "keymap", "get"], keys].concat();
+        program.extend([&["str", "code", "get"][..], then].concat());
+        server.ok(&program)
+    };
+    let last = ["last", "str", "keymap", "get", "last"];
+    assert_eq!(code(&last, &["execute"])?.trim(), "ran-by-the-reader");
+    // `C-b x` runs `me-focused confirm-close`, of a word the bundled keys
+    // define, which a client's dictionary has and the command line's lacks.
+    let failure = code(
+        &["2", "at"],
+        &["dup", "kind", "print", "str", "value", "get"],
+    )?;
+    assert_eq!(failure.trim(), "failure\nme-focused confirm-close");
     terminal.type_bytes(b"\x02g")?;
     eventually("the client in the map C-b g", || {
         Ok(read("keys")?.starts_with(r#"{"at":"C-b g","#))
@@ -744,7 +763,7 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     terminal.wait_for("Enter accept")?;
     terminal.type_bytes(
         b"str 'C-b y' code me focused zoom end bind  \
-          me keys json str 'C-b y' contains if str fresh else str stale then \
+          me keys json str '\"key\":\"y\"' contains if str fresh else str stale then \
           str read-back- swap cat print\r",
     )?;
     let mut said = String::new();
@@ -766,6 +785,17 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
         said, "read-back-fresh",
         "the read found the keys before the bind"
     );
+    // In the client, `C-b x`'s words are all its dictionary's.
+    terminal.type_bytes(b"\x02e")?;
+    terminal.wait_for("Enter accept")?;
+    terminal.type_bytes(
+        b"me keys str keymap get first str keymap get 2 at str code get kind \
+          str made-an- swap cat print\r",
+    )?;
+    eventually("the code made in the client", || {
+        terminal.pump();
+        Ok(String::from_utf8_lossy(&terminal.output).contains("made-an-xt"))
+    })?;
     terminal.type_bytes(b"\x02d")?;
     terminal.wait_exit()?;
     let gone = server.fux(&["str", &id, "client", "keys"])?;

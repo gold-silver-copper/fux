@@ -41,7 +41,7 @@ pub enum Dispatch {
     /// Tell the worker the frame count after all preceding sends completed.
     Fence,
     /// The answer to the server's question numbered so (`ToAttached::Read`).
-    Answer(u64, fux_wire::json::Json),
+    Answer(u64, fux_wire::callback::Data),
 }
 
 /// A client's display and its opening counter, kept for the attachment's life.
