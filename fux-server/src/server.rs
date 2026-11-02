@@ -10,10 +10,10 @@ use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer, Wit
 use crate::socket::{Endpoint, SocketPath};
 use crate::wait::Waiting;
 use fux_vt::bytes::ByteQueue;
+use fux_wire::callback::Data;
 use fux_wire::code::Code;
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId};
-use fux_wire::json::Json;
 use fux_wire::layout::Placement;
 use fux_wire::protocol::{
     Asked, Attach, AttachedFrame, Body, Context, Decoder, Frame, Greeting, Hello, Mismatch, Reply,
@@ -1350,12 +1350,12 @@ impl Server {
     /// A client's answer to the question numbered `asked` it was relayed
     /// (`Waiting::Read`): the reply of the request that asked it, if that
     /// still waits; else nobody's.
-    fn answered(&mut self, client: ClientId, asked: u64, value: Json, now: Instant) {
+    fn answered(&mut self, client: ClientId, asked: u64, value: Data, now: Instant) {
         let asks = |w: &Waiting| matches!(*w, Waiting::Read { client: c, asked: a } if (c, a) == (client, asked));
         let asker = (self.conns.iter_mut())
             .find(|conn| matches!(&conn.stage, Stage::Waiting(w) if asks(w)));
         if let Some(conn) = asker {
-            conn.answer(&mut self.session, Body::Field(value).into(), now);
+            conn.answer(&mut self.session, Body::Read(value).into(), now);
         }
     }
 
@@ -2520,7 +2520,7 @@ mod tests {
             }
             let asked = asked.ok_or("the client was not asked")?;
             let frame = match answers {
-                true => AttachedFrame::Answer(asked, Json::str("its keys")),
+                true => AttachedFrame::Answer(asked, Data::Text("its keys".into())),
                 false => AttachedFrame::Detach,
             };
             source.decoder.push(&frame.encode());
@@ -2537,7 +2537,7 @@ mod tests {
             match answers {
                 true => assert_eq!(
                     reply.response,
-                    Response::Returned(Body::Field(Json::str("its keys")))
+                    Response::Returned(Body::Read(Data::Text("its keys".into())))
                 ),
                 false => assert!(matches!(
                     reply.end(),

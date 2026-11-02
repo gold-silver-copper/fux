@@ -698,12 +698,22 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
 }
 
 /// Another program reads a client's keys and preferences from the client
-/// itself: a binding two maps deep, the map the client is in now, and a
-/// preference's name, value and type.
+/// itself: the keymap nested, a binding two maps deep, the map the client
+/// is in now, and a preference's name, value and type. A binding's code is
+/// a code value of its words, which reading never compiles: `execute`
+/// compiles them in the dictionary it runs in, so a word that one lacks
+/// fails there, and a read in the middle of a computation leaves it as it
+/// was.
 #[test]
 fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     let server = Server::start(
         "str 'C-b g u' code me focused zoom end bind  str 'C-b g' repeat\n\
+         define say-ran str ran-in-the-client print end\n\
+         str 'C-b g s' code say-ran end bind\n\
+         define take end  str 'C-b g r' code take end bind\n\
+         str 'C-b g y' code stop-compiling digits-begin start-compiling end bind\n\
+         str 'C-b g n' code me focused swap rename end bind\n\
+         str 'C-b g t' code str ran-by-the-reader print end bind\n\
          str history-bytes 4096 set\n",
     )?;
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
@@ -717,13 +727,74 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     let read = |what: &str| server.ok(&["str", &id, "client", what, "json"]);
     let keys = read("keys")?;
     for said in [
-        r#"{"at":"","keymap":[{"kind":"map","keys":"C-b","repeat":false},"#,
-        r#"{"kind":"map","keys":"C-b g","repeat":true}"#,
-        r#"{"kind":"binding","keys":"C-b g u","code":"me focused zoom","label":"me focused zoom","group":"Other"}"#,
-        r#"{"kind":"line","keys":"Enter","action":"submit","code":null,"label":"accept"}"#,
+        r#"{"at":"","keymap":[{"kind":"map","key":"C-b","repeat":false,"keymap":["#,
+        r#"{"kind":"map","key":"g","repeat":true,"keymap":[{"kind":"binding","key":"u","code":"me focused zoom","label":"me focused zoom","group":"Other"},"#,
+        r#"{"kind":"binding","key":"x","code":"me-focused confirm-close","label":"close pane","group":"Panes"}"#,
+        r#"{"key":"Enter","action":"submit","code":null,"label":"accept"}"#,
     ] {
         assert!(keys.contains(said), "{said} in {keys}");
     }
+    // A binding of the map `C-b`, the root's first key, its code then
+    // `then` run on it.
+    let program = |keys: &[&str], then: &[&str]| {
+        let read = ["str", &id, "client", "keys", "str", "keymap", "get"];
+        let mut program = [&read[..], &["first", "str", "keymap", "get"], keys].concat();
+        program.extend([&["str", "code", "get"][..], then].concat());
+        program.into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let code = |keys: &[&str], then: &[&str]| {
+        let program = program(keys, then);
+        server.ok(&program.iter().map(String::as_str).collect::<Vec<_>>())
+    };
+    let last = ["last", "str", "keymap", "get", "last"];
+    assert_eq!(code(&last, &["execute"])?.trim(), "ran-by-the-reader");
+    // A word compiled before the code is read runs it as `execute` does.
+    let early = [
+        &["define", "run-code", "execute", "end"].map(str::to_owned)[..],
+        &program(&last, &["run-code"]),
+    ]
+    .concat();
+    let early: Vec<&str> = early.iter().map(String::as_str).collect();
+    assert_eq!(server.ok(&early)?.trim(), "ran-by-the-reader");
+    // `C-b x` runs `me-focused confirm-close`, `me-focused` a word of the
+    // bundled keys', which a client's dictionary has and the command
+    // line's lacks: a code value here too, which fails as it is executed.
+    assert_eq!(code(&["2", "at"], &["kind"])?.trim(), "code");
+    let close = program(&["2", "at"], &["execute"]);
+    let failed = server.fux(&close.iter().map(String::as_str).collect::<Vec<_>>())?;
+    assert!(
+        failed.stderr.contains("unknown_word") && failed.stderr.contains("me-focused"),
+        "{}",
+        failed.stderr
+    );
+    // Read in the middle of number text and with a value on the return
+    // stack, beside `take`, immediate here, which `C-b g r` names, and
+    // `C-b g y`, whose words begin number text as they compile.
+    let midway = [
+        "define",
+        "take",
+        "from-return",
+        "drop",
+        "end",
+        "immediate",
+        "digits-begin",
+        "str",
+        "kept",
+        "holds",
+        "7",
+        "to-return",
+        "str",
+        &id,
+        "client",
+        "keys",
+        "drop",
+        "from-return",
+        "print",
+        "0",
+        "digits-end",
+        "print",
+    ];
+    assert_eq!(server.ok(&midway)?, "7\nkept\n");
     terminal.type_bytes(b"\x02g")?;
     eventually("the client in the map C-b g", || {
         Ok(read("keys")?.starts_with(r#"{"at":"C-b g","#))
@@ -736,6 +807,49 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     eventually("Escape leaving the map", || {
         Ok(read("keys")?.starts_with(r#"{"at":"","#))
     })?;
+    // A read code value is a callback too: `C-b g n`'s, the prompt's.
+    let opens = [
+        "str",
+        &id,
+        "client",
+        "str",
+        "Reuse",
+        "str",
+        "named-by-prompt",
+    ];
+    let reuse = program(&["last", "str", "keymap", "get", "4", "at"], &["prompt"]);
+    let reuse = [
+        &opens[..],
+        &reuse.iter().map(String::as_str).collect::<Vec<_>>(),
+    ]
+    .concat();
+    server.ok(&reuse)?;
+    terminal.wait_for("Reuse")?;
+    terminal.type_bytes(b"\r")?;
+    let name = ["str", &id, "client", "focused", "str", "name", "get"];
+    eventually("the prompt's callback ran", || {
+        Ok(server.ok(&name)?.trim() == "named-by-prompt")
+    })?;
+    // In the client, `C-b g s`'s word is its config's, and runs.
+    terminal.type_bytes(b"\x02e")?;
+    terminal.wait_for("Enter accept")?;
+    terminal.type_bytes(
+        b"me keys str keymap get first str keymap get last str keymap get 1 at \
+          str code get execute\r",
+    )?;
+    eventually("the code run in the client", || {
+        terminal.pump();
+        Ok(String::from_utf8_lossy(&terminal.output).contains("ran-in-the-client"))
+    })?;
+    // And bound again, as it came: `C-b g t`'s code on `C-b Q`.
+    terminal.type_bytes(b"\x02e")?;
+    terminal.wait_for("Enter accept")?;
+    terminal.type_bytes(
+        b"str 'C-b Q' me keys str keymap get first str keymap get last str keymap get last \
+          str code get bind\r",
+    )?;
+    let rebound = r#"{"kind":"binding","key":"Q","code":"str ran-by-the-reader print""#;
+    eventually("C-b Q bound", || Ok(read("keys")?.contains(rebound)))?;
     // A key bound, then read, in one program at its prompt: the read finds
     // it, as pending keys are committed before the program asks anything.
     // What it prints is joined as it runs, so the line typed never shows
@@ -744,7 +858,7 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     terminal.wait_for("Enter accept")?;
     terminal.type_bytes(
         b"str 'C-b y' code me focused zoom end bind  \
-          me keys json str 'C-b y' contains if str fresh else str stale then \
+          me keys json str '\"key\":\"y\"' contains if str fresh else str stale then \
           str read-back- swap cat print\r",
     )?;
     let mut said = String::new();

@@ -69,6 +69,39 @@ pub enum Fux {
     Extent(Extent),
     /// What the server said: a capture or a wait's outcome.
     Answer(Rc<Answer>, Option<Run>),
+    /// A code value another client sent, as its words: `execute` compiles
+    /// them in this program's dictionary, then runs them (`Ask::Code`).
+    Code(Rc<Sent>),
+}
+
+/// A code value another client sent: its words, and the xt they made
+/// where it was executed last, which runs again in the machine that made
+/// it while it holds it.
+#[derive(Debug)]
+pub struct Sent {
+    code: fux_wire::callback::Code,
+    made: std::cell::RefCell<Option<Value<Fux>>>,
+}
+
+impl From<fux_wire::callback::Code> for Sent {
+    fn from(code: fux_wire::callback::Code) -> Self {
+        let made = std::cell::RefCell::default();
+        Self { code, made }
+    }
+}
+
+/// Two are equal when their words are.
+impl PartialEq for Sent {
+    fn eq(&self, other: &Self) -> bool {
+        self.code == other.code
+    }
+}
+
+impl std::ops::Deref for Sent {
+    type Target = fux_wire::callback::Code;
+    fn deref(&self) -> &Self::Target {
+        &self.code
+    }
 }
 
 impl AppValue for Fux {
@@ -100,6 +133,7 @@ impl AppValue for Fux {
             },
             Fux::Extent(_) => "size",
             Fux::Answer(answer, _) => answer.names().0,
+            Fux::Code(_) => "code",
         }
     }
 
@@ -116,6 +150,7 @@ impl AppValue for Fux {
             Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
             Fux::All => write!(out, "all"),
             Fux::Opts(_) => write!(out, "({})", self.kind()),
+            Fux::Code(code) => out.write_str(&code.text()),
         }
         .map_err(|_| fuxth::Failure::new(Code::Output.into(), "the text could not be written"))
     }
@@ -340,6 +375,9 @@ pub enum Ask {
     /// The program's own dictionary's records: the word a name names
     /// (`word`), or every word (`dictionary`).
     Dictionary(Option<String>),
+    /// A code value another client sent (`Fux::Code`), `execute`d: made
+    /// in the program's dictionary as #370 makes a callback's, then run.
+    Code(Rc<Sent>),
 }
 
 /// The keys of a binding just made.
@@ -565,8 +603,10 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
         error.message.push_str(&format!(" ({usage})"));
     }
-    if error.code == Lang::UnknownWord {
-        error.message.push_str(" (`fux help` lists every word)");
+    // Once, though a code value's failure is told again where it ran.
+    const LISTS: &str = " (`fux help` lists every word)";
+    if error.code == Lang::UnknownWord && !error.message.ends_with(LISTS) {
+        error.message.push_str(LISTS);
     }
     let place = error.place.take();
     Failed {
@@ -1293,8 +1333,40 @@ fn steps(
                 let records = dictionary(machine, name.as_deref());
                 pushed(machine, records)?
             }
+            Outcome::Suspended(Ask::Code(sent)) => {
+                let ran = sent_xt(machine, &sent, stop)
+                    .and_then(|xt| machine.execute(xt).map_err(|e| uncaught(machine, e)));
+                if let Err(failed) = ran {
+                    pushed(machine, Err(failed))?
+                }
+            }
         }
     }
+}
+
+/// The xt `sent` makes in `machine`: the one it made there before, while
+/// `machine` holds it; else its words compiled as a callback's are, the run
+/// set aside, which they can't touch. What was made so and is held no more
+/// is let go of first, so a program that reads and runs code again and
+/// again keeps only what it holds.
+fn sent_xt(
+    machine: &mut Machine<Fux>,
+    sent: &Sent,
+    stop: Option<&Stop>,
+) -> Result<Value<Fux>, Failed> {
+    if let Some(xt) = sent.made.borrow().clone().filter(|xt| machine.owns(xt)) {
+        return Ok(xt);
+    }
+    machine.release();
+    let from = machine.made();
+    let aside = machine.set_aside();
+    let xt = code_value(machine, sent, stop);
+    machine.take_back(aside);
+    machine.lent(from);
+    if let Ok(xt) = &xt {
+        *sent.made.borrow_mut() = Some(xt.clone());
+    }
+    xt
 }
 
 /// The record of the word `name` names in `machine`'s dictionary now, or,
@@ -1456,6 +1528,10 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
         Body::Field(json) => {
             record::pane_fact(&json, run).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
+        // Its code values kept as their words, which `execute` compiles.
+        Body::Read(data) => callback::value(&data, &mut |code| {
+            Ok(Value::App(Fux::Code(Rc::new(code.clone().into()))))
+        })?,
     }])
 }
 

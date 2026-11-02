@@ -61,6 +61,15 @@ pub trait Host {
             "this host reads no source files",
         ))
     }
+    /// What to wait for while the host makes `value`, a code value of its
+    /// own (another machine's, sent as its words), into an xt of this
+    /// machine's: `execute` waits for it, and the host runs the xt
+    /// (`Machine::execute`). None for any other value, which `execute`
+    /// refuses.
+    fn code(&mut self, value: &Self::Value) -> Option<Self::Request> {
+        let _ = value;
+        None
+    }
 }
 
 /// Code: steps, each with the token it came from (none for a word of the
@@ -462,6 +471,54 @@ impl std::fmt::Display for Definition<'_> {
     }
 }
 
+/// What a machine is running, beside its dictionary, each field named
+/// once: `set_aside` and `take_back` move the same ones.
+macro_rules! run_state {
+    ($($field:ident: $ty:ty,)*) => {
+        /// What a machine was running, set aside (`Machine::set_aside`).
+        pub struct Aside<A> {
+            $($field: $ty,)*
+        }
+
+        impl<A: AppValue> Machine<A> {
+            /// What the machine is running, set aside, so that it is at
+            /// rest with its dictionary, to compile code (`Host::code`);
+            /// `take_back` puts it back as it was, and drops whatever ran
+            /// between.
+            pub fn set_aside(&mut self) -> Aside<A> {
+                Aside {
+                    $($field: std::mem::take(&mut self.$field),)*
+                }
+            }
+
+            pub fn take_back(&mut self, aside: Aside<A>) {
+                $(self.$field = aside.$field;)*
+            }
+        }
+    };
+}
+
+run_state! {
+    stack: Vec<Value<A>>,
+    frames: Vec<Frame>,
+    locals: Vec<Option<Value<A>>>,
+    marks: Vec<(usize, Body)>,
+    iters: Vec<(Sequence<A>, usize, usize)>,
+    loops: Vec<Loop>,
+    returns: Vec<Value<A>>,
+    building: Vec<Building<A>>,
+    compiling: bool,
+    made: Option<Vec<(usize, usize)>>,
+    digits: String,
+    out: Vec<Value<A>>,
+    actions: Vec<(Step, Token)>,
+    raised: Vec<Token>,
+    last: Option<(usize, usize, usize)>,
+    read_last: Option<Token>,
+    read_here: bool,
+    empty: bool,
+}
+
 /// A machine: its dictionary and what it is running.
 #[derive(Clone)]
 pub struct Machine<A> {
@@ -539,6 +596,11 @@ pub struct Machine<A> {
     /// reader itself, from its source: so `code` and `end` can tell a
     /// quotation their words alone make again.
     pub(crate) read_here: bool,
+    /// The versions a host made for values of its own (`Host::code`),
+    /// which `release` lets go of once nothing holds them.
+    lent: Vec<usize>,
+    /// The empty code each version `release` let go of names.
+    released: Option<Rc<Steps<A>>>,
 }
 
 impl<A: AppValue> Machine<A> {
@@ -578,6 +640,8 @@ impl<A: AppValue> Machine<A> {
             raised: Vec::new(),
             last: None,
             read_here: false,
+            lent: Vec::new(),
+            released: None,
         };
         let vocabulary = Rc::clone(&machine.vocabulary);
         for builtin in Builtin::ALL {
@@ -959,6 +1023,84 @@ impl<A: AppValue> Machine<A> {
         }
     }
 
+    /// `execute` of a value of the host's: what to wait for while the host
+    /// makes it, a code value, an xt; else its refusal.
+    #[cold]
+    #[inline(never)]
+    fn host_code<H: Host<Value = A>>(&mut self, host: &mut H) -> Result<H::Request, Error> {
+        let value = self.pop()?;
+        let request = if let Value::App(app) = &value {
+            host.code(app)
+        } else {
+            None
+        };
+        request.ok_or_else(|| self.not_executed(&value))
+    }
+
+    fn not_executed(&self, value: &Value<A>) -> Error {
+        let wants = Wants::Takes(Builtin::Execute, "an xt or a code value");
+        self.refused(Some(wants), value.kind(), false)
+    }
+
+    /// Runs `xt`, as `execute` does: the xt a host made of a code value
+    /// (`Host::code`), run next, before the step after `execute`.
+    pub fn execute(&mut self, xt: Value<A>) -> Result<(), Error> {
+        let Value::Xt(Xt(code)) = xt else {
+            return Err(self.not_executed(&xt));
+        };
+        self.enter(&code)
+    }
+
+    /// Whether `xt` is this machine's, so it runs here.
+    pub fn owns(&self, xt: &Value<A>) -> bool {
+        matches!(xt, Value::Xt(Xt(code)) if self.index_of(code).is_ok())
+    }
+
+    /// How many versions of code it has made: where the next one goes.
+    pub fn made(&self) -> usize {
+        self.versions.len().saturating_add(self.fresh.len())
+    }
+
+    /// The versions made since `from` were made by its host for a value of
+    /// its own (`Host::code`): `release` lets go of them once nothing
+    /// holds them.
+    pub fn lent(&mut self, from: usize) {
+        self.lent.extend(from..self.made());
+    }
+
+    /// Lets go of each version `lent` that no value holds and no call
+    /// runs: its index stays, naming empty code, so no other changes.
+    pub fn release(&mut self) {
+        let running = |index: usize, frames: &[Frame]| {
+            frames.iter().any(|frame| match frame {
+                Frame::Code { code, via, .. } => {
+                    *code == index || via.is_some_and(|(code, _)| code == index)
+                }
+                Frame::Read(_) => false,
+            })
+        };
+        let unheld = |code: Option<&Rc<Steps<A>>>| code.is_some_and(|c| Rc::strong_count(c) == 1);
+        let (free, held): (Vec<usize>, Vec<usize>) = std::mem::take(&mut self.lent)
+            .into_iter()
+            .partition(|&index| unheld(self.version_at(index)) && !running(index, &self.frames));
+        self.lent = held;
+        if free.is_empty() {
+            return;
+        }
+        let empty =
+            Rc::clone((self.released).get_or_insert_with(|| Rc::new(Steps::new(Rc::from("")))));
+        let kept = self.versions.len();
+        for index in free {
+            let slot = match index.checked_sub(kept) {
+                None => Rc::make_mut(&mut self.versions).get_mut(index),
+                Some(fresh) => self.fresh.get_mut(fresh),
+            };
+            if let Some(slot) = slot {
+                *slot = Rc::clone(&empty);
+            }
+        }
+    }
+
     /// Runs `code`, one of this machine's, in a frame of its own.
     pub(crate) fn enter(&mut self, code: &Rc<Steps<A>>) -> Result<(), Error> {
         let index = self.index_of(code)?;
@@ -1054,6 +1196,12 @@ impl<A: AppValue> Machine<A> {
                     // whole, which the CPU can't forward (counting to a
                     // million: +7% cycles on fewer instructions).
                     Op::Push(value) => self.stack.extend_from_slice(std::slice::from_ref(value)),
+                    // A code value of the host's is made into an xt by it.
+                    Op::Builtin(Builtin::Execute)
+                        if matches!(self.stack.last(), Some(Value::App(_))) =>
+                    {
+                        return self.host_code(host).map(Outcome::Suspended);
+                    }
                     Op::Builtin(builtin) => {
                         self.builtin(*builtin, host)?;
                         if self.frames.len() != depth {
@@ -2638,8 +2786,8 @@ builtins! { m host;
     Quit "quit" [cold] () "--" raises(Quit) "stop the program: the failure quit, -56 throw" {
         m.throw(Value::Int(-56))
     }
-    Execute "execute" [cold] (xt: Exec) "xt --" raises(any) "run the word xt is" {
-        m.enter(&xt)
+    Execute "execute" [cold] (xt: Any) "xt --" raises(any) "run the word xt is, or the code a code value of the host's makes here" {
+        m.execute(xt)
     }
     Create "create" [cold] () "--" raises(MissingToken BadName IdsExhausted Memory)
         "create NAME: a word that gives the address where the data space goes on, for the data stored after (store-next, allot)"

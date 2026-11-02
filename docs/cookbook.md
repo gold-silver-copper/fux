@@ -363,13 +363,14 @@ str 'C-a g h' code me focused str left 1 move-border end bind  str 'C-a g' repea
 
 Another program reads a client's keys, and the map it is in now, from
 that client itself, and its preferences. Here a client of no terminal
-says its id, and two of its keys and one preference are read from it.
+says its id, and two of its keys, in the map `C-b` holds, and one
+preference are read from it.
 
 ```sh
 fux opts 80 24 size attach > client.id &
 A=$!
 until [ -s client.id ]; do kill -0 "$A"; sleep 0.1; done
-fux str "$(cat client.id)" client keys | jq -c '.at, (.keymap[] | select(.keys == "C-b d" or .keys == "C-b r"))'
+fux str "$(cat client.id)" client keys | jq -c '.at, (.keymap[] | select(.key == "C-b") | .keymap[] | select(.key == "d" or .key == "r"))'
 fux str "$(cat client.id)" client preferences | jq -c 'select(.name == "bell")'
 kill "$A"
 ```

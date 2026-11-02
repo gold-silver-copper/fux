@@ -120,12 +120,12 @@ macro_rules! preferences {
         impl Preferences {
             /// The `preferences` record: each one's name, its value as
             /// `set` takes it, and what it takes.
-            pub fn record(&self) -> fux_wire::json::Json {
-                use fux_wire::json::Json;
-                Json::Array(vec![$(Json::object(vec![
-                    ("name", Json::str($name)),
-                    ("value", self.$field.json()),
-                    ("type", Json::str(<$reads as Reads>::takes())),
+            pub fn record(&self) -> fux_wire::callback::Data {
+                use fux_wire::callback::Data;
+                Data::List(vec![$(Data::record([
+                    ("name", Data::text($name)),
+                    ("value", self.$field.data()),
+                    ("type", Data::text(<$reads as Reads>::takes())),
                 ]),)*])
             }
         }

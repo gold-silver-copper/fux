@@ -22,6 +22,30 @@ pub enum Data {
     Code(Code),
 }
 
+impl Data {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text(text.into())
+    }
+
+    pub fn int(n: impl Into<i64>) -> Self {
+        Self::Int(n.into())
+    }
+
+    /// A count: every one fux keeps fits an integer, else it is null.
+    pub fn count(n: usize) -> Self {
+        i64::try_from(n).map_or(Self::Null, Self::Int)
+    }
+
+    /// A record of no server run's, its fields in order.
+    pub fn record<const N: usize>(fields: [(&str, Data); N]) -> Self {
+        let fields = fields.map(|(key, value)| (key.to_owned(), value));
+        Self::Record {
+            of: None,
+            fields: fields.into(),
+        }
+    }
+}
+
 /// How deep a callback's lists and records may nest on the wire: decoding
 /// one, or making one, is a recursion that goes no deeper.
 pub const DEPTH: u8 = 64;

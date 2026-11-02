@@ -33,8 +33,13 @@ fn fail() -> Failure {
 }
 
 /// `v` as a code value goes on the wire: the words of `code … end`'s xt,
-/// which only it keeps, and only when `code` WORDS `end` makes it again.
+/// which only it keeps, and only when `code` WORDS `end` makes it again;
+/// or the words of one another client sent.
 pub(super) fn code(v: &Value<Fux>) -> Result<Code, Failure> {
+    // One another client sent goes on as it came.
+    if let Value::App(Fux::Code(code)) = v {
+        return Ok((**code).clone());
+    }
     let Value::Xt(xt) = v else {
         let why = format!("takes code … end, not {}", v.kind());
         return Err(Failure::new(fuxth::Code::Type, why));
@@ -89,6 +94,7 @@ fn data_within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
         }
         Value::App(Fux::Client(c, run)) => Data::Client(*c, *run),
         Value::Xt(_) => Data::Code(code(v)?),
+        Value::App(Fux::Code(code)) => Data::Code((**code).clone()),
         Value::App(Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..))
         | Value::Mark(_)
         | Value::Failure(_)
@@ -230,6 +236,25 @@ mod tests {
             client: Data::Null,
         })
     }
+    /// A client's answer is read compiling nothing, so no machine keeps
+    /// code for it: each code value in it is its words, which go on to
+    /// another client as they came.
+    #[test]
+    fn a_clients_code_values_are_read_as_their_words() -> TestResult {
+        let code = crate::testing::code("me-focused confirm-close");
+        let answer = Data::record([("code", Data::Code(code.clone()))]);
+        let reply = fux_wire::protocol::Body::Read(answer.clone()).into();
+        let read = crate::script::answered(reply)?;
+        let [Value::App(Fux::Record(record))] = read.as_slice() else {
+            return Err("a record".into());
+        };
+        let held = record.get("code").map_err(|e| e.message)?;
+        assert_eq!(held, Value::App(Fux::Code(Rc::new(code.into()))));
+        let sent = data(&Value::App(Fux::Record(Rc::clone(record))));
+        assert_eq!(sent.map_err(|e| e.message)?, answer);
+        Ok(())
+    }
+
     /// Data with no code value in it needs no machine to read.
     fn no_code(_: &Code) -> Result<Value<Fux>, Failed> {
         Err(Failed::new(
@@ -523,6 +548,83 @@ mod tests {
             let refused = admit(prompt(args), None, &context, None).err();
             assert!(refused.is_some_and(|e| e.message.contains("different server runs")));
         }
+        Ok(())
+    }
+
+    /// A code value another client sent compiles where `execute` runs it
+    /// as a callback's does: its words ask nothing of the server and read
+    /// no file as they compile, and a stop stops them; the run executing
+    /// it, number text and the return stack too, goes on as it was.
+    #[test]
+    fn a_sent_code_value_compiles_at_execute_as_a_callbacks_does() -> TestResult {
+        let run = |program: &str, words: &str, stop: Option<&crate::script::Stop>| {
+            let tokens = crate::script::token::source("t", program).map_err(|e| e.to_string())?;
+            let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
+            let sent = Rc::new(crate::testing::code(words).into());
+            machine.push(Value::App(Fux::Code(sent)));
+            let mut out = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut out);
+            crate::script::run(&mut machine, &mut host, &mut NoRequests, stop)
+                .map_err(|e| e.to_string())
+        };
+        let kept = "digits-begin str kept holds 7 to-return execute from-return 0 digits-end";
+        let ran = run(kept, "1 2 add", None)?;
+        assert_eq!(ran, [Value::Int(3), Value::Int(7), Value::str("kept")]);
+        let asks = run(
+            "define ask-it %1 str x rename end immediate execute",
+            "ask-it",
+            None,
+        );
+        assert!(
+            asks.as_ref()
+                .is_err_and(|e| e.contains("ask nothing of the server")),
+            "{asks:?}"
+        );
+        let dir = fuxix::file::scratch()?.join(format!("sent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join("action.fux");
+        std::fs::write(&file, "str read")?;
+        let reads = run("execute", &format!("include {}", file.display()), None);
+        std::fs::remove_dir_all(&dir)?;
+        assert!(
+            reads.as_ref().is_err_and(|e| e.contains("reads no files")),
+            "{reads:?}"
+        );
+        let stop = crate::script::Stop::default();
+        let stopper = stop.clone();
+        let stopping = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            stopper.stop();
+        });
+        let spins = run(
+            "define spin begin again end immediate execute",
+            "spin",
+            Some(&stop),
+        );
+        stopping.join().map_err(|_| "the stopping thread")?;
+        assert!(spins.is_err() && stop.stopped(), "{spins:?}");
+        Ok(())
+    }
+
+    /// A sent code value run again and again in one machine runs what it
+    /// made there the first time: one compilation, however many runs.
+    #[test]
+    fn a_sent_code_value_compiles_once_where_it_runs_again() -> TestResult {
+        let made = |runs: u32| -> Result<usize, Box<dyn std::error::Error>> {
+            let program = format!("{runs} 0 do dup execute drop loop drop");
+            let mut machine =
+                crate::script::compile(&crate::script::token::source("t", &program)?)?;
+            machine.push(Value::App(Fux::Code(Rc::new(
+                crate::testing::code("7").into(),
+            ))));
+            let before = machine.made();
+            let mut out = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut out);
+            let left = crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
+            assert!(left.is_empty(), "{left:?}");
+            Ok(machine.made() - before)
+        };
+        assert_eq!(made(1000)?, made(1)?);
         Ok(())
     }
 
