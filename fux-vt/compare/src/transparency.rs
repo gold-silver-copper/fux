@@ -390,7 +390,8 @@ impl Through {
                     | ToAttached::Welcome(..)
                     | ToAttached::Open(_)
                     | ToAttached::Keys(_)
-                    | ToAttached::Ended(_),
+                    | ToAttached::Ended(_)
+                    | ToAttached::Read(..),
                 ) => {}
             }
         }

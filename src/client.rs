@@ -2295,13 +2295,22 @@ mod tests {
                 }
             }
             let stdin = io::stdin();
-            // Every setting of the terminal, as `stty -g` writes them.
+            // Every setting of the terminal, as `stty -a` lists them, but
+            // `pendin`: a state of its input, not a setting, which macOS's
+            // kernel sets itself whenever line editing comes back on.
             let modes = || {
-                std::process::Command::new("stty")
-                    .arg("-g")
+                let out = std::process::Command::new("stty")
+                    .arg("-a")
                     .stdin(std::process::Stdio::inherit())
-                    .output()
-                    .map(|out| out.stdout)
+                    .output()?;
+                let listed = String::from_utf8(out.stdout).map_err(io::Error::other)?;
+                let settings = listed.split_whitespace();
+                let settings = settings.filter(|s| s.trim_start_matches('-') != "pendin");
+                let settings: Vec<_> = settings.map(str::to_owned).collect();
+                match out.status.success() {
+                    true => Ok(settings),
+                    false => Err(io::Error::other("stty -a failed")),
+                }
             };
             let before = modes()?;
             for flush in [false, true] {
