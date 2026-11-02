@@ -1258,23 +1258,16 @@ pub fn pane_grid(
         bar_position: fux_wire::presentation::BarPosition::Off,
     };
     let screens = |id: PaneId| (id == pane).then_some(screen);
-    match grid.memo.take().filter(|m| m.frame == frame) {
-        Some(memo) => grid.memo = Some(memo.update(grid, &screens)),
+    // A grid blanked has no rows: every row the screen has is drawn.
+    let memo = match grid.memo.take().filter(|m| m.frame == frame) {
+        Some(memo) => memo,
         None => {
             grid.reset(rows, cols, true)?;
-            let window = screen.window();
-            let mut keys = Vec::with_capacity(usize::from(rows));
-            for (y, line) in (0..rows).zip(area.lines()) {
-                let row = window.row(y);
-                keys.push(row.map(|r| (r.id(), r.version())));
-                draw_row(grid, pane, row, (line, window.cols()), None);
-            }
-            grid.memo = Some(Memo {
-                frame,
-                keys: vec![keys],
-            });
+            let keys = vec![vec![None; usize::from(rows)]];
+            Memo { frame, keys }
         }
-    }
+    };
+    grid.memo = Some(memo.update(grid, &screens));
     grid.underline_styles = true;
     grid.cursor = None;
     grid.modes = Modes::default();
