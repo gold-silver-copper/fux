@@ -73,8 +73,10 @@ reference.
    a program exited with 7, a text is on the screen. It never decides that
    a program is ready, idle or done. Nothing is guessed: no made-up names,
    values, defaults or spelling suggestions.
-2. **Act on what you saw.** An action can carry the version it was based
-   on, and is refused as stale if the thing moved.
+2. **Act on what you saw.** An action can carry the version of the state
+   it depends on. That state's owner refuses it as stale if the version
+   changed before acceptance. A version says nothing about another owner's
+   state.
 3. **Every failure says what already happened.** A fuxth program can fail
    after it acted, so its error lists the actions that already took effect.
 4. **Limits belong to users and the OS** (D-83). fux sets no limits of
@@ -190,7 +192,7 @@ The machine numbers hold throughout:
 | Keystroke echo, idle / beside a flood (p50) | 0.24 / 0.25 ms | ≤ 0.5 / ≤ 1 ms |
 | Plain text to the screen | 151 MB/s | ≥ 100 MB/s |
 | Idle wakeups in 10 s | 0 | 0 |
-| Server memory at start / per empty pane | 5.3 MiB / 60 KiB | ≤ 8 MiB / ≤ 128 KiB |
+| Server memory at start / per empty pane, every process counted (D-121) | 5.3 MiB / 60 KiB | ≤ 8 MiB / ≤ 1 MiB |
 | One `fux` command, cold | 8.25 M instructions | ≤ 10 M |
 | fuxth steps a second | 130–140 M | ≥ 100 M |
 | Longest hold of the server loop by one request | not gated | ≤ 16 ms |
