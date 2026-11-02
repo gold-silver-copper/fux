@@ -165,7 +165,6 @@ named!(
         CommandRunning "command_running",
         LastStatus "last_status",
         LastOutput "last_output",
-        Bells "bells",
         Notification "notification",
         Truncated "truncated",
         InputQueued "input_queued",
@@ -175,9 +174,11 @@ named!(
 crate::wire::closed_wire!(Terminal, "terminal fact");
 
 /// A field of a pane's observation after its `id`, `tab` and `version`,
-/// not yet read: its terminal's, by its place in `Facts::terminal`.
+/// not yet read: its version's counts, by their place in `Counts::named`;
+/// its terminal's, by its place in `Facts::terminal`.
 #[derive(Clone, Copy)]
 enum Field {
+    Count(usize),
     Name,
     Label,
     Title,
@@ -204,8 +205,11 @@ impl Pane {
         Some(self.read(field))
     }
 
-    /// Its fields' names, in order: its own, then those it holds.
+    /// Its fields' names, in order: its counts, its own, then those it
+    /// holds.
     fn names(&self) -> impl Iterator<Item = (&'static str, Field)> + '_ {
+        let counts = self.version.counts.named().into_iter().enumerate();
+        let counts = counts.map(|(at, (name, _))| (name, Field::Count(at)));
         let own = [
             ("name", Field::Name),
             ("label", Field::Label),
@@ -223,7 +227,7 @@ impl Pane {
                 .chain(terminal)
         });
         let cwd = self.cwd.iter().map(|_| ("cwd", Field::Cwd));
-        own.into_iter().chain(facts).chain(cwd)
+        counts.chain(own).chain(facts).chain(cwd)
     }
 
     /// A field `names` gives: null where it is not held.
@@ -232,6 +236,9 @@ impl Pane {
         let facts = self.facts.as_ref();
         let none = || Cow::Owned(Json::Null);
         match field {
+            Field::Count(at) => Cow::Owned(
+                (self.version.counts.named().get(at)).map_or(Json::Null, |(_, n)| Json::uint(*n)),
+            ),
             Field::Name => Cow::Owned(self.name.as_deref().map_or(Json::Null, Json::str)),
             Field::Label => Cow::Owned(Json::str(self.label.as_str())),
             Field::Title => Cow::Owned(Json::str(self.title.as_str())),

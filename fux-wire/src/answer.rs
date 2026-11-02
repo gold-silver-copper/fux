@@ -167,6 +167,9 @@ impl PaneAnswer {
         write!(out, "{{\"pane\":\"{}\"", self.pane())?;
         if let Some(version) = self.version() {
             write!(out, ",\"version\":\"{version}\"")?;
+            for (name, n) in version.counts.named() {
+                write!(out, ",\"{name}\":{n}")?;
+            }
         }
         if let PaneAnswer::Changed { changed, ended, .. } = self {
             out.write_str(",\"changed\":[")?;

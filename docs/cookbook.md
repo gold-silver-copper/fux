@@ -413,13 +413,16 @@ fux require words.fux str shell pane str 42 screen-has
 
 A program's dictionary is data: `word` gives a word's record, where it
 came from (`core`, `fux`, `library`, or `run` for the program's own), its
-effect and help as declared, and the words that made it as they were read
-(`native` for a word in Rust), and `codes`, what it can fail with as it
-runs (null where that is unknown, as for `execute`); `dictionary` gives every word's, in the order they were defined. `see` writes what made a word, and `words` every
-name. None of them asks the server.
+effect, its documentation (all `fux help NAME` says of it), the words that
+made it as they were read (`native` for a word in Rust), and `codes`, what
+it can fail with as it runs (null where that is unknown, as for
+`execute`); `dictionary` gives every word's, in the order they were
+defined. `see` writes what made a word, and `words` every name. None of
+them asks the server.
 
 ```sh
 fux str line word str definition get
+fux str capture word str documentation get
 fux str div word str codes get
 [ "$(fux define double 2 mul end str double word str provenance get)" = run ]
 fux dictionary | jq -r 'select(.provenance == "fux") | .name' | wc -l
