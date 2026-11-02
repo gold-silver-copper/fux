@@ -471,8 +471,34 @@ impl std::fmt::Display for Definition<'_> {
     }
 }
 
-/// What a machine was running, set aside (`Machine::set_aside`).
-pub struct Aside<A> {
+/// What a machine is running, beside its dictionary, each field named
+/// once: `set_aside` and `take_back` move the same ones.
+macro_rules! run_state {
+    ($($field:ident: $ty:ty,)*) => {
+        /// What a machine was running, set aside (`Machine::set_aside`).
+        pub struct Aside<A> {
+            $($field: $ty,)*
+        }
+
+        impl<A: AppValue> Machine<A> {
+            /// What the machine is running, set aside, so that it is at
+            /// rest with its dictionary, to compile code (`Host::code`);
+            /// `take_back` puts it back as it was, and drops whatever ran
+            /// between.
+            pub fn set_aside(&mut self) -> Aside<A> {
+                Aside {
+                    $($field: std::mem::take(&mut self.$field),)*
+                }
+            }
+
+            pub fn take_back(&mut self, aside: Aside<A>) {
+                $(self.$field = aside.$field;)*
+            }
+        }
+    };
+}
+
+run_state! {
     stack: Vec<Value<A>>,
     frames: Vec<Frame>,
     locals: Vec<Option<Value<A>>>,
@@ -1073,54 +1099,6 @@ impl<A: AppValue> Machine<A> {
                 *slot = Rc::clone(&empty);
             }
         }
-    }
-
-    /// What the machine is running, set aside, so that it is at rest with
-    /// its dictionary, to compile code (`Host::code`); `take_back` puts it
-    /// back as it was, and drops whatever ran between.
-    pub fn set_aside(&mut self) -> Aside<A> {
-        use std::mem::take;
-        Aside {
-            stack: take(&mut self.stack),
-            frames: take(&mut self.frames),
-            locals: take(&mut self.locals),
-            marks: take(&mut self.marks),
-            iters: take(&mut self.iters),
-            loops: take(&mut self.loops),
-            returns: take(&mut self.returns),
-            building: take(&mut self.building),
-            compiling: take(&mut self.compiling),
-            made: take(&mut self.made),
-            digits: take(&mut self.digits),
-            out: take(&mut self.out),
-            actions: take(&mut self.actions),
-            raised: take(&mut self.raised),
-            last: take(&mut self.last),
-            read_last: take(&mut self.read_last),
-            read_here: take(&mut self.read_here),
-            empty: take(&mut self.empty),
-        }
-    }
-
-    pub fn take_back(&mut self, aside: Aside<A>) {
-        self.stack = aside.stack;
-        self.frames = aside.frames;
-        self.locals = aside.locals;
-        self.marks = aside.marks;
-        self.iters = aside.iters;
-        self.loops = aside.loops;
-        self.returns = aside.returns;
-        self.building = aside.building;
-        self.compiling = aside.compiling;
-        self.made = aside.made;
-        self.digits = aside.digits;
-        self.out = aside.out;
-        self.actions = aside.actions;
-        self.raised = aside.raised;
-        self.last = aside.last;
-        self.read_last = aside.read_last;
-        self.read_here = aside.read_here;
-        self.empty = aside.empty;
     }
 
     /// Runs `code`, one of this machine's, in a frame of its own.
