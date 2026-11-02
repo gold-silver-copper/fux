@@ -671,7 +671,17 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
         listing.contains(" one ") && !listing.contains(" two "),
         "{listing}"
     );
+    // A close is undone whole: its pane stays, and takes input.
+    let refused = server.fux(&["str", &shell, "pane", "kill"])?;
+    assert_ne!(refused.status, 0, "{}", refused.stdout);
+    assert!(
+        server
+            .ok(&["ls", "listing"])?
+            .contains(&format!("    {shell} "))
+    );
     std::fs::remove_dir(&blocked).map_err(e)?;
+    server.type_line(&shell, "echo still-here")?;
+    server.shows(&shell, "still-here")?;
     signal(server_pid(server)?, Signal::Kill);
     server.ok(&["start"])?;
     let listing = server.ok(&["ls", "listing"])?;
@@ -817,5 +827,77 @@ fn a_takeover_keeps_ended_program_panes_by_their_role() -> Outcome {
         assert_eq!(state.trim(), "ended", "{kept}");
     }
     assert!(!listing.contains(&format!("    {shell} ")), "{listing}");
+    Ok(())
+}
+
+/// 20. A connection ends with its server though a pane it sends a body to
+///     reads nothing (stopped): what it does at panes' sockets is part of
+///     its loop, which its server's end ends (D-124 (6)).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome {
+    use std::io::Write;
+    let server = Server::start("")?;
+    let sleeper = pane(&server, "a", &["sleep", "1000"])?;
+    let own = own_process(&server, &sleeper)?;
+    let pid = server_pid(&server)?;
+    let _reap = reap_run(&server)?;
+    signal(own, Signal::Stop);
+    let mut sending = started(
+        &server,
+        &["str", &sleeper, "pane", "input", "paste", "send-keys"],
+    )?;
+    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+    stdin.write_all(&vec![b'x'; 32 << 20]).map_err(e)?;
+    drop(stdin);
+    let mut conn = None;
+    eventually("its connection to hold it", || {
+        conn = (children(pid, "__conn").into_iter())
+            .find(|conn| peak_kib(*conn).is_ok_and(|k| k > 32 << 10));
+        Ok(conn.is_some())
+    })?;
+    let conn = conn.ok_or("its connection")?;
+    signal(pid, Signal::Kill);
+    eventually("its connection gone", || Ok(!alive(conn)))?;
+    signal(own, Signal::Cont);
+    let _ = sending.wait();
+    Ok(())
+}
+
+/// 21. Keys for a client go from the asking connection to the client's,
+///     never through the server (D-123): a paste for one grows no memory of
+///     the server's, and its client takes it as typed.
+#[cfg(target_os = "linux")]
+#[test]
+fn keys_for_a_client_never_pass_through_the_server() -> Outcome {
+    use std::io::Write;
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 80)?;
+    client.wait_for("$")?;
+    let id = client.id.clone().ok_or("its id")?;
+    server.ok(&[
+        "str",
+        &id,
+        "client",
+        "str",
+        "via-client",
+        "text",
+        "send-keys",
+    ])?;
+    client.wait_for("via-client")?;
+    let pid = server_pid(&server)?;
+    let before = peak_kib(pid)?;
+    let mut sending = started(
+        &server,
+        &["str", &id, "client", "input", "paste", "send-keys"],
+    )?;
+    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+    stdin.write_all(&vec![b'y'; 24 << 20]).map_err(e)?;
+    drop(stdin);
+    eventually("the keys sent", || {
+        Ok(sending.try_wait().map_err(e)?.is_some())
+    })?;
+    let grew = peak_kib(pid)?.saturating_sub(before);
+    assert!(grew < 8 << 10, "the server grew {grew} KiB");
     Ok(())
 }

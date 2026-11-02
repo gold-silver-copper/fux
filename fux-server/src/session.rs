@@ -35,6 +35,9 @@ pub enum Outgoing {
     /// (`send-keys` to a client), its screen ended by the server, or its
     /// detach, saying why.
     To(ClientId, ToAttached<'static>),
+    /// Keys for a client, as typed at its terminal: the body another
+    /// client's connection keeps by this number and sends its connection.
+    Keys(ClientId, u64),
     /// Stop the server, saying why, as this actor.
     Shutdown(String, fux_wire::events::Actor),
 }
@@ -260,13 +263,19 @@ pub struct Session {
     staged: Option<Vec<(PaneId, ToPane)>>,
     /// Why a change could not be recorded, which undoes it (`transact`).
     unrecorded: Option<Error>,
+    /// The panes a change closes, their copies and links, kept whole till
+    /// it is recorded: told to close then, or put back (`transact`).
+    closing: Vec<(PaneId, Link, bool)>,
+    closed: Vec<Pane>,
     /// The body the frame being taken has, kept by its connection
     /// (`link::FromConn::Frame`), till a request or act takes it; the
     /// bodies to go to panes, each its connection's number, its token and
     /// the panes; and the last token given.
     body: Option<u64>,
-    pub deliveries: Vec<(u64, u64, Vec<PaneId>)>,
-    tokens: u64,
+    pub deliveries: Vec<(u64, u64, Vec<PaneId>, Option<ClientId>)>,
+    /// What panes used up of what connections held them for (`Retired`):
+    /// the server lets each go of its connection.
+    pub retired: Vec<(PaneId, u64)>,
     /// A reply the asker's connection makes itself (`link::Making`): taken
     /// as the reply is sent.
     pub making: Option<crate::link::Making>,
@@ -379,9 +388,11 @@ impl Session {
             recording: true,
             staged: None,
             unrecorded: None,
+            closing: Vec::new(),
+            closed: Vec::new(),
             body: None,
             deliveries: Vec::new(),
-            tokens: 0,
+            retired: Vec::new(),
             making: None,
             orphans: Vec::new(),
             placed: Placement::default(),
@@ -574,7 +585,7 @@ impl Session {
     /// Asks pane `id` `what`, as the journal's actor now: the question's
     /// number, which its answer carries (`Waiting::Asked`). A pane whose
     /// own process is gone is asked nothing: what it can't do, it is told.
-    fn ask_pane(&mut self, id: PaneId, what: Ask, now: Instant) -> Result<u64, Error> {
+    pub(crate) fn ask_pane(&mut self, id: PaneId, what: Ask, now: Instant) -> Result<u64, Error> {
         let pane = self.pane(id)?;
         if !self.links.contains_key(&id) {
             return Err(pane.refuses_input().unwrap_or_else(|| lost(id)));
@@ -722,11 +733,12 @@ impl Session {
     }
 
     /// A body's token: its panes are asked for it, and its connection sends
-    /// it them (`deliveries`).
+    /// it them (`deliveries`). Numbered as questions are, so that no body
+    /// and no capture a pane holds (a question's number) are ever one.
     pub(crate) fn body_token(&mut self) -> Option<(u64, u64)> {
         let body = self.body.take()?;
-        self.tokens = self.tokens.wrapping_add(1);
-        Some((body, self.tokens))
+        self.asked_pane = self.asked_pane.wrapping_add(1);
+        Some((body, self.asked_pane))
     }
 
     /// Questions `asks` and `tokens`, whose asker is gone: none is waited
@@ -888,6 +900,7 @@ impl Session {
                 }
             }
             FromPane::Refused { client, why } => self.notify_to(client, why, true),
+            FromPane::Retired(token) => self.retired.push((id, token)),
         }
     }
 
@@ -1249,7 +1262,7 @@ impl Session {
             }
         }
         if let Some((body, token)) = body {
-            self.deliveries.push((body, token, asked));
+            self.deliveries.push((body, token, asked, None));
         }
         let form = match many {
             true => Form::Many,
@@ -2002,6 +2015,10 @@ impl Session {
                 for (id, message) in staged {
                     self.tell_pane(id, message, now);
                 }
+                self.closed.clear();
+                for (id, link, closed) in std::mem::take(&mut self.closing) {
+                    self.unlink(id, link, closed, now);
+                }
                 done
             }
         }
@@ -2011,6 +2028,11 @@ impl Session {
     /// were, what it journaled, queued for clients or asked of panes let go
     /// untold, and the panes it made closed.
     fn roll_back(&mut self, undo: Undo, now: Instant) {
+        // What it closed comes back whole, untold.
+        self.parts.put_back(std::mem::take(&mut self.closed));
+        for (id, link, _) in std::mem::take(&mut self.closing) {
+            self.links.insert(id, link);
+        }
         let made = self.parts.restructure(undo.structure);
         self.ids = undo.ids;
         self.views = undo.views;
@@ -2292,6 +2314,10 @@ impl Session {
                 notice = Some((told, failed.is_some()));
             }
             self.end_pane(id, closed, now);
+            // A change's close is undone if its record can't be written.
+            if self.staged.is_some() {
+                self.closed.push(pane);
+            }
         }
         self.after_close(now);
         if let Some((told, failed)) = notice {
@@ -2312,7 +2338,10 @@ impl Session {
     /// Ends pane `id`'s process, its pane closed (by fux if `closed`).
     fn end_pane(&mut self, id: PaneId, closed: bool, now: Instant) {
         if let Some(link) = self.links.remove(&id) {
-            self.unlink(id, link, closed, now);
+            match self.staged.is_some() {
+                true => self.closing.push((id, link, closed)),
+                false => self.unlink(id, link, closed, now),
+            }
         }
     }
 
@@ -3090,8 +3119,19 @@ impl Session {
             // Taken as typed at its terminal: its bindings see them. No
             // pane answers: they go to the pane the client chooses.
             ClientAction::Keys(ref inputs) => {
-                let keys = ToAttached::Keys(inputs.clone());
-                self.outbox.push(Outgoing::To(client, keys));
+                // Inputs its asker's connection kept go from it to the
+                // client's connection, which sends them its client.
+                match self.body_token() {
+                    Some((body, token)) => {
+                        self.deliveries
+                            .push((body, token, Vec::new(), Some(client)));
+                        self.outbox.push(Outgoing::Keys(client, token));
+                    }
+                    None => {
+                        let keys = ToAttached::Keys(inputs.clone());
+                        self.outbox.push(Outgoing::To(client, keys));
+                    }
+                }
                 return Ok(PaneResults::Many(Vec::new()).into());
             }
             ClientAction::Detach => {
@@ -3883,6 +3923,7 @@ pub(crate) mod testing {
                     | ToAttached::Welcome(..)
                     | ToAttached::Read(..),
                 )
+                | super::Outgoing::Keys(..)
                 | super::Outgoing::Shutdown { .. }) => {
                     kept.push(other);
                 }
@@ -6985,7 +7026,7 @@ mod tests {
                     {
                         Some(b.to_vec())
                     }
-                    Outgoing::To(..) | Outgoing::Shutdown(..) => None,
+                    Outgoing::To(..) | Outgoing::Keys(..) | Outgoing::Shutdown(..) => None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -7209,7 +7250,7 @@ mod tests {
                     Outgoing::To(c, ToAttached::Paint(b)) if b.starts_with(b"\x1b]52;c;") => {
                         Some(*c)
                     }
-                    Outgoing::To(..) | Outgoing::Shutdown(..) => None,
+                    Outgoing::To(..) | Outgoing::Keys(..) | Outgoing::Shutdown(..) => None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -8216,6 +8257,55 @@ mod tests {
         let cursor = cursor.ok_or("its cursor")?;
         let after = output(&mut s, &format!("all str {cursor} 0 next-events"))?;
         assert!(after.contains(r#""event":"bell""#), "{after}");
+        Ok(())
+    }
+
+    /// The bodies panes are sent and the captures they hold are numbered as
+    /// one: dropping a body is never dropping a capture (D-123).
+    #[test]
+    fn bodies_and_held_captures_are_numbered_as_one() -> TestResult {
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let tab = s.locate(id).map(|(_, tab)| tab).ok_or("its tab")?;
+        let now = Instant::now();
+        let what = Ask::Capture {
+            history: None,
+            view: command::CaptureView::default(),
+            tab,
+            hold: true,
+        };
+        let held = s.ask_pane(id, what, now)?;
+        s.give_body(Some(1));
+        let (_, body) = s.body_token().ok_or("a token")?;
+        assert_ne!(body, held);
+        s.tell_pane(id, ToPane::Drop { token: body }, now);
+        assert!(
+            host(&mut s, id, |h| h.fetch(held).is_some())?,
+            "its capture dropped"
+        );
+        Ok(())
+    }
+
+    /// Each body a pane uses up is told retired, so its sender keeps
+    /// nothing of a stream of small pastes once each is typed (D-123).
+    #[test]
+    fn each_body_used_up_is_retired() -> TestResult {
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let to = command::To::Now(AnyRef::Pane(id));
+        for n in 0..32 {
+            s.give_body(Some(n));
+            let pending = s.send_keys(to, &[], Instant::now())?;
+            let (_, token, _, _) = s.deliveries.pop().ok_or("its delivery")?;
+            let inputs = vec![Input::Text("x".into())];
+            host(&mut s, id, |h| h.body(token, inputs))?;
+            assert_eq!(s.retired.pop(), Some((id, token)));
+            let [(_, ask)] = pending.asks.as_slice() else {
+                return Err("one ask".into());
+            };
+            assert!(s.answered_yet(*ask), "its keys typed");
+        }
+        assert_eq!(queued(&mut s, id)?, [b'x'; 32]);
         Ok(())
     }
 

@@ -385,6 +385,9 @@ pub enum FromPane {
         ask: u64,
         answer: Answered,
     },
+    /// Body or held capture `0` is used up: taken by what waited for it,
+    /// or fetched. Its asker's connection holds it no more.
+    Retired(u64),
 }
 wired!(FromPane {
     Begun(b),
@@ -396,6 +399,7 @@ wired!(FromPane {
     Notice { text, error },
     Refused { client, why },
     Answer { ask, answer },
+    Retired(t),
 });
 
 /// A message in one frame, as `Frame` has it.
@@ -884,13 +888,22 @@ pub enum ToConn {
     /// What its attached client's screen is made of now but its panes'
     /// screens, which it gets from the panes (`render::Scene`).
     Scene(Box<crate::render::Scene>),
-    /// Its client's body `body` (`FromConn::Frame`) goes to `panes`, as
-    /// their server's `token`.
+    /// Its client's body `body` (`FromConn::Frame`) goes to `panes`, or to
+    /// `client`'s connection, as their server's `token`.
     Deliver {
         body: u64,
         token: u64,
         panes: Vec<PaneId>,
+        client: Option<ClientId>,
     },
+    /// Its client is attached as `client`: it listens for bodies other
+    /// connections send it, at `SOCKET.panes/cN` (`ToSide::Body`).
+    Listen { client: ClientId },
+    /// Its client is sent body `token`'s keys, as typed at its terminal
+    /// (`ToAttached::Keys`), once the body comes: what follows waits.
+    Keys { token: u64 },
+    /// Body `token` is wanted no more: its sender is gone.
+    Drop { token: u64 },
     /// The answer to its client's request, which it makes itself, as its
     /// client is to have it: its last word once made.
     Make(Box<Making>),
@@ -906,7 +919,10 @@ wired!(ToConn {
     Answered,
     Hello { panes, run },
     Scene(s),
-    Deliver { body, token, panes },
+    Deliver { body, token, panes, client },
+    Listen { client },
+    Keys { token },
+    Drop { token },
     Make(m),
     Detached,
     Close
@@ -939,8 +955,10 @@ pub enum FromConn {
     /// Its client sent what is no frame of those expected: why. It reads
     /// it no more.
     Bad(String),
+    /// Body `0` another connection sent it is used up: sent its client.
+    Retired(u64),
 }
-wired!(FromConn { Frame { frame, body }, Flushed, Shut, Bad(why) });
+wired!(FromConn { Frame { frame, body }, Flushed, Shut, Bad(why), Retired(t) });
 
 /// How the server starts a client's connection's own process: `fux
 /// __conn`, the client's socket on stdin, its link on stdout.

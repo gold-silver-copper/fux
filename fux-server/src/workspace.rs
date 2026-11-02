@@ -1551,6 +1551,14 @@ impl Parts {
         }
     }
 
+    /// Copies of panes closed, put back as a change is undone (`restructure`
+    /// places them again).
+    pub(crate) fn put_back(&mut self, panes: Vec<Pane>) {
+        for pane in panes {
+            self.panes.insert(pane.id(), pane);
+        }
+    }
+
     /// Its tree as `structure` took it, the names its panes had then: the
     /// panes made since are let go, and their ids given back.
     pub(crate) fn restructure(&mut self, structure: Structure) -> Vec<PaneId> {

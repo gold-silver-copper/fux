@@ -14,7 +14,7 @@ use crate::link::{Drawn, End, Expect, FromConn, FromSide, Making, Read, ToConn, 
 use crate::render::{Grid, Scene, Sixels, Visible};
 use fux_vt::bytes::ByteQueue;
 use fux_wire::command::{Input, Run};
-use fux_wire::id::PaneId;
+use fux_wire::id::{ClientId, PaneId};
 use fux_wire::protocol::{Asked, Attach, AttachedFrame, Decoder, Frame, Hello, ToAttached};
 use std::collections::BTreeMap;
 use std::os::unix::net::UnixStream;
@@ -252,11 +252,13 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
             asked.map(|mut asked| {
                 use fux_wire::command::{Command, Request};
                 let body = match &mut asked.request {
-                    Request::Do(Command::SendKeys { inputs, .. })
-                        if bodies && !inputs.is_empty() =>
-                    {
-                        Some(std::mem::take(inputs))
-                    }
+                    Request::Do(
+                        Command::SendKeys { inputs, .. }
+                        | Command::Client {
+                            action: fux_wire::command::ClientAction::Keys(inputs),
+                            ..
+                        },
+                    ) if bodies && !inputs.is_empty() => Some(std::mem::take(inputs)),
                     Request::Do(_)
                     | Request::Wait(_)
                     | Request::NextEvents { .. }
@@ -305,67 +307,256 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
 /// The pane `id` of run `run` reached at its socket in `panes`, its first
 /// word said (`ToPane::Join`); none if it can't be.
 fn join(panes: &std::path::Path, run: Run, id: PaneId) -> Option<End> {
-    let stream = UnixStream::connect(panes.join(id.number().to_string())).ok()?;
+    reach(&panes.join(id.number().to_string()), run)
+}
+
+/// Where client `client`'s connection listens for bodies (`ToConn::Listen`).
+fn client_socket(panes: &std::path::Path, client: ClientId) -> PathBuf {
+    panes.join(format!("c{}", client.number()))
+}
+
+/// What listens at `socket`, reached, its first word said.
+fn reach(socket: &std::path::Path, run: Run) -> Option<End> {
+    let stream = UnixStream::connect(socket).ok()?;
     let mut end = End::new(stream).ok()?;
     end.send(&ToPane::Join { run });
     Some(end)
 }
 
-/// Sends `message` on a link just made, and waits for the pane's answer:
-/// what one reply its connection makes needs (`Making`).
-fn ask_side(mut end: End, message: &ToSide) -> Option<FromSide> {
-    end.send(message);
-    end.flush_all().ok()?;
-    end.wait::<FromSide>().ok().flatten()
+/// Where an attached client's connection takes bodies other connections
+/// send its client (`ToConn::Keys`): its socket, removed as it ends, and
+/// those reaching it.
+struct Listening {
+    listener: std::os::unix::net::UnixListener,
+    path: PathBuf,
+    peers: Vec<End>,
 }
 
-/// The reply its connection makes itself (`Making`), framed for its
-/// client: a pane's capture fetched from it and placed, or a client's
-/// screen composed from its scene and its panes' screens, which it gets
-/// from them.
-fn make(making: Making, panes: &std::path::Path, run: Run) -> Vec<u8> {
-    use fux_wire::protocol::{Body, Reply, Response, ToCommand};
-    let captured = match making {
-        Making::Capture {
-            pane,
-            token,
-            placed,
-        } => {
-            let held =
-                join(panes, run, pane).and_then(|end| ask_side(end, &ToSide::Fetch { token }));
-            match held {
-                Some(FromSide::Held {
-                    captured: Some(mut captured),
-                    ..
-                }) => {
-                    crate::capture::place(&mut captured, &placed);
-                    Ok(captured)
-                }
-                Some(FromSide::Held { captured: None, .. } | FromSide::Drawn(_)) | None => {
-                    Err(format!("{pane}'s capture is gone: its own process ended"))
+impl Drop for Listening {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl Listening {
+    /// Listens as client `client`'s connection, in `panes`.
+    fn at(panes: &std::path::Path, client: ClientId) -> Option<Listening> {
+        let path = client_socket(panes, client);
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).ok()?;
+        listener.set_nonblocking(true).ok()?;
+        Some(Listening {
+            listener,
+            path,
+            peers: Vec::new(),
+        })
+    }
+
+    /// Takes those reaching it, and the bodies they sent, into `bodies`: of
+    /// run `run`, from its own user.
+    fn take(
+        &mut self,
+        ready: &[bool],
+        buffer: &mut [u8],
+        run: Run,
+        bodies: &mut BTreeMap<u64, Vec<Input>>,
+    ) {
+        if ready.first().copied().unwrap_or(false) {
+            while let Ok((stream, _)) = self.listener.accept() {
+                let ours = fuxix::socket::peer(&stream)
+                    .is_ok_and(|peer| peer.uid == fuxix::process::geteuid());
+                if let (true, Ok(end)) = (ours, End::new(stream)) {
+                    self.peers.push(end);
                 }
             }
         }
-        Making::Client { client, scene } => {
-            let mut sides = BTreeMap::new();
-            for &(id, _) in &scene.placement.panes {
-                let mut side = Side {
-                    end: None,
-                    mirror: None,
+        let mut kept = Vec::new();
+        for (mut end, readable) in std::mem::take(&mut self.peers)
+            .into_iter()
+            .zip(ready.iter().skip(1).chain(std::iter::repeat(&false)))
+        {
+            let closed = *readable && end.read(buffer) == Read::Closed;
+            let mut joined = false;
+            loop {
+                if !joined {
+                    match end.next_message::<ToPane>() {
+                        Ok(Some(ToPane::Join { run: theirs })) if theirs == run => joined = true,
+                        Ok(None) => break,
+                        Ok(Some(_)) | Err(_) => break,
+                    }
+                    continue;
+                }
+                match end.next_message::<ToSide>() {
+                    Ok(Some(ToSide::Body { token, inputs })) => {
+                        bodies.insert(token, inputs);
+                    }
+                    Ok(None) | Ok(Some(_)) | Err(_) => break,
+                }
+            }
+            if !closed {
+                kept.push(end);
+            }
+        }
+        self.peers = kept;
+    }
+}
+
+/// What it does at panes' sockets beside showing them, each on a link of
+/// its own, in its loop: so that its server's end ends it whatever a pane
+/// does (a stopped one takes nothing).
+enum Errand {
+    /// A body sent: done once its link took it all.
+    Post(End),
+    /// A capture to fetch, then place: its client's reply.
+    Fetch {
+        end: Option<End>,
+        pane: PaneId,
+        placed: crate::link::Placed,
+    },
+    /// A client's screen to compose from `scene` and its panes' first
+    /// screens, as they come: its client's reply once each came, or its
+    /// pane went.
+    Compose {
+        client: ClientId,
+        scene: Box<Scene>,
+        waiting: Vec<(PaneId, End)>,
+        sides: BTreeMap<PaneId, Side>,
+    },
+}
+
+impl Errand {
+    /// The errand making the reply `making` says (`ToConn::Make`).
+    fn of(making: Making, panes: &std::path::Path, run: Run) -> Errand {
+        match making {
+            Making::Capture {
+                pane,
+                token,
+                placed,
+            } => {
+                let end = join(panes, run, pane).map(|mut end| {
+                    end.send(&ToSide::Fetch { token });
+                    end
+                });
+                Errand::Fetch { end, pane, placed }
+            }
+            Making::Client { client, scene } => {
+                let mut waiting = Vec::new();
+                let mut sides = BTreeMap::new();
+                for &(id, _) in &scene.placement.panes {
+                    sides.insert(
+                        id,
+                        Side {
+                            end: None,
+                            mirror: None,
+                        },
+                    );
+                    if let Some(mut end) = join(panes, run, id) {
+                        end.send(&ToSide::Watch);
+                        waiting.push((id, end));
+                    }
+                }
+                Errand::Compose {
+                    client,
+                    scene,
+                    waiting,
+                    sides,
+                }
+            }
+        }
+    }
+
+    /// Its links, each with what it waits for.
+    fn links(&self) -> Vec<(&End, fuxix::poll::Events)> {
+        use fuxix::poll::Events;
+        let flags = |end: &End, read: bool| {
+            let mut flags = if read { Events::IN } else { Events::NONE };
+            if !end.out.is_empty() {
+                flags |= Events::OUT;
+            }
+            flags
+        };
+        match self {
+            Errand::Post(end) => vec![(end, flags(end, false))],
+            Errand::Fetch { end, .. } => end.iter().map(|end| (end, flags(end, true))).collect(),
+            Errand::Compose { waiting, .. } => waiting
+                .iter()
+                .map(|(_, end)| (end, flags(end, true)))
+                .collect(),
+        }
+    }
+
+    /// Goes on, its links' readiness `ready`: done once it has no more to
+    /// do, with its client's reply if it makes one.
+    fn on(&mut self, ready: &[bool], buffer: &mut [u8], run: Run) -> Option<Option<Vec<u8>>> {
+        match self {
+            Errand::Post(end) => match end.flush() {
+                Ok(false) => None,
+                Ok(true) | Err(_) => Some(None),
+            },
+            Errand::Fetch { end, pane, placed } => {
+                let Some(end) = end else {
+                    return Some(Some(reply(run, Err(gone_capture(*pane)))));
                 };
-                let drawn = join(panes, run, id).and_then(|end| ask_side(end, &ToSide::Watch));
-                if let Some(FromSide::Drawn(drawn)) = drawn {
-                    side.take(*drawn, id);
+                let gone = end.flush().is_err()
+                    || ready.first().copied().unwrap_or(false) && end.read(buffer) == Read::Closed;
+                match end.next_message::<FromSide>() {
+                    Ok(Some(FromSide::Held {
+                        captured: Some(mut captured),
+                        ..
+                    })) => {
+                        crate::capture::place(&mut captured, placed);
+                        Some(Some(reply(run, Ok(captured))))
+                    }
+                    Ok(Some(FromSide::Held { captured: None, .. } | FromSide::Drawn(_)))
+                    | Err(_) => Some(Some(reply(run, Err(gone_capture(*pane))))),
+                    Ok(None) if gone => Some(Some(reply(run, Err(gone_capture(*pane))))),
+                    Ok(None) => None,
                 }
-                sides.insert(id, side);
             }
-            let screens = |id: PaneId| sides.get(&id)?.mirror.as_ref().map(fux_vt::Parser::screen);
-            let mut grid = Grid::default();
-            crate::render::compose_scene(&scene, &screens, &mut grid)
-                .map(|()| Box::new(crate::capture::client(client, &grid)))
-                .map_err(|e| format!("capturing {client}: {e}"))
+            Errand::Compose {
+                client,
+                scene,
+                waiting,
+                sides,
+            } => {
+                let mut left = Vec::new();
+                for ((id, mut end), readable) in std::mem::take(waiting).into_iter().zip(ready) {
+                    let gone =
+                        end.flush().is_err() || *readable && end.read(buffer) == Read::Closed;
+                    match end.next_message::<FromSide>() {
+                        Ok(Some(FromSide::Drawn(drawn))) => {
+                            if let Some(side) = sides.get_mut(&id) {
+                                side.take(*drawn, id);
+                            }
+                        }
+                        Ok(Some(FromSide::Held { .. })) | Err(_) => {}
+                        Ok(None) if gone => {}
+                        Ok(None) => left.push((id, end)),
+                    }
+                }
+                *waiting = left;
+                if !waiting.is_empty() {
+                    return None;
+                }
+                let screens =
+                    |id: PaneId| sides.get(&id)?.mirror.as_ref().map(fux_vt::Parser::screen);
+                let mut grid = Grid::default();
+                let captured = crate::render::compose_scene(scene, &screens, &mut grid)
+                    .map(|()| Box::new(crate::capture::client(*client, &grid)))
+                    .map_err(|e| format!("capturing {client}: {e}"));
+                Some(Some(reply(run, captured)))
+            }
         }
-    };
+    }
+}
+
+fn gone_capture(pane: PaneId) -> String {
+    format!("{pane}'s capture is gone: its own process ended")
+}
+
+/// A reply its connection makes itself (`Making`), framed for its client.
+fn reply(run: Run, captured: Result<Box<fux_wire::answer::Captured>, String>) -> Vec<u8> {
+    use fux_wire::protocol::{Body, Reply, Response, ToCommand};
     let response = match captured {
         Ok(captured) => Response::Returned(Body::Capture(captured)),
         Err(message) => Response::Failed {
@@ -470,12 +661,14 @@ impl Composer {
     }
 
     /// Body `token`, `inputs`, sent to each of `panes` (`ToSide::Body`):
-    /// on its link to one it shows, else on one made for it.
-    fn deliver(&mut self, token: u64, inputs: &[Input], panes: &[PaneId]) {
+    /// on its link to one it shows, else on one made for it, which goes on
+    /// as an errand till its pane took it all.
+    fn deliver(&mut self, token: u64, inputs: &[Input], panes: &[PaneId]) -> Vec<Errand> {
         let message = ToSide::Body {
             token,
             inputs: inputs.to_vec(),
         };
+        let mut posts = Vec::new();
         for id in panes {
             match self.sides.get_mut(id).and_then(|side| side.end.as_mut()) {
                 Some(end) => end.send(&message),
@@ -486,11 +679,12 @@ impl Composer {
                         .and_then(|(panes, run)| join(panes, *run, *id));
                     if let Some(mut end) = reached {
                         end.send(&message);
-                        let _ = end.flush_all();
+                        posts.push(Errand::Post(end));
                     }
                 }
             }
         }
+        posts
     }
 
     /// What the panes it shows sent: their screens, each taken.
@@ -544,6 +738,17 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
     // What it keeps of its client's frames (`Sent`), each by its number.
     let mut bodies: BTreeMap<u64, Vec<Input>> = BTreeMap::new();
     let mut numbered = 0u64;
+    // What it does at panes' sockets, and whether one of them makes its
+    // client's reply, which its client's next request waits for.
+    let mut errands: Vec<Errand> = Vec::new();
+    let mut making = false;
+    // An attached client's: where other connections send it bodies, those
+    // come, the keys it waits to send its client till their body comes, and
+    // what its server said after them, which waits too.
+    let mut listening: Option<Listening> = None;
+    let mut received: BTreeMap<u64, Vec<Input>> = BTreeMap::new();
+    let mut keys: Option<u64> = None;
+    let mut backlog: std::collections::VecDeque<ToConn> = std::collections::VecDeque::new();
     loop {
         let now = Instant::now();
         // What its client sent, as far as its stage lets it be taken.
@@ -607,7 +812,7 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
             if std::mem::take(&mut unflushed) {
                 link.send(&FromConn::Flushed);
             }
-            if want == Want::Answer && answered {
+            if want == Want::Answer && answered && !making {
                 want = Want::Frames(Expect::Asked);
                 continue;
             }
@@ -648,6 +853,23 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                 fds.push(PollFd::new(&end.stream, flags));
             }
         }
+        let listened = listening
+            .as_ref()
+            .map_or(0, |l| l.peers.len().saturating_add(1));
+        if let Some(listening) = &listening {
+            fds.push(PollFd::new(&listening.listener, Events::IN));
+            for end in &listening.peers {
+                fds.push(PollFd::new(&end.stream, Events::IN));
+            }
+        }
+        let mut counts = Vec::with_capacity(errands.len());
+        for errand in &errands {
+            let links = errand.links();
+            counts.push(links.len());
+            for (end, flags) in links {
+                fds.push(PollFd::new(&end.stream, flags));
+            }
+        }
         match fds.poll(timeout) {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(error) => return Err(format!("poll: {error}")),
@@ -675,17 +897,66 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
             .map(|(id, flags)| (*id, !flags.is_empty()))
             .collect();
         composer.heard(&mut buffer, &heard, now);
+        // Bodies other connections sent its client.
+        let mut at = sides.len().saturating_add(2);
+        if let (Some(listen), Some((_, run))) = (&mut listening, &composer.panes) {
+            let readable: Vec<bool> = (ready.iter().skip(at).take(listened))
+                .map(|flags| !flags.is_empty())
+                .collect();
+            listen.take(&readable, &mut buffer, *run, &mut received);
+        }
+        at = at.saturating_add(listened);
+        // Its errands, each as far as its links let it go now.
+        let mut going = Vec::with_capacity(errands.len());
+        for (mut errand, count) in std::mem::take(&mut errands).into_iter().zip(counts) {
+            let readable: Vec<bool> = (ready.iter().skip(at).take(count))
+                .map(|flags| !flags.is_empty())
+                .collect();
+            at = at.saturating_add(count);
+            let run = composer.panes.as_ref().map(|(_, run)| *run);
+            match run.and_then(|run| errand.on(&readable, &mut buffer, run)) {
+                None if run.is_some() => going.push(errand),
+                None | Some(None) => {}
+                Some(Some(made)) => {
+                    out.push(&made);
+                    (unflushed, making) = (true, false);
+                }
+            }
+        }
+        errands = going;
         if ready.get(1).is_some_and(|f| !f.is_empty()) {
             // Its server gone, so is it: what it holds for its client is let
             // go, but what one write takes. A crashed server's clients have
             // nothing left to be served.
             let gone = link.read(&mut buffer) == Read::Closed;
             loop {
-                let message = match link.next_message::<ToConn>() {
-                    Ok(Some(message)) => message,
+                match link.next_message::<ToConn>() {
+                    Ok(Some(message)) => backlog.push_back(message),
                     Ok(None) => break,
                     Err(error) => return Err(format!("its server sent a bad frame: {error}")),
+                }
+            }
+            if gone {
+                let _ = write(&client, &mut out);
+                return Ok(());
+            }
+        }
+        // What its server said, in order: keys for its client whose body has
+        // not come yet hold back what follows them.
+        loop {
+            if let Some(token) = keys {
+                let Some(inputs) = received.remove(&token) else {
+                    break;
                 };
+                let frame = ToAttached::Keys(inputs);
+                out.push_with(|frames| frame.encode_into(frames));
+                link.send(&FromConn::Retired(token));
+                (keys, unflushed) = (None, true);
+            }
+            let Some(message) = backlog.pop_front() else {
+                break;
+            };
+            {
                 match message {
                     ToConn::Bytes(bytes) => {
                         out.push(&bytes);
@@ -695,23 +966,44 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                     ToConn::Answered => answered = true,
                     ToConn::Hello { panes, run } => composer.panes = Some((panes, run)),
                     ToConn::Scene(scene) => composer.scene(*scene),
-                    ToConn::Deliver { body, token, panes } => {
+                    ToConn::Deliver {
+                        body,
+                        token,
+                        panes,
+                        client: to,
+                    } => {
                         let inputs = bodies.remove(&body).unwrap_or_default();
-                        composer.deliver(token, &inputs, &panes);
+                        errands.extend(composer.deliver(token, &inputs, &panes));
+                        let reached = (composer.panes.as_ref())
+                            .zip(to)
+                            .and_then(|((panes, run), to)| reach(&client_socket(panes, to), *run));
+                        if let Some(mut end) = reached {
+                            end.send(&ToSide::Body { token, inputs });
+                            errands.push(Errand::Post(end));
+                        }
                     }
-                    ToConn::Make(making) => {
+                    ToConn::Listen { client: me } => {
+                        listening = composer
+                            .panes
+                            .as_ref()
+                            .and_then(|(panes, _)| Listening::at(panes, me));
+                    }
+                    ToConn::Keys { token } => keys = Some(token),
+                    ToConn::Drop { token } => {
+                        received.remove(&token);
+                        if keys == Some(token) {
+                            keys = None;
+                        }
+                    }
+                    ToConn::Make(made) => {
                         if let Some((panes, run)) = &composer.panes {
-                            out.push(&make(*making, panes, *run));
-                            unflushed = true;
+                            errands.push(Errand::of(*made, panes, *run));
+                            making = true;
                         }
                     }
                     ToConn::Detached => composer.screen.restore(&mut out),
                     ToConn::Close => (closing, want) = (true, Want::Nothing),
                 }
-            }
-            if gone {
-                let _ = write(&client, &mut out);
-                return Ok(());
             }
         }
     }

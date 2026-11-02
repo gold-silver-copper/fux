@@ -383,6 +383,7 @@ impl Through {
                     return Err(format!("fux detached the client: {reason}"));
                 }
                 Outgoing::Shutdown(reason, _) => return Err(format!("fux stopped: {reason}")),
+                Outgoing::Keys(..) => {}
                 Outgoing::To(
                     _,
                     ToAttached::Paint(_)

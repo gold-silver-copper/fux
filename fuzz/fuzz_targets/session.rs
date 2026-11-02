@@ -491,6 +491,8 @@ impl Run {
                 panic!("an attachment reply from the session")
             }
             Outgoing::Shutdown { .. } => self.shut = true,
+            // Bodies are kept by connections, of which this has none.
+            Outgoing::Keys(..) => {}
             Outgoing::To(client, ToAttached::Open(open)) => {
                 let context = Context {
                     client: Some(client),

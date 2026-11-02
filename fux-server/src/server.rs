@@ -125,10 +125,22 @@ struct Conn {
     /// request's, till it is asked.
     bodies: std::collections::VecDeque<Option<u64>>,
     body: Option<u64>,
-    /// What the panes wait for or hold for it, each a token
-    /// (`ToPane::Drop` once it is gone).
-    tokens: Vec<(PaneId, u64)>,
+    /// What panes, or other clients' connections, wait for or hold for it,
+    /// each a token: let go once used up (`Retired`), dropped once it is
+    /// gone (`ToPane::Drop`, `ToConn::Drop`).
+    tokens: std::collections::BTreeSet<(Holder, u64)>,
+    /// Bodies other connections sent its process that it used up
+    /// (`FromConn::Retired`), till the server lets their senders go of them.
+    retired: Vec<u64>,
     stage: Stage,
+}
+
+/// What holds a body or capture for a connection: a pane, or another
+/// client's connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Holder {
+    Pane(PaneId),
+    Client(ClientId),
 }
 
 /// Where a connection is in its life, each stage holding what it alone
@@ -235,7 +247,8 @@ impl Conn {
             gone: false,
             bodies: std::collections::VecDeque::new(),
             body: None,
-            tokens: Vec::new(),
+            tokens: std::collections::BTreeSet::new(),
+            retired: Vec::new(),
             stage: Stage::Hello,
         })
     }
@@ -307,6 +320,7 @@ impl Conn {
                     self.bodies.push_back(body);
                 }
                 Ok(Some(FromConn::Flushed)) => self.pending = false,
+                Ok(Some(FromConn::Retired(token))) => self.retired.push(token),
                 Ok(Some(FromConn::Shut)) => closed = true,
                 Ok(Some(FromConn::Bad(why))) => {
                     log!("a client sent a bad frame: {why}");
@@ -357,10 +371,25 @@ impl Conn {
             self.stage,
             Stage::Command | Stage::Blocked(_) | Stage::Waiting(_)
         );
-        if let Stage::Attached(attached) = mem::replace(&mut self.stage, next) {
-            session.detach(attached.client, Detach::Disconnected, now);
-            // Its terminal's cursor overrides are given back as its own.
-            self.tell_process(&crate::link::ToConn::Detached);
+        match mem::replace(&mut self.stage, next) {
+            Stage::Attached(attached) => {
+                session.detach(attached.client, Detach::Disconnected, now);
+                // Its terminal's cursor overrides are given back as its own.
+                self.tell_process(&crate::link::ToConn::Detached);
+            }
+            // What it asked of panes and no one answered is let go, however
+            // it leaves its wait: one answered took its answers already.
+            Stage::Waiting(waiting) => {
+                if let Waiting::Asked(pending) = *waiting {
+                    session.abandon(&pending.asks, &[], now);
+                }
+            }
+            Stage::Hello
+            | Stage::Attaching
+            | Stage::Command
+            | Stage::Blocked(_)
+            | Stage::Closing
+            | Stage::Dead => {}
         }
         match (&self.stage, next_expects) {
             // A command client's next request is read once its answer is
@@ -384,6 +413,10 @@ impl Conn {
                 let attached = Attached::new(client);
                 self.enter(session, Stage::Attached(Box::new(attached)), now);
                 self.send(&ToAttached::Welcome(client, session.run));
+                // Its process takes what other connections send its client.
+                if session.panes().is_some() {
+                    self.tell_process(&crate::link::ToConn::Listen { client });
+                }
             }
             Err(error) => self.end(session, &ToAttached::Exit(&error.to_string()), now),
         }
@@ -395,7 +428,7 @@ impl Conn {
         // One its process makes itself: told how (`link::Making`).
         if let Some(making) = session.making.take() {
             if let crate::link::Making::Capture { pane, token, .. } = &making {
-                self.tokens.push((*pane, *token));
+                self.tokens.insert((Holder::Pane(*pane), *token));
             }
             self.tell_process(&crate::link::ToConn::Make(Box::new(making)));
             if self.stage.asked() {
@@ -797,6 +830,7 @@ impl Server {
         if self.session.parts.journal().end(self.session.journal_run) != answered_at {
             changed |= self.answer_waits(now);
         }
+        self.retire();
         // Each client's view as it ends the turn.
         self.scenes(now);
         self.flush_links();
@@ -878,22 +912,30 @@ impl Server {
         // One closing goes once its process, done with its client, closes
         // its link (`Conn::hear`).
         let session = &mut self.session;
+        let mut dropped = Vec::new();
         self.conns.retain_mut(|conn| {
             let dead = matches!(conn.stage, Stage::Dead) || conn.gone;
             // What it was told before it died still goes, as far as it can;
             // what it asked of panes is no one's (`Session::abandon`).
             if dead {
+                conn.enter(session, Stage::Dead, now);
                 let _ = conn.link.flush();
-                let mut asks = Vec::new();
-                if let Stage::Waiting(waiting) = &conn.stage
-                    && let Waiting::Asked(pending) = &**waiting
-                {
-                    asks.clone_from(&pending.asks);
+                let mut tokens = Vec::new();
+                for (holder, token) in mem::take(&mut conn.tokens) {
+                    match holder {
+                        Holder::Pane(pane) => tokens.push((pane, token)),
+                        Holder::Client(client) => dropped.push((client, token)),
+                    }
                 }
-                session.abandon(&asks, &conn.tokens, now);
+                session.abandon(&[], &tokens, now);
             }
             !dead
         });
+        for (client, token) in dropped {
+            if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                conn.tell_process(&crate::link::ToConn::Drop { token });
+            }
+        }
     }
 
     /// Waits for descriptors to be ready, or `timeout`; which are, and for
@@ -1049,6 +1091,12 @@ impl Server {
                     continue;
                 }
                 Outgoing::To(client, frame) => (client, frame),
+                Outgoing::Keys(client, token) => {
+                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                        conn.tell_process(&crate::link::ToConn::Keys { token });
+                    }
+                    continue;
+                }
             };
             if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
                 conn.tell(&mut self.session, &frame, now);
@@ -1377,6 +1425,22 @@ impl Server {
         Ok(true)
     }
 
+    /// What panes and connections used up (`Retired`), their senders hold
+    /// no more.
+    fn retire(&mut self) {
+        let mut retired: Vec<u64> = (mem::take(&mut self.session.retired).into_iter())
+            .map(|(_, token)| token)
+            .collect();
+        for conn in &mut self.conns {
+            retired.append(&mut conn.retired);
+        }
+        for token in retired {
+            for conn in &mut self.conns {
+                conn.tokens.retain(|(_, held)| *held != token);
+            }
+        }
+    }
+
     /// The bodies connection `index` keeps that its request or act sent
     /// panes asking for (`Session::deliveries`): it sends them the panes.
     fn deliver_bodies(&mut self, index: usize) {
@@ -1384,9 +1448,17 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        for (body, token, panes) in deliveries {
-            conn.tokens.extend(panes.iter().map(|pane| (*pane, token)));
-            conn.tell_process(&crate::link::ToConn::Deliver { body, token, panes });
+        for (body, token, panes, client) in deliveries {
+            let holders =
+                (panes.iter().map(|pane| Holder::Pane(*pane))).chain(client.map(Holder::Client));
+            conn.tokens.extend(holders.map(|holder| (holder, token)));
+            let deliver = crate::link::ToConn::Deliver {
+                body,
+                token,
+                panes,
+                client,
+            };
+            conn.tell_process(&deliver);
         }
     }
 
@@ -1873,6 +1945,66 @@ mod tests {
             },
             peer,
         ))
+    }
+
+    /// A command's connection gone while its question waits: the question
+    /// is waited for no more, and its answer, come after, is let go
+    /// (D-123), however the connection goes.
+    #[test]
+    fn a_connection_gone_waiting_lets_its_question_go() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let (stream, client) = UnixStream::pair()?;
+        let mut conn = linked(stream, Some(crate::link::Expect::Asked))?;
+        conn.stage = Stage::Command;
+        server.conns.push(conn);
+        // Asked, and its answer not yet heard.
+        let pane = PaneId::of(1);
+        let tab = (server.session.locate(pane).map(|(_, tab)| tab)).ok_or("its tab")?;
+        let what = crate::link::Ask::Capture {
+            history: None,
+            view: fux_wire::command::CaptureView::default(),
+            tab,
+            hold: false,
+        };
+        let ask = &server.session.ask_pane(pane, what, Instant::now())?;
+        let pending = crate::wait::Pending::new(vec![(pane, *ask)], crate::wait::Form::Capture);
+        let waiting = Box::new(Waiting::Asked(pending));
+        let conn = server.conns.last_mut().ok_or("its connection")?;
+        conn.enter(&mut server.session, Stage::Waiting(waiting), Instant::now());
+        drop(client);
+        let index = server.conns.len().saturating_sub(1);
+        let deadline = after(Instant::now(), std::time::Duration::from_secs(10));
+        while server.conns.len() > 1 {
+            if Instant::now() > deadline {
+                return Err("its connection was kept".into());
+            }
+            server.serve_conn(index, PollFlags::IN | PollFlags::OUT, Instant::now());
+            server.close_conns(Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        server.session.pump(Instant::now());
+        assert!(server.session.answered_yet(*ask), "still waited for");
+        assert!(server.session.answer_to(*ask).is_none(), "its answer kept");
+        Ok(())
+    }
+
+    /// What a pane used up of what a connection held for it is let go of
+    /// it: a connection that lives on keeps only what is still to come.
+    #[test]
+    fn what_a_pane_used_up_is_let_go() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let pane = PaneId::of(1);
+        let conn = server.conns.first_mut().ok_or("its connection")?;
+        conn.tokens.insert((Holder::Pane(pane), 7));
+        conn.tokens.insert((Holder::Pane(pane), 8));
+        server.session.retired.push((pane, 7));
+        server.retire();
+        let conn = server.conns.first().ok_or("its connection")?;
+        assert_eq!(
+            conn.tokens.iter().copied().collect::<Vec<_>>(),
+            [(Holder::Pane(pane), 8)]
+        );
+        Ok(())
     }
 
     /// A command client gone, its connection is dropped once its process

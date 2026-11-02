@@ -823,6 +823,7 @@ mod tests {
                     | ToAttached::Keys(_)
                     | ToAttached::Read(..),
                 )
+                | Outgoing::Keys(..)
                 | Outgoing::Shutdown { .. } => None,
             })
             .collect()

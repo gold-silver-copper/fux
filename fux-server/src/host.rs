@@ -882,6 +882,7 @@ impl Host {
         }
         let screen = pane.screen();
         let mut bytes = Vec::new();
+        let mut retired = None;
         match typed {
             Typed::Key(stroke) => {
                 fux_vt::keys::encode::key_bytes(stroke, screen.key_mode(), &mut bytes);
@@ -895,6 +896,7 @@ impl Host {
                     self.awaiting.insert(token, Awaiting::Paste { client });
                     return;
                 };
+                retired = Some(token);
                 let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
                 for input in inputs {
                     if let Input::Paste(text) = input {
@@ -911,6 +913,9 @@ impl Host {
                     bytes.extend(reports.flatten());
                 }
             }
+        }
+        if let Some(token) = retired {
+            self.report(FromPane::Retired(token));
         }
         if !bytes.is_empty() {
             self.pane_mut()
@@ -932,7 +937,10 @@ impl Host {
                 body: Some(token),
                 ..
             } => match self.bodies.remove(&token) {
-                Some(inputs) => self.send_keys(&inputs, seen),
+                Some(inputs) => {
+                    self.report(FromPane::Retired(token));
+                    self.send_keys(&inputs, seen)
+                }
                 None => {
                     let actor = self.actor;
                     self.awaiting
@@ -1267,6 +1275,7 @@ impl Host {
     pub fn body(&mut self, token: u64, inputs: Vec<Input>) {
         match self.awaiting.remove(&token) {
             Some(Awaiting::Keys { ask, actor, seen }) => {
+                self.report(FromPane::Retired(token));
                 let previous = std::mem::replace(&mut self.actor, actor);
                 let answer = self
                     .send_keys(&inputs, seen)
@@ -1288,7 +1297,11 @@ impl Host {
 
     /// The capture held as `token`, taken by its asker's connection.
     pub fn fetch(&mut self, token: u64) -> Option<Box<fux_wire::answer::Captured>> {
-        self.held.remove(&token)
+        let held = self.held.remove(&token);
+        if held.is_some() {
+            self.report(FromPane::Retired(token));
+        }
+        held
     }
 
     /// Its facts are looked at again: what changes with no event of its own
