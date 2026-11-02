@@ -382,10 +382,22 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
 /// 6b. A crashed server's run is taken back though the connection's
 ///     process it started for its next client, which holds its socket till
 ///     it sees its server go, is stopped meanwhile: a socket whose server
-///     is gone is no server's (`socket::listened`).
+///     is gone is no server's (`socket::owned`), with room in its backlog
+///     or none.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_crashed_servers_run_is_taken_back_while_its_waiting_connection_is_stopped() -> Outcome {
+    taken_back_with_its_spare_stopped(false)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_crashed_servers_run_is_taken_back_with_its_stopped_connections_backlog_full() -> Outcome {
+    taken_back_with_its_spare_stopped(true)
+}
+
+#[cfg(target_os = "linux")]
+fn taken_back_with_its_spare_stopped(full: bool) -> Outcome {
     let started = Server::start("")?;
     let _stop = Stop(&started);
     let server = &started;
@@ -402,9 +414,34 @@ fn a_crashed_servers_run_is_taken_back_while_its_waiting_connection_is_stopped()
     };
     signal(spare, Signal::Stop);
     signal(pid, Signal::Kill);
-    let taken = server.ok(&["start"]).and_then(|_| layout(server));
+    // Clients come while no server serves, till the socket takes no more.
+    let mut queued = Vec::new();
+    while full && queued.len() < 100_000 {
+        let fd = fuxix::socket::stream().map_err(e)?;
+        fuxix::io::set_nonblocking(&fd, true).map_err(e)?;
+        match fuxix::socket::connect(&fd, &server.socket) {
+            Ok(()) => queued.push(fd),
+            Err(fuxix::Errno::AGAIN) => break,
+            Err(error) => return Err(format!("queueing a client: {error}")),
+        }
+    }
+    // Asked with a bound: a client of the old socket would wait for good.
+    let taken = server.ok(&["start"]).and_then(|_| {
+        let status = within(server, 30, &["status"])?;
+        match status.status {
+            0 => layout(server),
+            _ => Err(format!("no server took the run back: {}", status.stderr)),
+        }
+    });
+    let still = processes().into_iter().any(|(p, ..)| p == spare)
+        && std::fs::read_to_string(format!("/proc/{spare}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(") ")
+                .is_some_and(|(_, r)| r.starts_with('T'))
+        });
     signal(spare, Signal::Cont);
+    drop(queued);
     assert_eq!(taken?, before);
+    assert!(still, "the spare ran meanwhile");
     assert!(
         server
             .ok(&["str", &shell, "pane", "capture"])?

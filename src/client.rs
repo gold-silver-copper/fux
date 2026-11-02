@@ -539,9 +539,9 @@ pub fn greet(socket: &SocketPath) -> Result<(), Error> {
     connect(socket, Role::Command).map(drop)
 }
 
-/// Whether a server answers on `socket` (`socket::listened`).
+/// Whether a server answers on `socket` (`socket::owned`).
 pub fn answers(socket: &SocketPath) -> bool {
-    socket::listened(socket.path())
+    socket::owned(socket)
 }
 
 /// Starts a server in the background, its journal keeping `journal`

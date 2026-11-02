@@ -350,6 +350,30 @@ pub fn listened(path: &Path) -> bool {
     }
 }
 
+/// Whether a server answers on `socket`: something listens there
+/// (`listened`), and it is not a crashed server's, held by a process of its
+/// with a backlog full or not.
+pub fn owned(socket: &SocketPath) -> bool {
+    listened(socket.path()) && !crashed(socket.path())
+}
+
+/// Whether the run on the socket at `path` lost its server: its record is
+/// left, which a stop removes, and no server holds the socket's lock, asked
+/// as a starting server does, once none is starting there.
+fn crashed(path: &Path) -> bool {
+    if !panes(path).join("run").exists() {
+        return false;
+    }
+    let Ok((starting, _)) = lock_file(path, ".starting") else {
+        return false;
+    };
+    starting.lock().is_ok()
+        && matches!(
+            lock_file(path, ".lock").map(|(lock, _)| lock.try_lock()),
+            Ok(Ok(()))
+        )
+}
+
 /// Why the client on `stream` is refused, if it is: it is not the server's
 /// own user's, or its user can't be told.
 pub fn stranger(stream: &std::os::unix::net::UnixStream) -> Option<String> {
@@ -427,7 +451,10 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
                 path.display()
             )));
         }
-        Ok(_) if listened(path) => {
+        // With the lock held, one that listens is no live fux server's,
+        // but still refused, unless its run's record is left: then it is a
+        // crashed one's, held by a process of its (`listened`, full or not).
+        Ok(_) if listened(path) && !panes(path).join("run").exists() => {
             return Err(Error::Refused(format!(
                 "another fux server is already listening on {}",
                 path.display()
