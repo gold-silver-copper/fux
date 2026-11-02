@@ -1740,9 +1740,24 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
         }
         let due = clock.due(now) <= now;
         let mut sent = false;
+        // What it tells its server, taken first: telling marks it changed.
+        let reports = host.take();
+        // Its screen next, to the connections that show it: a keystroke's
+        // echo goes before its facts are made for its server.
+        for peer in &mut peers {
+            if let Some(Some(watch)) = &mut peer.side
+                && !watch.waiting
+                && due
+                && let Some(drawn) = host.drawn(watch)
+            {
+                peer.end.send(&FromSide::Drawn(Box::new(drawn)));
+                (watch.waiting, sent) = (true, true);
+            }
+            let _ = peer.end.flush();
+        }
         match &mut link {
             Some(end) => {
-                for report in host.take() {
+                for report in reports {
                     end.send(&report);
                 }
                 if !waiting
@@ -1759,18 +1774,7 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
                 }
             }
             // With no server, what it does is in its state alone.
-            None => drop(host.take()),
-        }
-        for peer in &mut peers {
-            if let Some(Some(watch)) = &mut peer.side
-                && !watch.waiting
-                && due
-                && let Some(drawn) = host.drawn(watch)
-            {
-                peer.end.send(&FromSide::Drawn(Box::new(drawn)));
-                (watch.waiting, sent) = (true, true);
-            }
-            let _ = peer.end.flush();
+            None => drop(reports),
         }
         if sent {
             clock = Clock {
