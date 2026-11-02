@@ -1933,8 +1933,6 @@ mod tests {
         Ok((session, conn, peer))
     }
 
-    /// A connection whose process runs in a thread of the test's, its
-    /// client the far end of `client`, expecting `expect`'s frames.
     /// What `conn` was given for its client, not yet passed on, and passed
     /// to its process and not yet sent it.
     fn client_bytes(conn: &Conn) -> Vec<u8> {
@@ -1958,6 +1956,8 @@ mod tests {
         Ok(())
     }
 
+    /// A connection whose process runs in a thread of the test's, its
+    /// client the far end of `client`, expecting `expect`'s frames.
     fn linked(client: UnixStream, expect: Option<crate::link::Expect>) -> std::io::Result<Conn> {
         let (link, theirs) = UnixStream::pair()?;
         std::thread::spawn(move || crate::conn::serve(client, theirs));
@@ -1992,17 +1992,14 @@ mod tests {
     #[test]
     fn a_refused_paint_ends_the_attachment_without_clearing_its_screen()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (mut server, _peer) = server()?;
+        use fux_wire::protocol::{Decoder, ToAttached};
+        use std::io::Read as _;
+        let (mut server, mut client) = server()?;
         let attached = server
             .conns
             .first_mut()
             .and_then(Conn::attached)
             .ok_or("attachment")?;
-        attached.shown = Grid::new(10, 40)?;
-        attached.shown.cells.set(
-            0,
-            fux_vt::CellRef::new("K", false, fux_vt::Attributes::default()),
-        );
         attached.known = true;
         let now = Instant::now();
         let journal = server.session.parts.journal();
@@ -2010,11 +2007,30 @@ mod tests {
         let mut reader = crate::journal::Reader::new(scope, journal, server.session.run, None)?;
         fux_vt::refuse_next(1);
         server.paint(0, now);
-        let conn = server.conns.first().ok_or("connection")?;
-        let (painted, exit) = sent(conn);
-        assert!(painted.is_empty(), "{painted:?}");
-        assert!(exit.is_some_and(|why| why.contains("rendering c1")));
+        let conn = server.conns.first_mut().ok_or("connection")?;
         assert!(matches!(conn.stage, Stage::Closing));
+        conn.link.flush_all()?;
+        // What its client is sent, till its connection's process ends:
+        // its exit, and no paint, which would clear what it shows.
+        client.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut sent = Vec::new();
+        client.read_to_end(&mut sent)?;
+        let mut decoder = Decoder::default();
+        decoder.push(&sent);
+        let (mut painted, mut exit) = (false, None);
+        while let Ok(Some(frame)) = decoder.frame::<ToAttached>() {
+            match frame {
+                ToAttached::Paint(_) => painted = true,
+                ToAttached::Exit(why) => exit = Some(why.to_owned()),
+                ToAttached::Welcome(..)
+                | ToAttached::Ended(_)
+                | ToAttached::Open(_)
+                | ToAttached::Keys(_)
+                | ToAttached::Read(..) => {}
+            }
+        }
+        assert!(!painted);
+        assert!(exit.is_some_and(|why| why.contains("rendering c1")));
         // Its client detached, saying so, once.
         let batch = reader.batch(server.session.parts.journal(), true)?;
         let detached: Vec<_> = (batch.events.iter())
