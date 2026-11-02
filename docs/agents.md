@@ -82,18 +82,14 @@ fux str sh1 pane str "$C" events | head -n 1 || [ $? -eq 141 ]
 | a log of what a program wrote | `script(1)` in its pane (`fux help servers`) |
 
 **Stop.** Close your workspace and all in it; kill your `events` readers
-by PID. A server ends with its last pane; one still up stops with `kill`
-on its process, which macOS leaves out of `status`, where `lsof -t` names it:
+by PID. A server ends with its last pane (a crashed one leaves its panes
+for the next `fux start`); one still up stops with `kill` on its process,
+which macOS leaves out of `status`, where `lsof -t` names it:
 
 ```sh
 fux str agent workspace kill
 if fux status > /dev/null 2>&1; then kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"; fi
 ```
-
-`kill -9`, a crash or the OOM killer ends the server alone: each pane is
-a process of its own, which waits with its program, and `fux start` takes
-them back, with their ids; a cursor from before is refused, saying what
-was lost.
 
 fux exits 0 when done (or with what `N exit` gave); 1 when refused, saying
 `fux: CODE: MESSAGE` on stderr; 2 for a mistake in the program (`usage`,
