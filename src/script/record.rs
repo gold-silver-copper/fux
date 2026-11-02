@@ -183,12 +183,12 @@ pub(super) fn failure(thrown: &fuxth::Thrown<Fux>) -> Record {
 
 /// The dictionary's record of a word: its `name`; its `provenance`, where
 /// it came from: `core`, `fux`, `library`, or `run` for the program's own
-/// (a config's too); its `effect` and `documentation`, as declared, or
-/// null for the program's own; its `definition`, the words that made it as
-/// they were read, `native` for a word in Rust, or null where a source it
-/// was read from couldn't keep them; and its `codes`, the codes it can
-/// fail with as it runs, each once (`Machine::codes`), or null where they
-/// are unknown.
+/// (a config's too); its `effect`, as declared, and its `documentation`,
+/// all `fux help NAME` says of it (`help::documentation`), or null for the
+/// program's own; its `definition`, the words that made it as they were
+/// read, `native` for a word in Rust, or null where a source it was read
+/// from couldn't keep them; and its `codes`, the codes it can fail with as
+/// it runs, each once (`Machine::codes`), or null where they are unknown.
 pub(super) fn word(definition: &fuxth::Definition<'_>, codes: Option<&[fuxth::Code]>) -> V {
     use fuxth::Origin;
     let provenance = match definition.origin {
@@ -196,12 +196,6 @@ pub(super) fn word(definition: &fuxth::Definition<'_>, codes: Option<&[fuxth::Co
         Origin::Host => "fux",
         Origin::Library => "library",
         Origin::Program => "run",
-    };
-    // fux's own words say what they do in its table.
-    let fuxs = || Some(super::Word::named(definition.name)?.row().about);
-    let about = match definition.origin {
-        Origin::Host => fuxs(),
-        Origin::Core | Origin::Library | Origin::Program => definition.about,
     };
     let text = |text: Option<&str>| text.map_or_else(null, Value::str);
     let source = match definition.native() {
@@ -212,7 +206,10 @@ pub(super) fn word(definition: &fuxth::Definition<'_>, codes: Option<&[fuxth::Co
         ("name", Value::str(definition.name)),
         ("provenance", Value::str(provenance)),
         ("effect", text(definition.effect)),
-        ("documentation", text(about)),
+        (
+            "documentation",
+            text(crate::help::documentation(definition).as_deref()),
+        ),
         ("definition", source),
         (
             "codes",

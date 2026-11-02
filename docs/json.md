@@ -565,8 +565,8 @@ lists each preference's `name`, its `value` as `set` takes it, and its
 ## `word` and `dictionary`
 
 ```json
-{"name":"dup","provenance":"library","effect":"a -- a a","documentation":"a copy of the top","definition":"define dup 0 pick end","codes":["stack_underflow"]}
-{"name":"percent","provenance":"fux","effect":"n -- size","documentation":"n percent of the tab, for resize-pane","definition":"native","codes":["stack_underflow","type","range","bad_value"]}
+{"name":"dup","provenance":"library","effect":"a -- a a","documentation":"a copy of the top.","definition":"define dup 0 pick end","codes":["stack_underflow"]}
+{"name":"percent","provenance":"fux","effect":"n -- size","documentation":"n percent of the tab, for resize-pane.\n\nuse: N percent, which leaves size; e.g. fux %3 30 percent str horizontal resize-pane","definition":"native","codes":["stack_underflow","type","range","bad_value"]}
 {"name":"sq","provenance":"run","effect":null,"documentation":null,"definition":"define sq dup mul end","codes":["stack_underflow","type"]}
 ```
 
@@ -576,10 +576,12 @@ fails `unknown_word`. `dictionary` gives a list of every word's record, the
 current definition of each name once, in the order they were defined: the
 core's, fux's, the libraries', then the program's own (a config's too).
 `provenance` is `core`, `fux`, `library`, or `run` for the program's own.
-`effect` and `documentation` are as declared, `null` for a word the program
-defined. `definition` is the words that made it as they were read, from
-every source that gave them (a definition begun in one line or file and
-ended in the next), each quoted to be read back, then `immediate` if it is.
+`effect` is as declared, and `documentation` is all `fux help NAME` says
+of the word after its effect: what it does, and for fux's words its usage
+and options; both are `null` for a word the program defined. `definition`
+is the words that made it as they were read, from every source that gave
+them (a definition begun in one line or file and ended in the next), each
+quoted to be read back, then `immediate` if it is.
 A `define … end` reads back as the same word. A word `create`, `variable`,
 `constant`, `defer` or `let` made shows the words from its maker, the word
 the reader read and ran (that word, or a defining word of the program's),
