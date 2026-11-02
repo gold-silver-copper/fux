@@ -947,17 +947,29 @@ fn finish(mut sending: std::process::Child, client: &mut Client) -> Result<(bool
 }
 
 /// 22. Keys for a client that detaches before it takes them fail, saying
-///     so: never status 0 for keys its program never got. Its connection
-///     held still while it detaches, then at real times.
+///     so: never status 0 for keys its program never got. The detach
+///     always completes: its client is told and its connection ends. Its
+///     connection held still while it detaches, then at real times.
 #[cfg(target_os = "linux")]
 #[test]
 fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
     const SIZE: usize = 32 << 20;
+    let detached = |client: &mut Client, conn: i32, at: &str| {
+        eventually(&format!("it detached, {at}"), || {
+            let _ = client.pump();
+            Ok(client.exit.as_deref() == Some("detached"))
+        })?;
+        eventually(&format!("its connection gone, {at}"), || Ok(!alive(conn)))
+    };
+    let the_clients = |server: &Server| -> Result<i32, String> {
+        match children(server_pid(server)?, "__conn")[..] {
+            [conn] => Ok(conn),
+            _ => Err("one connection, the client's".into()),
+        }
+    };
     let server = Server::start("")?;
     let (mut client, id, got) = keeping(&server)?;
-    let [conn] = children(server_pid(&server)?, "__conn")[..] else {
-        return Err("one connection, the client's".into());
-    };
+    let conn = the_clients(&server)?;
     signal(conn, Signal::Stop);
     let sending = paste(&server, &id, &vec![b'y'; SIZE])?;
     let pid = server_pid(&server)?;
@@ -970,10 +982,12 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
     signal(conn, Signal::Cont);
     let (typed, said) = finish(sending, &mut client)?;
     assert!(!typed && said.contains("did not reach"), "{said}");
+    detached(&mut client, conn, "held")?;
     assert_eq!(std::fs::metadata(&got).map_err(e)?.len(), 0);
     for delay in [0u64, 10, 20, 40, 60, 80] {
         let server = Server::start("")?;
         let (mut client, id, got) = keeping(&server)?;
+        let conn = the_clients(&server)?;
         let sending = paste(&server, &id, &vec![b'y'; SIZE])?;
         std::thread::sleep(std::time::Duration::from_millis(delay));
         server.ok(&["str", &id, "client", "detach"])?;
@@ -987,6 +1001,7 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
             let lost = said.contains("did not reach") || said.contains("no client");
             assert!(lost, "{delay} ms: {said}");
         }
+        detached(&mut client, conn, &format!("at {delay} ms"))?;
     }
     Ok(())
 }

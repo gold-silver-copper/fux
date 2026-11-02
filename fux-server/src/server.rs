@@ -129,6 +129,9 @@ struct Conn {
     /// each a token: let go once used up (`Retired`) or typed, dropped once
     /// it is gone (`ToPane::Drop`, `ToConn::Drop`).
     tokens: std::collections::BTreeSet<(Holder, u64)>,
+    /// Keys for its client its process was told to wait for the body of
+    /// (`ToConn::Keys`), till they are typed or let go.
+    keys: std::collections::BTreeSet<u64>,
     stage: Stage,
 }
 
@@ -246,6 +249,7 @@ impl Conn {
             bodies: std::collections::VecDeque::new(),
             body: None,
             tokens: std::collections::BTreeSet::new(),
+            keys: std::collections::BTreeSet::new(),
             stage: Stage::Hello,
         })
     }
@@ -939,10 +943,17 @@ impl Server {
             }
             !dead
         });
-        for (client, token) in dropped {
-            if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                conn.tell_process(&crate::link::ToConn::Drop { token });
-            }
+        for (_, token) in dropped {
+            self.let_go(token);
+        }
+    }
+
+    /// Keys `token` go to their client no more: its connection waits for
+    /// their body no more, and lets what follows them go on.
+    fn let_go(&mut self, token: u64) {
+        if let Some(conn) = self.conns.iter_mut().find(|c| c.keys.contains(&token)) {
+            conn.keys.remove(&token);
+            conn.tell_process(&crate::link::ToConn::Drop { token });
         }
     }
 
@@ -1101,6 +1112,7 @@ impl Server {
                 Outgoing::To(client, frame) => (client, frame),
                 Outgoing::Keys(client, token) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                        conn.keys.insert(token);
                         conn.tell_process(&crate::link::ToConn::Keys { token });
                     }
                     continue;
@@ -1440,19 +1452,26 @@ impl Server {
             .map(|(_, token)| token)
             .collect();
         let views = &self.session.views;
+        let mut lost = Vec::new();
         for conn in &mut self.conns {
-            let mut lost = Vec::new();
+            let mut theirs = Vec::new();
             conn.tokens.retain(|&(holder, token)| match holder {
                 Holder::Client(client, _) if !views.contains_key(&client) => {
-                    lost.push(token);
+                    theirs.push(token);
                     false
                 }
                 Holder::Client(..) => true,
                 Holder::Pane(_) => !retired.contains(&token),
             });
-            for token in lost {
+            for &token in &theirs {
                 conn.tell_process(&crate::link::ToConn::Drop { token });
             }
+            lost.append(&mut theirs);
+        }
+        // Its client gone, its connection, detaching it, is held up by
+        // none of them.
+        for token in lost {
+            self.let_go(token);
         }
     }
 
@@ -1479,6 +1498,9 @@ impl Server {
             if let Some(&typed) = conn.tokens.iter().find(held) {
                 conn.tokens.remove(&typed);
                 conn.tell_process(&crate::link::ToConn::Typed { token: typed.1 });
+                for conn in &mut self.conns {
+                    conn.keys.remove(&typed.1);
+                }
                 return;
             }
         }
