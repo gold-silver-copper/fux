@@ -980,11 +980,12 @@ fn paint(
                         unread(&mut s);
                     }
                     units = units.saturating_add(read.len());
-                    let dirty = s.views.get(&c).is_some_and(|v| v.dirty);
+                    // Each read's screens go to the client's connection,
+                    // which composes it again (`fux_server::conn`).
                     if let Some(view) = s.views.get_mut(&c) {
                         view.dirty = false;
                     }
-                    if baseline || !dirty {
+                    if baseline {
                         continue;
                     }
                     if !fux_server::render::compose_into(&s, c, &mut spare)
