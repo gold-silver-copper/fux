@@ -261,12 +261,19 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     let gone = fuxix::process::Pid::from_raw(orphan).ok_or("a pid")?;
     let parent = |pid: &str| -> Result<Option<String>, String> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(e)?;
-        let parent = stat.rsplit(')').next().and_then(|r| r.split_whitespace().nth(1));
+        let parent = stat
+            .rsplit(')')
+            .next()
+            .and_then(|r| r.split_whitespace().nth(1));
         Ok(parent.map(str::to_owned))
     };
-    let program = server.ok(&["str", &pane, "pane", "str", "program", "get", "str", "pid", "get"])?;
+    let program = server.ok(&[
+        "str", &pane, "pane", "str", "program", "get", "str", "pid", "get",
+    ])?;
     let own = parent(program.trim())?.ok_or("the program's parent")?;
-    eventually("the orphan adopted", || Ok(parent(&orphan.to_string())?.as_deref() == Some(&own)))?;
+    eventually("the orphan adopted", || {
+        Ok(parent(&orphan.to_string())?.as_deref() == Some(&own))
+    })?;
     server.ok(&["str", &pane, "pane", "str", "C-d", "press"])?;
     eventually("the orphan reaped", || Ok(!support::exists(gone.as_raw())))
 }

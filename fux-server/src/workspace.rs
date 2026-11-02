@@ -12,8 +12,8 @@
 //! events tell is changed only here, by methods that journal the change
 //! as they make it, and by what each pane tells, which the session
 //! journals at the pane's place as it updates its copy (`copy`).
-use crate::journal::{Change, Close, Event, Journal, PaneEvent, ViewChange};
 use crate::copy::Copy as Pane;
+use crate::journal::{Change, Close, Event, Journal, PaneEvent, ViewChange};
 use fux_wire::command::{AnyRef, Sibling};
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};

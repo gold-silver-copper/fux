@@ -2,11 +2,11 @@
 //! its overlay or its focused pane. The client reads its
 //! own keyboard and runs its own bindings; a key reaches the server only
 //! as literal input for the pane it focuses.
+use crate::link::Typed;
 use crate::session::Session;
 use crate::view::Mode;
 use fux_vt::keys::Keystroke;
 use fux_vt::keys::mouse::{MouseAction, MouseEvent};
-use crate::link::Typed;
 use fux_wire::act::{Act, ScreenAct};
 use fux_wire::id::ClientId;
 use std::time::Instant;
@@ -173,7 +173,7 @@ impl Session {
             self.notify_to(client, why, true);
             return true;
         }
-        self.to_pane(pane, crate::link::ToPane::Typed { client, typed }, now);
+        self.tell_pane(pane, crate::link::ToPane::Typed { client, typed }, now);
         false
     }
 
@@ -531,7 +531,7 @@ mod tests {
     /// edits already in flight when that opening ended.
     #[test]
     fn stale_screen_actions_cannot_change_a_new_opening() -> Outcome {
-    use fux_wire::act::{Act, ScreenAct};
+        use fux_wire::act::{Act, ScreenAct};
         let (mut s, c) = session()?;
         s.out(PaneId::of(1), b"first\r\nlast");
         let panel = Panel::Prompt {

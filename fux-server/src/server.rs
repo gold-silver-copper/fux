@@ -721,7 +721,12 @@ impl Server {
         match wake {
             Wake::Session(timer) => self.session.fire(timer, now),
             Wake::Grace => {
-                for orphan in self.session.orphans.iter_mut().filter(|o| o.deadline <= now) {
+                for orphan in self
+                    .session
+                    .orphans
+                    .iter_mut()
+                    .filter(|o| o.deadline <= now)
+                {
                     // The server's child, unreaped: its pid is its own.
                     let _ = fuxix::process::kill(orphan.pid, fuxix::process::Signal::Kill);
                     orphan.deadline = after(now, STOP_WAIT);
@@ -1443,7 +1448,7 @@ impl Server {
         }
         let mut heard = Vec::new();
         loop {
-            match remote.end.next() {
+            match remote.end.next_message() {
                 Ok(Some(report)) => heard.push(report),
                 Ok(None) => break,
                 Err(error) => {
@@ -1997,7 +2002,11 @@ mod tests {
             server.serve_conn(0, PollFlags::IN, Instant::now());
             let got = server
                 .session
-                .host_mut(PaneId::of(1), |h| h.pane_mut().drain_input(), Instant::now())
+                .host_mut(
+                    PaneId::of(1),
+                    |h| h.pane_mut().drain_input(),
+                    Instant::now(),
+                )
                 .ok_or("pane")?;
             let mut expected = vec![b'a'; KEYS];
             expected.push(b'Z');
@@ -2021,7 +2030,11 @@ mod tests {
         assert!(
             server
                 .session
-                .host_mut(PaneId::of(1), |h| h.pane().input().is_empty(), Instant::now())
+                .host_mut(
+                    PaneId::of(1),
+                    |h| h.pane().input().is_empty(),
+                    Instant::now()
+                )
                 .ok_or("pane")?
         );
         Ok(())
@@ -2246,7 +2259,11 @@ mod tests {
                 }
                 Ok(server
                     .session
-                    .host_mut(PaneId::of(1), |h| h.pane_mut().drain_input(), Instant::now())
+                    .host_mut(
+                        PaneId::of(1),
+                        |h| h.pane_mut().drain_input(),
+                        Instant::now(),
+                    )
                     .ok_or("pane")?)
             });
             let result = (|| -> Result<Reply, String> {

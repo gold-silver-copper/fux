@@ -191,17 +191,29 @@ impl From<fux_wire::code::Error> for Refusal {
 pub enum ToPane {
     /// The first word: what it starts as.
     Begin(Box<Begin>),
-    Resize { size: Size, actor: Actor },
+    Resize {
+        size: Size,
+        actor: Actor,
+    },
     Host(Hosting),
     /// Whether a client shows it: what it let go of is told only then.
     Shown(bool),
-    Typed { client: ClientId, typed: Typed },
-    Ask { ask: u64, actor: Actor, what: Ask },
+    Typed {
+        client: ClientId,
+        typed: Typed,
+    },
+    Ask {
+        ask: u64,
+        actor: Actor,
+        what: Ask,
+    },
     /// The last screen it sent was taken: it may send the next.
     Taken,
     /// It is closed, by fux if `closed` (`kill`): its program is hung up,
     /// and it ends once that is gone.
-    Close { closed: bool },
+    Close {
+        closed: bool,
+    },
 }
 wired!(ToPane {
     Begin(b),
@@ -255,10 +267,19 @@ pub enum FromPane {
     /// Its program copied this (OSC 52), for the clients showing it.
     Copied(String),
     /// What the clients showing it are told.
-    Notice { text: String, error: bool },
+    Notice {
+        text: String,
+        error: bool,
+    },
     /// What a client typed was refused, so.
-    Refused { client: ClientId, why: String },
-    Answer { ask: u64, answer: Answered },
+    Refused {
+        client: ClientId,
+        why: String,
+    },
+    Answer {
+        ask: u64,
+        answer: Answered,
+    },
 }
 wired!(FromPane {
     Begun(b),
@@ -362,7 +383,10 @@ impl End {
         while !self.flush()? {
             let mut poll = fuxix::poll::Poll::default();
             let mut fds = poll.list();
-            fds.push(fuxix::poll::PollFd::new(&self.stream, fuxix::poll::Events::OUT));
+            fds.push(fuxix::poll::PollFd::new(
+                &self.stream,
+                fuxix::poll::Events::OUT,
+            ));
             match fds.poll(None) {
                 Ok(_) | Err(fuxix::Errno::INTR) => {}
                 Err(error) => return Err(error),
@@ -386,7 +410,7 @@ impl End {
     }
 
     /// The next whole message come, if one is.
-    pub fn next<T: Wire>(&mut self) -> Result<Option<T>, fux_wire::protocol::Error> {
+    pub fn next_message<T: Wire>(&mut self) -> Result<Option<T>, fux_wire::protocol::Error> {
         Ok(self.decoder.frame::<Message<T>>()?.map(|m| m.0))
     }
 
@@ -396,7 +420,7 @@ impl End {
     pub fn wait<T: Wire>(&mut self) -> Result<Option<T>, fux_wire::protocol::Error> {
         let mut buffer = [0u8; 4096];
         loop {
-            if let Some(message) = self.next()? {
+            if let Some(message) = self.next_message()? {
                 return Ok(Some(message));
             }
             let mut poll = fuxix::poll::Poll::default();
@@ -410,7 +434,7 @@ impl End {
                 Err(_) => return Ok(None),
             }
             if self.read(&mut buffer) == Read::Closed {
-                return self.next();
+                return self.next_message();
             }
         }
     }
@@ -481,13 +505,17 @@ impl Link {
         let mut command = std::process::Command::new(exe);
         command
             .arg(PANE)
-            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(theirs)))
+            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                theirs,
+            )))
             .stdout(std::process::Stdio::null());
         fuxix::process::lead_session(&mut command, false);
         let child = command
             .spawn()
             .map_err(|e| format!("starting its process, {}: {e}", exe.display()))?;
-        let pid = i32::try_from(child.id()).ok().and_then(fuxix::process::Pid::from_raw);
+        let pid = i32::try_from(child.id())
+            .ok()
+            .and_then(fuxix::process::Pid::from_raw);
         // fux reaps it by its pid; std never waits on a dropped child.
         drop(child);
         let pid = pid.ok_or("its process has no pid")?;

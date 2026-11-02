@@ -128,8 +128,14 @@ impl Host {
             .map_err(|e| e.to_string())?;
         let graphics = fux_vt::Graphics::from(begin.hosting.draws);
         let _ = pane.host(begin.hosting.colours(), begin.hosting.palette(), graphics);
-        let told = Env::of(begin.id, begin.run, begin.socket.as_deref(), begin.exe.as_deref());
-        let child = spawn(&told, 0, &launch, (begin.size, graphics.cell())).map_err(|e| e.to_string())?;
+        let told = Env::of(
+            begin.id,
+            begin.run,
+            begin.socket.as_deref(),
+            begin.exe.as_deref(),
+        );
+        let child =
+            spawn(&told, 0, &launch, (begin.size, graphics.cell())).map_err(|e| e.to_string())?;
         if let Some(child) = child {
             pane.run(child);
         }
@@ -201,7 +207,9 @@ impl Host {
         // The last of them carries the facts they leave too: a fact a
         // waiter reads once an event is told is never behind it.
         let counts = self.pane.counts();
-        let facts = self.facts().map_err(|error| log!("{}: its facts: {error}", self.pane.id()));
+        let facts = self
+            .facts()
+            .map_err(|error| log!("{}: its facts: {error}", self.pane.id()));
         let mut told = std::mem::take(&mut self.told).into_iter().peekable();
         while let Some((what, actor)) = told.next() {
             let facts = match told.peek() {
@@ -379,7 +387,8 @@ impl Host {
         // At the pane's size and history now, which may have changed while
         // it waited.
         let size = self.pane.size();
-        new.fresh.set_history_bytes(self.pane.options().history_bytes);
+        new.fresh
+            .set_history_bytes(self.pane.options().history_bytes);
         let run = self.run;
         let mut pane = self.pane_mut();
         let (old, left) = pane.respawned(new.fresh, new.process);
@@ -431,7 +440,11 @@ impl Host {
         }
         self.closed = Some(closed);
         let process = self.pane_mut().let_go();
-        self.end(process.map_or(Process::Absent, Process::Reading), closed, now);
+        self.end(
+            process.map_or(Process::Absent, Process::Reading),
+            closed,
+            now,
+        );
         if let Some(child) = self.leftover.take() {
             self.end(Process::Reading(child), closed, now);
         }
@@ -726,7 +739,9 @@ impl Host {
         self.dirty = true;
         self.killed.retain(|pid| !process::reaped(*pid));
         let leaders: Vec<Pid> = (self.pane.process().child().into_iter())
-            .chain((self.respawning.iter()).flat_map(|r| r.process.child().into_iter().chain(&r.old)))
+            .chain(
+                (self.respawning.iter()).flat_map(|r| r.process.child().into_iter().chain(&r.old)),
+            )
             .chain(&self.leftover)
             .chain(self.dying.iter().map(|d| &d.child))
             .map(|child| child.leader.pid())
@@ -743,7 +758,8 @@ impl Host {
     /// hold its pane's end.
     pub fn finish(&mut self) {
         let dying = std::mem::take(&mut self.dying);
-        self.killed.extend(dying.into_iter().filter_map(Dying::kill));
+        self.killed
+            .extend(dying.into_iter().filter_map(Dying::kill));
         for _ in 0..500 {
             self.killed.retain(|pid| !process::reaped(*pid));
             if self.killed.is_empty() {
@@ -826,7 +842,8 @@ impl Host {
             }
         }
         if !bytes.is_empty() {
-            self.pane_mut().push_with(|_, out| out.extend_from_slice(&bytes));
+            self.pane_mut()
+                .push_with(|_, out| out.extend_from_slice(&bytes));
         }
     }
 
@@ -1104,7 +1121,10 @@ impl Host {
         }
         let mut screen = Vec::new();
         let blank = Grid::default();
-        let sent = self.sent.as_ref().filter(|sent| sent.rows == grid.rows && sent.cols == grid.cols);
+        let sent = self
+            .sent
+            .as_ref()
+            .filter(|sent| sent.rows == grid.rows && sent.cols == grid.cols);
         crate::render::paint_into(sent.unwrap_or(&blank), sent.is_some(), &grid, &mut screen);
         // Its pictures go whole with its text when they change: placed
         // after it, on cells its text then leaves as they are.
@@ -1229,7 +1249,9 @@ impl Host {
     #[cfg(test)]
     pub(crate) fn children(&self) -> Vec<Pid> {
         (self.pane.process().child().into_iter())
-            .chain((self.respawning.iter()).flat_map(|r| r.process.child().into_iter().chain(&r.old)))
+            .chain(
+                (self.respawning.iter()).flat_map(|r| r.process.child().into_iter().chain(&r.old)),
+            )
             .chain(&self.leftover)
             .chain(self.dying.iter().map(|d| &d.child))
             .map(|child| child.leader.pid())
@@ -1479,8 +1501,12 @@ pub fn serve(link: std::os::unix::net::UnixStream) -> Result<(), String> {
         let at = [timer.map(|(at, _)| at), paint].into_iter().flatten().min();
         let timeout = at.map(|at| at.saturating_duration_since(now));
         let reading = match host.pane().process() {
-            Process::Reading(child) if !host.pane().has_unread() => Some(child),
-            _ => None,
+            Process::Reading(child) => (!host.pane().has_unread()).then_some(child),
+            Process::Absent
+            | Process::HungUp(_)
+            | Process::ReadFailed(..)
+            | Process::Exited(_)
+            | Process::Respawning => None,
         };
         let mut fds = poll.list();
         let link = match (gone, end.out.is_empty()) {
@@ -1508,7 +1534,7 @@ pub fn serve(link: std::os::unix::net::UnixStream) -> Result<(), String> {
                 gone = true;
             }
             loop {
-                match end.next::<ToPane>() {
+                match end.next_message::<ToPane>() {
                     Ok(Some(ToPane::Taken)) => waiting = false,
                     Ok(Some(message)) => {
                         if matches!(message, ToPane::Typed { .. }) {
@@ -1708,13 +1734,22 @@ mod tests {
         frame.extend_from_slice(b"DONE\x1b[?2026l");
         host.output(&frame, Instant::now());
         assert!(host.pane().mid_frame(), "the budget stopped no call");
-        assert!(host.take().is_empty() && host.update().is_none(), "told mid-frame");
+        assert!(
+            host.take().is_empty() && host.update().is_none(),
+            "told mid-frame"
+        );
         while host.pane().mid_frame() {
             host.fire(Timer::Unread, Instant::now());
         }
         let told = host.take();
         assert!(
-            told.iter().any(|t| matches!(t, FromPane::Told { told: Told::Bell, .. })),
+            told.iter().any(|t| matches!(
+                t,
+                FromPane::Told {
+                    told: Told::Bell,
+                    ..
+                }
+            )),
             "{told:?}"
         );
         let update = host.update().ok_or("no screen")?;

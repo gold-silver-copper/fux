@@ -356,8 +356,8 @@ impl Session {
         if terminal.is_some_and(|t| t.change.is_some()) {
             return None;
         }
-        let (colours, palette, graphics) = (terminal)
-            .map_or_else(Default::default, |t| (t.colours, t.palette, t.graphics()));
+        let (colours, palette, graphics) =
+            (terminal).map_or_else(Default::default, |t| (t.colours, t.palette, t.graphics()));
         Some(Hosting {
             foreground: colours.foreground,
             background: colours.background,
@@ -498,8 +498,8 @@ mod tests {
     /// What pane `pane`'s program was answered, taken.
     fn answered(s: &mut Session, pane: u32) -> String {
         let now = Instant::now();
-        let bytes = (s.host_mut(PaneId::of(pane), |h| h.pane_mut().drain_input(), now))
-            .unwrap_or_default();
+        let bytes =
+            (s.host_mut(PaneId::of(pane), |h| h.pane_mut().drain_input(), now)).unwrap_or_default();
         String::from_utf8_lossy(&bytes).into_owned()
     }
 

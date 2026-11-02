@@ -13,8 +13,8 @@ use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
 use fux_wire::code::{Error, Raise, fail};
 use fux_wire::command::Start;
 use fux_wire::command::{
-    self, AnyRef, Beside, ClientAction, Command, Extent, Input, Kind, Members, MoveTo,
-    PaneResize, Request, Resized, Sibling, SwapWith, Way, WsRef,
+    self, AnyRef, Beside, ClientAction, Command, Extent, Input, Kind, Members, MoveTo, PaneResize,
+    Request, Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
 use fux_wire::json::Json;
@@ -495,7 +495,7 @@ impl Session {
     // ------------------------------------------------------------ panes
 
     /// Says `message` to pane `id`'s own process, if it has one.
-    pub(crate) fn to_pane(&mut self, id: PaneId, message: ToPane, now: Instant) {
+    pub(crate) fn tell_pane(&mut self, id: PaneId, message: ToPane, now: Instant) {
         if let Some(link) = self.links.get_mut(&id) {
             link.send(id, message, now, &mut self.inbox);
         }
@@ -513,7 +513,7 @@ impl Session {
         let ask = self.asked_pane;
         self.asks.insert(ask, id);
         let actor = self.parts.journal().current_actor();
-        self.to_pane(id, ToPane::Ask { ask, actor, what }, now);
+        self.tell_pane(id, ToPane::Ask { ask, actor, what }, now);
         Ok(ask)
     }
 
@@ -530,7 +530,11 @@ impl Session {
     /// The reply of the questions `answers` answer, as `form` makes them
     /// one (`Pending`). A question its pane never answered (its process
     /// ended first) is `indeterminate`.
-    pub(crate) fn replied(&mut self, answers: Vec<(PaneId, Option<Answered>)>, form: &Form) -> Reply {
+    pub(crate) fn replied(
+        &mut self,
+        answers: Vec<(PaneId, Option<Answered>)>,
+        form: &Form,
+    ) -> Reply {
         let unanswered = |pane: PaneId| crate::link::Refusal {
             code: fux_wire::code::Code::Indeterminate,
             message: format!("{pane} never answered: it may have acted"),
@@ -558,9 +562,12 @@ impl Session {
                 }
                 match refused {
                     None => PaneResults::Many(took).into(),
-                    Some(refusal) if sent.is_empty() => Reply::failed(refusal.code, refusal.message),
+                    Some(refusal) if sent.is_empty() => {
+                        Reply::failed(refusal.code, refusal.message)
+                    }
                     Some(refusal) => {
-                        let message = format!("{}; already sent to {}", refusal.message, sent.join(" "));
+                        let message =
+                            format!("{}; already sent to {}", refusal.message, sent.join(" "));
                         Reply::failed(refusal.code, message)
                     }
                 }
@@ -571,7 +578,8 @@ impl Session {
                 };
                 match answer {
                     Some(Answered::Acted(version)) => {
-                        if let (Form::Respawn(Some(argv)), Some(copy)) = (form, self.parts.pane_mut(pane))
+                        if let (Form::Respawn(Some(argv)), Some(copy)) =
+                            (form, self.parts.pane_mut(pane))
                             && let Runs::Explicit(launch) = &mut copy.runs
                         {
                             launch.argv = argv.clone();
@@ -580,7 +588,9 @@ impl Session {
                     }
                     Some(Answered::Done) => Reply::default(),
                     Some(Answered::Captured(captured)) => self.captured(pane, *captured),
-                    Some(Answered::Refused(refusal)) => Reply::failed(refusal.code, refusal.message),
+                    Some(Answered::Refused(refusal)) => {
+                        Reply::failed(refusal.code, refusal.message)
+                    }
                     None => {
                         let refusal = unanswered(pane);
                         Reply::failed(refusal.code, refusal.message)
@@ -597,7 +607,12 @@ impl Session {
     /// it came: `events` from it reads what the pane told after the
     /// capture, as the pane told everything before it first.
     fn captured(&self, pane: PaneId, mut captured: fux_wire::answer::Captured) -> Reply {
-        if let fux_wire::answer::Of::Pane { pane: observed, read, .. } = &mut captured.of {
+        if let fux_wire::answer::Of::Pane {
+            pane: observed,
+            read,
+            ..
+        } = &mut captured.of
+        {
             if let Some((_, tab)) = self.locate(pane) {
                 observed.tab = tab;
                 let at = self.tab(tab).and_then(|t| self.sized(t).rect(pane));
@@ -677,9 +692,10 @@ impl Session {
                     pane.told_facts(*facts);
                 }
                 use crate::journal::Told;
-                let exited = match &told {
-                    Told::Exited(end) => Some(*end),
-                    _ => None,
+                let exited = if let Told::Exited(end) = &told {
+                    Some(*end)
+                } else {
+                    None
                 };
                 // What shows: its title, in its viewers' bars and in those
                 // of its workspace's where it names its tab; whether its
@@ -721,12 +737,16 @@ impl Session {
                         self.updated.insert(id);
                     }
                 }
-                for client in self.viewers(AnyRef::Pane(id)).into_iter().filter(|_| painted) {
+                for client in self
+                    .viewers(AnyRef::Pane(id))
+                    .into_iter()
+                    .filter(|_| painted)
+                {
                     if let Some(view) = self.views.get_mut(&client) {
                         view.dirty = true;
                     }
                 }
-                self.to_pane(id, ToPane::Taken, now);
+                self.tell_pane(id, ToPane::Taken, now);
             }
             FromPane::Alert { bell, notified } => self.alert(id, bell, notified, now),
             FromPane::Copied(text) => {
@@ -753,7 +773,9 @@ impl Session {
         let Some((ws, tab)) = self.locate(id) else {
             return (label, None);
         };
-        let names = self.tab(tab).is_none_or(|t| t.name().is_some() || t.root().first_pane() != id);
+        let names = self
+            .tab(tab)
+            .is_none_or(|t| t.name().is_some() || t.root().first_pane() != id);
         if names || pane.name().is_some() {
             return (label, None);
         }
@@ -796,9 +818,17 @@ impl Session {
 
     /// Process `pid`, the server's child, was reaped, ending `status`: a
     /// pane's own, or a program adopted from one (`Orphan`).
-    pub fn reaped(&mut self, pid: fuxix::process::Pid, status: fuxix::process::Status, now: Instant) {
-        if let Some(at) = self.orphans.iter().position(|o| o.pid == pid) {
-            let orphan = self.orphans.remove(at);
+    pub fn reaped(
+        &mut self,
+        pid: fuxix::process::Pid,
+        status: fuxix::process::Status,
+        now: Instant,
+    ) {
+        let (ended, orphans) = std::mem::take(&mut self.orphans)
+            .into_iter()
+            .partition::<Vec<_>, _>(|o| o.pid == pid);
+        self.orphans = orphans;
+        if let Some(orphan) = ended.first() {
             self.orphan_ended(orphan.pane, Ended::from(status), now);
             return;
         }
@@ -817,8 +847,12 @@ impl Session {
 
     /// Pane `id`'s link closed.
     pub fn link_closed(&mut self, id: PaneId, now: Instant) {
-        let linked = (self.links.get_mut(&id).into_iter())
-            .chain(self.ending.iter_mut().filter(|(e, _)| *e == id).map(|(_, l)| l));
+        let linked = (self.links.get_mut(&id).into_iter()).chain(
+            self.ending
+                .iter_mut()
+                .filter(|(e, _)| *e == id)
+                .map(|(_, l)| l),
+        );
         for link in linked {
             if let Link::Remote(remote) = link {
                 remote.closed = true;
@@ -837,7 +871,9 @@ impl Session {
                 ended: Some(status),
                 ..
             })) => match status {
-                fuxix::process::Status::Exited(code) => format!("its pane's own process exited with status {code}"),
+                fuxix::process::Status::Exited(code) => {
+                    format!("its pane's own process exited with status {code}")
+                }
                 fuxix::process::Status::Signalled(signal) => {
                     format!("its pane's own process was killed by signal {signal}")
                 }
@@ -908,7 +944,8 @@ impl Session {
             ended: true,
             ..counts
         };
-        self.parts.told(id, crate::journal::Told::Exited(end), actor, counts);
+        self.parts
+            .told(id, crate::journal::Told::Exited(end), actor, counts);
         self.touch();
         self.program_ended(id, end, now);
         self.settle(now);
@@ -1031,7 +1068,12 @@ impl Session {
     /// pane takes them or refuses on its own, as they reach it (D-120 (4)):
     /// the answer says which took them. That is all it promises: not what
     /// its program does next.
-    fn send_keys(&mut self, to: command::To, inputs: &[Input], now: Instant) -> Result<Pending, Error> {
+    fn send_keys(
+        &mut self,
+        to: command::To,
+        inputs: &[Input],
+        now: Instant,
+    ) -> Result<Pending, Error> {
         let seen = match to {
             command::To::Seen(seen) => {
                 self.counts_since(seen)?;
@@ -1329,7 +1371,12 @@ impl Session {
     }
 
     /// A new pane, its ID taken from `ids`, running what `new` says.
-    fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>, now: Instant) -> Result<(Pane, Link), Error> {
+    fn new_pane(
+        &self,
+        ids: &mut Ids,
+        new: NewPane<'_>,
+        now: Instant,
+    ) -> Result<(Pane, Link), Error> {
         let start = new.start;
         let launch = pane::Launch {
             argv: start.argv().clone(),
@@ -1341,8 +1388,16 @@ impl Session {
             false => Runs::Explicit(launch.clone()),
         };
         let id = ids.pane()?;
-        let pane = Pane::new(id, runs, new.size, new.options)
-            .map_err(|source| fail(Raise::Start, pane::Error::Terminal { size: new.size, source }.to_string()))?;
+        let pane = Pane::new(id, runs, new.size, new.options).map_err(|source| {
+            fail(
+                Raise::Start,
+                pane::Error::Terminal {
+                    size: new.size,
+                    source,
+                }
+                .to_string(),
+            )
+        })?;
         let draws = match new.cell {
             Some(cell) => crate::link::Draws::Cell(cell.width(), cell.height()),
             None => crate::link::Draws::Text,
@@ -1381,7 +1436,7 @@ impl Session {
                     self.inbox.push_back((id, FromPane::Update(first)));
                 }
                 // What else came as it began, read already, waits for no poll.
-                while let Ok(Some(report)) = remote.end.next() {
+                while let Ok(Some(report)) = remote.end.next_message() {
                     self.inbox.push_back((id, report));
                 }
             }
@@ -1401,8 +1456,9 @@ impl Session {
     /// held here and done; and of their questions unanswered, which are
     /// `indeterminate`.
     pub fn reap_ending(&mut self) {
-        let (done, ending): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.ending).into_iter().partition(|(_, link)| match link {
+        let (done, ending): (Vec<_>, Vec<_>) = std::mem::take(&mut self.ending)
+            .into_iter()
+            .partition(|(_, link)| match link {
                 Link::Remote(remote) => remote.closed && remote.ended.is_some(),
                 Link::Local(host) => host.finished(),
             });
@@ -1741,7 +1797,7 @@ impl Session {
                 pane.hosting = Some(hosting.clone());
             }
             if told_shown {
-                self.to_pane(id, ToPane::Shown(shown), now);
+                self.tell_pane(id, ToPane::Shown(shown), now);
             }
             if let Some(hosting) = hosting {
                 for client in self.viewers(AnyRef::Pane(id)) {
@@ -1749,7 +1805,7 @@ impl Session {
                         view.dirty = true;
                     }
                 }
-                self.to_pane(id, ToPane::Host(hosting), now);
+                self.tell_pane(id, ToPane::Host(hosting), now);
             }
         }
     }
@@ -1808,7 +1864,7 @@ impl Session {
                 && pane.ask_size(size)
             {
                 let actor = self.parts.journal().current_actor();
-                self.to_pane(id, ToPane::Resize { size, actor }, now);
+                self.tell_pane(id, ToPane::Resize { size, actor }, now);
             }
         }
     }
@@ -1870,7 +1926,11 @@ impl Session {
                 .map(|error| format!("{id}: reading program terminal: {error}"));
             let status =
                 why.map(|why| format!("{} {why}", fux_wire::words::labelled(id, &pane.label())));
-            let told = status.into_iter().chain(failed.clone()).collect::<Vec<_>>().join("; ");
+            let told = status
+                .into_iter()
+                .chain(failed.clone())
+                .collect::<Vec<_>>()
+                .join("; ");
             if !told.is_empty() {
                 if failed.is_some() && self.parts.panes().is_empty() {
                     self.shut_down(told.clone());
@@ -2184,7 +2244,7 @@ impl Session {
     fn run(&mut self, command: &Command, origin: &Origin, now: Instant) -> Done {
         let actor = self.request_actor(origin);
         let previous = self.parts.actor(actor);
-        let done = match self.asking(command, origin, now) {
+        let done = match self.asking(command, now) {
             Some(asked) => asked.map(Done::Asked),
             None => self.execute(command, origin, now).map(Done::Now),
         };
@@ -2200,28 +2260,23 @@ impl Session {
 
     /// The commands a pane does itself, asked of it: none, for another
     /// command.
-    fn asking(
-        &mut self,
-        command: &Command,
-        origin: &Origin,
-        now: Instant,
-    ) -> Option<Result<Pending, Error>> {
+    fn asking(&mut self, command: &Command, now: Instant) -> Option<Result<Pending, Error>> {
         let one = |session: &mut Self, target, what| {
             let ask = session.ask_pane(target, what, now)?;
             Ok(Pending::new(vec![(target, ask)], Form::One))
         };
-        Some(match command {
-            &Command::SendKeys { to, ref inputs } => self.send_keys(to, inputs, now),
-            &Command::SendMouse {
+        Some(match *command {
+            Command::SendKeys { to, ref inputs } => self.send_keys(to, inputs, now),
+            Command::SendMouse {
                 target,
                 mouse,
                 row,
                 col,
             } => one(self, target, Ask::Mouse { mouse, row, col }),
-            &Command::Signal { target, signal } => one(self, target, Ask::Signal(signal)),
-            &Command::ClearHistory { target } => one(self, target, Ask::ClearHistory),
-            &Command::HistoryBudget { target, bytes } => one(self, target, Ask::HistoryBytes(bytes)),
-            &Command::Respawn {
+            Command::Signal { target, signal } => one(self, target, Ask::Signal(signal)),
+            Command::ClearHistory { target } => one(self, target, Ask::ClearHistory),
+            Command::HistoryBudget { target, bytes } => one(self, target, Ask::HistoryBytes(bytes)),
+            Command::Respawn {
                 target,
                 kill,
                 ref argv,
@@ -2236,15 +2291,28 @@ impl Session {
                 }
                 asked.map(|ask| Pending::new(vec![(target, ask)], Form::Respawn(argv.clone())))
             }
-            &Command::CapturePane {
+            Command::CapturePane {
                 target,
                 history,
                 view,
             } => self.capture(target, history, view, now),
-            _ => {
-                let _ = origin;
-                return None;
-            }
+            Command::Inspect { .. }
+            | Command::KillServer
+            | Command::NewTab { .. }
+            | Command::Split { .. }
+            | Command::Notify { .. }
+            | Command::Resize(_)
+            | Command::Kill { .. }
+            | Command::Rename { .. }
+            | Command::Move { .. }
+            | Command::SwapPane { .. }
+            | Command::Arrange { .. }
+            | Command::ResizePane { .. }
+            | Command::Zoom { .. }
+            | Command::Reorder { .. }
+            | Command::Resolve { .. }
+            | Command::Members { .. }
+            | Command::Client { .. } => return None,
         })
     }
 
@@ -3628,8 +3696,8 @@ mod tests {
     use crate::pane::{Left, Process};
     use crate::process;
     use fux_wire::code::Code;
-    use std::time::Duration;
     use std::num::NonZeroU32;
+    use std::time::Duration;
 
     /// Pane `id`'s host, held here, changed by `change`: what it tells
     /// then is taken in.
@@ -5037,7 +5105,9 @@ mod tests {
             if live {
                 host(&mut session, id, |h| h.read_failed(fuxix::Errno::SRCH))?;
             } else {
-                host(&mut session, id, |h| h.pane_mut().read_failed(fuxix::Errno::SRCH))?;
+                host(&mut session, id, |h| {
+                    h.pane_mut().read_failed(fuxix::Errno::SRCH)
+                })?;
             }
             session.end_program(id, Ended::Exited(0));
             let notice = session
@@ -5511,7 +5581,9 @@ mod tests {
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07");
         // Programs are started, as a server starts them.
-        host(&mut s, id, |h| h.starts(Some("/nonexistent/fux.sock".into())))?;
+        host(&mut s, id, |h| {
+            h.starts(Some("/nonexistent/fux.sock".into()))
+        })?;
         let mut refused = String::new();
         let lines = told(&mut s, |s| {
             let respawn = run(s, "%2 str /no/such/bin program kill-first respawn");
@@ -5691,7 +5763,9 @@ mod tests {
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(23, 80));
         // Programs are started, as a server starts them.
-        host(&mut s, id, |h| h.starts(Some("/nonexistent/fux.sock".into())))?;
+        host(&mut s, id, |h| {
+            h.starts(Some("/nonexistent/fux.sock".into()))
+        })?;
         let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
         host(&mut s, id, |h| h.starts(None))?;
         let Begun::Waiting(mut waiting) = begun else {
@@ -5883,7 +5957,9 @@ mod tests {
             None,
         )?;
         // Programs are started, as a server starts them.
-        host(&mut s, id, |h| h.starts(Some("/nonexistent/fux.sock".into())))?;
+        host(&mut s, id, |h| {
+            h.starts(Some("/nonexistent/fux.sock".into()))
+        })?;
         let begun = s.begin_now(
             respawn_of(id, &["/bin/sh", "-c", "exit 0"])?,
             &Origin::Cli(Caller::default()),
@@ -5905,7 +5981,10 @@ mod tests {
         }
         // A pane reaps no orphan it holds: none but its children.
         let held = host(&mut s, id, |h| {
-            let started = h.replacement().and_then(|(child, _)| child).map(|c| c.leader.pid());
+            let started = h
+                .replacement()
+                .and_then(|(child, _)| child)
+                .map(|c| c.leader.pid());
             h.children().iter().any(|c| Some(*c) == started)
         })?;
         assert!(held);
@@ -5935,7 +6014,9 @@ mod tests {
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         s.input(c, b"\x1b[6;20;10t");
         let id = PaneId::of(2);
-        host(&mut s, id, |h| h.starts(Some("/nonexistent/fux.sock".into())))?;
+        host(&mut s, id, |h| {
+            h.starts(Some("/nonexistent/fux.sock".into()))
+        })?;
         run(&mut s, "%2 respawn")?;
         let size = s.pane(id)?.size();
         let child = host(&mut s, id, |h| h.set_process(Process::Absent))?;
@@ -6011,9 +6092,11 @@ mod tests {
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
         give(&mut s, id, Process::Reading(child))?;
         let winsize = |s: &mut Session| {
-            host(s, id, |h| fuxix::terminal::window_size(&h.pane().process().child()?.master))
-                .ok()
-                .flatten()
+            host(s, id, |h| {
+                fuxix::terminal::window_size(&h.pane().process().child()?.master)
+            })
+            .ok()
+            .flatten()
         };
         s.input(c, b"\x1b[6;20;10t");
         let told = winsize(&mut s);
@@ -6064,7 +6147,10 @@ mod tests {
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let queue = |s: &mut Session, bytes: &[u8]| {
-            host(s, id, |h| h.pane_mut().push_with(|_, out| out.extend_from_slice(bytes)))
+            host(s, id, |h| {
+                h.pane_mut()
+                    .push_with(|_, out| out.extend_from_slice(bytes))
+            })
         };
         queue(&mut s, b"abc")?;
         let json = output(&mut s, "%2 capture json")?;
@@ -6252,7 +6338,10 @@ mod tests {
             s.out(id, &out);
             s.end_program(id, Ended::Exited(0));
             if budgeted {
-                assert!(host(&mut s, id, |h| h.pane().has_unread())?, "the budget stopped no call");
+                assert!(
+                    host(&mut s, id, |h| h.pane().has_unread())?,
+                    "the budget stopped no call"
+                );
                 assert!(
                     s.pane(id)?.exit_status().is_none(),
                     "exited with output unread"
@@ -6443,8 +6532,15 @@ mod tests {
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
         let sent = run(&mut s, "@1 str x text send-keys");
         let sent = sent.err().unwrap_or_default();
-        assert!(sent.starts_with("not_running: ") && sent.ends_with("; already sent to %1"), "{sent}");
-        assert_eq!(queued(&mut s, PaneId::of(1))?, b"x", "the first pane took them");
+        assert!(
+            sent.starts_with("not_running: ") && sent.ends_with("; already sent to %1"),
+            "{sent}"
+        );
+        assert_eq!(
+            queued(&mut s, PaneId::of(1))?,
+            b"x",
+            "the first pane took them"
+        );
         Ok(())
     }
 
@@ -6485,7 +6581,8 @@ mod tests {
                 .collect::<String>()
                 .as_bytes(),
         );
-        let history = |s: &mut Session| host(s, PaneId::of(1), |h| h.pane().screen().history_len()).ok();
+        let history =
+            |s: &mut Session| host(s, PaneId::of(1), |h| h.pane().screen().history_len()).ok();
         assert!(history(&mut s) > Some(2));
         // Two rows of four cells: 24 bytes a row and 8 a cell.
         run(&mut s, "%1 str horizontal axis 4096 history-bytes split")?;
@@ -6493,7 +6590,10 @@ mod tests {
         run(&mut s, "str history-bytes 0 set")?;
         assert!(history(&mut s) > Some(2));
         run(&mut s, "%1 112 history-budget")?;
-        assert_eq!(host(&mut s, PaneId::of(2), |h| h.pane().history_bytes())?, other);
+        assert_eq!(
+            host(&mut s, PaneId::of(2), |h| h.pane().history_bytes())?,
+            other
+        );
         assert_eq!(history(&mut s), Some(2));
         Ok(())
     }
@@ -8798,7 +8898,10 @@ mod journal_tests {
             }
             s.fire(Timer::Pane(id, crate::host::Timer::Unread), Instant::now());
         }
-        assert_eq!(s.host_mut(id, |h| h.respawning(), Instant::now()), Some(false));
+        assert_eq!(
+            s.host_mut(id, |h| h.respawning(), Instant::now()),
+            Some(false)
+        );
         let b = batch(&s, from)?;
         let actors: Vec<_> = named(&b, "renamed").iter().map(|e| e.origin).collect();
         assert_eq!(

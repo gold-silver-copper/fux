@@ -1934,7 +1934,9 @@ pub(crate) mod tests {
             )
         }
         /// What it told, journaled at a place of its own.
-        pub(crate) fn journal(&self) -> Result<crate::journal::Journal, Box<dyn std::error::Error>> {
+        pub(crate) fn journal(
+            &self,
+        ) -> Result<crate::journal::Journal, Box<dyn std::error::Error>> {
             use fux_wire::id::{TabId, WsId};
             let kept = fux_wire::command::JournalEntries::new(1 << 14).ok_or("journal")?;
             let mut journal = crate::journal::Journal::new(kept);
