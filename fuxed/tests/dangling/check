@@ -1,0 +1,5 @@
+# The save made the target, private, and the link stays. One test a line,
+# as bash -e runs it.
+[ "$(readlink notes.txt)" = target.txt ]
+[ "$(mode target.txt)" = 600 ]
+[ "$(ls -A | wc -l)" -eq 2 ]

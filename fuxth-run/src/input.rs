@@ -346,17 +346,17 @@ impl Input {
         self.bytes.pop_front()
     }
 
-    /// The text of the file at `path`, or why there is none. A file that
-    /// may make a read wait (a FIFO, `<(…)`) is read as stdin is, so that
-    /// Ctrl-C reaches the program meanwhile; a plain file at once.
-    pub fn file(&mut self, path: &Path) -> Result<Result<String, String>, Stop> {
+    /// The text of the file at `path`, or the OS's error, kept as it is
+    /// (text that isn't UTF-8 as invalid data). A file that may make a read
+    /// wait (a FIFO, `<(…)`) is read as stdin is, so that Ctrl-C reaches the
+    /// program meanwhile; a plain file at once.
+    pub fn file(&mut self, path: &Path) -> Result<std::io::Result<String>, Stop> {
         let meta = match std::fs::metadata(path) {
             Ok(meta) => meta,
-            Err(e) => return Ok(Err(e.to_string())),
+            Err(e) => return Ok(Err(e)),
         };
         if meta.is_file() {
-            let read = std::fs::read(path).map_err(|e| e.to_string());
-            return Ok(read.and_then(|bytes| String::from_utf8(bytes).map_err(|_| unreadable())));
+            return Ok(std::fs::read(path).and_then(utf8));
         }
         let open = std::fs::OpenOptions::new()
             .read(true)
@@ -364,7 +364,7 @@ impl Input {
             .open(path);
         let file = match open {
             Ok(file) => file,
-            Err(e) => return Ok(Err(e.to_string())),
+            Err(e) => return Ok(Err(e)),
         };
         let mut bytes = Vec::new();
         let mut buffer = [0; 4096];
@@ -376,10 +376,10 @@ impl Input {
                 Ok(0) => break,
                 Ok(n) => bytes.extend(buffer.get(..n).unwrap_or_default()),
                 Err(Errno::AGAIN | Errno::INTR) => {}
-                Err(e) => return Ok(Err(std::io::Error::from_raw_os_error(e.raw()).to_string())),
+                Err(e) => return Ok(Err(std::io::Error::from_raw_os_error(e.raw()))),
             }
         }
-        Ok(String::from_utf8(bytes).map_err(|_| unreadable()))
+        Ok(utf8(bytes))
     }
 
     /// The terminal's rows and columns: stdin's, else `LINES` and
@@ -721,8 +721,9 @@ fn text(bytes: Vec<u8>) -> Result<String, Failure> {
     String::from_utf8(bytes).map_err(|_| Failure::new(Code::Host(READ), "stdin: not UTF-8 text"))
 }
 
-fn unreadable() -> String {
-    "not UTF-8 text".to_owned()
+fn utf8(bytes: Vec<u8>) -> std::io::Result<String> {
+    String::from_utf8(bytes)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8 text"))
 }
 
 fn ended() -> Failure {

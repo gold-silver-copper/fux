@@ -1,0 +1,5 @@
+# The save replaced the target, and the link stays. One test a line, as
+# bash -e runs it.
+[ "$(readlink notes.txt)" = target.txt ]
+[ "$(cat target.txt)" = newold ]
+[ "$(ls -A | wc -l)" -eq 2 ]

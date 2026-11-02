@@ -1,0 +1,7 @@
+# The save replaced the target, its name whole, and the link stays. One
+# test a line, as bash -e runs it.
+target=$(printf 'target\n.'); target=${target%.}
+[ -L notes.txt ]
+[ "$(cat "$target")" = newold ]
+# Two files, the target's line end counted as a line.
+[ "$(ls -A | wc -l)" -eq 3 ]

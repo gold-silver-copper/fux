@@ -562,16 +562,21 @@ printf '%s\n' 'include interpret.fux interpret' \
 ## Edit a file with fuxed
 
 fuxed is a small screen editor written in fuxth, in a checkout of fux at
-`fuxed/fuxed.fux`: `fuxth fuxed/fuxed.fux FILE` on a terminal. Its keys and
-commands are in `fuxed/README.md`; M-x runs a line of fuxth in it, such as
-`str w first ctrl str save bind`. Off a terminal it reads its keys from
-stdin and the screen size from `LINES` and `COLUMNS`, so a file of keys
-edits a file: here, type, Enter, type, C-s to save and C-q to quit.
+`fuxed/fuxed.fux`, and `fuxed/fuxed FILE` launches it on a terminal. The
+launcher leaves two policies to the OS: `umask 077`, so the files it makes
+are private from the start, and `pwd -P` and `readlink`, so FILE is
+resolved once and saving through a symlink replaces its target. Its keys and commands are in
+`fuxed/README.md`; M-x runs a line of fuxth in it, such as `str w first
+ctrl str save bind`. Off a terminal it reads its keys from stdin and the
+screen size from `LINES` and `COLUMNS`, so a file of keys edits a file:
+here, through a symlink, type, Enter, type, C-s to save and C-q to quit.
 
 ```sh
 printf 'hello\015world\023\021' > keys
-LINES=24 COLUMNS=80 fuxth fuxed/fuxed.fux notes.txt < keys > /dev/null
-[ "$(cat notes.txt)" = "$(printf 'hello\nworld')" ]
+ln -s notes.txt link.txt
+LINES=24 COLUMNS=80 fuxed/fuxed link.txt < keys > /dev/null
+[ "$(cat notes.txt)" = "$(printf 'hello\nworld')" ] && [ -L link.txt ]
+[ "$(ls -l notes.txt | cut -c1-10)" = -rw------- ]
 ```
 
 ## Clean up

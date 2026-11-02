@@ -1,0 +1,4 @@
+# A file size limit of one block makes the save's first write fail, past
+# the 8 KiB the file's buffer holds; ignoring SIGXFSZ makes it a refused
+# write, as a full disk would be. The new file the save made is removed.
+umask 022; ulimit -f 1; trap '' XFSZ

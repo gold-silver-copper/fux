@@ -1,14 +1,15 @@
 #!/bin/bash
-# test.sh FUXTH: runs fuxed headless on each case in tests/, through the
-# fuxth binary FUXTH. A case is a directory: in.txt, the file it opens (none
-# for one that doesn't exist yet), named notes.txt, or what name says if
-# there; keys, its keys in printf's %b notation, line ends ignored; out.txt, if there, the file as saved, byte for byte;
-# mode, if there, the file's mode before, which the save must keep; beside/,
-# if there, files put beside it first, which must stay as they were; setup,
-# if there, shell sourced in the file's directory just before fuxed runs;
+# test.sh FUXTH: runs fuxed headless on each case in tests/, by its
+# launcher, with the fuxth binary FUXTH. A case is a directory: in.txt, the
+# file it opens (none for one that doesn't exist yet), named notes.txt, or
+# what name says if there; keys, its keys in printf's %b notation, line ends
+# ignored; out.txt, if there, the file as saved, byte for byte; mode, if
+# there, the file's mode before, which the save must keep; beside/, if
+# there, files put beside it first, which must stay as they were; setup, if
+# there, shell sourced in the file's directory just before fuxed runs;
 # check, if there, shell run there afterwards by bash -e, a test a line,
-# which must succeed. fuxed must quit by itself (exit 0) and, unless check
-# says otherwise, leave no other file.
+# which must succeed; status, if there, the exit status, else 0. fuxed must
+# quit by itself and, unless check says otherwise, leave no other file.
 set -u
 fuxth=${1:?usage: test.sh FUXTH}
 # A path relative to where the caller is, before any cd.
@@ -16,6 +17,8 @@ case $fuxth in */*) [ "${fuxth#/}" = "$fuxth" ] && fuxth=$PWD/$fuxth ;; esac
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT
+# The launcher runs the fuxth on the PATH.
+mkdir "$work/bin" && ln -s "$fuxth" "$work/bin/fuxth" || exit 1
 # A word that runs the rest, so an empty array never expands under set -u
 # (bash before 4.4 calls it unbound): `timeout` where there is one.
 limit=(command)
@@ -34,11 +37,13 @@ for case in "$here"/tests/*/; do
   [ -d "$case/beside" ] && cp -R "$case/beside/." "$dir/"
   printf '%b' "$(tr -d '\n' < "$case/keys")" > "$work/$name.keys"
   (cd "$dir" && { [ ! -f "$case/setup" ] || . "$case/setup"; } &&
-    LINES=10 COLUMNS=40 "${limit[@]}" "$fuxth" "$here/fuxed.fux" "$file" \
+    PATH=$work/bin:$PATH LINES=10 COLUMNS=40 "${limit[@]}" "$here/fuxed" "$file" \
       < "$work/$name.keys" > /dev/null 2> "$work/$name.err")
   status=$?
   why=
-  if [ "$status" -ne 0 ]; then why="exit $status: $(cat "$work/$name.err")"
+  expected=0
+  [ -f "$case/status" ] && expected=$(cat "$case/status")
+  if [ "$status" -ne "$expected" ]; then why="exit $status: $(cat "$work/$name.err")"
   elif [ -f "$case/out.txt" ] && ! cmp -s "$dir/$file" "$case/out.txt"; then
     why="saved file differs: $(od -c "$dir/$file" | head -5)"
   elif [ -f "$case/check" ]; then
