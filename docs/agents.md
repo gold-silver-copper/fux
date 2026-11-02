@@ -90,6 +90,11 @@ fux str agent workspace kill
 if fux status > /dev/null 2>&1; then kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"; fi
 ```
 
+`kill -9`, a crash or the OOM killer ends the server alone: each pane is
+a process of its own, which waits with its program, and `fux start` takes
+them back, with their ids; a cursor from before is refused, saying what
+was lost.
+
 fux exits 0 when done (or with what `N exit` gave); 1 when refused, saying
 `fux: CODE: MESSAGE` on stderr; 2 for a mistake in the program (`usage`,
 `unknown_word`, `type` …); 4 if the pane waited on closed; 124 on
@@ -349,7 +354,11 @@ stays unknown.
   run, or with counts the pane can't have had, fails `bad_value`, as for
   `changed`. A version is one pane's: to a
   tab's panes, send each its own; keys to a client go to the pane the
-  client chooses, and take no version.
+  client chooses, and take no version. Keys to a tab or a workspace go
+  to each of its panes on its own, each checking its own: one that
+  refuses fails the whole, saying which panes took them (`not_running: …;
+  already sent to %2 %4`). A pane whose own process ended before it said
+  whether it took them fails `indeterminate`: it may have.
 
   ```fux
   %2 capture let seen
@@ -568,8 +577,13 @@ read-file`. `X warn` prints on stderr:
   A command whose reply was lost has an unknown outcome: the server may
   have made a process or queued its input, so running it again is no way
   to learn whether it ran.
-- Nothing is saved on its own: a server that stops, or crashes, takes its
-  session with it. `fux all dump > FILE` saves its layout and launches when you
+- Nothing is saved on its own: a server that stops takes its session
+  with it. One that crashes leaves its panes' processes waiting, each with
+  its program, its screen and its history, beside its socket; `fux start`
+  on that socket takes the run back: its ids, names, layout and versions
+  go on, and `FUX_PANE` still names each pane. Its journal is new. Where
+  the run cannot be taken back (its record or its fux gone), `start`
+  refuses, naming the panes that wait and their pids. `fux all dump > FILE` saves its layout and launches when you
   choose; `fux start && fux --file FILE` makes them again on a fresh server,
   never its processes' state. That is another server run: versions from
   before it are refused.

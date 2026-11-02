@@ -15,7 +15,11 @@ panes an array of their objects). Rows and columns count from 0; times are milli
 
 A pane's facts are one observation, read in one server turn: its
 identity and place, its program, what it was started as and its
-terminal's state, in one flat object, the same wherever it is read.
+terminal's state, in one flat object, the same wherever it is read. Each
+pane runs in a process of its own, which holds its terminal and reports
+to the server in order: what `get` and a snapshot read is the server's
+copy, as the pane's process last reported it; a capture asks the pane's
+process, and reads it as it is.
 `ls json` and `X info json` give each pane's under `panes`; `PANE capture
 json` gives it with what it read of the screen and the journal's
 `cursor` (below); `PANE str FIELD get` reads one field of it now. In
@@ -71,10 +75,10 @@ its status with it:
 | `generation` | how many times the pane was respawned before it started, its version's RESPAWNS |
 | `argv` | the checked words it was started with, which `respawn` and `dump` start again |
 | `pid` | its process, `null` once it ended |
-| `state` | `"running"`; `"hung_up"`, it closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not); `"read_failed"`, reading its terminal failed (`read_error`): it is no longer read and refuses keys; `"ended"`, its version's ENDED is 1 |
+| `state` | `"running"`; `"hung_up"`, it closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not); `"read_failed"`, reading its terminal failed, or its pane's own process ended (`read_error`): it is no longer read and refuses keys; `"ended"`, its version's ENDED is 1 |
 | `exited` | the status it exited with (a pane started with a program, not a shell), else `null` |
 | `signal` | the signal that killed it (its number), else `null`; both `null` for one that ended whose status was lost |
-| `read_error` | an unexpected PTY read failure as errno text, or `null`; it stays after its exit |
+| `read_error` | an unexpected PTY read failure as errno text, or how its pane's own process ended (`its pane's own process was killed by signal 9`), or `null`; it stays after its exit |
 | `input_unread` | bytes of input fux queued for it and had not yet written to its terminal as it ended, let go, else 0. Input written to its terminal that it never read is not counted: the system does not say |
 | `foreground_group` | the terminal's observed foreground process group id `G`, or `null` if unknown; its leader may have exited while other members still run. The OS says what it runs: `ps -o comm=,args= -p G`, `/proc/G/cmdline`, `readlink /proc/G/cwd` and `pgrep -a -g G` (every member) on Linux; `ps -o`, `lsof -a -p G -d cwd -Fn` and `pgrep -lf -g G` on macOS. Each is a separate read that may race with the group changing |
 
@@ -172,6 +176,9 @@ client and its current workspace closure. Missing explicit scopes fail.
 server turn. A batch from it (`all str CURSOR 0 next-events`) starts after
 that observation; a missed journal prefix requires another snapshot. OS
 observations happen during the turn but are not simultaneous OS snapshots.
+Each pane reports from its own process, so a snapshot holds each pane as
+the server last heard from it: it claims no moment the panes shared, and
+one pane's facts may be newer than another's.
 A pane version does not certify process metadata or client focus.
 
 A snapshot is one observation, never truncated or combined from several
@@ -390,7 +397,11 @@ oldest before appending to a full ring. Retention promises a number of entries, 
 seconds; scope filtering reserves no private window. `missed` counts exactly
 the entries evicted before this cursor, including nonmatches. On loss,
 resnapshot and reconcile, or fail the task explicitly. A full ring is
-evicted before append and does not grow.
+evicted before append and does not grow. A journal is its server
+process's, ordered as each pane's process reported: a server that takes a
+run back after a crash (`fux start`) keeps one of its own, and refuses a
+cursor from the one before (`bad_value`), saying that what came between is
+lost: resnapshot.
 
 The journal guarantees ordered invalidations, not complete state replication:
 a later snapshot can already contain newer state. Foreground process
@@ -442,7 +453,7 @@ trees are not copied into layout/view invalidations. The finite coverage schema 
 | `history_cleared` | pane history invalidated |
 | `respawned` | the new program's `generation`; optional `input_unread`, the old program's input not written to its terminal |
 | `hung_up` | its program closed its terminal and runs on (`hung_up`) |
-| `read_failed` | `read_error`, the errno text of an unexpected PTY read failure |
+| `read_failed` | `read_error`, the errno text of an unexpected PTY read failure, or how its pane's own process ended; then its program's `exited`, with the status its program really ended with when it can be read, else lost, and its role's rule (a shell's pane closes) |
 | `exited` | `exited` (null when lost) or `signal`; optional `input_unread`; a shell's pane then closes |
 | `input` | a request's input queued for its program, never its text: the program's `generation`, `kind` (`keys` from `send-keys`, `paste` when a paste is among them, `mouse` from `send-mouse`), `bytes`, and `expected`, the version `expect` admitted it at, if it did. Typing at an attached terminal is not journaled |
 | `signalled` | `signal`'s number, sent by `signal` to what runs in the foreground of the program `generation` |
