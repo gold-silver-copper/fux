@@ -89,10 +89,14 @@ impl Session {
             "col" => place(at()?.as_ref().map(Rect::x)),
             "program" => crate::capture::program(pane)?,
             "launch" => crate::capture::launch(pane).json(),
-            _ => match inspect::Terminal::named(field) {
-                Some(fact) => crate::capture::terminal(fact, pane),
-                None => return Ok(None),
-            },
+            _ => {
+                let count = pane.counts().named().into_iter().find(|(n, _)| *n == field);
+                match (count, inspect::Terminal::named(field)) {
+                    (Some((_, n)), _) => Json::uint(n),
+                    (None, Some(fact)) => crate::capture::terminal(fact, pane),
+                    (None, None) => return Ok(None),
+                }
+            }
         };
         Ok(Some(Body::Field(value)))
     }

@@ -1,6 +1,6 @@
 # Run a program, wait for its exit, and read what it printed. A wait on an
 # answer (new-tab's, then its own) waits from the version it holds and answers
-# the next change; the version's last count is 1 once the program ended,
+# the next change; its `ended` count is 1 once the program ended,
 # and `get` reads how it ended.
 # expect: tick 1
 # expect: tick 2
@@ -11,6 +11,6 @@
 opts str agent in 80 24 size str sh program str -c arg
 str 'for i in 1 2 3; do echo tick $i; sleep 0.1; done; echo done' arg
 new-tab
-begin 600 timeout wait dup counts 4 at 1 eq until
+begin 600 timeout wait dup str ended get 1 eq until
 let W
 W capture W str exited get

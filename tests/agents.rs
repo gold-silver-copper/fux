@@ -1294,21 +1294,25 @@ fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
     for source in [
         pane.clone(),
         format!("{pane} capture"),
-        format!("{pane} version"),
         format!("{pane} str '' text send-keys"),
     ] {
-        server.ok(&[&format!("{source} 2 0 1 grows drop")])?;
+        server.ok(&[&format!("{source} str bells 0 1 grows drop")])?;
     }
-    for (index, amount) in [(0, 0), (5, 0), (2, -1)] {
-        let refused = server.fux(&[&format!("{pane} capture {index} {amount} 1 grows drop")])?;
+    for (count, amount) in [("respawns", 0), ("nosuch", 0), ("bells", -1)] {
+        let refused =
+            server.fux(&[&format!("{pane} capture str {count} {amount} 1 grows drop")])?;
         assert_eq!(refused.status, 1, "{}", refused.stdout);
     }
-    let bell = format!("{pane} str go line 2 1 3 grows counts 2 at");
+    let bell = format!("{pane} str go line str bells 1 3 grows str bells get");
     assert_eq!(server.ok(&[&bell])?, "1\n");
-    let overflow = server.fux(&[&format!("{pane} capture 2 {} 1 grows drop", i64::MAX)])?;
+    let overflow = server.fux(&[&format!(
+        "{pane} capture str bells {} 1 grows drop",
+        i64::MAX
+    )])?;
     assert_eq!(overflow.status, 1);
-    let generation =
-        format!("{pane} capture let seen {pane} kill-first respawn drop seen 1 1 1 grows drop");
+    let generation = format!(
+        "{pane} capture let seen {pane} kill-first respawn drop seen str screen 1 1 grows drop"
+    );
     let refused = server.fux(&[&generation])?;
     assert!(
         refused.stderr.contains("program respawned"),

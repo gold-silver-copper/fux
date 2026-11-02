@@ -361,9 +361,8 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         Ok(listed()?.contains("%2 sh 80x24 exited 3"))
     })?;
     let screen_count = || -> Result<u64, String> {
-        let counts = server.ok(&["str", "%2", "pane", "counts"])?;
-        let count = counts.split_whitespace().nth(1).ok_or("its counts")?;
-        count.parse().map_err(e)
+        let count = server.ok(&["str", "%2", "pane", "str", "screen", "get"])?;
+        count.trim().parse().map_err(e)
     };
     // Read on: its screen's revision grows. macOS takes the terminal from
     // the session as its leader exits (the writer's writes fail, EIO), so

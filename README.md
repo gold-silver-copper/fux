@@ -152,8 +152,9 @@ program, keys, a size) goes before it, on `opts` or on the pane it acts
 on.
 
 Every pane has a **version**, one word that names the pane, counts what
-only grows while its program runs (respawns, its screen's revision,
-bells, shell commands ended, its end) and names the server's run. An
+only grows while its program runs (`respawns`, `screen`, its revision,
+`bells`, `done`, shell commands ended, and `ended`, each a field by that
+name too) and names the server's run. An
 action (`new-tab`, `line`, `send-keys`, `signal` …) acts at once and
 answers its pane's version from just before it acted; `changed wait`
 waits until the version differs, and says what changed. `shows`, `quiet`
