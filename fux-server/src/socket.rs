@@ -326,16 +326,38 @@ impl Drop for Endpoint {
     }
 }
 
-/// Whether something listens on `path`, without waiting: a nonblocking
+/// Whether a server listens on `path`, without waiting: a nonblocking
 /// connect answers at once. A listener with a full backlog refuses with
-/// `EAGAIN`, and counts as alive.
-fn probe(path: &Path) -> io::Result<()> {
-    let fd = fuxix::socket::stream()?;
-    fuxix::io::set_nonblocking(&fd, true)?;
-    match fuxix::socket::connect(&fd, path) {
-        Ok(()) | Err(fuxix::Errno::AGAIN | fuxix::Errno::INPROGRESS) => Ok(()),
-        Err(error) => Err(error.into()),
+/// `EAGAIN`, and counts as alive. One whose maker, as the system names it
+/// (`SO_PEERCRED`: the process that listened), is gone is no server's: a
+/// crashed server's socket, still held by a process of its own that has
+/// yet to see it go (its connection's, waiting for a client, `conn::wait`,
+/// which never listens itself).
+pub fn listened(path: &Path) -> bool {
+    let Ok(fd) = fuxix::socket::stream() else {
+        return false;
+    };
+    if fuxix::io::set_nonblocking(&fd, true).is_err() {
+        return false;
     }
+    match fuxix::socket::connect(&fd, path) {
+        Ok(()) => !fuxix::socket::peer(&fd)
+            .ok()
+            .and_then(|peer| peer.pid)
+            .is_some_and(gone),
+        Err(fuxix::Errno::AGAIN | fuxix::Errno::INPROGRESS) => true,
+        Err(_) => false,
+    }
+}
+
+/// Whether process `pid` is gone: it has no session, or, on Linux, it is a
+/// zombie, whose descriptors are closed.
+fn gone(pid: fuxix::process::Pid) -> bool {
+    let zombie = || {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        (stat.rsplit_once(") ")).is_some_and(|(_, rest)| rest.starts_with(['Z', 'X']))
+    };
+    fuxix::process::session(pid).is_none() || cfg!(target_os = "linux") && zombie()
 }
 
 /// The lock file beside the socket at `path`, its name ending `end`, made
@@ -390,13 +412,14 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
                 path.display()
             )));
         }
-        Ok(_) if probe(path).is_ok() => {
+        Ok(_) if listened(path) => {
             return Err(Error::Refused(format!(
                 "another fux server is already listening on {}",
                 path.display()
             )));
         }
-        // No answer: with the lock held, no server owns it.
+        // No answer, or a crashed server's socket a process of its still
+        // holds: with the lock held, no server owns it.
         Ok(_) => {
             if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
                 fs::remove_file(path).map_err(failed("removing stale socket ", path))?;

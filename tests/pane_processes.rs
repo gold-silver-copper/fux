@@ -376,6 +376,40 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
 
 /// Stops a server however its test ends: one that took a run back is no
 /// child of the test's.
+/// 6b. A crashed server's run is taken back though the connection's
+///     process it started for its next client, which holds its socket till
+///     it sees its server go, is stopped meanwhile: a socket whose server
+///     is gone is no server's (`socket::listened`).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_crashed_servers_run_is_taken_back_while_its_waiting_connection_is_stopped() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let shell = pane(server, "work", &["sh"])?;
+    server.type_line(&shell, "echo MARK-BEFORE")?;
+    server.shows(&shell, "MARK-BEFORE")?;
+    let before = layout(server)?;
+    let pid = server_pid(server)?;
+    let waiting: Vec<i32> = (children(pid, "__conn").into_iter())
+        .filter(|conn| !connections(pid).contains(conn))
+        .collect();
+    let [spare] = waiting[..] else {
+        return Err(format!("the connection waiting for a client: {waiting:?}"));
+    };
+    signal(spare, Signal::Stop);
+    signal(pid, Signal::Kill);
+    let taken = server.ok(&["start"]).and_then(|_| layout(server));
+    signal(spare, Signal::Cont);
+    assert_eq!(taken?, before);
+    assert!(
+        server
+            .ok(&["str", &shell, "pane", "capture"])?
+            .contains("MARK-BEFORE")
+    );
+    eventually("the old connection's process gone", || Ok(!alive(spare)))
+}
+
 struct Stop<'a>(&'a Server);
 
 impl Drop for Stop<'_> {
