@@ -439,9 +439,9 @@ fn output_failed(error: &std::io::Error) -> Failure {
 /// The code of a failure the OS's `error` caused: `not_found` when there
 /// is no such file, else `otherwise`.
 fn code(error: &std::io::Error, otherwise: &'static str) -> Code {
-    match error.kind() {
-        std::io::ErrorKind::NotFound => Code::Host(NOT_FOUND),
-        _ => Code::Host(otherwise),
+    match error.kind() == std::io::ErrorKind::NotFound {
+        true => Code::Host(NOT_FOUND),
+        false => Code::Host(otherwise),
     }
 }
 
