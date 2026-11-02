@@ -564,7 +564,17 @@ fn a_capture_never_passes_through_the_server() -> Outcome {
     ]
     .concat();
     let lines = id(&server.ok(&words)?);
-    server.shows(&lines, "all-out")?;
+    // Its screen shows the end once all is read: waited for by its version,
+    // as long as a slow machine takes to read 600,000 lines, with no whole
+    // history captured on the way.
+    let deadline = after(std::time::Duration::from_secs(120));
+    let mut since = server.version(&lines)?;
+    while !server
+        .ok(&["str", &lines, "pane", "capture"])?
+        .contains("all-out")
+    {
+        since = server.changed(&lines, &since, deadline)?;
+    }
     let pid = server_pid(&server)?;
     let before = peak_kib(pid)?;
     let captured = server.ok(&["str", &lines, "pane", "all-history", "capture"])?;
