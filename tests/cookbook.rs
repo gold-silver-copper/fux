@@ -5,7 +5,7 @@
 //! which are configs, as a typing terminal runs one. Each must succeed: a
 //! recipe says the failures it expects (`|| [ $? -eq 124 ]`). The README
 //! runs the same way, on a server of its own. The agent page (`fux help
-//! agents`) runs as an agent types it, in one shell with no server: it
+//! agents`) runs as an agent types it, in one bash with no server: it
 //! starts its own, and stops it. None has `XDG_RUNTIME_DIR`, and each has
 //! its `TMPDIR` in its directory. What they print is never compared.
 mod support;
@@ -159,22 +159,39 @@ fn run(
 fn every_recipe_in_the_cookbook_runs() -> Outcome {
     let blocks = blocks(COOKBOOK)?;
     assert!(blocks.len() >= 10, "{} blocks", blocks.len());
-    for skipped in runs(blocks, false)? {
+    for skipped in runs(shell()?, blocks, false)? {
         eprintln!("{skipped}");
     }
     Ok(())
 }
 
+/// The page whole, whose `jobs` workspace outlives the agent's, so its
+/// stop kills the server; and its server, tab and stop alone, where the
+/// agent's workspace is the server's last, so the server has ended. By
+/// bash, as an agent's shell is: its `kill` fails on an empty pid, where
+/// bash as `sh` says so and goes on.
 #[test]
 fn every_command_on_the_agent_page_runs() -> Outcome {
-    let mut script = String::new();
+    let mut page = Vec::new();
     for (heading, lang, block) in blocks(agent_page())? {
         match lang {
-            "sh" => script.push_str(&block),
+            "sh" => page.push(block),
             _ => return Err(format!("{heading}: a {lang:?} block on the page")),
         }
     }
-    for skipped in runs(vec![("the agent page", "sh", script)], true)? {
+    let (Some(start), Some(tab), Some(stop)) = (page.first(), page.get(1), page.last()) else {
+        return Err(format!("{} blocks on the page", page.len()));
+    };
+    let alone = [start.as_str(), tab, stop].concat();
+    let runs = runs(
+        "bash",
+        vec![
+            ("the agent page", "sh", page.concat()),
+            ("its stop alone", "sh", alone),
+        ],
+        true,
+    )?;
+    for skipped in runs {
         eprintln!("{skipped}");
     }
     Ok(())
@@ -182,16 +199,16 @@ fn every_command_on_the_agent_page_runs() -> Outcome {
 
 #[test]
 fn every_command_in_the_readme_runs() -> Outcome {
-    for skipped in runs(blocks(README)?, false)? {
+    for skipped in runs(shell()?, blocks(README)?, false)? {
         eprintln!("{skipped}");
     }
     Ok(())
 }
 
 /// Runs `blocks` in order on a private server, or on none when `cold`:
-/// each `sh` one by a shell, each `fux` one as a config. What it skipped,
+/// each `sh` one by the shell `sh`, each `fux` one as a config. What it skipped,
 /// saying why.
-fn runs(blocks: Vec<(&str, &str, String)>, cold: bool) -> Result<Vec<String>, String> {
+fn runs(sh: &str, blocks: Vec<(&str, &str, String)>, cold: bool) -> Result<Vec<String>, String> {
     let server = Server::start("")?;
     let dir = server.dir.join("recipes");
     std::fs::create_dir_all(&dir).map_err(e)?;
@@ -201,7 +218,7 @@ fn runs(blocks: Vec<(&str, &str, String)>, cold: bool) -> Result<Vec<String>, St
         std::os::unix::fs::symlink(checkout, dir.join(name)).map_err(e)?;
     }
     let _started = Started(dir.clone());
-    let (sh, mut skipped) = (shell()?, Vec::new());
+    let mut skipped = Vec::new();
     for (i, (heading, lang, block)) in blocks.into_iter().enumerate() {
         match lang {
             "sh" => {
