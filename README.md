@@ -107,7 +107,9 @@ where its map doesn't bind it, sends it to the pane.
 the prefix until Esc or Enter. `f`, `g`, `i`, `u` and `y` are free for
 your own. `me-focused` is the keys' own word for `me me focused`, the
 client and the pane it focuses; `str last step` toggles with the one this
-client was shown before.
+client was shown before. `confirm-close` and `rename-prompt` are the
+keys' own too: your config and the command prompt have them, the
+command line doesn't.
 
 - **`C-b c`** opens the focused pane's history in your editor (the
   attached terminal's `$EDITOR`, else `vi`) at its last line, in a split
@@ -115,7 +117,7 @@ client was shown before.
   copy there. It stands in for a copy mode and a pager.
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
   or panes: Enter or `y` selects, `r` renames, `x` closes, Esc, `q` or
-  `n` cancels. They are library words over one `choose` primitive
+  `n` cancels. They are the keys' own words over one `choose` primitive
   (`choose-among`, `choose-move`, `choose-pane`; `fux help choose`).
 - **The command prompt** (`e`) runs fuxth as your client, `me` and all,
   and shows what it printed, or its failure, in the bar. `prompt` opens

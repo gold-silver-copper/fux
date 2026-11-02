@@ -3097,6 +3097,44 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// The keys' own words, the choosers and prompts among them, are in
+    /// the dictionary a client's keys, config and prompt compile in, not
+    /// the command line's.
+    #[test]
+    fn the_keys_own_words_are_a_clients_not_the_command_lines() -> Result<(), super::Failed> {
+        let found = |mut machine: super::Machine<super::Fux>, name: &str| {
+            machine.read(
+                super::token::source("found", &format!("str {name} find"))?,
+                None,
+            );
+            let mut out = super::io::sink();
+            let mut host = super::Host::new(Default::default(), None, &mut out);
+            let left = super::run(
+                &mut machine,
+                &mut host,
+                &mut super::ConfigOnly::default(),
+                None,
+            )?;
+            Ok::<_, super::Failed>(matches!(left.last(), Some(super::Value::Bool(true))))
+        };
+        for name in [
+            "me-focused",
+            "confirm-close",
+            "rename-prompt",
+            "choose-among",
+            "choose-move",
+            "choose-pane",
+        ] {
+            assert!(found(super::client_base(None)?, name)?, "{name}");
+            assert!(!found(super::base()?, name)?, "{name}");
+        }
+        // Their helpers are hidden from both.
+        for name in ["chooser-row", "chooser-find", "chooser-siblings"] {
+            assert!(!found(super::client_base(None)?, name)?, "{name}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
         let run = |name: &str, text: &str, state: &mut crate::client_state::Draft| {

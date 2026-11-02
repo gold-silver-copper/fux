@@ -276,6 +276,9 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             .copied()
             .unwrap_or("pane")
     };
+    // The bundled keys' map for a pane, tab or workspace.
+    let map =
+        |rng: &mut Rng| -> &'static str { rng.pick(&["a", "t", "w"]).copied().unwrap_or("a") };
     let panes = world.panes().count();
     let tabs = world.tabs().count();
     let spaces = world.workspaces.len();
@@ -360,26 +363,26 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         // the column if it is that client's prefix.
         23 => match rng.below(4) {
             0 => format!("str {} client str C-b key send-keys", client(rng)),
+            1 => format!("str {} client command-prompt", client(rng)),
+            // A tab's or workspace's chooser, as its key opens it.
             n => format!(
-                "str {} client {}",
+                "str {} client str C-b key str {}g text send-keys",
                 client(rng),
-                match n {
-                    1 => "command-prompt",
-                    2 => "dup focused tab choose-among",
-                    _ => "dup focused workspace choose-among",
-                }
+                if n == 2 { "t" } else { "w" }
             ),
         },
         24 => format!("str {} client dup focused {} menu", client(rng), kind(rng)),
+        // The pane's, tab's or workspace's rename prompt, then its close
+        // confirmation, as their keys open them.
         25 => format!(
-            "str {} client dup focused {} rename-prompt",
+            "str {} client str C-b key str {}r text send-keys",
             client(rng),
-            kind(rng)
+            map(rng)
         ),
         26 => format!(
-            "str {} client dup focused {} confirm-close",
+            "str {} client str C-b key str {}x text send-keys",
             client(rng),
-            kind(rng)
+            map(rng)
         ),
         27 => match rng.below(2) {
             0 => format!("str {} pane 0 history-budget", pane(rng)),
