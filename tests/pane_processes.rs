@@ -97,6 +97,19 @@ fn children(pid: i32, word: &str) -> Vec<i32> {
         .collect()
 }
 
+/// The processes of the server `pid`'s connections that took a client: not
+/// the one waiting for the next, which holds the server's socket on its
+/// stdout (`Server::spare`).
+#[cfg(target_os = "linux")]
+fn connections(pid: i32) -> Vec<i32> {
+    (children(pid, "__conn").into_iter())
+        .filter(|conn| {
+            std::fs::read_link(format!("/proc/{conn}/fd/1"))
+                .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
+        })
+        .collect()
+}
+
 /// The server's process.
 fn server_pid(server: &Server) -> Result<i32, String> {
     i32::try_from(server.pid().ok_or("the server's pid")?).map_err(e)
@@ -223,7 +236,7 @@ fn a_client_that_stops_reading_ends_only_its_connection() -> Outcome {
     let pid = i32::try_from(server.pid().ok_or("the server's pid")?).map_err(e)?;
     let mut stuck = server.attach(10, 40)?;
     stuck.wait_for("$")?;
-    let conns = children(pid, "__conn");
+    let conns = connections(pid);
     let [conn] = conns.as_slice() else {
         return Err(format!("its connection's process: {conns:?}"));
     };
@@ -518,8 +531,7 @@ fn a_paste_body_never_passes_through_the_server() -> Outcome {
     stdin.write_all(&body).map_err(e)?;
     drop(stdin);
     eventually("its connection to hold it", || {
-        Ok((children(pid, "__conn").into_iter())
-            .any(|conn| peak_kib(conn).is_ok_and(|k| k > 32 << 10)))
+        Ok((connections(pid).into_iter()).any(|conn| peak_kib(conn).is_ok_and(|k| k > 32 << 10)))
     })?;
     let grew = peak_kib(pid)?.saturating_sub(before);
     signal(own, Signal::Cont);
@@ -576,8 +588,7 @@ fn a_clients_screen_is_never_composed_in_the_server() -> Outcome {
     let mut watcher = server.watch(1500, 1500)?;
     eventually("its connection to compose it", || {
         watcher.pump()?;
-        Ok((children(pid, "__conn").into_iter())
-            .any(|conn| peak_kib(conn).is_ok_and(|k| k > 24 << 10)))
+        Ok((connections(pid).into_iter()).any(|conn| peak_kib(conn).is_ok_and(|k| k > 24 << 10)))
     })?;
     let grew = peak_kib(pid)?.saturating_sub(before);
     assert!(grew < 8 << 10, "the server grew {grew} KiB");
@@ -617,7 +628,7 @@ fn a_connection_ends_with_its_server_though_its_client_reads_nothing() -> Outcom
     let pid = server_pid(&server)?;
     let mut stuck = server.attach(10, 40)?;
     stuck.wait_for("$")?;
-    let conn = (children(pid, "__conn").first().copied()).ok_or("its connection")?;
+    let conn = (connections(pid).first().copied()).ok_or("its connection")?;
     server.type_line("%1", r#"while :; do printf '\033]52;c;aGk=\a'; done"#)?;
     eventually("its connection to hold copies", || {
         Ok(peak_kib(conn)? > 8 << 10)
@@ -852,8 +863,8 @@ fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome 
     drop(stdin);
     let mut conn = None;
     eventually("its connection to hold it", || {
-        conn = (children(pid, "__conn").into_iter())
-            .find(|conn| peak_kib(*conn).is_ok_and(|k| k > 32 << 10));
+        conn =
+            (connections(pid).into_iter()).find(|conn| peak_kib(*conn).is_ok_and(|k| k > 32 << 10));
         Ok(conn.is_some())
     })?;
     let conn = conn.ok_or("its connection")?;
@@ -962,7 +973,7 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
         eventually(&format!("its connection gone, {at}"), || Ok(!alive(conn)))
     };
     let the_clients = |server: &Server| -> Result<i32, String> {
-        match children(server_pid(server)?, "__conn")[..] {
+        match connections(server_pid(server)?)[..] {
             [conn] => Ok(conn),
             _ => Err("one connection, the client's".into()),
         }
@@ -974,7 +985,7 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
     let sending = paste(&server, &id, &vec![b'y'; SIZE])?;
     let pid = server_pid(&server)?;
     eventually("the keys on their way", || {
-        Ok((children(pid, "__conn").into_iter())
+        Ok((connections(pid).into_iter())
             .any(|asker| asker != conn && peak_kib(asker).is_ok_and(|k| k > 32 << 10)))
     })?;
     std::thread::sleep(std::time::Duration::from_millis(200));

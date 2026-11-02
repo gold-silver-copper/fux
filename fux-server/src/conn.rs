@@ -783,14 +783,85 @@ impl Composer {
     }
 }
 
-/// The loop of a client's connection's own process (`fux __conn`): its
-/// client on `client`, its server on `server`, until either goes.
-pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
+/// A client's connection's own process (`fux __conn`), started before its
+/// client came (`Server::spare`): it waits at its server's socket,
+/// `listener`, which is also its stdout, for a client of the server's own
+/// user, as the server did; then lets the socket go, its stdout pointed at
+/// `/dev/null`, tells its server it took a client, and serves it (`serve`),
+/// its server on `server`. It never listens itself, so a client is still
+/// told the server's pid (`SO_PEERCRED`). Its server gone first, it ends.
+pub fn wait(listener: std::os::unix::net::UnixListener, server: UnixStream) -> Result<(), String> {
+    use fuxix::poll::{Events, PollFd};
+    let mut link = End::new(server).map_err(|e| format!("its server: {e}"))?;
+    let mut buffer = [0u8; 4096];
+    let mut said = Vec::new();
+    loop {
+        let mut fds = [
+            PollFd::new(&listener, Events::IN),
+            PollFd::new(&link.stream, Events::IN),
+        ];
+        match fuxix::poll::poll(&mut fds, None) {
+            Ok(_) | Err(fuxix::Errno::INTR) => {}
+            Err(error) => return Err(format!("poll: {error}")),
+        }
+        let [theirs, ours] = fds.map(|fd| !fd.revents().is_empty());
+        if ours {
+            let closed = link.read(&mut buffer) == Read::Closed;
+            while let Some(message) = (link.next_message::<ToConn>())
+                .map_err(|e| format!("its server sent a bad frame: {e}"))?
+            {
+                said.push(message);
+            }
+            if closed {
+                return Ok(());
+            }
+        }
+        if !theirs {
+            continue;
+        }
+        let client = match listener.accept() {
+            Ok((client, _)) => client,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                continue;
+            }
+            // Out of descriptors, say: its server starts another later.
+            Err(e) => return Err(format!("accept: {e}")),
+        };
+        let euid = fuxix::process::geteuid();
+        match fuxix::socket::peer(&client).map(|peer| peer.uid) {
+            Ok(uid) if uid == euid => {
+                drop(listener);
+                let null =
+                    std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+                fuxix::io::redirect_stdout(&null).map_err(|e| format!("its stdout: {e}"))?;
+                link.send(&FromConn::Accepted);
+                return serve(client, link, said);
+            }
+            Ok(uid) => {
+                log!("refused a connection from uid {uid}; only uid {euid} may use this server");
+            }
+            Err(error) => {
+                log!("refused a connection whose peer could not be identified: {error}");
+            }
+        }
+    }
+}
+
+/// The loop of a client's connection's own process: its client on
+/// `client`, its server on `link`, which said `said` before, until either
+/// goes.
+pub fn serve(client: UnixStream, mut link: End, said: Vec<ToConn>) -> Result<(), String> {
     use fuxix::poll::{Events, PollFd};
     client
         .set_nonblocking(true)
         .map_err(|e| format!("its client: {e}"))?;
-    let mut link = End::new(server).map_err(|e| format!("its server: {e}"))?;
     let mut decoder = Decoder::default();
     let mut out = ByteQueue::default();
     let mut composer = Composer::new(Instant::now());
@@ -821,7 +892,7 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
     let mut listening: Option<Listening> = None;
     let mut received: BTreeMap<u64, Vec<Input>> = BTreeMap::new();
     let mut keys: Option<u64> = None;
-    let mut backlog: std::collections::VecDeque<ToConn> = std::collections::VecDeque::new();
+    let mut backlog: std::collections::VecDeque<ToConn> = said.into();
     loop {
         let now = Instant::now();
         // What its client sent, as far as its stage lets it be taken.
@@ -1208,7 +1279,7 @@ mod tests {
         said.send(&ToConn::Bytes(b"the reply".to_vec()));
         said.flush_all().map_err(|errno| errno.to_string())?;
         drop(said);
-        super::serve(client, link)?;
+        super::serve(client, End::new(link).map_err(e)?, Vec::new())?;
         let mut got = Vec::new();
         theirs.read_to_end(&mut got).map_err(e)?;
         assert_eq!(got, b"the reply");

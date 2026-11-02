@@ -126,18 +126,15 @@ fn pane() -> ExitCode {
     }
 }
 
-/// A client's connection's own process, started by its server
-/// (`server::Conn::start`): the client on stdin, its link on stdout.
+/// A client's connection's own process, started by its server before its
+/// client comes (`server::Conn::spare`): its link on stdin, the server's
+/// socket on stdout, where it takes its client.
 fn conn() -> ExitCode {
     use std::os::fd::AsFd;
-    let socket = |fd: std::os::fd::BorrowedFd<'_>| {
-        fd.try_clone_to_owned()
-            .map(std::os::unix::net::UnixStream::from)
-    };
-    let client = socket(std::io::stdin().as_fd());
-    let server = socket(std::io::stdout().as_fd());
-    let served = match (client, server) {
-        (Ok(client), Ok(server)) => fux_server::conn::serve(client, server),
+    let server = std::io::stdin().as_fd().try_clone_to_owned();
+    let listener = std::io::stdout().as_fd().try_clone_to_owned();
+    let served = match (listener, server) {
+        (Ok(listener), Ok(server)) => fux_server::conn::wait(listener.into(), server.into()),
         (Err(e), _) | (_, Err(e)) => Err(format!("its sockets: {e}")),
     };
     match served {
