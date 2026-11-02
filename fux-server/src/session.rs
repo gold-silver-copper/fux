@@ -239,9 +239,6 @@ pub struct Session {
     /// panes closed, till their processes end (`Session::ending`).
     pub links: BTreeMap<PaneId, Link>,
     pub ending: Vec<(PaneId, Link)>,
-    /// The panes whose screens came since the server last looked: their
-    /// output, which paints the clients showing them (`Server::paint`).
-    pub updated: BTreeSet<PaneId>,
     /// What panes told that is still to be taken in (`Session::pump`), in
     /// order.
     inbox: std::collections::VecDeque<(PaneId, FromPane)>,
@@ -263,6 +260,16 @@ pub struct Session {
     staged: Option<Vec<(PaneId, ToPane)>>,
     /// Why a change could not be recorded, which undoes it (`transact`).
     unrecorded: Option<Error>,
+    /// The body the frame being taken has, kept by its connection
+    /// (`link::FromConn::Frame`), till a request or act takes it; the
+    /// bodies to go to panes, each its connection's number, its token and
+    /// the panes; and the last token given.
+    body: Option<u64>,
+    pub deliveries: Vec<(u64, u64, Vec<PaneId>)>,
+    tokens: u64,
+    /// A reply the asker's connection makes itself (`link::Making`): taken
+    /// as the reply is sent.
+    pub making: Option<crate::link::Making>,
     /// Programs adopted from panes whose own processes ended first.
     pub orphans: Vec<Orphan>,
     /// Where `size_panes` lays out each tab; reused by every settle.
@@ -361,7 +368,6 @@ impl Session {
             journal_run: run,
             outbox: Vec::new(),
             links: BTreeMap::new(),
-            updated: BTreeSet::new(),
             ending: Vec::new(),
             inbox: std::collections::VecDeque::new(),
             pumping: false,
@@ -373,6 +379,10 @@ impl Session {
             recording: true,
             staged: None,
             unrecorded: None,
+            body: None,
+            deliveries: Vec::new(),
+            tokens: 0,
+            making: None,
             orphans: Vec::new(),
             placed: Placement::default(),
             laid: BTreeMap::new(),
@@ -536,6 +546,31 @@ impl Session {
         }
     }
 
+    /// Whether what client `client` types waits: its focused pane's process
+    /// takes nothing of what it was sent (stopped, say: `Remote::stalled`).
+    /// It stays with the client's connection, never queued here.
+    pub fn typing_waits(&self, client: ClientId) -> bool {
+        let pane = self.focused(client);
+        pane.and_then(|pane| self.links.get(&pane))
+            .is_some_and(|link| matches!(link, Link::Remote(remote) if remote.stalled))
+    }
+
+    /// Where its run's panes listen, and keep what outlives its server
+    /// (`socket::panes`): none in a session that starts no programs.
+    pub fn panes(&self) -> Option<std::path::PathBuf> {
+        self.launch.as_deref().map(crate::socket::panes)
+    }
+
+    /// Pane `id`'s screen, if it is held in this process (a session that
+    /// starts no programs): one in a process of its own sends its screen to
+    /// the connections showing it, never here (`conn`).
+    pub fn screen(&self, id: PaneId) -> Option<&fux_vt::Screen> {
+        match self.links.get(&id)? {
+            Link::Local(host) => Some(host.pane().screen()),
+            Link::Remote(_) => None,
+        }
+    }
+
     /// Asks pane `id` `what`, as the journal's actor now: the question's
     /// number, which its answer carries (`Waiting::Asked`). A pane whose
     /// own process is gone is asked nothing: what it can't do, it is told.
@@ -591,7 +626,7 @@ impl Session {
                             sent.push(pane.to_string());
                         }
                         Some(Answered::Refused(refusal)) => _ = refused.get_or_insert(refusal),
-                        Some(Answered::Done | Answered::Captured(_)) => {}
+                        Some(Answered::Done | Answered::Captured(_) | Answered::Held { .. }) => {}
                         None => _ = refused.get_or_insert_with(|| unanswered(pane)),
                     }
                 }
@@ -623,6 +658,18 @@ impl Session {
                     }
                     Some(Answered::Done) => Reply::default(),
                     Some(Answered::Captured(captured)) => self.captured(pane, *captured),
+                    Some(Answered::Held { token, cursor, .. }) => {
+                        let placed = crate::link::Placed {
+                            cursor,
+                            ..self.placed(pane)
+                        };
+                        self.making = Some(crate::link::Making::Capture {
+                            pane,
+                            token,
+                            placed,
+                        });
+                        Reply::default()
+                    }
                     Some(Answered::Refused(refusal)) => {
                         Reply::failed(refusal.code, refusal.message)
                     }
@@ -637,41 +684,63 @@ impl Session {
         reply
     }
 
-    /// Pane `pane`'s capture, as its process made it, given its place,
-    /// name and label, which are the server's, and the journal's cursor as
-    /// it came: `events` from it reads what the pane told after the
-    /// capture, as the pane told everything before it first.
+    /// Pane `pane`'s capture, as its process made it, given its place, name
+    /// and label now (`placed`), its cursor as it was taken.
     fn captured(&self, pane: PaneId, mut captured: fux_wire::answer::Captured) -> Reply {
-        if let fux_wire::answer::Of::Pane {
-            pane: observed,
-            read,
-            ..
-        } = &mut captured.of
-        {
-            if let Some((_, tab)) = self.locate(pane) {
-                observed.tab = tab;
-                let at = self.tab(tab).and_then(|t| self.sized(t).rect(pane));
-                observed.row = at.as_ref().map(Rect::y);
-                observed.col = at.as_ref().map(Rect::x);
-            }
-            if let Some(copy) = self.parts.panes().get(&pane) {
-                observed.name = copy.name().map(str::to_owned);
-                observed.label = format!("{}", copy.display_label());
-            }
-            let cursor = self.parts.journal().end(self.journal_run).to_string();
-            for (key, value) in read.iter_mut() {
-                if key == "cursor" {
-                    *value = Json::str(cursor.clone());
-                }
+        let mut placed = self.placed(pane);
+        if let fux_wire::answer::Of::Pane { read, .. } = &captured.of {
+            let cursor = read.iter().find(|(key, _)| key == "cursor");
+            if let Some((_, Json::String(cursor))) = cursor {
+                placed.cursor = cursor.to_string();
             }
         }
+        crate::capture::place(&mut captured, &placed);
         Body::Capture(Box::new(captured)).into()
     }
 
-    /// Forgets the answers to `asks`, whose wait is gone.
-    pub fn forget(&mut self, asks: &[(PaneId, u64)]) {
-        for (_, ask) in asks {
-            self.answers.remove(ask);
+    /// What the server knows of pane `pane` as it is captured: its tab and
+    /// place, its name and label (`link::Placed`).
+    fn placed(&self, pane: PaneId) -> crate::link::Placed {
+        let mut placed = crate::link::Placed::default();
+        if let Some((_, tab)) = self.locate(pane) {
+            placed.tab = Some(tab);
+            let at = self.tab(tab).and_then(|t| self.sized(t).rect(pane));
+            placed.row = at.as_ref().map(Rect::y);
+            placed.col = at.as_ref().map(Rect::x);
+        }
+        if let Some(copy) = self.parts.panes().get(&pane) {
+            placed.name = copy.name().map(str::to_owned);
+            placed.label = Some(format!("{}", copy.display_label()));
+        }
+        placed
+    }
+
+    /// The body of the frame taken next, kept by its connection: what a
+    /// request or act it makes takes for its inputs (`send_keys`, `paste`).
+    pub fn give_body(&mut self, body: Option<u64>) {
+        self.body = body;
+    }
+
+    /// A body's token: its panes are asked for it, and its connection sends
+    /// it them (`deliveries`).
+    pub(crate) fn body_token(&mut self) -> Option<(u64, u64)> {
+        let body = self.body.take()?;
+        self.tokens = self.tokens.wrapping_add(1);
+        Some((body, self.tokens))
+    }
+
+    /// Questions `asks` and `tokens`, whose asker is gone: none is waited
+    /// for, an answer that comes is let go, and what the panes hold or wait
+    /// for of them is let go too (`ToPane::Drop`). What a pane did is done.
+    pub fn abandon(&mut self, asks: &[(PaneId, u64)], tokens: &[(PaneId, u64)], now: Instant) {
+        for (pane, ask) in asks {
+            self.asks.remove(ask);
+            if let Some(Answered::Held { token, .. }) = self.answers.remove(ask) {
+                self.tell_pane(*pane, ToPane::Drop { token }, now);
+            }
+        }
+        for (pane, token) in tokens {
+            self.tell_pane(*pane, ToPane::Drop { token: *token }, now);
         }
     }
 
@@ -699,16 +768,44 @@ impl Session {
     /// its copy, and the views showing it are painted again. A pane closed
     /// tells nothing more but its answers.
     fn told(&mut self, id: PaneId, report: FromPane, now: Instant) {
-        if let FromPane::Answer { ask, answer } = report {
+        if let FromPane::Answer { ask, mut answer } = report {
             // A capture is the pane's own facts as it answered, after all it
-            // told before: its counts are the copy's, unless it is behind.
-            if let (Answered::Captured(captured), Some(pane)) = (&answer, self.parts.pane_mut(id))
-                && let fux_wire::answer::Of::Pane { pane: observed, .. } = &captured.of
-            {
-                pane.caught_up(observed.version.counts);
+            // told before: its counts are the copy's, unless it is behind;
+            // and its cursor the journal's as it is taken, before anything
+            // the pane told after it (D-120 (3)).
+            let cursor = self.parts.journal().end(self.journal_run).to_string();
+            let counts = match &mut answer {
+                Answered::Captured(captured) => {
+                    let placed = crate::link::Placed {
+                        cursor,
+                        ..crate::link::Placed::default()
+                    };
+                    crate::capture::place(captured, &placed);
+                    match &captured.of {
+                        fux_wire::answer::Of::Pane { pane: observed, .. } => {
+                            Some(observed.version.counts)
+                        }
+                        fux_wire::answer::Of::Client { .. } => None,
+                    }
+                }
+                Answered::Held {
+                    counts,
+                    cursor: stamped,
+                    ..
+                } => {
+                    *stamped = cursor;
+                    Some(*counts)
+                }
+                Answered::Acted(_) | Answered::Done | Answered::Refused(_) => None,
+            };
+            if let (Some(counts), Some(pane)) = (counts, self.parts.pane_mut(id)) {
+                pane.caught_up(counts);
             }
+            // One its asker gave up on is let go (`abandon`).
             if self.asks.remove(&ask).is_some() {
                 self.answers.insert(ask, answer);
+            } else if let Answered::Held { token, .. } = answer {
+                self.tell_pane(id, ToPane::Drop { token }, now);
             }
             return;
         }
@@ -763,22 +860,19 @@ impl Session {
                 }
             }
             FromPane::Update(update) => {
-                // Only a screen that changed paints its viewers: its facts
-                // alone show nowhere.
-                let painted = !update.screen.is_empty();
+                // Its screen goes to the clients showing it from the pane
+                // itself (`conn`): what they show of its facts here is its
+                // label, on their bars.
+                let (was, others) = self.labels(id);
                 if let Some(pane) = self.parts.pane_mut(id) {
                     pane.update(*update);
-                    if painted {
-                        self.updated.insert(id);
-                    }
                 }
-                for client in self
-                    .viewers(AnyRef::Pane(id))
-                    .into_iter()
-                    .filter(|_| painted)
-                {
-                    if let Some(view) = self.views.get_mut(&client) {
-                        view.dirty = true;
+                if self.labels(id).0 != was {
+                    let viewers = self.viewers(AnyRef::Pane(id));
+                    for client in viewers.into_iter().chain(others.unwrap_or_default()) {
+                        if let Some(view) = self.views.get_mut(&client) {
+                            view.dirty = true;
+                        }
                     }
                 }
                 self.tell_pane(id, ToPane::Taken, now);
@@ -1130,18 +1224,32 @@ impl Session {
         };
         let panes = self.panes_of(Some(to.target()))?;
         let many = !matches!(to.target(), AnyRef::Pane(_));
+        // Inputs its connection kept go from it to each pane asked.
+        let body = self.body_token();
         let mut asks = Vec::new();
+        let mut asked = Vec::new();
         for id in panes {
             let what = Ask::Keys {
-                inputs: inputs.to_vec(),
+                inputs: if body.is_some() {
+                    Vec::new()
+                } else {
+                    inputs.to_vec()
+                },
                 seen,
+                body: body.map(|(_, token)| token),
             };
             match self.ask_pane(id, what, now) {
-                Ok(ask) => asks.push((id, ask)),
+                Ok(ask) => {
+                    asks.push((id, ask));
+                    asked.push(id);
+                }
                 // A pane none can reach refuses as it would.
                 Err(error) if many => asks.push((id, self.refused(error))),
                 Err(error) => return Err(error),
             }
+        }
+        if let Some((body, token)) = body {
+            self.deliveries.push((body, token, asked));
         }
         let form = match many {
             true => Form::Many,
@@ -1431,16 +1539,7 @@ impl Session {
             false => Runs::Explicit(launch.clone()),
         };
         let id = ids.pane()?;
-        let pane = Pane::new(id, runs, new.size, new.options).map_err(|source| {
-            fail(
-                Raise::Start,
-                pane::Error::Terminal {
-                    size: new.size,
-                    source,
-                }
-                .to_string(),
-            )
-        })?;
+        let pane = Pane::new(id, runs, new.size, new.options);
         let draws = match new.cell {
             Some(cell) => crate::link::Draws::Cell(cell.width(), cell.height()),
             None => crate::link::Draws::Text,
@@ -1469,9 +1568,8 @@ impl Session {
         match &mut link {
             Link::Local(host) => Link::told(id, host, &mut self.inbox),
             Link::Remote(remote) => {
-                if let Some(first) = remote.first.take() {
-                    self.inbox.push_back((id, FromPane::Update(first)));
-                }
+                let first = std::mem::take(&mut remote.first);
+                self.inbox.extend(first.into_iter().map(|said| (id, said)));
                 // What else came as it began, read already, waits for no poll.
                 while let Ok(Some(report)) = remote.end.next_message() {
                     self.inbox.push_back((id, report));
@@ -1990,7 +2088,7 @@ impl Session {
                 Ok((link, greeting)) => {
                     links.push((id, link));
                     let mut copy = Pane::greeted(greeting);
-                    if let (Ok(copy), Some(name)) = (&mut copy, &recorded.name) {
+                    if let Some(name) = &recorded.name {
                         copy.rename(name.clone());
                     }
                     copy
@@ -2007,7 +2105,6 @@ impl Session {
                     return Err(fail(Raise::Start, format!("{id} answers, but: {why}")));
                 }
             };
-            let copy = copy.map_err(|e| fail(Raise::Start, format!("{id}: its copy: {e}")))?;
             copies.insert(id, copy);
         }
         self.parts = Parts::restore(self.entries, &record.workspaces, copies)?;
@@ -2593,7 +2690,16 @@ impl Session {
             }
         }
         let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
-        let ask = self.ask_pane(target, Ask::Capture { history, view, tab }, now)?;
+        // One in a process of its own is held there, for its asker's
+        // connection to fetch: the server never holds it (D-123).
+        let hold = matches!(self.links.get(&target), Some(Link::Remote(_)));
+        let what = Ask::Capture {
+            history,
+            view,
+            tab,
+            hold,
+        };
+        let ask = self.ask_pane(target, what, now)?;
         Ok(Pending::new(vec![(target, ask)], Form::Capture))
     }
 
@@ -2995,10 +3101,19 @@ impl Session {
                 return Ok(Reply::default());
             }
             ClientAction::Capture => {
-                let terminal = view()?;
+                view()?;
+                let scene = crate::render::scene(self, client).ok_or(Error::NoClient(client))?;
+                // Its panes in processes of their own send their screens to
+                // the asker's connection, which composes it (D-123).
+                if self.launch.is_some() {
+                    self.making = Some(crate::link::Making::Client {
+                        client,
+                        scene: Box::new(scene),
+                    });
+                    return Ok(Reply::default());
+                }
                 let mut grid = crate::render::Grid::default();
-                let placement = &mut Placement::default();
-                crate::render::compose_view(self, terminal, &mut grid, placement)
+                crate::render::compose_scene(&scene, &|id| self.screen(id), &mut grid)
                     .map_err(|e| fail(Raise::Memory, format!("capturing {client}: {e}")))?;
                 let captured = crate::capture::client(client, &grid);
                 return Ok(Body::Capture(Box::new(captured)).into());
@@ -5388,8 +5503,8 @@ mod tests {
                 assert_eq!(session.pane(id)?.read_error, error);
                 assert!(
                     session
-                        .pane(id)?
-                        .screen()
+                        .screen(id)
+                        .ok_or("its screen")?
                         .rows()
                         .any(|row| cells_text(&row).contains("saved"))
                 );
@@ -6618,8 +6733,7 @@ mod tests {
             );
             let pane = s.parts.panes().get(&id).ok_or("the pane")?;
             assert_eq!(pane.exit_status(), Some(Ended::Exited(0)));
-            let text = pane
-                .screen()
+            let text = (s.screen(id).ok_or("its screen")?)
                 .rows()
                 .map(|r| cells_text(&r))
                 .collect::<String>();
@@ -7552,8 +7666,13 @@ mod tests {
             !dirty(&s, one) && !dirty(&s, two),
             "typing into a pane repaints no one until the pane answers"
         );
+        // Its output goes to the clients' connections from the pane itself
+        // (`conn`): what they are made of here does not change.
         s.out(fux_wire::id::PaneId::of(1), b"ls");
-        assert!(dirty(&s, one) && dirty(&s, two), "its echo repaints both");
+        assert!(
+            !dirty(&s, one) && !dirty(&s, two),
+            "its echo changes no scene"
+        );
         clean(&mut s);
         // A key that changes the typist's own screen repaints it alone.
         s.input(one, b"\x02");

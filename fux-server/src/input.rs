@@ -186,7 +186,19 @@ impl Session {
             return;
         }
         view.notice = None;
-        let _ = self.type_in(client, Typed::Paste(text), now);
+        // Text its connection kept goes from it to the pane.
+        match self.body_token() {
+            Some((body, token)) => {
+                let runs_in = self.views.get(&client).and_then(|v| v.runs_in);
+                if let Some(pane) = self.focused(client).filter(|p| runs_in != Some(*p)) {
+                    self.deliveries.push((body, token, vec![pane]));
+                }
+                let _ = self.type_in(client, Typed::Body(token), now);
+            }
+            None => {
+                let _ = self.type_in(client, Typed::Paste(text), now);
+            }
+        }
     }
 
     /// The outer terminal gained or lost focus: the client's focused pane
@@ -325,7 +337,7 @@ mod tests {
         s.parts
             .panes()
             .get(&PaneId::of(pane))
-            .map_or(0, |p| p.screen().size().cols())
+            .map_or(0, |p| p.size().cols())
     }
 
     /// How many tabs the first workspace has.
@@ -502,7 +514,6 @@ mod tests {
             .panes()
             .get(&PaneId::of(1))
             .ok_or("pane")?
-            .screen()
             .size()
             .rows();
         s.apply(c, vec![Act::Presentation(presentation)]);
@@ -511,7 +522,6 @@ mod tests {
                 .panes()
                 .get(&PaneId::of(1))
                 .ok_or("pane")?
-                .screen()
                 .size()
                 .rows(),
             rows - 1

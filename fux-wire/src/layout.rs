@@ -1840,3 +1840,9 @@ mod tests {
         laid_out.join().map_err(|_| "the thread panicked")?
     }
 }
+
+// A client's placement, on the wire: what a server sends a connection's
+// process composing its client's screen (`fux-server`'s `render::Scene`).
+crate::wire::wire_struct!(Rect { x, y, w, h });
+crate::wire::wire_struct!(Separator { axis, rect });
+crate::wire::wire_struct!(Placement { panes, separators });

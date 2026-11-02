@@ -624,13 +624,10 @@ mod tests {
         assert_eq!(background(&mut s), "\x1b]11;rgb:1111/2222/3333\x07");
         s.out(PaneId::of(1), b"\x1bP9q#1;2;100;0;0!20~\x1b\\");
         let shown_on_c = |s: &Session| {
-            let (Some(view), mut placement) = (s.views.get(&c), Default::default()) else {
+            let Some(scene) = crate::render::scene(s, c) else {
                 return 0;
             };
-            let mut grid = crate::render::Grid::default();
-            let result = crate::render::compose_view(s, view, &mut grid, &mut placement);
-            assert!(result.is_ok(), "{result:?}");
-            crate::render::pictures(s, c, &placement).len()
+            crate::render::pictures(&scene, &|id| s.screen(id)).len()
         };
         assert_eq!(shown_on_c(&s), 1);
         s.input(d, b"x");

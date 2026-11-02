@@ -620,6 +620,33 @@ fn links<'a>(
     Json::Array(runs.into_iter().map(link).collect())
 }
 
+/// Pane capture `captured` as its server places it (`link::Placed`): in its
+/// tab now, at its place, with its name and label, and the journal's cursor
+/// as its server took it.
+pub fn place(captured: &mut Captured, placed: &crate::link::Placed) {
+    if let Of::Pane {
+        pane: observed,
+        read,
+        ..
+    } = &mut captured.of
+    {
+        if let Some(tab) = placed.tab {
+            observed.tab = tab;
+            observed.row = placed.row;
+            observed.col = placed.col;
+        }
+        if let Some(label) = &placed.label {
+            observed.name = placed.name.clone();
+            observed.label = label.clone();
+        }
+        for (key, value) in read.iter_mut() {
+            if key == "cursor" {
+                *value = Json::str(placed.cursor.clone());
+            }
+        }
+    }
+}
+
 /// What a client's terminal shows, row by row.
 pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
     let (rows, cols) = (grid.rows, grid.cols);

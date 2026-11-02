@@ -115,18 +115,24 @@ impl Hosting {
 pub enum Typed {
     Key(Keystroke),
     Paste(String),
+    /// A paste whose text its client's connection sends the pane itself,
+    /// as body `0` (`ToSide::Body`).
+    Body(u64),
     Focus(bool),
     Mouse(MouseEvent),
 }
-wired!(Typed { Key(k), Paste(t), Focus(g), Mouse(m) });
+wired!(Typed { Key(k), Paste(t), Body(b), Focus(g), Mouse(m) });
 
 /// What the server asks of a pane, answered by number (`FromPane::Answer`).
 #[derive(Clone, Debug)]
 pub enum Ask {
-    /// Keys for its program, if it is still at `seen`.
+    /// Keys for its program, if it is still at `seen`: `inputs`, or with a
+    /// `body`, those its asker's connection sends it as that body
+    /// (`ToSide::Body`), which it waits for.
     Keys {
         inputs: Vec<Input>,
         seen: Option<Version>,
+        body: Option<u64>,
     },
     Mouse {
         mouse: Mouse,
@@ -141,33 +147,42 @@ pub enum Ask {
     ClearHistory,
     HistoryBytes(HistoryBytes),
     /// A capture, its observation's place and name left for the server:
-    /// it is in tab `tab` as it is asked.
+    /// it is in tab `tab` as it is asked. Held, it is kept for its asker's
+    /// connection to fetch (`ToSide::Fetch`), and its counts answered.
     Capture {
         history: Option<usize>,
         view: CaptureView,
         tab: fux_wire::id::TabId,
+        hold: bool,
     },
 }
 wired!(Ask {
-    Keys { inputs, seen },
+    Keys { inputs, seen, body },
     Mouse { mouse, row, col },
     Signal(s),
     Respawn { kill, argv },
     ClearHistory,
     HistoryBytes(b),
-    Capture { history, view, tab },
+    Capture { history, view, tab, hold },
 });
 
-/// What a pane answers: the version it acted at, nothing, a capture, or
-/// its refusal.
+/// What a pane answers: the version it acted at, nothing, a capture or the
+/// counts of one it holds (`Ask::Capture`), or its refusal.
 #[derive(Clone, Debug)]
 pub enum Answered {
     Acted(Version),
     Done,
     Captured(Box<Captured>),
+    /// A capture it holds as `token`, at `counts`; `cursor`, the journal's
+    /// as its server took the answer, is the server's to write.
+    Held {
+        token: u64,
+        counts: Counts,
+        cursor: String,
+    },
     Refused(Refusal),
 }
-wired!(Answered { Acted(v), Done, Captured(c), Refused(r) });
+wired!(Answered { Acted(v), Done, Captured(c), Held { token, counts, cursor }, Refused(r) });
 
 /// A pane's refusal, with its code.
 #[derive(Clone, Debug)]
@@ -221,6 +236,15 @@ pub enum ToPane {
     /// Who it is, asked of one waiting (`Link::who`): it greets, and is
     /// not taken.
     Who,
+    /// A connection's process of run `run`, which talks to it from now on
+    /// (`ToSide`).
+    Join {
+        run: Run,
+    },
+    /// Body or held capture `token` is wanted no more: its asker is gone.
+    Drop {
+        token: u64,
+    },
 }
 wired!(ToPane {
     Begin(b),
@@ -233,11 +257,13 @@ wired!(ToPane {
     Close { closed },
     Take { run },
     Who,
+    Join { run },
+    Drop { token },
 });
 
-/// A pane's screen, as the server keeps a copy of it (`copy`): the bytes
-/// that paint its visible screen onto the copy's, as it was last sent, or
-/// whole if `full`; and its facts as they are with it.
+/// A pane as the server keeps a copy of it (`copy`): its counts, title,
+/// size, facts and program's pid. Its screen goes to the connections
+/// showing it, never to the server (`Drawn`).
 #[derive(Clone, Debug)]
 pub struct Update {
     pub counts: Counts,
@@ -245,14 +271,82 @@ pub struct Update {
     pub size: Size,
     pub facts: Facts,
     pub pid: Option<i32>,
+}
+wired!(struct Update { counts, title, size, facts, pid });
+
+/// A pane's screen, as a connection's process keeps a copy of it to compose
+/// its client's (`conn`): the bytes that paint its visible screen onto the
+/// copy, as it was last sent, or whole if `full`; at `size`, drawing what
+/// its host draws, its pictures kept to `picture_bytes`.
+#[derive(Clone, Debug)]
+pub struct Drawn {
+    pub size: Size,
     pub screen: Vec<u8>,
     pub full: bool,
-    /// What it draws, as its host said: its pictures go on the copy in
-    /// its cells, and are kept to `picture_bytes`.
     pub draws: Draws,
     pub picture_bytes: usize,
 }
-wired!(struct Update { counts, title, size, facts, pid, screen, full, draws, picture_bytes });
+wired!(struct Drawn { size, screen, full, draws, picture_bytes });
+
+/// From a client's connection's process to a pane's, which it reached at
+/// the pane's socket (D-123), after its first word (`ToPane::Join`).
+#[derive(Clone, Debug)]
+pub enum ToSide {
+    /// Send it the pane's screen, whole first, then as it changes, one
+    /// screen at a time (`Taken`).
+    Watch,
+    /// The last screen it was sent is taken: it may be sent the next.
+    Taken,
+    /// Body `token`, which a question its server asked waits for: the
+    /// connection's client's inputs (`Ask::Keys`, `Typed::Body`).
+    Body { token: u64, inputs: Vec<Input> },
+    /// The capture held as `token` (`Ask::Capture`), taken.
+    Fetch { token: u64 },
+}
+wired!(ToSide { Watch, Taken, Body { token, inputs }, Fetch { token } });
+
+/// From a pane's process to a connection's that reached it.
+#[derive(Clone, Debug)]
+pub enum FromSide {
+    Drawn(Box<Drawn>),
+    /// The capture held as `token`, if it is still held.
+    Held {
+        token: u64,
+        captured: Option<Box<Captured>>,
+    },
+}
+wired!(FromSide { Drawn(d), Held { token, captured } });
+
+/// What the server knows of a pane's capture that its pane does not: its
+/// place, name and label as it is captured, and the journal's cursor as
+/// the capture was told (`capture::place`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Placed {
+    pub tab: Option<fux_wire::id::TabId>,
+    pub row: Option<u16>,
+    pub col: Option<u16>,
+    pub name: Option<String>,
+    pub label: Option<String>,
+    pub cursor: String,
+}
+wired!(struct Placed { tab, row, col, name, label, cursor });
+
+/// A reply its connection makes itself, to send its client: of a capture
+/// pane `pane` holds as `token`, which it fetches and places, or of a client
+/// screen it composes from `scene` and the panes' screens.
+#[derive(Clone, Debug)]
+pub enum Making {
+    Capture {
+        pane: PaneId,
+        token: u64,
+        placed: Placed,
+    },
+    Client {
+        client: ClientId,
+        scene: Box<crate::render::Scene>,
+    },
+}
+wired!(Making { Capture { pane, token, placed }, Client { client, scene } });
 
 /// From a pane's process to the server, in the order it happened.
 #[derive(Clone, Debug)]
@@ -495,9 +589,33 @@ pub struct Remote {
     pub closed: bool,
     /// It was reaped, ending so.
     pub ended: Option<fuxix::process::Status>,
-    /// Its first screen and facts, sent as it began, till its pane takes
-    /// them (`Session::linked`).
-    pub first: Option<Box<Update>>,
+    /// What it said as it began or was taken back, its first facts last,
+    /// till its pane takes them (`Session::linked`).
+    pub first: Vec<FromPane>,
+    /// What says how it is to be now (its size, host, whether it is shown),
+    /// the latest of each, while its link takes nothing more: sent once it
+    /// does, so that one that reads nothing (stopped) grows no queue here.
+    pub later: Vec<ToPane>,
+    /// Its link took none of what was last written to it: its process reads
+    /// nothing (stopped, say). What would go to it waits upstream then.
+    pub stalled: bool,
+}
+
+impl Remote {
+    /// Writes what is queued as far as its link takes it, and once it took
+    /// it all, what waited till then (`later`).
+    pub fn flush(&mut self) {
+        let queued = self.end.out.len();
+        let all = matches!(self.end.flush(), Ok(true));
+        self.stalled = queued > 0 && self.end.out.len() == queued;
+        if !all {
+            return;
+        }
+        for message in std::mem::take(&mut self.later) {
+            self.end.send(&message);
+        }
+        let _ = self.end.flush();
+    }
 }
 
 impl Link {
@@ -510,8 +628,17 @@ impl Link {
         inbox: &mut std::collections::VecDeque<(PaneId, FromPane)>,
     ) {
         match self {
+            Link::Remote(remote) if remote.closed => {}
             Link::Remote(remote) => {
-                if !remote.closed {
+                let state = matches!(
+                    message,
+                    ToPane::Resize { .. } | ToPane::Host(_) | ToPane::Shown(_)
+                );
+                if state && !remote.end.out.is_empty() {
+                    let kind = std::mem::discriminant(&message);
+                    remote.later.retain(|m| std::mem::discriminant(m) != kind);
+                    remote.later.push(message);
+                } else {
                     remote.end.send(&message);
                 }
             }
@@ -594,13 +721,15 @@ impl Link {
             child: true,
             closed: false,
             ended: None,
-            first: None,
+            first: Vec::new(),
+            later: Vec::new(),
+            stalled: false,
         };
         match began.map_err(|e| format!("its process: {e}"))? {
             Some(FromPane::Begun(None)) => {
-                // Its first screen comes with it, so that nothing reads its
-                // copy before it has facts.
-                remote.first = Some(first(&mut remote.end)?);
+                // Its first facts come with it, so that nothing reads its
+                // copy before it has them.
+                remote.first = first(&mut remote.end)?;
                 Ok(Link::Remote(remote))
             }
             Some(FromPane::Begun(Some(why))) => Err(why),
@@ -641,9 +770,11 @@ impl Link {
             child: false,
             closed: false,
             ended: None,
-            first: None,
+            first: Vec::new(),
+            later: Vec::new(),
+            stalled: false,
         };
-        remote.first = Some(first(&mut remote.end).map_err(unknown)?);
+        remote.first = first(&mut remote.end).map_err(unknown)?;
         Ok((Link::Remote(remote), *greeting))
     }
 
@@ -682,12 +813,21 @@ impl std::fmt::Display for Untaken {
     }
 }
 
-/// A pane's first screen, as it begins or is taken back.
-fn first(end: &mut End) -> Result<Box<Update>, String> {
-    match end.wait::<FromPane>() {
-        Ok(Some(FromPane::Update(first))) => Ok(first),
-        Ok(_) => Err("its process sent no first screen".to_owned()),
-        Err(error) => Err(format!("its process: {error}")),
+/// What a pane says as it begins or is taken back, up to its first facts,
+/// which it sends once a frame it is part way through is whole: what it
+/// told before them too, in order.
+fn first(end: &mut End) -> Result<Vec<FromPane>, String> {
+    let mut said = Vec::new();
+    loop {
+        match end.wait::<FromPane>() {
+            Ok(Some(update @ FromPane::Update(_))) => {
+                said.push(update);
+                return Ok(said);
+            }
+            Ok(Some(other)) => said.push(other),
+            Ok(None) => return Err("its process ended before its first facts".to_owned()),
+            Err(error) => return Err(format!("its process: {error}")),
+        }
     }
 }
 
@@ -738,16 +878,39 @@ pub enum ToConn {
     /// The answer to its client's request is all sent: once the client
     /// has it, its next request is read.
     Answered,
-    /// A screen for its attached client, sent it as it differs from what
-    /// the client shows.
-    Paint(Box<Paint>),
+    /// Its first word: where its run's panes listen, and the run, which
+    /// it tells each pane it reaches (`ToPane::Join`).
+    Hello { panes: PathBuf, run: Run },
+    /// What its attached client's screen is made of now but its panes'
+    /// screens, which it gets from the panes (`render::Scene`).
+    Scene(Box<crate::render::Scene>),
+    /// Its client's body `body` (`FromConn::Frame`) goes to `panes`, as
+    /// their server's `token`.
+    Deliver {
+        body: u64,
+        token: u64,
+        panes: Vec<PaneId>,
+    },
+    /// The answer to its client's request, which it makes itself, as its
+    /// client is to have it: its last word once made.
+    Make(Box<Making>),
     /// Its client is detached: its terminal is given back its own cursor
     /// shape and configured colour, where they were set.
     Detached,
     /// Its last word is sent: it ends once its client has it all.
     Close,
 }
-wired!(ToConn { Bytes(b), Expect(e), Answered, Paint(p), Detached, Close });
+wired!(ToConn {
+    Bytes(b),
+    Expect(e),
+    Answered,
+    Hello { panes, run },
+    Scene(s),
+    Deliver { body, token, panes },
+    Make(m),
+    Detached,
+    Close
+});
 
 /// The frames a connection's client sends next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -762,46 +925,13 @@ wired!(Expect {
     Attached
 });
 
-/// A screen composed for an attached client: what its terminal is sent
-/// first (its title, its bell marks taken), the screen as it differs from
-/// the last it was sent (`render::Patch`), and its pictures,
-/// each with the sixel data that draws it at its place, the first time it
-/// is sent this client. `forget`: what the client shows is not known (it
-/// resized), and is painted whole.
-#[derive(Debug)]
-pub struct Paint {
-    pub before: Vec<u8>,
-    pub screen: crate::render::Patch,
-    pub pictures: Vec<Shown>,
-    pub forget: bool,
-}
-wired!(struct Paint { before, screen, pictures, forget });
-
-/// A picture an attached client is shown: its identity, the cells of its
-/// screen it takes (top row, first column, rows, columns), and, the first
-/// time, its sixel data.
-#[derive(Clone, Debug)]
-pub struct Shown {
-    pub id: u64,
-    pub place: (u16, u16),
-    pub size: (u16, u16),
-    pub data: Option<Vec<u8>>,
-}
-wired!(struct Shown { id, place, size, data });
-
-impl Shown {
-    /// The cells it takes: top row, first column, rows, columns.
-    pub fn area(&self) -> (u16, u16, u16, u16) {
-        (self.place.0, self.place.1, self.size.0, self.size.1)
-    }
-}
-
 /// From a client's connection's own process to the server.
 #[derive(Debug)]
 pub enum FromConn {
-    /// Whole frames its client sent, each decoded as the frame expected:
-    /// sent again as they came, for the server to take.
-    Frames(Vec<u8>),
+    /// A whole frame its client sent, decoded as the frame expected: sent
+    /// again as it came, for the server to take, but for its inputs or
+    /// paste text, which it keeps as `body` (`ToConn::Deliver`).
+    Frame { frame: Vec<u8>, body: Option<u64> },
     /// Everything sent for its client was written to it.
     Flushed,
     /// Its client shut its side: it sends no more.
@@ -810,7 +940,7 @@ pub enum FromConn {
     /// it no more.
     Bad(String),
 }
-wired!(FromConn { Frames(f), Flushed, Shut, Bad(why) });
+wired!(FromConn { Frame { frame, body }, Flushed, Shut, Bad(why) });
 
 /// How the server starts a client's connection's own process: `fux
 /// __conn`, the client's socket on stdin, its link on stdout.

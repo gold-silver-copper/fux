@@ -7,13 +7,16 @@ use crate::view::{Mode, View};
 use crate::workspace::{Child, Node, Tab, Workspace};
 use fux_vt::clusters;
 use fux_vt::sixel::Picture;
-use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};
+use fux_vt::{
+    Attributes, CellRef, Cells, Color, CursorShape, Graphics, Hyperlink, Rgb, Row, Screen,
+};
 use fux_wire::act::{List, Panel};
 use fux_wire::answer::sgr;
 use fux_wire::command::AnyRef;
 use fux_wire::id::ClientId;
 use fux_wire::id::PaneId;
 use fux_wire::layout::{Axis, Placement, Rect};
+use fux_wire::presentation::Presentation;
 use std::borrow::Cow;
 use std::io::Write;
 use std::sync::Arc;
@@ -140,30 +143,29 @@ pub fn shows_pictures(session: &Session, id: PaneId) -> bool {
     matches!(session.graphics(id), fux_vt::Graphics::Sixel(_))
 }
 
-/// The pictures client `client`'s panes, placed as `placement` has them,
-/// may show before transient bar feedback is clipped: none unless its
-/// terminal draws sixel and nothing
-/// covers its panes (an overlay); of a pane, only while its
-/// pictures show (`shows_pictures`), those laid out in this terminal's
-/// cell size. Each is clipped to its pane.
-pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> Vec<Visible> {
-    let Some(view) = session.views.get(&client) else {
-        return Vec::new();
-    };
-    let (fux_vt::Graphics::Sixel(cell), true) = (view.terminal.graphics(), view.mode.is_normal())
+/// The pictures a client's panes show, placed as its scene has them: none
+/// unless its terminal draws sixel and nothing covers its panes (an
+/// overlay); of a pane, only while its pictures show (`shows_pictures`),
+/// those laid out in this terminal's cell size. Each is clipped to its pane,
+/// and away from what bar-off feedback covers.
+pub fn pictures<'s>(scene: &Scene, screens: &dyn Fn(PaneId) -> Option<&'s Screen>) -> Vec<Visible> {
+    let (fux_vt::Graphics::Sixel(cell), true) = (Graphics::from(scene.draws), scene.normal())
     else {
         return Vec::new();
     };
     let cell = (cell.width(), cell.height());
     let mut visible = Vec::new();
-    for &(id, rect) in &placement.panes {
-        let Some(pane) = session.parts.panes().get(&id) else {
+    for &(id, rect) in &scene.placement.panes {
+        let Some(screen) = screens(id) else {
             continue;
         };
-        if !shows_pictures(session, id) || view.runs_in == Some(id) {
+        if !scene.pictures.contains(&id) || scene.runs_in == Some(id) {
             continue;
         }
-        visible.extend(placed(id, rect, pane.screen(), cell));
+        visible.extend(placed(id, rect, screen, cell));
+    }
+    if let (true, Some(cover)) = (scene.bar.off, scene.bar.cover) {
+        clip_bar_pictures(cell, cover, &mut visible);
     }
     visible
 }
@@ -209,13 +211,10 @@ pub fn placed(id: PaneId, rect: Rect, screen: &Screen, cell: (u16, u16)) -> Vec<
     visible
 }
 
-/// Clips pane pictures away from what bar-off feedback covers (`bar_cover`),
-/// after held-frame recovery: one that reaches into it loses its rows from
-/// the covered row down.
-pub(crate) fn clip_bar_pictures(view: &View, cover: Rect, pictures: &mut Vec<Visible>) {
-    let fux_vt::Graphics::Sixel(cell) = view.terminal.graphics() else {
-        return;
-    };
+/// Clips pane pictures, in cells of `cell`, away from what bar-off feedback
+/// covers (`bar_cover`): one that reaches into it loses its rows from the
+/// covered row down.
+fn clip_bar_pictures(cell: (u16, u16), cover: Rect, pictures: &mut Vec<Visible>) {
     pictures.retain_mut(|picture| {
         let (y, x, h, w) = picture.area;
         if x >= cover.right() || x.saturating_add(w) <= cover.x() {
@@ -225,7 +224,7 @@ pub(crate) fn clip_bar_pictures(view: &View, cover: Rect, pictures: &mut Vec<Vis
         picture.crop.3 = picture
             .crop
             .3
-            .min(u32::from(picture.area.2).saturating_mul(u32::from(cell.height())));
+            .min(u32::from(picture.area.2).saturating_mul(u32::from(cell.1)));
         picture.area.2 > 0
     });
 }
@@ -346,32 +345,30 @@ struct Frame {
 }
 
 impl Frame {
-    fn of(
-        session: &Session,
-        view: &View,
-        placement: &Placement,
+    fn of<'s>(
+        scene: &Scene,
+        screens: &dyn Fn(PaneId) -> Option<&'s Screen>,
         focus: Option<PaneId>,
     ) -> Option<Frame> {
-        if !view.mode.is_normal() {
+        if !scene.normal() {
             return None;
         }
-        let mut panes = Vec::with_capacity(placement.panes.len());
-        for (id, rect) in &placement.panes {
-            let pane = session.parts.panes().get(id)?;
-            let screen = pane.screen();
-            if own_colours(screen) || view.runs_in == Some(*id) {
+        let mut panes = Vec::with_capacity(scene.placement.panes.len());
+        for (id, rect) in &scene.placement.panes {
+            let screen = screens(*id)?;
+            if own_colours(screen) || scene.runs_in == Some(*id) {
                 return None;
             }
-            panes.push((*id, pane.respawns, *rect, screen.size().into()));
+            panes.push((*id, scene.respawns(*id), *rect, screen.size().into()));
         }
         Some(Frame {
-            rows: view.rows,
-            cols: view.cols,
+            rows: scene.rows,
+            cols: scene.cols,
             panes,
-            separators: placement.separators.clone(),
+            separators: scene.placement.separators.clone(),
             focus: focus?,
-            styles: view.presentation.styles,
-            bar_position: view.presentation.bar.position(),
+            styles: scene.presentation.styles,
+            bar_position: scene.presentation.bar.position(),
         })
     }
 }
@@ -379,12 +376,16 @@ impl Frame {
 impl Memo {
     /// Puts again on `grid`, which this memo's frame composed and composes
     /// now, the pane rows that changed since: the grid's memo then.
-    fn update(mut self, grid: &mut Grid, session: &Session) -> Memo {
+    fn update<'s>(
+        mut self,
+        grid: &mut Grid,
+        screens: &dyn Fn(PaneId) -> Option<&'s Screen>,
+    ) -> Memo {
         for ((id, _, rect, _), keys) in self.frame.panes.iter().zip(&mut self.keys) {
-            let Some(pane) = session.parts.panes().get(id) else {
+            let Some(screen) = screens(*id) else {
                 continue;
             };
-            let window = pane.screen().window();
+            let window = screen.window();
             let lines = (0..window.rows()).zip(rect.lines());
             for ((y, line), key) in lines.zip(keys.iter_mut()) {
                 let row = window.row(y);
@@ -841,115 +842,6 @@ impl Grid {
     }
 }
 
-/// What a grid composed for a client shows that its connection's process
-/// was not sent before (`Grid::patch`): its size, each row that differs
-/// from the last grid it was sent (every row, with none or one of another
-/// size), its cursor and modes, and how the client's terminal draws. The
-/// process puts it on what it was sent before (`Patch::onto`).
-#[derive(Debug)]
-pub struct Patch {
-    size: (u16, u16),
-    lines: Vec<(u16, Vec<PatchCell>)>,
-    cursor: Option<(u16, u16)>,
-    /// The cursor's shape, as DECSCUSR numbers it, its colour, and the
-    /// mouse's mode.
-    modes: (u16, Option<Rgb>, u16),
-    /// `underline_styles` and `cell_placement`.
-    draws: (bool, bool),
-}
-wired!(struct Patch { size, lines, cursor, modes, draws });
-
-/// A cell of a patch's row: its width (0 for a wide glyph's second half),
-/// its cluster and attributes, and its link.
-#[derive(Debug)]
-struct PatchCell {
-    width: u8,
-    text: String,
-    attributes: Attributes,
-    link: Option<(PaneId, u64, String)>,
-}
-wired!(struct PatchCell { width, text, attributes, link });
-
-impl Grid {
-    /// What this grid shows that `sent`, the last its connection's process
-    /// was sent, does not.
-    pub fn patch(&self, sent: Option<&Grid>) -> Patch {
-        let sent = sent.filter(|sent| (sent.rows, sent.cols) == (self.rows, self.cols));
-        let lines = (differing_rows(sent, self).into_iter())
-            .map(|y| {
-                let cells = (0..self.cols).map(|x| {
-                    let cell = self.get(y, x).unwrap_or_default();
-                    let width = match (cell.is_wide_continuation(), cell.is_wide()) {
-                        (true, _) => 0,
-                        (false, false) => 1,
-                        (false, true) => 2,
-                    };
-                    let link = self.link(y, x);
-                    PatchCell {
-                        width,
-                        text: cell.contents().to_owned(),
-                        attributes: cell.attributes(),
-                        link: link.map(|(pane, link)| (pane, link.key(), link.uri().to_owned())),
-                    }
-                });
-                (y, cells.collect())
-            })
-            .collect();
-        let Modes {
-            cursor_shape,
-            cursor_colour,
-            mouse,
-        } = self.modes;
-        Patch {
-            size: (self.rows, self.cols),
-            lines,
-            cursor: self.cursor,
-            modes: (cursor_shape.number(), cursor_colour, mouse),
-            draws: (self.underline_styles, self.cell_placement),
-        }
-    }
-}
-
-impl Patch {
-    /// Puts it on `grid`, the last grid it was made against: one of
-    /// another size is made anew, blank, first.
-    pub fn onto(self, grid: &mut Grid) -> Result<(), String> {
-        let (rows, cols) = self.size;
-        if (grid.rows, grid.cols) != (rows, cols) {
-            *grid = Grid::new(rows, cols).map_err(|e| e.to_string())?;
-        }
-        grid.memo = None;
-        for (y, cells) in self.lines {
-            grid.links.unlink(y, 0..cols);
-            for (x, cell) in (0..cols).zip(cells) {
-                match cell.width {
-                    0 => grid.set(y, x, CellRef::wide_continuation()),
-                    width => grid.set(y, x, CellRef::new(&cell.text, width == 2, cell.attributes)),
-                }
-                if let Some((pane, key, uri)) = cell.link {
-                    let link = Linked::Sent {
-                        key,
-                        uri: Arc::from(uri),
-                    };
-                    grid.links.set(y, x, Some((pane, &link)), cols);
-                }
-            }
-        }
-        grid.cursor = self.cursor;
-        let (shape, cursor_colour, mouse) = self.modes;
-        let cursor_shape = (CursorShape::ALL.iter().copied())
-            .find(|s| s.number() == shape)
-            .ok_or("a cursor shape")?;
-        grid.modes = Modes {
-            cursor_shape,
-            cursor_colour,
-            mouse,
-        };
-        (grid.underline_styles, grid.cell_placement) = self.draws;
-        Ok(())
-    }
-}
-
 /// `attributes` in the colours a pane's program set: an indexed colour
 /// whose entry it changed (OSC 4), and the default foreground and
 /// background (OSC 10, 11), as it set them; the rest as they are, for the
@@ -1054,50 +946,182 @@ fn fit_cells<'a>(
         .chain((cut && cols > 0).then_some(("…", 1)))
 }
 
-/// The client's screen as it should look now, in a grid of its own, as a
-/// test reads it.
-#[cfg(test)]
-pub(crate) fn compose(session: &Session, client: ClientId) -> Option<Grid> {
-    let mut grid = Grid::default();
-    let view = session.views.get(&client)?;
-    let composed = compose_view(session, view, &mut grid, &mut Placement::default());
-    assert!(composed.is_ok(), "{composed:?}");
-    Some(grid)
+/// What a client's screen is made of but its panes' screens: what its
+/// server knows of it, and sends its connection's process, which composes
+/// it with the screens its panes send it (`conn`, D-123). Its view's size,
+/// presentation and open screen, the panes placed and the one it focuses,
+/// its bar's text, and which panes show pictures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scene {
+    pub rows: u16,
+    pub cols: u16,
+    pub presentation: Presentation,
+    /// The screen of its client's it shows over its panes, if one is open.
+    pub panel: Option<Panel>,
+    pub read_only: bool,
+    /// The pane its client runs in, if it shows it (`View::runs_in`).
+    pub runs_in: Option<PaneId>,
+    /// What its terminal draws.
+    pub draws: crate::link::Draws,
+    pub underline_styles: bool,
+    pub placement: Placement,
+    pub focus: Option<PaneId>,
+    /// Whether its terminal reports the mouse for the focused pane: its
+    /// program may ask, as it takes input and nothing of fux's has the keys.
+    pub mouse: bool,
+    /// The panes whose pictures show (`shows_pictures`).
+    pub pictures: Vec<PaneId>,
+    /// Each placed pane's respawns, which tell its programs' screens apart.
+    pub respawns: Vec<(PaneId, u64)>,
+    pub bar: BarLine,
+}
+wired!(struct Scene {
+    rows, cols, presentation, panel, read_only, runs_in, draws, underline_styles, placement,
+    focus, mouse, pictures, respawns, bar,
+});
+
+/// A view's bar as its server writes it: its row, what it covers (its row,
+/// or the bar off, the corner its feedback takes; none if it shows
+/// nothing), its colours, its left side's parts up to `left_limit`, and its
+/// right side's at `start`, `right_width` wide.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BarLine {
+    pub y: u16,
+    pub cover: Option<Rect>,
+    /// The bar is off, and shows over the bottom pane row.
+    pub off: bool,
+    pub fill: Attributes,
+    pub left: Vec<(String, Attributes)>,
+    pub left_limit: u16,
+    pub right: Vec<(String, Attributes)>,
+    pub start: u16,
+    pub right_width: u16,
+}
+wired!(struct BarLine { y, cover, off, fill, left, left_limit, right, start, right_width });
+
+impl Scene {
+    /// Whether no screen of its client's shows over its panes.
+    pub fn normal(&self) -> bool {
+        self.panel.is_none()
+    }
+    /// Its screen but its bar's row.
+    pub fn pane_area(&self) -> Rect {
+        let screen = Rect::screen(self.rows, self.cols);
+        match self.presentation.bar.position() {
+            fux_wire::presentation::BarPosition::Top => screen.split(Axis::Vertical, 1).1,
+            fux_wire::presentation::BarPosition::Bottom => {
+                Rect::screen(self.rows.saturating_sub(1), self.cols)
+            }
+            fux_wire::presentation::BarPosition::Off => screen,
+        }
+    }
+    fn respawns(&self, id: PaneId) -> u64 {
+        (self.respawns.iter())
+            .find(|(pane, _)| *pane == id)
+            .map_or(0, |(_, respawns)| *respawns)
+    }
 }
 
-/// Composes a view's screen as it should look now into `grid`, whatever it
-/// held, laying out its panes in `placement`. The grid's cells and the
-/// placement are reused, not made again; the frame's memo, the bar's text
-/// and the like are made each time. A pane's screen comes a frame at a
-/// time (`host`), so a client is never painted half of one.
-pub fn compose_view(
-    session: &Session,
-    view: &View,
-    grid: &mut Grid,
-    placement: &mut Placement,
-) -> Result<(), fux_vt::Error> {
-    session.placement_into(view, placement);
-    let placement = &*placement;
+/// Client `client`'s scene as its server sees it now (`Scene`).
+pub fn scene(session: &Session, client: ClientId) -> Option<Scene> {
+    let view = session.views.get(&client)?;
+    let mut placement = Placement::default();
+    session.placement_into(view, &mut placement);
     let tab = session.shown_tab(view.id);
     let focus = tab.and_then(|t| t.focus(view.id));
-    put_panes(grid, session, view, placement, focus)?;
-    grid.cell_placement = view.presentation.cell_placement;
+    // The mouse: reported by the client's terminal only while the focused
+    // pane's program asked for it, still takes input, and nothing of fux's
+    // has the keys, so that the rest of the time the terminal selects text
+    // as it does. A client that only watches sends no clicks: its terminal
+    // selects.
+    let mouse = view.mode.is_normal()
+        && !view.read_only
+        && focus.is_some_and(|focus| {
+            view.runs_in != Some(focus)
+                && placement.rect(focus).is_some()
+                && (session.parts.panes().get(&focus)).is_some_and(|p| p.refuses_input().is_none())
+        });
+    let pictures = (placement.panes.iter())
+        .map(|(id, _)| *id)
+        .filter(|id| shows_pictures(session, *id))
+        .collect();
+    let respawns = (placement.panes.iter())
+        .filter_map(|(id, _)| Some((*id, session.parts.panes().get(id)?.respawns)))
+        .collect();
+    let bar = bar_line(session, view, &placement);
+    Some(Scene {
+        rows: view.rows,
+        cols: view.cols,
+        presentation: view.presentation.clone(),
+        panel: match &view.mode {
+            Mode::Panel(panel) => Some(panel.clone()),
+            Mode::Normal => None,
+        },
+        read_only: view.read_only,
+        runs_in: view.runs_in,
+        draws: view.terminal.graphics().into(),
+        underline_styles: view.terminal.underline_styles,
+        placement,
+        focus,
+        mouse,
+        pictures,
+        respawns,
+        bar,
+    })
+}
+
+/// The client's screen as it should look now, composed here from its
+/// scene and the screens of the panes held in this process (a session that
+/// starts no programs: the tests', the tools'), as its connection's
+/// process composes it from the screens its panes send it.
+pub fn compose(session: &Session, client: ClientId) -> Option<Grid> {
+    let mut grid = Grid::default();
+    compose_into(session, client, &mut grid)
+        .ok()?
+        .then_some(grid)
+}
+
+/// `compose` into `grid`, whatever it held, as a connection's process
+/// composes into the grid it keeps: whether there is such a client.
+pub fn compose_into(
+    session: &Session,
+    client: ClientId,
+    grid: &mut Grid,
+) -> Result<bool, fux_vt::Error> {
+    let Some(scene) = scene(session, client) else {
+        return Ok(false);
+    };
+    compose_scene(&scene, &|id| session.screen(id), grid)?;
+    Ok(true)
+}
+
+/// Composes a scene's screen into `grid`, whatever it held, with each
+/// placed pane's screen as `screens` has it, blank where it has none yet.
+/// The grid's cells are reused, not made again; the frame's memo puts only
+/// the pane rows that changed (`Memo`). A pane's screen comes a frame at a
+/// time (`host`), so a client is never painted half of one.
+pub fn compose_scene<'s>(
+    scene: &Scene,
+    screens: &dyn Fn(PaneId) -> Option<&'s Screen>,
+    grid: &mut Grid,
+) -> Result<(), fux_vt::Error> {
+    put_panes(grid, scene, screens, scene.focus)?;
+    grid.cell_placement = scene.presentation.cell_placement;
     // The cursor and the mouse are no pane's while the client's own has
     // the focus (`View::runs_in`).
-    let focus = focus.filter(|focus| view.runs_in != Some(*focus));
+    let focus = scene.focus.filter(|focus| scene.runs_in != Some(*focus));
     // The cursor: the focused pane's, but only in normal mode: none under
     // an overlay, nor in a repeat mode, whose keys are fux's.
     if let Some(focus) = focus
-        && let Some(rect) = placement.rect(focus)
-        && let Some(pane) = session.parts.panes().get(&focus)
+        && let Some(rect) = scene.placement.rect(focus)
+        && let Some(screen) = screens(focus)
     {
-        let screen = pane.screen();
         let (y, x) = screen.cursor_position();
         // On a row drawn twice as wide, at its glyph's first half.
         let doubled = screen.line_rendition(y).is_double();
         let x = if doubled { x.saturating_mul(2) } else { x };
         if screen.mode(fux_vt::Mode::ShowCursor)
-            && view.mode.is_normal()
+            && scene.normal()
             && let Some(at) = rect.at(y, x)
         {
             grid.cursor = Some(at);
@@ -1105,63 +1129,52 @@ pub fn compose_view(
             grid.modes.cursor_colour = screen.dynamic_color(12);
         }
     }
-    // The mouse: reported by the client's terminal only while the focused
-    // pane's program asked for it, still takes input, and nothing of fux's
-    // has the keys, so that the rest of the time the terminal selects text
-    // as it does. A client that only watches sends no clicks: its terminal
-    // selects.
-    if view.mode.is_normal()
-        && !view.read_only
-        && let Some(focus) = focus
-        && placement.rect(focus).is_some()
-        && let Some(pane) = session.parts.panes().get(&focus)
-        && pane.refuses_input().is_none()
+    if scene.mouse
+        && let Some(screen) = focus.and_then(screens)
     {
-        grid.modes.mouse = mouse_level(pane.screen().mouse_protocol_mode());
+        grid.modes.mouse = mouse_level(screen.mouse_protocol_mode());
     }
-    let panel = view.presentation.styles.panel.attributes();
-    match &view.mode {
-        Mode::Panel(Panel::Column(c)) => {
-            if view.presentation.show_column {
-                column(grid, view, c);
+    let panel = scene.presentation.styles.panel.attributes();
+    match &scene.panel {
+        Some(Panel::Column(c)) => {
+            if scene.presentation.show_column {
+                column(grid, scene, c);
             }
         }
-        Mode::Panel(Panel::List(list)) => list_panel(grid, view, list),
-        Mode::Panel(Panel::Prompt {
+        Some(Panel::List(list)) => list_panel(grid, scene, list),
+        Some(Panel::Prompt {
             title,
             before,
             after,
             hints,
         }) => {
             // The panel's border takes a cell each side.
-            let room = view.cols.saturating_sub(2);
+            let room = scene.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
                 (title.as_str().into(), panel.with_bold(true)),
                 (prompt_line(before, after, room), panel),
                 (hinted(hints).into(), panel.with_dim(true)),
             ];
-            surface(grid, view, &lines);
+            surface(grid, scene, &lines);
         }
         // A repeat mode shows in the bar, leaving the layout in view.
-        Mode::Normal | Mode::Panel(Panel::Repeat(_)) => {}
+        None | Some(Panel::Repeat(_)) => {}
     }
-    bar(grid, session, view, placement)?;
+    draw_bar(grid, scene);
     Ok(())
 }
 
-/// Puts the panes and separators on the grid, composed for `view` as laid
-/// out in `placement`: if the grid's memo is of the frame composed now, only
-/// the pane rows that changed since (`Memo`); else all, blanking first what
-/// they leave.
-fn put_panes(
+/// Puts the panes and separators on the grid, composed for `scene`: if the
+/// grid's memo is of the frame composed now, only the pane rows that
+/// changed since (`Memo`); else all, blanking first what they leave.
+fn put_panes<'s>(
     grid: &mut Grid,
-    session: &Session,
-    view: &View,
-    placement: &Placement,
+    scene: &Scene,
+    screens: &dyn Fn(PaneId) -> Option<&'s Screen>,
     focus: Option<PaneId>,
 ) -> Result<(), fux_vt::Error> {
-    grid.underline_styles = view.terminal.underline_styles;
-    let frame = Frame::of(session, view, placement, focus);
+    grid.underline_styles = scene.underline_styles;
+    let frame = Frame::of(scene, screens, focus);
     if let Some(memo) = grid
         .memo
         .take()
@@ -1169,26 +1182,23 @@ fn put_panes(
     {
         grid.cursor = None;
         grid.modes = Modes::default();
-        grid.memo = Some(memo.update(grid, session));
+        grid.memo = Some(memo.update(grid, screens));
         return Ok(());
     }
     // The panes and separators, which never overlap, cover the pane area
     // unless a split has no room for even its first child; the bar covers
     // its row. Covered, every cell is written below, and the grid needs no
     // blanking first.
+    let placement = &scene.placement;
     let lines = placement.separators.iter().map(|s| &s.rect);
     let covered = (placement.panes.iter().map(|(_, r)| r).chain(lines))
         .map(Rect::area)
         .fold(0u32, u32::saturating_add);
-    let tiled = covered == view.pane_area().area();
-    grid.reset(view.rows, view.cols, !tiled)?;
+    let tiled = covered == scene.pane_area().area();
+    grid.reset(scene.rows, scene.cols, !tiled)?;
     let mut keys = Vec::new();
     for (id, rect) in &placement.panes {
-        let Some(pane) = session.parts.panes().get(id) else {
-            grid.blank(*rect);
-            continue;
-        };
-        if view.runs_in == Some(*id) {
+        if scene.runs_in == Some(*id) {
             grid.blank(*rect);
             let text = clusters("this client");
             grid.text_cells(
@@ -1200,7 +1210,10 @@ fn put_panes(
             );
             continue;
         }
-        let screen = pane.screen();
+        let Some(screen) = screens(*id) else {
+            grid.blank(*rect);
+            continue;
+        };
         // A pane whose program changed its colours is drawn in them.
         let colours = own_colours(screen).then_some(screen);
         let window = screen.window();
@@ -1214,7 +1227,7 @@ fn put_panes(
         }
         keys.push(pane_keys);
     }
-    separators(grid, placement, focus, view.presentation.styles);
+    separators(grid, placement, focus, scene.presentation.styles);
     grid.memo = frame.map(|frame| Memo { frame, keys });
     Ok(())
 }
@@ -1611,18 +1624,14 @@ fn whole_bar(view: &View) -> bool {
         || !view.mode.is_normal()
 }
 
-/// Native feedback takes precedence over the configured right side. With
-/// the bar off, the whole bar overlays the bottom pane row while one of the
-/// client's screens shows, and other feedback only its corner
-/// (`bar_cover`), without resizing a pane.
-fn bar(
-    grid: &mut Grid,
-    session: &Session,
-    view: &View,
-    placement: &Placement,
-) -> Result<(), fux_vt::Error> {
+/// `view`'s bar as its server writes it (`BarLine`). Native feedback takes
+/// precedence over the configured right side. With the bar off, the whole
+/// bar overlays the bottom pane row while one of the client's screens
+/// shows, and other feedback only its corner (`bar_cover`), without
+/// resizing a pane.
+fn bar_line(session: &Session, view: &View, placement: &Placement) -> BarLine {
     let Some(bottom) = view.rows.checked_sub(1) else {
-        return Ok(());
+        return BarLine::default();
     };
     use fux_wire::presentation::BarPosition;
     let position = view.presentation.bar.position();
@@ -1631,7 +1640,6 @@ fn bar(
     } else {
         bottom
     };
-    let base = view.presentation.styles.bar.attributes();
     let unseen = unseen(session, view, placement);
     let (right, start, right_width) = right_side(session, view, &unseen);
     let row = Rect::screen(view.rows, view.cols)
@@ -1640,33 +1648,45 @@ fn bar(
         .split(Axis::Vertical, 1)
         .0;
     let cover = match position {
-        BarPosition::Off => {
-            let Some(cover) = off_cover(view, &unseen, start) else {
-                return Ok(());
-            };
-            // The covered pane cells are composed again next time, unchanged
-            // rows too, and a pane's cursor never shows through it.
-            grid.memo = None;
-            grid.cursor = (grid.cursor).filter(|(y, x)| !cover.contains(*y, *x));
-            cover
-        }
-        BarPosition::Top | BarPosition::Bottom => row,
+        BarPosition::Off => off_cover(view, &unseen, start),
+        BarPosition::Top | BarPosition::Bottom => Some(row),
     };
-    grid.fill(cover, base);
-    if whole_bar(view) {
-        let left_limit = view
-            .cols
-            .saturating_sub(right_width.saturating_add(u16::from(right_width > 0)));
-        bar_parts(
-            grid,
-            y,
-            0,
-            left_limit,
-            &bar_fields(session, view, view.presentation.bar.left(), left_limit),
-        );
+    let left_limit = view
+        .cols
+        .saturating_sub(right_width.saturating_add(u16::from(right_width > 0)));
+    let left = match whole_bar(view) {
+        true => bar_fields(session, view, view.presentation.bar.left(), left_limit),
+        false => Vec::new(),
+    };
+    BarLine {
+        y,
+        cover,
+        off: position == BarPosition::Off,
+        fill: view.presentation.styles.bar.attributes(),
+        left,
+        left_limit,
+        right,
+        start,
+        right_width,
     }
-    bar_parts(grid, y, start, start.saturating_add(right_width), &right);
-    Ok(())
+}
+
+/// Draws a scene's bar (`BarLine`).
+fn draw_bar(grid: &mut Grid, scene: &Scene) {
+    let bar = &scene.bar;
+    let Some(cover) = bar.cover else {
+        return;
+    };
+    if bar.off {
+        // The covered pane cells are composed again next time, unchanged
+        // rows too, and a pane's cursor never shows through it.
+        grid.memo = None;
+        grid.cursor = (grid.cursor).filter(|(y, x)| !cover.contains(*y, *x));
+    }
+    grid.fill(cover, bar.fill);
+    bar_parts(grid, bar.y, 0, bar.left_limit, &bar.left);
+    let end = bar.start.saturating_add(bar.right_width);
+    bar_parts(grid, bar.y, bar.start, end, &bar.right);
 }
 
 /// What of the tab `view` shows its screen does not: `[hidden %3]` for each
@@ -1776,7 +1796,7 @@ fn windowed<'a>(
 }
 
 /// A panel in the bottom-right corner of the pane area, sized to its lines.
-fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
+fn surface(grid: &mut Grid, view: &Scene, lines: &[Line<'_>]) {
     let area = view.pane_area();
     let area = if view.presentation.bar.position() == fux_wire::presentation::BarPosition::Off {
         area.split(Axis::Vertical, area.h().saturating_sub(1)).0
@@ -1819,7 +1839,7 @@ fn hinted(hints: &[fux_wire::act::Hint]) -> String {
 }
 
 /// A chooser: the entries that fit, the selected one highlighted.
-fn list_panel(grid: &mut Grid, view: &View, list: &List) {
+fn list_panel(grid: &mut Grid, view: &Scene, list: &List) {
     let panel = view.presentation.styles.panel.attributes();
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), panel.with_bold(true))];
     // Its items' rows: it has a title and a help line.
@@ -1836,7 +1856,7 @@ fn list_panel(grid: &mut Grid, view: &View, list: &List) {
 
 /// The command column: the bindings and maps of its map, grouped, the
 /// selected one highlighted and those that cannot run now dimmed.
-fn column(grid: &mut Grid, view: &View, column: &fux_wire::act::Column) {
+fn column(grid: &mut Grid, view: &Scene, column: &fux_wire::act::Column) {
     let panel = view.presentation.styles.panel.attributes();
     let key_width = column
         .entries
@@ -2215,13 +2235,14 @@ mod tests {
         Ok(())
     }
 
-    /// `compose` into a grid and placement kept, as the server composes:
-    /// false if there is no such client.
+    /// `compose` into a grid kept, as a connection's process composes, its
+    /// placement into `placement`: false if there is no such client.
     fn compose_into(s: &Session, c: ClientId, grid: &mut Grid, placement: &mut Placement) -> bool {
-        let view = s.views.get(&c);
-        view.is_some_and(|view| {
-            let result = compose_view(s, view, grid, placement);
+        let scene = scene(s, c);
+        scene.is_some_and(|scene| {
+            let result = compose_scene(&scene, &|id| s.screen(id), grid);
             assert!(result.is_ok(), "{result:?}");
+            *placement = scene.placement;
             true
         })
     }
@@ -2559,8 +2580,7 @@ mod tests {
         run(&mut s, &respawn)?;
         s.out(id, b"A");
         let row_key = |s: &Session| {
-            let pane = s.parts.panes().get(&id)?;
-            let row = pane.screen().window().row(0)?;
+            let row = s.screen(id)?.window().row(0)?;
             Some((row.id(), row.version()))
         };
         let old_key = row_key(&s).ok_or("the row")?;
@@ -2971,7 +2991,7 @@ mod tests {
             // Under it.
             at((3, 35, 1, 1), (0, 0, 12, 12)),
         ];
-        clip_bar_pictures(view, cover, &mut pictures);
+        clip_bar_pictures((12, 12), cover, &mut pictures);
         let areas: Vec<_> = pictures.iter().map(|p| (p.area, p.crop)).collect();
         assert_eq!(
             areas,

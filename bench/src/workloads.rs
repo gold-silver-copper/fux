@@ -899,7 +899,6 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     }
     let mut shown = fux_server::render::Grid::default();
     let mut spare = fux_server::render::Grid::default();
-    let mut placement = fux_wire::layout::Placement::default();
     let mut buffer = Vec::new();
     let mut have = false;
     let (mut painted, mut frames) = (0usize, 0usize);
@@ -925,11 +924,9 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         if let Some(view) = s.views.get_mut(&c) {
             view.dirty = false;
         }
-        let Some(view) = s.views.get(&c) else {
+        if !fux_server::render::compose_into(&s, c, &mut spare).map_err(|e| e.to_string())? {
             continue;
-        };
-        fux_server::render::compose_view(&s, view, &mut spare, &mut placement)
-            .map_err(|e| e.to_string())?;
+        }
         // Every key changes the screen: painted without asking whether it
         // did, as `paint_into` finds what changed.
         fux_server::render::paint_into(&shown, have, &spare, &mut buffer);
@@ -968,7 +965,6 @@ fn paint(
     let panes: Vec<_> = s.parts.panes().keys().copied().collect();
     let mut shown = fux_server::render::Grid::default();
     let mut spare = fux_server::render::Grid::default();
-    let mut placement = fux_wire::layout::Placement::default();
     let mut buffer = Vec::new();
     let (mut painted, mut frames, mut units, mut have) = (0usize, 0usize, 0usize, false);
     while units < total {
@@ -991,11 +987,11 @@ fn paint(
                     if baseline || !dirty {
                         continue;
                     }
-                    let Some(view) = s.views.get(&c) else {
+                    if !fux_server::render::compose_into(&s, c, &mut spare)
+                        .map_err(|e| e.to_string())?
+                    {
                         continue;
-                    };
-                    fux_server::render::compose_view(&s, view, &mut spare, &mut placement)
-                        .map_err(|e| e.to_string())?;
+                    }
                     if have && spare == shown {
                         continue;
                     }

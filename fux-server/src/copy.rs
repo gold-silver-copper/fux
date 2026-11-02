@@ -4,13 +4,12 @@
 //! it, and changes with the journal in one step (`Session::told`): each of
 //! the pane's events the journal holds is in it, and none it does not.
 //!
-//! Its screen is a terminal of its own (`mirror`), the pane's visible
-//! screen painted onto it as the pane sends it, a frame at a time; its
-//! facts are the pane's own observation of itself.
+//! It keeps no screen: a pane sends its screen to the connections showing
+//! it (`conn`, D-123). Its facts are the pane's own observation of itself.
 use crate::journal::Told;
 use crate::link::{Hosting, Update};
 use crate::pane::{Runs, Said};
-use fux_vt::{Screen, Size};
+use fux_vt::Size;
 use fux_wire::answer::Ended;
 use fux_wire::code::{Error, Raise, fail};
 use fux_wire::command::{Counts, PaneOptions, Run, Version};
@@ -48,7 +47,8 @@ pub struct Copy {
     facts: Facts,
     /// Its program's process, while it has one.
     pid: Option<fuxix::process::Pid>,
-    mirror: fux_vt::Parser,
+    /// Its size, as it last said.
+    size: Size,
     /// What its host's terminal said, as it was last told it.
     pub hosting: Option<Hosting>,
     /// Whether a client shows it, as it was last told.
@@ -60,31 +60,15 @@ pub struct Copy {
     pub read_error: Option<String>,
 }
 
-/// What a copy's screen keeps of what its pane paints on it: its links,
-/// and the cursor colour it sets (OSC 12).
-const MIRROR: fux_vt::Options = fux_vt::Options::new()
-    .with(fux_vt::Feature::Hyperlinks)
-    .with(fux_vt::Feature::Palette)
-    .with(fux_vt::Feature::Pictures);
-
-/// What a mirror's paints say back: nothing, as no program reads them.
-struct Discard;
-impl fux_vt::Sink for Discard {}
-
 impl Copy {
     /// Pane `id`, as it starts: `runs`, at `size`, with `options`, and
     /// nothing on its screen yet.
-    pub fn new(
-        id: PaneId,
-        runs: Runs,
-        size: Size,
-        options: PaneOptions,
-    ) -> Result<Copy, fux_vt::Error> {
+    pub fn new(id: PaneId, runs: Runs, size: Size, options: PaneOptions) -> Copy {
         let launch = fux_wire::inspect::Launch {
             shell: matches!(runs, Runs::Shell(_)),
             cwd: crate::capture::path(runs.launch().cwd.as_os_str()),
         };
-        Ok(Copy {
+        Copy {
             id,
             name: None,
             title: Said::default(),
@@ -100,16 +84,16 @@ impl Copy {
                 terminal: Vec::new(),
             },
             pid: None,
-            mirror: fux_vt::Parser::with_options(size, 0, MIRROR)?,
+            size,
             hosting: None,
             shown: false,
             asked: None,
             read_error: None,
-        })
+        }
     }
 
     /// Pane `greeting` says it is, as a server takes it back.
-    pub fn greeted(greeting: crate::link::Greeting) -> Result<Copy, fux_vt::Error> {
+    pub fn greeted(greeting: crate::link::Greeting) -> Copy {
         let launch = crate::pane::Launch {
             argv: greeting.argv,
             cwd: greeting.cwd,
@@ -118,7 +102,7 @@ impl Copy {
             true => Runs::Shell(launch),
             false => Runs::Explicit(launch),
         };
-        let mut copy = Copy::new(greeting.id, runs, greeting.size, greeting.options)?;
+        let mut copy = Copy::new(greeting.id, runs, greeting.size, greeting.options);
         copy.respawns = greeting.respawns;
         copy.counts = greeting.counts;
         copy.title = greeting.title;
@@ -129,13 +113,13 @@ impl Copy {
             (None, false, Some(error)) => State::ReadFailed(error),
             (None, false, None) => State::Running,
         };
-        Ok(copy)
+        copy
     }
 
     /// Pane `recorded`, as its run's record keeps it, its own process gone
     /// while no server ran: as it ended, if it had; else running, at the
     /// respawns it was at, its screen blank.
-    pub fn recorded(recorded: &crate::record::Pane) -> Result<Copy, fux_vt::Error> {
+    pub fn recorded(recorded: &crate::record::Pane) -> Copy {
         let launch = crate::pane::Launch {
             argv: recorded.argv.clone(),
             cwd: recorded.cwd.clone(),
@@ -144,7 +128,7 @@ impl Copy {
             true => Runs::Shell(launch),
             false => Runs::Explicit(launch),
         };
-        let mut copy = Copy::new(recorded.id, runs, recorded.size, recorded.options)?;
+        let mut copy = Copy::new(recorded.id, runs, recorded.size, recorded.options);
         copy.name = recorded.name.clone();
         copy.respawns = recorded.respawns;
         copy.counts.respawns = recorded.respawns;
@@ -152,7 +136,7 @@ impl Copy {
             copy.counts = counts;
             copy.state = State::Exited(ended);
         }
-        Ok(copy)
+        copy
     }
 
     /// It as its run's record keeps it (`Copy::recorded`).
@@ -194,11 +178,7 @@ impl Copy {
         self.options
     }
     pub fn size(&self) -> Size {
-        self.screen().size()
-    }
-    /// Its visible screen, as last sent.
-    pub fn screen(&self) -> &Screen {
-        self.mirror.screen()
+        self.size
     }
     pub fn counts(&self) -> Counts {
         self.counts
@@ -234,11 +214,6 @@ impl Copy {
         let told = self.facts.terminal.iter().find(|(t, _)| *t == fact);
         told.map_or(Json::Null, |(_, json)| json.clone())
     }
-    /// Whether a shell command was ever marked here (OSC 133 `C`).
-    pub fn marked(&self) -> bool {
-        self.screen().commands().started > 0
-    }
-
     /// Why its program takes no input, if it takes none, as last told:
     /// what the pane itself checks as it is sent input (`host::refuses_input`).
     pub fn refuses_input(&self) -> Option<Error> {
@@ -265,7 +240,7 @@ impl Copy {
                 if self.asked == Some(*size) {
                     self.asked = None;
                 }
-                self.resize(*size);
+                self.size = *size;
             }
             Told::HungUp => {
                 self.state = State::HungUp;
@@ -344,31 +319,13 @@ impl Copy {
         }
     }
 
-    /// Its screen and facts, as it sent them.
+    /// Its facts, as it sent them.
     pub(crate) fn update(&mut self, update: Update) {
         self.counts = update.counts;
         self.title = update.title;
         self.pid = update.pid.and_then(fuxix::process::Pid::from_raw);
         self.facts = update.facts;
-        if update.full || update.size != self.size() {
-            match fux_vt::Parser::with_options(update.size, 0, MIRROR) {
-                Ok(mirror) => self.mirror = mirror,
-                Err(error) => log!("{}: its copy at {:?}: {error}", self.id, update.size),
-            }
-        }
-        let graphics = fux_vt::Graphics::from(update.draws);
-        if self.screen().graphics() != graphics {
-            self.mirror.set_host_graphics(graphics);
-        }
-        self.mirror.set_picture_bytes(update.picture_bytes);
-        let mut bytes = update.screen.as_slice();
-        // Every byte read, budget or no: the bytes paint one screen.
-        while let Ok(Some((taken, _))) = self.mirror.process_until_stop(bytes, &mut Discard) {
-            bytes = bytes.get(taken..).unwrap_or_default();
-            if bytes.is_empty() && !self.mirror.has_work_left() {
-                break;
-            }
-        }
+        self.size = update.size;
     }
 
     /// Whether it is to be told to take `size`: one it is not at, nor was
@@ -385,14 +342,6 @@ impl Copy {
     /// Its program's process is gone with its pane's (`Session::pane_lost`).
     pub(crate) fn lost(&mut self) {
         self.pid = None;
-    }
-
-    fn resize(&mut self, size: Size) {
-        if size != self.size()
-            && let Err(error) = self.mirror.resize(size)
-        {
-            log!("{}: its copy at {size:?}: {error}", self.id);
-        }
     }
 
     /// Its given name, title or launch program, or its id for display.
