@@ -573,6 +573,8 @@ pub struct Machine<A> {
     /// The versions a host made for values of its own (`Host::code`),
     /// which `release` lets go of once nothing holds them.
     lent: Vec<usize>,
+    /// The empty code each version `release` let go of names.
+    released: Option<Rc<Steps<A>>>,
 }
 
 impl<A: AppValue> Machine<A> {
@@ -613,6 +615,7 @@ impl<A: AppValue> Machine<A> {
             last: None,
             read_here: false,
             lent: Vec::new(),
+            released: None,
         };
         let vocabulary = Rc::clone(&machine.vocabulary);
         for builtin in Builtin::ALL {
@@ -1058,7 +1061,8 @@ impl<A: AppValue> Machine<A> {
         if free.is_empty() {
             return;
         }
-        let empty = Rc::new(Steps::new(Rc::from("")));
+        let empty =
+            Rc::clone((self.released).get_or_insert_with(|| Rc::new(Steps::new(Rc::from("")))));
         let kept = self.versions.len();
         for index in free {
             let slot = match index.checked_sub(kept) {
