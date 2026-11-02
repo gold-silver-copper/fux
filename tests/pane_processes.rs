@@ -97,6 +97,22 @@ fn children(pid: i32, word: &str) -> Vec<i32> {
         .collect()
 }
 
+/// The processes of the server `pid`'s connections that have a client:
+/// those it took itself (`__conn taken`), and those that took one at its
+/// socket, whose stdout then points elsewhere; not the one waiting for the
+/// next, which holds the socket on its stdout (`Server::spare`).
+#[cfg(target_os = "linux")]
+fn connections(pid: i32) -> Vec<i32> {
+    let taken = children(pid, "taken");
+    (children(pid, "__conn").into_iter())
+        .filter(|conn| {
+            taken.contains(conn)
+                || std::fs::read_link(format!("/proc/{conn}/fd/1"))
+                    .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
+        })
+        .collect()
+}
+
 /// The server's process.
 fn server_pid(server: &Server) -> Result<i32, String> {
     i32::try_from(server.pid().ok_or("the server's pid")?).map_err(e)
@@ -223,7 +239,7 @@ fn a_client_that_stops_reading_ends_only_its_connection() -> Outcome {
     let pid = i32::try_from(server.pid().ok_or("the server's pid")?).map_err(e)?;
     let mut stuck = server.attach(10, 40)?;
     stuck.wait_for("$")?;
-    let conns = children(pid, "__conn");
+    let conns = connections(pid);
     let [conn] = conns.as_slice() else {
         return Err(format!("its connection's process: {conns:?}"));
     };
@@ -363,6 +379,77 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
 
 /// Stops a server however its test ends: one that took a run back is no
 /// child of the test's.
+/// 6b. A crashed server's run is taken back though the connection's
+///     process it started for its next client, which holds its socket till
+///     it sees its server go, is stopped meanwhile: a socket whose server
+///     is gone is no server's (`socket::owned`), with room in its backlog
+///     or none.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_crashed_servers_run_is_taken_back_while_its_waiting_connection_is_stopped() -> Outcome {
+    taken_back_with_its_spare_stopped(false)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_crashed_servers_run_is_taken_back_with_its_stopped_connections_backlog_full() -> Outcome {
+    taken_back_with_its_spare_stopped(true)
+}
+
+#[cfg(target_os = "linux")]
+fn taken_back_with_its_spare_stopped(full: bool) -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let shell = pane(server, "work", &["sh"])?;
+    server.type_line(&shell, "echo MARK-BEFORE")?;
+    server.shows(&shell, "MARK-BEFORE")?;
+    let before = layout(server)?;
+    let pid = server_pid(server)?;
+    let waiting: Vec<i32> = (children(pid, "__conn").into_iter())
+        .filter(|conn| !connections(pid).contains(conn))
+        .collect();
+    let [spare] = waiting[..] else {
+        return Err(format!("the connection waiting for a client: {waiting:?}"));
+    };
+    signal(spare, Signal::Stop);
+    signal(pid, Signal::Kill);
+    // Clients come while no server serves, till the socket takes no more.
+    let mut queued = Vec::new();
+    while full && queued.len() < 100_000 {
+        let fd = fuxix::socket::stream().map_err(e)?;
+        fuxix::io::set_nonblocking(&fd, true).map_err(e)?;
+        match fuxix::socket::connect(&fd, &server.socket) {
+            Ok(()) => queued.push(fd),
+            Err(fuxix::Errno::AGAIN) => break,
+            Err(error) => return Err(format!("queueing a client: {error}")),
+        }
+    }
+    // Asked with a bound: a client of the old socket would wait for good.
+    let taken = server.ok(&["start"]).and_then(|_| {
+        let status = within(server, 30, &["status"])?;
+        match status.status {
+            0 => layout(server),
+            _ => Err(format!("no server took the run back: {}", status.stderr)),
+        }
+    });
+    let still = processes().into_iter().any(|(p, ..)| p == spare)
+        && std::fs::read_to_string(format!("/proc/{spare}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(") ")
+                .is_some_and(|(_, r)| r.starts_with('T'))
+        });
+    signal(spare, Signal::Cont);
+    drop(queued);
+    assert_eq!(taken?, before);
+    assert!(still, "the spare ran meanwhile");
+    assert!(
+        server
+            .ok(&["str", &shell, "pane", "capture"])?
+            .contains("MARK-BEFORE")
+    );
+    eventually("the old connection's process gone", || Ok(!alive(spare)))
+}
+
 struct Stop<'a>(&'a Server);
 
 impl Drop for Stop<'_> {
@@ -518,8 +605,7 @@ fn a_paste_body_never_passes_through_the_server() -> Outcome {
     stdin.write_all(&body).map_err(e)?;
     drop(stdin);
     eventually("its connection to hold it", || {
-        Ok((children(pid, "__conn").into_iter())
-            .any(|conn| peak_kib(conn).is_ok_and(|k| k > 32 << 10)))
+        Ok((connections(pid).into_iter()).any(|conn| peak_kib(conn).is_ok_and(|k| k > 32 << 10)))
     })?;
     let grew = peak_kib(pid)?.saturating_sub(before);
     signal(own, Signal::Cont);
@@ -552,7 +638,17 @@ fn a_capture_never_passes_through_the_server() -> Outcome {
     ]
     .concat();
     let lines = id(&server.ok(&words)?);
-    server.shows(&lines, "all-out")?;
+    // Its screen shows the end once all is read: waited for by its version,
+    // as long as a slow machine takes to read 600,000 lines, with no whole
+    // history captured on the way.
+    let deadline = after(std::time::Duration::from_secs(120));
+    let mut since = server.version(&lines)?;
+    while !server
+        .ok(&["str", &lines, "pane", "capture"])?
+        .contains("all-out")
+    {
+        since = server.changed(&lines, &since, deadline)?;
+    }
     let pid = server_pid(&server)?;
     let before = peak_kib(pid)?;
     let captured = server.ok(&["str", &lines, "pane", "all-history", "capture"])?;
@@ -576,8 +672,7 @@ fn a_clients_screen_is_never_composed_in_the_server() -> Outcome {
     let mut watcher = server.watch(1500, 1500)?;
     eventually("its connection to compose it", || {
         watcher.pump()?;
-        Ok((children(pid, "__conn").into_iter())
-            .any(|conn| peak_kib(conn).is_ok_and(|k| k > 24 << 10)))
+        Ok((connections(pid).into_iter()).any(|conn| peak_kib(conn).is_ok_and(|k| k > 24 << 10)))
     })?;
     let grew = peak_kib(pid)?.saturating_sub(before);
     assert!(grew < 8 << 10, "the server grew {grew} KiB");
@@ -617,7 +712,7 @@ fn a_connection_ends_with_its_server_though_its_client_reads_nothing() -> Outcom
     let pid = server_pid(&server)?;
     let mut stuck = server.attach(10, 40)?;
     stuck.wait_for("$")?;
-    let conn = (children(pid, "__conn").first().copied()).ok_or("its connection")?;
+    let conn = (connections(pid).first().copied()).ok_or("its connection")?;
     server.type_line("%1", r#"while :; do printf '\033]52;c;aGk=\a'; done"#)?;
     eventually("its connection to hold copies", || {
         Ok(peak_kib(conn)? > 8 << 10)
@@ -852,8 +947,8 @@ fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome 
     drop(stdin);
     let mut conn = None;
     eventually("its connection to hold it", || {
-        conn = (children(pid, "__conn").into_iter())
-            .find(|conn| peak_kib(*conn).is_ok_and(|k| k > 32 << 10));
+        conn =
+            (connections(pid).into_iter()).find(|conn| peak_kib(*conn).is_ok_and(|k| k > 32 << 10));
         Ok(conn.is_some())
     })?;
     let conn = conn.ok_or("its connection")?;
@@ -962,7 +1057,7 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
         eventually(&format!("its connection gone, {at}"), || Ok(!alive(conn)))
     };
     let the_clients = |server: &Server| -> Result<i32, String> {
-        match children(server_pid(server)?, "__conn")[..] {
+        match connections(server_pid(server)?)[..] {
             [conn] => Ok(conn),
             _ => Err("one connection, the client's".into()),
         }
@@ -974,7 +1069,7 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
     let sending = paste(&server, &id, &vec![b'y'; SIZE])?;
     let pid = server_pid(&server)?;
     eventually("the keys on their way", || {
-        Ok((children(pid, "__conn").into_iter())
+        Ok((connections(pid).into_iter())
             .any(|asker| asker != conn && peak_kib(asker).is_ok_and(|k| k > 32 << 10)))
     })?;
     std::thread::sleep(std::time::Duration::from_millis(200));

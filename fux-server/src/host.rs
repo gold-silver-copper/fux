@@ -141,6 +141,9 @@ pub struct Watch {
     revision: Option<u64>,
     whole: u64,
     sent: Option<Grid>,
+    /// The grid its next screen is composed on: the one sent before
+    /// `sent`, whose rows that changed since are drawn again.
+    spare: Grid,
     pictures: Vec<crate::render::Visible>,
     own: crate::render::Own,
     /// It was sent a screen it did not take yet.
@@ -1360,8 +1363,10 @@ impl Host {
             return None;
         }
         let pane = &self.pane;
-        let mut grid = Grid::default();
-        if let Err(error) = crate::render::pane_grid(pane.id(), pane.screen(), &mut grid) {
+        let mut grid = std::mem::take(&mut watch.spare);
+        if let Err(error) =
+            crate::render::pane_grid(pane.id(), pane.respawns, pane.screen(), &mut grid)
+        {
             log!("{}: composing its screen: {error}", pane.id());
             return None;
         }
@@ -1393,9 +1398,10 @@ impl Host {
         watch.revision = Some(self.revision);
         watch.whole = self.whole;
         if screen.is_empty() {
+            watch.spare = grid;
             return None;
         }
-        watch.sent = Some(grid);
+        watch.spare = watch.sent.replace(grid).unwrap_or_default();
         watch.pictures = pictures;
         watch.own = own;
         Some(crate::link::Drawn {
@@ -1740,37 +1746,48 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
         }
         let due = clock.due(now) <= now;
         let mut sent = false;
-        match &mut link {
-            Some(end) => {
-                for report in host.take() {
-                    end.send(&report);
+        // What it tells its server, taken first: telling marks it changed.
+        let mut reports = host.take();
+        // Its screen goes first, to the connections that show it, so that a
+        // keystroke's echo waits for no facts made for its server; but after
+        // a copy, which reaches the clients through the server, it goes
+        // after what it tells the server, so the copy comes no later.
+        let copied = (reports.iter()).any(|r| matches!(r, FromPane::Copied(_)));
+        for screen in [!copied, copied] {
+            if screen {
+                for peer in &mut peers {
+                    if let Some(Some(watch)) = &mut peer.side
+                        && !watch.waiting
+                        && due
+                        && let Some(drawn) = host.drawn(watch)
+                    {
+                        peer.end.send(&FromSide::Drawn(Box::new(drawn)));
+                        (watch.waiting, sent) = (true, true);
+                    }
+                    let _ = peer.end.flush();
                 }
-                if !waiting
-                    && due
-                    && let Some(update) = host.update()
-                {
-                    end.send(&FromPane::Update(Box::new(update)));
-                    (waiting, sent) = (true, true);
-                    again = Some(crate::after(now, PAINT));
-                }
-                if end.flush().is_err() {
-                    (link, waiting) = (None, false);
-                    host.forget();
-                }
+                continue;
             }
-            // With no server, what it does is in its state alone.
-            None => drop(host.take()),
-        }
-        for peer in &mut peers {
-            if let Some(Some(watch)) = &mut peer.side
-                && !watch.waiting
+            let Some(end) = &mut link else {
+                // With no server, what it does is in its state alone.
+                drop(std::mem::take(&mut reports));
+                continue;
+            };
+            for report in std::mem::take(&mut reports) {
+                end.send(&report);
+            }
+            if !waiting
                 && due
-                && let Some(drawn) = host.drawn(watch)
+                && let Some(update) = host.update()
             {
-                peer.end.send(&FromSide::Drawn(Box::new(drawn)));
-                (watch.waiting, sent) = (true, true);
+                end.send(&FromPane::Update(Box::new(update)));
+                (waiting, sent) = (true, true);
+                again = Some(crate::after(now, PAINT));
             }
-            let _ = peer.end.flush();
+            if end.flush().is_err() {
+                (link, waiting) = (None, false);
+                host.forget();
+            }
         }
         if sent {
             clock = Clock {

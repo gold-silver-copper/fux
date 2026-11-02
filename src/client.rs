@@ -539,9 +539,9 @@ pub fn greet(socket: &SocketPath) -> Result<(), Error> {
     connect(socket, Role::Command).map(drop)
 }
 
-/// Whether a server answers on `socket`.
+/// Whether a server answers on `socket` (`socket::owned`).
 pub fn answers(socket: &SocketPath) -> bool {
-    UnixStream::connect(socket.path()).is_ok()
+    socket::owned(socket)
 }
 
 /// Starts a server in the background, its journal keeping `journal`

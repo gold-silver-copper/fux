@@ -53,7 +53,10 @@ pub fn main() -> ExitCode {
         match args.split_first().map(|(a, rest)| (a.as_str(), rest)) {
             Some((SERVE, rest)) => return serve(rest),
             Some((fux_server::link::PANE, [])) => return pane(),
-            Some((fux_server::link::CONN, [])) => return conn(),
+            Some((fux_server::link::CONN, [])) => return conn(false),
+            Some((fux_server::link::CONN, [taken])) if taken == fux_server::link::TAKEN => {
+                return conn(true);
+            }
             _ => {}
         }
     }
@@ -126,18 +129,16 @@ fn pane() -> ExitCode {
     }
 }
 
-/// A client's connection's own process, started by its server
-/// (`server::Conn::start`): the client on stdin, its link on stdout.
-fn conn() -> ExitCode {
+/// A client's connection's own process, started by its server: its link
+/// on stdin, and on stdout the server's socket, where it takes its client
+/// (`server::Conn::spare`), or, `taken`, a client the server took itself.
+fn conn(taken: bool) -> ExitCode {
     use std::os::fd::AsFd;
-    let socket = |fd: std::os::fd::BorrowedFd<'_>| {
-        fd.try_clone_to_owned()
-            .map(std::os::unix::net::UnixStream::from)
-    };
-    let client = socket(std::io::stdin().as_fd());
-    let server = socket(std::io::stdout().as_fd());
-    let served = match (client, server) {
-        (Ok(client), Ok(server)) => fux_server::conn::serve(client, server),
+    let server = std::io::stdin().as_fd().try_clone_to_owned();
+    let out = std::io::stdout().as_fd().try_clone_to_owned();
+    let served = match (out, server) {
+        (Ok(client), Ok(server)) if taken => fux_server::conn::taken(client.into(), server.into()),
+        (Ok(listener), Ok(server)) => fux_server::conn::wait(listener.into(), server.into()),
         (Err(e), _) | (_, Err(e)) => Err(format!("its sockets: {e}")),
     };
     match served {
