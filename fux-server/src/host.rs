@@ -273,9 +273,8 @@ impl Host {
     /// What the server says.
     pub fn handle(&mut self, message: ToPane, now: Instant) {
         // What may change its screen or facts: keys typed do not (an echo
-        // is its program's output). Its facts taken, it looks again at what
-        // changes with no event (its foreground group), once.
-        if !matches!(message, ToPane::Typed { .. }) {
+        // is its program's output), nor its facts taken.
+        if !matches!(message, ToPane::Typed { .. } | ToPane::Taken) {
             self.dirty = true;
         }
         match message {
@@ -1292,6 +1291,12 @@ impl Host {
         self.held.remove(&token)
     }
 
+    /// Its facts are looked at again: what changes with no event of its own
+    /// (its foreground group, as its shell starts a job) is told too.
+    pub fn look_again(&mut self) {
+        self.dirty = true;
+    }
+
     /// Something happened to it: its server is to be told its facts, and
     /// the connections watching it its screen, as they changed.
     fn changed(&mut self) {
@@ -1705,8 +1710,10 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
         next: Instant::now(),
         wrote: None,
     };
-    // Its server's link while it has one.
+    // Its server's link while it has one; and when it looks at its facts
+    // again, a frame after it last sent them (`Host::look_again`).
     let mut link = Some(end);
+    let mut again: Option<Instant> = None;
     let mut peers: Vec<Peer> = Vec::new();
     let mut poll = fuxix::poll::Poll::default();
     let mut socket = socket;
@@ -1731,6 +1738,7 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
                 {
                     end.send(&FromPane::Update(Box::new(update)));
                     (waiting, sent) = (true, true);
+                    again = Some(crate::after(now, PAINT));
                 }
                 if end.flush().is_err() {
                     (link, waiting) = (None, false);
@@ -1768,7 +1776,10 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
         let owed = (link.is_some() && !waiting)
             || (peers.iter()).any(|p| matches!(&p.side, Some(Some(w)) if !w.waiting));
         let paint = (owed && clock.wrote.is_some()).then(|| clock.due(now));
-        let at = [timer.map(|(at, _)| at), paint].into_iter().flatten().min();
+        let at = [timer.map(|(at, _)| at), paint, again]
+            .into_iter()
+            .flatten()
+            .min();
         let timeout = at.map(|at| at.saturating_duration_since(now));
         let reading = match host.pane().process() {
             Process::Reading(child) => (!host.pane().has_unread()).then_some(child),
@@ -1941,6 +1952,10 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             && at <= Instant::now()
         {
             host.fire(timer, Instant::now());
+        }
+        if again.is_some_and(|at| at <= Instant::now()) {
+            again = None;
+            host.look_again();
         }
     }
 }
