@@ -577,7 +577,9 @@ read-file`. `X warn` prints on stderr:
   with it. One that crashes leaves its panes' processes waiting, each with
   its program, its screen and its history, beside its socket; `fux start`
   on that socket takes the run back: its ids, names, layout and versions
-  go on, and `FUX_PANE` still names each pane. Its journal is new. Where
+  go on, and `FUX_PANE` still names each pane. A pane whose own process
+  ended while no server ran stays as its role says: a program's ended, its
+  screen blank, a shell's closed. Its journal is new. Where
   the run cannot be taken back (its record or its fux gone), `start`
   refuses, naming the panes that wait and their pids. `fux all dump > FILE` saves its layout and launches when you
   choose; `fux start && fux --file FILE` makes them again on a fresh server,

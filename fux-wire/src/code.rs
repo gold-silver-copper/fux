@@ -151,7 +151,9 @@ codes! {
     NoServer "no_server" [asked],
     /// The client and the server speak different protocols.
     Mismatch "mismatch" [asked],
-    /// The client could not do its part: its socket, its terminal.
+    /// A part of fux's could not do its part: the client's socket or
+    /// terminal, or the server's run record (a change it could not record
+    /// is not made).
     Client "client" [asked],
     // What a command names.
     /// A pane named is not there.

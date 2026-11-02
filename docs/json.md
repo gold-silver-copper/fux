@@ -235,11 +235,13 @@ resize, a reset, a switch of screens or a change to history); or it was
 read while a repeat (REP) was still being drawn, so it names screens
 whose rows differ.
 
-`cursor` is the journal cursor read in the same server turn as `version`
-and the screen: `PANE str CURSOR events` from it starts reading the pane's
+`cursor` is the journal cursor as the server took the pane's answer, in
+the order the pane reported, before anything it reported after the
+capture: `PANE str CURSOR events` from it starts reading the pane's
 journal entries after the capture, none from before it (as from any cursor,
 entries evicted first are `missed`). A change only to the screen is no entry:
-it shows as a new `version` and in captures.
+it shows as a new `version` and in captures. The capture goes from the
+pane's own process to the asking connection's, never through the server.
 
 `above` is how many history rows are kept above the first row read:
 history not asked for (`null` for `last-output`; rows a `rows` range
@@ -286,7 +288,10 @@ wide glyph at either column boundary leaves a blank in the selected half.
 
 `CLIENT capture json`:
 `{"client":"c1","screen_rows":24,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"]}`,
-`screen_rows` and `screen_cols` its terminal's size.
+`screen_rows` and `screen_cols` its terminal's size: the client's screen
+composed as its own connection composes it, from what the server says it is
+made of and its panes' screens as they are now, by the asking connection,
+which gets them from the panes.
 
 Client JSON serialization writes capture runs directly without constructing
 a second JSON object graph, and plain text streams nested lists' captures and
@@ -401,7 +406,9 @@ evicted before append and does not grow. A journal is its server
 process's, ordered as each pane's process reported: a server that takes a
 run back after a crash (`fux start`) keeps one of its own, and refuses a
 cursor from the one before (`bad_value`), saying that what came between is
-lost: resnapshot.
+lost: resnapshot. A change to the tree (a name, a layout, a new pane) is
+told only once the run's record holds it: one whose record can't be written
+(a full disk) fails `client`, saying so, and is not made.
 
 The journal guarantees ordered invalidations, not complete state replication:
 a later snapshot can already contain newer state. Foreground process

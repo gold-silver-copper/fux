@@ -71,8 +71,11 @@ until SIGTERM, SIGINT or SIGHUP, which `kill` sends ([Security](#security)
 shows how on Linux and macOS). It then hangs up every pane, tells each
 attached terminal why, and removes its socket. Each pane runs in a process
 of its own (`fux __pane`), holding its terminal, and each client's
-connection in another (`fux __conn`): a pane that floods its memory, or a
-client that stops reading, ends only its own process. A server that
+connection in another (`fux __conn`), which composes its client's screen
+from the panes' screens it gets from them, and keeps what its client sends
+until the panes take it: a pane that floods its memory, or a client that
+stops reading, ends only its own process. The server holds the layout,
+names and the journal, and no screen or paste. A server that
 crashes, or is killed with `kill -9` or by the OOM killer, ends alone: its
 panes' processes wait, with their programs, and `fux start` on its socket
 takes the run back, as it was.
