@@ -330,9 +330,10 @@ type RowKey = Option<(fux_vt::RowId, u64)>;
 
 /// Everything about a grid composed in normal mode but its panes' rows: its
 /// size, each pane's place, program (`Pane::starts`) and window size, the
-/// separators, and the focused pane, which colours them. None for a client
-/// shown no tab, or with a pane in colours of its own (`recolour`), whose
-/// rows depend on more than their keys, or its own pane (`View::runs_in`).
+/// separators, and the focused pane and styles, which colour them. None for
+/// a client shown no tab, or with a pane in colours of its own (`recolour`),
+/// whose rows depend on more than their keys, or its own pane
+/// (`View::runs_in`). A pane's screen alone (`pane_grid`) has no styles.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Frame {
     rows: u16,
@@ -340,7 +341,7 @@ struct Frame {
     panes: Vec<(PaneId, u64, Rect, (u16, u16))>,
     separators: Vec<fux_wire::layout::Separator>,
     focus: PaneId,
-    styles: fux_wire::presentation::Styles,
+    styles: Option<fux_wire::presentation::Styles>,
     bar_position: fux_wire::presentation::BarPosition,
 }
 
@@ -367,7 +368,7 @@ impl Frame {
             panes,
             separators: scene.placement.separators.clone(),
             focus: focus?,
-            styles: scene.presentation.styles,
+            styles: Some(scene.presentation.styles),
             bar_position: scene.presentation.bar.position(),
         })
     }
@@ -1234,17 +1235,49 @@ fn put_panes<'s>(
 
 /// Pane `pane`'s screen alone on `grid`, at its size, with its cursor,
 /// cursor shape and colour and mouse tracking as its program set them:
-/// what its process sends the server, which paints it onto the server's
-/// copy (`host`, `copy`), the colours its program set with it (`Own`).
-pub fn pane_grid(pane: PaneId, screen: &Screen, grid: &mut Grid) -> Result<(), fux_vt::Error> {
+/// what its process sends the connections that show it (`host`), with the
+/// colours its program set (`Own`). `respawns` tells its programs apart. A
+/// grid this composed before for the same screen has only the rows that
+/// changed since drawn again.
+pub fn pane_grid(
+    pane: PaneId,
+    respawns: u64,
+    screen: &Screen,
+    grid: &mut Grid,
+) -> Result<(), fux_vt::Error> {
     let size = screen.size();
     let (rows, cols) = (size.rows(), size.cols());
-    grid.reset(rows, cols, true)?;
-    grid.underline_styles = true;
-    let window = screen.window();
-    for (y, line) in (0..rows).zip(Rect::screen(rows, cols).lines()) {
-        draw_row(grid, pane, window.row(y), (line, window.cols()), None);
+    let area = Rect::screen(rows, cols);
+    let frame = Frame {
+        rows,
+        cols,
+        panes: vec![(pane, respawns, area, size.into())],
+        separators: Vec::new(),
+        focus: pane,
+        styles: None,
+        bar_position: fux_wire::presentation::BarPosition::Off,
+    };
+    let screens = |id: PaneId| (id == pane).then_some(screen);
+    match grid.memo.take().filter(|m| m.frame == frame) {
+        Some(memo) => grid.memo = Some(memo.update(grid, &screens)),
+        None => {
+            grid.reset(rows, cols, true)?;
+            let window = screen.window();
+            let mut keys = Vec::with_capacity(usize::from(rows));
+            for (y, line) in (0..rows).zip(area.lines()) {
+                let row = window.row(y);
+                keys.push(row.map(|r| (r.id(), r.version())));
+                draw_row(grid, pane, row, (line, window.cols()), None);
+            }
+            grid.memo = Some(Memo {
+                frame,
+                keys: vec![keys],
+            });
+        }
     }
+    grid.underline_styles = true;
+    grid.cursor = None;
+    grid.modes = Modes::default();
     let (y, x) = screen.cursor_position();
     // On a row drawn twice as wide, at its glyph's first half.
     let x = match screen.line_rendition(y).is_double() {

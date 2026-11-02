@@ -141,6 +141,9 @@ pub struct Watch {
     revision: Option<u64>,
     whole: u64,
     sent: Option<Grid>,
+    /// The grid its next screen is composed on: the one sent before
+    /// `sent`, whose rows that changed since are drawn again.
+    spare: Grid,
     pictures: Vec<crate::render::Visible>,
     own: crate::render::Own,
     /// It was sent a screen it did not take yet.
@@ -1360,8 +1363,10 @@ impl Host {
             return None;
         }
         let pane = &self.pane;
-        let mut grid = Grid::default();
-        if let Err(error) = crate::render::pane_grid(pane.id(), pane.screen(), &mut grid) {
+        let mut grid = std::mem::take(&mut watch.spare);
+        if let Err(error) =
+            crate::render::pane_grid(pane.id(), pane.respawns, pane.screen(), &mut grid)
+        {
             log!("{}: composing its screen: {error}", pane.id());
             return None;
         }
@@ -1393,9 +1398,10 @@ impl Host {
         watch.revision = Some(self.revision);
         watch.whole = self.whole;
         if screen.is_empty() {
+            watch.spare = grid;
             return None;
         }
-        watch.sent = Some(grid);
+        watch.spare = watch.sent.replace(grid).unwrap_or_default();
         watch.pictures = pictures;
         watch.own = own;
         Some(crate::link::Drawn {
