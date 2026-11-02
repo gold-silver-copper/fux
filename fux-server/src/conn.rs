@@ -997,11 +997,9 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
             }
         }
         errands = going;
+        let mut gone = false;
         if ready.get(1).is_some_and(|f| !f.is_empty()) {
-            // Its server gone, so is it: what it holds for its client is let
-            // go, but what one write takes. A crashed server's clients have
-            // nothing left to be served.
-            let gone = link.read(&mut buffer) == Read::Closed;
+            gone = link.read(&mut buffer) == Read::Closed;
             loop {
                 match link.next_message::<ToConn>() {
                     // A body none will send now holds nothing back.
@@ -1016,10 +1014,6 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                     Ok(None) => break,
                     Err(error) => return Err(format!("its server sent a bad frame: {error}")),
                 }
-            }
-            if gone {
-                let _ = write(&client, &mut out);
-                return Ok(());
             }
         }
         // What its server said, in order: keys for its client whose body has
@@ -1069,6 +1063,14 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                     ToConn::Close => (closing, want) = (true, Want::Nothing),
                 }
             }
+        }
+        // Its server gone, so is it, once it has taken what that said
+        // before: what it holds for its client is let go, but what one
+        // write takes. A crashed server's clients have nothing left to be
+        // served.
+        if gone {
+            let _ = write(&client, &mut out);
+            return Ok(());
         }
     }
 }
@@ -1161,6 +1163,27 @@ mod tests {
         composer.screen.known = false;
         assert!(composer.due(true).is_some());
         assert_eq!(composer.due(false), None, "one paint in flight");
+        Ok(())
+    }
+
+    /// What its server said before it went is passed on, though its end
+    /// comes in the same read: a reply sent as the server dies arrives.
+    #[test]
+    fn what_its_server_said_before_its_end_is_passed_on() -> Result<(), String> {
+        use crate::link::{End, ToConn};
+        use std::io::Read;
+        use std::os::unix::net::UnixStream;
+        let e = |error: std::io::Error| error.to_string();
+        let (client, mut theirs) = UnixStream::pair().map_err(e)?;
+        let (server, link) = UnixStream::pair().map_err(e)?;
+        let mut said = End::new(server).map_err(e)?;
+        said.send(&ToConn::Bytes(b"the reply".to_vec()));
+        said.flush_all().map_err(|errno| errno.to_string())?;
+        drop(said);
+        super::serve(client, link)?;
+        let mut got = Vec::new();
+        theirs.read_to_end(&mut got).map_err(e)?;
+        assert_eq!(got, b"the reply");
         Ok(())
     }
 
