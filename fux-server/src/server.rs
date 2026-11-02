@@ -1196,7 +1196,10 @@ impl Server {
     /// after `ACCEPT_REST`, as an `accept` that fails is: whether it rests
     /// now.
     fn keep_spare(&mut self, now: Instant) -> bool {
-        if self.spare.is_some() {
+        // Where the system names no socket's listening process (macOS), a
+        // crashed server's spare would hold its socket as a live server's
+        // (`socket::listened`): the server takes every client itself there.
+        if self.spare.is_some() || !cfg!(target_os = "linux") {
             return false;
         }
         let Phase::Serving {
@@ -2707,6 +2710,8 @@ mod tests {
 
     /// A connection's process that can't be started is tried again when
     /// the turn says to wake: the server waits on nothing else for it.
+    /// Only Linux has spares (`keep_spare`).
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_spare_that_cannot_start_is_tried_again_by_the_turns_deadline()
     -> Result<(), Box<dyn std::error::Error>> {
