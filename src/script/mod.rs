@@ -603,8 +603,10 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
         error.message.push_str(&format!(" ({usage})"));
     }
-    if error.code == Lang::UnknownWord {
-        error.message.push_str(" (`fux help` lists every word)");
+    // Once, though a code value's failure is told again where it ran.
+    const LISTS: &str = " (`fux help` lists every word)";
+    if error.code == Lang::UnknownWord && !error.message.ends_with(LISTS) {
+        error.message.push_str(LISTS);
     }
     let place = error.place.take();
     Failed {
