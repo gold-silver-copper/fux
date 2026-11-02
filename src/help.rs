@@ -181,18 +181,17 @@ pub fn explain(name: &str) -> Option<String> {
 /// One word at length, as its record (`str NAME word`) says it: its stack
 /// effect, its documentation, and a library's code as written.
 fn word(name: &str) -> Option<String> {
-    crate::script::defined(name, |definition| {
-        let effect = definition.effect.unwrap_or_default();
-        let mut out = format!("{name}  ( {effect} )\n\n{}\n", documentation(definition)?);
-        if definition.origin == fuxth::Origin::Library {
-            let docs = crate::script::docs();
-            let doc = docs.iter().rev().find(|doc| doc.name == name)?;
-            let code = doc.code.replace('\n', "\n  ");
-            out.push_str(&format!("Written in fuxth:\n\n  {code}\n"));
-        }
-        Some(out)
-    })
-    .flatten()
+    let machine = crate::script::base().ok()?;
+    let definition = machine.definition(name)?;
+    let effect = definition.effect.unwrap_or_default();
+    let mut out = format!("{name}  ( {effect} )\n\n{}\n", documentation(&definition)?);
+    if definition.origin == fuxth::Origin::Library {
+        let docs = crate::script::docs();
+        let doc = docs.iter().rev().find(|doc| doc.name == name)?;
+        let code = doc.code.replace('\n', "\n  ");
+        out.push_str(&format!("Written in fuxth:\n\n  {code}\n"));
+    }
+    Some(out)
 }
 
 /// A word's documentation, which its record and `fux help NAME` give: what

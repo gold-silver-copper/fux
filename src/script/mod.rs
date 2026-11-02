@@ -599,7 +599,7 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
 }
 
 /// The bundled dictionary.
-fn base() -> Result<Machine<Fux>, Failed> {
+pub(crate) fn base() -> Result<Machine<Fux>, Failed> {
     READY.with(|ready| ready.as_ref().map(|(m, _)| m.clone()).map_err(Clone::clone))
 }
 
@@ -779,12 +779,6 @@ pub fn docs() -> Docs {
             .as_ref()
             .map_or_else(|_| Rc::from([]), |(_, docs)| Rc::clone(docs))
     })
-}
-
-/// What `f` makes of the word `name` names in the bundled dictionary (the
-/// core's, fux's and the libraries'), if one does.
-pub fn defined<T>(name: &str, f: impl FnOnce(&fuxth::Definition<'_>) -> T) -> Option<T> {
-    READY.with(|ready| Some(f(&ready.as_ref().ok()?.0.definition(name)?)))
 }
 
 /// Where a program's requests go: a connection made when the first is.
