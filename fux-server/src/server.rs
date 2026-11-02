@@ -852,8 +852,9 @@ impl Server {
         self.scenes(now);
         self.flush_links();
         // The next connection's process starts once what this turn did has
-        // gone out, so a client waits for no start.
-        self.keep_spare(now);
+        // gone out, so a client waits for no start; one that can't is tried
+        // again when the turn says.
+        changed |= self.keep_spare(now);
         if changed {
             next = self.wakes().map(|(at, _)| at).min();
         }
@@ -1155,20 +1156,21 @@ impl Server {
 
     /// Starts the next connection's process (`Conn::spare`) while the
     /// server serves and has none; one that cannot start is tried again
-    /// after `ACCEPT_REST`, as an `accept` that fails is.
-    fn keep_spare(&mut self, now: Instant) {
+    /// after `ACCEPT_REST`, as an `accept` that fails is: whether it rests
+    /// now.
+    fn keep_spare(&mut self, now: Instant) -> bool {
         if self.spare.is_some() {
-            return;
+            return false;
         }
         let Phase::Serving {
             listening,
             resting: None,
         } = &self.phase
         else {
-            return;
+            return false;
         };
         let Some(exe) = self.session.exe.as_deref() else {
-            return;
+            return false;
         };
         match Conn::spare(&listening.listener, exe) {
             Ok(mut conn) => {
@@ -1178,9 +1180,13 @@ impl Server {
                 }
                 let _ = conn.link.flush();
                 self.spare = Some(conn);
+                false
             }
             // Out of descriptors or processes, as an accept can be.
-            Err(e) => self.rest(&format!("starting a connection's process: {e}"), now),
+            Err(e) => {
+                self.rest(&format!("starting a connection's process: {e}"), now);
+                true
+            }
         }
     }
 
@@ -2588,6 +2594,42 @@ mod tests {
                 r#""stopped""#,
             ]
         );
+        Ok(())
+    }
+
+    /// A connection's process that can't be started is tried again when
+    /// the turn says to wake: the server waits on nothing else for it.
+    #[test]
+    fn a_spare_that_cannot_start_is_tried_again_by_the_turns_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let dir = fuxix::file::scratch()?.join(format!("fux-spare-{}", std::process::id()));
+        let socket = crate::socket::checked(dir.join("s"), "test")?;
+        server.phase = Phase::Serving {
+            listening: Listening::open(&socket)?,
+            resting: None,
+        };
+        // A turn with nothing to start settles what the session had to do,
+        // so that the next does nothing else.
+        server.session.exe = None;
+        let now = Instant::now();
+        let mut wakes = Vec::new();
+        let ControlFlow::Continue(_) = server.turn(now, &mut wakes) else {
+            return Err("the turn stopped the server".into());
+        };
+        server.session.exe = Some(dir.join("no-such-fux"));
+        let ControlFlow::Continue(next) = server.turn(now, &mut wakes) else {
+            return Err("the turn stopped the server".into());
+        };
+        let Phase::Serving {
+            resting: Some(retry),
+            ..
+        } = server.phase
+        else {
+            return Err("no retry".into());
+        };
+        assert!(server.spare.is_none());
+        assert_eq!(next, Some(retry));
         Ok(())
     }
 }
