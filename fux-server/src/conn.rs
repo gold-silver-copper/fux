@@ -418,8 +418,8 @@ enum Errand {
     /// A body sent: done once its link took it all.
     Post(End),
     /// Its client's keys sent `client`'s connection as body `token`, if it
-    /// could be reached: its own client's reply once that took them all,
-    /// or could not.
+    /// could be reached: done once that took them all; its own client's
+    /// reply if it could not.
     Keys {
         end: Option<End>,
         client: ClientId,
@@ -443,8 +443,8 @@ enum Errand {
 }
 
 impl Errand {
-    /// The errand making the reply `making` says (`ToConn::Make`).
-    /// What `making` takes, at `panes` of run `run`, its client's bodies
+    /// The errand making the reply `making` says (`ToConn::Make`), at
+    /// `panes` of run `run`, its client's bodies
     /// `bodies` at hand.
     fn of(
         making: Making,
@@ -457,6 +457,7 @@ impl Errand {
                 client,
                 body,
                 token,
+                ..
             } => {
                 let inputs = bodies.remove(&body).unwrap_or_default();
                 let end = reach(&client_socket(panes, client), run).map(|mut end| {
@@ -531,22 +532,13 @@ impl Errand {
                 Ok(false) => None,
                 Ok(true) | Err(_) => Some(None),
             },
-            Errand::Keys { end, client, .. } => {
-                let response = match end.as_mut().map(End::flush) {
-                    Some(Ok(false)) => return None,
-                    Some(Ok(true)) => Response::Answered(PaneResults::Many(Vec::new())),
-                    // Taken by none: said so; the token is dropped there
-                    // once its asker goes.
-                    Some(Err(_)) | None => {
-                        *end = None;
-                        Response::Failed {
-                            code: fux_wire::code::Code::Indeterminate,
-                            message: format!("the keys did not reach {client}'s connection"),
-                        }
-                    }
-                };
-                Some(Some(framed(run, response)))
-            }
+            // Taken all of, its server says when they are typed; taken by
+            // none, it says so.
+            Errand::Keys { end, client, .. } => match end.as_mut().map(End::flush) {
+                Some(Ok(false)) => None,
+                Some(Ok(true)) => Some(None),
+                Some(Err(_)) | None => Some(Some(typed(run, Some(*client)))),
+            },
             Errand::Fetch { end, pane, placed } => {
                 let Some(end) = end else {
                     return Some(Some(reply(run, Err(gone_capture(*pane)))));
@@ -606,6 +598,21 @@ impl Errand {
 
 fn gone_capture(pane: PaneId) -> String {
     format!("{pane}'s capture is gone: its own process ended")
+}
+
+/// The reply to keys for a client (`Making::Keys`): typed, or not, as they
+/// did not reach the client `lost`.
+fn typed(run: Run, lost: Option<ClientId>) -> Vec<u8> {
+    framed(
+        run,
+        match lost {
+            None => Response::Answered(PaneResults::Many(Vec::new())),
+            Some(client) => Response::Failed {
+                code: fux_wire::code::Code::Indeterminate,
+                message: format!("the keys did not reach {client}'s connection"),
+            },
+        },
+    )
 }
 
 /// A capture its connection makes itself (`Making`), framed for its client.
@@ -801,6 +808,9 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
     // client's reply, which its client's next request waits for.
     let mut errands: Vec<Errand> = Vec::new();
     let mut making = false;
+    // The keys for a client its client asked for, sent, till their server
+    // says whether they were typed.
+    let mut typing: Option<(u64, ClientId)> = None;
     // An attached client's: where other connections send it bodies, those
     // come, the keys it waits to send its client till their body comes, and
     // what its server said after them, which waits too.
@@ -875,7 +885,9 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                 want = Want::Frames(Expect::Asked);
                 continue;
             }
-            if closing {
+            // Done once what it sends panes is sent too: keys its client
+            // typed as it went go on.
+            if closing && errands.is_empty() {
                 return Ok(());
             }
         }
@@ -981,15 +993,8 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                 None if run.is_some() => going.push(errand),
                 None | Some(None) => {}
                 Some(Some(made)) => {
-                    // Taken all of, they are its client's connection's now:
-                    // so said before its own client, done, can go.
-                    if let Errand::Keys {
-                        end: Some(_),
-                        token,
-                        ..
-                    } = errand
-                    {
-                        link.send(&FromConn::Retired(token));
+                    if let Errand::Keys { .. } = errand {
+                        typing = None;
                     }
                     out.push(&made);
                     (unflushed, making) = (true, false);
@@ -1002,12 +1007,30 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
             gone = link.read(&mut buffer) == Read::Closed;
             loop {
                 match link.next_message::<ToConn>() {
-                    // A body none will send now holds nothing back.
+                    // A body none will send now holds nothing back; one that
+                    // won't reach its client is not typed.
                     Ok(Some(ToConn::Drop { token })) => {
                         received.remove(&token);
                         backlog.retain(|m| !matches!(m, ToConn::Keys { token: t } if *t == token));
                         if keys == Some(token) {
                             keys = None;
+                        }
+                        if let (Some((_, run)), Some((asked, client))) = (&composer.panes, typing)
+                            && asked == token
+                        {
+                            errands.retain(
+                                |e| !matches!(e, Errand::Keys { token: t, .. } if *t == token),
+                            );
+                            out.push(&typed(*run, Some(client)));
+                            (typing, unflushed, making) = (None, true, false);
+                        }
+                    }
+                    Ok(Some(ToConn::Typed { token })) => {
+                        if let (Some((_, run)), Some((asked, _))) = (&composer.panes, typing)
+                            && asked == token
+                        {
+                            out.push(&typed(*run, None));
+                            (typing, unflushed, making) = (None, true, false);
                         }
                     }
                     Ok(Some(message)) => backlog.push_back(message),
@@ -1025,7 +1048,6 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                 };
                 let frame = ToAttached::Keys(inputs);
                 out.push_with(|frames| frame.encode_into(frames));
-                link.send(&FromConn::Retired(token));
                 (keys, unflushed) = (None, true);
             }
             let Some(message) = backlog.pop_front() else {
@@ -1052,9 +1074,12 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                             .and_then(|(panes, _)| Listening::at(panes, me));
                     }
                     ToConn::Keys { token } => keys = Some(token),
-                    ToConn::Drop { .. } => {}
+                    ToConn::Drop { .. } | ToConn::Typed { .. } => {}
                     ToConn::Make(made) => {
                         if let Some((panes, run)) = &composer.panes {
+                            if let Making::Keys { client, token, .. } = *made {
+                                typing = Some((token, client));
+                            }
                             errands.push(Errand::of(*made, panes, *run, &mut bodies));
                             making = true;
                         }

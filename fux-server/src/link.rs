@@ -346,15 +346,17 @@ pub enum Making {
         scene: Box<crate::render::Scene>,
     },
     /// Its client's body `body` sent `client`'s connection as body
-    /// `token`, which types it: answered once that took it all, or why it
-    /// could not.
+    /// `token`, which types it: answered once `client` answered the read
+    /// numbered `asked` sent it after them, so took them
+    /// (`ToConn::Typed`), or why it could not (`ToConn::Drop`).
     Keys {
         client: ClientId,
         body: u64,
         token: u64,
+        asked: u64,
     },
 }
-wired!(Making { Capture { pane, token, placed }, Client { client, scene }, Keys { client, body, token } });
+wired!(Making { Capture { pane, token, placed }, Client { client, scene }, Keys { client, body, token, asked } });
 
 /// From a pane's process to the server, in the order it happened.
 #[derive(Clone, Debug)]
@@ -909,9 +911,12 @@ pub enum ToConn {
     /// Its client is sent body `token`'s keys, as typed at its terminal
     /// (`ToAttached::Keys`), once the body comes: what follows waits.
     Keys { token: u64 },
-    /// Body `token` is wanted no more: its sender is gone. Taken as it
-    /// comes, before what waits for it.
+    /// Body `token` goes no further: its sender is gone, or the client it
+    /// was for. Taken as it comes, before what waits for it.
     Drop { token: u64 },
+    /// Body `token`, its client's keys, was taken by the client it was
+    /// for, still attached (`Making::Keys`).
+    Typed { token: u64 },
     /// The answer to its client's request, which it makes itself, as its
     /// client is to have it: its last word once made.
     Make(Box<Making>),
@@ -931,6 +936,7 @@ wired!(ToConn {
     Listen { client },
     Keys { token },
     Drop { token },
+    Typed { token },
     Make(m),
     Detached,
     Close
@@ -963,11 +969,8 @@ pub enum FromConn {
     /// Its client sent what is no frame of those expected: why. It reads
     /// it no more.
     Bad(String),
-    /// Body `0` is used up: another connection's, sent its client; or its
-    /// own, which the client's connection it was for took all of.
-    Retired(u64),
 }
-wired!(FromConn { Frame { frame, body }, Flushed, Shut, Bad(why), Retired(t) });
+wired!(FromConn { Frame { frame, body }, Flushed, Shut, Bad(why) });
 
 /// How the server starts a client's connection's own process: `fux
 /// __conn`, the client's socket on stdin, its link on stdout.

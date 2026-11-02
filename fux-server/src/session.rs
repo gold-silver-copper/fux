@@ -3124,10 +3124,17 @@ impl Session {
                 // asker's answers once they are there.
                 if let Some((body, token)) = self.body_token() {
                     self.outbox.push(Outgoing::Keys(client, token));
+                    // It answers once it took them, as it takes what came
+                    // before in order.
+                    self.asked = self.asked.wrapping_add(1);
+                    let asked = self.asked;
+                    let read = ToAttached::Read(asked, command::ClientRead::Keys);
+                    self.outbox.push(Outgoing::To(client, read));
                     let keys = crate::link::Making::Keys {
                         client,
                         body,
                         token,
+                        asked,
                     };
                     self.making = Some(keys);
                     return Ok(Reply::default());

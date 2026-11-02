@@ -126,21 +126,19 @@ struct Conn {
     bodies: std::collections::VecDeque<Option<u64>>,
     body: Option<u64>,
     /// What panes, or other clients' connections, wait for or hold for it,
-    /// each a token: let go once used up (`Retired`), dropped once it is
-    /// gone (`ToPane::Drop`, `ToConn::Drop`).
+    /// each a token: let go once used up (`Retired`) or typed, dropped once
+    /// it is gone (`ToPane::Drop`, `ToConn::Drop`).
     tokens: std::collections::BTreeSet<(Holder, u64)>,
-    /// Bodies other connections sent its process that it used up
-    /// (`FromConn::Retired`), till the server lets their senders go of them.
-    retired: Vec<u64>,
     stage: Stage,
 }
 
 /// What holds a body or capture for a connection: a pane, or another
-/// client's connection.
+/// client's connection, keys for which are taken once the client answers
+/// the read numbered `1` sent it after them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Holder {
     Pane(PaneId),
-    Client(ClientId),
+    Client(ClientId, u64),
 }
 
 /// Where a connection is in its life, each stage holding what it alone
@@ -248,7 +246,6 @@ impl Conn {
             bodies: std::collections::VecDeque::new(),
             body: None,
             tokens: std::collections::BTreeSet::new(),
-            retired: Vec::new(),
             stage: Stage::Hello,
         })
     }
@@ -320,7 +317,6 @@ impl Conn {
                     self.bodies.push_back(body);
                 }
                 Ok(Some(FromConn::Flushed)) => self.pending = false,
-                Ok(Some(FromConn::Retired(token))) => self.retired.push(token),
                 Ok(Some(FromConn::Shut)) => closed = true,
                 Ok(Some(FromConn::Bad(why))) => {
                     log!("a client sent a bad frame: {why}");
@@ -431,8 +427,14 @@ impl Conn {
                 crate::link::Making::Capture { pane, token, .. } => {
                     self.tokens.insert((Holder::Pane(*pane), *token));
                 }
-                crate::link::Making::Keys { client, token, .. } => {
-                    self.tokens.insert((Holder::Client(*client), *token));
+                crate::link::Making::Keys {
+                    client,
+                    token,
+                    asked,
+                    ..
+                } => {
+                    self.tokens
+                        .insert((Holder::Client(*client, *asked), *token));
                 }
                 crate::link::Making::Client { .. } => {}
             }
@@ -930,7 +932,7 @@ impl Server {
                 for (holder, token) in mem::take(&mut conn.tokens) {
                     match holder {
                         Holder::Pane(pane) => tokens.push((pane, token)),
-                        Holder::Client(client) => dropped.push((client, token)),
+                        Holder::Client(client, _) => dropped.push((client, token)),
                     }
                 }
                 session.abandon(&[], &tokens, now);
@@ -1431,18 +1433,25 @@ impl Server {
         Ok(true)
     }
 
-    /// What panes and connections used up (`Retired`), their senders hold
-    /// no more.
+    /// What panes used up (`Retired`), their askers' connections hold no
+    /// more; and keys for a client gone, which their askers' are told.
     fn retire(&mut self) {
-        let mut retired: Vec<u64> = (mem::take(&mut self.session.retired).into_iter())
+        let retired: Vec<u64> = (mem::take(&mut self.session.retired).into_iter())
             .map(|(_, token)| token)
             .collect();
+        let views = &self.session.views;
         for conn in &mut self.conns {
-            retired.append(&mut conn.retired);
-        }
-        for token in retired {
-            for conn in &mut self.conns {
-                conn.tokens.retain(|(_, held)| *held != token);
+            let mut lost = Vec::new();
+            conn.tokens.retain(|&(holder, token)| match holder {
+                Holder::Client(client, _) if !views.contains_key(&client) => {
+                    lost.push(token);
+                    false
+                }
+                Holder::Client(..) => true,
+                Holder::Pane(_) => !retired.contains(&token),
+            });
+            for token in lost {
+                conn.tell_process(&crate::link::ToConn::Drop { token });
             }
         }
     }
@@ -1464,6 +1473,15 @@ impl Server {
     /// (`Waiting::Read`): the reply of the request that asked it, if that
     /// still waits; else nobody's.
     fn answered(&mut self, client: ClientId, asked: u64, value: Data, now: Instant) {
+        // Keys sent it before the question: taken, so typed.
+        for conn in &mut self.conns {
+            let held = |(holder, _): &&(Holder, u64)| *holder == Holder::Client(client, asked);
+            if let Some(&typed) = conn.tokens.iter().find(held) {
+                conn.tokens.remove(&typed);
+                conn.tell_process(&crate::link::ToConn::Typed { token: typed.1 });
+                return;
+            }
+        }
         let asks = |w: &Waiting| matches!(*w, Waiting::Read { client: c, asked: a } if (c, a) == (client, asked));
         let asker = (self.conns.iter_mut())
             .find(|conn| matches!(&conn.stage, Stage::Waiting(w) if asks(w)));

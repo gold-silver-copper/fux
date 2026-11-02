@@ -269,6 +269,12 @@ impl Server {
         std::fs::read_to_string(self.dir.join("server.log")).unwrap_or_default()
     }
 
+    /// Starts `fux ARGS…` against this server, not waiting for it: for one
+    /// that waits on a client of the test's, pumped the while.
+    pub fn spawn(&self, args: &[&str]) -> Result<std::process::Child, String> {
+        self.command(fux()).args(args).spawn().map_err(e)
+    }
+
     /// Runs `fux ARGS…` against this server.
     pub fn fux(&self, args: &[&str]) -> Result<Output, String> {
         self.fux_env(args, &[])
