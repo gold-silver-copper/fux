@@ -161,9 +161,9 @@ reference.
   whenever that helps. Only the agent interface and frozen parts promise
   anything.
 
-## When it is done: fux 1.0 (D-65)
+## The next checkpoint (D-65, D-119)
 
-fux 1.0 is reached when all of these hold:
+The checkpoint, fux's next version, is reached when all of these hold:
 - **every row of the gap check is "have":** the gap check as amended by
   panel sitting 5 and D-81;
 - **the adopted removals are done** (D-68);
