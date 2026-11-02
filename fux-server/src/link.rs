@@ -238,11 +238,13 @@ wired!(struct Update { counts, title, size, facts, pid, screen, full, draws, pic
 pub enum FromPane {
     /// It started, its program too, or why not: its first word.
     Begun(Option<String>),
-    /// It told this, as `actor`, which left it at `counts`.
+    /// It told this, as `actor`, which left it at `counts`; with the last
+    /// of what it told at once, the facts that left it with.
     Told {
         told: Told,
         actor: Actor,
         counts: Counts,
+        facts: Option<Box<Facts>>,
     },
     Update(Box<Update>),
     /// Its program rang the bell, or sent a notification.
@@ -260,7 +262,7 @@ pub enum FromPane {
 }
 wired!(FromPane {
     Begun(b),
-    Told { told, actor, counts },
+    Told { told, actor, counts, facts },
     Update(u),
     Alert { bell, notified },
     Copied(t),
@@ -431,6 +433,9 @@ pub struct Remote {
     pub closed: bool,
     /// It was reaped, ending so.
     pub ended: Option<fuxix::process::Status>,
+    /// Its first screen and facts, sent as it began, till its pane takes
+    /// them (`Session::linked`).
+    pub first: Option<Box<Update>>,
 }
 
 impl Link {
@@ -492,14 +497,24 @@ impl Link {
             return Err(format!("its process left before it began: {error}"));
         }
         let began = end.wait::<FromPane>();
-        let remote = Remote {
+        let mut remote = Remote {
             end,
             pid,
             closed: false,
             ended: None,
+            first: None,
         };
         match began.map_err(|e| format!("its process: {e}"))? {
-            Some(FromPane::Begun(None)) => Ok(Link::Remote(remote)),
+            Some(FromPane::Begun(None)) => {
+                // Its first screen comes with it, so that nothing reads its
+                // copy before it has facts.
+                match remote.end.wait::<FromPane>() {
+                    Ok(Some(FromPane::Update(first))) => remote.first = Some(first),
+                    Ok(_) => return Err("its process sent no first screen".to_owned()),
+                    Err(error) => return Err(format!("its process: {error}")),
+                }
+                Ok(Link::Remote(remote))
+            }
             Some(FromPane::Begun(Some(why))) => Err(why),
             Some(_) => Err("its process's first word was not its start".to_owned()),
             None => Err("its process ended before it began".to_owned()),

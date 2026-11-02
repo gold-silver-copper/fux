@@ -235,8 +235,8 @@ fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
 }
 
 /// A program a pane's program started and left (a double fork) becomes the
-/// server's child, not init's (Linux): once it exits the server reaps it,
-/// leaving no zombie.
+/// child of its pane's own process, not init's (Linux): once it exits that
+/// process reaps it, leaving no zombie.
 #[cfg(target_os = "linux")]
 #[test]
 fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
@@ -257,16 +257,16 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
         .to_owned();
     let orphan = pid_in(std::path::Path::new(&*pidfile))?;
     let _reap = Reap(vec![orphan]);
-    // End of input: cat exits, and the server, its parent, reaps it.
+    // End of input: cat exits, and its pane's process, its parent, reaps it.
     let gone = fuxix::process::Pid::from_raw(orphan).ok_or("a pid")?;
-    eventually("the orphan adopted", || {
-        let stat = std::fs::read_to_string(format!("/proc/{orphan}/stat")).map_err(e)?;
-        let parent = stat
-            .rsplit(')')
-            .next()
-            .and_then(|r| r.split_whitespace().nth(1));
-        Ok(parent == server.pid().map(|p| p.to_string()).as_deref())
-    })?;
+    let parent = |pid: &str| -> Result<Option<String>, String> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(e)?;
+        let parent = stat.rsplit(')').next().and_then(|r| r.split_whitespace().nth(1));
+        Ok(parent.map(str::to_owned))
+    };
+    let program = server.ok(&["str", &pane, "pane", "str", "program", "get", "str", "pid", "get"])?;
+    let own = parent(program.trim())?.ok_or("the program's parent")?;
+    eventually("the orphan adopted", || Ok(parent(&orphan.to_string())?.as_deref() == Some(&own)))?;
     server.ok(&["str", &pane, "pane", "str", "C-d", "press"])?;
     eventually("the orphan reaped", || Ok(!support::exists(gone.as_raw())))
 }

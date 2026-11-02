@@ -198,12 +198,21 @@ impl Host {
         if self.told.is_empty() {
             return;
         }
+        // The last of them carries the facts they leave too: a fact a
+        // waiter reads once an event is told is never behind it.
         let counts = self.pane.counts();
-        for (told, actor) in std::mem::take(&mut self.told) {
+        let facts = self.facts().map_err(|error| log!("{}: its facts: {error}", self.pane.id()));
+        let mut told = std::mem::take(&mut self.told).into_iter().peekable();
+        while let Some((what, actor)) = told.next() {
+            let facts = match told.peek() {
+                None => facts.clone().ok().map(Box::new),
+                Some(_) => None,
+            };
             self.out.push(FromPane::Told {
-                told,
+                told: what,
                 actor,
                 counts,
+                facts,
             });
         }
     }
@@ -747,8 +756,9 @@ impl Host {
     /// Writes the waiting input, as far as its program's terminal takes
     /// it: whether it took any, which makes room for a scheme report.
     pub fn write_input(&mut self) -> bool {
-        self.input = false;
         let wrote = self.pane_mut().write_input();
+        // What its terminal did not take waits for it to take more.
+        self.input = !self.pane.input().is_empty();
         if wrote {
             self.tell_schemes();
         }
@@ -1423,9 +1433,14 @@ pub fn serve(link: std::os::unix::net::UnixStream) -> Result<(), String> {
         }
     };
     end.send(&FromPane::Begun(None));
-    let mut buffer = vec![0u8; READ];
-    // A screen sent and not yet taken.
+    // A screen sent and not yet taken: its first, which its server waits
+    // for as it starts it.
     let mut waiting = false;
+    if let Some(first) = host.update() {
+        end.send(&FromPane::Update(Box::new(first)));
+        waiting = true;
+    }
+    let mut buffer = vec![0u8; READ];
     let mut clock = Clock {
         next: Instant::now(),
         wrote: None,

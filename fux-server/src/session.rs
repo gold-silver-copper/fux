@@ -650,6 +650,13 @@ impl Session {
     /// tells nothing more but its answers.
     fn told(&mut self, id: PaneId, report: FromPane, now: Instant) {
         if let FromPane::Answer { ask, answer } = report {
+            // A capture is the pane's own facts as it answered, after all it
+            // told before: its counts are the copy's, unless it is behind.
+            if let (Answered::Captured(captured), Some(pane)) = (&answer, self.parts.pane_mut(id))
+                && let fux_wire::answer::Of::Pane { pane: observed, .. } = &captured.of
+            {
+                pane.caught_up(observed.version.counts);
+            }
             if self.asks.remove(&ask).is_some() {
                 self.answers.insert(ask, answer);
             }
@@ -664,7 +671,11 @@ impl Session {
                 told,
                 actor,
                 counts,
+                facts,
             } => {
+                if let (Some(facts), Some(pane)) = (facts, self.parts.pane_mut(id)) {
+                    pane.told_facts(*facts);
+                }
                 use crate::journal::Told;
                 let exited = match &told {
                     Told::Exited(end) => Some(*end),
@@ -1363,8 +1374,17 @@ impl Session {
     /// Pane `id`'s link, its pane placed: what it told as it began is
     /// taken in.
     fn linked(&mut self, id: PaneId, mut link: Link, now: Instant) {
-        if let Link::Local(host) = &mut link {
-            Link::told(id, host, &mut self.inbox);
+        match &mut link {
+            Link::Local(host) => Link::told(id, host, &mut self.inbox),
+            Link::Remote(remote) => {
+                if let Some(first) = remote.first.take() {
+                    self.inbox.push_back((id, FromPane::Update(first)));
+                }
+                // What else came as it began, read already, waits for no poll.
+                while let Ok(Some(report)) = remote.end.next() {
+                    self.inbox.push_back((id, report));
+                }
+            }
         }
         self.links.insert(id, link);
         self.pump(now);

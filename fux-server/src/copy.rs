@@ -265,6 +265,18 @@ impl Copy {
         }
     }
 
+    /// Its facts, as it told them with an event.
+    pub(crate) fn told_facts(&mut self, facts: Facts) {
+        self.facts = facts;
+    }
+
+    /// Its counts, `counts` as a capture saw them, if it is not past them.
+    pub(crate) fn caught_up(&mut self, counts: Counts) {
+        if counts.had(self.counts) {
+            self.counts = counts;
+        }
+    }
+
     /// Its screen and facts, as it sent them.
     pub(crate) fn update(&mut self, update: Update) {
         self.counts = update.counts;
