@@ -3,8 +3,11 @@
 //! order, each by a shell with `set -e -o pipefail` in one directory, on
 //! a private server, so every command's status counts; its `fux` blocks,
 //! which are configs, as a typing terminal runs one. Each must succeed: a
-//! recipe says the failures it expects (`|| [ $? -eq 124 ]`). What they
-//! print is never compared.
+//! recipe says the failures it expects (`|| [ $? -eq 124 ]`). The README
+//! runs the same way, on a server of its own. The agent page (`fux help
+//! agents`) runs as an agent types it, in one bash with no server: it
+//! starts its own, and stops it. None has `XDG_RUNTIME_DIR`, and each has
+//! its `TMPDIR` in its directory. What they print is never compared.
 mod support;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -14,6 +17,15 @@ use support::*;
 
 const COOKBOOK: &str = include_str!("../docs/cookbook.md");
 
+const README: &str = include_str!("../README.md");
+
+/// The agent page, `fux help agents`: `docs/agents.md` before its first
+/// topic.
+fn agent_page() -> &'static str {
+    let agents = include_str!("../docs/agents.md");
+    agents.split_once("\n## ").map_or(agents, |(page, _)| page)
+}
+
 /// Programs a recipe may use beyond `sh` and fux; a recipe that names one
 /// the machine lacks is skipped, saying so.
 const NEEDS: &[&str] = &["jq", "timeout", "ps", "pgrep"];
@@ -21,12 +33,12 @@ const NEEDS: &[&str] = &["jq", "timeout", "ps", "pgrep"];
 /// How long one block may run before it fails as hung.
 const HUNG: Duration = Duration::from_secs(120);
 
-/// Each fenced block, in order: the heading it is under (`intro` before
-/// the first), its language and its text. A fence this can't take, one
-/// indented or never closed, is refused, so no block goes unrun.
-fn blocks() -> Result<Vec<(&'static str, &'static str, String)>, String> {
+/// Each fenced block of `doc`, in order: the heading it is under (`intro`
+/// before the first), its language and its text. A fence this can't take,
+/// one indented or never closed, is refused, so no block goes unrun.
+fn blocks(doc: &'static str) -> Result<Vec<(&'static str, &'static str, String)>, String> {
     let (mut blocks, mut heading, mut open) = (Vec::new(), "intro", None);
-    for line in COOKBOOK.lines() {
+    for line in doc.lines() {
         match (&mut open, line.strip_prefix("```")) {
             (None, Some(lang)) => open = Some((lang, String::new())),
             (Some(_), Some("")) => {
@@ -88,11 +100,12 @@ impl Drop for Started {
 }
 
 /// Runs `script` by `sh` with `-e -o pipefail` in `dir`, as a shell on
-/// `server` with this build's fux first on the PATH, in a process group
-/// of its own, which is killed once it ends or hangs, whatever it left
-/// running: its exit status and what it said.
+/// `server` (or on none, when `cold`) with this build's fux first on the
+/// PATH, in a process group of its own, which is killed once it ends or
+/// hangs, whatever it left running: its exit status and what it said.
 fn run(
     sh: &str,
+    cold: bool,
     server: &Server,
     dir: &Path,
     i: usize,
@@ -103,12 +116,18 @@ fn run(
     let path = std::iter::once(bin.to_owned()).chain(std::env::split_paths(&path));
     let said = dir.join(format!(".recipe-{i}.out"));
     let file = std::fs::File::create(&said).map_err(e)?;
-    let mut child = Command::new(sh)
+    let mut command = Command::new(sh);
+    match cold {
+        true => command.env_remove("FUX_SOCKET"),
+        false => command.env("FUX_SOCKET", &server.socket),
+    };
+    let mut child = command
         .args(["-e", "-o", "pipefail", "-c", script])
         .current_dir(dir)
         .process_group(0)
         .env("PATH", std::env::join_paths(path).map_err(e)?)
-        .env("FUX_SOCKET", &server.socket)
+        .env("TMPDIR", dir)
+        .env_remove("XDG_RUNTIME_DIR")
         .env("SHELL", "/bin/sh")
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
         .env_remove("FUX_PANE")
@@ -138,6 +157,58 @@ fn run(
 
 #[test]
 fn every_recipe_in_the_cookbook_runs() -> Outcome {
+    let blocks = blocks(COOKBOOK)?;
+    assert!(blocks.len() >= 10, "{} blocks", blocks.len());
+    for skipped in runs(shell()?, blocks, false)? {
+        eprintln!("{skipped}");
+    }
+    Ok(())
+}
+
+/// The page whole, whose `jobs` workspace outlives the agent's, so its
+/// stop kills the server; and its server, tab and stop alone, where the
+/// agent's workspace is the server's last, so the server has ended. By
+/// bash, as an agent's shell is: its `kill` fails on an empty pid, where
+/// bash as `sh` says so and goes on.
+#[test]
+fn every_command_on_the_agent_page_runs() -> Outcome {
+    let mut page = Vec::new();
+    for (heading, lang, block) in blocks(agent_page())? {
+        match lang {
+            "sh" => page.push(block),
+            _ => return Err(format!("{heading}: a {lang:?} block on the page")),
+        }
+    }
+    let (Some(start), Some(tab), Some(stop)) = (page.first(), page.get(1), page.last()) else {
+        return Err(format!("{} blocks on the page", page.len()));
+    };
+    let alone = [start.as_str(), tab, stop].concat();
+    let runs = runs(
+        "bash",
+        vec![
+            ("the agent page", "sh", page.concat()),
+            ("its stop alone", "sh", alone),
+        ],
+        true,
+    )?;
+    for skipped in runs {
+        eprintln!("{skipped}");
+    }
+    Ok(())
+}
+
+#[test]
+fn every_command_in_the_readme_runs() -> Outcome {
+    for skipped in runs(shell()?, blocks(README)?, false)? {
+        eprintln!("{skipped}");
+    }
+    Ok(())
+}
+
+/// Runs `blocks` in order on a private server, or on none when `cold`:
+/// each `sh` one by the shell `sh`, each `fux` one as a config. What it skipped,
+/// saying why.
+fn runs(sh: &str, blocks: Vec<(&str, &str, String)>, cold: bool) -> Result<Vec<String>, String> {
     let server = Server::start("")?;
     let dir = server.dir.join("recipes");
     std::fs::create_dir_all(&dir).map_err(e)?;
@@ -147,18 +218,18 @@ fn every_recipe_in_the_cookbook_runs() -> Outcome {
         std::os::unix::fs::symlink(checkout, dir.join(name)).map_err(e)?;
     }
     let _started = Started(dir.clone());
-    let sh = shell()?;
-    let blocks = blocks()?;
-    assert!(blocks.len() >= 10, "{} blocks", blocks.len());
+    let mut skipped = Vec::new();
     for (i, (heading, lang, block)) in blocks.into_iter().enumerate() {
         match lang {
             "sh" => {
                 let named = block.split(|c: char| !c.is_alphanumeric());
                 if let Some(missing) = named.into_iter().find(|w| NEEDS.contains(w) && !found(w)) {
-                    eprintln!("skipped {heading:?}: it needs {missing}, which is missing");
+                    skipped.push(format!(
+                        "skipped {heading:?}: it needs {missing}, which is missing"
+                    ));
                     continue;
                 }
-                let (status, said) = run(sh, &server, &dir, i, &block)?;
+                let (status, said) = run(sh, cold, &server, &dir, i, &block)?;
                 assert_eq!(status, 0, "{heading}:\n{block}\n{said}");
             }
             "fux" => {
@@ -170,5 +241,5 @@ fn every_recipe_in_the_cookbook_runs() -> Outcome {
             _ => return Err(format!("{heading}: a {lang:?} block, which nothing runs")),
         }
     }
-    Ok(())
+    Ok(skipped)
 }

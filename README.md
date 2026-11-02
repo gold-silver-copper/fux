@@ -1,1023 +1,419 @@
 # fux
 
-A small terminal multiplexer. One server keeps your shells running in
-workspaces, tabs and split panes; `fux` attaches a terminal to it. Every
-other `fux` command line is a short program in **fuxth**, a tiny Forth made
-for the shell, and so are fux's config, key bindings, command prompt and
-dumped sessions. Several terminals can attach at once, each with its own
-view and its own keys. fux is driven from the keyboard: it has no mouse
-actions of its own, by design, and passes the mouse only to a program that
-asks for it (see [Terminal features](#terminal-features)).
+A minimal terminal multiplexer, driven and configured entirely in
+**fuxth**, a small Forth. One server keeps your programs running in
+panes, laid out in tabs and workspaces; `fux` attaches a terminal to it,
+and several terminals can attach at once, each with its own view and its
+own keys. Every other `fux` command line is a short fuxth program, and so
+are fux's config, key bindings, command prompt and saved sessions.
 
-fux is one binary for macOS and Linux, built with Rust 1.95 or later.
+fux is made for agents first, and the same words serve people. A program
+driving fux reads every fact as a record; learns every multiplexer and
+program-lifecycle change from a journal of events, and every screen
+change from versions and captures; gets live process facts from the OS;
+and acts only on the screen it saw. fux reports facts (a version moved,
+a program exited with 7, a text is on the screen) and never judges
+whether a program is ready, idle or done. What the OS already does, the
+OS does: `env`, `timeout`, `kill`, `ps`, your terminal's clipboard and
+your editor.
 
-```sh
-cargo install --locked fux        # or, in a clone: cargo install --locked --path .
-fux                               # attach, starting a server if none runs
-```
+fux is one binary for macOS and Linux, built with Rust 1.95 or later:
+`cargo install --locked fux`, or in a clone `cargo install --locked --path
+.`. `fux` alone attaches, starting a server if none runs. The `fuxth`
+runner is a program of its own: `cargo install --locked --path fuxth-run`.
+
+- `fux help agents` is the page for driving programs from a script or an
+  agent ([docs/agents.md](docs/agents.md)), `fux help TOPIC` the rest.
+- `fux help cookbook` has short recipes to copy, each run by fux's tests
+  ([docs/cookbook.md](docs/cookbook.md)).
+- `fux help` lists every word, `fux help WORD` says one at length, and
+  `fux help json` gives every record ([docs/json.md](docs/json.md)).
 
 ## Using it
 
-`fux` alone runs `opts attach`, starting a server in the
-background if none answers. `fux opts str work in attach` attaches to workspace
-`work`; `fux @2 attach` shows a tab's first pane in layout order (its
-zoomed pane, while it has one), and `fux %3 attach` focuses that pane. Explicit targets must exist.
-`fux opts watch attach` only watches (keys do nothing but `C-b d`, which
-detaches), and never starts a server or creates a workspace.
+`fux` attaches to the server, starting one in the background if none
+answers, and `C-b d` detaches: the programs keep running. `fux opts str
+work in attach` attaches to workspace `work`, `fux @2 attach` shows a tab,
+and `fux %3 attach` focuses a pane; each must exist. `fux opts watch
+attach` only watches: its keys do nothing but `C-b d`, and it never
+starts a server. Inside a fux pane, `fux` refuses to attach.
 
-With no target, attach uses the first stored workspace. A writable attach
-carries its launch and directory, which an empty server starts in the same turn,
-so concurrent attaches create only one workspace. A launch the client cannot
-make, or that does not fit the attach frame, is left out: an existing session
-still attaches, and an empty one refuses, saying why the launch was left out.
-The bundled `opts str main name attach-defaults` names the first workspace
-`main`, for both bare `fux` and `opts attach`. `opts attach-defaults` clears that
-name and any preferred target, giving an unnamed first workspace. `C-b d`
-detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
+- **Panes** are terminals that outlive their programs. A pane runs your
+  shell (the `shell` setting: your `$SHELL`, else `/bin/sh`), or the
+  program it was given. A shell's pane closes when its shell exits; a
+  program's stays, its exit told, until `kill` closes it or `respawn`
+  starts its program again. A pane's lines re-wrap when its width
+  changes, history included.
+- **Tabs** lay out panes, split side by side or stacked one at a time. A
+  tab closes with its last pane.
+- **Workspaces** hold tabs and workspaces, so workspaces nest: a project
+  `proj` with a workspace per agent shows as `proj › agent1`. A workspace
+  closes with its last child.
+- **Each client is shown its own** workspace, tab and pane, and remembers
+  the one it was shown before at each level. A tab's layout may hold
+  **stacks**: `PANE stack` puts a new pane on that pane's rectangle, as
+  `split` puts one beside it, and each client is shown one child of a
+  stack, its own. Every child keeps its size, so choosing one resizes no
+  program. In a stack, `C-b o` shows the next child, `C-b q` the last.
+- **The bar** is hidden: panes have every row. While the prefix, or any
+  screen of fux's, is in use, the bar draws over the bottom row, with the
+  workspace's path and its tabs on the left and the focused pane or what
+  the keys do on the right; when it ends, the row shows the pane again. A
+  bell or a program's notification (OSC 9, 777) shows in the bottom-right
+  corner for five seconds, or until your next key. A screen too small for
+  its tab shows the panes cut off, and the corner names them (`[hidden %3]
+  [cut %2]`). No pane is ever resized for fux's own feedback. To give the
+  bar a row of its own, see the cookbook's "The bar on a row of its own".
 
-The server runs until `fux kill-server` (refused while a person's terminal
-is attached or from its own panes: [Security](#security)), SIGTERM,
-SIGINT, SIGHUP, or until its last pane closes. It then hangs up every
-pane, tells each attached terminal why, and removes its socket.
-
-A pane runs your shell (the `shell` setting: `fux help set`), or the program
-it was given (`new-tab`, `split`). A shell's pane closes when its shell exits,
-showing its viewers the exit status; a program's pane stays, its exit told,
-until `kill` closes it or `respawn` starts it again. The pane's `program`
-record (`fux %2 str program get json`) is its program's generation, argv,
-process, state and how it ended (`fux help json`). A tab closes with its
-last pane, a workspace with its last tab or workspace.
-A pane's lines re-wrap when its width changes, history included.
-
-By default the panes have every row, and the bar takes none. While the
-prefix (or any screen of fux's) is in use, the bar draws over the bottom
-row: the workspace's path (`proj › agent1`) and its tabs and workspaces on
-the left; on the right the focused
-pane's id and label (its given name, else its OSC 0/2 title, launch
-program or id), or what the keys do. When it ends, the row shows the pane
-again. A notice takes only the bottom-right corner, until your next key;
-a bell or a program's notification (OSC 9, 777) shows there for five
-seconds, or until your next key. A screen too
-small for its tab (a watcher's, or one too small for all its panes)
-shows panes cut off at their right and bottom, or none of a pane it has
-no room for: the corner names them, hidden first: `[hidden %3] [cut %2]`.
-No pane is ever resized for fux's own feedback.
-
-### Presentation
-
-Styles, bar contents and prefix-column visibility belong to each client. Set
-these in your config or a bound program; the whole local draft commits before
-its next server request. A refused draft changes nothing. Defaults live in
-`src/script/client-defaults.fux` and `src/script/keys.fux`.
-
-```fux
-str styles list
-  list str bar str default str default end
-  list str border-focus str '#aabbcc' str default str bold end
-end set
-str bar list str top
-  list str workspace str tabs end
-  list list str slot 0 end str pane end
-  true
-end set
-str bar-slots list list 0 str 'my status text' end end set
-str show-column false set
-```
-
-`styles` changes only the roles supplied: `bar`, `tab` (the selected tab),
-`keys`, `notice`, `error`, `panel`, `border` and `border-focus`. Each row has
-a role, foreground, background, then any of `bold`, `dim`, `italic` and
-`underline`. Colours are 0–255, `str default` or `str '#rrggbb'`. Unknown or
-repeated roles/flags and malformed colours refuse the draft.
-
-`bar` is `[position [left fields] [right fields] tab-numbers?]`. Position is
-`top`, `bottom` or `off` (the default); the boolean numbers tabs from 1 in workspace order.
-Fields are `workspace`, `tabs`, `pane` and `[slot N]`, in the order
-given, each occurring once. There are no substitutions
-or executable fields. Native notices, copy hints, prefix/repeat/zoom feedback and
-hidden/cut pane indicators take precedence over the right-side fields.
-
-`bar-slots` replaces this client's slot texts with `[N text]` rows:
-N is 0–15, each once, its text with no control characters.
-Omitted slots are empty. Slot text stays inert even when it spells fuxth.
-A program supplies any changing text explicitly; fux adds no clock or polling
-timer and never evaluates a program during paint.
-
-Top and bottom reserve one row, as `bottom` with the default fields did
-before (`fux help cookbook`, "The bar on a row of its own"). Off reserves
-none: while one of fux's screens shows, the whole bar overlays the bottom
-pane row; other feedback covers only its right corner, without resizing
-PTYs. Client captures include that feedback; pane captures retain the underlying
-pane text. Feedback disappears on the normal input/cancel paths. Zoom alone
-does not create an overlay with the bar off; the zoomed pane fills the screen.
-`str show-column false set` hides the column body while keeping prefix dispatch,
-navigation, Escape cancellation and repeat feedback active; its default is true.
-
-## fuxth
-
-A fux command line is a program: words run left to right, each taking its
-values from a stack and leaving its own.
-
-```sh
-fux ls listing                                    # what there is
-A=$(fux opts str agent in 80 24 size str htop program new-tab)     # start htop: %3:0.0.0.0.0:RUN, its version
-fux str "$A" changed wait                         # until it differs: %3:0.412.0.0.0:RUN screen
-fux %3 capture                                    # its screen
-fux %3 str q text send-keys                       # press q: its version from before
-```
-
-- A number is a value; `%3`, `@2` and `+1` alone are a pane, a tab and a
-  workspace; any other bare word is a word to run. `str WORD` pushes WORD as
-  text, whatever it looks like: `str 'two words'`.
-- What is left at the end is printed, a value a line: a pane as `%3`, a tab
-  `@2`, a workspace `+1`, a client `c1`, a capture as its text, a record as
-  JSON, a list an item a line (a list in it as one line of JSON).
-  `all str topology snapshot` holds one immutable hierarchy observation;
-  `str panes get` on it reads locally and returns a list of records with typed IDs.
-  `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
-- Every pane has a **version**, one word that names the pane, counts what
-  only grows while its program runs (respawns, its screen's revision, bells,
-  shell commands ended, its end) and names the server's run. A program's
-  exit is told as it is reaped; what its terminal still holds is read on,
-  and an ended pane is frozen once its terminal is drained. An action
-  (`new-tab`, `send-keys`, `signal` …) acts at once and answers its pane's
-  version from just before it acted; `str V changed wait` waits in V's pane
-  until its version differs from V, and answers what changed. fux never
-  judges whether a program is done: [docs/agents.md](docs/agents.md) says
-  what a version counts and has recipes (a text, quiet for N seconds, a
-  command's end, an exit). A failure prints nothing more on stdout: it
-  says `fux: CODE: MESSAGE` on stderr, with the file, line and word, then
-  what was left, and exits 1; 2 for a mistake in the program (an unknown
-  word, a value of the wrong type, …); a wait exits 4 if the pane closed,
-  124 if nothing changed in time. A stdout whose reader went (`| head -1`)
-  ends fux quietly, 141, as `cat`.
-- A single argument is a whole program (`fux 'ls json'`), never a file,
-  whatever it holds; `fux --file FILE ARGS…` runs a file, so a script can
-  start with `#!/usr/bin/env -S fux --file`; and `fux -` runs what stdin
-  says. `#` starts a comment.
-- The language's core is small on purpose: a few words, and the immediate
-  words that shape a program (`str`, `define`, `let`, `if`, `begin`,
-  `list`, `each`, `try`, `code`), listed by `fux help` and at length in
-  [fuxth/README.md](fuxth/README.md). Words run as they are read; a
-  definition is found from its `end` on, and calls itself with `recurse`.
-  The rest of the language, its standard library, is written in fuxth;
-  fux's own words (`ls`, `new-tab`, `send-keys` …) are fux's, not the
-  language's.
-- Each word checks its values as it runs: a word given too few, or one of a
-  kind it doesn't take (`str a 1 add`, `1 if`), fails there, after the words
-  before it have acted; keys or options left that no word acts on
-  (`%3 str x text`) fail the program's end. An unknown word fails as it is
-  read, and a block left open at the end, after the words before acted.
-- No word is a character a shell treats specially, so a program needs no
-  quoting beyond the text you give `str`.
-
-`fux help` lists every word with what it takes and leaves (`x secs -- x`);
-`fux help WORD` (`fux str WORD explain`) says one at length, with
-its options and an example;
-`fux help agents` is the recipe for scripts and agents, its first screen
-enough for most work and `fux help TOPIC` the rest
-([docs/agents.md](docs/agents.md)), `fux help json` what `json` gives
-([docs/json.md](docs/json.md)). fux sets no limits of its own on memory,
-time or steps: `ulimit`, cgroups and `timeout` do.
-
-What a word that acts takes (**options**, a wait, keys) goes
-on the pane before it, in any order: the pane given them becomes a request,
-which the word at the end acts on. `new-tab` has
-no pane yet, nor has `attach`: they start from `opts`, empty options.
-A single-valued option occurs once; arguments and input fragments accumulate
-in order. `split` requires `str horizontal axis` (side by side) or
-`str vertical axis` (stacked). `resize-pane` takes a pane, cells or a
-percent, and `str horizontal` or `str vertical`. Mouse events are positional:
-`%2 str click 3 10 send-mouse`.
-`all str CURSOR events` streams events as they come; `next-events` returns one batch.
-`new-tab` starts a shell, or the program given (`program`, then each `arg`; a
-shell's line is `str sh program str -c arg str LINE arg`), whose pane stays
-once it exits, in the workspace `in` names: one not there is made, and
-`str new-workspace in` makes an unnamed one. A workspace holds tabs and
-workspaces: `in` again names one in the one before, so `opts str proj in str
-agent1 in` makes `proj › agent1`, each from the first not there. Asked from a key or prompt, it
-moves its client to the new tab; from the command line, no client. Their tab is laid out on `COLS ROWS size`, else on the
-caller's own screen (a client's keys), else on the caller's tab (`fux`
-run in a pane): never on the screen of a client that does not show the
-caller's tab. Run from outside fux, a size must be given: fux makes none
-up.
-
-A handle names everything under it, and `all` the whole session: `info`,
-`dump`, `events`, `panes`, `tabs` and `kill` take any of them (a pane holds
-no tabs, and `PANE info` or `PANE dump` has its tab hold that pane alone);
-`ls` is the library word `all info`. A workspace's subtree is the workspaces
-in it too, so `fux str proj workspace kill` closes a whole project. `dump`
-writes a script that makes it again, its workspaces in the workspace its
-first argument names (`./proj.fux home`), else at the top.
-
-The server shows each client one workspace at a time, a workspace one of
-its tabs and workspaces, and a tab focuses one of its panes: each client its own at every
-level, each remembering the one it showed there before. A tab's layout
-may hold stacks: `PANE stack` puts a new pane on that pane's rectangle,
-as `split` puts one beside it, and each client is shown one child of a
-stack, its own; every child keeps its size, so choosing one resizes no
-program. `CLIENT HANDLE
-show` shows a client a pane, tab or workspace, and each that holds it.
-`CLIENT HANDLE WAY step` shows it a sibling of the handle: `str next` or
-`str previous` among what holds it (for a pane in a stack, the stack's
-children), going round; `str last`, the one it was
-shown there before; or for a pane `str left`, `str right`, `str up` or
-`str down`, its neighbour on the client's screen. Stepping to another pane
-of a zoomed tab ends the zoom. When what a client is shown closes, it is
-shown the one before, else the next, else the one before that in order.
-`capture` takes a pane or client; only panes take capture options and have
-versions. `PANE version` reads the current version; `ANSWER version` and
-`CAPTURE version` return the version held when observed. `--version` prints
-the binary's release and protocol (`fux RELEASE (protocol N)`), and `status
-json` gives `release`, `server_release` and both protocols.
-Capture `rows` and `cols` use half-open `start..end` ranges, like `slice`.
-`resize` takes a tab scope or headless client. `move` takes a pane and a tab,
-workspace, `str new-tab`, `str new-workspace`, or a direction; or a
-workspace and the workspace it goes in, last, or `all` for the top, never
-itself or one in it; `swap-with`
-takes a pane or direction. Directions are `str left`, `str right`, `str up`
-and `str down`.
-
-```sh
-fux opts str agent in str web name 120 40 size str ./app program str --verbose arg new-tab
-fux %3 200 history capture
-fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
-```
-
-A program can name what it made; a wait on an action's answer waits from the version it holds:
-
-```sh
-fux opts str agent in 80 24 size str sh program str -c arg str 'echo hello; sleep 1' arg new-tab let P   P wait drop   P capture
-```
-
-A script plays well with the shell. `args` gives the arguments after
-`--file FILE`, `input` the rest of stdin, `read-file` a file's text (UTF-8),
-`getenv` a variable (one not set fails `unset_var`, never
-an empty string; in a binding, the attached terminal's); `warn` prints on stderr, and `N exit` ends the program
-with exit status N:
-
-```sh
-$ cat greet.fux
-#!/usr/bin/env -S fux --file
-args each str 'hello ' swap cat print end
-$ ./greet.fux ann bob
-hello ann
-hello bob
-```
-
-These words are the command line's alone: a config's or a key's program is
-refused them (`not_here`). `fux ./greet.fux` is refused as an unknown word,
-with the fixed `str WORD` text hint: no argument is guessed to be a file.
-Use `fux --file ./greet.fux` to run it.
-
-The bundled words are written in fuxth themselves (`fux help WORD` shows
-each one's code): `type` and `press` (text and a key into a pane), `line`
-(a line typed and Enter), and `counts` (a version's counts, as
-integers). `observed` samples a pane or single answer
-and retains an existing pane capture. `shows`, `quiet` and `until-ended`
-return their matching capture; `grows` waits for a counter increase within
-one program generation. Their timeouts apply to each change; use an outer
-shell deadline for the whole loop (`fux help agents`).
-
-From outside fux, `new-tab` needs `in` and `size`.
-`opts str new-workspace in ... new-tab` starts its tab in a fresh unnamed
-workspace.
-
-### Finding things
-
-A pane is `%N`, a tab `@N`, a workspace `+N` or its name, a client `cN`:
-`str %3 pane`, `str @2 tab`, `str work workspace`, `str c1 client`. `pane`
-also takes a pane's given name: `str web pane`. `new-tab ... name` names
-its tab; `%3 str web rename` names a pane. `tab` and `workspace` take a pane,
-the tab or workspace it is in. To choose a member of a container, use
-`panes` or `tabs`; a container never stands for its only member.
-A name is given or absent: `get name` is `null` for an unnamed thing,
-which shows a label instead. A label never finds anything. Renaming one
-thing never renames another. Workspaces, tabs and panes share one
-namespace: a name another of them has is refused (`name_taken`), so a
-name finds one thing.
-Inside a pane,
-`here` is that pane (`FUX_PANE`, below). In a key's program or the
-prompt's, `me` is the client whose key it is, and `me focused` its focused
-pane.
-
-### Which server
-
-`FUX_SOCKET` is the socket of the server a `fux` command talks to, else
-`server.sock` in fux's directory (`$XDG_RUNTIME_DIR/fux` or, with
-`XDG_RUNTIME_DIR` unset, `$TMPDIR/fux`). Each `fux` command talks to one
-server; two are two commands joined by the shell. A private server for a
-test or an agent:
-
-```sh
-export FUX_SOCKET="$XDG_RUNTIME_DIR/fux/test.sock"
-fux start                                         # returns once it answers: nothing in it yet
-fux opts str agent in 80 24 size str ./app program new-tab
-fux kill-server
-```
+The server runs until its last pane closes, until `fux kill-server`
+(refused from its own panes and while a person's terminal is attached), or
+until SIGTERM, SIGINT or SIGHUP, which `kill` sends ([Security](#security)
+shows how on Linux and macOS). It then hangs up every pane, tells each
+attached terminal why, and removes its socket.
+Nothing is saved on its own ([Saved sessions](#saved-sessions)).
 
 ## Keys
 
-Every key below follows the prefix, `C-b` by default, and is a lower-case
-letter but `a W`: case counts, so `C-b T` is not `C-b t`. The keys are your client's:
-each terminal attached has its own keymap, from its config, and the server
-knows none of it. A keymap maps each key to a binding or to another keymap,
-at any depth, as Emacs's prefix maps do: the prefix is a key of the root
-map, the one your client is in while it holds no keys, that holds the map
-of the keys below, and `C-b t` holds the tab keys in that one. A key that is not fux's reaches the focused
-pane as you typed it. So are fux's screens: the command column,
-choosers and prompts belong to your client, which
-switches between them at the key that does it, so a key typed fast is never
-read in the wrong one; the server draws what your client shows.
+Every key below follows the prefix, `C-b`. Case counts: `C-b T` is not
+`C-b t`. The keys are your client's: each terminal attached has its own
+keymap, from its config, and the server knows none of it. A key that is
+not fux's reaches the focused pane as you typed it.
 
-A binding's program first waits for the server to process this client's
-preceding keys and resizes, including any refusals. Later keys wait for the
-program to finish. Every request stays tied to that attachment and server
-run. This orders input admitted to a pane; it does not wait for the pane's
-program to read it or finish work.
-
-A key that holds a map opens the **command column**, headed by the keys
-typed so far and listing that map's keys: arrows, PageUp/PageDown and
-Home/End move, Enter runs the selected one, a bound key runs its own, Esc
-closes; its moves by keys that are not letters are the choosers'
-(`str list … bind-in`). A key you bind is yours there, even one the column
-moves with; Esc always closes. The prefix again, where its map binds it
-not, sends it to the pane.
+Keymaps nest, as Emacs's prefix maps do: a key maps to a binding or to
+another keymap, at any depth. The prefix is a key of the root map that
+holds the map of the keys below, and `C-b t` holds the tab keys in that
+one. A key that holds a map opens the **command column**, headed by the
+keys typed so far and listing that map's keys: the arrows move, Enter
+runs the selected one, a key runs its own, Esc closes. The prefix again,
+where its map doesn't bind it, sends it to the pane.
 
 | Key | Runs | Does |
 | --- | --- | --- |
 | `h` `j` `k` `l` | `me-focused str left step` … | focus the pane that way |
 | `o` / `q` | `me-focused str next step` / `me-focused str last step` | focus the next / last pane (in a stack, child) |
 | `v` / `s` | `me focused str horizontal axis split drop` / `… str vertical axis …` | split side by side / stacked |
-| `x` | `me-focused confirm-close` | close the pane (asks: `y` or Enter closes, `n` or Esc keeps it) |
+| `x` | `me-focused confirm-close` | close the pane (`y` or Enter closes, `n` or Esc keeps it) |
 | `z` | `me focused zoom` | zoom the pane, or restore it, on every screen showing its tab |
+| `c` | `me edit-history` | the pane's history in your `$EDITOR` |
 | `a`, then a key | `me-focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
-| `c` | `me edit-history` | the pane's history in your `$EDITOR`, at its end, in a split that closes when the editor exits |
 | `n` / `b` | `me-focused tab str next step` / `… str previous step` | next / previous tab |
+| `t`, `w` | the tab and workspace maps | `n` new, `h`/`l` previous and next, `g` choose, `r` rename, `x` close, `m h`/`m l` move |
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
 | `r`, then `h` `j` `k` `l` | `me focused str left 1 move-border` … | move a border one cell |
 | `m`, then `h` `j` `k` `l` | `me focused str left move` … | move the pane beside its neighbour |
-| `t`, `w` | tab and workspace maps | below |
 
-`r` and `m` are maps that **repeat**: `h` `j` `k` `l` act again without the
-prefix until Esc or Enter (as `h` and `l` do after `a m`, `t m` and `w m`);
-the prefix ends the mode and opens the column; any other key ends it and
-is dropped, which the bar says.
+`r` and `m` are maps that **repeat**: `h` `j` `k` `l` act again without
+the prefix until Esc or Enter. `f`, `g`, `i`, `u` and `y` are free for
+your own. `me-focused` is the keys' own word for `me me focused`, the
+client and the pane it focuses; `str last step` toggles with the one this
+client was shown before.
 
-`a`, `t` and `w` hold **maps** too. `t` and `w` share their verbs: `n` new,
-`h`/`l` previous and next, `g` choose, `r` rename, `x` close, and `m` then
-`h`/`l` to move it earlier or later, repeating. A map is bindings like any
-other: `str 'C-b a g' code … end bind` adds one to it, listed in the column beside
-the defaults, and `unbind` takes one away. `f`, `g`, `i`, `u` and `y`
-are free for your own bindings. These keys are themselves a config, run
-before yours, in the words yours uses
-([src/script/keys.fux](src/script/keys.fux)); `list-keys` at the client's
-command prompt prints yours the same way. From the CLI, `fux list-keys`
-prints these defaults.
-
-`me-focused` is the keys' own word, `me me focused`: the client and the pane
-it focuses. `me-focused tab str last step` and `me-focused workspace str
-last step` return to the tab this client was shown last in its workspace,
-or to the workspace it was shown last, with the tab it was shown there.
-Repeating `last` toggles the two. Showing the same one again or reordering
-it does not change what was last; closing it forgets it. With no last one,
-the step refuses. Detaching discards it all. For example, bind
-`str 'C-b t q' code me-focused tab str last step end bind` in your config.
-
+- **`C-b c`** opens the focused pane's history in your editor (the
+  attached terminal's `$EDITOR`, else `vi`) at its last line, in a split
+  titled `history` that closes when the editor exits: search, select and
+  copy there. It stands in for a copy mode and a pager.
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
-  or panes. A chooser acts on the item it was opened for, even once
-  renamed, and closes if that item is gone.
-  Enter or `y` selects, `r` renames, `x` closes, Esc, `q` or `n` cancels; arrows,
-  `j`/`k`, PageUp/PageDown and Home/End move.
-  They are three library words over one `choose` primitive:
-  `CLIENT HANDLE choose-among` shows the sibling chosen (`t g` is
-  `me-focused tab choose-among`), `CLIENT PANE HANDLE choose-move` moves the
-  pane to the tab or workspace chosen among the siblings of HANDLE, a tab or
-  workspace (`a t` is `me-focused dup tab choose-move`), and `choose-pane`
-  swaps. Each reads one topology snapshot for its rows, source and current
-  marker.
-  Custom lists use `choose (client title rows current selected callback --)`:
-  rows are `[payload,label]`, and both indices are `[]` or `[index]`.
-  Selection is empty only when there are no rows; the current marker is
-  independently optional. A title may be `[text,subject-handle]` to close
-  the list when its subject closes. Labels are inert, sanitized text.
+  or panes: Enter or `y` selects, `r` renames, `x` closes, Esc, `q` or
+  `n` cancels. They are library words over one `choose` primitive
+  (`choose-among`, `choose-move`, `choose-pane`; `fux help choose`).
+- **The command prompt** (`e`) runs fuxth as your client, `me` and all,
+  and shows what it printed, or its failure, in the bar. `prompt` opens
+  a line of your own whose Enter runs your code with the line.
+- **A key's program** runs as your client, one at a time; while one runs
+  that may open a screen, the keys you type wait for it. The prefix, then
+  Esc, stops one that takes long.
 
-  ```fux
-  me str Hosts
-  list list str server.example str 'Production host' end end
-  list end list 0 end code nip print end choose
-  ```
+The keys are a config, run before yours, in the words yours uses
+([src/script/keys.fux](src/script/keys.fux)): `fux list-keys` prints them
+as config lines ([Configuration](#configuration)).
 
-  The callback is a code value, `code … end`, or
-  `[captured-arguments,code … end]`; a string is refused. Enter passes the
-  captured values, then `client payload`; list key actions receive only
-  `client payload`. The move/swap choosers capture their source once, and
-  every row carries its destination handle. Immutable scalars,
-  typed handles, records, null, lists and code values are admitted;
-  unfinished requests are refused. A code value goes to the receiving
-  client as its words, which it compiles in its own dictionary (a word it
-  defines otherwise means its own there); runtime checks cover dynamic
-  fields and require an empty result stack.
-  Stale handles refuse rather than selecting a replacement with the same label.
-- **The command prompt** (`e`) runs fuxth as your client, `me` and all
-  (`me focused str vertical axis str htop program split`), and shows what it
-  printed, or its failure, in the bar. It and the rename prompts edit with
-  the arrows, Home, End, Backspace and Delete.
-- **Prompts and questions of your own:** `prompt` opens a line whose Enter
-  runs your fuxth with the line on its stack, a string; the recipe file
-  `recipes/confirm.fux` gives `confirm`, a question, a chooser titled with
-  it whose one row, Yes, runs it
-  (`me str 'close it?' code %3 kill end confirm`); its row is no pane, tab or
-  workspace, so `r` and `x` refuse there. The question is a chooser's
-  title: text (`42 string`, not `42`), or `[text,subject]`, which closes
-  when its subject goes.
-  A callback may also be `[captured-arguments,code … end]`; captured
-  arguments enter its stack before the submitted line, as values:
-  `me str Rename str '' list list %3 end code rename end end prompt`.
-  The rename prompts and close questions use this typed form in the library.
-- **These screens' keys are a config too**, as the bindings are: `bind-in`
-  gives a key of a chooser or a line being typed one of that
-  screen's actions, and `label` names it in the screen's hints
-  (`str list str g str first bind-in str first label`); `unbind-in` takes one
-  away. `bind-in` accepts only native actions. Executable list keys use
-  `str r code rename-prompt end bind-action` and
-  `str x code confirm-close end bind-action`; each receives `client payload`
-  and must leave an empty stack. An unknown native action always refuses.
-  Escape always leaves a screen, and is never bound.
-- **A key's program** runs as your client, one at a time. While one that may
-  open a screen runs (it has a chooser or another such word), the
-  keys you type wait for it, and go to the screen it opens. The prefix, then
-  Esc, stops a program a key or the prompt runs, if it takes long.
+## Driving it
 
-Directional focus picks, among the panes beyond the focused pane's edge,
-the one whose centre is closest across the direction, then along it, then
-the lowest number.
+A command line is a fuxth program: its words run left to right, each
+taking its values from a stack and leaving its own. `%3`, `@2` and `+1`
+are a pane, a tab and a workspace, and `str NAME pane` finds a pane by
+its name; `str WORD` pushes any text. What is left is printed, a value a
+line: a capture as its text, a record as one line of JSON.
 
-### Copying and pasting
+```sh
+fux opts str agent in 80 24 size str sh program new-tab str sh1 rename
+A=$(fux str sh1 pane str 'sleep 1; echo "six times seven: $((6*7))"' line)
+fux str "$A" changed wait
+fux str sh1 pane str 'seven: 42' 30 shows
+fux str sh1 pane capture json | jq -c '{version, cursor, program}'
+fux ls listing
+```
 
-`C-b c` opens the focused pane's history in your editor (the attached
-terminal's `$EDITOR`, else `vi`) at its last line, in a split titled
-`history` that closes when the editor exits: search, select and copy there
-(`me edit-history`, a library word). The editor is given `+LINE` before the
-file, as `vi`, `vim`, `nvim`, `nano` and `emacs` all take it.
+The first line starts a shell in a new tab in workspace `agent`, made if
+it isn't there, and names its pane `sh1`; from outside fux a new tab
+needs a size, as fux makes none up. What a word that acts takes (the
+program, keys, a size) goes before it, on `opts` or on the pane it acts
+on.
 
-A program in a pane that copies with OSC 52, as Neovim and Helix do, copies
-to the terminals showing that tab whose `terminal-clipboard` is on
-(watchers and zoomed tabs included), up to 64 KiB encoded, while its
-creation supplied `program-clipboard true` (the bundled default); `false
-program-clipboard` refuses its copies. fux keeps no copy. A longer copy,
-or one that is not base64 (RFC 4648, padded or not) of UTF-8 text, copies
-nothing, and the clients showing the pane say so. fux never reads the
-clipboard. Paste with your terminal, or from a file:
-`fux %2 input paste send-keys < FILE`.
+Every pane has a **version**, one word that names the pane, counts what
+only grows while its program runs (respawns, its screen's revision,
+bells, shell commands ended, its end) and names the server's run. An
+action (`new-tab`, `line`, `send-keys`, `signal` …) acts at once and
+answers its pane's version from just before it acted; `changed wait`
+waits until the version differs, and says what changed. `shows`, `quiet`
+and `until-ended` wait for a text, for a quiet screen and for the
+program's end, and `expect` sends keys only if the pane is still at the
+version you read. fux never judges whether a program is done: `fux help
+agents` says what to wait for, and `fux help recipes` how.
 
-## Shell marks
+A failure prints nothing more on stdout: stderr says `fux: CODE:
+MESSAGE`, with the file, line and word, then what was left. fux exits 1
+for a refusal; 2 for a mistake in the program (an unknown word, a value of
+the wrong type …); 4 if the pane waited on closed; 124 if nothing changed
+in time; and 141, quietly, if stdout's reader went (`| head -n 1`). A
+single argument is a whole program (`fux 'ls json'`), never a file; `fux
+--file FILE ARGS…` runs a file, so a script can start with `#!/usr/bin/env
+-S fux --file`, and `fux -` runs what stdin says.
 
-fux starts your shell as it is, and reads the OSC 133 marks any program
-sends: `C` where a command's output begins, `D;STATUS` where it ends, `A`
-where a prompt starts. With them, a pane's version counts the commands
-that end, `last_status` says how the last did, `last-output` reads its
-output alone; without
-them, each says there are none. `fux help shells` shows the lines
-that send them, for bash, zsh and fish, to put in your own startup files
-([docs/agents.md](docs/agents.md#shells-shells-and-their-marks)).
+A handle names everything under it: `info`, `dump`, `events`, `panes`,
+`tabs` and `kill` take a pane, a tab, a workspace or `all`, and apply to
+the whole of it, so `kill` on a project closes its agents' workspaces too.
 
-## Words
+```sh
+fux opts str proj in str agent1 in 80 24 size str sh program new-tab > /dev/null
+fux opts str proj in str agent2 in 80 24 size str sh program new-tab > /dev/null
+fux str proj workspace panes len
+fux str proj workspace kill
+```
 
-`fux help` lists every word, by what it does, with what each takes and
-leaves; `fux help WORD` says one at length. The program's own dictionary,
-its own definitions included, is data: `fux str NAME word` gives a word's
-record (where it came from, its effect and help, and the words that made
-it) and `fux dictionary` every word's, in the order they were defined;
-`fux see NAME` writes what made it, and `fux words` every name.
+Names are given, never made: `name` and `rename` give one, and a
+workspace, tab or pane that has a name refuses it to another
+(`name_taken`), so a name finds one thing. fux sets no limits of its own
+on memory, time or steps: `ulimit`, cgroups and `timeout` do.
 
-**Key names**, for `key`, `bind` and `move-keys`, are tmux's (`C-x`, `M-x`,
-`S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F35`, …) and any
-single character, which carries its own shift (`T` or `S-t`); common
-spellings (`Backspace`, `Esc`, `Return`, `Del`, `Ins`, `PgUp`, `PgDn`) are
-taken too. Unknown names are refused; `fux key-names` prints the vocabulary.
+## fuxth
 
-**Inside a pane**, a program's environment holds:
+fuxth is a small Forth with full English words, so a program needs no
+quoting beyond what the shell needs: `define … end` makes a word, `if …
+else … then` and `begin … until` decide and repeat, `str timeout try …
+catch … end` handles a failure. It has a dictionary, immediate and defining
+words, a data space of memory-safe cells and execution tokens. Words run
+as they are read and each checks its values as it runs, so a failure
+comes after the words before it have acted, and stderr lists what took
+effect. `fux help` lists the core's words and the libraries', which are
+written in fuxth themselves (`fux help WORD` shows each one's code);
+[fuxth/README.md](fuxth/README.md) is the language at length.
 
-| Variable | Value |
-| --- | --- |
-| `TERM` | `xterm-256color` |
-| `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` | `fux` and fux's version, not the outer terminal's, whose features fux may not have |
-| `FUX_PANE` | the pane and its program generation, `%N:GENERATION`: `here` to a fux command run there; an old generation is refused after respawn |
-| `FUX_SOCKET` | the socket of the pane's server, so a fux command there reaches it |
-| `FUX_SERVER` | which run of which server the pane is of, the run every version names. A fux command from a pane of another server, or of an earlier run of this one, or with `FUX_PANE` and no `FUX_SERVER`, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
-| `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"${FUX:-fux}"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
+```sh
+fux 'define double 2 mul end 21 double'
+echo 'define square dup mul end 7 square' | fuxth
+fux str line word str definition get
+```
 
-The rest is the server's environment when it started. `env(1)` gives a
-program others: `str env program str PORT=8080 arg str ./app arg new-tab`;
-`env -u NAME` removes one. A launch's argv must fit its one frame.
+- **`fuxth`** runs a fuxth program without fux: a file, or the program on
+  its stdin, printing only what it prints. On a terminal with no file it
+  is a REPL.
+- **fuxed** is a small screen editor written in fuxth, on the `fuxth`
+  runner: `fuxth fuxed/fuxed.fux FILE` in a checkout of fux
+  ([fuxed/README.md](fuxed/README.md)).
+- **The dictionary is data.** `str NAME word` gives a word's record
+  (where it came from, its effect and help, the codes it can fail with
+  and the words that made it), `dictionary` every word's in the order
+  they were defined, `see NAME` what made it and `words` every name.
+- **A script plays well with the shell.** `args` gives the arguments
+  after `--file FILE`, `input` the rest of stdin, `read-file` a file's
+  text, `getenv` a variable (one not set fails `unset_var`), `warn` prints
+  on stderr and `N exit` ends with status N.
 
-Every launch carries checked argv and a role. `program` chooses program role;
-`list str /bin/sh end shell-program` chooses shell role. Shell exit closes its
-pane; program exit retains it. Respawn uses the saved program launch, or
-the program given. An unknown
-nearby working directory is refused: give an absolute `cwd`. The first pane
-starts in the invoking client's directory, independently of HOME.
-Dump records saved argv and role. Programs keep their
-saved launch cwd, even if they have since changed directories; shells use
-their current directory when it is known.
-Creation options on attach require an untargeted writable invocation; explicit
-subjects, `in` and `watch` refuse those options instead of ignoring them.
+## Records and events
 
-`opts str work in attach-defaults` sets this client's preferred workspace and
-retains its first-workspace name as unused data. A typed tab or pane can also
-be given to `attach-defaults` in an action script. Configs use workspace names
-without querying the server. Target and name in one call conflict; a name-only
-or empty call clears the preferred target. Explicit attach targets override
-preferences, and an explicit `name` chooses untargeted creation instead of a
-preferred target. `in` remains workspace-only on all creation words.
+Every fact fux keeps is a record, which `json` prints as one line of JSON
+and `get` reads one field of (`fux str sh1 pane str program get json`):
 
-XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
-attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
-VT220-class terminal.
+- `ls` is everything at once; `X info` a pane, tab, workspace or `all`;
+  `SCOPE str topology snapshot` the layout alone.
+- `PANE capture json` is a pane's whole observation at one version: its
+  screen, version, journal `cursor`, its `program` record (argv, `pid`,
+  state, exit status or signal, `foreground_group`), its terminal's modes
+  and marks, hyperlinks and pictures.
+- `CLIENT keys` and `CLIENT preferences` are a client's keymap and
+  settings, read from that client.
+- `status` says which server answers, its release and protocol, and its
+  `server_pid`.
 
-### JSON
-
-`json` on what a word left gives its JSON: `ls json`, `X info json`,
-`pane capture json`, `client capture json`, an action's or a
-wait's answer (`… wait json`), `status json`; `X str CURSOR events`
-streams NDJSON events, each with its `seq` and `next`. `SCOPE str CURSOR SECONDS next-events`
-returns one record with `events`, `first`, exact `next`, `missed` and `status`. These shapes are part of fux's interface; `fux
-help json` lists every one ([docs/json.md](docs/json.md)).
+The **journal** is the server's numbered events: panes, tabs and
+workspaces created, renamed, moved, closed, zoomed and laid out; programs
+that hung up, failed to read, exited or respawned; shell commands started
+and done; the input and signals requests sent; bells, titles and
+notifications; clients attached, shown and detached. A change only to a
+screen is no event: it shows as a new version and in captures. `SCOPE str
+CURSOR events` prints them as they come, one JSON object a line, each with
+its `seq` and the `next` cursor, until the scope is gone or the server
+stops; an empty cursor starts now. Take the cursor from `ls` or from a
+capture, and you miss nothing between reading and following. A hook is an
+ordinary program reading this stream, and a log is your redirect (`>>
+FILE`). The journal keeps the last 16,384 events, a size the
+`journal-entries` setting gives a server as it starts; reading past what
+it still holds fails `missed`. `fux help json` lists every record and
+event ([docs/json.md](docs/json.md)).
 
 ## Configuration
 
-`require PATH` reads a file's words where it stands, once per canonical
-path, relative to the requiring file (or the CLI's cwd for arguments and
-stdin); `include PATH` reads one each time. For example, `require shared/keys.fux` in a config shares definitions
-and key bindings. Quotes handle paths with spaces. There is no search path
-or automatic CLI config import. Required files are kept with the client as
-they were read; reattach to read edits. Keys and prompts use the config's
-definitions and cannot read new files with `require`.
-
-A required file runs as it is read, after the words before it. Cycles fail
-with the source chain, file and line. A source is any file that reads, a
-FIFO or `<(…)` among them; stdin is `-`.
-
 The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
-`~/.config/fux/config.fux`: fuxth, which a typing terminal runs as it attaches.
-`fux start`, watchers, headless attaches (`size attach`) and ordinary CLI
-commands use only the bundled state; they never load this file.
-Its `set` and key words build one candidate client state. Keys, frozen
-definitions and preferences commit together; a failed config keeps the whole
-bundled state, preserves earlier explicit CLI settings, and shows one
-diagnostic. Evaluation and local setters send no requests. A wait without
-`timeout` waits until something changes; `SECS timeout`, or coreutils
-`timeout`, bounds it.
-`journal-entries` (16,384) is how many events the journal of a server this
-client starts keeps (`start`, or an attach that finds none running); a
-running server keeps the size it started with:
-`fux str journal-entries 65536 set start`.
-Shell argv, `history-bytes`, `program-clipboard`,
-`reflow`, `alternate-scroll-lines` and `picture-bytes`
-are local defaults for future creations. Explicit creation options override
-them, including zero and false. Existing panes retain their policy through
-respawn; `%3 4194304 history-budget` changes only that pane's current budget.
-Lowering it evicts the oldest rows immediately. Dump records current budgets
-and permissions. Bell, titles and terminal clipboard delivery belong to each
-view and arrive in its attach request after local commit. Later key or prompt
-changes use a connection-bound action, fenced before following requests.
+`~/.config/fux/config.fux`: fuxth, which a typing terminal runs as it
+attaches. Command lines, `fux start`, watchers and headless clients never
+load it. A config builds one candidate client state, keys, definitions
+and preferences together; one that fails keeps the whole bundled state
+and shows why.
 
-Emulator defaults are bundled in `src/script/client-defaults.fux`:
-
-| Setting | Default | Bound and lifetime |
-| --- | --- | --- |
-| `reflow` | `true` | Creation policy; rewrap recorded primary-screen lines, never the alternate screen |
-| `alternate-scroll-lines` | `5` | 0–32767 arrows per wheel action when the program enables alternate scroll; Ctrl keeps half-page scrolling |
-| `picture-bytes` | `100663296` | 0–96 MiB per pane; zero disables picture admission and advertisement |
-| `escape-delay-ms` | `35` | 0–65535 ms, per client |
-| `paste-timeout-ms` | `5000` | 0–65535 ms, per client |
-| `cell-placement` | `false` | Per client; position after each non-ASCII glyph |
-
-The three pane settings also have typed creation options, for example
-`fux opts str agent in false reflow 0 picture-bytes str /bin/cat program new-tab`.
-They survive terminal reset and respawn, and dump preserves them.
-Decoder changes take effect when reading begins idle, keeping an unfinished
-Escape or paste's existing timing. Zero waits for the next explicit timeout
-event.
-
-`str cell-placement true set` forces a redraw of that client's screen.
-The compact default assumes the outer terminal shares fux's Unicode 17
-narrow ambiguous-width and cluster advance rules, with cursor moves for
-known cluster differences. Explicit placement bounds accumulated cursor
-drift; it cannot constrain a mismatched font's glyph footprint. Both modes
-keep fux's stored cell geometry. Neither guesses from locale or terminal name.
-The bounded comparison in `bench/examples/placement.rs` measures output bytes,
-thread CPU and paint latency; it does not measure transport or display latency.
-
-Client defaults load when `set`, `attach-defaults`, `list-keys`, `attach` or a
-launch needs them; ordinary queries and server
-controls do not load them. Bundled
-`client-defaults.fux` reads this client's `$SHELL` once and chooses `/bin/sh`
-for an unset or empty value. A non-text value is reported and falls back as
-that library specifies. Bundled `keys.fux` supplies `C-b`; there is no native
-prefix fallback. Key words such as `bind`, `move-keys`, `unbind`, `label`,
-`group` and `repeat` refuse the CLI: use a config or an attached prompt.
-In action programs, pending client state commits before the next server or
-screen operation. A failed commit leaves earlier commits intact. Launches
-carry their own completed creation policy; setters send nothing.
-
-```sh
-# ~/.config/fux/config.fux
-str C-b str C-a move-keys                         # the prefix, and every key after it, on C-a
-str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
+```fux
+str C-b str C-a move-keys
+str shell list str /bin/sh str -l end set
 str terminal-clipboard false set
-
-unbind-all                                        # optional: no keys at all, the screens' too
-define split-right me focused str horizontal axis split drop end   # a word of the config's
+define split-right me focused str horizontal axis split drop end
 str 'C-a v' code split-right end bind
-str 'C-a t n' code opts new-tab drop end bind     # C-a and t hold maps: C-a t n
 str 'C-a r l' code me focused str right 1 move-border end bind
-str 'C-a r' repeat                                # C-a r l l l, then Esc
-str 'C-a g' code me focused str vertical axis str lazygit program split drop end bind
-  str 'lazygit' label  str Tools group            # what the column shows, and under which heading
-str M-h code me-focused str left step end bind    # in the root map: Alt-h alone
+str 'C-a r' repeat
+str 'C-a g' code me focused str vertical axis str top program split drop end bind
+  str top label  str Tools group
+str M-h code me-focused str left step end bind
 ```
 
-`fux help set` lists the settings: what each takes and where its bundled
-initialization lives.
-
-**Bindings** run a code value, `code … end`, compiled where it is written
-and again, from its words, each time its keys are typed, fresh, as your
-client (`me`); a string is refused. A binding uses the config's
-definitions made before it, as any code does, and the command prompt any
-of them; not its `let` names (a definition that reads one is refused
-there, with that reason). `bind` takes keys from the root map,
-space-separated: each but the last holds a map, made as needed
-(`str 'C-b t n'`). One key alone binds it in the root map, where it then
-never reaches any program: bind chords or function keys rather than
-letters. A key is a binding or a map, never both, and unbinding a map's
-last key unbinds the map. Esc in a map always closes the column.
-`move-keys` moves what keys run or hold to other keys (`str C-b str C-a
-move-keys` moves the prefix, with every key after it). `label` and `group`
-change the binding just made, and `repeat` makes the map its keys hold
-repeat; the column lists groups in the order their keys were first bound,
-`Other` last (a key bound again keeps its place). Another program reads a
-client's keys as data, from that client: `str c1 client keys` gives the
-keys it binds and the map it is in now, `str c1 client preferences` each
-preference's name, value and type (`docs/json.md`).
-
-The default keys are a config like yours, run before it, so anything one
-binding does, yours may: rebind a key, `unbind` it, or start from none
-(`unbind-all`, which takes the screens' keys too; Escape still leaves them).
-`list-keys` in the client's command prompt prints its keys as config lines
-that make them, from `unbind-all` on; not its definitions, which a binding
-may call. From the CLI, `fux list-keys` prints the bundled keys:
-`fux list-keys >> ~/.config/fux/config.fux` gives you every default key to
-edit in place. What it appends starts with `unbind-all`, which undoes any
-key lines earlier in your config, so delete those. Default keys a later
-fux adds then reach you only once you bind them.
+- **Bindings** run a code value, `code … end`, as your client (`me`),
+  never a string. `bind` takes keys from the root map, each but the last
+  a map, made as needed. `move-keys` moves what keys run or hold (here
+  the prefix, and every key after it, to `C-a`); `label` and `group`
+  change the binding just made, `repeat` makes a map repeat, `unbind`
+  takes a key away and `unbind-all` every key. A key bound alone in the
+  root map (`M-h`) never reaches a program.
+- **`fux list-keys`** prints the bundled keys as config lines from
+  `unbind-all` on: `fux list-keys >> ~/.config/fux/config.fux` gives you
+  every default key to edit in place.
+- **Settings** (`fux help set` lists them): the shell, history and
+  picture budgets, reflow, the bell, titles, the terminal clipboard, the
+  journal's size and the decoder's timings. Each is a preference of this
+  client, with its default in fuxth ([src/script/client-defaults.fux](src/script/client-defaults.fux)).
+- **The bar's place, fields and styles** are settings too: `str bar …
+  set`, `str bar-slots …`, `str styles …` (`fux help set`).
+- **Recipe files** hold words only some want: `require PATH` reads one,
+  relative to the file that names it. A checkout of fux has
+  `recipes/layouts.fux` (layout presets) and `recipes/confirm.fux`
+  (`confirm`, a question before an action).
 
 ## Saved sessions
 
-`all dump` prints what there is as a fuxth script that makes it again (its first
-line `#!/usr/bin/env -S fux --file`, so `chmod +x` makes it runnable), each
-pane a `let` name later lines use; `X dump` one tab or workspace. Run it
-to make it again on a running server, each tab in the workspace of its
-given name (made if missing). An unnamed workspace is recreated as a fresh
-workspace. Only given pane, tab and workspace names are written; display
-labels are never saved as names. A replay first checks every name it
-gives: one this server already has is refused (`name_taken`, naming what
-has it) before anything is made; a workspace of its name is joined. Close
-or rename what would conflict before replay:
-`fux str dev workspace dump > dev.fux; fux --file dev.fux`. Each
-tab is made at the size it has (`size`), which a server with no client
-needs; one that fits clients' screens fits them again after
-(`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
-split keeps two thirds of its room, the new one takes a third), so the
-layout comes back as it was, at every size. A split
-or a move that would hide a pane on its tab's effective size (`fux help
-agents`) is refused: whatever there
-is can be made again. Each split holds its two shares exactly, never
-rounded. A close gives the closed pane's room to its sibling in their
-split, every other share as it was. Moving a border changes only the panes
-that touch it, and once those beyond are at their least the next border
-out moves on: each split it moves takes the cells its two sides then have
-as its shares. A terminal's resize changes no share.
+`all dump` prints what there is as a fuxth script that makes it again,
+and `X dump` a tab or a workspace with all in it: the layouts, sizes,
+names and the programs each pane started with. Running it on a server,
+with `fux --file FILE PARENT`, makes them again in workspace PARENT
+(made if missing), else at the top: saving, cloning and moving a project
+are that one mechanism (the cookbook's "Save and restore a layout"). A
+replay joins a workspace of a name it gives, and refuses a tab or pane
+name the server already has (`name_taken`) before it makes anything. A
+dump starts new processes: it never brings back what a process held, its
+screen, its history or what ran in a shell, and it can repeat a program's
+side effects, so read it before you run it.
 
-A dump is executable launch intent. Replaying it starts new processes with
-new identities, using the saved launch arguments,
-directories, names and layouts. It can repeat external side effects. It does
-not save process memory, terminal contents/history, client
-views or journal entries. Replay is a sequence of requests: if a later one
-fails, earlier creations remain. Review the script before running it.
-
-`dump` is a library word over one scoped `recipe` snapshot. It builds the
-whole source before returning it, including quoted arguments and empty
-strings. The library's `quote` word returns one source token; `str` followed
-by that token reads the original text back. Quoted newlines stay inside
-string literals, including in omission annotations.
-
-A recipe is made whole, never as partial source.
-Dump a smaller scope when a complete session exceeds those bounds.
-
-Nothing is saved automatically. To recreate a layout after its server ends
-(a crash, `kill -9`, or a reboot), save a dump beforehand and replay it on a
-fresh server:
-
-```sh
-fux all dump > ~/session.fux              # save when you choose
-fux start && fux --file ~/session.fux # replay on a fresh server
-```
-
-Detaching, a client crash, or socket EOF leaves the server's processes,
-pane screens/history, layouts and journal running. That attachment's
-view, navigation history, focus seats and overlays are discarded. Remaining
-clients can change pane sizing and capability hosts. With every client gone,
-programs still run and their output is parsed into bounded state; no terminal
-hosts their tabs. A killed client cannot reliably restore its outer terminal.
-
-A normal server stop shuts down its panes and discards all in-memory state.
-A server crash or reboot offers no process-survival or recovery guarantee;
-SIGKILL cannot run cleanup, and OS hangup behavior is not a saved session.
-A restart creates a new server run. There is no automatic crash restore or
-live upgrade.
-
-Ordinary requests and attachments require exactly equal protocol numbers;
-release-version proximity does not suffice. On mismatch the existing server
-is left running, and a command line follows it: it runs again, unchanged,
-with the server's own binary (its process's `/proc/PID/exe`, the file it
-runs even once that was replaced), which speaks the server's protocol and
-vocabulary, and says so on stderr in one line. Its stdin, output and exit
-status are then that binary's. Where that cannot be, the command fails with
-`mismatch`, saying why: the system does not say the server's process (macOS),
-the server runs this same binary, or the program already did something
-outside fux's process (asked a server, started or stopped one, warned or
-read stdin), which running it again would do twice. A key's or a config's
-program never follows. `kill` on its process stops an incompatible server
-and its panes, as it stops any: `kill "$(fux status str server_pid get)"`
-where the system says the server's process (Linux); elsewhere (macOS),
-find it as you find any process (`lsof -t SOCKET`), then `kill` it.
-Starting another does not resume them.
-A lost command reply leaves its outcome unknown: the server may already have
-created a process, killed a target or queued input. Repeating that request is
-not a safe way to discover whether the first one ran.
-
-`arrange` replaces an existing tab's whole layout in one guarded commit:
-
-```fux
-@2 dup str layout_revision get
-list list str horizontal 1 2 1 2 end %3 list str horizontal 1 1 3 4 end %4 %5 end arrange
-```
-
-The list must name every current pane of that tab exactly once. The revision
-is `TAB:REVISION:RUN`, tied to the tab and server run. Layout edits and changes
-to the tab's fit invalidate it, even if a border is moved back. A stale or
-invalid proposal changes nothing. A revision the tab has since moved past
-fails with `stale`. A token for another tab or run, or a future serial, fails
-with `bad_value`.
-Pane focus stays with the same pane.
-Every background and sizing-client screen must show every pane; watchers do
-not constrain it. Success journals one `laid_out` invalidation, then sizes
-panes through the normal settle path, which reports PTY resize failures.
-
-The tree is a flat list, rooted at index zero. Each leaf accepts a typed pane
-or its action/wait answer; all retained pane runs must agree. A split is
-`list str horizontal|vertical FIRST-SHARE SECOND-SHARE FIRST-INDEX SECOND-INDEX end`.
-Every index must be reached once; shares are nonzero u32 values. A proposal
-nests at most 64 deep; past that it fails `too_long`, as `arrange` checks or
-the server. Revision exhaustion refuses further
-guarded edits rather than reusing a token.
-
-Layout presets are a recipe file, `recipes/layouts.fux` in a checkout of
-fux: after `require recipes/layouts.fux`, `@2 even-h`, `@2 even-v`,
-`@2 main-h`, `@2 main-v` and `@2 tiled` each read one topology snapshot and
-arrange its panes in tree order, using that observation's revision.
-`even-h` puts panes side by side; `even-v` stacks them. `main-h` puts the
-first pane above the rest in a row; `main-v` puts it beside the rest in a
-column. Both give the main pane two shares against the remainder's one.
-`tiled` alternates horizontal and vertical splits. Concurrent layout
-changes and layouts that do not fit are refused by `arrange`, without a
-retry. A config that requires it, relative to itself, can bind one:
-
-```fux
-require layouts.fux
-str 'C-b a =' code me focused tab even-h end bind str 'panes side by side' label
-```
-
-A dump makes the layouts and launches again: each shell starts afresh in
-its directory, each program a pane was started with starts again. It never brings
-back what a process held: its screen, its history, what ran in a shell. A
-pane whose directory is not UTF-8 text, which fuxth cannot write, is dumped
-without it: it starts where the dump is run. A shell whose current directory
-fux cannot read uses its saved launch directory. A comment line explains
-either case.
+Nothing is saved on its own: a server that stops or crashes takes its
+session with it. Detaching, or a client's crash, leaves the server and its
+programs running. A command line against a server of another fux protocol
+runs again with that server's own binary, saying so on stderr; where that
+cannot be, it fails `mismatch`, saying why.
 
 ## Terminal features
 
-The outer terminal must accept UTF-8 and xterm-style cursor movement,
-erasing, alternate-screen controls and SGR, including indexed/RGB colours.
-Fux emits this dialect directly; it does not choose it from outer `TERM` or
-a terminal-brand database. The `TERM=xterm-256color` given to pane programs
-describes fux, not evidence about the outer terminal.
-
-Queries supply evidence for keyboard flags, underline styles, sixel, cell
-size and colours. `ls json` exposes capability evidence separately from
-each client's effective output, and each tab's chosen `host` (see [JSON](docs/json.md)).
-An unanswered query is unknown. OSC 52 clipboard, OSC 8 links, cursor
-controls and synchronized-output markers are requests the outer terminal
-may ignore; sending them is not proof of support or delivery. Fux promises
-neither universal terminal compatibility nor identical glyphs across fonts
-and width implementations.
+fux writes one terminal dialect: UTF-8, xterm-style cursor movement and
+erasing, the alternate screen and SGR colours. It doesn't choose it from
+the outer `TERM`; programs in panes get `TERM=xterm-256color`, which
+describes fux. What the outer terminal supports, fux asks it, and an
+unanswered question stays unknown.
 
 - **Mouse.** fux turns on your terminal's mouse reporting only while the
-  focused pane's program asks for it (htop, `vim` with `mouse=a`, lazygit)
-  and nothing of fux's is open, and gives that program its clicks, drags
-  and wheel in its own cells and encoding. Clicks elsewhere (another pane,
-  a border, the bar) do nothing; a drag that leaves the pane stays at its
-  edge. The rest of the time your terminal selects text and scrolls as it
-  always does; while a program has the mouse, most terminals select with
-  Shift held. fux itself never acts on the mouse: no clicking to focus,
-  dragging borders or scrolling history (`C-b c` opens it in your editor).
-- **Keyboard.** If your terminal speaks the kitty keyboard protocol
-  (Ghostty, kitty, WezTerm, foot, iTerm2), fux turns it on while attached,
-  telling apart keys otherwise sent alike (Shift-Enter and Enter, Ctrl-I
-  and Tab); Escape needs no wait. Each program gets keys as it asked: kitty
-  protocol, xterm's modifyOtherKeys, or plain. The decoder and encoder are
-  fux-vt's (`fux_vt::keys`), so other hosts of fux-vt can use them.
-- **Synchronized output** (mode 2026): fux brackets output frames for
-  terminals supporting it. Pane programs' held frames are released after
-  1 s even if the program does not end the frame.
-- **One terminal answers for a tab.** With several terminals attached,
-  a tab's panes are answered (colours, scheme, sixel, cell size) by one
-  terminal, the tab's host: of those showing the tab, the one that last
-  typed into it, else the first attached; none in a tab no terminal shows
-  (a headless client has no terminal: it never hosts, and its keys don't
-  change who does). What the host didn't say is unknown, never taken from
-  another terminal or kept from an earlier host: a host that draws no
-  sixel means no pictures, one that said no background leaves it
-  unanswered, and one that said no cell size leaves `CSI 16 t`
-  unanswered.
-- **Colours.** Programs asking the foreground and background (OSC 10, 11)
-  or palette entries 0 to 15 (OSC 4) are told the host's, and get its
-  dark/light changes (mode 2031) if it reports them: one whose tab had
-  another host, or none, is told the scheme of the host it has once it
-  has one. Colours a program sets (OSC 4, 10, 11) apply to its own pane
-  only, and win over your terminal's; your terminal's palette is never
-  changed. A pane's cursor colour (OSC 12) is painted only while its
-  cursor is focused; resetting it (OSC 112), changing focus, opening an
-  overlay or detaching restores the terminal's configured colour. This
-  reset does not recover a colour set before attaching. If fux never
-  applied a pane's cursor colour, detach leaves it alone. A colour no one
-  knows is not answered: one the host didn't say, palette entries past 15
-  the program didn't set, and every colour in a tab with no host.
-- **Bells.** A program's bell rings each terminal showing its workspace, at
-  most once every 250 ms, and shows it a brief `bell in …` notice; a tab
-  you are not looking at is also marked `!` in the bar until you show it.
-  `str bell false set` silences all three. A program's notification (OSC
-  9, 777) shows as a brief notice, `%3 label: text`, in each terminal
-  showing its workspace, in place of a bell's notice from the same output.
-- **Titles.** With `str titles true set`, your terminal's title is the
-  focused pane's (or its tab's label). fux saves your terminal's own title
-  first and restores it when you detach or turn titles off.
-- **Hyperlinks** (OSC 8) are emitted as link requests to your terminal.
-- **Pictures** (sixel). A pane's program is told your terminal draws sixel
-  graphics, and the size of its cells (`CSI 16 t`, asked again each time
-  your terminal is resized, as a font zoom resizes it), if your terminal
-  says so (its terminal's size in pixels, `TIOCGWINSZ`, follows the cell,
-  and a change signals it, SIGWINCH), and the pictures it draws are shown on
-  your terminal, clipped to the pane; they scroll with the text, and text
-  over one, or an overlay, takes it away. A pane is told its tab's host's
-  sixel and cell size, at once as they change (its terminal is sized in
-  pixels for the cell, which signals its programs): with no host, or a host
-  that said no cell size, it is told it has none. A pane whose host
-  doesn't draw sixel, or said no cell size, is told no sixel, so its
-  programs draw in text (half blocks), which captures read; it keeps no new
-  picture, and shows those it has on no terminal until its host draws
-  sixel again, though another terminal showing its tab does. A picture
-  shows on each terminal showing it that draws sixel in the cell size it
-  was laid out in. `json` says where pictures are, and the cell size
-  (`cell`, `null` while it is told none). fux never makes a cell size
-  up: a terminal says none with a 0, or with one smaller than a sixel band, 2
-  by 6 pixels, which fux tells you. A pane told none leaves `CSI 14 t` and
-  `CSI 16 t` unanswered; told one, it answers them with it. A sixel
-  picture is placed only while the pane's host draws sixel and said its
-  cell size.
-  Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole, mlterm and others;
-  not by kitty, whose graphics protocol fux does not speak, nor Ghostty,
-  Alacritty or Apple's Terminal.
-- **Underline styles** (curly, dotted, dashed, double) reach your terminal
-  if it draws them, else a plain underline.
-- **In-band resize reports** (mode 2048) are sent when a pane's size
-  changes.
+  focused pane's program asks for it and nothing of fux's is open, and
+  gives that program its clicks, drags and wheel. The rest of the time
+  your terminal selects and scrolls as it always does. fux itself never
+  acts on the mouse.
+- **Keyboard.** With a terminal that speaks the kitty keyboard protocol,
+  fux tells keys apart that are otherwise sent alike (Shift-Enter and
+  Enter), and gives each program keys as it asked: kitty protocol,
+  xterm's modifyOtherKeys, or plain.
+- **One terminal answers for a tab:** of those showing it, the one that
+  last typed into it, else the first attached. Programs asking colours
+  (OSC 10, 11, 4), the scheme (mode 2031), sixel and cell size are told
+  that terminal's; what it didn't say stays unanswered.
+- **Clipboard.** A program that copies with OSC 52 copies to the terminals
+  showing it whose `terminal-clipboard` is on, up to 64 KiB. fux keeps no
+  copy and never reads the clipboard: paste with your terminal, or from a
+  file with `input paste send-keys < FILE`.
+- **Bells and notifications** ring and show a brief notice in each
+  terminal showing the workspace, at most once every 250 ms; `str bell
+  false set` silences them. **Titles**: with `str titles true set`, your
+  terminal's title is the focused pane's, and is restored when you detach.
+- **Pictures** (sixel) a program draws reach your terminal, clipped to
+  the pane, when the tab's terminal draws sixel and says its cell size
+  (foot, WezTerm, xterm `-ti vt340`, Konsole, mlterm); else the program is
+  told there is no sixel, and draws in text.
+- **Also:** synchronized output (mode 2026), OSC 8 hyperlinks, underline
+  styles, in-band resize reports (mode 2048), and OSC 133 shell marks,
+  which count a shell's commands in its pane's version and let
+  `last-output` read one's output alone (`fux help shells` has the lines
+  that send them, for bash, zsh and fish).
 
-## Not included
+## Left to other programs
 
-- **Pane logs** (tmux's `pipe-pane`): run the program under `script` in its
-  pane, so it still writes to a terminal, rather than to a pipe as with
-  `tee`. On Linux (util-linux):
-
-  ```sh
-  fux opts str agent in str script program str -q arg str -e arg str -f arg str LOG arg str -c arg str 'make test' arg new-tab
-  ```
-
-  On macOS and the BSDs, whose `script` takes the command as its last
-  words and flushes with `-F`:
-
-  ```sh
-  fux opts str agent in str script program str -q arg str -F arg str LOG arg str sh arg str -c arg str 'make test' arg new-tab
-  ```
-
-  LOG holds the raw bytes the program wrote to its terminal; util-linux
-  adds a first and a last line of its own, which BSD `-q` leaves out. `-e`
-  (util-linux) makes the pane's exit status the program's, which BSD
-  `script` always gives.
-- **fux's own mouse actions**: the mouse reaches only programs that ask for
-  it (see [Terminal features](#terminal-features)).
-- **Mouse reports in pixels** (mode 1016): your terminal tells fux the
-  cell the mouse is in, not the pixel within it, and fux makes none up.
-  The mode is reported permanently reset and setting it changes nothing,
-  so a program reports in cells, as with a terminal without it.
-- **Hooks** (tmux's `set-hook`): run an ordinary program over `X str
-  CURSOR events`, as over `journalctl -f`. Loss fails it, and needs a new
-  snapshot; hooks do not run on the server.
-- **Process survival after server failure**, or automatic session saving:
-  replaying a saved `dump` creates new processes and recreates the layout.
-- **A format language** for output (tmux's `#{…}`): `json`, and `X str
-  FIELD get` for one value.
-- **Watching the config file**: a typing terminal runs it as it attaches.
+| For | Use |
+| --- | --- |
+| a program's environment | `env(1)`: `str env program str PORT=8080 arg str ./app arg new-tab`; `env -u NAME` removes one |
+| a time limit | `timeout(1)`, on a fux command or as a pane's program |
+| a file into a pane | `fux %2 input paste send-keys < FILE` |
+| what a pane runs, and where | `ps`, `/proc` and `pgrep` on its program's `foreground_group` (`fux help agents`) |
+| stopping a server, whatever it holds | `kill` on its process ([Security](#security)) |
+| a log of a pane | `script(1)` as its program, so it still writes to a terminal (`fux help servers`) |
+| hooks | an ordinary program reading `events` |
+| scrollback, search and copy | your editor, on `C-b c` |
+| a format language | `json` with `jq`, or `X str FIELD get` |
+| keeping agents apart | a server each, or the OS's isolation: fux has no confinement |
 
 ## Security
 
 The server listens only on a Unix socket, which is the only way to
-control it: a sandbox that denies `connect` to it cannot drive fux. The
-socket is `FUX_SOCKET`, else `server.sock` in fux's directory. fux's directory is `$XDG_RUNTIME_DIR/fux` whenever
-`XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`; one of them set empty or to
-a relative path is refused, as is neither set. An auto-started server logs
-to `fux.log` beside it.
+control it. The socket is `FUX_SOCKET`, else `server.sock` in fux's
+directory, `$XDG_RUNTIME_DIR/fux` whenever `XDG_RUNTIME_DIR` is set, else
+`$TMPDIR/fux`; one of them set empty or to a relative path is refused, as
+is neither set. An auto-started server logs to `fux.log` beside it.
 
 - The socket's directory must be a directory of yours, not a symbolic
-  link, mode 0700; fux creates the default one so. The directories above
-  it are not checked.
+  link, mode 0700; fux creates the default one so.
 - The socket is mode 0600 before any connection is accepted, and a lock
   file makes one server its owner.
 - Every peer must run as the server's own user (`SO_PEERCRED` on Linux,
   `getpeereid` on macOS); others, root included, are refused.
 - Frames are length-prefixed and at most 1 MiB, checked before anything
-  is made for one; a longer message goes as several.
+  is made for one.
 
-Anyone who can open the socket can run anything as you (`new-tab`,
-`send-keys`). As with tmux, the socket's permissions are the access
-control. The server never interprets a program: it takes typed requests,
-and from attached terminals typed actions and literal keys for a pane.
+Anyone who can open the socket can run anything as you: as with tmux,
+the socket's permissions are the access control. fux has no confinement:
+any client may act anywhere on its server. To keep an agent to panes of
+its own, give it a server of its own (`fux help agents`); both still run
+as you, so neither is kept from your own processes and files.
 
-Against mistakes, rather than against a program of yours that means harm:
+`kill` on a server's process stops it, whatever it holds, even from its own
+panes. `status` gives its `server_pid` where the system says it (Linux);
+on macOS, `lsof -t` names it from the socket:
 
-- `kill-server` from one of the server's own panes, or while a person's
-  terminal is attached (headless clients do not count), is refused:
-  `kill` on its process stops it anyway (`fux status`'s `server_pid`; on
-  macOS, which says none, `lsof -t SOCKET`). `kill` takes a
-  handle or `all`, never a default, so an empty variable closes nothing.
-- To keep an agent to panes of its own, give it a server of its own, a
-  session apart from yours:
-
-  ```sh
-  FUX_SOCKET=/run/user/1000/agent.sock fux start
-  FUX_SOCKET=/run/user/1000/agent.sock fux opts str agent in 120 40 size new-tab
-  ```
-
-  An agent given only that socket reaches only what runs there; you watch
-  it by attaching to the socket (`FUX_SOCKET=… fux opts watch attach`, or `fux`
-  to type there too). Panes never move between servers. It keeps a mistake
-  in one session from reaching the other, nothing more: both servers run as
-  you, so neither is kept from your own processes and files.
-- `fux opts watch attach` watches without typing into anything.
+```sh
+kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
+```
 
 ## Development
 
-CI runs, on Linux and macOS, these and the rest of
-[its gates](.github/workflows/ci.yml):
-
-```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
-```
-
-The tests start real servers and shells: they need `/bin/sh`, `/bin/bash` and
-`python3`, use `dash` if it is on `PATH`, and with `FUX_TEST_SHELLS=1`
-also zsh and fish. Tools outside the workspace, each
-with a README:
-
-- [`fux-vt/compare`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md):
-  fux's terminal emulator beside other terminals;
-- [`diff`](https://github.com/gold-silver-copper/fux/blob/master/diff/README.md):
-  fux beside its last release;
-- [`bench`](https://github.com/gold-silver-copper/fux/blob/master/bench/README.md):
-  speed, latency and footprint;
-- [`fuzz`](https://github.com/gold-silver-copper/fux/blob/master/fuzz/README.md):
-  libFuzzer targets;
-- [`walk`](https://github.com/gold-silver-copper/fux/blob/master/walk/README.md):
-  scripted runs of the real binary.
-
-fuxth itself is its own crate, [`fuxth`](fuxth/README.md): the language with
-no words of fux's, for any program that wants a small Forth to drive it.
+CI runs, on Linux and macOS, `cargo fmt --all --check`, `cargo clippy
+--workspace --all-targets --locked -- -D warnings`, `cargo test
+--workspace --locked` and the rest of [its gates](.github/workflows/ci.yml).
+The tests start real servers and shells: they need `/bin/sh`, `/bin/bash`
+and `python3`, use `dash` if it is on `PATH`, and with `FUX_TEST_SHELLS=1`
+also zsh and fish. Tools outside the workspace, each with a README:
+[`fux-vt/compare`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/README.md) (fux's terminal emulator
+beside other terminals), [`diff`](https://github.com/gold-silver-copper/fux/blob/master/diff/README.md) (fux beside its last
+release), [`bench`](https://github.com/gold-silver-copper/fux/blob/master/bench/README.md) (speed, latency and footprint),
+[`fuzz`](https://github.com/gold-silver-copper/fux/blob/master/fuzz/README.md) (libFuzzer targets) and [`walk`](https://github.com/gold-silver-copper/fux/blob/master/walk/README.md)
+(scripted runs of the real binary).
 
 ## License
 
