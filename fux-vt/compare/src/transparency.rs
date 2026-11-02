@@ -352,7 +352,10 @@ impl Through {
     /// Whether the pane holds a frame of synchronized output.
     pub fn held(&mut self) -> bool {
         let held = |h: &mut fux_server::host::Host| h.pane().frame_deadline().is_some();
-        (self.session.host_mut(self.pane, held, std::time::Instant::now())).unwrap_or(false)
+        (self
+            .session
+            .host_mut(self.pane, held, std::time::Instant::now()))
+        .unwrap_or(false)
     }
 
     /// Releases a held frame, as its pane does once its timeout passes.

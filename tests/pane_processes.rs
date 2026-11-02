@@ -108,7 +108,7 @@ fn cap(pid: i32, more: u64) -> Outcome {
         .find_map(|line| line.strip_prefix("VmSize:"))
         .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
         .ok_or("its size")?;
-    let limit = (kib * 1024 + more).to_string();
+    let limit = kib.saturating_mul(1024).saturating_add(more).to_string();
     let out = std::process::Command::new("prlimit")
         .args(["--pid", &pid.to_string(), &format!("--as={limit}:{limit}")])
         .output()
