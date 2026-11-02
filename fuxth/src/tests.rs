@@ -2309,3 +2309,28 @@ fn a_control_word_declares_what_the_steps_it_compiles_fail_with() -> Result<(), 
     }
     Ok(())
 }
+
+/// A source read above a run that waits for its host is read to its end
+/// there, so the host can answer with a code value of the machine's own;
+/// a failure there is no `try`'s of the run's, and the run goes on as it
+/// was either way.
+#[test]
+fn a_source_read_above_a_waiting_run_leaves_it_as_it_was() -> Result<(), Error> {
+    let mut machine = compile("str unknown_word try 1 ask execute catch drop -1 end")?;
+    let host = &mut Toy::default();
+    assert_eq!(machine.run(host, u64::MAX)?, Outcome::Suspended(1));
+    let above = machine.read_above(token::source("answer", "code no-such-word end")?)?;
+    let failed = machine.run(host, u64::MAX).err().map(|e| e.code.name());
+    assert_eq!(failed, Some("unknown_word"), "not the run's try's");
+    machine.left_above(above);
+    let above = machine.read_above(token::source("answer", "code 5 add end")?)?;
+    assert_eq!(machine.run(host, 1)?, Outcome::Paused);
+    while machine.run(host, 1)? != Outcome::Finished {}
+    let xt = machine.pop()?;
+    machine.left_above(above);
+    machine.push(Value::Int(10));
+    machine.push(xt);
+    assert_eq!(machine.run(host, u64::MAX)?, Outcome::Finished);
+    assert_eq!(machine.stack(), ints(&[15]));
+    Ok(())
+}

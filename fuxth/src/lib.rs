@@ -49,7 +49,7 @@ mod vocabulary;
 pub use codes::Known;
 pub use error::Error;
 pub use fuxth_core::{Code, Failure};
-pub use machine::{Args, Builtin, Definition, Done, Host, Machine, Origin, Outcome};
+pub use machine::{Above, Args, Builtin, Definition, Done, Host, Machine, Origin, Outcome};
 pub use reader::Doc;
 pub use token::{Place, Token};
 pub use value::{Address, AppValue, List, Mark, Text, Thrown, Value, Xt};
