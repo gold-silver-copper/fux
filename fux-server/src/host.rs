@@ -233,7 +233,9 @@ impl Host {
 
     /// What the server says.
     pub fn handle(&mut self, message: ToPane, now: Instant) {
-        self.dirty = true;
+        // What may change its screen or facts: neither its last screen
+        // taken nor keys typed do (an echo is its program's output).
+        self.dirty |= !matches!(message, ToPane::Taken | ToPane::Typed { .. });
         match message {
             // Its first word, which `begin` took.
             ToPane::Begin(_) | ToPane::Taken => {}

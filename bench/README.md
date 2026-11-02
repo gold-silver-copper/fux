@@ -196,7 +196,7 @@ pane programs are this binary's (`__echo`, `__flood`, `__serve`,
 | --- | --- |
 | latency | `__echo` answers each key `a`–`z` with its circled letter; a key is timed from the write to the client's PTY to the read that brings the glyph back. Keys 17 to 25 ms apart (past fux's 16 ms paint interval), idle and beside a `__flood` pane. Median, p99, mean, max, misses (no echo in 2 s; ten in a row end the run), bytes and paints per key |
 | throughput | `__serve` writes, when asked, a reset, the workload, and a marker no workload has; timed until the client has the marker. Every corpus recording and synthetic workload (16 MiB); bytes sent and paints |
-| footprint | with a shell: server and client CPU over 10 s; server memory, then with 4 more panes, 4 more with full 10,000-row histories, and 50 shells |
+| footprint | with a shell: server and client CPU over 10 s; server memory, then with 4 more panes, 4 more with full 10,000-row histories, and 50 shells. A server is every process of its own: it and each process under it running its executable (fux's panes and connections), not the programs in its panes; memory is PSS (shared pages counted by share), where Linux says it |
 
 It writes `bench/target/fux-bench/feel.json` and prints a summary.
 

@@ -712,18 +712,19 @@ wired!(Expect {
 });
 
 /// A screen composed for an attached client: what its terminal is sent
-/// first (its title, its bell marks taken), the screen, and its pictures,
+/// first (its title, its bell marks taken), the screen as it differs from
+/// the last it was sent (`render::Patch`), and its pictures,
 /// each with the sixel data that draws it at its place, the first time it
 /// is sent this client. `forget`: what the client shows is not known (it
 /// resized), and is painted whole.
 #[derive(Debug)]
 pub struct Paint {
     pub before: Vec<u8>,
-    pub grid: crate::render::Grid,
+    pub screen: crate::render::Patch,
     pub pictures: Vec<Shown>,
     pub forget: bool,
 }
-wired!(struct Paint { before, grid, pictures, forget });
+wired!(struct Paint { before, screen, pictures, forget });
 
 /// A picture an attached client is shown: its identity, the cells of its
 /// screen it takes (top row, first column, rows, columns), and, the first

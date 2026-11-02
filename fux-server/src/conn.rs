@@ -30,6 +30,9 @@ enum Want {
 /// An attached client's screen as it shows it, and its pictures.
 #[derive(Default)]
 struct Screen {
+    /// The screen its server last composed for it, which each patch it
+    /// sends goes on (`render::Patch`).
+    composed: Grid,
     shown: Grid,
     /// Whether `shown` is what the client's terminal shows.
     known: bool,
@@ -42,14 +45,17 @@ impl Screen {
     /// Paints `paint` onto the client's terminal, as it differs from what
     /// it shows: a picture gone or moved has its cells painted again,
     /// blank, which takes its pixels away; one whose cells this paint
-    /// paints over, or new, is sent after the text.
-    fn paint(&mut self, paint: Paint, out: &mut ByteQueue) {
+    /// paints over, or new, is sent after the text. A patch that does not
+    /// go on what it was sent is its server's mistake.
+    fn paint(&mut self, paint: Paint, out: &mut ByteQueue) -> Result<(), String> {
         let Paint {
             before,
-            grid: spare,
+            screen,
             pictures,
             forget,
         } = paint;
+        screen.onto(&mut self.composed)?;
+        let spare = self.composed.clone();
         if forget {
             self.known = false;
         }
@@ -94,6 +100,7 @@ impl Screen {
         self.data
             .retain(|id, _| now.iter().any(|(shown, _)| shown == id));
         self.pictures = now;
+        Ok(())
     }
 
     /// Its terminal's cursor overrides given back as its own, at detach;
@@ -278,7 +285,9 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                     ToConn::Expect(expect) => want = Want::Frames(expect),
                     ToConn::Answered => answered = true,
                     ToConn::Paint(paint) => {
-                        screen.paint(*paint, &mut out);
+                        screen
+                            .paint(*paint, &mut out)
+                            .map_err(|e| format!("its server sent a bad screen: {e}"))?;
                         unflushed = true;
                     }
                     ToConn::Detached => screen.restore(&mut out),

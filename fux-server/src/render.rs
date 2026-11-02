@@ -841,58 +841,92 @@ impl Grid {
     }
 }
 
-/// A grid on the wire, as the server sends a client's connection's process
-/// each screen it composes for it (`conn`): its cells, a cluster each with
-/// its width, its links, its cursor and modes, and how the client's
-/// terminal draws.
-impl fux_wire::wire::Wire for Grid {
-    fn put(&self, out: &mut impl fux_wire::wire::Sink) {
-        (self.rows, self.cols).put(out);
-        for y in 0..self.rows {
-            for x in 0..self.cols {
-                let cell = self.get(y, x).unwrap_or_default();
-                let width = match (cell.is_wide_continuation(), cell.is_wide()) {
-                    (true, _) => 0u8,
-                    (false, false) => 1,
-                    (false, true) => 2,
-                };
-                width.put(out);
-                if width > 0 {
-                    cell.contents().to_owned().put(out);
-                    cell.attributes().put(out);
-                }
-                let link = self.link(y, x);
-                let link = link.map(|(pane, link)| (pane, link.key(), link.uri().to_owned()));
-                link.put(out);
-            }
-        }
-        self.cursor.put(out);
+/// What a grid composed for a client shows that its connection's process
+/// was not sent before (`Grid::patch`): its size, each row that differs
+/// from the last grid it was sent (every row, with none or one of another
+/// size), its cursor and modes, and how the client's terminal draws. The
+/// process puts it on what it was sent before (`Patch::onto`).
+#[derive(Debug)]
+pub struct Patch {
+    size: (u16, u16),
+    lines: Vec<(u16, Vec<PatchCell>)>,
+    cursor: Option<(u16, u16)>,
+    /// The cursor's shape, as DECSCUSR numbers it, its colour, and the
+    /// mouse's mode.
+    modes: (u16, Option<Rgb>, u16),
+    /// `underline_styles` and `cell_placement`.
+    draws: (bool, bool),
+}
+wired!(struct Patch { size, lines, cursor, modes, draws });
+
+/// A cell of a patch's row: its width (0 for a wide glyph's second half),
+/// its cluster and attributes, and its link.
+#[derive(Debug)]
+struct PatchCell {
+    width: u8,
+    text: String,
+    attributes: Attributes,
+    link: Option<(PaneId, u64, String)>,
+}
+wired!(struct PatchCell { width, text, attributes, link });
+
+impl Grid {
+    /// What this grid shows that `sent`, the last its connection's process
+    /// was sent, does not.
+    pub fn patch(&self, sent: Option<&Grid>) -> Patch {
+        let sent = sent.filter(|sent| (sent.rows, sent.cols) == (self.rows, self.cols));
+        let lines = (differing_rows(sent, self).into_iter())
+            .map(|y| {
+                let cells = (0..self.cols).map(|x| {
+                    let cell = self.get(y, x).unwrap_or_default();
+                    let width = match (cell.is_wide_continuation(), cell.is_wide()) {
+                        (true, _) => 0,
+                        (false, false) => 1,
+                        (false, true) => 2,
+                    };
+                    let link = self.link(y, x);
+                    PatchCell {
+                        width,
+                        text: cell.contents().to_owned(),
+                        attributes: cell.attributes(),
+                        link: link.map(|(pane, link)| (pane, link.key(), link.uri().to_owned())),
+                    }
+                });
+                (y, cells.collect())
+            })
+            .collect();
         let Modes {
             cursor_shape,
             cursor_colour,
             mouse,
         } = self.modes;
-        (cursor_shape.number(), cursor_colour, mouse).put(out);
-        (self.underline_styles, self.cell_placement).put(out);
+        Patch {
+            size: (self.rows, self.cols),
+            lines,
+            cursor: self.cursor,
+            modes: (cursor_shape.number(), cursor_colour, mouse),
+            draws: (self.underline_styles, self.cell_placement),
+        }
     }
+}
 
-    fn get(r: &mut fux_wire::wire::Reader<'_>) -> Result<Self, fux_wire::wire::Error> {
-        use fux_wire::wire::Error;
-        let (rows, cols) = <(u16, u16)>::get(r)?;
-        let mut grid = Grid::new(rows, cols).map_err(|_| Error::Bad("a grid's size"))?;
-        for y in 0..rows {
-            for x in 0..cols {
-                let cell = match u8::get(r)? {
-                    0 => None,
-                    width => Some((width == 2, String::get(r)?, Attributes::get(r)?)),
-                };
-                match &cell {
-                    None => grid.set(y, x, CellRef::wide_continuation()),
-                    Some((wide, text, attributes)) => {
-                        grid.set(y, x, CellRef::new(text, *wide, *attributes));
-                    }
+impl Patch {
+    /// Puts it on `grid`, the last grid it was made against: one of
+    /// another size is made anew, blank, first.
+    pub fn onto(self, grid: &mut Grid) -> Result<(), String> {
+        let (rows, cols) = self.size;
+        if (grid.rows, grid.cols) != (rows, cols) {
+            *grid = Grid::new(rows, cols).map_err(|e| e.to_string())?;
+        }
+        grid.memo = None;
+        for (y, cells) in self.lines {
+            grid.links.unlink(y, 0..cols);
+            for (x, cell) in (0..cols).zip(cells) {
+                match cell.width {
+                    0 => grid.set(y, x, CellRef::wide_continuation()),
+                    width => grid.set(y, x, CellRef::new(&cell.text, width == 2, cell.attributes)),
                 }
-                if let Some((pane, key, uri)) = Option::<(PaneId, u64, String)>::get(r)? {
+                if let Some((pane, key, uri)) = cell.link {
                     let link = Linked::Sent {
                         key,
                         uri: Arc::from(uri),
@@ -901,18 +935,18 @@ impl fux_wire::wire::Wire for Grid {
                 }
             }
         }
-        grid.cursor = Option::get(r)?;
-        let (shape, cursor_colour, mouse) = <(u16, Option<Rgb>, u16)>::get(r)?;
+        grid.cursor = self.cursor;
+        let (shape, cursor_colour, mouse) = self.modes;
         let cursor_shape = (CursorShape::ALL.iter().copied())
             .find(|s| s.number() == shape)
-            .ok_or(Error::Bad("a cursor shape"))?;
+            .ok_or("a cursor shape")?;
         grid.modes = Modes {
             cursor_shape,
             cursor_colour,
             mouse,
         };
-        (grid.underline_styles, grid.cell_placement) = <(bool, bool)>::get(r)?;
-        Ok(grid)
+        (grid.underline_styles, grid.cell_placement) = self.draws;
+        Ok(())
     }
 }
 

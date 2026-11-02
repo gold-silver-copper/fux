@@ -129,6 +129,8 @@ struct Conn {
     pending: bool,
     /// Its client sent what is no frame: it is read no more.
     bad: bool,
+    /// Its process closed its link: it is done, whatever its stage.
+    gone: bool,
     stage: Stage,
 }
 
@@ -207,6 +209,9 @@ struct Attached {
     /// client, a resize), the next paint is a full one. The screen itself
     /// is its process's.
     known: bool,
+    /// The screen last composed for it, which its process was sent: the
+    /// next is sent as it differs (`Grid::patch`).
+    sent: Grid,
     /// Where its panes were last placed.
     placement: Placement,
     /// When the next paint may be made.
@@ -256,6 +261,7 @@ impl Attached {
             client,
             processed: 0,
             known: false,
+            sent: Grid::default(),
             placement: Placement::default(),
             pictures: Vec::new(),
             clock: PaintClock {
@@ -295,6 +301,7 @@ impl Conn {
             out: ByteQueue::default(),
             pending: false,
             bad: false,
+            gone: false,
             stage: Stage::Hello,
         })
     }
@@ -371,7 +378,8 @@ impl Conn {
     /// its client is; whether its client is gone, or shut its side.
     fn hear(&mut self, buffer: &mut [u8]) -> bool {
         use crate::link::FromConn;
-        let mut closed = self.link.read_up_to(buffer, CONN_READ) == crate::link::Read::Closed;
+        self.gone |= self.link.read_up_to(buffer, CONN_READ) == crate::link::Read::Closed;
+        let mut closed = self.gone;
         loop {
             match self.link.next_message::<FromConn>() {
                 Ok(Some(FromConn::Frames(frames))) => self.decoder.push(&frames),
@@ -953,9 +961,9 @@ impl Server {
     /// send. Neither has a client attached: it was detached as it ended.
     fn close_conns(&mut self) {
         // One closing goes once its process, done with its client, closes
-        // its link (`read_conn`).
+        // its link (`Conn::hear`).
         self.conns.retain_mut(|conn| {
-            let dead = matches!(conn.stage, Stage::Dead);
+            let dead = matches!(conn.stage, Stage::Dead) || conn.gone;
             // What it was told before it died still goes, as far as it can.
             if dead {
                 let _ = conn.link.flush();
@@ -1166,19 +1174,21 @@ impl Server {
             .collect();
         attached.pictures = shown.iter().map(|p| p.id).collect();
         let forget = !attached.known;
+        let screen = grid.patch(attached.known.then_some(&attached.sent));
+        // The grid it was sent before is the next composed into: one of the
+        // same frame is put together again from its memo, where little
+        // changed (`Memo`).
+        mem::swap(&mut attached.sent, &mut grid);
+        self.scratch = grid;
         attached.known = true;
         attached.clock.painted(now);
         let paint = crate::link::Paint {
             before,
-            grid,
+            screen,
             pictures: shown,
             forget,
         };
-        let message = crate::link::ToConn::Paint(Box::new(paint));
-        conn.tell_process(&message);
-        if let crate::link::ToConn::Paint(paint) = message {
-            self.scratch = paint.grid;
-        }
+        conn.tell_process(&crate::link::ToConn::Paint(Box::new(paint)));
         // Its process told now rather than when the next poll says it can
         // be: a keystroke's echo goes out a round sooner.
         conn.pending = true;
@@ -2021,6 +2031,29 @@ mod tests {
         Ok(())
     }
 
+    /// A command client gone, its connection is dropped once its process
+    /// ends: none is kept polled on a closed link, which spun an idle
+    /// server.
+    #[test]
+    fn a_finished_commands_connection_is_dropped() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let (stream, client) = UnixStream::pair()?;
+        let mut conn = linked(stream, Some(crate::link::Expect::Asked))?;
+        conn.stage = Stage::Command;
+        server.conns.push(conn);
+        drop(client);
+        let deadline = after(Instant::now(), std::time::Duration::from_secs(10));
+        while server.conns.len() > 1 {
+            if Instant::now() > deadline {
+                return Err("its connection was kept".into());
+            }
+            server.serve_conn(1, PollFlags::IN | PollFlags::OUT, Instant::now());
+            server.close_conns();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
     /// The frames waiting for the client: what is painted in them, and the
     /// `Exit`'s reason.
     /// Worker first, source second, unrelated command third. No process or
@@ -2144,7 +2177,7 @@ mod tests {
                     .and_then(Conn::attached)
                     .ok_or("source")?
                     .processed;
-                server.serve_conn(1, PollFlags::IN, Instant::now());
+                server.serve_conn(1, PollFlags::IN | PollFlags::OUT, Instant::now());
                 let after = server
                     .conns
                     .get_mut(1)
@@ -2176,7 +2209,7 @@ mod tests {
                         .ok_or("pane")?
                         <= KEYS
                 );
-                server.serve_conn(1, PollFlags::IN, Instant::now());
+                server.serve_conn(1, PollFlags::IN | PollFlags::OUT, Instant::now());
                 let after = server
                     .conns
                     .get_mut(1)
