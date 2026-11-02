@@ -249,7 +249,7 @@ mod tests {
             return Err("a record".into());
         };
         let held = record.get("code").map_err(|e| e.message)?;
-        assert_eq!(held, Value::App(Fux::Code(Rc::new(code))));
+        assert_eq!(held, Value::App(Fux::Code(Rc::new(code.into()))));
         let sent = data(&Value::App(Fux::Record(Rc::clone(record))));
         assert_eq!(sent.map_err(|e| e.message)?, answer);
         Ok(())
@@ -560,7 +560,7 @@ mod tests {
         let run = |program: &str, words: &str, stop: Option<&crate::script::Stop>| {
             let tokens = crate::script::token::source("t", program).map_err(|e| e.to_string())?;
             let mut machine = crate::script::compile(&tokens).map_err(|e| e.to_string())?;
-            let sent = Rc::new(crate::testing::code(words));
+            let sent = Rc::new(crate::testing::code(words).into());
             machine.push(Value::App(Fux::Code(sent)));
             let mut out = Vec::new();
             let mut host = Host::new(Context::default(), None, &mut out);
@@ -603,6 +603,28 @@ mod tests {
         );
         stopping.join().map_err(|_| "the stopping thread")?;
         assert!(spins.is_err() && stop.stopped(), "{spins:?}");
+        Ok(())
+    }
+
+    /// A sent code value run again and again in one machine runs what it
+    /// made there the first time: one compilation, however many runs.
+    #[test]
+    fn a_sent_code_value_compiles_once_where_it_runs_again() -> TestResult {
+        let made = |runs: u32| -> Result<usize, Box<dyn std::error::Error>> {
+            let program = format!("{runs} 0 do dup execute drop loop drop");
+            let mut machine =
+                crate::script::compile(&crate::script::token::source("t", &program)?)?;
+            machine.push(Value::App(Fux::Code(Rc::new(
+                crate::testing::code("7").into(),
+            ))));
+            let before = machine.made();
+            let mut out = Vec::new();
+            let mut host = Host::new(Context::default(), None, &mut out);
+            let left = crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
+            assert!(left.is_empty(), "{left:?}");
+            Ok(machine.made() - before)
+        };
+        assert_eq!(made(1000)?, made(1)?);
         Ok(())
     }
 

@@ -2309,3 +2309,27 @@ fn a_control_word_declares_what_the_steps_it_compiles_fail_with() -> Result<(), 
     }
     Ok(())
 }
+
+/// Code its host made for a value of its own is let go of once nothing
+/// holds it, and kept while something does.
+#[test]
+fn lent_code_goes_once_nothing_holds_it() -> Result<(), Error> {
+    let host = &mut Toy::default();
+    let mut machine = with_stdlib();
+    let mut made = || -> Result<Value<Ticket>, Error> {
+        let from = machine.made();
+        machine.read(token::source("t", "code 1 2 add end")?, None);
+        while machine.run(host, u64::MAX)? != Outcome::Finished {}
+        machine.lent(from);
+        machine.pop()
+    };
+    let (Value::Xt(Xt(kept)), Value::Xt(Xt(dropped))) = (made()?, made()?) else {
+        return Err(Error::new(Code::Type, "code … end makes an xt", None));
+    };
+    let gone = std::rc::Rc::downgrade(&dropped);
+    drop(dropped);
+    machine.release();
+    assert!(gone.upgrade().is_none(), "nothing held it");
+    assert!(machine.owns(&Value::Xt(Xt(kept))), "a value held it");
+    Ok(())
+}

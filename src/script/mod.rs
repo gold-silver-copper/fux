@@ -71,7 +71,37 @@ pub enum Fux {
     Answer(Rc<Answer>, Option<Run>),
     /// A code value another client sent, as its words: `execute` compiles
     /// them in this program's dictionary, then runs them (`Ask::Code`).
-    Code(Rc<fux_wire::callback::Code>),
+    Code(Rc<Sent>),
+}
+
+/// A code value another client sent: its words, and the xt they made
+/// where it was executed last, which runs again in the machine that made
+/// it while it holds it.
+#[derive(Debug)]
+pub struct Sent {
+    code: fux_wire::callback::Code,
+    made: std::cell::RefCell<Option<Value<Fux>>>,
+}
+
+impl From<fux_wire::callback::Code> for Sent {
+    fn from(code: fux_wire::callback::Code) -> Self {
+        let made = std::cell::RefCell::default();
+        Self { code, made }
+    }
+}
+
+/// Two are equal when their words are.
+impl PartialEq for Sent {
+    fn eq(&self, other: &Self) -> bool {
+        self.code == other.code
+    }
+}
+
+impl std::ops::Deref for Sent {
+    type Target = fux_wire::callback::Code;
+    fn deref(&self) -> &Self::Target {
+        &self.code
+    }
 }
 
 impl AppValue for Fux {
@@ -347,7 +377,7 @@ pub enum Ask {
     Dictionary(Option<String>),
     /// A code value another client sent (`Fux::Code`), `execute`d: made
     /// in the program's dictionary as #370 makes a callback's, then run.
-    Code(Rc<fux_wire::callback::Code>),
+    Code(Rc<Sent>),
 }
 
 /// The keys of a binding just made.
@@ -1301,18 +1331,40 @@ fn steps(
                 let records = dictionary(machine, name.as_deref());
                 pushed(machine, records)?
             }
-            Outcome::Suspended(Ask::Code(code)) => {
-                // Compiled with the run set aside, which it can't touch.
-                let aside = machine.set_aside();
-                let xt = code_value(machine, &code, stop);
-                machine.take_back(aside);
-                let ran = xt.and_then(|xt| machine.execute(xt).map_err(|e| uncaught(machine, e)));
+            Outcome::Suspended(Ask::Code(sent)) => {
+                let ran = sent_xt(machine, &sent, stop)
+                    .and_then(|xt| machine.execute(xt).map_err(|e| uncaught(machine, e)));
                 if let Err(failed) = ran {
                     pushed(machine, Err(failed))?
                 }
             }
         }
     }
+}
+
+/// The xt `sent` makes in `machine`: the one it made there before, while
+/// `machine` holds it; else its words compiled as a callback's are, the run
+/// set aside, which they can't touch. What was made so and is held no more
+/// is let go of first, so a program that reads and runs code again and
+/// again keeps only what it holds.
+fn sent_xt(
+    machine: &mut Machine<Fux>,
+    sent: &Sent,
+    stop: Option<&Stop>,
+) -> Result<Value<Fux>, Failed> {
+    if let Some(xt) = sent.made.borrow().clone().filter(|xt| machine.owns(xt)) {
+        return Ok(xt);
+    }
+    machine.release();
+    let from = machine.made();
+    let aside = machine.set_aside();
+    let xt = code_value(machine, sent, stop);
+    machine.take_back(aside);
+    machine.lent(from);
+    if let Ok(xt) = &xt {
+        *sent.made.borrow_mut() = Some(xt.clone());
+    }
+    xt
 }
 
 /// The record of the word `name` names in `machine`'s dictionary now, or,
@@ -1476,7 +1528,7 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
         }
         // Its code values kept as their words, which `execute` compiles.
         Body::Read(data) => callback::value(&data, &mut |code| {
-            Ok(Value::App(Fux::Code(Rc::new(code.clone()))))
+            Ok(Value::App(Fux::Code(Rc::new(code.clone().into()))))
         })?,
     }])
 }

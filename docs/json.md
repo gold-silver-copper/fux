@@ -566,8 +566,8 @@ whether it `repeat`s and has a `keymap` of its own, as deep as the keys go.
 A `code` is a code value: the client sends its words, and reading it
 compiles nothing. `execute` compiles them in the dictionary of the
 program that runs it, as a callback's code is compiled (asking nothing of
-the server, reading no file, stopped by a stop), then runs them
-(`… str code get execute`). A word that dictionary lacks fails there,
+the server, reading no file, stopped by a stop), once in that program,
+then runs them (`… str code get execute`). A word that dictionary lacks fails there,
 `unknown_word`: the command line lacks the bundled keys' helpers
 (`me-focused`) and the client's config's words, which a key's or the
 prompt's program has. `json` writes it as its words, and a callback,

@@ -570,6 +570,9 @@ pub struct Machine<A> {
     /// reader itself, from its source: so `code` and `end` can tell a
     /// quotation their words alone make again.
     pub(crate) read_here: bool,
+    /// The versions a host made for values of its own (`Host::code`),
+    /// which `release` lets go of once nothing holds them.
+    lent: Vec<usize>,
 }
 
 impl<A: AppValue> Machine<A> {
@@ -609,6 +612,7 @@ impl<A: AppValue> Machine<A> {
             raised: Vec::new(),
             last: None,
             read_here: false,
+            lent: Vec::new(),
         };
         let vocabulary = Rc::clone(&machine.vocabulary);
         for builtin in Builtin::ALL {
@@ -1016,6 +1020,55 @@ impl<A: AppValue> Machine<A> {
             return Err(self.not_executed(&xt));
         };
         self.enter(&code)
+    }
+
+    /// Whether `xt` is this machine's, so it runs here.
+    pub fn owns(&self, xt: &Value<A>) -> bool {
+        matches!(xt, Value::Xt(Xt(code)) if self.index_of(code).is_ok())
+    }
+
+    /// How many versions of code it has made: where the next one goes.
+    pub fn made(&self) -> usize {
+        self.versions.len().saturating_add(self.fresh.len())
+    }
+
+    /// The versions made since `from` were made by its host for a value of
+    /// its own (`Host::code`): `release` lets go of them once nothing
+    /// holds them.
+    pub fn lent(&mut self, from: usize) {
+        self.lent.extend(from..self.made());
+    }
+
+    /// Lets go of each version `lent` that no value holds and no call
+    /// runs: its index stays, naming empty code, so no other changes.
+    pub fn release(&mut self) {
+        let running = |index: usize, frames: &[Frame]| {
+            frames.iter().any(|frame| match frame {
+                Frame::Code { code, via, .. } => {
+                    *code == index || via.is_some_and(|(code, _)| code == index)
+                }
+                Frame::Read(_) => false,
+            })
+        };
+        let unheld = |code: Option<&Rc<Steps<A>>>| code.is_some_and(|c| Rc::strong_count(c) == 1);
+        let (free, held): (Vec<usize>, Vec<usize>) = std::mem::take(&mut self.lent)
+            .into_iter()
+            .partition(|&index| unheld(self.version_at(index)) && !running(index, &self.frames));
+        self.lent = held;
+        if free.is_empty() {
+            return;
+        }
+        let empty = Rc::new(Steps::new(Rc::from("")));
+        let kept = self.versions.len();
+        for index in free {
+            let slot = match index.checked_sub(kept) {
+                None => Rc::make_mut(&mut self.versions).get_mut(index),
+                Some(fresh) => self.fresh.get_mut(fresh),
+            };
+            if let Some(slot) = slot {
+                *slot = Rc::clone(&empty);
+            }
+        }
     }
 
     /// What the machine is running, set aside, so that it is at rest with
