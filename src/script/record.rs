@@ -208,7 +208,7 @@ pub(super) fn word(definition: &fuxth::Definition<'_>, codes: Option<&[fuxth::Co
         ("effect", text(definition.effect)),
         (
             "documentation",
-            text(crate::help::documentation(definition).as_deref()),
+            crate::help::documentation(definition).map_or_else(null, Value::str),
         ),
         ("definition", source),
         (

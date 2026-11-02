@@ -232,16 +232,20 @@ pub fn documentation(definition: &fuxth::Definition<'_>) -> Option<String> {
         }
     }
     if word == Word::Act(Act::Set) {
-        out.push_str(&settings());
+        settings(&mut out);
     } else if word == Word::Act(Act::Json) {
-        out.push_str(&format!("\n{JSON}"));
+        out.push('\n');
+        out.push_str(JSON);
     }
-    Some(out.trim_end().to_owned())
+    while out.ends_with(char::is_whitespace) {
+        out.pop();
+    }
+    Some(out)
 }
 
-/// Local settings and their bundled initialization source.
-fn settings() -> String {
-    let mut out = String::from("\nThe settings:\n");
+/// Local settings and their bundled initialization source, after `out`.
+fn settings(out: &mut String) {
+    out.push_str("\nThe settings:\n");
     for [name, takes, about] in crate::client_state::table() {
         let about = about.split_whitespace().map(str::to_owned);
         out.push_str(&format!(
@@ -253,7 +257,6 @@ fn settings() -> String {
     out.push_str("\nStyles rows: [role foreground background flags...]; roles: bar tab keys\nnotice error panel border border-focus. Colours: 0..255, default, #rrggbb.\nFlags: bold dim italic underline. A subset changes only its supplied roles.\nBar: [top/bottom/off [left fields] [right fields] tab-numbers?].\nFields: workspace tabs pane [slot 0..15]; each once.\nNative notices, prefix/repeat/zoom hints and clipping remain authoritative.\nOff, the default, takes no row: the bar overlays the bottom pane row while\na screen shows (the prefix's too), other feedback its corner; no PTY resizes.\nBar-slots replaces all slots: [0..15 text] rows, each slot once, text\nwith no controls. Text is inert. No paint-time programs or added timers.\nstr show-column false set hides the body, retaining dispatch, Escape and feedback.\n");
     out.push_str("\nBundled initialization (client-defaults.fux):\n");
     out.push_str(crate::script::DEFAULTS);
-    out
 }
 
 #[cfg(test)]
