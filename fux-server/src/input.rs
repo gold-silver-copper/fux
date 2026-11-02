@@ -191,7 +191,7 @@ impl Session {
             Some((body, token)) => {
                 let runs_in = self.views.get(&client).and_then(|v| v.runs_in);
                 if let Some(pane) = self.focused(client).filter(|p| runs_in != Some(*p)) {
-                    self.deliveries.push((body, token, vec![pane], None));
+                    self.deliveries.push((body, token, vec![pane]));
                 }
                 let _ = self.type_in(client, Typed::Body(token), now);
             }

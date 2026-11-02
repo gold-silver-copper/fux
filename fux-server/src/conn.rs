@@ -13,9 +13,12 @@
 use crate::link::{Drawn, End, Expect, FromConn, FromSide, Making, Read, ToConn, ToPane, ToSide};
 use crate::render::{Grid, Scene, Sixels, Visible};
 use fux_vt::bytes::ByteQueue;
+use fux_wire::answer::PaneResults;
 use fux_wire::command::{Input, Run};
 use fux_wire::id::{ClientId, PaneId};
-use fux_wire::protocol::{Asked, Attach, AttachedFrame, Decoder, Frame, Hello, ToAttached};
+use fux_wire::protocol::{
+    Asked, Attach, AttachedFrame, Decoder, Frame, Hello, Response, ToAttached,
+};
 use std::collections::BTreeMap;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -325,11 +328,11 @@ fn reach(socket: &std::path::Path, run: Run) -> Option<End> {
 
 /// Where an attached client's connection takes bodies other connections
 /// send its client (`ToConn::Keys`): its socket, removed as it ends, and
-/// those reaching it.
+/// those reaching it, each once it has said its first word (`Join`).
 struct Listening {
     listener: std::os::unix::net::UnixListener,
     path: PathBuf,
-    peers: Vec<End>,
+    peers: Vec<(End, bool)>,
 }
 
 impl Drop for Listening {
@@ -366,23 +369,26 @@ impl Listening {
                 let ours = fuxix::socket::peer(&stream)
                     .is_ok_and(|peer| peer.uid == fuxix::process::geteuid());
                 if let (true, Ok(end)) = (ours, End::new(stream)) {
-                    self.peers.push(end);
+                    self.peers.push((end, false));
                 }
             }
         }
         let mut kept = Vec::new();
-        for (mut end, readable) in std::mem::take(&mut self.peers)
+        for ((mut end, mut joined), readable) in std::mem::take(&mut self.peers)
             .into_iter()
             .zip(ready.iter().skip(1).chain(std::iter::repeat(&false)))
         {
-            let closed = *readable && end.read(buffer) == Read::Closed;
-            let mut joined = false;
+            // One that says what it has no business saying is let go.
+            let mut gone = *readable && end.read(buffer) == Read::Closed;
             loop {
                 if !joined {
                     match end.next_message::<ToPane>() {
                         Ok(Some(ToPane::Join { run: theirs })) if theirs == run => joined = true,
                         Ok(None) => break,
-                        Ok(Some(_)) | Err(_) => break,
+                        Ok(Some(_)) | Err(_) => {
+                            gone = true;
+                            break;
+                        }
                     }
                     continue;
                 }
@@ -390,11 +396,15 @@ impl Listening {
                     Ok(Some(ToSide::Body { token, inputs })) => {
                         bodies.insert(token, inputs);
                     }
-                    Ok(None) | Ok(Some(_)) | Err(_) => break,
+                    Ok(None) => break,
+                    Ok(Some(_)) | Err(_) => {
+                        gone = true;
+                        break;
+                    }
                 }
             }
-            if !closed {
-                kept.push(end);
+            if !gone {
+                kept.push((end, joined));
             }
         }
         self.peers = kept;
@@ -407,6 +417,14 @@ impl Listening {
 enum Errand {
     /// A body sent: done once its link took it all.
     Post(End),
+    /// Its client's keys sent `client`'s connection as body `token`, if it
+    /// could be reached: its own client's reply once that took them all,
+    /// or could not.
+    Keys {
+        end: Option<End>,
+        client: ClientId,
+        token: u64,
+    },
     /// A capture to fetch, then place: its client's reply.
     Fetch {
         end: Option<End>,
@@ -426,8 +444,27 @@ enum Errand {
 
 impl Errand {
     /// The errand making the reply `making` says (`ToConn::Make`).
-    fn of(making: Making, panes: &std::path::Path, run: Run) -> Errand {
+    /// What `making` takes, at `panes` of run `run`, its client's bodies
+    /// `bodies` at hand.
+    fn of(
+        making: Making,
+        panes: &std::path::Path,
+        run: Run,
+        bodies: &mut BTreeMap<u64, Vec<Input>>,
+    ) -> Errand {
         match making {
+            Making::Keys {
+                client,
+                body,
+                token,
+            } => {
+                let inputs = bodies.remove(&body).unwrap_or_default();
+                let end = reach(&client_socket(panes, client), run).map(|mut end| {
+                    end.send(&ToSide::Body { token, inputs });
+                    end
+                });
+                Errand::Keys { end, client, token }
+            }
             Making::Capture {
                 pane,
                 token,
@@ -477,6 +514,7 @@ impl Errand {
         };
         match self {
             Errand::Post(end) => vec![(end, flags(end, false))],
+            Errand::Keys { end, .. } => end.iter().map(|end| (end, flags(end, false))).collect(),
             Errand::Fetch { end, .. } => end.iter().map(|end| (end, flags(end, true))).collect(),
             Errand::Compose { waiting, .. } => waiting
                 .iter()
@@ -493,6 +531,22 @@ impl Errand {
                 Ok(false) => None,
                 Ok(true) | Err(_) => Some(None),
             },
+            Errand::Keys { end, client, .. } => {
+                let response = match end.as_mut().map(End::flush) {
+                    Some(Ok(false)) => return None,
+                    Some(Ok(true)) => Response::Answered(PaneResults::Many(Vec::new())),
+                    // Taken by none: said so; the token is dropped there
+                    // once its asker goes.
+                    Some(Err(_)) | None => {
+                        *end = None;
+                        Response::Failed {
+                            code: fux_wire::code::Code::Indeterminate,
+                            message: format!("the keys did not reach {client}'s connection"),
+                        }
+                    }
+                };
+                Some(Some(framed(run, response)))
+            }
             Errand::Fetch { end, pane, placed } => {
                 let Some(end) = end else {
                     return Some(Some(reply(run, Err(gone_capture(*pane)))));
@@ -554,16 +608,21 @@ fn gone_capture(pane: PaneId) -> String {
     format!("{pane}'s capture is gone: its own process ended")
 }
 
-/// A reply its connection makes itself (`Making`), framed for its client.
+/// A capture its connection makes itself (`Making`), framed for its client.
 fn reply(run: Run, captured: Result<Box<fux_wire::answer::Captured>, String>) -> Vec<u8> {
-    use fux_wire::protocol::{Body, Reply, Response, ToCommand};
     let response = match captured {
-        Ok(captured) => Response::Returned(Body::Capture(captured)),
+        Ok(captured) => Response::Returned(fux_wire::protocol::Body::Capture(captured)),
         Err(message) => Response::Failed {
             code: fux_wire::code::Code::Indeterminate,
             message,
         },
     };
+    framed(run, response)
+}
+
+/// A reply its connection makes itself, framed for its client.
+fn framed(run: Run, response: Response) -> Vec<u8> {
+    use fux_wire::protocol::{Reply, ToCommand};
     let reply = Reply {
         run: Some(run),
         response,
@@ -825,7 +884,11 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
         }
         let reads = !shut && !ended && !matches!(want, Want::Answer | Want::Nothing);
         let wake = composer.due(out.is_empty());
-        let timeout = wake.map(|at| at.saturating_duration_since(now));
+        // An errand with no link left to wait on goes on at once.
+        let timeout = match errands.iter().any(|errand| errand.links().is_empty()) {
+            true => Some(Duration::ZERO),
+            false => wake.map(|at| at.saturating_duration_since(now)),
+        };
         let mut fds = poll.list();
         let mut theirs = Events::NONE;
         if reads {
@@ -858,7 +921,7 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
             .map_or(0, |l| l.peers.len().saturating_add(1));
         if let Some(listening) = &listening {
             fds.push(PollFd::new(&listening.listener, Events::IN));
-            for end in &listening.peers {
+            for (end, _) in &listening.peers {
                 fds.push(PollFd::new(&end.stream, Events::IN));
             }
         }
@@ -918,6 +981,16 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                 None if run.is_some() => going.push(errand),
                 None | Some(None) => {}
                 Some(Some(made)) => {
+                    // Taken all of, they are its client's connection's now:
+                    // so said before its own client, done, can go.
+                    if let Errand::Keys {
+                        end: Some(_),
+                        token,
+                        ..
+                    } = errand
+                    {
+                        link.send(&FromConn::Retired(token));
+                    }
                     out.push(&made);
                     (unflushed, making) = (true, false);
                 }
@@ -931,6 +1004,14 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
             let gone = link.read(&mut buffer) == Read::Closed;
             loop {
                 match link.next_message::<ToConn>() {
+                    // A body none will send now holds nothing back.
+                    Ok(Some(ToConn::Drop { token })) => {
+                        received.remove(&token);
+                        backlog.retain(|m| !matches!(m, ToConn::Keys { token: t } if *t == token));
+                        if keys == Some(token) {
+                            keys = None;
+                        }
+                    }
                     Ok(Some(message)) => backlog.push_back(message),
                     Ok(None) => break,
                     Err(error) => return Err(format!("its server sent a bad frame: {error}")),
@@ -966,21 +1047,9 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                     ToConn::Answered => answered = true,
                     ToConn::Hello { panes, run } => composer.panes = Some((panes, run)),
                     ToConn::Scene(scene) => composer.scene(*scene),
-                    ToConn::Deliver {
-                        body,
-                        token,
-                        panes,
-                        client: to,
-                    } => {
+                    ToConn::Deliver { body, token, panes } => {
                         let inputs = bodies.remove(&body).unwrap_or_default();
                         errands.extend(composer.deliver(token, &inputs, &panes));
-                        let reached = (composer.panes.as_ref())
-                            .zip(to)
-                            .and_then(|((panes, run), to)| reach(&client_socket(panes, to), *run));
-                        if let Some(mut end) = reached {
-                            end.send(&ToSide::Body { token, inputs });
-                            errands.push(Errand::Post(end));
-                        }
                     }
                     ToConn::Listen { client: me } => {
                         listening = composer
@@ -989,15 +1058,10 @@ pub fn serve(client: UnixStream, server: UnixStream) -> Result<(), String> {
                             .and_then(|(panes, _)| Listening::at(panes, me));
                     }
                     ToConn::Keys { token } => keys = Some(token),
-                    ToConn::Drop { token } => {
-                        received.remove(&token);
-                        if keys == Some(token) {
-                            keys = None;
-                        }
-                    }
+                    ToConn::Drop { .. } => {}
                     ToConn::Make(made) => {
                         if let Some((panes, run)) = &composer.panes {
-                            errands.push(Errand::of(*made, panes, *run));
+                            errands.push(Errand::of(*made, panes, *run, &mut bodies));
                             making = true;
                         }
                     }

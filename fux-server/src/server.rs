@@ -427,8 +427,14 @@ impl Conn {
     fn answer(&mut self, session: &mut Session, mut reply: Reply, now: Instant) {
         // One its process makes itself: told how (`link::Making`).
         if let Some(making) = session.making.take() {
-            if let crate::link::Making::Capture { pane, token, .. } = &making {
-                self.tokens.insert((Holder::Pane(*pane), *token));
+            match &making {
+                crate::link::Making::Capture { pane, token, .. } => {
+                    self.tokens.insert((Holder::Pane(*pane), *token));
+                }
+                crate::link::Making::Keys { client, token, .. } => {
+                    self.tokens.insert((Holder::Client(*client), *token));
+                }
+                crate::link::Making::Client { .. } => {}
             }
             self.tell_process(&crate::link::ToConn::Make(Box::new(making)));
             if self.stage.asked() {
@@ -1448,17 +1454,9 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        for (body, token, panes, client) in deliveries {
-            let holders =
-                (panes.iter().map(|pane| Holder::Pane(*pane))).chain(client.map(Holder::Client));
-            conn.tokens.extend(holders.map(|holder| (holder, token)));
-            let deliver = crate::link::ToConn::Deliver {
-                body,
-                token,
-                panes,
-                client,
-            };
-            conn.tell_process(&deliver);
+        for (body, token, panes) in deliveries {
+            (conn.tokens).extend(panes.iter().map(|pane| (Holder::Pane(*pane), token)));
+            conn.tell_process(&crate::link::ToConn::Deliver { body, token, panes });
         }
     }
 

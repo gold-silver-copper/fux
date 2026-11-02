@@ -272,7 +272,7 @@ pub struct Session {
     /// bodies to go to panes, each its connection's number, its token and
     /// the panes; and the last token given.
     body: Option<u64>,
-    pub deliveries: Vec<(u64, u64, Vec<PaneId>, Option<ClientId>)>,
+    pub deliveries: Vec<(u64, u64, Vec<PaneId>)>,
     /// What panes used up of what connections held them for (`Retired`):
     /// the server lets each go of its connection.
     pub retired: Vec<(PaneId, u64)>,
@@ -1262,7 +1262,7 @@ impl Session {
             }
         }
         if let Some((body, token)) = body {
-            self.deliveries.push((body, token, asked, None));
+            self.deliveries.push((body, token, asked));
         }
         let form = match many {
             true => Form::Many,
@@ -3120,18 +3120,20 @@ impl Session {
             // pane answers: they go to the pane the client chooses.
             ClientAction::Keys(ref inputs) => {
                 // Inputs its asker's connection kept go from it to the
-                // client's connection, which sends them its client.
-                match self.body_token() {
-                    Some((body, token)) => {
-                        self.deliveries
-                            .push((body, token, Vec::new(), Some(client)));
-                        self.outbox.push(Outgoing::Keys(client, token));
-                    }
-                    None => {
-                        let keys = ToAttached::Keys(inputs.clone());
-                        self.outbox.push(Outgoing::To(client, keys));
-                    }
+                // client's connection, which sends them its client: the
+                // asker's answers once they are there.
+                if let Some((body, token)) = self.body_token() {
+                    self.outbox.push(Outgoing::Keys(client, token));
+                    let keys = crate::link::Making::Keys {
+                        client,
+                        body,
+                        token,
+                    };
+                    self.making = Some(keys);
+                    return Ok(Reply::default());
                 }
+                let keys = ToAttached::Keys(inputs.clone());
+                self.outbox.push(Outgoing::To(client, keys));
                 return Ok(PaneResults::Many(Vec::new()).into());
             }
             ClientAction::Detach => {
@@ -8296,7 +8298,7 @@ mod tests {
         for n in 0..32 {
             s.give_body(Some(n));
             let pending = s.send_keys(to, &[], Instant::now())?;
-            let (_, token, _, _) = s.deliveries.pop().ok_or("its delivery")?;
+            let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
             let inputs = vec![Input::Text("x".into())];
             host(&mut s, id, |h| h.body(token, inputs))?;
             assert_eq!(s.retired.pop(), Some((id, token)));

@@ -865,8 +865,9 @@ fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome 
 }
 
 /// 21. Keys for a client go from the asking connection to the client's,
-///     never through the server (D-123): a paste for one grows no memory of
-///     the server's, and its client takes it as typed.
+///     never through the server (D-123): a paste of any size for one grows
+///     no memory of the server's, its client takes all of it as typed, and
+///     what is sent it after comes too.
 #[cfg(target_os = "linux")]
 #[test]
 fn keys_for_a_client_never_pass_through_the_server() -> Outcome {
@@ -875,29 +876,61 @@ fn keys_for_a_client_never_pass_through_the_server() -> Outcome {
     let mut client = server.attach(24, 80)?;
     client.wait_for("$")?;
     let id = client.id.clone().ok_or("its id")?;
-    server.ok(&[
-        "str",
-        &id,
-        "client",
-        "str",
-        "via-client",
-        "text",
-        "send-keys",
-    ])?;
-    client.wait_for("via-client")?;
+    let got = server.dir.join("got");
+    let keeps = format!("stty -icanon -echo; exec cat > {}\r", got.display());
+    client.keys(&keeps)?;
+    eventually("its program to keep what it is sent", || {
+        client.pump()?;
+        Ok(got.exists())
+    })?;
     let pid = server_pid(&server)?;
     let before = peak_kib(pid)?;
+    let has = |want: u64, client: &mut Client| {
+        eventually(&format!("{want} bytes kept"), || {
+            client.pump()?;
+            Ok(std::fs::metadata(&got).map_err(e)?.len() >= want)
+        })
+    };
+    let mut sent = 0u64;
+    for size in [1usize << 20, 32 << 20] {
+        let mut sending = started(
+            &server,
+            &["str", &id, "client", "input", "paste", "send-keys"],
+        )?;
+        let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+        stdin.write_all(&vec![b'y'; size]).map_err(e)?;
+        drop(stdin);
+        let mut status = None;
+        eventually("the keys sent", || {
+            client.pump()?;
+            status = sending.try_wait().map_err(e)?;
+            Ok(status.is_some())
+        })?;
+        assert!(status.is_some_and(|s| s.success()), "{status:?}");
+        sent = sent.saturating_add(u64::try_from(size).map_err(e)?);
+        has(sent, &mut client)?;
+    }
+    let grew = peak_kib(pid)?.saturating_sub(before);
+    assert!(grew < 8 << 10, "the server grew {grew} KiB");
+    server.ok(&["str", &id, "client", "str", "abcde", "text", "send-keys"])?;
+    has(sent.saturating_add(5), &mut client)?;
+    assert_eq!(
+        std::fs::metadata(&got).map_err(e)?.len(),
+        sent.saturating_add(5)
+    );
+    // Keys that can't reach it fail, saying so.
+    let socket = kept(&server).join(format!("c{}", id.trim_start_matches('c')));
+    std::fs::remove_file(&socket).map_err(e)?;
     let mut sending = started(
         &server,
         &["str", &id, "client", "input", "paste", "send-keys"],
     )?;
-    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
-    stdin.write_all(&vec![b'y'; 24 << 20]).map_err(e)?;
-    drop(stdin);
-    eventually("the keys sent", || {
-        Ok(sending.try_wait().map_err(e)?.is_some())
-    })?;
-    let grew = peak_kib(pid)?.saturating_sub(before);
-    assert!(grew < 8 << 10, "the server grew {grew} KiB");
+    drop(sending.stdin.take());
+    let lost = sending.wait_with_output().map_err(e)?;
+    let said = String::from_utf8_lossy(&lost.stderr);
+    assert!(
+        !lost.status.success() && said.contains("did not reach"),
+        "{said}"
+    );
     Ok(())
 }

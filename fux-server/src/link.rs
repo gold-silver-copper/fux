@@ -345,8 +345,16 @@ pub enum Making {
         client: ClientId,
         scene: Box<crate::render::Scene>,
     },
+    /// Its client's body `body` sent `client`'s connection as body
+    /// `token`, which types it: answered once that took it all, or why it
+    /// could not.
+    Keys {
+        client: ClientId,
+        body: u64,
+        token: u64,
+    },
 }
-wired!(Making { Capture { pane, token, placed }, Client { client, scene } });
+wired!(Making { Capture { pane, token, placed }, Client { client, scene }, Keys { client, body, token } });
 
 /// From a pane's process to the server, in the order it happened.
 #[derive(Clone, Debug)]
@@ -888,13 +896,12 @@ pub enum ToConn {
     /// What its attached client's screen is made of now but its panes'
     /// screens, which it gets from the panes (`render::Scene`).
     Scene(Box<crate::render::Scene>),
-    /// Its client's body `body` (`FromConn::Frame`) goes to `panes`, or to
-    /// `client`'s connection, as their server's `token`.
+    /// Its client's body `body` (`FromConn::Frame`) goes to `panes`, as
+    /// their server's `token`.
     Deliver {
         body: u64,
         token: u64,
         panes: Vec<PaneId>,
-        client: Option<ClientId>,
     },
     /// Its client is attached as `client`: it listens for bodies other
     /// connections send it, at `SOCKET.panes/cN` (`ToSide::Body`).
@@ -902,7 +909,8 @@ pub enum ToConn {
     /// Its client is sent body `token`'s keys, as typed at its terminal
     /// (`ToAttached::Keys`), once the body comes: what follows waits.
     Keys { token: u64 },
-    /// Body `token` is wanted no more: its sender is gone.
+    /// Body `token` is wanted no more: its sender is gone. Taken as it
+    /// comes, before what waits for it.
     Drop { token: u64 },
     /// The answer to its client's request, which it makes itself, as its
     /// client is to have it: its last word once made.
@@ -919,7 +927,7 @@ wired!(ToConn {
     Answered,
     Hello { panes, run },
     Scene(s),
-    Deliver { body, token, panes, client },
+    Deliver { body, token, panes },
     Listen { client },
     Keys { token },
     Drop { token },
@@ -955,7 +963,8 @@ pub enum FromConn {
     /// Its client sent what is no frame of those expected: why. It reads
     /// it no more.
     Bad(String),
-    /// Body `0` another connection sent it is used up: sent its client.
+    /// Body `0` is used up: another connection's, sent its client; or its
+    /// own, which the client's connection it was for took all of.
     Retired(u64),
 }
 wired!(FromConn { Frame { frame, body }, Flushed, Shut, Bad(why), Retired(t) });
