@@ -189,7 +189,7 @@ The machine numbers hold throughout:
 
 | Property | Today | Promise |
 |---|---|---|
-| Keystroke echo, idle / beside a flood (p50) | 0.24 / 0.25 ms | ≤ 0.5 / ≤ 1 ms |
+| Keystroke echo, idle / beside a flood (p50; D-127) | 0.81 / 0.18 ms | ≤ 1 / ≤ 1 ms |
 | Plain text to the screen | 151 MB/s | ≥ 100 MB/s |
 | Idle wakeups in 10 s | 0 | 0 |
 | Server memory at start / per empty pane, every process counted (D-121) | 5.3 MiB / 60 KiB | ≤ 8 MiB / ≤ 1 MiB |
