@@ -628,7 +628,10 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
     let mut b = server.attach(8, 60)?;
     a.wait_for("$")?;
     b.wait_for("$")?;
-    server.ok(&["str c1 client str F5 key send-keys drop"])?;
+    // Its id as it was welcomed: two clients attaching at once are given
+    // theirs in the order their connections' processes reach the server.
+    let id = a.id.clone().ok_or("a's id")?;
+    server.ok(&[&format!("str {id} client str F5 key send-keys drop")])?;
     eventually("committed title before the wait finishes", || {
         a.pump()?;
         b.pump()?;
