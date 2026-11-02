@@ -192,7 +192,7 @@ fn a_flood_under_a_cap_ends_its_pane_process_alone() -> Outcome {
     let flood = pane(&server, "a", &["sleep", "1000"])?;
     let shell = pane(&server, "b", &["sh"])?;
     let own = own_process(&server, &flood)?;
-    cap(own, 256 << 20)?;
+    cap(own, 64 << 20)?;
     // It asks its terminal what it is, and never reads the answers.
     let asks = r#"q=$(printf '\033[c%.0s' $(seq 200)); yes "$q""#;
     let respawn = [
@@ -228,7 +228,7 @@ fn a_client_that_stops_reading_ends_only_its_connection() -> Outcome {
         return Err(format!("its connection's process: {conns:?}"));
     };
     let conn = *conn;
-    cap(conn, 64 << 20)?;
+    cap(conn, 16 << 20)?;
     let shell = support::focused(&server)?;
     // It no longer reads (`pump`) from here on.
     let copies = r#"while :; do printf '\033]52;c;aGk=\a'; done"#;
@@ -438,6 +438,7 @@ fn a_run_that_cannot_be_taken_back_is_refused_naming_its_panes() -> Outcome {
 }
 
 /// `fux ARGS…` against `server`, started: its stdin is a pipe.
+#[cfg(target_os = "linux")]
 fn started(server: &Server, args: &[&str]) -> Result<std::process::Child, String> {
     std::process::Command::new(fux())
         .args(args)
@@ -452,21 +453,34 @@ fn started(server: &Server, args: &[&str]) -> Result<std::process::Child, String
         .map_err(e)
 }
 
-/// `fux ARGS…` against `server`, given `seconds` at most (`timeout`): its
-/// status, 124 if it took longer, and what it said.
-fn within(server: &Server, seconds: u32, args: &[&str]) -> Result<Output, String> {
-    let out = std::process::Command::new("timeout")
-        .arg(seconds.to_string())
-        .arg(fux())
+/// `fux ARGS…` against `server`, given `seconds` at most: its status, 124
+/// if it took longer (killed then), and what it said.
+fn within(server: &Server, seconds: u64, args: &[&str]) -> Result<Output, String> {
+    let mut child = std::process::Command::new(fux())
         .args(args)
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
         .env_remove("FUX_PANE")
         .env_remove("FUX_SERVER")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(e)?;
+    let deadline = after(std::time::Duration::from_secs(seconds));
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(e)? {
+            break status.code().unwrap_or(-1);
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break 124;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let out = child.wait_with_output().map_err(e)?;
     Ok(Output {
-        status: out.status.code().unwrap_or(-1),
+        status,
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
@@ -773,11 +787,13 @@ fn a_takeover_keeps_ended_program_panes_by_their_role() -> Outcome {
     let shell = id(&server.ok(&["opts", "str", "w", "in", "80", "24", "size", "new-tab"])?);
     let _reap = reap_run(server)?;
     signal(own_process(server, &ended)?, Signal::Kill);
-    eventually("its program ended", || {
+    // Ended, or on macOS, which gives the server no orphan to reap, its
+    // terminal's read failed: either way no longer running.
+    eventually("its program no longer running", || {
         let state = server.ok(&[
             "str", &ended, "pane", "str", "program", "get", "str", "state", "get",
         ])?;
-        Ok(state.trim() == "ended")
+        Ok(state.trim() != "running")
     })?;
     let (lost_own, shell_own) = (own_process(server, &lost)?, own_process(server, &shell)?);
     let pid = server_pid(server)?;
