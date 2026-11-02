@@ -1625,10 +1625,12 @@ fn attached(
         if is(STREAM) && !read_more(stream, decoder)? {
             let welcomed = keyboard.is_some();
             let ended = last_frames(stream, decoder, welcomed, output.as_deref_mut());
-            // A server that stops says so first (`Exit`): one that ends
-            // without a word crashed, and its run waits for the next.
-            let crashed = "the fux server ended without stopping; its panes wait for the next: \
-                           `fux` takes them back";
+            // A server that stops says so first (`Exit`): without a word,
+            // it crashed, its run waiting for the next, or this
+            // connection's own process ended.
+            let crashed = "the connection to the fux server ended without a word: it, or the \
+                           server, crashed; `fux` attaches again, and takes a crashed server's \
+                           panes back";
             return ended.unwrap_or_else(|| Ok(crashed.into()));
         }
     }

@@ -306,7 +306,7 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
     signal(pid, Signal::Kill);
     attached.wait_exit()?;
     let said = String::from_utf8_lossy(&attached.output).into_owned();
-    assert!(said.contains("ended without stopping"), "{said}");
+    assert!(said.contains("ended without a word"), "{said}");
     for program in programs {
         assert!(alive(program), "{program} ended with the server");
     }

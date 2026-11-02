@@ -333,12 +333,15 @@ impl Drop for Session {
         };
         match self.mux {
             Mux::Direct => {}
+            // A stop (SIGTERM) ends fux's run, panes and all, with its
+            // terminal attached, which `kill-server` refuses; a kill would
+            // leave its panes waiting for the next server.
             Mux::Fux => {
-                let socket = env.iter().any(|(k, _)| k == "FUX_SOCKET");
-                if let Some(fux) = env.iter().find(|(k, _)| k == "FUX_BIN").map(|(_, v)| v)
-                    && socket
+                if let Some(pid) = (self.server_pid)
+                    .and_then(|p| i32::try_from(p).ok())
+                    .and_then(fuxix::process::Pid::from_raw)
                 {
-                    run(fux, &["kill-server"]);
+                    let _ = fuxix::process::kill(pid, fuxix::process::Signal::Term);
                 }
             }
             Mux::Tmux => run(
@@ -491,7 +494,6 @@ fn start(
             }
             let socket = socket.to_string_lossy().into_owned();
             env.push(("FUX_SOCKET".into(), socket.clone()));
-            env.push(("FUX_BIN".into(), place.fux.clone()));
             let env_ref: Vec<(&str, &str)> =
                 env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             // fux's bar takes no row: the pane is the client's size.
