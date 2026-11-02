@@ -1747,40 +1747,47 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
         let due = clock.due(now) <= now;
         let mut sent = false;
         // What it tells its server, taken first: telling marks it changed.
-        let reports = host.take();
-        // Its screen next, to the connections that show it: a keystroke's
-        // echo goes before its facts are made for its server.
-        for peer in &mut peers {
-            if let Some(Some(watch)) = &mut peer.side
-                && !watch.waiting
+        let mut reports = host.take();
+        // Its screen goes first, to the connections that show it, so that a
+        // keystroke's echo waits for no facts made for its server; but after
+        // a copy, which reaches the clients through the server, it goes
+        // after what it tells the server, so the copy comes no later.
+        let copied = (reports.iter()).any(|r| matches!(r, FromPane::Copied(_)));
+        for screen in [!copied, copied] {
+            if screen {
+                for peer in &mut peers {
+                    if let Some(Some(watch)) = &mut peer.side
+                        && !watch.waiting
+                        && due
+                        && let Some(drawn) = host.drawn(watch)
+                    {
+                        peer.end.send(&FromSide::Drawn(Box::new(drawn)));
+                        (watch.waiting, sent) = (true, true);
+                    }
+                    let _ = peer.end.flush();
+                }
+                continue;
+            }
+            let Some(end) = &mut link else {
+                // With no server, what it does is in its state alone.
+                drop(std::mem::take(&mut reports));
+                continue;
+            };
+            for report in std::mem::take(&mut reports) {
+                end.send(&report);
+            }
+            if !waiting
                 && due
-                && let Some(drawn) = host.drawn(watch)
+                && let Some(update) = host.update()
             {
-                peer.end.send(&FromSide::Drawn(Box::new(drawn)));
-                (watch.waiting, sent) = (true, true);
+                end.send(&FromPane::Update(Box::new(update)));
+                (waiting, sent) = (true, true);
+                again = Some(crate::after(now, PAINT));
             }
-            let _ = peer.end.flush();
-        }
-        match &mut link {
-            Some(end) => {
-                for report in reports {
-                    end.send(&report);
-                }
-                if !waiting
-                    && due
-                    && let Some(update) = host.update()
-                {
-                    end.send(&FromPane::Update(Box::new(update)));
-                    (waiting, sent) = (true, true);
-                    again = Some(crate::after(now, PAINT));
-                }
-                if end.flush().is_err() {
-                    (link, waiting) = (None, false);
-                    host.forget();
-                }
+            if end.flush().is_err() {
+                (link, waiting) = (None, false);
+                host.forget();
             }
-            // With no server, what it does is in its state alone.
-            None => drop(reports),
         }
         if sent {
             clock = Clock {
