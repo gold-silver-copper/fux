@@ -89,6 +89,7 @@ fn data_within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
         }
         Value::App(Fux::Client(c, run)) => Data::Client(*c, *run),
         Value::Xt(_) => Data::Code(code(v)?),
+        Value::App(Fux::Code(code)) => Data::Code((**code).clone()),
         Value::App(Fux::Opts(_) | Fux::Extent(_) | Fux::Answer(..))
         | Value::Mark(_)
         | Value::Failure(_)
@@ -230,6 +231,25 @@ mod tests {
             client: Data::Null,
         })
     }
+    /// A client's answer is read compiling nothing, so no machine keeps
+    /// code for it: each code value in it is its words, which go on to
+    /// another client as they came.
+    #[test]
+    fn a_clients_code_values_are_read_as_their_words() -> TestResult {
+        let code = crate::testing::code("me-focused confirm-close");
+        let answer = Data::record([("code", Data::Code(code.clone()))]);
+        let reply = fux_wire::protocol::Body::Read(answer.clone()).into();
+        let read = crate::script::answered(reply)?;
+        let [Value::App(Fux::Record(record))] = read.as_slice() else {
+            return Err("a record".into());
+        };
+        let held = record.get("code").map_err(|e| e.message)?;
+        assert_eq!(held, Value::App(Fux::Code(Rc::new(code))));
+        let sent = data(&Value::App(Fux::Record(Rc::clone(record))));
+        assert_eq!(sent.map_err(|e| e.message)?, answer);
+        Ok(())
+    }
+
     /// Data with no code value in it needs no machine to read.
     fn no_code(_: &Code) -> Result<Value<Fux>, Failed> {
         Err(Failed::new(
@@ -321,7 +341,7 @@ mod tests {
             }
             .into(),
         })?;
-        let mut values = crate::script::answered(reply, &mut no_code)?;
+        let mut values = crate::script::answered(reply)?;
         let root = values.pop().ok_or("snapshot")?;
         let payload = data(&root).map_err(|e| e.message)?;
         let bytes = fux_wire::wire::encode(&payload);

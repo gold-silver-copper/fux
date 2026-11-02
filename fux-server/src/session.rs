@@ -3591,23 +3591,10 @@ pub(crate) mod testing {
         session.outbox = kept;
     }
 
-    /// A reply's code values, which only a client's answers carry.
-    pub(crate) fn no_code(
-        _: &fux_wire::callback::Code,
-    ) -> Result<fuxth::Value<fux::script::Fux>, fux::script::Failed> {
-        let why = "a session's reply carries no code";
-        Err(fux::script::Failed::new(
-            fux_wire::code::Code::BadValue,
-            why,
-        ))
-    }
-
     /// What a reply's answer prints, a value a line, or why it failed.
     pub(crate) fn said(reply: &Result<Reply, super::Error>) -> String {
         let values = match reply {
-            Ok(reply) => {
-                fux::script::answered(reply.clone(), &mut no_code).map_err(|f| f.to_string())
-            }
+            Ok(reply) => fux::script::answered(reply.clone()).map_err(|f| f.to_string()),
             Err(error) => Err(error.to_string()),
         };
         match values {
@@ -4031,11 +4018,10 @@ mod tests {
                 })
             );
             assert_eq!(split, panes == 2);
-            let reply = Reply {
+            let held = fux::script::answered(Reply {
                 run: Some(s.run),
                 ..Body::Snapshot(snapshot).into()
-            };
-            let held = fux::script::answered(reply, &mut testing::no_code)?;
+            })?;
             assert!(!held.is_empty());
         }
         let before = s

@@ -539,24 +539,6 @@ pub struct Machine<A> {
     /// reader itself, from its source: so `code` and `end` can tell a
     /// quotation their words alone make again.
     pub(crate) read_here: bool,
-    /// The frames of the run under a source read above it (`read_above`),
-    /// which waits: the run finishes at them, and its failures are caught
-    /// above them only.
-    floor: usize,
-}
-
-/// What a run was at when a source was read above it (`read_above`):
-/// where `left_above` takes it back to.
-#[derive(Debug)]
-pub struct Above {
-    floor: usize,
-    stack: usize,
-    iters: usize,
-    loops: usize,
-    returns: usize,
-    marks: usize,
-    last: Option<(usize, usize, usize)>,
-    read_last: Option<Token>,
 }
 
 impl<A: AppValue> Machine<A> {
@@ -596,7 +578,6 @@ impl<A: AppValue> Machine<A> {
             raised: Vec::new(),
             last: None,
             read_here: false,
-            floor: 0,
         };
         let vocabulary = Rc::clone(&machine.vocabulary);
         for builtin in Builtin::ALL {
@@ -799,8 +780,7 @@ impl<A: AppValue> Machine<A> {
     /// the code it was compiling.
     fn recover(&mut self, mut thrown: Thrown<A>) -> Result<(), Error> {
         let code = thrown.error.code;
-        let floor = self.floor;
-        let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, frames, .. } if codes.contains(&code) && *frames > floor);
+        let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&code));
         let Some(caught) = self.marks.iter().rposition(catches) else {
             // Uncaught, the code being compiled means nothing: it and its
             // marks go, and the values stay.
@@ -964,51 +944,6 @@ impl<A: AppValue> Machine<A> {
         Error::new(code, message, self.at().as_ref())
     }
 
-    /// Reads `tokens` next, a source above the run under way, which waits
-    /// for its host: `run` reads it to its end and finishes there, what it
-    /// gives on the stack, only its own `try`s catching its failures. So a
-    /// host makes a value of the machine's own while a word waits for it
-    /// (`code … end`'s xt, which runs only where it was made). Refused
-    /// while code is compiled, which its words would join.
-    pub fn read_above(&mut self, tokens: Vec<Token>) -> Result<Above, Error> {
-        if self.compiling || !self.building.is_empty() {
-            let why = "a source can't be read above code being compiled";
-            return Err(self.fail(Code::NotTopLevel, why));
-        }
-        let above = Above {
-            floor: self.floor,
-            stack: self.stack.len(),
-            iters: self.iters.len(),
-            loops: self.loops.len(),
-            returns: self.returns.len(),
-            marks: self.marks.len(),
-            last: self.last,
-            read_last: self.read_last.clone(),
-        };
-        self.floor = self.frames.len();
-        self.read(tokens, None);
-        Ok(above)
-    }
-
-    /// The run under a source read above it, as it was before, whether the
-    /// source was read to its end or not: what the source left on the stack
-    /// goes, so its host takes what it gave first.
-    pub fn left_above(&mut self, above: Above) {
-        while self.frames.len() > self.floor {
-            self.leave();
-        }
-        self.floor = above.floor;
-        self.stack.truncate(above.stack);
-        self.iters.truncate(above.iters);
-        self.loops.truncate(above.loops);
-        self.returns.truncate(above.returns);
-        self.marks.truncate(above.marks);
-        self.building.clear();
-        self.compiling = false;
-        self.last = above.last;
-        self.read_last = above.read_last;
-    }
-
     /// Ends the frame on top: its `let` names go with it; a file whose
     /// reading ends so, unfinished, was never read.
     pub(crate) fn leave(&mut self) {
@@ -1068,7 +1003,7 @@ impl<A: AppValue> Machine<A> {
         let mut versions = Some(Rc::clone(&self.versions));
         'frames: loop {
             let depth = self.frames.len();
-            let index = match self.frames.get(self.floor..).and_then(<[Frame]>::last) {
+            let index = match self.frames.last() {
                 None => {
                     self.ended()?;
                     return Ok(Outcome::Finished);
@@ -1463,10 +1398,6 @@ impl<A: AppValue> Machine<A> {
     fn ended(&self) -> Result<(), Error> {
         if !self.building.is_empty() {
             return Err(self.unclosed());
-        }
-        // The run under a source read above it goes on.
-        if self.floor > 0 {
-            return Ok(());
         }
         let unused = |why| Error::new(Code::Unused, why, self.read_last.as_ref());
         if self.empty && !self.stack.is_empty() {
@@ -2707,8 +2638,22 @@ builtins! { m host;
     Quit "quit" [cold] () "--" raises(Quit) "stop the program: the failure quit, -56 throw" {
         m.throw(Value::Int(-56))
     }
-    Execute "execute" [cold] (xt: Exec) "xt --" raises(any) "run the word xt is" {
-        m.enter(&xt)
+    Execute "execute" [cold] (xt: Any) "xt --" raises(any) "run the word xt is, or what a code value of the host's words make, read here" {
+        match xt {
+            Value::Xt(Xt(code)) => m.enter(&code),
+            Value::App(ref code) if let Some(words) = code.words() => m.read_code(words),
+            other @ (Value::Int(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::List(_)
+            | Value::App(_)
+            | Value::Mark(_)
+            | Value::Failure(_)
+            | Value::Addr(_)) => {
+                let wants = Wants::Takes(Builtin::Execute, "an xt or a code value");
+                Err(m.refused(Some(wants), other.kind(), false))
+            }
+        }
     }
     Create "create" [cold] () "--" raises(MissingToken BadName IdsExhausted Memory)
         "create NAME: a word that gives the address where the data space goes on, for the data stored after (store-next, allot)"

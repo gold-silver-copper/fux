@@ -252,7 +252,7 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 20] = [
+pub const KINDS: [(&str, &str, Option<&str>); 21] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("all", "the whole session", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
@@ -261,6 +261,7 @@ pub const KINDS: [(&str, &str, Option<&str>); 20] = [
     ("client-capture", "a client's capture", None),
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
     ("record", "a record", None), ("null", "null", None),
+    ("code", "a code value another client sent, as its words, which execute compiles here", None),
     ("opts", "options (from opts, for new-tab, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("pane-request", "a pane request", Some("nothing acts on this request")),
     ("tab-request", "a tab request", Some("nothing acts on this request")),
@@ -353,7 +354,7 @@ words! {
         Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it, a pane's stacks too" "fux str c1 client %3 show" [];
         Clients Step "step" "client handle way --" raises(Type asks) "show a client the next, previous or last shown of the handle's siblings (a pane's: the children of the stack nearest it, else its tab's panes shown), or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux str c1 client @2 str next step" [];
         Clients Detach "detach" "client --" raises(Type asks) "detach a client" "fux str c1 client detach" [];
-        Clients Keymap "keys" "client -- record" raises(Type asks) "the client's keys, as it answers: at, the keys it has typed into the map it is in; keymap, its keys from the root, each one that runs a binding (kind binding: key, code, label, group) or holds a map of more (kind map: key, repeat, keymap), at any depth; list and line, its screens' keys (key, action or code, label). Each code is a code value, made in this program's dictionary, which execute runs; one whose words that lacks is the failure that says so, carrying them" "fux str c1 client keys str keymap get first json" [];
+        Clients Keymap "keys" "client -- record" raises(Type asks) "the client's keys, as it answers: at, the keys it has typed into the map it is in; keymap, its keys from the root, each one that runs a binding (kind binding: key, code, label, group) or holds a map of more (kind map: key, repeat, keymap), at any depth; list and line, its screens' keys (key, action or code, label). Each code is a code value of its words, which reading compiles nothing of: execute compiles them in this program's dictionary and runs them, failing there for a word it lacks" "fux str c1 client keys str keymap get first json" [];
         Clients Preferences "preferences" "client -- list" raises(Type asks) "each of the client's preferences, as it answers: its name, its value as set takes it, and its type" "fux str c1 client preferences json" [];
         Server Start "start" "--" raises(NotHere asks) "start the server in the background, if none answers" "fux start" [];
         Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
@@ -604,15 +605,9 @@ pub(super) fn write_json_value(
                 Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
                 Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
                 Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
+                Fux::Code(code) => fux_wire::json::write_str(out, &code.text()),
             }?,
             Value::Failure(thrown) => super::record::failure(thrown).write(out)?,
-            // A code value as its words, as `code … end` reads them back.
-            Value::Xt(xt) if let Some(words) = xt.words() => {
-                let words: Vec<String> = (words.iter())
-                    .map(|t| fux_wire::words::quote(&t.text))
-                    .collect();
-                fux_wire::json::write_str(out, &words.join(" "))?
-            }
             Value::Xt(_) | Value::Mark(_) | Value::Addr(_) => {
                 let text = value.text().map_err(|_| std::fmt::Error)?;
                 fux_wire::json::write_str(out, &text)?

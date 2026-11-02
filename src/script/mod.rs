@@ -69,6 +69,9 @@ pub enum Fux {
     Extent(Extent),
     /// What the server said: a capture or a wait's outcome.
     Answer(Rc<Answer>, Option<Run>),
+    /// A code value another client sent, as its words: `execute` compiles
+    /// them in this program's dictionary as it runs them (#370's rule).
+    Code(Rc<fux_wire::callback::Code>),
 }
 
 impl AppValue for Fux {
@@ -100,7 +103,13 @@ impl AppValue for Fux {
             },
             Fux::Extent(_) => "size",
             Fux::Answer(answer, _) => answer.names().0,
+            Fux::Code(_) => "code",
         }
+    }
+
+    fn words(&self) -> Option<&[String]> {
+        let Fux::Code(code) = self else { return None };
+        Some(&code.words)
     }
 
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), fuxth::Failure> {
@@ -116,6 +125,7 @@ impl AppValue for Fux {
             Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
             Fux::All => write!(out, "all"),
             Fux::Opts(_) => write!(out, "({})", self.kind()),
+            Fux::Code(code) => out.write_str(&code.text()),
         }
         .map_err(|_| fuxth::Failure::new(Code::Output.into(), "the text could not be written"))
     }
@@ -666,8 +676,7 @@ pub(crate) fn callback_machine(
 /// `code`, compiled in `machine`'s dictionary as `code … end` compiles
 /// its words: its xt. Its immediate words run as a key's program runs,
 /// reading no file and stopping at `stop`, and ask nothing of the server;
-/// they close only what they open. Its words are said at `key`. A run
-/// `machine` has under way waits, as it was (`Machine::read_above`).
+/// they close only what they open. Its words are said at `key`.
 fn code_value(
     machine: &mut Machine<Fux>,
     code: &fux_wire::callback::Code,
@@ -684,19 +693,18 @@ fn code_value(
     let words = code.words.iter().map(String::as_str);
     let tokens = ["code"].into_iter().chain(words).chain(["end"]).map(word);
     let depth = machine.stack().len();
-    let above = machine.read_above(tokens.collect()).map_err(telling)?;
+    machine.read(tokens.collect(), None);
     let mut out = io::sink();
     let mut host = Host::new(Context::default(), None, &mut out);
     host.files = source::Files::sealed();
-    let ran = run(machine, &mut host, &mut Compiling, stop).and_then(|_| match machine.pop() {
+    run(machine, &mut host, &mut Compiling, stop)?;
+    match machine.pop() {
         Ok(xt @ Value::Xt(_)) if machine.stack().len() == depth => Ok(xt),
         _ => Err(Failed::new(
             Code::BadValue,
             "a code value's words close what they did not open",
         )),
-    });
-    machine.left_above(above);
-    ran
+    }
 }
 
 /// What compiling a code value asks: nothing of the server.
@@ -1260,9 +1268,7 @@ fn steps(
                             if acts(&asked.request) {
                                 took_effect(machine);
                             }
-                            let values =
-                                answered(reply, &mut |code| answered_code(machine, code, stop));
-                            pushed(machine, values)?
+                            pushed(machine, answered(reply))?
                         }
                     },
                     Err(failed) => pushed(machine, Err(failed))?,
@@ -1365,7 +1371,7 @@ fn raised(
     (code, message): (Code, String),
     reply: Reply,
 ) -> Result<(), Failed> {
-    let answer = answered(reply, &mut |code| answered_code(machine, code, None));
+    let answer = answered(reply);
     let Ok(Some(answer)) =
         answer.map(|mut a| a.pop().filter(|_| PaneAnswer::FAILURES.contains(&code)))
     else {
@@ -1424,38 +1430,9 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
     told(error, true)
 }
 
-/// A code value a client answered (`Body::Read`), compiled in `machine`'s
-/// dictionary; where that can't make it (it lacks a word, as one the
-/// client's config defines), the failure that says why, carrying its
-/// words, so the rest of the answer is read. Stopping stops it.
-fn answered_code(
-    machine: &mut Machine<Fux>,
-    code: &fux_wire::callback::Code,
-    stop: Option<&Stop>,
-) -> Result<Value<Fux>, Failed> {
-    match code_value(machine, code, stop) {
-        Err(failed) if !stop.is_some_and(Stop::stopped) => {
-            let why = format!("not made in this program's dictionary: {}", failed.message);
-            let error = fuxth::Error::new(failed.code.into(), why, None);
-            Ok(Value::Failure(Rc::new(fuxth::Thrown {
-                number: error.code.number(),
-                error,
-                carried: Some(Value::str(code.text())),
-                actions: Vec::new(),
-                calls: Vec::new(),
-            })))
-        }
-        compiled => compiled,
-    }
-}
-
 /// What a reply's answer puts on the stack: nothing, a string, handles, or
-/// an answer of fux's; a field's value as fuxth's own where it is one; what
-/// a client answered of its own, each code value in it made by `compile`.
-pub fn answered(
-    reply: Reply,
-    compile: &mut dyn FnMut(&fux_wire::callback::Code) -> Result<Value<Fux>, Failed>,
-) -> Result<Vec<Value<Fux>>, Failed> {
+/// an answer of fux's; a field's value as fuxth's own where it is one.
+pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
     let run = reply.run;
     let body = match reply.response {
         Response::Answered(PaneResults::One(answer)) => {
@@ -1489,7 +1466,10 @@ pub fn answered(
         Body::Field(json) => {
             record::pane_fact(&json, run).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
-        Body::Read(data) => callback::value(&data, compile)?,
+        // Its code values kept as their words, which `execute` compiles.
+        Body::Read(data) => callback::value(&data, &mut |code| {
+            Ok(Value::App(Fux::Code(Rc::new(code.clone()))))
+        })?,
     }])
 }
 
@@ -2233,9 +2213,7 @@ pub(crate) mod tests {
                 decoded.end().status(),
                 code.map_or(0, |code| code.status().get())
             );
-            let no_code = &mut |_: &_| Err(super::Failed::new(Code::BadValue, "no code"));
-            let values =
-                crate::script::answered(decoded.clone(), no_code).map_err(|f| f.to_string())?;
+            let values = crate::script::answered(decoded.clone()).map_err(|f| f.to_string())?;
             let json = values
                 .first()
                 .map(|v| match v {

@@ -541,7 +541,7 @@ a server that stopped left it there. Every server in fux's directory:
 ```json
 {"at":"C-b r","keymap":[{"kind":"map","key":"C-b","repeat":false,"keymap":[
   {"kind":"binding","key":"v","code":"me focused str horizontal axis split drop","label":"split side by side","group":"Panes"},
-  {"kind":"binding","key":"x","code":{"code":"unknown_word","number":-13,"message":"not made in this program's dictionary: me-focused: no such word; …","value":"me-focused confirm-close","actions":[]},"label":"close pane","group":"Panes"},
+  {"kind":"binding","key":"x","code":"me-focused confirm-close","label":"close pane","group":"Panes"},
   {"kind":"map","key":"r","repeat":true,"keymap":[
     {"kind":"binding","key":"h","code":"me focused str left 1 move-border","label":"shrink or grow left","group":"Resize"}]}]}],
  "list":[{"key":"Enter","action":"choose","code":null,"label":"select"},
@@ -563,14 +563,15 @@ whether it `repeat`s and has a `keymap` of its own, as deep as the keys go.
 `action`, or for a list's `bind-action` key its `code`, and its `label` or
 `null`. `list-keys` prints the same keys as config lines.
 
-A `code` is a code value: the client sends its words, and the program
-that reads it makes it in its own dictionary, so `execute` runs it there
-(`… str code get execute`), and `json` writes its words. A program whose
-dictionary lacks one of its words gets the failure that says so in its
-place, its `value` the words: the command line lacks the bundled keys'
-helpers (`me-focused`) and the client's config's words, which a key's or
-the prompt's program has. `preferences` lists each preference's `name`,
-its `value` as `set` takes it, and its `type` as `fux help set` says it.
+A `code` is a code value: the client sends its words, and reading it
+compiles nothing. `execute` compiles them in the dictionary of the
+program that runs it, as it runs them (`… str code get execute`), so a
+word that dictionary lacks fails then, `unknown_word`: the command line
+lacks the bundled keys' helpers (`me-focused`) and the client's config's
+words, which a key's or the prompt's program has. `json` writes it as its
+words, and passed on to another client it goes as they came.
+`preferences` lists each preference's `name`, its `value` as `set` takes
+it, and its `type` as `fux help set` says it.
 
 ## `word` and `dictionary`
 
