@@ -143,7 +143,7 @@ pub fn step(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> 
             client,
             bytes: keys(rng, prefix),
         },
-        1 => Step::Cli(cli(rng, world, clients)),
+        1 => Step::Cli(cli(rng, world, clients, state)),
         2 => {
             let (rows, cols) = rng.pick(SIZES).copied().unwrap_or((24, 80));
             Step::Resize { client, rows, cols }
@@ -238,7 +238,7 @@ fn keys(rng: &mut Rng, prefix: u8) -> Vec<u8> {
 
 /// A command line from the whole vocabulary, targets taken from the
 /// state, some of them wrong.
-fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
+fn cli(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> Vec<String> {
     let pane = |rng: &mut Rng| -> String {
         let panes: Vec<&str> = world.panes().map(|p| p.id.as_str()).collect();
         if rng.chance(5) {
@@ -276,6 +276,16 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
             .copied()
             .unwrap_or("pane")
     };
+    // A client and its prefix, as a key's name (`C-b`).
+    let prefixed = |rng: &mut Rng| -> (String, String) {
+        let client = client(rng);
+        let prefix = state.prefixes.get(&client).copied().unwrap_or(state.prefix);
+        let key = format!("C-{}", char::from(prefix.saturating_add(0x60)));
+        (client, key)
+    };
+    // The bundled keys' map for a pane, tab or workspace.
+    let map =
+        |rng: &mut Rng| -> &'static str { rng.pick(&["a", "t", "w"]).copied().unwrap_or("a") };
     let panes = world.panes().count();
     let tabs = world.tabs().count();
     let spaces = world.workspaces.len();
@@ -360,27 +370,25 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
         // the column if it is that client's prefix.
         23 => match rng.below(4) {
             0 => format!("str {} client str C-b key send-keys", client(rng)),
-            n => format!(
-                "str {} client {}",
-                client(rng),
-                match n {
-                    1 => "command-prompt",
-                    2 => "dup focused tab choose-among",
-                    _ => "dup focused workspace choose-among",
-                }
-            ),
+            1 => format!("str {} client command-prompt", client(rng)),
+            // A tab's or workspace's chooser, as its key opens it.
+            n => {
+                let (client, prefix) = prefixed(rng);
+                let map = if n == 2 { "t" } else { "w" };
+                format!("str {client} client str {prefix} key str {map}g text send-keys")
+            }
         },
         24 => format!("str {} client dup focused {} menu", client(rng), kind(rng)),
-        25 => format!(
-            "str {} client dup focused {} rename-prompt",
-            client(rng),
-            kind(rng)
-        ),
-        26 => format!(
-            "str {} client dup focused {} confirm-close",
-            client(rng),
-            kind(rng)
-        ),
+        // The pane's, tab's or workspace's rename prompt, then its close
+        // confirmation, as their keys open them.
+        n @ (25 | 26) => {
+            let (client, prefix) = prefixed(rng);
+            let key = if n == 25 { "r" } else { "x" };
+            format!(
+                "str {client} client str {prefix} key str {}{key} text send-keys",
+                map(rng)
+            )
+        }
         27 => match rng.below(2) {
             0 => format!("str {} pane 0 history-budget", pane(rng)),
             _ => format!("str {} pane 100000 history-budget", pane(rng)),

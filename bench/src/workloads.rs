@@ -206,7 +206,7 @@ const LINES: [&str; 5] = [
     "%2 str y text str Enter key send-keys",
     "str %2:0.57.0.3.0:48211-1867a3f9c2b8e7d6 changed wait",
     "define twice dup add end list 1 2 3 end each twice end len drop %2 all-history capture",
-    "str c1 client dup focused tab choose-among",
+    "str c1 client dup focused tab str next step",
 ];
 /// The bytes of a pane's history fux keeps by default.
 const HISTORY: usize = 8 << 20;

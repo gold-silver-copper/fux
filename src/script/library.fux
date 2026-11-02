@@ -78,24 +78,6 @@ define edit-history
   str 'printf "\033]2;history\007"; f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && $EDITOR "+$(($(wc -l <"$f")))" "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg
   split drop
 end
-# client handle -- : a prompt for its new name
-define rename-prompt
-  dup kind str answer eq if pane then let it
-  list str 'rename ' it kind str ' ' it string end glue
-  it str name get dup kind str string eq not if drop str '' then
-  list list it end code rename end end
-  prompt
-end
-# client handle -- : close it, once confirmed: a chooser with one row, Yes, which the client and the row are given to as well
-define confirm-close
-  dup kind str answer eq if pane then let it
-  it str label get let caption
-  list str 'close ' it kind str ' ' it string
-    caption it string eq not if str ' ' caption then str ?
-  end glue
-  list list true str Yes end end empty list 0 end
-  list list it end code 2drop kill end end choose
-end
 
 # -- record : one facts observation of all workspaces, tabs, panes and clients
 define ls all info end
@@ -155,6 +137,7 @@ define listing
     then
   end 10 char join
 end
+hide chooser-row
 
 # text -- source : a string literal, never executable data
 define dump-text let text list str 'str ' text quote str ' ' end glue end
@@ -326,71 +309,3 @@ define events
     batch str status get dup str gone eq swap str stopped eq or
   until
 end
-
-# records id -- record : an exact held identity; absence refuses before opening
-define chooser-find
-  string let wanted let records
-  list records each dup str id get string wanted eq if else drop then end end
-  dup len 1 ne if str 'chooser target is absent or ambiguous' fail then first
-end
-# snapshot record -- row : a tab/workspace label with its pane summary
-define chooser-container-row
-  let item let s item chooser-row let row
-  item str id get kind str tab eq if list item str id get end
-  else item str children get then let tabs
-  list s str panes get each let p
-    tabs p str tab get contains if p chooser-row last then
-  end end str ', ' join let names
-  list row first list row last str ' — ' names end glue end
-end
-# rows id -- index : the current marker, independently optional
-define chooser-index
-  string let wanted let rows
-  list rows len 0 do rows i at first string wanted eq if i then loop end
-end
-# rows current -- selected : the library chooses an initial row
-define chooser-selected
-  let current let rows
-  current len 0 gt if current else list rows len 0 gt if 0 then end then
-end
-# snapshot handle -- rows : a row for each of the handle's siblings of its kind, in order, among what holds it
-define chooser-siblings
-  let it let s
-  it kind str workspace eq if str workspaces str parent else
-    it kind str tab eq if str tabs str workspace else str panes str tab then
-  then let holder let kinds
-  s kinds get it chooser-find holder get let held
-  list s kinds get each dup holder get held eq if else drop then end end let siblings
-  list siblings each
-    dup str id get kind str pane eq if chooser-row else s swap chooser-container-row then
-  end end
-end
-# client handle -- : choose among the handle's siblings from one topology observation, and show the one chosen
-define choose-among
-  let it let c all str topology snapshot it chooser-siblings let rows
-  rows it chooser-index let current
-  c list it kind str s end glue rows current rows current chooser-selected code show end choose
-end
-# client pane handle -- : choose where to move the pane: one of the siblings of handle, a tab or workspace, from one topology observation
-define choose-move
-  str 'tab workspace' str 'a tab or workspace, where the pane moves' assert-kind
-  let it let source let c all str topology snapshot let s
-  s str panes get source chooser-find drop
-  s it chooser-siblings let rows
-  rows it chooser-index let current
-  c list list str 'move ' source string str ' to ' it kind end glue source end rows
-  current rows current chooser-selected list list source end code nip move end end choose
-end
-# client pane -- : choose another pane in its tab, from one topology observation
-define choose-pane
-  let source let c source tab str topology snapshot let s
-  s str panes get source chooser-find str tab get let tab-id
-  list s str panes get each let item
-    item str tab get tab-id eq item str id get string source string ne and if item chooser-row then
-  end end let rows
-  rows len 0 eq if str 'only one pane in the source tab' fail then
-  c list list str 'swap ' source string str ' with' end glue source end rows
-  list end list 0 end list list source end code nip swap-with end end choose
-end
-hide chooser-row hide chooser-find hide chooser-container-row hide chooser-index hide chooser-selected
-hide chooser-siblings
