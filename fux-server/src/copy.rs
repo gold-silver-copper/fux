@@ -108,6 +108,30 @@ impl Copy {
         })
     }
 
+    /// Pane `greeting` says it is, as a server takes it back.
+    pub fn greeted(greeting: crate::link::Greeting) -> Result<Copy, fux_vt::Error> {
+        let launch = crate::pane::Launch {
+            argv: greeting.argv,
+            cwd: greeting.cwd,
+        };
+        let runs = match greeting.shell {
+            true => Runs::Shell(launch),
+            false => Runs::Explicit(launch),
+        };
+        let mut copy = Copy::new(greeting.id, runs, greeting.size, greeting.options)?;
+        copy.respawns = greeting.respawns;
+        copy.counts = greeting.counts;
+        copy.title = greeting.title;
+        copy.read_error = greeting.read_error.clone();
+        copy.state = match (greeting.ended, greeting.hung_up, greeting.read_error) {
+            (Some(ended), _, _) => State::Exited(ended),
+            (None, true, _) => State::HungUp,
+            (None, false, Some(error)) => State::ReadFailed(error),
+            (None, false, None) => State::Running,
+        };
+        Ok(copy)
+    }
+
     pub fn id(&self) -> PaneId {
         self.id
     }

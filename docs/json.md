@@ -483,7 +483,9 @@ the program itself (`usage`, `require`, `open_quote`, `unknown_word`,
   `name_taken`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `stale`, `no_marks`, `start`, `size`, `mouse`, `signal`,
-  `not_headless`, `own_server`, `people_attached`;
+  `not_headless`, `own_server`, `people_attached`, and `indeterminate`, a
+  pane's own process that ended before it said whether it did what it was
+  asked: it may have;
 - how a wait ends: `timeout` (124), `closed` (4);
 - a program of words: `cancelled`, `not_here`, `not_config`,
   `config`, `bad_binding`, `read`, `unset_var`, `output`, `nested`,

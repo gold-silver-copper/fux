@@ -769,7 +769,9 @@ impl Reader {
         let next = from.unwrap_or(end);
         if next.run != run {
             return Err(format!(
-                "{next} is from another server run, not this one ({run})"
+                "{next} is not this server's journal ({run}): a journal ends with its server \
+                 process, and one that takes a run back after a crash keeps one of its own, \
+                 so what came between is lost; take a new snapshot"
             ));
         }
         if next.seq > end.seq {
@@ -958,7 +960,7 @@ impl Read {
             Scope::Target(target) => session.holder(target).is_some(),
             Scope::Client(client) => session.views.contains_key(&client),
         };
-        if reader.next == journal.end(session.run) && exists && now < self.deadline {
+        if reader.next == journal.end(session.journal_run) && exists && now < self.deadline {
             return None;
         }
         let mut batch = match reader.batch(journal, exists) {

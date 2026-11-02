@@ -1492,3 +1492,96 @@ impl Parts {
         })
     }
 }
+
+impl Parts {
+    /// Its tree, as its run's record holds it (`record`).
+    pub(crate) fn record(&self) -> Vec<crate::record::Workspace> {
+        fn ws(of: &Workspace, panes: &BTreeMap<PaneId, Pane>) -> crate::record::Workspace {
+            use crate::record::Child as Recorded;
+            let children = (of.children.children.iter()).map(|child| match child {
+                Node::Tab(tab) => Recorded::Tab(crate::record::Tab {
+                    id: tab.id,
+                    name: tab.name.clone(),
+                    nodes: tab.root.nodes(),
+                    revision: tab.revision,
+                    fixed: matches!(tab.fit, Fit::Fixed(_)),
+                    size: tab.fit.size(),
+                    zoomed: tab.zoomed,
+                    names: (tab.root.panes().into_iter())
+                        .map(|p| (p, panes.get(&p).and_then(|p| p.name().map(str::to_owned))))
+                        .collect(),
+                }),
+                Node::Workspace(inner) => Recorded::Workspace(ws(inner, panes)),
+            });
+            crate::record::Workspace {
+                id: of.id,
+                name: of.name.clone(),
+                children: children.collect(),
+            }
+        }
+        (self.workspaces.children.iter())
+            .map(|w| ws(w, &self.panes))
+            .collect()
+    }
+
+    /// The tree `workspaces` records (`record`), holding `panes`, its
+    /// journal keeping `journal` events, no client shown it yet: as a
+    /// server takes a run back. Each pane it holds and `panes` does not is
+    /// gone: it ended while no server ran.
+    pub(crate) fn restore(
+        journal: fux_wire::command::JournalEntries,
+        workspaces: &[crate::record::Workspace],
+        panes: BTreeMap<PaneId, Pane>,
+    ) -> Result<Parts, fux_wire::code::Error> {
+        fn ws(
+            parts: &mut Parts,
+            recorded: &crate::record::Workspace,
+            parent: Option<WsId>,
+        ) -> Result<Workspace, fux_wire::code::Error> {
+            use crate::record::Child as Recorded;
+            parts.journal.nest(recorded.id, parent);
+            let mut children = Vec::new();
+            for child in &recorded.children {
+                children.push(match child {
+                    Recorded::Tab(tab) => {
+                        let panes: Vec<PaneId> = tab.names.iter().map(|(p, _)| *p).collect();
+                        let fit = match tab.fit_fixed() {
+                            true => Fit::Fixed(tab.size),
+                            false => Fit::Clients(tab.size),
+                        };
+                        Node::Tab(Tab {
+                            id: tab.id,
+                            name: tab.name.clone(),
+                            root: fux_wire::layout::from_nodes(&tab.nodes, &panes)?,
+                            revision: tab.revision,
+                            changed: true,
+                            fit,
+                            zoomed: tab.zoomed,
+                            seats: BTreeMap::new(),
+                            typist: None,
+                        })
+                    }
+                    Recorded::Workspace(inner) => {
+                        Node::Workspace(ws(parts, inner, Some(recorded.id))?)
+                    }
+                });
+            }
+            Ok(Workspace {
+                id: recorded.id,
+                name: recorded.name.clone(),
+                children: Stack {
+                    children,
+                    shown: BTreeMap::new(),
+                },
+            })
+        }
+        let mut parts = Parts::new(journal);
+        let mut top = Vec::new();
+        for recorded in workspaces {
+            top.push(ws(&mut parts, recorded, None)?);
+        }
+        parts.workspaces.children = top;
+        parts.panes = panes;
+        Ok(parts)
+    }
+}

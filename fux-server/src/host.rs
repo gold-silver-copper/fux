@@ -265,6 +265,8 @@ impl Host {
                 self.actor = previous;
             }
             ToPane::Close { closed } => self.close(closed, now),
+            // Taken back as its link begins (`serve`).
+            ToPane::Take { .. } => {}
         }
     }
 
@@ -1104,6 +1106,45 @@ impl Host {
 
     // -------------------------------------------------------------- screen
 
+    /// Its server is gone: what it did not tell is told to no one, and the
+    /// next server it is linked to is sent its screen whole.
+    fn forget(&mut self) {
+        self.told.clear();
+        self.out.clear();
+        self.sent = None;
+        self.sent_pictures.clear();
+        self.sent_facts = None;
+        self.dirty = true;
+    }
+
+    /// What it says of itself as a server takes it back.
+    fn greeting(&self) -> crate::link::Greeting {
+        let pane = &self.pane;
+        let launch = pane.runs.launch();
+        let (ended, hung_up, read_error) = match pane.process() {
+            Process::Exited(ended) => (Some(*ended), false, None),
+            Process::HungUp(_) => (None, true, None),
+            Process::ReadFailed(_, error) => (None, false, Some(error.to_string())),
+            Process::Absent | Process::Reading(_) | Process::Respawning => (None, false, None),
+        };
+        crate::link::Greeting {
+            protocol: crate::link::PANE_PROTOCOL,
+            id: pane.id(),
+            run: self.run,
+            respawns: pane.respawns,
+            shell: matches!(pane.runs, Runs::Shell(_)),
+            argv: launch.argv.clone(),
+            cwd: launch.cwd.clone(),
+            options: pane.options(),
+            size: pane.size(),
+            title: pane.title().clone(),
+            counts: pane.counts(),
+            ended,
+            hung_up,
+            read_error,
+        }
+    }
+
     /// Its screen and facts as the server is to have them, if they changed
     /// since it was last sent them: what it sends next, once the server
     /// took the last. Part way through a frame, none: a frame is sent
@@ -1428,12 +1469,14 @@ impl Clock {
     }
 }
 
-/// The loop of a pane's own process (`fux __pane`), linked to its server
-/// on `link`, until it is closed and its program is gone: it starts as its
-/// server's first word says, and reads its program's terminal, the link
-/// and its children's ends. Its server gone, it ends as if closed by fux:
-/// a pane outlives no server (D-120).
-pub fn serve(link: std::os::unix::net::UnixStream) -> Result<(), String> {
+/// The loop of a pane's own process (`fux __pane`), listening at its
+/// socket on `listener`, until it is closed and its program is gone: it
+/// starts as the first word of its server, the first to reach it, says,
+/// and reads its program's terminal, its link and its children's ends.
+/// Its server gone without closing it (a crash), it goes on, telling no
+/// one, and waits for a server of its run to take it back (D-124): one at
+/// a time.
+pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
     use crate::link::{End, Read};
     use fuxix::poll::{Events, PollFd};
     if let Err(errno) = fuxix::process::adopt_orphans() {
@@ -1441,7 +1484,16 @@ pub fn serve(link: std::os::unix::net::UnixStream) -> Result<(), String> {
     }
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| format!("the signal pipe: {e}"))?;
-    let mut end = End::new(link).map_err(|e| format!("its link: {e}"))?;
+    let socket = (listener.local_addr().ok())
+        .and_then(|address| address.as_pathname().map(std::path::Path::to_owned));
+    // Listened on again, by it: one that reaches it is told its pid, not
+    // the server's that made the socket (`SO_PEERCRED`).
+    fuxix::socket::listen(&listener, 16).map_err(|e| format!("its socket: {e}"))?;
+    let (stream, _) = listener.accept().map_err(|e| format!("its server: {e}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("its socket: {e}"))?;
+    let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
     let first = end.wait::<ToPane>().map_err(|e| format!("its link: {e}"))?;
     let Some(ToPane::Begin(begin)) = first else {
         return Err("its server's first word was not its start".to_owned());
@@ -1467,37 +1519,53 @@ pub fn serve(link: std::os::unix::net::UnixStream) -> Result<(), String> {
         next: Instant::now(),
         wrote: None,
     };
-    let mut gone = false;
+    // Its server's link while it has one; one that reached it while it
+    // waits, till it says it takes it back.
+    let mut link = Some(end);
+    let mut asking: Option<End> = None;
     let mut poll = fuxix::poll::Poll::default();
+    let mut socket = socket;
     loop {
         let now = Instant::now();
-        for report in host.take() {
-            end.send(&report);
-        }
-        if !waiting
-            && !gone
-            && clock.due(now) <= now
-            && let Some(update) = host.update()
+        // Closed, it waits for no server: none finds it, as it ends.
+        if host.closed.is_some()
+            && let Some(at) = socket.take()
         {
-            end.send(&FromPane::Update(Box::new(update)));
-            waiting = true;
-            clock = Clock {
-                next: crate::after(now, PAINT),
-                wrote: None,
-            };
+            let _ = std::fs::remove_file(at);
         }
-        if !gone && end.flush().is_err() {
-            gone = true;
-        }
-        if gone {
-            host.handle(ToPane::Close { closed: true }, now);
+        match &mut link {
+            Some(end) => {
+                for report in host.take() {
+                    end.send(&report);
+                }
+                if !waiting
+                    && clock.due(now) <= now
+                    && let Some(update) = host.update()
+                {
+                    end.send(&FromPane::Update(Box::new(update)));
+                    waiting = true;
+                    clock = Clock {
+                        next: crate::after(now, PAINT),
+                        wrote: None,
+                    };
+                }
+                if end.flush().is_err() {
+                    link = None;
+                    host.forget();
+                }
+            }
+            // With no server, what it does is in its state alone.
+            None => drop(host.take()),
         }
         if host.finished() {
             host.finish();
+            if let Some(socket) = &socket {
+                let _ = std::fs::remove_file(socket);
+            }
             return Ok(());
         }
         let timer = host.timer();
-        let paint = (!waiting && !gone && clock.wrote.is_some()).then(|| clock.due(now));
+        let paint = (link.is_some() && !waiting && clock.wrote.is_some()).then(|| clock.due(now));
         let at = [timer.map(|(at, _)| at), paint].into_iter().flatten().min();
         let timeout = at.map(|at| at.saturating_duration_since(now));
         let reading = match host.pane().process() {
@@ -1509,13 +1577,19 @@ pub fn serve(link: std::os::unix::net::UnixStream) -> Result<(), String> {
             | Process::Respawning => None,
         };
         let mut fds = poll.list();
-        let link = match (gone, end.out.is_empty()) {
-            (true, _) => Events::NONE,
-            (false, true) => Events::IN,
-            (false, false) => Events::IN | Events::OUT,
+        let linked = match &link {
+            Some(end) if end.out.is_empty() => Events::IN,
+            Some(_) => Events::IN | Events::OUT,
+            None => Events::NONE,
         };
-        fds.push(PollFd::new(&end.stream, link));
+        let ends = (link.as_ref().map(|end| &end.stream)).or(asking.as_ref().map(|end| &end.stream));
+        let none = &listener;
+        match ends {
+            Some(stream) => fds.push(PollFd::new(stream, linked | Events::IN)),
+            None => fds.push(PollFd::new(none, Events::NONE)),
+        }
         fds.push(PollFd::new(children.reader(), Events::IN));
+        fds.push(PollFd::new(&listener, Events::IN));
         if let Some(child) = reading {
             let mut flags = Events::IN;
             if host.input {
@@ -1529,33 +1603,69 @@ pub fn serve(link: std::os::unix::net::UnixStream) -> Result<(), String> {
         }
         let ready: Vec<Events> = fds.revents().collect();
         let now = Instant::now();
-        if ready.first().is_some_and(|f| !f.is_empty()) {
-            if end.read(&mut buffer) == Read::Closed {
-                gone = true;
-            }
-            loop {
-                match end.next_message::<ToPane>() {
-                    Ok(Some(ToPane::Taken)) => waiting = false,
-                    Ok(Some(message)) => {
-                        if matches!(message, ToPane::Typed { .. }) {
-                            clock.next = now;
+        let is = |i: usize| ready.get(i).is_some_and(|f| !f.is_empty());
+        if is(0) {
+            if let Some(end) = &mut link {
+                if end.read(&mut buffer) == Read::Closed {
+                    link = None;
+                }
+                let end = link.as_mut();
+                if let Some(end) = end {
+                    loop {
+                        match end.next_message::<ToPane>() {
+                            Ok(Some(ToPane::Taken)) => waiting = false,
+                            Ok(Some(message)) => {
+                                if matches!(message, ToPane::Typed { .. }) {
+                                    clock.next = now;
+                                }
+                                host.handle(message, now);
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                log!("{}: its server sent a bad frame: {error}", host.id());
+                                link = None;
+                                break;
+                            }
                         }
-                        host.handle(message, now);
                     }
-                    Ok(None) => break,
-                    Err(error) => {
-                        log!("{}: its server sent a bad frame: {error}", host.id());
-                        gone = true;
-                        break;
+                }
+                if link.is_none() {
+                    host.forget();
+                }
+            } else if let Some(mut end) = asking.take() {
+                // The first word of one that reached it: a server of its
+                // run's taking it back, or none (a look, `fux status`).
+                let closed = end.read(&mut buffer) == Read::Closed;
+                match end.next_message::<ToPane>() {
+                    Ok(Some(ToPane::Take { run })) if run == host.run => {
+                        host.forget();
+                        end.send(&FromPane::Greeting(Box::new(host.greeting())));
+                        if let Some(update) = host.update() {
+                            end.send(&FromPane::Update(Box::new(update)));
+                            waiting = true;
+                        }
+                        link = Some(end);
                     }
+                    Ok(None) if !closed => asking = Some(end),
+                    Ok(_) | Err(_) => {}
                 }
             }
         }
-        if ready.get(1).is_some_and(|f| !f.is_empty()) {
+        if is(1) {
             crate::drain(children.reader());
             host.reap(now);
         }
-        if let Some(flags) = ready.get(2).copied().filter(|f| !f.is_empty()) {
+        if is(2) {
+            // One at a time: while one reaches it, another is let go.
+            while let Ok((stream, _)) = listener.accept() {
+                let ours = fuxix::socket::peer(&stream)
+                    .is_ok_and(|peer| peer.uid == fuxix::process::geteuid());
+                if link.is_none() && asking.is_none() && ours && host.closed.is_none() {
+                    asking = End::new(stream).ok();
+                }
+            }
+        }
+        if let Some(flags) = ready.get(3).copied().filter(|f| !f.is_empty()) {
             if flags.intersects(Events::OUT) {
                 host.write_input();
             }

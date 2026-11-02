@@ -515,6 +515,8 @@ pub enum Error {
     Socket(crate::socket::Error),
     /// The listener or the signal pipes could not be set up.
     Setup(std::io::Error),
+    /// The run on the socket cannot be taken back, or started beside, so.
+    Refused(String),
 }
 
 impl std::fmt::Display for Error {
@@ -522,6 +524,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::Socket(error) => error.fmt(f),
             Error::Setup(error) => error.fmt(f),
+            Error::Refused(why) => f.write_str(why),
         }
     }
 }
@@ -544,11 +547,43 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
             "the system clock is before 1970 or past 2554: this run cannot be told from another",
         ))
     })?;
-    let session = Session::new(socket.path().to_owned(), true, run, journal);
+    crate::socket::private_directory(socket, true).map_err(Error::Socket)?;
+    let panes = crate::socket::panes(socket.path());
+    let exe = panes.join("exe");
+    let record = crate::record::read(&panes.join("run")).map_err(Error::Refused)?;
+    match &record {
+        // A run to take back runs the fux it started with (D-124 (7)).
+        Some(_) if !exe.exists() => {
+            let why = format!("the fux the run on {} runs, {}, is gone", socket.path().display(), exe.display());
+            return Err(Error::Refused(stranded(&panes, &why)));
+        }
+        Some(_) if std::env::current_exe().ok().as_deref() != Some(exe.as_path()) => {
+            use std::os::unix::process::CommandExt;
+            let error = std::process::Command::new(&exe).args(std::env::args_os().skip(1)).exec();
+            return Err(Error::Refused(format!("running {}: {error}", exe.display())));
+        }
+        Some(_) => {}
+        None if !waiting(&panes).is_empty() => {
+            let why = format!("the record of the run on {} is gone", socket.path().display());
+            return Err(Error::Refused(stranded(&panes, &why)));
+        }
+        None => {}
+    }
+    let mut session = Session::new(socket.path().to_owned(), true, run, journal);
+    session.exe = Some(exe.clone());
     let read_buffer = read_buffer()?;
     // Last of what can fail: once it listens, a server that started
     // with it finds it there (`socket::bind_socket`).
     let listening = Listening::open(socket)?;
+    // Under the socket's lock, the one server of the socket: a run whose
+    // server crashed is taken back before anyone is served; else a new one
+    // begins.
+    match crate::record::read(&panes.join("run")).map_err(Error::Refused)? {
+        Some(record) => session
+            .resume(record, Instant::now())
+            .map_err(|e| Error::Refused(format!("taking the run back: {e}")))?,
+        None => pin(&panes, &exe).map_err(Error::Setup)?,
+    }
     // A server starts with nothing in it: the first client to attach
     // starts its first shell, on its screen, and a request makes a pane
     // only at a size it knows.
@@ -571,6 +606,66 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
     ready();
     server.run();
     Ok(())
+}
+
+/// Makes `panes`, where a fresh run keeps what outlives its server, and
+/// pins the fux it runs there, `exe`, which its panes and programs run and
+/// a server taking it back runs too: installing fux neither upgrades nor
+/// strands it (D-124 (7)). A link to this fux where one can be made, else a
+/// copy of it.
+fn pin(panes: &std::path::Path, exe: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    // What a run that stopped, or never began, left there is no one's.
+    match fs::remove_dir_all(panes) {
+        Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
+        Ok(()) | Err(_) => {}
+    }
+    fs::DirBuilder::new().mode(0o700).create(panes)?;
+    let running = std::env::current_exe()?;
+    if fs::hard_link(&running, exe).is_ok() {
+        return Ok(());
+    }
+    // The running binary itself, though the file was replaced since.
+    let source = match std::path::Path::new("/proc/self/exe").exists() {
+        true => std::path::PathBuf::from("/proc/self/exe"),
+        false => running,
+    };
+    fs::copy(source, exe).map(drop)
+}
+
+/// The pane processes waiting at `panes` for a server, by their sockets'
+/// names and their pids, as each answers.
+fn waiting(panes: &std::path::Path) -> Vec<(String, Option<fuxix::process::Pid>)> {
+    let Ok(entries) = fs::read_dir(panes) else {
+        return Vec::new();
+    };
+    let mut waiting = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.parse::<u32>().is_err() {
+            continue;
+        }
+        if let Ok(stream) = UnixStream::connect(entry.path()) {
+            let pid = fuxix::socket::peer(&stream).ok().and_then(|peer| peer.pid);
+            waiting.push((name, pid));
+        }
+    }
+    waiting
+}
+
+/// Why a run cannot be taken back, `why`, and its panes that wait.
+fn stranded(panes: &std::path::Path, why: &str) -> String {
+    let waiting: Vec<String> = (waiting(panes).into_iter())
+        .map(|(name, pid)| match pid {
+            Some(pid) => format!("%{name} (pid {pid})"),
+            None => format!("%{name}"),
+        })
+        .collect();
+    format!(
+        "{why}: its run cannot be taken back, and no other starts beside it; \
+         its panes wait: {}; `kill` on each pid ends it",
+        waiting.join(", ")
+    )
 }
 
 /// The line that says the server listens, which the client that started
@@ -674,14 +769,14 @@ impl Server {
             self.deliver(now);
         }
         changed |= self.answer_waits(now);
-        let answered_at = self.session.parts.journal().end(self.session.run);
+        let answered_at = self.session.parts.journal().end(self.session.journal_run);
         self.flush_links();
         // Only the deadline survives compaction, never connection indices.
         self.close_conns();
         // Delivery can detach a client, resize its panes or start shutdown.
         changed |= !self.session.outbox.is_empty();
         self.deliver(now);
-        if self.session.parts.journal().end(self.session.run) != answered_at {
+        if self.session.parts.journal().end(self.session.journal_run) != answered_at {
             changed |= self.answer_waits(now);
         }
         if changed {
@@ -867,6 +962,8 @@ impl Server {
             return;
         }
         log!("{reason}");
+        // The run ends: no server takes it back, nor a part of it.
+        self.session.unrecord();
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(after(now, STOP_WAIT));
         // Every client attached is detached for it before its entry, which
@@ -1513,6 +1610,11 @@ impl Server {
                 break;
             }
             std::thread::sleep(Duration::from_millis(2));
+        }
+        // The run is over, and its panes' sockets gone with them: so is
+        // where it kept them, unless the next run's server made it again.
+        if let Some(socket) = self.session.socket() {
+            let _ = fs::remove_dir(crate::socket::panes(socket));
         }
     }
 }

@@ -214,6 +214,10 @@ pub enum ToPane {
     Close {
         closed: bool,
     },
+    /// A server of run `run` takes it back (`Link::take`).
+    Take {
+        run: Run,
+    },
 }
 wired!(ToPane {
     Begin(b),
@@ -224,6 +228,7 @@ wired!(ToPane {
     Ask { ask, actor, what },
     Taken,
     Close { closed },
+    Take { run },
 });
 
 /// A pane's screen, as the server keeps a copy of it (`copy`): the bytes
@@ -250,6 +255,8 @@ wired!(struct Update { counts, title, size, facts, pid, screen, full, draws, pic
 pub enum FromPane {
     /// It started, its program too, or why not: its first word.
     Begun(Option<String>),
+    /// What it is, as a server takes it back: its first word then.
+    Greeting(Box<Greeting>),
     /// It told this, as `actor`, which left it at `counts`; with the last
     /// of what it told at once, the facts that left it with.
     Told {
@@ -283,6 +290,7 @@ pub enum FromPane {
 }
 wired!(FromPane {
     Begun(b),
+    Greeting(g),
     Told { told, actor, counts, facts },
     Update(u),
     Alert { bell, notified },
@@ -453,6 +461,9 @@ pub enum Link {
 pub struct Remote {
     pub end: End,
     pub pid: fuxix::process::Pid,
+    /// It is this server's child, which reaps it; one taken back from a
+    /// server that crashed is not (`Link::take`).
+    pub child: bool,
     /// Its link closed.
     pub closed: bool,
     /// It was reaped, ending so.
@@ -498,16 +509,26 @@ impl Link {
     }
 
     /// Starts pane `begin.id`'s own process from `exe`, `fux __pane`,
-    /// linked on its stdin, in a session of its own, and waits for its first
-    /// word: why it did not start, if it did not.
-    pub fn start(exe: &std::path::Path, begin: Begin) -> Result<Link, String> {
-        let (ours, theirs) = UnixStream::pair().map_err(|e| format!("its link: {e}"))?;
+    /// listening at `socket` on its stdin, where its server reaches it and
+    /// the next one would if this one crashed (D-124), in a session of its
+    /// own; and waits for its first word: why it did not start, if it did
+    /// not.
+    pub fn start(exe: &std::path::Path, socket: &std::path::Path, begin: Begin) -> Result<Link, String> {
+        let at = |doing: &str| {
+            let socket = socket.display().to_string();
+            let doing = doing.to_owned();
+            move |e: std::io::Error| format!("{doing} {socket}: {e}")
+        };
+        // One left by a pane of a run that ended is no one's now.
+        let _ = std::fs::remove_file(socket);
+        let listener =
+            std::os::unix::net::UnixListener::bind(socket).map_err(at("binding its socket"))?;
+        std::fs::set_permissions(socket, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .map_err(at("its socket"))?;
         let mut command = std::process::Command::new(exe);
         command
             .arg(PANE)
-            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
-                theirs,
-            )))
+            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(listener)))
             .stdout(std::process::Stdio::null());
         fuxix::process::lead_session(&mut command, false);
         let child = command
@@ -519,7 +540,8 @@ impl Link {
         // fux reaps it by its pid; std never waits on a dropped child.
         drop(child);
         let pid = pid.ok_or("its process has no pid")?;
-        let mut end = End::new(ours).map_err(|e| format!("its link: {e}"))?;
+        let stream = UnixStream::connect(socket).map_err(at("reaching its process at"))?;
+        let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
         end.send(&ToPane::Begin(Box::new(begin)));
         if let Err(error) = end.flush_all() {
             return Err(format!("its process left before it began: {error}"));
@@ -528,6 +550,7 @@ impl Link {
         let mut remote = Remote {
             end,
             pid,
+            child: true,
             closed: false,
             ended: None,
             first: None,
@@ -536,11 +559,7 @@ impl Link {
             Some(FromPane::Begun(None)) => {
                 // Its first screen comes with it, so that nothing reads its
                 // copy before it has facts.
-                match remote.end.wait::<FromPane>() {
-                    Ok(Some(FromPane::Update(first))) => remote.first = Some(first),
-                    Ok(_) => return Err("its process sent no first screen".to_owned()),
-                    Err(error) => return Err(format!("its process: {error}")),
-                }
+                remote.first = Some(first(&mut remote.end)?);
                 Ok(Link::Remote(remote))
             }
             Some(FromPane::Begun(Some(why))) => Err(why),
@@ -548,7 +567,82 @@ impl Link {
             None => Err("its process ended before it began".to_owned()),
         }
     }
+
+    /// Takes back the pane whose process listens at `socket`, waiting for
+    /// a server since its own crashed (D-124): what it says it is, if it is
+    /// a pane of run `run` and speaks this pane protocol, and its link.
+    pub fn take(socket: &std::path::Path, run: Run) -> Result<(Link, Greeting), String> {
+        let stream = UnixStream::connect(socket).map_err(|e| format!("reaching it: {e}"))?;
+        let pid = fuxix::socket::peer(&stream)
+            .ok()
+            .and_then(|peer| peer.pid)
+            .ok_or("its process has no pid")?;
+        let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
+        end.send(&ToPane::Take { run });
+        end.flush_all().map_err(|e| format!("its link: {e}"))?;
+        let greeting = match end.wait::<FromPane>() {
+            Ok(Some(FromPane::Greeting(greeting))) => greeting,
+            Ok(Some(_)) => return Err("its first word was no greeting".to_owned()),
+            Ok(None) => return Err("it is no pane of this run".to_owned()),
+            Err(error) => return Err(format!("its link: {error}")),
+        };
+        if greeting.protocol != PANE_PROTOCOL {
+            return Err(format!(
+                "it speaks pane protocol {}, not {PANE_PROTOCOL}",
+                greeting.protocol
+            ));
+        }
+        let mut remote = Remote {
+            end,
+            pid,
+            child: false,
+            closed: false,
+            ended: None,
+            first: None,
+        };
+        remote.first = Some(first(&mut remote.end)?);
+        Ok((Link::Remote(remote), *greeting))
+    }
 }
+
+/// A pane's first screen, as it begins or is taken back.
+fn first(end: &mut End) -> Result<Box<Update>, String> {
+    match end.wait::<FromPane>() {
+        Ok(Some(FromPane::Update(first))) => Ok(first),
+        Ok(_) => Err("its process sent no first screen".to_owned()),
+        Err(error) => Err(format!("its process: {error}")),
+    }
+}
+
+/// The messages between a server and its panes' processes: a server takes
+/// back only panes of its own (`Link::take`).
+pub const PANE_PROTOCOL: u32 = 1;
+
+/// What a pane waiting for a server says of itself as one takes it back:
+/// enough to make its copy again, its screen and facts coming after.
+#[derive(Clone, Debug)]
+pub struct Greeting {
+    pub protocol: u32,
+    pub id: PaneId,
+    pub run: Run,
+    pub respawns: u64,
+    pub shell: bool,
+    pub argv: Program,
+    pub cwd: PathBuf,
+    pub options: PaneOptions,
+    pub size: Size,
+    pub title: Said,
+    pub counts: Counts,
+    /// How its program ended, if it has; else whether it hung up, or
+    /// reading its terminal failed.
+    pub ended: Option<fux_wire::answer::Ended>,
+    pub hung_up: bool,
+    pub read_error: Option<String>,
+}
+wired!(struct Greeting {
+    protocol, id, run, respawns, shell, argv, cwd, options, size, title, counts, ended, hung_up,
+    read_error,
+});
 
 /// How the server starts a pane's own process: `fux __pane`, its link on
 /// stdin. No help lists it.

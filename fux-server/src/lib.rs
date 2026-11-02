@@ -72,6 +72,7 @@ pub mod link;
 pub mod outer;
 pub mod pane;
 pub mod process;
+pub mod record;
 pub mod render;
 pub mod server;
 pub mod session;

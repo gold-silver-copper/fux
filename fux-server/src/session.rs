@@ -213,11 +213,16 @@ pub struct Session {
     /// start real processes; tests of the state alone start none.
     launch: Option<PathBuf>,
     /// The running fux, a started pane's `FUX`, if it can be had.
-    exe: Option<PathBuf>,
-    /// Which run of a server this is: its panes' `FUX_SERVER`, by which a
-    /// command from a pane tells whether the pane is this server's, and
-    /// every version's, by which a wait tells its own.
+    pub exe: Option<PathBuf>,
+    /// Which run this is: its panes' `FUX_SERVER`, by which a command from
+    /// a pane tells whether the pane is this run's, and every version's, by
+    /// which a wait tells its own. It outlives a server process that
+    /// crashes (D-124).
     pub run: command::Run,
+    /// Whose journal this server process keeps, its cursors' second half:
+    /// the run's, for its first server; one of its own for a server that
+    /// took the run back (D-124 (5)).
+    pub journal_run: command::Run,
     pub outbox: Vec<Outgoing>,
     /// Each pane's link to its own process, by its pane; and those of
     /// panes closed, till their processes end (`Session::ending`).
@@ -236,6 +241,12 @@ pub struct Session {
     answers: BTreeMap<u64, Answered>,
     /// The last question's number.
     asked_pane: u64,
+    /// The events its journal keeps.
+    entries: command::JournalEntries,
+    /// Its run's record as last written (`write_record`), and whether it
+    /// is still written: not once the run ends (`unrecord`).
+    recorded: Vec<u8>,
+    recording: bool,
     /// Programs adopted from panes whose own processes ended first.
     pub orphans: Vec<Orphan>,
     /// Where `size_panes` lays out each tab; reused by every settle.
@@ -331,6 +342,7 @@ impl Session {
             launch: launch.then_some(socket),
             exe: std::env::current_exe().ok(),
             run,
+            journal_run: run,
             outbox: Vec::new(),
             links: BTreeMap::new(),
             updated: BTreeSet::new(),
@@ -340,6 +352,9 @@ impl Session {
             asks: BTreeMap::new(),
             answers: BTreeMap::new(),
             asked_pane: 0,
+            entries: journal,
+            recorded: Vec::new(),
+            recording: true,
             orphans: Vec::new(),
             placed: Placement::default(),
             laid: BTreeMap::new(),
@@ -623,7 +638,7 @@ impl Session {
                 observed.name = copy.name().map(str::to_owned);
                 observed.label = format!("{}", copy.display_label());
             }
-            let cursor = self.parts.journal().end(self.run).to_string();
+            let cursor = self.parts.journal().end(self.journal_run).to_string();
             for (key, value) in read.iter_mut() {
                 if key == "cursor" {
                     *value = Json::str(cursor.clone());
@@ -681,7 +696,7 @@ impl Session {
             return;
         }
         match report {
-            FromPane::Begun(_) | FromPane::Answer { .. } => {}
+            FromPane::Begun(_) | FromPane::Greeting(_) | FromPane::Answer { .. } => {}
             FromPane::Told {
                 told,
                 actor,
@@ -802,12 +817,17 @@ impl Session {
         }
     }
 
+    /// The socket its panes' programs reach it by, if they start any.
+    pub fn socket(&self) -> Option<&Path> {
+        self.launch.as_deref()
+    }
+
     /// The pids of the panes' own processes, linked or ending, not yet
     /// reaped: the server's children it reaps by pid (`Server::reap`); and
     /// the programs it adopted from those that ended (`Orphan`).
     pub fn children(&self) -> Vec<fuxix::process::Pid> {
         let remote = |link: &Link| match link {
-            Link::Remote(remote) => remote.ended.is_none().then_some(remote.pid),
+            Link::Remote(remote) => (remote.child && remote.ended.is_none()).then_some(remote.pid),
             Link::Local(_) => None,
         };
         (self.links.values().filter_map(remote))
@@ -865,6 +885,8 @@ impl Session {
     /// reaped: a closed pane's link is let go, a pane's is lost.
     fn gone(&mut self, id: PaneId, now: Instant) {
         self.reap_ending();
+        // One this server did not start is not its child to reap: its link
+        // closing is all it learns.
         let how = match self.links.get(&id) {
             Some(Link::Remote(Remote {
                 closed: true,
@@ -878,6 +900,11 @@ impl Session {
                     format!("its pane's own process was killed by signal {signal}")
                 }
             },
+            Some(Link::Remote(Remote {
+                closed: true,
+                child: false,
+                ..
+            })) => "its pane's own process ended".to_owned(),
             Some(_) | None => return,
         };
         self.pane_lost(id, &how, now);
@@ -1420,7 +1447,10 @@ impl Session {
         // A server's panes are processes of their own; a session that
         // starts no programs holds its panes itself.
         let link = match (&self.launch, &self.exe) {
-            (Some(_), Some(exe)) => Link::start(exe, begin),
+            (Some(socket), Some(exe)) => {
+                let at = crate::socket::panes(socket).join(id.number().to_string());
+                Link::start(exe, &at, begin)
+            }
             _ => crate::host::Host::begin(begin, now).map(|host| Link::Local(Box::new(host))),
         };
         Ok((pane, link.map_err(|why| fail(Raise::Start, why))?))
@@ -1459,7 +1489,7 @@ impl Session {
         let (done, ending): (Vec<_>, Vec<_>) = std::mem::take(&mut self.ending)
             .into_iter()
             .partition(|(_, link)| match link {
-                Link::Remote(remote) => remote.closed && remote.ended.is_some(),
+                Link::Remote(remote) => remote.closed && (remote.ended.is_some() || !remote.child),
                 Link::Local(host) => host.finished(),
             });
         self.ending = ending;
@@ -1774,6 +1804,96 @@ impl Session {
         self.size_panes(now);
         self.host_panes(now);
         self.pump(now);
+        self.write_record();
+    }
+
+    /// Its run ends: its record and its fux go, so no server takes back the
+    /// run, or the panes still ending; none is written again.
+    pub fn unrecord(&mut self) {
+        if let Some(socket) = self.launch.as_deref() {
+            let panes = crate::socket::panes(socket);
+            for kept in ["run", "exe"] {
+                let _ = std::fs::remove_file(panes.join(kept));
+            }
+        }
+        self.recording = false;
+    }
+
+    /// Its run's record, written whole if it changed (`record`), as the
+    /// session settles: before anything that changed it is told. A failed
+    /// write is logged, and tried again at the next change: the change is
+    /// made all the same, and a crash before then takes back the tree as
+    /// it was written last.
+    fn write_record(&mut self) {
+        let Some(socket) = self.launch.as_ref().filter(|_| self.recording) else {
+            return;
+        };
+        let record = crate::record::Record {
+            run: self.run,
+            ids: self.ids.given(),
+            workspaces: self.parts.record(),
+        };
+        let bytes = fux_wire::wire::encode(&record);
+        if bytes == self.recorded {
+            return;
+        }
+        let path = crate::socket::panes(socket).join("run");
+        match crate::record::write(&path, &bytes) {
+            Ok(()) => self.recorded = bytes,
+            Err(error) => log!("writing the run's record, {}: {error}", path.display()),
+        }
+    }
+
+    /// Takes back the run `record` holds, whose server crashed (D-124):
+    /// each of its panes still waiting, at its place, with its name, its
+    /// ids and versions going on; those gone close, as their programs'
+    /// ends would have closed them, as does a shell that ended meanwhile.
+    /// Its journal starts afresh, this server's own (D-124 (5)).
+    pub fn resume(&mut self, record: crate::record::Record, now: Instant) -> Result<(), Error> {
+        let Some(socket) = self.launch.clone() else {
+            return Err(fail(Raise::Start, "a session that starts no programs takes back none"));
+        };
+        let panes = crate::socket::panes(&socket);
+        self.run = record.run;
+        self.ids = Ids::after(&record.ids);
+        let mut copies = BTreeMap::new();
+        let mut links = Vec::new();
+        let listed = crate::record::panes(&record.workspaces);
+        for &(_, id) in &listed {
+            let at = panes.join(id.number().to_string());
+            match Link::take(&at, record.run) {
+                Ok((link, greeting)) => match Pane::greeted(greeting) {
+                    Ok(copy) => {
+                        copies.insert(id, copy);
+                        links.push((id, link));
+                    }
+                    Err(error) => log!("{id}: not taken back: its copy: {error}"),
+                },
+                Err(why) => log!("{id}: not taken back: {why}"),
+            }
+        }
+        crate::record::named(&record.workspaces, &mut copies);
+        self.parts = Parts::restore(self.entries, &record.workspaces, copies)?;
+        for (id, link) in links {
+            self.linked(id, link, now);
+        }
+        for &(_, id) in &listed {
+            let Some(pane) = self.parts.panes().get(&id) else {
+                log!("{id} ended while no server ran");
+                self.close_pane(id, Some("ended while no server ran".into()), now);
+                continue;
+            };
+            if let (Runs::Shell(_), Some(ended)) = (&pane.runs, pane.exit_status()) {
+                let end = pane::End {
+                    ended,
+                    left: pane::Left::default(),
+                };
+                self.program_ended(id, end, now);
+            }
+        }
+        self.recorded.clear();
+        self.settle(now);
+        Ok(())
     }
 
     /// Each pane is told what its host's terminal said, as that changes
@@ -2152,7 +2272,7 @@ impl Session {
                     ));
                 }
                 let reader =
-                    crate::journal::Reader::new(scope, self.parts.journal(), self.run, from)
+                    crate::journal::Reader::new(scope, self.parts.journal(), self.journal_run, from)
                         .map_err(|why| fail(Raise::BadValue, why))?;
                 let read = crate::journal::Read::new(reader, crate::after(now, timeout.duration()));
                 return Ok(self.answered(Waiting::Events(read), now));

@@ -96,20 +96,25 @@ fn serve(args: &[String]) -> ExitCode {
     };
     match server::serve(&socket, journal) {
         Ok(()) => ExitCode::SUCCESS,
+        // Said to the client that started it, which reads its stdout.
+        Err(error @ server::Error::Refused(_)) => {
+            let _ = writeln!(std::io::stdout(), "fux server: {error}");
+            fail(error.to_string())
+        }
         Err(error) => fail(error.to_string()),
     }
 }
 
 /// A pane's own process, started by its server (`link::Link::start`), its
-/// link on stdin.
+/// socket listening on stdin.
 fn pane() -> ExitCode {
     use std::os::fd::AsFd;
-    let link = std::io::stdin()
+    let listener = std::io::stdin()
         .as_fd()
         .try_clone_to_owned()
-        .map(std::os::unix::net::UnixStream::from);
-    let served = link
-        .map_err(|e| format!("its link: {e}"))
+        .map(std::os::unix::net::UnixListener::from);
+    let served = listener
+        .map_err(|e| format!("its socket: {e}"))
         .and_then(fux_server::host::serve);
     match served {
         Ok(()) => ExitCode::SUCCESS,

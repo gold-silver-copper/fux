@@ -98,6 +98,16 @@ impl SocketPath {
     }
 }
 
+/// Where a run on the socket at `socket` keeps what outlives its server
+/// process (D-124): `SOCKET.panes`, private as the socket's directory is,
+/// holding each pane's own socket (`N`), the run's record (`run`) and the
+/// fux it runs (`exe`). fux's own, changing with it; no interface.
+pub fn panes(socket: &Path) -> PathBuf {
+    let mut panes = socket.as_os_str().to_owned();
+    panes.push(".panes");
+    PathBuf::from(panes)
+}
+
 /// The socket a command uses: `socket` if given, else `FUX_SOCKET`, else
 /// `server.sock` in fux's directory.
 pub fn socket_path(socket: Option<&Path>) -> Result<SocketPath, Error> {
