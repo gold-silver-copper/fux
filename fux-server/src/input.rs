@@ -1214,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn every_library_chooser_builds_its_rows_from_one_topology_observation() -> Outcome {
+    fn every_chooser_of_the_keys_builds_its_rows_from_one_topology_observation() -> Outcome {
         use fux::script::{AsClient, Asks, Host};
         use fux_wire::command::Command;
         struct Reads<'a>(crate::session::testing::InProcess<'a>, Vec<Command>);
@@ -1278,10 +1278,10 @@ mod tests {
                 on_commit: None,
                 stop: None,
             };
-            let mut machine = fux::script::compile(
-                &fuxth::token::source("chooser", code).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
+            // In a client's dictionary, as a key's program is.
+            let mut machine = fux::screens::Job::from(code.to_owned())
+                .machine(None, None)
+                .map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             let mut host = Host::new(context, Some(&mut state), &mut out);
             fux::script::run(&mut machine, &mut host, &mut asks, None)
@@ -1317,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn library_chooser_callbacks_act_on_the_selected_destination() -> Outcome {
+    fn chooser_callbacks_act_on_the_selected_destination() -> Outcome {
         for (open, keys, observe, expected) in [
             (
                 "me me focused tab choose-among",

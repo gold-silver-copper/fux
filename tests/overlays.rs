@@ -310,8 +310,7 @@ fn rename_prompts_start_from_the_current_name() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.wait_for("$")?;
-    // Asked from the command line, as `a r` asks it.
-    server.ok(&["str", "c1", "client", "str", "%1", "pane", "rename-prompt"])?;
+    client.keys(&format!("{PREFIX}ar"))?;
     client.wait_for("rename pane %1")?;
     client.wait_for("▏")?;
     client.keys("shell\r")?;
@@ -319,12 +318,12 @@ fn rename_prompts_start_from_the_current_name() -> Outcome {
         Ok(server.ok(&["ls", "listing"])?.contains("%1 shell"))
     })?;
     // An empty name is refused, and says so.
-    server.ok(&["str", "c1", "client", "str", "%1", "pane", "rename-prompt"])?;
+    client.keys(&format!("{PREFIX}ar"))?;
     client.wait_for("rename pane %1")?;
     client.wait_for("shell▏")?;
     client.keys(&format!("{CLEAR}\r"))?;
     bar_has(&mut client, "a name cannot be empty")?;
-    server.ok(&["str", "c1", "client", "str", "@1", "tab", "rename-prompt"])?;
+    client.keys(&format!("{PREFIX}tr"))?;
     client.wait_for("rename tab @1")?;
     client.keys("\x1b")?;
     Ok(())
