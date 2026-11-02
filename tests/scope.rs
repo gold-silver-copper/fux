@@ -34,17 +34,16 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
     let result = server.dir.join("result");
     let status = server.dir.join("status");
     let pid = server.dir.join("descendant");
+    // It gives its pid once in a session of its own: till then the
+    // respawn's signals to the pane's session reach it too.
     let descendant = format!(
-        "while [ ! -f \"{}\" ]; do sleep 0.02; done; \"$FUX\" here kill > \"{}\" 2>&1; echo $? > \"{}\"",
+        "echo $$ > \"{}\"; while [ ! -f \"{}\" ]; do sleep 0.02; done; \"$FUX\" here kill > \"{}\" 2>&1; echo $? > \"{}\"",
+        pid.display(),
         released.display(),
         result.display(),
         status.display()
     );
-    let script = format!(
-        "setsid sh -c '{}' & echo $! > '{}'; echo \"$FUX_PANE\"; exec cat",
-        descendant,
-        pid.display()
-    );
+    let script = format!("setsid sh -c '{descendant}' & echo \"$FUX_PANE\"; exec cat");
     server.ok(&[
         "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "str", "-c",
         "arg", "str", &script, "arg", "new-tab",
@@ -72,10 +71,12 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
         Ok(server.ok(&["%2", "capture"])?.contains("%2:1"))
     })?;
     std::fs::write(&released, "go").map_err(e)?;
-    eventually("the old caller's refusal", || {
-        Ok(std::fs::read_to_string(&status).is_ok_and(|s| s.trim() == "1"))
+    eventually("the old caller's status", || {
+        Ok(std::fs::read_to_string(&status).is_ok_and(|s| s.ends_with('\n')))
     })?;
     let refused = std::fs::read_to_string(&result).map_err(e)?;
+    let status = std::fs::read_to_string(&status).map_err(e)?;
+    assert_eq!(status, "1\n", "{refused}");
     assert!(
         refused.contains("no longer identifies its program"),
         "{refused}"

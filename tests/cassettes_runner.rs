@@ -153,19 +153,32 @@ mod runner {
 
         /// A fux whose request never answers (one that hangs, as a server that
         /// greets and then never answers `next-events` leaves it) is killed at
-        /// the deadline, with nothing of it left running.
+        /// the deadline, with nothing of it left running. A fake killed
+        /// before it gave its pid (a loaded machine can take that long to
+        /// start a shell) shows nothing, so the deadline doubles till one
+        /// was running when it passed.
         #[test]
         fn a_request_that_never_answers_ends_at_its_deadline() -> Result<(), String> {
             let (fux, place, pid) = fake("hang", "exec sleep 600")?;
             let mut ctx = Ctx::new()?;
             ctx.fux = fux;
-            let started = Instant::now();
-            let read = journal(&ctx, &place, R1, after(Duration::from_secs(1)));
-            let took = started.elapsed();
+            let mut deadline = Duration::from_secs(1);
+            let (read, took) = loop {
+                let started = Instant::now();
+                let read = journal(&ctx, &place, R1, after(deadline));
+                let took = started.elapsed();
+                if std::fs::read_to_string(&pid).is_ok_and(|p| p.ends_with('\n')) {
+                    break (read, took);
+                }
+                if deadline >= Duration::from_secs(16) {
+                    return Err("the fake never started in time".to_owned());
+                }
+                deadline *= 2;
+            };
             let left = left(&pid)?;
             let _ = std::fs::remove_dir_all(&place.dir);
             assert!(read.is_err_and(|why| why.contains("no answer in time")));
-            assert!(took < Duration::from_secs(5), "{took:?}");
+            assert!(took < deadline + Duration::from_secs(4), "{took:?}");
             assert!(!left, "it is still there");
             Ok(())
         }
