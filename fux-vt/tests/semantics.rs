@@ -375,6 +375,16 @@ fn a_rejected_resize_leaves_a_grapheme_open() -> Result {
     Ok(())
 }
 
+/// `Size::new` refuses no rows or no columns, and its error says which.
+#[test]
+fn a_size_of_no_rows_or_columns_says_which_it_lacks() {
+    let said = |rows, cols| Size::new(rows, cols).map_err(|e| e.to_string()).err();
+    assert!(said(0, 5).is_some_and(|e| e.starts_with("0 rows") && e.ends_with("one row")));
+    assert!(said(3, 0).is_some_and(|e| e.ends_with("one column")));
+    assert!(said(0, 0).is_some_and(|e| e.ends_with("one row and one column")));
+    assert_eq!(said(1, 1), None);
+}
+
 #[test]
 fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
     let mut p = Parser::new(Size::new(3, 5)?, 1 << 10)?;

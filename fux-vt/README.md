@@ -322,7 +322,8 @@ row's slot, and history.
   run out. A row's version changes with each edit that
   changes its cells, links, soft wrap or prompt mark, and nothing else: erasing blanks,
   or rewriting a glyph as it was, keeps it; ICH and DCH always change it.
-- **Limits.** A `Size` has no zero to refuse: `Size::new` refuses one.
+- **Limits.** A `Size` has no zero to refuse: `Size::new` refuses one,
+  its `SizeError` saying which.
   A screen of more than 64 Mi (67,108,864) cells is refused
   (`Error::Capacity`; B38); history
   keeps at most 1,048,576 rows and 64 Mi cells, whatever its budget; text

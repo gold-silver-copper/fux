@@ -84,7 +84,7 @@ use std::{fmt, ops::Range};
 pub use cell::{Attributes, Blink, CellRef, Cells, Color, Rgb, SgrForm, UnderlineStyle};
 #[cfg(feature = "checks")]
 pub use check::{Checked, Fault, refuse_next};
-pub use geometry::Size;
+pub use geometry::{Size, SizeError};
 pub use link::Hyperlink;
 pub use mode::{Mode, ModeStatus};
 pub use parser::{
