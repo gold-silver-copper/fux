@@ -1,4 +1,5 @@
 use super::*;
+use crate::CellRef;
 use crate::test_feed::Refused;
 
 impl Screen {

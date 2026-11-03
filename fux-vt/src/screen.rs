@@ -6,8 +6,8 @@ use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, SET_FOR_GOOD, S
 use crate::parser::Chars;
 use crate::unicode::{Cluster, Properties};
 use crate::{
-    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark,
-    Options, Reply, Rgb, RowId, Rows, SgrForm, UnderlineStyle, Window,
+    Attributes, Blink, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark, Options,
+    Reply, Rgb, RowId, Rows, SgrForm, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Erase, Grid, Scroll, put},
     palette::Colours,
@@ -2754,11 +2754,9 @@ impl Screen {
             // A double-width line holds half the columns (DEC STD 070,
             // 5.6.1): the rectangle stops at its end.
             let row = columns.each().take_while(|x| *x < g.row_end(y));
-            let cells: Vec<CellRef<'_>> = row.filter_map(|x| g.cell(y, x)).collect();
-            crate::budget::spend(cells.len());
-            let read = cells.iter().map(|cell| cell.contents().len());
-            crate::budget::spend(read.fold(0usize, usize::saturating_add));
-            for cell in cells {
+            for cell in row.filter_map(|x| g.cell(y, x)) {
+                // The cell, and its text read.
+                crate::budget::spend(cell.contents().len().saturating_add(1));
                 let mut chars = cell.contents().chars();
                 let base = match chars.next() {
                     None if cell.is_wide_continuation() => ESC,
