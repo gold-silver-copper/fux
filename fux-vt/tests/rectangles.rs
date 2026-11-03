@@ -128,6 +128,17 @@ fn decera_and_decsera_erase_a_rectangle() -> Result {
     assert!(screen.cell(0, 0).is_some_and(|c| space(&c)));
     assert!(screen.cell(1, 2).is_some_and(|c| space(&c)));
     assert!(screen.cell(1, 4).is_some_and(|c| c.contents().is_empty()));
+    // Both cells of a wide glyph become spaces in the pen's colours.
+    let mut parser = Parser::new(Size::new(1, 3)?, 0)?;
+    parser.process("\x1b[41m\u{754c}\x1b[42m\x1b[1;1;1;2$z".as_bytes())?;
+    let erased = |x| {
+        parser
+            .screen()
+            .cell(0, x)
+            .map(|c| c.attributes().background())
+    };
+    let green = Some(fux_vt::Color::Idx(2));
+    assert_eq!((erased(0), erased(1)), (green, green));
     Ok(())
 }
 

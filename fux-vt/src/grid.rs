@@ -1280,8 +1280,8 @@ impl Grid {
     /// columns `start` to `end` of live row `row` becomes a space, keeping
     /// its attributes; empty cells stay empty (DEC STD 070, each of them).
     /// With `all`, DECERA: every glyph becomes a space in that style,
-    /// "clearing all character attributes", links too. A wide glyph the
-    /// span cuts is blanked whole.
+    /// "clearing all character attributes", links too, and a wide glyph
+    /// two spaces. A wide glyph the span cuts is blanked whole.
     pub fn erase_to_spaces(
         &mut self,
         row: u16,
@@ -1299,7 +1299,7 @@ impl Grid {
             for cell in cells.get_mut(span.clone()).into_iter().flatten() {
                 if cell.is_wide_continuation() {
                     if !kept {
-                        *cell = cell.blanked();
+                        *cell = all.map_or(cell.blanked(), |style| Compact::ascii(b' ', style));
                         changed = true;
                     }
                     continue;
