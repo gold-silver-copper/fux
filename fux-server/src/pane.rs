@@ -1019,6 +1019,7 @@ impl Pane {
     /// the rest of the output waits, unread, for the pane's next turn
     /// ([`Pane::read_unread`]).
     fn output(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
+        self.keep_terminal_size();
         if self.has_unread() {
             self.unread.bytes.extend_from_slice(bytes);
             return;
@@ -1315,15 +1316,35 @@ impl Pane {
         }
         tell.tell(Told::Resized(size));
         let result = self.size_terminal();
-        if !self.terminal_sized(result) {
-            return;
+        if self.terminal_sized(result) {
+            self.report_size();
         }
-        // In-band resize: the report follows the PTY's new size, never
-        // precedes it (references/modern/mode_2048_in_band_resize.md). A
-        // program that takes no input is sent none.
+    }
+
+    /// In-band resize: the report follows the PTY's new size, never
+    /// precedes it (references/modern/mode_2048_in_band_resize.md). A
+    /// program that takes no input is sent none.
+    fn report_size(&mut self) {
         let takes = crate::host::refuses_input(self).is_none();
         if let Some(report) = self.parser.resize_report().filter(|_| takes) {
             self.input.push(report);
+        }
+    }
+
+    /// Sizes its program's terminal as its screen is again, if it is not.
+    /// A program may size its terminal itself, and one that reads the size
+    /// and writes it back, as readline does each time it starts on a line,
+    /// undoes a resize that comes in between. Sized again, the program is
+    /// signalled and, if it asked, told in band. A refusal was reported when
+    /// the resize was refused first.
+    fn keep_terminal_size(&mut self) {
+        let Some(child) = self.process.child() else {
+            return;
+        };
+        let size = fuxix::terminal::Size::from(self.size().nonzero());
+        let resized = fuxix::terminal::window_size(&child.master).is_some_and(|(s, _)| s != size);
+        if resized && self.size_terminal().is_ok() {
+            self.report_size();
         }
     }
 
@@ -2346,6 +2367,39 @@ pub(crate) mod tests {
         assert_eq!(pane.input.drain_all(), b"\x1b[48;6;25;0;0t");
         pane.resize(size(6, 25));
         assert!(pane.input.drain_all().is_empty(), "the same size");
+        Ok(())
+    }
+
+    /// A program that writes back the size it read before a resize, as
+    /// readline does, has its terminal sized as the screen again at its next
+    /// output, and is told so in band.
+    #[test]
+    fn a_terminal_its_program_sized_back_is_sized_again() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut pane = pane(24, 80, 1 << 10)?;
+        let argv = ["/bin/cat".to_owned()];
+        let at = (size(24, 80), None);
+        pane.run(crate::process::spawn(
+            &argv,
+            std::path::Path::new("/"),
+            (&[], &[]),
+            at,
+        )?);
+        pane.output(b"\x1b[?2048h");
+        pane.resize(size(10, 60));
+        pane.input.drain_all();
+        use std::os::fd::AsFd;
+        let master = |pane: &Pane| {
+            pane.process()
+                .child()
+                .map(|c| c.master.as_fd().try_clone_to_owned())
+        };
+        let master = master(&pane).ok_or("a child")??;
+        fuxix::terminal::set_window_size(&master, size(24, 80).nonzero().into(), None)?;
+        pane.output(b"$ ");
+        let sized = fuxix::terminal::window_size(&master).map(|(s, _)| s);
+        assert_eq!(sized, Some(size(10, 60).nonzero().into()));
+        assert_eq!(pane.input.drain_all(), b"\x1b[48;10;60;0;0t");
         Ok(())
     }
 
