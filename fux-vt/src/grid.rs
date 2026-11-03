@@ -1410,11 +1410,12 @@ impl Grid {
         let mut cells = self.slice(source).get(span).unwrap_or_default().to_vec();
         // The source's cells, however few of them land.
         crate::budget::spend(cells.len());
+        // Cut where it lands too: at the screen's edge.
+        cells.truncate(to.len());
         if cuts {
             cut(&mut cells);
         }
         unpicture(&mut cells);
-        cells.truncate(to.len());
         let text = self.texts.get(source);
         let texts: Vec<String> = (cells.iter())
             .map(|c| match (c.is_spilled(), text) {
@@ -1450,10 +1451,11 @@ impl Grid {
                     line.set_compacted(at, *cell, text);
                 }
             }
+            // The columns written and their neighbours, each read with its
+            // own: a glyph beside them keeps the half past them.
             let edges = columns.start.saturating_sub(1)..columns.end.saturating_add(1);
-            let edges = edges.start..edges.end.min(line.cells.len());
-            if let Some(edges) = line.cells.get_mut(edges).filter(|_| changed && cuts) {
-                repair_wide(edges);
+            if changed && cuts {
+                repair_wide_in(line.cells, edges);
             }
         }
         if changed {
@@ -2525,8 +2527,15 @@ pub(crate) fn put(cells: &mut [Compact], i: usize, glyph: Compact, width: u16) -
 }
 
 pub(crate) fn repair_wide(cells: &mut [Compact]) {
-    crate::budget::spend(cells.len());
-    for i in 0..cells.len() {
+    repair_wide_in(cells, 0..cells.len());
+}
+
+/// `repair_wide` for cells `range` of `cells`, each half's other read
+/// wherever it is in `cells`.
+fn repair_wide_in(cells: &mut [Compact], range: Range<usize>) {
+    let range = range.start..range.end.min(cells.len());
+    crate::budget::spend(range.len());
+    for i in range {
         let invalid = cells.get(i).is_some_and(|c| {
             c.is_wide()
                 && !i

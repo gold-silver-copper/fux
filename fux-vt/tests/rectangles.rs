@@ -223,6 +223,23 @@ fn deccra_blanks_a_wide_glyph_it_cuts() -> Result {
     let mut parser = Parser::new(Size::new(2, 4)?, 0)?;
     parser.process("\u{754c}\r\n\u{8a9e}\x1b[1;1;1;1;1;2;1;1$v".as_bytes())?;
     assert_eq!(lines(&parser), ["\u{754c}", ""]);
+    // Copied beside itself: the glyph there keeps both halves.
+    let mut parser = Parser::new(Size::new(1, 4)?, 0)?;
+    parser.process("\u{754c}\x1b[;;;;;;3$v".as_bytes())?;
+    assert_eq!(lines(&parser), ["\u{754c}\u{754c}"]);
+    // Copied to the last column, where only its first half lands.
+    let mut parser = Parser::new(Size::new(1, 3)?, 0)?;
+    parser.process("\u{754c}\x1b[;;;;;;3$v".as_bytes())?;
+    let halves = |x| (parser.screen().cell(0, x)).map(|c| (c.is_wide(), c.is_wide_continuation()));
+    let halves: Vec<_> = (0..3).map(halves).collect();
+    assert_eq!(
+        halves,
+        [
+            Some((true, false)),
+            Some((false, true)),
+            Some((false, false))
+        ]
+    );
     Ok(())
 }
 
