@@ -1890,11 +1890,15 @@ impl Parser {
         let kept = |bytes| Kept { bytes, cut: !whole };
         match command {
             b"0" => {
+                self.screen.set_title(kept(rest));
                 sink.event(Event::IconName(kept(rest)));
                 sink.event(Event::Title(kept(rest)));
             }
             b"1" => sink.event(Event::IconName(kept(rest))),
-            b"2" => sink.event(Event::Title(kept(rest))),
+            b"2" => {
+                self.screen.set_title(kept(rest));
+                sink.event(Event::Title(kept(rest)));
+            }
             // OSC 9 ; 4 is ConEmu's progress report, not a notification.
             b"9" if !rest.starts_with(b"4;") => sink.event(Event::Notification(kept(rest))),
             b"777" => {

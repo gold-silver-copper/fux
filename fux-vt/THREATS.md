@@ -181,7 +181,7 @@ B26 and B41 bound host-side objects or host calls.
 | B40 | Row lookups by id (host call) | Work ≤ R + ⌊log2(history rows + 1)⌋ + 1 a call; the index's first 256 spans are free (20 KiB a grid), each past costs 80 B of history's budget | `None` for a row that is gone | 8 MiB of empty history; `x ESC[L CR LF` repeated | `b40`; `row_lookup.rs` |
 | B41 | `ByteQueue::push_with` (host call) | After the closure, what was taken ≤ the buffer's length | — | A closure that clears the vector, then a push | `b41` |
 | B42 | Small fixed state | Tab stops a byte a column; the palette about 1.3 KB; kitty stacks 32 entries | — | HTS at every column | `b42` |
-| B43 | Events | Delivered synchronously; fux-vt keeps none | — | 400 × OSC 9 | `b43` |
+| B43 | Events | Delivered synchronously; fux-vt keeps none but the last window title (`Screen::title`, ≤ `OSC_PAYLOAD_LIMIT`) | — | 400 × OSC 9 | `b43` |
 | B44 | Refused allocations | Each refusal counts in `Parser::refused()` and degrades as 1.3 says; every later byte is read | 1.3's table | `ESC]133;A BEL hello` with a refusal forced (`refuse_next`) | `b44` |
 | B45 | Key and mouse encoders (host calls) | ≤ 64 B per key, mouse report or `Screen::encode_mouse` chunk; alternate scroll ≤ 32,767 arrows | Default/UTF-8 positions past their limits emit a 0 byte; hosts admit or refuse each whole scroll expansion | Every key, modifier and mode; mouse at each encoding's edges; negotiated scroll expansion at maximum height | `b45`; `alternate_scroll_keeps_negotiated_arrows_in_bounded_chunks` |
 | B46 | Covering | A placement covers ≤ `COVER_WORDS` = 4,000,000 words of 64 pixels of the pictures under it, the room to note them included (16 B a row shown of each picture covered, and the covered rows' words) and a copy of what was noted of one the host holds; the room, the words promised included, is inside P (B01). It reads the newer picture's drawn grid positions on the rows of those under it, once a grid row: ≤ the positions it drew (B04) | One under it past the words, or past P, goes whole, the newest covered first | 64 pictures, each a column right of the last, opaque (P2 0) and drawn (P2 1) | `b46`; `a_picture_covers_only_the_pixels_it_lies_on` |
@@ -203,13 +203,14 @@ One parser, every term a capacity:
 | History, with its text, links, maps and styles | 1.1 × H + 64 KiB (B17) | 9,293,004 |
 | History's free row-id spans, both grids | 2 × 256 × 80 (B40) | 40,960 |
 | The parser's buffers | OSC 65,537 + the decoder + DECRQSS | ≈ 67,000 |
+| The window title (B43) | `OSC_PAYLOAD_LIMIT` | 65,536 |
 | Pictures, the decoder and its growth inside | P (B01) | 100,663,296 |
 | Small fixed state | tab stops, palette, kitty stacks | ≈ 6,000 |
 
-- Steady: 123,740,628 B = 118.01 MiB (22.01 MiB without pictures).
-- While processing, with the largest transient (3.2): 128,354,362 B =
-  122.41 MiB.
-- With a resize: 136,431,232 B = 130.11 MiB, the peak engine heap per
+- Steady: 123,806,164 B = 118.07 MiB (22.07 MiB without pictures).
+- While processing, with the largest transient (3.2): 128,419,898 B =
+  122.47 MiB.
+- With a resize: 136,496,768 B = 130.17 MiB, the peak engine heap per
   parser at fux's defaults.
 
 ### 3.2 Transient peaks

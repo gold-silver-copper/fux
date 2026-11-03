@@ -106,6 +106,22 @@ fn events_report_titles_icons_bells_and_clipboard_sets() -> Result {
     Ok(())
 }
 
+/// The screen keeps the window title OSC 0 or OSC 2 set last, as
+/// `Event::Title` tells it: OSC 1 names only the icon, and a title past
+/// the limit is kept cut.
+#[test]
+fn the_screen_keeps_the_title_set_last() -> Result {
+    let mut parser = Parser::with_options(Size::new(2, 20)?, 0, EVENTS)?;
+    let title = |p: &Parser| (p.screen().title().bytes.to_vec(), p.screen().title().cut);
+    assert_eq!(title(&parser), (b"".to_vec(), false));
+    parser.process_all(b"\x1b]0;both\x07\x1b]2;title\x1b\\\x1b]1;icon\x07", &mut ())?;
+    assert_eq!(title(&parser), (b"title".to_vec(), false));
+    let long = [&b"\x1b]2;"[..], &vec![b'x'; OSC_PAYLOAD_LIMIT], b"\x07"].concat();
+    parser.process_all(&long, &mut ())?;
+    assert_eq!(title(&parser), (vec![b'x'; OSC_PAYLOAD_LIMIT - 2], true));
+    Ok(())
+}
+
 #[test]
 fn osc_payloads_are_bounded_and_cancellable() -> Result {
     let mut parser = Parser::with_options(Size::new(4, 20)?, 0, EVENTS)?;
