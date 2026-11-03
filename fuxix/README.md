@@ -62,9 +62,9 @@ loop learns of the end from a `signal::Pipe` of `Chld`.
 | `process::geteuid`, `session` | `geteuid`, `getsid` | the same | not offered |
 | `process::lead_session`, `pty::Slave::spawn` | before `fork`, the highest descriptor in `/dev/fd`; between `fork` and `exec` (`pre_exec`): every descriptor from 3 up marked close-on-exec (`close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each up to past those listed; Android: always the latter), `sigaction(SIG_IGN)` on each signal ignored before a `signal::Pipe` caught it, `sigprocmask` to block none, `setsid`, `TIOCSCTTY` | the same, by `fcntl` on each up to past those listed | std's spawn makes no session |
 | `process::thread_cpu_time` (for fux-bench) | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
-| `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
+| `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)`: an exit's code, or a kill's signal and whether it dumped core (`CLD_DUMPED`) | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
 | `process::reap` | `waitid(WEXITED, WNOHANG)` | the same, ignoring the stops macOS reports | for a pid, not a `Child` |
-| `process::adopt_orphans`, `reap_orphans` | `prctl(PR_SET_CHILD_SUBREAPER)`; `waitpid(WNOHANG)` on each child in `/proc/self/task/*/children` not kept | nothing: macOS has no subreaper, so orphans go to launchd | not offered |
+| `process::adopt_orphans`, `reap_orphans` | `prctl(PR_SET_CHILD_SUBREAPER)`; `waitid(WEXITED, WNOHANG)` on each child in `/proc/self/task/*/children` not kept, saying each reaped and how it ended | nothing: macOS has no subreaper, so orphans go to launchd | not offered |
 | `process::tree` | this process's descendants, by `/proc/PID/task/*/children` | every process (`proc_listallpids`), as orphans leave the tree | not offered |
 | `process::cwd_observed` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
 | `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |

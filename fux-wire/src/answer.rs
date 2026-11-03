@@ -223,7 +223,7 @@ impl From<Status> for Ended {
     fn from(status: Status) -> Self {
         match status {
             Status::Exited(code) => Ended::Exited(code),
-            Status::Signalled(signal) => Ended::Signalled(signal),
+            Status::Signalled { signal, .. } => Ended::Signalled(signal),
         }
     }
 }

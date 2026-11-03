@@ -214,8 +214,10 @@ pub fn session(pid: Pid) -> Option<Pid> {
 pub enum Status {
     /// It exited with this code.
     Exited(i32),
-    /// This signal killed it.
-    Signalled(i32),
+    /// The signal numbered `signal` killed it ([`Signal::from_raw`] names
+    /// it, unless it is one Signal has no name for: a real-time one), and
+    /// whether it dumped core.
+    Signalled { signal: i32, core_dumped: bool },
 }
 
 /// Whether `pid`, a child of this process, has ended, without reaping it:
@@ -260,7 +262,14 @@ fn waited(pid: Pid, keep: libc::c_int) -> Result<Option<Status>> {
     let status = unsafe { info.si_status() };
     Ok(match info.si_code {
         libc::CLD_EXITED => Some(Status::Exited(status)),
-        libc::CLD_KILLED | libc::CLD_DUMPED => Some(Status::Signalled(status)),
+        libc::CLD_KILLED => Some(Status::Signalled {
+            signal: status,
+            core_dumped: false,
+        }),
+        libc::CLD_DUMPED => Some(Status::Signalled {
+            signal: status,
+            core_dumped: true,
+        }),
         _ => None,
     })
 }
@@ -283,26 +292,36 @@ pub fn adopt_orphans() -> Result<()> {
 
 /// Reaps every child of this process that has exited and that `kept` does
 /// not keep: the orphans it adopted ([`adopt_orphans`]); none on macOS. Its
-/// own children are kept, for whoever waits for them.
-pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
+/// own children are kept, for whoever waits for them. Each reaped, and how
+/// it ended.
+pub fn reap_orphans(kept: impl Fn(Pid) -> bool) -> Vec<(Pid, Status)> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = kept;
+        Vec::new()
+    }
     // Each child is looked at, however many: not cut at `TREE_MAX`, as
     // live ones listed first would hide every zombie after them.
     #[cfg(not(target_os = "macos"))]
-    for task in std::fs::read_dir("/proc/self/task")
-        .into_iter()
-        .flatten()
-        .flatten()
     {
-        let listed = std::fs::read_to_string(task.path().join("children"));
-        let children = listed.iter().flat_map(|l| l.split_whitespace());
-        for pid in children.filter_map(|c| Pid::from_raw(c.parse().ok()?)) {
-            if !kept(pid) {
-                let _ = reap(pid);
+        let mut reaped = Vec::new();
+        for task in std::fs::read_dir("/proc/self/task")
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let listed = std::fs::read_to_string(task.path().join("children"));
+            let children = listed.iter().flat_map(|l| l.split_whitespace());
+            for pid in children.filter_map(|c| Pid::from_raw(c.parse().ok()?)) {
+                if !kept(pid)
+                    && let Ok(Some(status)) = reap(pid)
+                {
+                    reaped.push((pid, status));
+                }
             }
         }
+        reaped
     }
-    #[cfg(target_os = "macos")]
-    let _ = kept;
 }
 
 /// The most processes a [`tree`] holds on Linux: a runaway tree is cut
@@ -626,9 +645,13 @@ mod tests {
         kill(pid, Signal::Cont).map_err(|e| e.to_string())?;
         kill(pid, Signal::Kill).map_err(|e| e.to_string())?;
         let status = wait_ended(pid);
-        assert_eq!(status, Some(Status::Signalled(libc::SIGKILL)));
+        let killed = Status::Signalled {
+            signal: libc::SIGKILL,
+            core_dumped: false,
+        };
+        assert_eq!(status, Some(killed));
         // Reported without reaping: it is still there to reap.
-        assert_eq!(reap(pid), Ok(Some(Status::Signalled(libc::SIGKILL))));
+        assert_eq!(reap(pid), Ok(Some(killed)));
         let _ = child.try_wait();
         Ok(())
     }
@@ -658,6 +681,34 @@ mod tests {
         let pid = Pid::of(&child).ok_or("a pid")?;
         assert_eq!(wait_ended(pid), Some(Status::Exited(3)));
         assert_eq!(reap(pid), Ok(Some(Status::Exited(3))));
+        Ok(())
+    }
+
+    /// An adopted orphan is reaped and told with how it ended, and a child
+    /// kept is left alone; on macOS nothing is adopted.
+    #[test]
+    fn reaped_orphans_are_told_with_their_ends() -> std::result::Result<(), String> {
+        adopt_orphans().map_err(|e| e.to_string())?;
+        // The orphan writes its pid, then exits 5 once its parent is gone.
+        let out = Command::new("sh")
+            .args(["-c", "sh -c 'echo $$; sleep 0.2; exit 5' &"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let orphan = Pid::from_raw(text.trim().parse().map_err(|_| "a pid")?).ok_or("a pid")?;
+        let deadline = Instant::now().checked_add(Duration::from_secs(5));
+        let mut reaped = Vec::new();
+        while cfg!(not(target_os = "macos")) && reaped.is_empty() {
+            // Only the orphan: the other tests' children are theirs.
+            reaped.extend(reap_orphans(|pid| pid != orphan));
+            if deadline.is_none_or(|d| Instant::now() > d) {
+                return Err("never reaped".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if cfg!(not(target_os = "macos")) {
+            assert_eq!(reaped, [(orphan, Status::Exited(5))]);
+        }
         Ok(())
     }
 

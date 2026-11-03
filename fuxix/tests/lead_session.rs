@@ -45,7 +45,7 @@ fn a_session_leader_starts_unblocked_with_the_dispositions_inherited()
     // SIGTERM blocked, it would stay pending and the shell exit 0.
     let term = ended("kill -TERM $$; exit 0")?;
     assert!(
-        matches!(term, Status::Signalled(signal) if signal == libc::SIGTERM),
+        matches!(term, Status::Signalled { signal, .. } if signal == libc::SIGTERM),
         "{term:?}"
     );
     // Ignored on entry and caught here, it is ignored there again.

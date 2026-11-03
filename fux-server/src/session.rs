@@ -1023,7 +1023,7 @@ impl Session {
                 fuxix::process::Status::Exited(code) => {
                     format!("its pane's own process exited with status {code}")
                 }
-                fuxix::process::Status::Signalled(signal) => {
+                fuxix::process::Status::Signalled { signal, .. } => {
                     format!("its pane's own process was killed by signal {signal}")
                 }
             },
