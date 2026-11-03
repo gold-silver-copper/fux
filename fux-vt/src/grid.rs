@@ -1075,14 +1075,32 @@ impl Grid {
     /// erase (tmux sends an EL for nearly every line) reads only cells
     /// before it, and one reaching it lowers the mark to `start`: erasing
     /// or recycling the row again costs nothing.
+    ///
+    /// A whole row erased ends the line above (or history's newest, above
+    /// the top row), which no longer goes on in it, so a line editor
+    /// redrawing its prompt there (bash after a resize) starts a line of
+    /// its own. The row above keeps its soft wrap, as xterm's `ClearRight`
+    /// and `ScrnClearLines` do; its line just ends (`ENDS`,
+    /// `Row::continues`).
     pub fn erase(&mut self, row: u16, start: u16, end: u16, style: u32, version: u64) {
+        if self.blank(row, start, end, style, version) {
+            match row.checked_sub(1) {
+                Some(above) => self.end_line(above, version),
+                None => self.history.end_newest_line(version),
+            }
+        }
+    }
+
+    /// `erase`, but a line going on into a whole row still does: whether
+    /// a whole row changed.
+    fn blank(&mut self, row: u16, start: u16, end: u16, style: u32, version: u64) -> bool {
         let (cols, last) = (self.size.cols(), self.size.columns().last());
         let mut clears_edge = end >= cols;
         let Some(slot) = self.slot(row) else {
-            return;
+            return false;
         };
         let Some(&Meta { used, .. }) = self.meta.get(slot) else {
-            return;
+            return false;
         };
         let plain = style == 0;
         let span_end = usize::from(end.min(cols));
@@ -1142,18 +1160,9 @@ impl Grid {
                 m.version = version;
             }
         }
-        // A whole row erased keeps no text or links. The line above (or
-        // history's newest, above the top row) no longer goes on in it, so
-        // a line editor redrawing its prompt there (bash after a resize)
-        // starts a line of its own. The row above keeps its soft wrap, as
-        // xterm's `ClearRight` and `ScrnClearLines` do; its line just ends
-        // (`ENDS`, `Row::continues`).
-        if start == 0 && end >= cols {
-            match row.checked_sub(1) {
-                Some(above) if changed => self.end_line(above, version),
-                None if changed => self.history.end_newest_line(version),
-                Some(_) | None => {}
-            }
+        // A whole row erased keeps no text or links.
+        let whole = start == 0 && end >= cols;
+        if whole {
             if let Some(text) = self.texts.get_mut(slot) {
                 text.release();
             }
@@ -1163,6 +1172,7 @@ impl Grid {
                 self.unlink_rows(rows, 1, false);
             }
         }
+        whole && changed
     }
 
     /// ED (`display`) or EL of `part`, ending a pending wrap. `erase` erases
@@ -1249,10 +1259,11 @@ impl Grid {
     }
 
     /// DECFRA: fills columns `start` to `end` of live row `row` with the
-    /// narrow glyph `c` in `style`, with no link, erasing first so a wide
-    /// glyph the span cuts is blanked.
+    /// narrow glyph `c` in `style`, with no link, blanking first so a
+    /// wide glyph the span cuts is blanked. It changes no line (DEC STD
+    /// 070, 5.12.1): one going on into the row still does.
     pub fn fill(&mut self, row: u16, (start, end): (u16, u16), c: char, style: u32, version: u64) {
-        self.erase(row, start, end, style, version);
+        self.blank(row, start, end, style, version);
         let span = usize::from(start)..usize::from(end);
         crate::budget::spend(span.len());
         let glyph = Compact::glyph(c, 1, style);

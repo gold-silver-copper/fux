@@ -133,10 +133,20 @@ fn decera_and_decsera_erase_a_rectangle() -> Result {
 
 /// DEC STD 070, 5.12.1: the operations change no line, so a row they reach
 /// the last column of stays soft-wrapped, as xterm keeps it (`replay
-/// --engines xterm --size 2x3 'abcdef\e[1;1;1;3$z'`).
+/// --engines xterm --size 2x3 'abcdef\e[1;1;1;3$z'`), and a line going on
+/// into a row they cover whole still goes on (xterm's `ScrnFillRectangle`
+/// touches no line's wrap).
 #[test]
 fn rectangles_keep_soft_wraps() -> Result {
-    for op in ["\x1b[88;1;1;1;3$x", "\x1b[1;1;1;3$z", "\x1b[1;1;1;3${"] {
+    let ops = [
+        "\x1b[88;{0};1;{0};3$x",
+        "\x1b[{0};1;{0};3$z",
+        "\x1b[{0};1;{0};3${",
+    ];
+    for op in ops
+        .iter()
+        .flat_map(|op| [op.replace("{0}", "1"), op.replace("{0}", "2")])
+    {
         let mut parser = Parser::new(Size::new(2, 3)?, 0)?;
         parser.process(format!("abcdef{op}").as_bytes())?;
         let rows: Vec<bool> = parser.screen().rows().map(|r| r.continues()).collect();
