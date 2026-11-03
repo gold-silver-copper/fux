@@ -375,6 +375,28 @@ fn a_rejected_resize_leaves_a_grapheme_open() -> Result {
     Ok(())
 }
 
+/// History numbers each row it takes in turn, through the alternate
+/// screen too, and lets the numbers of the rows it lets go pass.
+#[test]
+fn history_numbers_the_rows_it_takes_and_passes_those_let_go() -> Result {
+    let mut p = Parser::new(Size::new(2, 3)?, 1 << 20)?;
+    p.process(b"a\r\nb\r\nc\r\nd")?;
+    assert_eq!(p.screen().history_numbers(), 0..2);
+    p.process(b"\x1b[?1049h\r\nx\r\ny\r\nz")?;
+    assert_eq!(
+        p.screen().history_numbers(),
+        0..2,
+        "the alternate screen keeps none"
+    );
+    p.process(b"\x1b[?1049l")?;
+    p.clear_history();
+    p.process(b"\r\ne")?;
+    assert_eq!(p.screen().history_numbers(), 2..3);
+    let taken: Vec<String> = p.screen().main_rows().take(1).map(|r| r.text()).collect();
+    assert_eq!(taken, ["c  "]);
+    Ok(())
+}
+
 /// `Size::new` refuses no rows or no columns, and its error says which.
 #[test]
 fn a_size_of_no_rows_or_columns_says_which_it_lacks() {

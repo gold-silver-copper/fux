@@ -376,7 +376,10 @@ forces a refresh; it never hides an update. `Screen::revision` counts the
 bytes of output read, one held back while work is left over, and the
 resizes to another size and changes to history: with no work left, the
 same however the output was cut into calls, where marks move on with
-each call.
+each call. `Screen::history_numbers` numbers the primary screen's history
+rows: each row it takes gets the next number, so a host that noted the
+end finds the rows scrolled in since, and whether any went before it
+read them; a resize may number history afresh.
 
 ## Bounds
 

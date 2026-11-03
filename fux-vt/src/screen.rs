@@ -1170,6 +1170,20 @@ impl Screen {
     pub fn main_rows(&self) -> Rows<'_> {
         Rows::of(&self.primary)
     }
+    /// The numbers of the rows the primary screen's history keeps, oldest
+    /// first, whichever screen is in use: each row that scrolls into it
+    /// takes the next number, never reused, so `end` moves on by every row
+    /// it takes, and `start` by every row let go, to its budget or
+    /// [`crate::Parser::clear_history`]. The history rows of
+    /// [`Screen::main_rows`] are these, in order. A host that noted `end`
+    /// finds the rows taken since numbered from it on, and, if `start` has
+    /// passed it, that some went before it read them. A resize lays
+    /// history out again and may number it afresh: numbers compare only
+    /// between resizes.
+    pub fn history_numbers(&self) -> Range<u64> {
+        let (start, end) = self.primary.history_numbers();
+        start..end
+    }
     /// The alternate screen's rows, whichever screen is in use: what a
     /// full-screen program drew last, kept until it is shown again.
     pub fn alternate_rows(&self) -> Rows<'_> {
