@@ -837,7 +837,8 @@ pub trait Sink {
     /// A sixel picture, with [`Feature::Pictures`], ended: placed whole,
     /// or not: begun while the host drew no sixel (`set_host_graphics`),
     /// and not kept; ended once it had no cell size; lifted past a scroll
-    /// region's top as it was placed; or cut, placed or not: what it drew
+    /// region's top, or cut by a double-width line's end, as it was
+    /// placed; or cut, placed or not: what it drew
     /// past what a picture may keep ([`crate::sixel::MAX_SIDE`] a side,
     /// [`crate::sixel::MAX_PIXELS`] in all, and the pictures' budget,
     /// [`Parser::set_picture_bytes`]) is not kept. One that drew nothing,

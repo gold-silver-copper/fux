@@ -1754,6 +1754,32 @@ fn a_picture_is_clipped_at_the_right_margin_and_keeps_its_clip() -> Result {
     Ok(())
 }
 
+/// DEC STD 070, 5.6.1: a double-width line holds half the columns. A
+/// picture whose bands go on onto one takes its cells there only to that
+/// line's end, and the cursor it leaves there stays on the line.
+#[test]
+fn a_picture_onto_a_double_width_line_stops_at_its_end() -> Result {
+    let graphics =
+        fux_vt::CellSize::new(2, 6).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel);
+    let mut p = Parser::with_options(Size::new(2, 6)?, 0, PICTURES)?;
+    p.set_host_graphics(graphics);
+    // One cell wide and two high, from column 5; row 2 holds 3 columns.
+    p.process(b"\x1b[2;1H\x1b#6\x1b[1;5H\x1bPq\"1;1;2;12\x1b\\")?;
+    assert_eq!(p.screen().cursor_position(), (1, 2));
+    assert!(cell(&p, 1, 4)?.contents().is_empty());
+    assert_eq!(
+        p.screen().pictures().count(),
+        0,
+        "a cut picture is not kept"
+    );
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
+    Ok(())
+}
+
 /// DEC STD 070-9, 11.2.4: a picture past the bottom margin scrolls "if
 /// text drawn into this region would have scrolled", and what scrolls off
 /// is gone. On a screen that keeps no history (the alternate one), a
