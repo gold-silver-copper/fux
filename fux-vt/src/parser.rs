@@ -1802,23 +1802,20 @@ impl Parser {
             let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
             ended.then_some(Stop::Ended)
         };
+        let dispatch = match dispatch {
+            Dispatch::Unhandled => (self.screen)
+                .other_csi(&self.params, intermediates, byte, &self.options)
+                .unwrap_or(Dispatch::Unhandled),
+            done @ (Dispatch::Done | Dispatch::Reply(_)) => done,
+        };
         match dispatch {
             Dispatch::Done => {}
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
-            Dispatch::Unhandled => {
-                match self
-                    .screen
-                    .other_csi(&self.params, intermediates, byte, &self.options)
-                {
-                    Some(Dispatch::Done) => {}
-                    Some(Dispatch::Reply(reply)) => sink.reply(reply.as_bytes()),
-                    Some(Dispatch::Unhandled) | None => sink.unhandled(Unhandled::Csi {
-                        params: Params(&self.params),
-                        intermediates,
-                        action: byte,
-                    }),
-                }
-            }
+            Dispatch::Unhandled => sink.unhandled(Unhandled::Csi {
+                params: Params(&self.params),
+                intermediates,
+                action: byte,
+            }),
         }
         framed
     }
