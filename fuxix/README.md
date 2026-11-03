@@ -39,7 +39,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `io::read`, `io::write` | `read`, `write` | the same | on a borrowed descriptor, with `AGAIN` and `INTR` as values |
 | `io::set_nonblocking` | `fcntl(F_SETFL, O_NONBLOCK)` | the same | not offered on a bare descriptor |
 | `io::redirect_stdout` | `dup2(fd, 1)` | the same | not offered |
-| `signal::Pipe` | `sigaction(SA_RESTART)`, a handler that writes a byte to each non-blocking pipe held for its signal (64 at most), saving `errno`: one pipe for several signals | the same | not offered |
+| `signal::Pipe` | `sigaction(SA_RESTART)`, a handler that writes the signal's number as a byte to each non-blocking pipe held for it (64 at most), saving `errno`: one pipe for several signals, told apart by `Pipe::next` | the same | not offered |
 | `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
 | `process::kill`, `kill_group` | `kill`, `killpg` | the same | std signals only its own children, and only with SIGKILL |
 | `process::geteuid`, `session` | `geteuid`, `getsid` | the same | not offered |

@@ -1881,7 +1881,7 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             }
         }
         if is(1) {
-            crate::drain(children.reader());
+            while children.next().is_some() {}
             host.reap(now);
         }
         if is(2) {

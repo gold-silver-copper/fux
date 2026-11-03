@@ -6,8 +6,9 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 /// A pipe that becomes readable when any of its signals arrives: each
-/// writes a byte to the other end, of which its notice holds a copy. Both
-/// ends are non-blocking; dropped, the notices stop, then the pipe closes.
+/// writes its number as a byte to the other end, of which its notice holds
+/// a copy, so [`Pipe::next`] tells which came. Both ends are non-blocking;
+/// dropped, the notices stop, then the pipe closes.
 pub struct Pipe {
     /// Declared first, so that they are dropped before the read end closes:
     /// a handler then never writes to a pipe with no reader.
@@ -31,9 +32,21 @@ impl Pipe {
         })
     }
 
-    /// The read end, to wait on and drain.
+    /// The read end, to wait on.
     pub fn reader(&self) -> &PipeReader {
         &self.reader
+    }
+
+    /// The next signal that came, taken off the pipe: `None` once it is
+    /// empty, so `while let Some(signal) = pipe.next()` drains it. A signal
+    /// that came while the pipe was full is not told; one that came twice
+    /// before it was read may be told twice.
+    pub fn next(&self) -> Option<Signal> {
+        let mut byte = [0u8];
+        match crate::io::read(&self.reader, &mut byte) {
+            Ok(1) => Signal::from_raw(i32::from(u8::from_ne_bytes(byte))),
+            Ok(_) | Err(_) => None,
+        }
     }
 }
 
@@ -187,13 +200,16 @@ extern "C" fn handle(signal: libc::c_int) {
     for slot in &SLOTS {
         if slot.signal.load(Ordering::SeqCst) == signal {
             let fd = slot.fd.load(Ordering::SeqCst);
-            if fd != FREE {
+            // Every signal's number is below 256.
+            if fd != FREE
+                && let Ok(byte) = u8::try_from(signal)
+            {
                 // SAFETY: `write` is async-signal-safe, and the byte is
                 // readable for the call. The descriptor is open: its notice
                 // closes it only after clearing the signal and seeing no
                 // handler running, and this one counted itself first. A
                 // write that fails (a full pipe) is dropped.
-                unsafe { libc::write(fd, [0u8].as_ptr().cast(), 1) };
+                unsafe { libc::write(fd, [byte].as_ptr().cast(), 1) };
             }
         }
     }
@@ -245,6 +261,21 @@ mod tests {
         assert_eq!(next(&mut one), Some(1));
         assert_eq!(next(&mut two), Some(1));
         drop(first);
+        // One pipe for two signals tells each by name, and is empty after.
+        let both = Pipe::new(&[Signal::Usr2, Signal::Winch])?;
+        kill(pid, Signal::Winch)?;
+        kill(pid, Signal::Usr2)?;
+        let mut came = Vec::new();
+        while came.len() < 2 {
+            let mut fds = [PollFd::new(both.reader(), Events::IN)];
+            assert!(poll(&mut fds, Some(Duration::from_secs(5))).is_ok_and(|n| n == 1));
+            came.extend(std::iter::from_fn(|| both.next()));
+        }
+        let mut both_ways = [Signal::Usr2, Signal::Winch];
+        both_ways.sort_by_key(|signal| signal.raw());
+        came.sort_by_key(|signal| signal.raw());
+        assert_eq!(came, both_ways);
+        assert_eq!(both.next(), None);
         kill(pid, Signal::Usr1)?;
         assert_eq!(next(&mut two), Some(1));
         assert_eq!(next(&mut one), Some(0), "a dropped notice's pipe is closed");
