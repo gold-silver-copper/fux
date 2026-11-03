@@ -3,5 +3,6 @@
 target=$(printf 'target\n.'); target=${target%.}
 [ -L notes.txt ]
 [ "$(cat "$target")" = newold ]
-# Two files, the target's line end counted as a line.
-[ "$(ls -A | wc -l)" -eq 3 ]
+# Two files and no temporary one, counted by a glob: ls may print the
+# line end as `?`.
+shopt -s dotglob; files=(*); [ "${#files[@]}" -eq 2 ]

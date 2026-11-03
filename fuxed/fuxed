@@ -23,8 +23,9 @@ resolve() {
       [ "$link" != "$dir/$name" ] || { echo "fuxed: $1: a symlink loop" >&2; exit 1; }
     done
     seen+=("$dir/$name")
-    target=$(readlink -- "$dir/$name" && echo .) || exit 1
-    target=${target%$'\n.'}
+    # -n: GNU readlink ends its line, macOS's never does; with it, neither.
+    target=$(readlink -n -- "$dir/$name" && echo .) || exit 1
+    target=${target%.}
     case $target in /*) ;; *) target=$dir/$target ;; esac
     split "$target"
   done
