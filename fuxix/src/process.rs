@@ -17,8 +17,9 @@ impl Pid {
         NonZeroI32::new(raw).filter(|n| n.get() > 0).map(Pid)
     }
 
-    /// A child's ID.
-    pub(crate) fn of(child: &std::process::Child) -> Option<Pid> {
+    /// The ID of a child std started, for [`reap`], [`kill_group`] and the
+    /// rest.
+    pub fn of(child: &std::process::Child) -> Option<Pid> {
         i32::try_from(child.id()).ok().and_then(Pid::from_raw)
     }
 

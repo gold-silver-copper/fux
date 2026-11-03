@@ -716,9 +716,7 @@ impl Link {
         let child = command
             .spawn()
             .map_err(|e| format!("starting its process, {}: {e}", exe.display()))?;
-        let pid = i32::try_from(child.id())
-            .ok()
-            .and_then(fuxix::process::Pid::from_raw);
+        let pid = fuxix::process::Pid::of(&child);
         // fux reaps it by its pid; std never waits on a dropped child.
         drop(child);
         let pid = pid.ok_or("its process has no pid")?;

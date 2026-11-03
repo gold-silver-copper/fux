@@ -11,7 +11,7 @@ fn ended(script: &str) -> Result<Status, Box<dyn std::error::Error>> {
     command.args(["-c", script]);
     lead_session(&mut command, false);
     let child = command.spawn()?;
-    let pid = Pid::from_raw(i32::try_from(child.id())?).ok_or("a pid")?;
+    let pid = Pid::of(&child).ok_or("a pid")?;
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(10))
         .ok_or("a deadline")?;

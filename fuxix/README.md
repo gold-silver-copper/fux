@@ -76,6 +76,7 @@ loop learns of the end from a `signal::Pipe` of `Chld`.
 `file::NOFOLLOW` is `O_NOFOLLOW`, for `OpenOptions::custom_flags`.
 `socket::max_path_len` is the longest path a socket address holds: its
 `sun_path` less the NUL (107 bytes on Linux and Android, 103 on macOS).
+`process::Pid::of` is the `Pid` of a `std::process::Child`.
 `process::Signal` is the signals fuxix sends and those a program dies of,
 each found by its number (`from_raw`), and giving it and its name back
 (`raw`, `name`, `TERM`).
