@@ -128,6 +128,21 @@ pub fn kill_group(group: Pid, signal: Signal) -> Result<()> {
     check(unsafe { libc::killpg(group.as_raw(), signal.raw()) }).map(drop)
 }
 
+/// Whether the group `group` has a process in it, found by sending it no
+/// signal (`killpg(group, 0)`): one this process may not signal counts too.
+/// A program's group outlives it while a job it left runs, for [`tree`]
+/// and [`session`] to find, or [`kill_group`] to end.
+pub fn group_alive(group: Pid) -> Result<bool> {
+    // SAFETY: killpg takes two numbers and touches no memory; with no
+    // signal it only checks.
+    match check(unsafe { libc::killpg(group.as_raw(), 0) }) {
+        Ok(_) => Ok(true),
+        Err(Errno::SRCH) => Ok(false),
+        Err(errno) if errno.raw() == libc::EPERM => Ok(true),
+        Err(errno) => Err(errno),
+    }
+}
+
 /// This process's effective user ID.
 pub fn geteuid() -> u32 {
     // SAFETY: geteuid cannot fail and touches no memory.
@@ -615,6 +630,22 @@ mod tests {
         // Reported without reaping: it is still there to reap.
         assert_eq!(reap(pid), Ok(Some(Status::Signalled(libc::SIGKILL))));
         let _ = child.try_wait();
+        Ok(())
+    }
+
+    #[test]
+    fn a_group_is_alive_until_its_last_process_is_reaped() -> std::result::Result<(), String> {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pid = Pid::of(&child).ok_or("a pid")?;
+        assert_eq!(group_alive(pid), Ok(true));
+        kill_group(pid, Signal::Kill).map_err(|e| e.to_string())?;
+        child.wait().map_err(|e| e.to_string())?;
+        assert_eq!(group_alive(pid), Ok(false));
         Ok(())
     }
 

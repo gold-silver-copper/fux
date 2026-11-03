@@ -141,6 +141,14 @@ impl Slave {
     /// with its pid, or once it cannot, with the system's error as it is:
     /// a `NotFound` may be the program, its `#!` interpreter or the
     /// directory, which the system does not tell apart.
+    ///
+    /// The pid is also its process group's and its session's: to end what
+    /// it started, [`crate::process::kill_group`] reaches its group, and a
+    /// job in a group of its own (a shell's, with job control) is in its
+    /// session, which [`crate::process::session`] tells of each process in
+    /// [`crate::process::tree`]. A job it left may hold the PTY open after
+    /// it ends; [`crate::process::group_alive`] says when its group is
+    /// empty.
     pub fn spawn<S: AsRef<OsStr>>(
         self,
         argv: &[S],
