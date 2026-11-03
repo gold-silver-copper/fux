@@ -20,7 +20,6 @@ use fux_wire::protocol::{
 };
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
-use fuxix::terminal::Termios;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, ErrorKind, Read, Write};
@@ -166,15 +165,14 @@ impl From<fux_wire::protocol::Error> for Error {
     }
 }
 
-/// The terminal state to restore, shared with the panic hook.
-static SAVED: Mutex<Option<Termios>> = Mutex::new(None);
-fn restore() {
-    let saved = SAVED.lock().ok().and_then(|mut s| s.take());
-    if let Some(termios) = saved {
+/// Whether the terminal is on the alternate screen, which the panic hook
+/// leaves too.
+static ENTERED: AtomicBool = AtomicBool::new(false);
+fn leave() {
+    if ENTERED.swap(false, Ordering::SeqCst) {
         let mut out = io::stdout();
         let _ = out.write_all(LEAVE.as_bytes());
         let _ = out.flush();
-        let _ = fuxix::terminal::set_attributes(io::stdin(), &termios);
     }
 }
 
@@ -1159,7 +1157,6 @@ pub fn attach(
     attaching: Attaching,
     size: Option<fux_vt::Size>,
 ) -> Result<(), Error> {
-    let stdin = io::stdin();
     let terminal = size.is_none();
     // A terminal's signals are caught once connected, so that ^C while
     // connecting still ends fux, and before it goes raw.
@@ -1186,7 +1183,7 @@ pub fn attach(
         ancestry: if terminal { ancestry() } else { Vec::new() },
     };
     let raw = terminal
-        .then(|| Raw::enter_with(&stdin, &mut io::stdout()))
+        .then(|| Raw::enter_with(&mut io::stdout()))
         .transpose()?;
     // The server relays every paint, which the client writes to its
     // terminal; the keys are the client's to read.
@@ -1277,30 +1274,28 @@ impl Signals {
 }
 
 /// The terminal in raw mode on the alternate screen, which puts the
-/// terminal back as it was once dropped, however the attachment ends.
-struct Raw;
+/// terminal back as it was once dropped, however the attachment ends: it
+/// leaves the alternate screen, then its modes come back.
+struct Raw(#[expect(dead_code, reason = "held for its drop")] fuxix::terminal::Raw<io::Stdin>);
 
 impl Raw {
-    fn enter_with(stdin: &io::Stdin, stdout: &mut impl Write) -> Result<Raw, Error> {
-        let original =
-            fuxix::terminal::attributes(stdin).map_err(failed("reading terminal modes"))?;
-        let mut raw = original.clone();
-        raw.make_raw();
-        if let Ok(mut saved) = SAVED.lock() {
-            *saved = Some(original);
-        }
-        // Wrapped once per process, however often it attaches.
+    fn enter_with(stdout: &mut impl Write) -> Result<Raw, Error> {
+        let modes = fuxix::terminal::Raw::enter(io::stdin()).map_err(failed("setting raw mode"))?;
+        // Set after fuxix's, so it runs first: the alternate screen is left
+        // before the modes come back and the message is printed. Once per
+        // process, however often it attaches.
         static HOOKED: std::sync::Once = std::sync::Once::new();
         HOOKED.call_once(|| {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                restore();
+                leave();
                 previous(info);
             }));
         });
-        // Made before raw mode, so that failing to set it restores too.
-        let entered = Raw;
-        fuxix::terminal::set_attributes(stdin, &raw).map_err(failed("setting raw mode"))?;
+        // Made before the screen is entered, so that failing to enter it
+        // leaves it too.
+        let entered = Raw(modes);
+        ENTERED.store(true, Ordering::SeqCst);
         stdout.write_all(ENTER.as_bytes()).map_err(Error::Output)?;
         stdout.flush().map_err(Error::Output)?;
         Ok(entered)
@@ -1309,7 +1304,7 @@ impl Raw {
 
 impl Drop for Raw {
     fn drop(&mut self) {
-        restore();
+        leave();
     }
 }
 
@@ -2303,7 +2298,6 @@ mod tests {
                     Err(io::Error::other("entry flush refused"))
                 }
             }
-            let stdin = io::stdin();
             // Every setting of the terminal, as `stty -a` lists them, but
             // `pendin`: a state of its input, not a setting, which macOS's
             // kernel sets itself whenever line editing comes back on.
@@ -2323,7 +2317,7 @@ mod tests {
             };
             let before = modes()?;
             for flush in [false, true] {
-                let result = Raw::enter_with(&stdin, &mut Refused { flush });
+                let result = Raw::enter_with(&mut Refused { flush });
                 let error = result.err().ok_or("entry succeeded")?;
                 let expected = if flush {
                     "entry flush refused"

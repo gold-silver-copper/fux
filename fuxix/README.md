@@ -13,7 +13,8 @@ with. On any other platform it does not build.
   session is a `Pid`, which is positive; a failure is an `Errno` or `None`;
   a struct the kernel fills is read only after the call says it filled it.
 - No function retries a call a signal interrupted: it fails with
-  `Errno::INTR`, and the caller decides.
+  `Errno::INTR`, and the caller decides. A drop, which has no caller to
+  tell, retries: `terminal::Raw` putting a terminal's modes back.
 
 ## `pty::open` on macOS
 
@@ -62,7 +63,8 @@ loop learns of the end from a `signal::Pipe` of `Chld`.
 | `process::tree` | this process's descendants, by `/proc/PID/task/*/children` | every process (`proc_listallpids`), as orphans leave the tree | not offered |
 | `process::cwd_observed` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
 | `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
-| `terminal::attributes`, `set_attributes`, `Termios::make_raw` | `tcgetattr`, `tcsetattr`, `cfmakeraw` | the same | not offered |
+| `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `edits_lines`, `echoes`, `end_of_file`, `newline_as_crlf`, `set_newline_as_crlf` | `tcgetattr`, `tcsetattr(TCSANOW)`, `cfmakeraw`; `ICANON`, `ECHO`, `VEOF`, `OPOST` and `ONLCR` | the same | not offered |
+| `terminal::Raw` | `tcsetattr(TCSADRAIN)` to raw mode, and back once dropped or, from a panic hook it chains, before a panic's message | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
 | `terminal::foreground_group` | `tcgetpgrp` | the same | not offered |
 | `socket::stream`, `bind`, `listen`, `connect` | `socket(SOCK_CLOEXEC)`, `bind`, `listen`, `connect` | `socket`, then close-on-exec | `UnixListener::bind` binds and listens in one step; fux sets the socket's mode between them |
