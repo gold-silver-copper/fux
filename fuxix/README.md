@@ -56,7 +56,7 @@ loop learns of the end from a `signal::Pipe` of `Chld`.
 | `io::set_nonblocking` | `fcntl(F_SETFL, O_NONBLOCK)` | the same | not offered on a bare descriptor |
 | `io::redirect_stdout` | `dup2(fd, 1)` | the same | not offered |
 | `signal::Pipe` | `sigaction(SA_RESTART)`, a handler that writes the signal's number as a byte to each non-blocking pipe held for it (64 at most), saving `errno`: one pipe for several signals, told apart by `Pipe::next` | the same | not offered |
-| `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
+| `poll::poll`, `Poll::list` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
 | `process::kill`, `kill_group` | `kill`, `killpg` | the same | std signals only its own children, and only with SIGKILL |
 | `process::group_alive` | `killpg(group, 0)` | the same | not offered |
 | `process::geteuid`, `session` | `geteuid`, `getsid` | the same | not offered |
@@ -78,6 +78,8 @@ loop learns of the end from a `signal::Pipe` of `Chld`.
 
 `terminal::Size` is a size in cells, never no rows or no columns:
 `Size::new(rows, cols)` gives one if neither is zero.
+A `poll::List`'s `push` gives an `Entry`, which `events` asks what that
+descriptor was found ready for, wherever it is in the list.
 `file::NOFOLLOW` is `O_NOFOLLOW`, for `OpenOptions::custom_flags`.
 `socket::max_path_len` is the longest path a socket address holds: its
 `sun_path` less the NUL (107 bytes on Linux and Android, 103 on macOS).

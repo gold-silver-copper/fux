@@ -1819,40 +1819,34 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             | Process::Exited(_)
             | Process::Respawning => None,
         };
-        let read = reading.is_some();
         let mut fds = poll.list();
-        match &link {
-            Some(end) if end.out.is_empty() => fds.push(PollFd::new(&end.stream, Events::IN)),
-            Some(end) => fds.push(PollFd::new(&end.stream, Events::IN | Events::OUT)),
-            None => fds.push(PollFd::new(&listener, Events::NONE)),
-        }
-        fds.push(PollFd::new(children.reader(), Events::IN));
-        fds.push(PollFd::new(&listener, Events::IN));
-        match reading {
-            Some(child) => {
-                let mut flags = Events::IN;
-                if host.input {
-                    flags |= Events::OUT;
-                }
-                fds.push(PollFd::new(&child.master, flags));
-            }
-            None => fds.push(PollFd::new(&listener, Events::NONE)),
-        }
-        for peer in &peers {
-            let mut flags = Events::IN;
-            if !peer.end.out.is_empty() {
-                flags |= Events::OUT;
-            }
-            fds.push(PollFd::new(&peer.end.stream, flags));
-        }
+        let writes = |out: bool| match out {
+            true => Events::IN | Events::OUT,
+            false => Events::IN,
+        };
+        let linked = (link.as_ref())
+            .map(|end| fds.push(PollFd::new(&end.stream, writes(!end.out.is_empty()))));
+        let reaped = fds.push(PollFd::new(children.reader(), Events::IN));
+        let reached = fds.push(PollFd::new(&listener, Events::IN));
+        let program = reading.map(|child| fds.push(PollFd::new(&child.master, writes(host.input))));
+        let peered: Vec<_> = (peers.iter())
+            .map(|peer| {
+                fds.push(PollFd::new(
+                    &peer.end.stream,
+                    writes(!peer.end.out.is_empty()),
+                ))
+            })
+            .collect();
         match fds.poll(timeout) {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(error) => return Err(format!("poll: {error}")),
         }
-        let ready: Vec<Events> = fds.revents().collect();
+        let ready = |entry: Option<_>| entry.map_or(Events::NONE, |entry| fds.events(entry));
+        let (linked, reaped, reached) = (ready(linked), ready(Some(reaped)), ready(Some(reached)));
+        let program = ready(program);
+        let peered: Vec<Events> = peered.into_iter().map(|peer| ready(Some(peer))).collect();
         let now = Instant::now();
-        let is = |i: usize| ready.get(i).is_some_and(|f| !f.is_empty());
-        if is(0)
+        if !linked.is_empty()
             && let Some(end) = &mut link
         {
             // What it said before it went is taken first: a close it sent
@@ -1880,11 +1874,11 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
                 host.forget();
             }
         }
-        if is(1) {
+        if !reaped.is_empty() {
             while children.next().is_some() {}
             host.reap(now);
         }
-        if is(2) {
+        if !reached.is_empty() {
             while let Ok((stream, _)) = listener.accept() {
                 let ours = fuxix::socket::peer(&stream)
                     .is_ok_and(|peer| peer.uid == fuxix::process::geteuid());
@@ -1896,20 +1890,20 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
                 }
             }
         }
-        if let Some(flags) = ready.get(3).copied().filter(|f| !f.is_empty())
-            && read
-        {
-            if flags.intersects(Events::OUT) {
+        if !program.is_empty() {
+            if program.intersects(Events::OUT) {
                 host.write_input();
             }
-            if flags.intersects(Events::IN | Events::HUP | Events::ERR) {
+            if program.intersects(Events::IN | Events::HUP | Events::ERR) {
                 read_program(&mut host, &mut buffer, &mut clock, now);
             }
         }
         // What reached it: each peer's words, in order, then its end.
         let mut kept = Vec::with_capacity(peers.len());
-        for (i, mut peer) in std::mem::take(&mut peers).into_iter().enumerate() {
-            if !is(i.saturating_add(4)) {
+        // One reached this turn has no entry yet: it is kept, unread.
+        let events = peered.into_iter().chain(std::iter::repeat(Events::NONE));
+        for (mut peer, events) in std::mem::take(&mut peers).into_iter().zip(events) {
+            if events.is_empty() {
                 kept.push(peer);
                 continue;
             }

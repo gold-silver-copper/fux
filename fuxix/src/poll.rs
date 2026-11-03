@@ -74,6 +74,8 @@ pub struct Poll {
 }
 
 /// Descriptors borrowed until this list has finished waiting on them.
+/// Each is told by the [`Entry`] its push gave, wherever it is in the list,
+/// so one left out of a turn shifts no other.
 pub struct List<'poll, 'fd> {
     fds: &'poll mut Vec<libc::pollfd>,
     fd: PhantomData<BorrowedFd<'fd>>,
@@ -89,9 +91,22 @@ impl Poll {
     }
 }
 
+/// A descriptor pushed onto a [`List`], to ask it what that one was found
+/// ready for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Entry(usize);
+
 impl<'fd> List<'_, 'fd> {
-    pub fn push(&mut self, fd: PollFd<'fd>) {
+    pub fn push(&mut self, fd: PollFd<'fd>) -> Entry {
         self.fds.push(fd.raw);
+        Entry(self.fds.len().saturating_sub(1))
+    }
+
+    /// What `poll` found `entry`, pushed onto this list, ready for.
+    pub fn events(&self, entry: Entry) -> Events {
+        self.fds
+            .get(entry.0)
+            .map_or(Events::NONE, |fd| Events(fd.revents))
     }
 
     pub fn poll(&mut self, timeout: Option<Duration>) -> Result<usize> {
@@ -169,6 +184,15 @@ mod tests {
             assert!(list.revents().all(|flags| flags.intersects(Events::IN)));
         }
         let capacity = storage.fds.capacity();
+        let mut list = storage.list();
+        let quiet = list.push(PollFd::new(&idle, Events::IN));
+        let written = list.push(PollFd::new(&ready, Events::IN));
+        assert_eq!(list.poll(Some(Duration::ZERO)), Ok(1));
+        assert!(
+            list.events(written).intersects(Events::IN),
+            "told by its entry"
+        );
+        assert!(list.events(quiet).is_empty());
         let mut list = storage.list();
         list.push(PollFd::new(&idle, Events::IN));
         assert_eq!(list.poll(Some(Duration::ZERO)), Ok(0));
