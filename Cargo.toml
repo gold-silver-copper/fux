@@ -6,7 +6,7 @@ resolver = "3"
 # fux's three crates share one release: the server tells it to programs
 # and clients, and a client prints its own.
 [workspace.package]
-version = "0.36.0"
+version = "0.37.0"
 
 [package]
 name = "fux"
@@ -28,11 +28,11 @@ include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.
 in-process = ["fux-server/in-process"]
 
 [dependencies]
-fux-server = { path = "fux-server", version = "0.36.0" }
-fux-vt = { path = "fux-vt", version = "0.15.0" }
-fux-wire = { path = "fux-wire", version = "0.36.0" }
-fuxix = { path = "fuxix", version = "0.8.0" }
-fuxth = { path = "fuxth", version = "0.7.0" }
+fux-server = { path = "fux-server", version = "0.37.0" }
+fux-vt = { path = "fux-vt", version = "0.16.0" }
+fux-wire = { path = "fux-wire", version = "0.37.0" }
+fuxix = { path = "fuxix", version = "0.9.0" }
+fuxth = { path = "fuxth", version = "0.8.0" }
 
 [dev-dependencies]
 fux-server = { path = "fux-server", features = ["in-process"] }
