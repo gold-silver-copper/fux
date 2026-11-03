@@ -13,9 +13,9 @@ repository = "https://github.com/gold-silver-copper/fux"
 testing = []
 
 [dependencies]
-fux-vt = { path = "../fux-vt", version = "0.15.0" }
-fuxix = { path = "../fuxix", version = "0.8.0" }
-fuxth-core = { path = "../fuxth/core", version = "0.7.0" }
+fux-vt = { path = "../fux-vt", version = "0.16.0" }
+fuxix = { path = "../fuxix", version = "0.9.0" }
+fuxth-core = { path = "../fuxth/core", version = "0.8.0" }
 
 [lints]
 workspace = true

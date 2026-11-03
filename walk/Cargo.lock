@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "fux"
-version = "0.36.0"
+version = "0.37.0"
 dependencies = [
  "fux-server",
  "fux-vt",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "fux-server"
-version = "0.36.0"
+version = "0.37.0"
 dependencies = [
  "fux-vt",
  "fux-wire",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.15.0"
+version = "0.16.0"
 
 [[package]]
 name = "fux-walk"
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "fux-wire"
-version = "0.36.0"
+version = "0.37.0"
 dependencies = [
  "fux-vt",
  "fuxix",
@@ -50,21 +50,21 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "fuxth"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "fuxth-core",
 ]
 
 [[package]]
 name = "fuxth-core"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "itoa"

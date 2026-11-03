@@ -15,9 +15,9 @@ name = "fuxth"
 path = "src/main.rs"
 
 [dependencies]
-fuxth = { path = "../fuxth", version = "0.7.0" }
-fuxix = { path = "../fuxix", version = "0.8.0" }
-fux-vt = { path = "../fux-vt", version = "0.15.0" }
+fuxth = { path = "../fuxth", version = "0.8.0" }
+fuxix = { path = "../fuxix", version = "0.9.0" }
+fux-vt = { path = "../fux-vt", version = "0.16.0" }
 # O_NONBLOCK, to open a FIFO that may wait without waiting.
 libc = "0.2"
 

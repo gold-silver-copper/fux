@@ -21,9 +21,9 @@ checks = ["fux-vt/checks"]
 # No fuxth here: the server never runs the interpreter (D-2).
 # `tests/no_interpreter.rs` checks the whole tree.
 [dependencies]
-fux-vt = { path = "../fux-vt", version = "0.15.0" }
-fux-wire = { path = "../fux-wire", version = "0.36.0" }
-fuxix = { path = "../fuxix", version = "0.8.0" }
+fux-vt = { path = "../fux-vt", version = "0.16.0" }
+fux-wire = { path = "../fux-wire", version = "0.37.0" }
+fuxix = { path = "../fuxix", version = "0.9.0" }
 
 # The tests run programs against a session as its clients do: through
 # fux's own fuxth vocabulary, which only a test build links.
