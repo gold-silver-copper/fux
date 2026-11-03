@@ -1,5 +1,5 @@
 //! The modes a program sets and resets by number. One table names each,
-//! its number ([`Mode::of`]) and where it is kept ([`Mode::kind`]), and
+//! its number ([`Mode::number`]) and where it is kept ([`Mode::kind`]), and
 //! `Screen::mode` and `Screen::set_mode` read and set every one by its kind.
 
 use crate::{Feature, MouseProtocolEncoding, MouseProtocolMode, Options};
@@ -24,16 +24,24 @@ macro_rules! modes {
 
         impl Mode {
             /// Every mode, in the order declared.
-            pub(crate) const ALL: [Self; [$(Self::$variant),*].len()] = [$(Self::$variant),*];
+            pub const ALL: [Self; [$(Self::$variant),*].len()] = [$(Self::$variant),*];
+
+            /// The number SM and RM (`private` false) or DECSET and DECRST
+            /// (`private` true) name it by: `(true, 1049)` for
+            /// [`Mode::AlternateScreenSaveCursor`], set by `CSI ? 1049 h`.
+            pub const fn number(self) -> (bool, u16) {
+                match self {
+                    $(Self::$variant => ($private, $n),)*
+                }
+            }
 
             /// The mode SM and RM (`private` false: IRM and LNM alone) or
             /// DECSET and DECRST name by `n`, with `options`: without
             /// theirs, 2031 and 2048 are not recognized.
             pub(crate) fn of(n: u16, private: bool, options: &Options) -> Option<Self> {
-                const NUMBERS: [(bool, u16); Mode::ALL.len()] = [$(($private, $n),)*];
                 const FEATURES: [Option<Feature>; Mode::ALL.len()] =
                     [$(modes!(@feature $($feature)?),)*];
-                let at = NUMBERS.iter().position(|&number| number == (private, n))?;
+                let at = Self::ALL.iter().position(|mode| mode.number() == (private, n))?;
                 let feature = FEATURES.get(at).copied().flatten();
                 let mode = Self::ALL.get(at).copied()?;
                 feature.is_none_or(|f| options.has(f)).then_some(mode)
@@ -281,5 +289,22 @@ impl Modes {
     /// The modes in `which` back as they are by default.
     pub(crate) fn reset(&mut self, which: Self) {
         self.0 = (self.0 & !which.0) | (Self::DEFAULT.0 & which.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each mode has a number of its own, the one SM and RM or DECSET and
+    /// DECRST find it by.
+    #[test]
+    fn every_mode_is_found_by_its_own_number() {
+        let options = Feature::ALL.into_iter().collect();
+        for mode in Mode::ALL {
+            let (private, n) = mode.number();
+            assert_eq!(Mode::of(n, private, &options), Some(mode), "{mode:?}");
+        }
+        assert_eq!(Mode::AlternateScreenSaveCursor.number(), (true, 1049));
     }
 }

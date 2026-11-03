@@ -43,7 +43,9 @@ CSI is ESC `[`. A missing or zero count is one unless noted. Sequences
 count from one, the API from zero. "Margins" are the scroll region and,
 with DECLRMM set, the left and right margins. Tests are in `tests/`
 and `src/*/tests.rs`. Every mode SM, RM, DECSET and DECRST set is a
-`Mode`, read with `Screen::mode(Mode::X)` as DECRQM reports it.
+`Mode`, read with `Screen::mode(Mode::X)` as DECRQM reports it;
+`Mode::ALL` lists them, and `Mode::number` gives the number each is set
+by (`(true, 1049)` for `CSI ? 1049 h`).
 
 | Sequence | Behaviour | Tests |
 | --- | --- | --- |
