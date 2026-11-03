@@ -6,6 +6,18 @@
 //! as the leader of a session of its own with the PTY as its controlling
 //! terminal, and leaves the parent without it (but on macOS, where the
 //! master holds it too: [`Master`]).
+//!
+//! **The end of a program and of its output**, the same on both systems:
+//! once [`crate::process::ended`] (or `reap`) says the program has ended,
+//! read the master until it says `AGAIN`, or that it is closed (0, or
+//! `IO`); then everything the program wrote has been read, as each of its
+//! writes is readable on the master by the time it returns. Waiting for the
+//! master to close does not tell the end: on Linux it closes once every
+//! holder of the slave has closed it, which a job the program left running
+//! may never do, and which a program whose stdin is elsewhere may do before
+//! it exits; on macOS, where the master holds the slave, it may not close
+//! at all. A poll loop learns of the end from a [`crate::signal::Pipe`] of
+//! `Chld`.
 use crate::errno::{Errno, check};
 use crate::process::Pid;
 use crate::terminal::{self, Size};
@@ -56,8 +68,8 @@ fn at<E: Into<std::io::Error>>(call: &'static str) -> impl FnOnce(E) -> Error {
 /// be anyone's: this process's copies as it starts a program that has
 /// already printed and exited. Held, the slave is closed last with the
 /// master, after its output was read. Its end is told by the program's
-/// exit, not by the master's hangup, which never comes while the slave is
-/// held.
+/// exit, not by the master's hangup, which need not come while the slave is
+/// held (the module's doc says how).
 #[derive(Debug)]
 pub struct Master(
     OwnedFd,
@@ -856,6 +868,55 @@ mod tests {
         let mut buffer = [0u8; 8];
         assert_eq!(master.read(&mut buffer).map_err(|e| e.to_string())?, 1);
         assert_eq!(buffer.first(), Some(&b'X'));
+        Ok(())
+    }
+
+    /// Once a program has ended, reading the master until `AGAIN` (or its
+    /// close) reads all it wrote, though a job it left holds the terminal
+    /// open.
+    #[test]
+    fn once_a_program_has_ended_its_output_is_read_until_again() -> std::result::Result<(), String>
+    {
+        let lines = 2000;
+        let (master, slave) = open(size()).map_err(|e| e.to_string())?;
+        let script = format!(
+            "(trap '' HUP; sleep 5) & i=0; while [ $i -lt {lines} ]; do echo line $i; i=$((i+1)); done"
+        );
+        let (mut child, pid) = slave
+            .spawn(&["sh", "-c", &script], |_| {})
+            .map_err(|e| e.to_string())?;
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(20))
+            .ok_or("a deadline")?;
+        let (mut seen, mut buffer, mut closed) = (Vec::new(), [0u8; 4096], false);
+        loop {
+            // Asked before the reads that follow: then they read all.
+            let ended = crate::process::ended(pid).map_err(|e| e.to_string())?;
+            loop {
+                match crate::io::read(&master, &mut buffer) {
+                    Ok(n) if n > 0 => seen.extend_from_slice(buffer.get(..n).unwrap_or_default()),
+                    Err(Errno::INTR) => {}
+                    Err(Errno::AGAIN) => break,
+                    // Closed: on macOS as the session's leader exits.
+                    Ok(_) | Err(Errno::IO) => {
+                        closed = true;
+                        break;
+                    }
+                    Err(errno) => return Err(errno.to_string()),
+                }
+            }
+            if ended.is_some() || closed || std::time::Instant::now() > deadline {
+                break;
+            }
+            let mut ready = [crate::poll::PollFd::new(&master, crate::poll::Events::IN)];
+            crate::poll::poll(&mut ready, Some(std::time::Duration::from_millis(50)))
+                .map_err(|e| e.to_string())?;
+        }
+        let _ = crate::process::kill_group(pid, crate::process::Signal::Kill);
+        let _ = child.wait();
+        let text = String::from_utf8_lossy(&seen);
+        assert_eq!(text.matches("line ").count(), lines);
+        assert!(text.ends_with(&format!("line {}\r\n", lines - 1)));
         Ok(())
     }
 

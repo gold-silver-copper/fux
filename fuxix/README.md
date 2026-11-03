@@ -32,6 +32,17 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
   `/dev/null`, so the call returns. Either way the PTY is dropped and
   another opened, up to 4 in all; then the error is `AGAIN`.
 
+## The end of a program on a PTY
+
+The same on both systems: once `process::ended` (or `reap`) says the
+program has ended, read the master until it says `AGAIN`, or that it is
+closed (0, or `IO`); that is everything it wrote. Waiting for the master
+to close does not tell the end: on Linux it closes once every holder of
+the slave has closed it, which a job the program left may never do, and
+which a program whose stdin is elsewhere may do before it exits; on
+macOS, where `Master` holds the slave, it may not close at all. A poll
+loop learns of the end from a `signal::Pipe` of `Chld`.
+
 ## Functions
 
 | Function | Linux and Android | macOS | Why not std |
