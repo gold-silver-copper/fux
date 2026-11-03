@@ -279,7 +279,11 @@ A grid stores a cell in 8 bytes (`compact.rs`):
   protection.
 
 Readers never see a stored cell: `Row::cell` and `Row::cells` return
-`CellRef`s, which carry the cluster's text and the style's attributes. A
+`CellRef`s, which carry the cluster's text and the style's attributes.
+`Attributes::write_sgr` writes the SGR parameters that set attributes
+after a reset, and `Attributes::write_sgr_change` the whole sequence that
+takes a terminal's pen from one set to another, the shorter of the change
+alone and a reset. A
 host that stores screen contents uses `Cells` (`Cells::new`,
 `Cells::set`), which stores
 cells as rows do, with each cell's attributes beside it in place of a

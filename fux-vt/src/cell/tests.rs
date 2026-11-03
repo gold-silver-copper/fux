@@ -145,3 +145,57 @@ fn range_comparisons_ignore_storage_and_detect_cell_changes() -> Result<(), Erro
     }
     Ok(())
 }
+
+/// The SGR change from one pen to another, read by a terminal whose pen
+/// is the first, leaves it the second, and is no longer than a reset and
+/// the second.
+#[test]
+fn an_sgr_change_takes_a_pen_from_one_to_the_other() -> Result<(), Error> {
+    let plain = Attributes::default();
+    let pens = [
+        plain,
+        plain.with_bold(true).with_dim(true),
+        plain.with_dim(true).with_italic(true),
+        Attributes::new(Color::Idx(1), Color::Rgb([1, 2, 3].into()))
+            .with_underline_style(UnderlineStyle::Curly)
+            .with_blink(Blink::Rapid),
+        Attributes::new(Color::Idx(12), Color::Default)
+            .with_underline_color(Color::Idx(200))
+            .with_inverse(true)
+            .with_strikeout(true),
+    ];
+    for (from, to) in pens.iter().flat_map(|a| pens.iter().map(move |b| (*a, *b))) {
+        let (mut set, mut change, mut full) = (b"\x1b[0".to_vec(), Vec::new(), b"\x1b[0".to_vec());
+        from.write_sgr(&mut set, SgrForm::Paint { styles: true });
+        set.push(b'm');
+        to.write_sgr_change(from, &mut change, true);
+        to.write_sgr(&mut full, SgrForm::Paint { styles: true });
+        let mut parser =
+            crate::Parser::new(crate::Size::new(1, 2).map_err(|_| Error::Capacity)?, 0)?;
+        parser.process(&[set, change.clone(), b"x".to_vec()].concat())?;
+        let got = parser.screen().window().cell(0, 0).map(|c| c.attributes());
+        assert_eq!(got, Some(to), "{:?}", change.escape_ascii().to_string());
+        assert!(change.len() <= full.len().saturating_add(1) && (from != to || change.is_empty()));
+    }
+    // SPA's guard is no SGR: attributes that differ only by it need none.
+    // Read from guarded cells they don't differ (`Styles::get` drops it);
+    // made here, they do.
+    let mut parser = crate::Parser::new(crate::Size::new(1, 2).map_err(|_| Error::Capacity)?, 0)?;
+    parser.process(b"\x1b[1m\x1bVa\x1bWb")?;
+    let pen = |x| parser.screen().window().cell(0, x).map(|c| c.attributes());
+    let a = pen(0).unwrap_or_default();
+    let guarded = Attributes {
+        flags: a.flags | Attributes::GUARDED,
+        ..a
+    };
+    for (to, from) in [(pen(1).unwrap_or_default(), a), (a, guarded), (guarded, a)] {
+        let mut change = Vec::new();
+        to.write_sgr_change(from, &mut change, true);
+        assert!(
+            to.bold() && change.is_empty(),
+            "{:?}",
+            change.escape_ascii().to_string()
+        );
+    }
+    Ok(())
+}

@@ -422,6 +422,75 @@ impl Attributes {
             SgrForm::Paint { .. } => {}
         }
     }
+    /// Writes the SGR sequence (`CSI … m`) that takes a terminal's pen
+    /// from `from` to these attributes, painted as [`SgrForm::Paint`]
+    /// with `styles` paints them: the shorter of the change alone and a
+    /// reset then these ([`Attributes::write_sgr`]), and nothing if they
+    /// are the same. Bold and dim go off together (22): one that stays
+    /// is set again.
+    pub fn write_sgr_change(self, from: Self, out: &mut Vec<u8>, styles: bool) {
+        // SPA's guard is no SGR: it neither shows nor goes in one.
+        let shown = |a: Self| Self {
+            flags: a.flags & !Self::GUARDED,
+            ..a
+        };
+        let (to, from) = (shown(self), shown(from));
+        if to == from {
+            return;
+        }
+        let form = SgrForm::Paint { styles };
+        let mut change = Vec::new();
+        let (gone, mut set) = (from.flags & !to.flags, to.flags & !from.flags);
+        let mut ended = false;
+        for (_, _, off, _) in Self::FLAGS.into_iter().filter(|(bit, ..)| gone & bit != 0) {
+            // 22 ends bold and dim both, once.
+            if off == 22 && std::mem::replace(&mut ended, true) {
+                continue;
+            }
+            if off == 22 {
+                set |= to.flags & (Self::BOLD | Self::DIM);
+            }
+            write_numbers(&mut change, [(off, "")]);
+        }
+        let on = Self::FLAGS.into_iter().filter(|(bit, ..)| set & bit != 0);
+        write_numbers(&mut change, on.map(|(_, on, _, name)| (on, name)));
+        let (underline, blink) = (to.underline_style(), to.blink());
+        if underline == UnderlineStyle::None && from.underline_style() != underline {
+            change.extend_from_slice(b";24");
+        } else if underline != from.underline_style() {
+            let underlined = Self::default().with_underline_style(underline);
+            underlined.write_underline_and_blink(&mut change, form);
+        }
+        if blink == Blink::None && from.blink() != blink {
+            change.extend_from_slice(b";25");
+        } else if blink != from.blink() {
+            Self::default()
+                .with_blink(blink)
+                .write_underline_and_blink(&mut change, form);
+        }
+        let colours = [
+            (to.foreground(), from.foreground(), 30u8, false),
+            (to.background(), from.background(), 40, false),
+            (to.underline_color(), from.underline_color(), 50, true),
+        ];
+        for (to, _, base, colon) in colours.into_iter().filter(|(to, was, ..)| to != was) {
+            if to == Color::Default {
+                write_numbers(&mut change, [(u16::from(base.saturating_add(9)), "")]);
+            } else {
+                write_colour(&mut change, to, base, colon);
+            }
+        }
+        let mut full = b";0".to_vec();
+        to.write_sgr(&mut full, form);
+        let shorter = if change.len() <= full.len() {
+            change
+        } else {
+            full
+        };
+        out.extend_from_slice(b"\x1b[");
+        out.extend_from_slice(shorter.get(1..).unwrap_or_default());
+        out.push(b'm');
+    }
     fn write_underline_and_blink(self, out: &mut Vec<u8>, form: SgrForm) {
         let style = self.underline_style();
         match style {
