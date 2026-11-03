@@ -12,7 +12,7 @@ const ID_LIMIT: usize = 250;
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
-use feed::{Feed, Look, cells_text};
+use feed::{Feed, Look};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const LINKS: Options = Options::new().with(Feature::Hyperlinks);
@@ -203,7 +203,7 @@ fn a_margin_scroll_cuts_the_runs_at_the_margins() -> Result {
           A\x1b]8;;r\x07BC\x1b]8;;\x07DEF\x1b]8;;s\x07GHI\x1b]8;;\x07J\
           \x1b[?69h\x1b[3;8s\x1b[2;3H\n",
     )?;
-    let text = |y| p.screen().window().row(y).map(|r| cells_text(&r));
+    let text = |y| p.screen().window().row(y).map(|r| r.text());
     assert_eq!(text(0).as_deref(), Some("abCDEFGHij"));
     assert_eq!(text(1).as_deref(), Some("AB      IJ"));
     let cells = |s: &str| expected(&s.split(' ').collect::<Vec<_>>());

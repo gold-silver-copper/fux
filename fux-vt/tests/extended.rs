@@ -18,7 +18,7 @@ use lines::lines;
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
-use feed::{Feed, Look, cells_text};
+use feed::{Feed, Look};
 
 /// The most bytes a cell's cluster keeps.
 const CLUSTER_CAPACITY: usize = 128;
@@ -1507,7 +1507,7 @@ fn a_copy_over_a_picture_reads_its_cells_as_blanks() -> Result {
     assert_eq!(p.screen().pictures().count(), 1);
     assert_eq!(cell(&p, 1, 3)?.contents(), fux_vt::PLACEHOLDER);
     let row = p.screen().window().row(1).ok_or("a row")?;
-    assert_eq!(cells_text(&row).trim_end(), "       z");
+    assert_eq!(row.text().trim_end(), "       z");
     Ok(())
 }
 

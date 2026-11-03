@@ -320,8 +320,12 @@ impl<'a> Row<'a> {
     /// column a wide glyph starting the next row did not fit in, which
     /// reflow and copies skip. A blank erased in a colour is no spacer.
     pub fn ends_in_spacer(&self) -> bool {
+        self.spacer_before(self.width)
+    }
+    /// Whether the row, soft-wrapped, has a spacer in column `end - 1`.
+    fn spacer_before(&self, end: usize) -> bool {
         self.wrapped()
-            && (self.width.checked_sub(1))
+            && (end.checked_sub(1))
                 .and_then(|col| self.stored(col))
                 .is_some_and(|c| c.is_blank(0))
             && (self.below())
@@ -370,6 +374,29 @@ impl<'a> Row<'a> {
     /// the row through scroll and reflow; ED erasing the row removes it.
     pub(crate) fn starts_prompt(&self) -> bool {
         self.flags & history::PROMPT != 0
+    }
+    /// The row's glyphs left to right, each with its column: a wide
+    /// glyph's second half is no glyph of its own, nor is a spacer the
+    /// row's line ends in ([`Row::ends_in_spacer`]), nor a cell past the
+    /// half a double-width row holds (DEC STD 070, 5.6.1), so the glyphs
+    /// of a line's rows, one row after another, are the line's.
+    pub fn glyphs(&self) -> impl Iterator<Item = (u16, CellRef<'a>)> + Clone + use<'a> {
+        let end = match self.rendition().is_double() {
+            true => (self.width / 2).max(1),
+            false => self.width,
+        };
+        let end = end.saturating_sub(usize::from(self.spacer_before(end)));
+        (0..=u16::MAX)
+            .zip(self.cells().take(end))
+            .filter(|(_, cell)| !cell.is_wide_continuation())
+    }
+    /// The row's text: each of its [`Row::glyphs`] as shown, a blank as a
+    /// space ([`CellRef::shown`]). Trailing blanks stay; a reader trims
+    /// them from a line's end. The text of a line that goes on over rows
+    /// ([`Row::continues`]) is its rows' texts joined: a row that does
+    /// not continue ends it.
+    pub fn text(&self) -> String {
+        self.glyphs().map(|(_, cell)| cell.shown()).collect()
     }
     /// The row's cells, left to right.
     pub fn cells(

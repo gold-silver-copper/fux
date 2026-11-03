@@ -2155,7 +2155,7 @@ fn differing_rows(old: Option<&Grid>, new: &Grid) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use crate::vt_feed::{Feed, Look, cells_text};
+    use crate::vt_feed::{Feed, Look};
     use std::time::Instant;
     #[global_allocator]
     static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
@@ -2791,7 +2791,7 @@ mod tests {
         let window = parser.screen().window();
         Ok((0..window.rows())
             .filter_map(|y| window.row(y))
-            .map(|row| cells_text(&row).trim_end_matches(' ').to_owned())
+            .map(|row| row.text().trim_end_matches(' ').to_owned())
             .collect())
     }
 
@@ -3183,7 +3183,7 @@ mod tests {
         parser
             .process(&paint(None, &grid))
             .map_err(|e| e.to_string())?;
-        let row = parser.screen().rows().next().map(|r| cells_text(&r));
+        let row = parser.screen().rows().next().map(|r| r.text());
         assert_eq!(row.as_deref(), Some("cafe\u{301} 界\u{301}x"));
         Ok(())
     }

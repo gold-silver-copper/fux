@@ -1,6 +1,6 @@
 //! What the unit tests feed a parser with: the calls a host makes,
-//! [`Parser::process_all`]; and a row's text.
-use crate::{Error, Options, Parser, Row, Sink, Size};
+//! [`Parser::process_all`].
+use crate::{Error, Options, Parser, Sink, Size};
 
 /// Counts the pictures told not placed (`Sink::picture`).
 #[derive(Default)]
@@ -19,15 +19,5 @@ impl Parser {
     /// [`Parser::process_all`], the replies dropped.
     pub(crate) fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.process_all(bytes, &mut ())
-    }
-}
-
-impl Row<'_> {
-    /// The row's text: blanks and placeholders as spaces, trailing blanks
-    /// kept.
-    pub(crate) fn cells_text(&self) -> String {
-        (self.cells().filter(|c| !c.is_wide_continuation()))
-            .map(|c| c.shown())
-            .collect()
     }
 }

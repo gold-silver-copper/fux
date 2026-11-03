@@ -252,7 +252,7 @@ bound!(picture_covering_has_bounded_work_and_memory, "B46");
 mod quota {
     use fux_vt::{Parser, Size, Stop};
 
-    use super::feed::{Feed, Look, cells_text};
+    use super::feed::{Feed, Look};
     use super::{Result, one_at_a_time, probe};
 
     /// A host that keeps its replies, in order.
@@ -377,7 +377,7 @@ mod quota {
         assert!((0..4095).all(|col| id(0, col) == even(col, ["c", "d"])));
         assert!((0..4095).all(|col| id(1, col).is_none()));
         assert_eq!([id(0, 4095), id(1, 4095)], [Some("b"), Some("d")]);
-        let text = |y| s.window().row(y).map(|r| cells_text(&r));
+        let text = |y| s.window().row(y).map(|r| r.text());
         let row = |cells: &[(char, usize)]| {
             cells
                 .iter()

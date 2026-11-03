@@ -13,7 +13,7 @@ use lines::lines;
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
-use feed::{Feed, Look, cells_text};
+use feed::{Feed, Look};
 /// The row of history `n` rows above the screen's top.
 fn above(parser: &Parser, n: usize) -> Result<Row<'_>> {
     let s = parser.screen();
@@ -28,7 +28,7 @@ fn cell(parser: &Parser, row: u16, col: u16) -> Result<CellRef<'_>> {
 }
 /// A row's text, its blank tail trimmed.
 fn text(row: &Row<'_>) -> String {
-    cells_text(row).trim_end().to_owned()
+    row.text().trim_end().to_owned()
 }
 /// How many rows a reader of `mark` reads again.
 fn dirty(screen: &Screen, mark: Mark) -> usize {
@@ -214,10 +214,45 @@ fn copying_widened_history_joins_original_row_extents_without_padding() -> Resul
     // History's row keeps its five cells, unpadded, and goes on in the next.
     let row = p.screen().rows().next().ok_or("a row")?;
     assert!(row.continues());
-    assert_eq!((row.len(), cells_text(&row)), (5, "abcde".to_owned()));
+    assert_eq!((row.len(), row.text()), (5, "abcde".to_owned()));
     assert!(row.cell(5).is_none());
     let next = p.screen().rows().nth(1).ok_or("a row")?;
     assert_eq!(text(&next), "fgh");
+    Ok(())
+}
+
+/// A row's glyphs, each with its column, leave out a wide glyph's second
+/// half and the spacer a soft-wrapped row ends in, so the texts of a
+/// line's rows, joined, are the line's text.
+#[test]
+fn a_rows_texts_join_into_its_lines_text() -> Result {
+    let mut p = Parser::new(Size::new(3, 5)?, 0)?;
+    p.process("abcd\u{4e16}x\r\nend".as_bytes())?;
+    let columns = |r: Row<'_>| r.glyphs().map(|(x, _)| x).collect::<Vec<u16>>();
+    let columns: Vec<_> = p.screen().rows().map(columns).collect();
+    assert_eq!(
+        columns,
+        [vec![0, 1, 2, 3], vec![0, 2, 3, 4], vec![0, 1, 2, 3, 4]]
+    );
+    let (mut lines, mut line) = (Vec::new(), String::new());
+    for row in p.screen().rows() {
+        line.push_str(&row.text());
+        if !row.continues() {
+            lines.push(std::mem::take(&mut line).trim_end().to_owned());
+        }
+    }
+    assert_eq!(lines, ["abcd\u{4e16}x", "end"]);
+    // A double-width row holds half the columns, and its line goes on
+    // from the last of them.
+    let mut p = Parser::new(Size::new(4, 10)?, 0)?;
+    p.process(b"\x1b#6abcdefgh")?;
+    let row = p.screen().rows().next().ok_or("a row")?;
+    assert!(row.continues());
+    let next = p.screen().rows().nth(1).ok_or("a row")?;
+    assert_eq!(
+        format!("{}{}", row.text(), next.text()).trim_end(),
+        "abcdefgh"
+    );
     Ok(())
 }
 

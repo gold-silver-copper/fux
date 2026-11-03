@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use crate::feed::{Feed, cells_text};
+use crate::feed::Feed;
 use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::{
     Feature, Graphics, Identity, Mode, Options, Parser, Size, bytes::ByteQueue, sixel::Picture,
@@ -2038,11 +2038,7 @@ pub fn b44(_: Scale, chunk: usize) -> Found {
             .filter(|piece| parser.process(piece).is_err())
             .count();
         fux_vt::refuse_next(0);
-        let text: String = parser
-            .screen()
-            .main_rows()
-            .map(|r| cells_text(&r))
-            .collect();
+        let text: String = parser.screen().main_rows().map(|r| r.text()).collect();
         let shown = string.escape_ascii();
         if !text.contains("hello") {
             return Err(format!(
@@ -2121,7 +2117,7 @@ fn modes_past_a_refusal() -> Found {
 fn degrades(chunk: usize) -> Found {
     let lines = |parser: &Parser| -> Vec<String> {
         let rows = parser.screen().rows();
-        rows.map(|r| cells_text(&r).trim_end().to_owned()).collect()
+        rows.map(|r| r.text().trim_end().to_owned()).collect()
     };
     let fed = |n: u32, before: &[u8], after: &[u8]| -> Result<Parser, String> {
         let options = Feature::ALL.into_iter().collect();

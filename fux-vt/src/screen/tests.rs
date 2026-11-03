@@ -399,7 +399,7 @@ fn a_cursor_on_a_left_out_glyph_goes_to_its_line_s_end() -> Result<(), Error> {
         p.resize(Size::of(4, 1))?;
         p.process(after)?;
         p.process(b"X")?;
-        let rows: Vec<String> = p.screen().rows().map(|r| r.cells_text()).collect();
+        let rows: Vec<String> = p.screen().rows().map(|r| r.text()).collect();
         assert_eq!(
             rows.get(..3),
             Some(&["a", "b", "X"].map(String::from)[..]),
@@ -771,7 +771,7 @@ fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
         p.screen()
             .primary
             .live_row(0)
-            .map(|r| r.cells_text())
+            .map(|r| r.text())
             .unwrap_or_default()
     };
     let ph = PLACEHOLDER;

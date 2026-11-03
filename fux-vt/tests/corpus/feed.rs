@@ -1,6 +1,6 @@
 //! What the tests feed a parser with and read its screen by, over the
 //! calls a host makes: [`Parser::process_all`], and the screen's window.
-use fux_vt::{CellRef, Error, Hyperlink, Options, Parser, Row, Screen, Sink, Size};
+use fux_vt::{CellRef, Error, Hyperlink, Options, Parser, Screen, Sink, Size};
 
 /// Gives each reply to a closure.
 struct Replies<F>(F);
@@ -58,11 +58,4 @@ impl Look for Screen {
     fn row_continues(&self, row: u16) -> bool {
         self.window().row(row).is_some_and(|r| r.continues())
     }
-}
-
-/// A row's text: blanks and placeholders as spaces, trailing blanks kept.
-pub fn cells_text(row: &Row<'_>) -> String {
-    (row.cells().filter(|c| !c.is_wide_continuation()))
-        .map(|c| c.shown())
-        .collect()
 }

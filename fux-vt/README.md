@@ -359,7 +359,10 @@ past output that moves it; a `RowId` finds it again later
 picture's cells read as blanks (`CellRef::shown`), and
 `Row::ends_in_spacer` says whether a soft-wrapped row ends in the blank a
 wide glyph did not fit in, which a copy leaves out (a blank erased in a
-colour is a cell, and stays).
+colour is a cell, and stays). `Row::glyphs` gives a row's glyphs with
+their columns, a wide glyph's second half and that spacer left out, and
+`Row::text` their text, blanks as spaces and trailing blanks kept: the
+texts of a line's rows, joined while `Row::continues`, are the line's.
 
 Marks (`Screen::mark`) are not consumed, so readers share them. A mark
 taken after any processing differs from one taken before;
