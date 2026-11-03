@@ -358,7 +358,10 @@ A `Row` is a retained row and its place among the rows retained, history
 first (`Screen::rows`): it borrows the screen, so a place can't be held
 past output that moves it; a `RowId` finds it again later
 (`Screen::row_index`). A `Window` is an immutable view of the screen
-(`Screen::window`); reading it never changes where output lands. A
+(`Screen::window`); reading it never changes where output lands.
+`Window::iter` walks its rows top to bottom with their numbers, and
+`Window::cell` reads a cell at a row and column, both `u16` as the
+cursor's position is. A
 picture's cells read as blanks (`CellRef::shown`), and
 `Row::ends_in_spacer` says whether a soft-wrapped row ends in the blank a
 wide glyph did not fit in, which a copy leaves out (a blank erased in a

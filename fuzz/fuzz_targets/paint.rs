@@ -215,7 +215,7 @@ fuzz_target!(|data: &[u8]| {
             if !new.underline_styles && want.3.underline() {
                 want.3 = want.3.with_underline(true);
             }
-            let got = seen(window.row(y).and_then(|row| row.cell(usize::from(x))));
+            let got = seen(window.cell(y, x));
             assert_eq!((got.0, got.1), (want.0, want.1), "width at {y},{x}");
             if !want.1 {
                 assert_eq!(got.2, want.2, "text at {y},{x}");

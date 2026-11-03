@@ -491,6 +491,16 @@ impl<'a> Window<'a> {
         }
         self.grid.row_at(self.start.checked_add(usize::from(row))?)
     }
+    /// The window's rows top to bottom, each with its row number.
+    pub fn iter(&self) -> impl Iterator<Item = (u16, Row<'a>)> + Clone + use<'a> {
+        let window = *self;
+        (0..self.rows()).filter_map(move |y| Some((y, window.row(y)?)))
+    }
+    /// The cell at row `row`, column `col` of the window, addressed as
+    /// [`Screen::cursor_position`] addresses the cursor.
+    pub fn cell(&self, row: u16, col: u16) -> Option<CellRef<'a>> {
+        self.row(row)?.cell(usize::from(col))
+    }
 }
 
 /// Whether a screen of `size` fits the bound on cells.

@@ -387,12 +387,10 @@ impl Memo {
                 continue;
             };
             let window = screen.window();
-            let lines = (0..window.rows()).zip(rect.lines());
-            for ((y, line), key) in lines.zip(keys.iter_mut()) {
-                let row = window.row(y);
-                let now = row.map(|r| (r.id(), r.version()));
+            for (((_, row), line), key) in window.iter().zip(rect.lines()).zip(keys.iter_mut()) {
+                let now = Some((row.id(), row.version()));
                 if now != *key {
-                    draw_row(grid, *id, row, (line, window.cols()), None);
+                    draw_row(grid, *id, Some(row), (line, window.cols()), None);
                     *key = now;
                 }
             }
@@ -2789,9 +2787,8 @@ mod tests {
     fn apply(bytes: &[u8], parser: &mut fux_vt::Parser) -> Result<Vec<String>, String> {
         parser.process(bytes).map_err(|e| e.to_string())?;
         let window = parser.screen().window();
-        Ok((0..window.rows())
-            .filter_map(|y| window.row(y))
-            .map(|row| row.text().trim_end_matches(' ').to_owned())
+        Ok((window.iter())
+            .map(|(_, row)| row.text().trim_end_matches(' ').to_owned())
             .collect())
     }
 

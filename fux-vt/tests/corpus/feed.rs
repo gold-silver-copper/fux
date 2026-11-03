@@ -50,7 +50,7 @@ pub trait Look {
 
 impl Look for Screen {
     fn cell(&self, row: u16, col: u16) -> Option<CellRef<'_>> {
-        self.window().row(row)?.cell(usize::from(col))
+        self.window().cell(row, col)
     }
     fn link(&self, row: u16, col: u16) -> Option<&Hyperlink> {
         self.window().row(row)?.link(usize::from(col))

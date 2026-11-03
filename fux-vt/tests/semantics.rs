@@ -375,6 +375,25 @@ fn a_rejected_resize_leaves_a_grapheme_open() -> Result {
     Ok(())
 }
 
+/// A window walks its rows top to bottom with their numbers, those
+/// `Window::row` gives, and reads a cell at a row and column as the
+/// cursor's position names one.
+#[test]
+fn a_window_walks_its_rows_and_reads_a_cell_by_its_position() -> Result {
+    let mut p = Parser::new(Size::new(3, 4)?, 1 << 10)?;
+    p.process(b"a\r\nb\r\nc\r\nd")?;
+    let window = p.screen().window();
+    let walked: Vec<(u16, String)> = window.iter().map(|(y, row)| (y, row.text())).collect();
+    assert_eq!(
+        walked,
+        [(0, "b   ".into()), (1, "c   ".into()), (2, "d   ".into())]
+    );
+    assert_eq!(p.screen().cursor_position(), (2, 1));
+    assert_eq!(window.cell(2, 0).map(|c| c.contents()), Some("d"));
+    assert!(window.cell(3, 0).is_none() && window.cell(0, 4).is_none());
+    Ok(())
+}
+
 /// History numbers each row it takes in turn, through the alternate
 /// screen too, and lets the numbers of the rows it lets go pass.
 #[test]
