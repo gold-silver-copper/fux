@@ -104,7 +104,7 @@ impl Find for [u8] {
 }
 
 pub struct Terminal {
-    master: OwnedFd,
+    master: fuxix::pty::Master,
     pub child: Child,
     seen: Arc<(Mutex<Seen>, Condvar)>,
 }
@@ -127,7 +127,6 @@ impl Terminal {
             .ok_or("a zero size")?;
         let (master, slave) = fuxix::pty::open(size).map_err(|e| format!("opening a PTY: {e}"))?;
         // Read and written as a terminal is, waiting.
-        let master = OwnedFd::from(master);
         fuxix::io::set_nonblocking(&master, false).map_err(|e| e.to_string())?;
         let argv = std::iter::once(program).chain(args.iter().copied());
         let (child, _) = slave
@@ -146,7 +145,10 @@ impl Terminal {
             ..Seen::default()
         };
         let seen = Arc::new((Mutex::new(seen), Condvar::new()));
-        let reader = master.try_clone().map_err(|e| e.to_string())?;
+        let reader = master
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|e| e.to_string())?;
         let shared = Arc::clone(&seen);
         std::thread::spawn(move || read(&reader, &shared));
         Ok(Terminal {

@@ -90,7 +90,11 @@ fn descriptors() -> Result<Vec<(&'static str, OwnedFd, OwnedFd)>, String> {
             .as_fd()
             .try_clone_to_owned()
             .map_err(|e| e.to_string())?;
-        out.push(("pty", master.into(), slave));
+        let master = master
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|e| e.to_string())?;
+        out.push(("pty", master, slave));
     }
     Ok(out)
 }

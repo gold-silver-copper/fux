@@ -1093,7 +1093,7 @@ struct Client {
     terminal: Box<dyn Engine>,
     /// The PTY's master, kept open while the client runs, and how much of
     /// the terminal's replies has been written to it.
-    master: File,
+    master: fuxix::pty::Master,
     answered: usize,
     /// The server's files: tmux's socket, zellij's directories.
     dir: PathBuf,
@@ -1229,7 +1229,10 @@ impl Client {
                 .envs(env.iter().cloned());
         })
         .map_err(|e| format!("{}: {e}", mux.name()))?;
-        let mut reader = master.try_clone().map_err(|e| format!("the PTY: {e}"))?;
+        let mut reader = std::os::fd::AsFd::as_fd(&master)
+            .try_clone_to_owned()
+            .map(File::from)
+            .map_err(|e| format!("the PTY: {e}"))?;
         let (tx, from) = mpsc::channel();
         std::thread::Builder::new()
             .name("mux-client".into())

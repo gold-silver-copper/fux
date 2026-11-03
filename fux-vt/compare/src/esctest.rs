@@ -624,7 +624,7 @@ fn launch(
     rows: u16,
     cols: u16,
     env: &[(&str, &Path)],
-) -> Result<(File, Child), String> {
+) -> Result<(fuxix::pty::Master, Child), String> {
     let _guard = SPAWN.lock().map_err(|_| "a spawn panicked")?;
     crate::record::start(rows, cols, argv, |command| {
         command
@@ -700,7 +700,7 @@ type Answer<'a> = dyn FnMut(&[u8]) -> Result<Vec<u8>, String> + 'a;
 /// to `answer` and writing what it answers back; past `deadline`, gives up.
 /// Whether it finished before the deadline.
 fn pump(
-    master: &mut File,
+    master: &mut fuxix::pty::Master,
     answer: &mut Answer<'_>,
     deadline: Instant,
     done: impl Fn() -> bool,

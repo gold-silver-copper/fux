@@ -45,8 +45,8 @@ fn at<E: Into<std::io::Error>>(call: &'static str) -> impl FnOnce(E) -> Error {
 
 /// A PTY's master: close-on-exec, so no program this process starts holds
 /// the PTY open, and nonblocking, so a read or write that would wait fails
-/// with `AGAIN` instead. Read and write it with [`crate::io`], and wait for
-/// it with [`crate::poll`]. It keeps its slave's path.
+/// with `AGAIN` instead. Read and write it with [`crate::io`] or as a
+/// `std::io` reader and writer, and wait for it with [`crate::poll`].
 ///
 /// On macOS it keeps the slave open too, for as long as it lives. There the
 /// last close of a slave throws away the output not yet read from the
@@ -84,11 +84,40 @@ impl AsFd for Slave {
     }
 }
 
-/// The master as a plain descriptor, for a caller that wants it otherwise:
-/// blocking, say.
-impl From<Master> for OwnedFd {
-    fn from(master: Master) -> Self {
-        master.0
+/// Read as `std::io` reads: with `AGAIN` as `WouldBlock`, until a caller
+/// that wants to wait makes it blocking (`io::set_nonblocking`). There is
+/// no plain descriptor to take out of it: on macOS that would close the
+/// slave it holds, and lose what was not read yet.
+impl std::io::Read for &Master {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        crate::io::read(self, buffer).map_err(Into::into)
+    }
+}
+
+impl std::io::Read for Master {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        (&*self).read(buffer)
+    }
+}
+
+/// Written as `std::io` writes, as it reads.
+impl std::io::Write for &Master {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        crate::io::write(self, bytes).map_err(Into::into)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl std::io::Write for Master {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        (&*self).write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -810,6 +839,25 @@ mod tests {
     const STRESS_WORKERS: usize = 16;
     const STRESS_WORKER_ROUNDS: usize = 1500;
     const STRESS_DEADLINE_SECS: u64 = 120;
+
+    /// What the program wrote before the last slave close is read from the
+    /// master, though the slave closes nonblocking, which on macOS throws
+    /// away what is unread unless the master holds it (`Master`).
+    #[test]
+    fn output_written_before_the_last_slave_close_is_read() -> std::result::Result<(), String> {
+        use std::io::Read;
+        let (mut master, slave) = open(size()).map_err(|e| e.to_string())?;
+        crate::io::set_nonblocking(&slave, true).map_err(|e| e.to_string())?;
+        assert_eq!(crate::io::write(&slave, b"X"), Ok(1));
+        drop(slave);
+        let mut ready = [crate::poll::PollFd::new(&master, crate::poll::Events::IN)];
+        crate::poll::poll(&mut ready, Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        let mut buffer = [0u8; 8];
+        assert_eq!(master.read(&mut buffer).map_err(|e| e.to_string())?, 1);
+        assert_eq!(buffer.first(), Some(&b'X'));
+        Ok(())
+    }
 
     #[test]
     fn a_name_stops_at_its_nul() {
