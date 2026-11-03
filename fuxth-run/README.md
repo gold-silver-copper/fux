@@ -43,21 +43,25 @@ prompt-line evaluate false until`, so a definition goes on over lines.
 | `cursor-at` | col row -- | moves the cursor, from 0 |
 | `clear-screen` | -- | |
 | `screen-size` | -- rows cols | the terminal's on stdin, else `LINES` and `COLUMNS`; fails `unsupported` (-21) without them |
-| `read-file` | path -- s | a file's text, as in fux, a FIFO's too; fails `read` |
+| `read-file` | path -- s | a file's text, as in fux, a FIFO's too; fails `not_found` for a file that isn't there, else `read` |
 | `create-file` | path -- file ior | a new file, open to write; never one that exists |
 | `write-file`, `write-line` | s file -- ior | s; and a newline |
 | `close-file` | file -- ior | |
 | `rename-file` | from to -- ior | |
+| `delete-file` | path -- ior | |
 | `file-mode` | path -- n ior | the permission bits |
 | `set-file-mode` | n path -- ior | |
+| `get` | failure field -- value | a failure's `code`, its `number` in Forth's table of `throw` codes (an empty list for none) or its `message` |
 | `getenv` | name -- s | fails `unset_var` for one not set |
 | `args` | -- list | the strings after FILE |
 | `exit` | n -- | ends the program, what is left printed, with status n |
 | `prompt-line` | -- s | the REPL's only: the stack and `ok`, then the next line |
 
-An **ior** is 0, or a failure holding the OS's message (code `io`): `throw`
-raises it, so `str x create-file throw` reads as in Forth. A word that
-changed a file is listed with a failure after it.
+An **ior** is 0, or a failure holding the OS's message, its code
+`not_found` when the OS says there is no such file (ENOENT), else `io`:
+`throw` raises it, so `str x create-file throw` reads as in Forth, and
+`str code get` tells it apart. A word that changed a file is listed with a
+failure after it.
 
 ## On a terminal
 
@@ -81,6 +85,8 @@ few bytes as make it.
 ## Tested
 
 `tests/runner.rs`: a batch program over a pipe prints only its output and
-fails nonzero; a key-driven program over a pipe saves a file; Ctrl-C is a
+fails nonzero; a key-driven program over a pipe saves a file; `get` reads a
+failure's fields; only a file the OS says isn't there fails `not_found`;
+`delete-file` removes one and is listed as having taken effect; Ctrl-C is a
 failure `try` catches and exits 130 uncaught, and reaches a wait on a FIFO;
 an ending signal puts the terminal back; the REPL on a terminal.

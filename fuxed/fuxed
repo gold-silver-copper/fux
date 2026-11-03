@@ -1,0 +1,36 @@
+#!/bin/bash
+# fuxed FILE: fuxed on FILE, with the two policies the OS gives it. Files it
+# makes are private from the moment they are made (umask 077); a FILE that
+# exists keeps its mode. FILE is resolved once, before the editor starts, so
+# saving through a symlink replaces its target and the link stays; a
+# symlink loop starts nothing. Needs fuxth on the PATH.
+[ $# -eq 1 ] || { echo 'usage: fuxed FILE' >&2; exit 2; }
+umask 077
+# The directory of the path $1, every symlink in it resolved (pwd -P), into
+# dir, and its last part into name. `echo .` keeps a name's line ends whole.
+split() {
+  case $1 in */*) dir=${1%/*} name=${1##*/} ;; *) dir=. name=$1 ;; esac
+  dir=$(CDPATH='' cd -- "${dir:-/}" && pwd -P && echo .) || exit 1
+  dir=${dir%$'\n.'}
+}
+# The path $1, as dir and name, its last part's symlinks followed too, though
+# what they name may not exist yet. A symlink met twice is a loop.
+resolve() {
+  local seen=() link target
+  split "$1"
+  while [ -L "$dir/$name" ]; do
+    for link in "${seen[@]}"; do
+      [ "$link" != "$dir/$name" ] || { echo "fuxed: $1: a symlink loop" >&2; exit 1; }
+    done
+    seen+=("$dir/$name")
+    # -n: GNU readlink ends its line, macOS's never does; with it, neither.
+    target=$(readlink -n -- "$dir/$name" && echo .) || exit 1
+    target=${target%.}
+    case $target in /*) ;; *) target=$dir/$target ;; esac
+    split "$target"
+  done
+}
+resolve "$0"
+here=$dir
+resolve "$1"
+exec fuxth "$here/fuxed.fux" "$dir/$name"

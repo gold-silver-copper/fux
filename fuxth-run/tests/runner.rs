@@ -199,6 +199,99 @@ fn a_key_driven_program_over_a_pipe_saves_a_file() -> Outcome {
 }
 
 #[test]
+fn a_failure_gives_its_code_number_and_message_to_get() -> Outcome {
+    let dir = dir("get")?;
+    let program = "str all try -28 throw catch dup str code get print dup str number get print \
+        str message get print end \
+        str missing file-mode nip str number get len print";
+    let ran = run(&dir, &[], program)?;
+    assert_eq!(
+        text(&ran.stdout),
+        "interrupt\n-28\n-28 thrown\n0\n",
+        "{}",
+        text(&ran.stderr)
+    );
+    // A field it has none of, and a value that is no failure.
+    for (program, said) in [
+        (
+            "str x file-mode nip str value get",
+            "fuxth: range: stdin:1: get: get takes code, number or message, not \"value\"\n",
+        ),
+        (
+            "5 str code get",
+            "fuxth: type: stdin:1: get: get takes a failure, not an integer\n",
+        ),
+    ] {
+        let ran = run(&dir, &[], program)?;
+        assert_eq!(text(&ran.stderr), said);
+        assert_eq!(ran.status.code(), Some(1));
+    }
+    Ok(())
+}
+
+#[test]
+fn only_a_file_the_os_says_is_not_there_fails_not_found() -> Outcome {
+    let dir = dir("not-found")?;
+    // A symlink loop whose name holds what ENOENT's message says, a file
+    // that isn't UTF-8 text, and one in a directory that can't be searched.
+    std::os::unix::fs::symlink("notes(os error 2)", dir.join("notes(os error 2)")).map_err(e)?;
+    std::fs::write(dir.join("latin1.txt"), b"caf\xe9\n").map_err(e)?;
+    std::fs::create_dir(dir.join("locked")).map_err(e)?;
+    std::fs::write(dir.join("locked/f"), "").map_err(e)?;
+    let locked = |mode| {
+        std::fs::set_permissions(
+            dir.join("locked"),
+            std::os::unix::fs::PermissionsExt::from_mode(mode),
+        )
+    };
+    locked(0).map_err(e)?;
+    // Root searches it anyway.
+    let searchable = std::fs::metadata(dir.join("locked/f")).is_ok();
+    let code = |path: &str| format!("str '{path}' file-mode nip str code get");
+    let read = |path: &str| format!("str all try str '{path}' read-file catch str code get end");
+    let mut program = vec![
+        code("gone"),
+        read("gone"),
+        code("gone/f"),
+        code("notes(os error 2)"),
+        read("notes(os error 2)"),
+        read("latin1.txt"),
+    ];
+    let mut said = "not_found\nnot_found\nnot_found\nio\nread\nread\n".to_owned();
+    if !searchable {
+        program.extend([code("locked/f"), read("locked/f")]);
+        said.push_str("io\nread\n");
+    }
+    let ran = run(&dir, &[], &program.join("\n"))?;
+    locked(0o755).map_err(e)?;
+    assert_eq!(text(&ran.stdout), said, "{}", text(&ran.stderr));
+    assert!(ran.status.success(), "{:?}", ran.status);
+    Ok(())
+}
+
+#[test]
+fn delete_file_removes_a_file_and_says_so_as_its_other_file_words_do() -> Outcome {
+    let dir = dir("delete")?;
+    std::fs::write(dir.join("made"), "").map_err(e)?;
+    std::fs::create_dir(dir.join("dir")).map_err(e)?;
+    let program = "str made delete-file throw \
+        str made delete-file str code get print \
+        str dir delete-file str code get print \
+        str made delete-file throw";
+    let ran = run(&dir, &[], program)?;
+    assert_eq!(text(&ran.stdout), "not_found\nio\n");
+    let said = text(&ran.stderr);
+    assert!(said.starts_with("fuxth: not_found: "), "{said}");
+    assert!(
+        said.ends_with("fuxth: already took effect: stdin:1: delete-file\n"),
+        "{said}"
+    );
+    assert!(!dir.join("made").exists());
+    assert!(dir.join("dir").is_dir());
+    Ok(())
+}
+
+#[test]
 fn ctrl_c_is_a_failure_try_catches_and_uncaught_exits_130() -> Outcome {
     let dir = dir("interrupt")?;
     // `-28 throw` is the interrupt; a loop of words that change files
@@ -248,6 +341,8 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
         "define opt str interrupt try tick include execute catch drop str caught print end end
         opt source";
     std::fs::write(dir.join("caught.fux"), caught).map_err(e)?;
+    let read = "str interrupt try str data read-file catch str code get print end";
+    std::fs::write(dir.join("read-caught.fux"), read).map_err(e)?;
     // A writer that holds `data` open and writes nothing.
     let mut writer = Command::new("sh")
         .args(["-c", "exec sleep 30 > data"])
@@ -255,8 +350,14 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
         .spawn()
         .map_err(e)?;
     // A source with no writer at all, a file read that waits on one, an
-    // include of a source with none, and one in a try that catches it.
-    for args in [["source"], ["read.fux"], ["include.fux"], ["caught.fux"]] {
+    // include of a source with none, and each in a try that catches it.
+    for args in [
+        ["source"],
+        ["read.fux"],
+        ["include.fux"],
+        ["caught.fux"],
+        ["read-caught.fux"],
+    ] {
         let child = Command::new(FUXTH)
             .args(args)
             .current_dir(&dir)
@@ -271,8 +372,13 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
         std::thread::sleep(Duration::from_millis(300));
         fuxix::process::kill(pid, fuxix::process::Signal::Int).map_err(e)?;
         let ran = child.wait_with_output().map_err(e)?;
-        if args == ["caught.fux"] {
-            assert_eq!(text(&ran.stdout), "caught\n", "{}", text(&ran.stderr));
+        let caught = match args {
+            ["caught.fux"] => "caught\n",
+            ["read-caught.fux"] => "interrupt\n",
+            _ => "",
+        };
+        if !caught.is_empty() {
+            assert_eq!(text(&ran.stdout), caught, "{}", text(&ran.stderr));
             assert_eq!(ran.status.code(), Some(0));
             continue;
         }

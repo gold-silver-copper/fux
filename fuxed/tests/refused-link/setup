@@ -1,0 +1,3 @@
+# The save's new file is already there as a link to a file that isn't: it
+# is never opened, followed or removed.
+ln -s elsewhere .notes.txt.fuxed-save

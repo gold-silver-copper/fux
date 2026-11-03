@@ -1,0 +1,4 @@
+# A file size limit of one block, and a file under the 8 KiB its buffer
+# holds: the writes are kept, and the save fails as it closes the file,
+# whose buffer then can't be written. The new file is removed.
+ulimit -f 1; trap '' XFSZ

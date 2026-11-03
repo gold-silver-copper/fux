@@ -1,0 +1,3 @@
+# FILE is a symlink to a file whose name ends with a line end.
+target=$(printf 'target\n.'); target=${target%.}
+mv notes.txt "$target" && ln -s "$target" notes.txt

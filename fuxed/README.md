@@ -5,8 +5,25 @@ A minimal screen editor written only in [fuxth](../fuxth), run by the
 its job is to find out what fuxth lacks.
 
 ```sh
-fuxth fuxed/fuxed.fux FILE
+fuxed/fuxed FILE
 ```
+
+`fuxed/fuxed` is its launcher, which needs `fuxth` on the PATH. It gives
+the editor two policies the OS already has:
+
+- **New files are private** from the moment they are made: it runs the
+  editor under `umask 077`. A FILE that exists keeps its own mode.
+- **FILE is resolved once, before the editor starts:** its directory by
+  `cd` and `pwd -P`, then each symlink it is by `readlink`, whether what
+  it names exists yet or not; a name ending in a line end stays whole. A
+  symlink's target is what is edited and saved, and the link stays a link;
+  a dangling link's target is made on the first save. A symlink loop, or a
+  directory that can't be entered, starts nothing, and the launcher exits 1. A link pointed elsewhere
+  while the editor runs is not followed.
+
+`fuxth fuxed/fuxed.fux FILE` runs the editor bare, with neither: its new
+files get the umask it inherits, and saving through a symlink replaces the
+link with a file.
 
 It shows FILE on the terminal's alternate screen, with a status row: the
 name, the row and column, `modified` when there are unsaved changes, and
@@ -53,15 +70,19 @@ gives the key Ctrl and a letter sends. A line's error shows on the status
 row, and the editor goes on.
 
 **Saving** writes a new file beside FILE, `.FILE.fuxed-save`, made
-exclusively, so it never opens a file that exists. When FILE exists, the new
-file is made 0600 before anything is written, and gets FILE's mode once
-written and closed. Its last line ends with a line end only if FILE's did
-(a new file's does). Then it is renamed over FILE. Only a FILE confirmed
-missing is opened and saved as new: when its metadata can't be read for
-another reason (a symlink loop, a directory it can't search), it opens
-empty with the OS's error on the status row, and isn't saved over.
-Anything refused stops the save before FILE is replaced, and the status
-row shows the OS's error.
+exclusively, so it never opens a file that exists. When FILE exists, the
+new file gets FILE's mode once written and closed. Its last line ends with
+a line end only if FILE's did (a new file's does). Then it is renamed over
+FILE. Only a FILE the OS says isn't there (`not_found`) is opened and
+saved as new: when its metadata can't be read for another reason (a
+symlink loop, a directory it can't search), it opens empty with the OS's
+error on the status row, and isn't saved over; a FILE that can't be read,
+or isn't UTF-8 text, isn't opened. Anything refused stops the save before
+FILE is replaced, and the status row shows the OS's error. The new file,
+if this save made it, is then closed and removed, so the next save can
+make it again; if it can't be removed, the status row says so too. A
+`.FILE.fuxed-save` already there, file or link, refuses the save, and is
+left alone.
 
 **Out of version 0, on purpose:** sideways scrolling (a long line is cut at
 the edge), tabs and wide characters drawn at their width (a tab shows as
@@ -70,12 +91,14 @@ one space), undo, search, several buffers, an init file, mouse, colour,
 
 ## Tested
 
-`fuxed/test.sh FUXTH` runs each case in `tests/` headless: fuxed opens a
-copy of `in.txt` (none for a file that doesn't exist), reads `keys` (in
-printf's `%b` notation) from stdin, and must quit by itself, leaving the
-saved file equal to `out.txt` byte for byte and no other file. A case's
-`mode` is the file's mode before, which the save must keep; its `beside/`
-holds files put next to it, which must stay as they were; its `setup` and
-`check` are shell run before and after (a file size limit that makes a
-save's write fail, a symlink loop). The checks look at the files, never the
+`fuxed/test.sh FUXTH` runs each case in `tests/` headless, by the
+launcher with FUXTH as its `fuxth`: fuxed opens a copy of `in.txt` (none
+for a file that doesn't exist), reads `keys` (in printf's `%b` notation)
+from stdin, and must quit by itself, leaving the saved file equal to
+`out.txt` byte for byte and no other file. A case's `mode` is the file's
+mode before, which the save must keep; its `beside/` holds files put next
+to it, which must stay as they were; its `setup` and `check` are shell run
+before and after (a file size limit that makes a save's write fail, an
+inherited `umask 022`, a symlink, a symlink loop); its `status` is the exit
+status it must have, if not 0. The checks look at the files, never the
 screen.

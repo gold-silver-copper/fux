@@ -55,16 +55,8 @@ define guarded
 end
 
 # ---- Opening: a file that doesn't exist opens empty
-# -- flag : whether FILE is confirmed missing: reading it fails as ENOENT,
-# which only the OS's message tells (finding fuxed-3). The message must end
-# with exactly `(os error 2) (FILE)`, so FILE's own name can't say it.
-define missing
-  list str '(os error 2) (' filename str ')' end glue let tail
-  str all try filename read-file drop false catch
-    string let said
-    said len tail len ge if said said len tail len sub said len slice tail eq else false then
-  end
-end
+# failure -- flag : whether the OS said there is no such file
+define missing str code get str not_found eq end
 # A file whose metadata can't be read for another reason opens empty, with
 # the OS's error on the status row, and isn't saved over.
 define load
@@ -74,7 +66,7 @@ define load
     dup len 0 gt if dup last 10 eq else false then to final-newline
     final-newline if dup len 1 sub let n 0 n slice then
     lines to buffer
-  else missing if str 'new file' else known string then to message then
+  else known missing if str 'new file' else known string then to message then
 end
 
 # ---- Drawing: each frame built as one string and written once
@@ -196,24 +188,37 @@ define write-lines
   buffer 0 buffer len 1 sub slice each file write-line throw end
   buffer last file final-newline if write-line else write-file then throw
 end
+# file temp mode known -- : the buffer written to file, the new file at temp,
+# which is closed, given FILE's mode if FILE has one, and renamed over FILE
+define replace-file
+  let known let mode let temp let file
+  file write-lines
+  file close-file throw
+  known 0 eq if mode temp set-file-mode throw then
+  temp filename rename-file throw
+end
+# failure file temp -- s : why a save failed, once file is closed and temp,
+# which the save made, removed; and what stays, if temp can't be
+define cleaned
+  let temp let file str message get let why
+  str io try file close-file drop catch drop end
+  temp delete-file let removed
+  removed 0 eq if why else list why str '; ' temp str ' stays: ' removed str message get end glue then
+end
 # Saves to a new file beside FILE, made exclusively, then renamed over FILE.
-# For a FILE that exists, it is 0600 before a byte is written and gets FILE's
-# mode before the rename. Only a FILE confirmed missing is saved as new;
-# anything refused stops the save before FILE is replaced.
+# Only a FILE the OS says isn't there is saved as new; anything refused stops
+# the save before FILE is replaced, and the new file, if this save made it, is
+# removed, so the next save can make it again.
 define save
   list filename directory-of str . filename base-of str .fuxed-save end glue let temp
   str all try
     filename file-mode let known let mode
-    known 0 eq not if missing not if known throw then then
+    known 0 eq not if known missing not if known throw then then
     temp create-file throw let file
-    known 0 eq if 384 temp set-file-mode throw then
-    file write-lines
-    file close-file throw
-    known 0 eq if mode temp set-file-mode throw then
-    temp filename rename-file throw
+    str all try file temp mode known replace-file catch file temp cleaned fail end
     false to dirty
     str saved to message
-  catch string str 'not saved: ' swap cat to message end
+  catch str message get str 'not saved: ' swap cat to message end
 end
 # The first press with unsaved changes asks; a second one in a row quits.
 define quit-editor

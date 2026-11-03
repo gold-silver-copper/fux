@@ -1,0 +1,3 @@
+# FILE is a symlink to a file that isn't there yet, and new files would be
+# 0644 but for the launcher's umask.
+umask 022; ln -s target.txt notes.txt

@@ -1,0 +1,2 @@
+# New files would be 0644 but for the launcher's umask.
+umask 022

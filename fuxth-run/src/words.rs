@@ -1,7 +1,8 @@
 //! The runner's words: the terminal's, files', and the process's, each
 //! checking its own values as it runs. A file word that can fail as the
 //! OS refuses gives an ior: 0, or a failure that holds the OS's message,
-//! for `throw` or a test.
+//! for `throw` or a test, its code `not_found` when the OS says there is no
+//! such file.
 use crate::input::{self, Input, Stop};
 use fuxth::{AppValue, Args, Code, Done, Error, Failure, Host, List, Thrown, Value, Vocabulary};
 use std::io::Write;
@@ -15,6 +16,7 @@ use std::rc::Rc;
 const UNSET_VAR: &str = "unset_var";
 pub const READ: &str = "read";
 pub const IO: &str = "io";
+const NOT_FOUND: &str = "not_found";
 pub const OUTPUT: &str = "output";
 
 /// A file `create-file` opened, by its place in the runner's table.
@@ -65,8 +67,10 @@ words! {
     WriteLine "write-line" "s file -- ior",
     CloseFile "close-file" "file -- ior",
     RenameFile "rename-file" "from to -- ior",
+    DeleteFile "delete-file" "path -- ior",
     FileMode "file-mode" "path -- n ior",
     SetFileMode "set-file-mode" "n path -- ior",
+    Get "get" "failure field -- value",
     Getenv "getenv" "name -- s",
     Arguments "args" "-- list",
     Exit "exit" "n --",
@@ -86,7 +90,7 @@ pub fn vocabulary(repl: bool) -> Result<Vocabulary, Error> {
     for (name, effect) in names.chain(constants) {
         vocabulary.add(name, effect)?;
     }
-    for code in [UNSET_VAR, READ, IO, OUTPUT] {
+    for code in [UNSET_VAR, READ, IO, NOT_FOUND, OUTPUT] {
         vocabulary.raises(Code::Host(code))?;
     }
     vocabulary.evaluate();
@@ -238,7 +242,7 @@ impl Host for Runner {
     fn read(&mut self, path: &Path) -> Result<String, Failure> {
         let unread = |why| Failure::new(Code::Require, why);
         match self.input.file(path) {
-            Ok(read) => read.map_err(unread),
+            Ok(read) => read.map_err(|e| unread(e.to_string())),
             Err(Stop::Failed(failure)) => Err(failure),
             Err(Stop::Signal(signal)) => {
                 self.input.defer(Stop::Signal(signal));
@@ -271,7 +275,7 @@ impl Runner {
         };
         let ior = |done: std::io::Result<()>, what: &str| match done {
             Ok(()) => Value::Int(0),
-            Err(e) => failure(format!("{name}: {what}: {e}")),
+            Err(e) => failure(code(&e, IO), format!("{name}: {what}: {e}")),
         };
         match word {
             Word::ReadKey => out.push(Value::Int(self.input.key()?)),
@@ -302,7 +306,7 @@ impl Runner {
             Word::ReadFile => {
                 let path = string(next()?, name)?;
                 let text = (self.input.file(Path::new(&**path))?)
-                    .map_err(|why| Failure::new(Code::Host(READ), format!("{why} ({path})")))?;
+                    .map_err(|e| Failure::new(code(&e, READ), format!("{e} ({path})")))?;
                 out.push(Value::str(text));
             }
             Word::CreateFile => {
@@ -342,6 +346,11 @@ impl Runner {
                 let renamed = std::fs::rename(&**from, &**to);
                 return Ok(acted(out, ior(renamed, &format!("{from} to {to}"))));
             }
+            Word::DeleteFile => {
+                let path = string(next()?, name)?;
+                let deleted = std::fs::remove_file(&**path);
+                return Ok(acted(out, ior(deleted, &path)));
+            }
             Word::FileMode => {
                 let path = string(next()?, name)?;
                 match std::fs::metadata(&**path) {
@@ -358,6 +367,21 @@ impl Runner {
                 let mode = mode.ok_or_else(|| Failure::new(Code::Range, why))?;
                 let set = std::fs::set_permissions(&**path, std::fs::Permissions::from_mode(mode));
                 return Ok(acted(out, ior(set, &path)));
+            }
+            Word::Get => {
+                let (thrown, field) = (failed(next()?, name)?, string(next()?, name)?);
+                let value = match &**field {
+                    "code" => Value::str(thrown.error.code.name()),
+                    "number" => thrown
+                        .number
+                        .map_or_else(|| Value::List(Rc::new(List::new(Vec::new()))), Value::Int),
+                    "message" => Value::str(&*thrown.error.message),
+                    _ => {
+                        let why = format!("get takes code, number or message, not {:?}", &**field);
+                        return Err(Failure::new(Code::Range, why).into());
+                    }
+                };
+                out.push(value);
             }
             Word::Getenv => {
                 let name = string(next()?, name)?;
@@ -392,8 +416,8 @@ impl Runner {
 impl Runner {
     /// The program file `file`: its one identity, and its text.
     pub fn source(&mut self, file: &str) -> Result<(PathBuf, String), Stop> {
-        let failed = |why: String| Failure::new(Code::Host(READ), format!("{why} ({file})"));
-        let path = identity(Path::new(file)).map_err(|e| failed(e.to_string()))?;
+        let failed = |e: std::io::Error| Failure::new(Code::Host(READ), format!("{e} ({file})"));
+        let path = identity(Path::new(file)).map_err(failed)?;
         let text = self.input.file(&path)?.map_err(failed)?;
         Ok((path, text))
     }
@@ -412,10 +436,19 @@ fn output_failed(error: &std::io::Error) -> Failure {
     Failure::new(Code::Host(OUTPUT), format!("writing the output: {error}"))
 }
 
+/// The code of a failure the OS's `error` caused: `not_found` when there
+/// is no such file, else `otherwise`.
+fn code(error: &std::io::Error, otherwise: &'static str) -> Code {
+    match error.kind() == std::io::ErrorKind::NotFound {
+        true => Code::Host(NOT_FOUND),
+        false => Code::Host(otherwise),
+    }
+}
+
 /// A failure as a value, for an ior.
-fn failure(message: String) -> Value<File> {
+fn failure(code: Code, message: String) -> Value<File> {
     Value::Failure(Rc::new(Thrown {
-        error: Error::new(Code::Host(IO), message, None),
+        error: Error::new(code, message, None),
         number: None,
         carried: None,
         actions: Vec::new(),
@@ -470,6 +503,20 @@ fn string(value: Value<File>, name: &str) -> Result<Rc<fuxth::Text>, Failure> {
         | Value::Failure(_)
         | Value::Addr(_)
         | Value::Bool(_)) => Err(refused(name, "a string", &other)),
+    }
+}
+
+fn failed(value: Value<File>, name: &str) -> Result<Rc<Thrown<File>>, Failure> {
+    match value {
+        Value::Failure(thrown) => Ok(thrown),
+        other @ (Value::Int(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)
+        | Value::Xt(_)
+        | Value::Mark(_)
+        | Value::Addr(_)
+        | Value::Bool(_)) => Err(refused(name, "a failure", &other)),
     }
 }
 

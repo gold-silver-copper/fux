@@ -222,7 +222,7 @@ fux str line word str definition get
   its stdin, printing only what it prints. On a terminal with no file it
   is a REPL.
 - **fuxed** is a small screen editor written in fuxth, on the `fuxth`
-  runner: `fuxth fuxed/fuxed.fux FILE` in a checkout of fux
+  runner: `fuxed/fuxed FILE` in a checkout of fux
   ([fuxed/README.md](fuxed/README.md)).
 - **The dictionary is data.** `str NAME word` gives a word's record
   (where it came from, its effect and help, the codes it can fail with
