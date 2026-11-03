@@ -58,6 +58,8 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `socket::peer` | `SO_PEERCRED` | `getpeereid` | `peer_cred` is unstable |
 | `file::pin` | `open(O_PATH \| O_NOFOLLOW)` | none | `O_PATH` has no name in std |
 
+`terminal::Size` is a size in cells, never no rows or no columns:
+`Size::new(rows, cols)` gives one if neither is zero.
 `file::NOFOLLOW` is `O_NOFOLLOW`, for `OpenOptions::custom_flags`.
 `socket::max_path_len` is the longest path a socket address holds: its
 `sun_path` less the NUL (107 bytes on Linux and Android, 103 on macOS).

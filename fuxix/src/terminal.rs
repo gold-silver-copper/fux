@@ -50,8 +50,9 @@ pub struct Size {
 }
 
 impl Size {
-    /// `rows` by `cols`, if neither is zero.
-    pub(crate) fn new(rows: u16, cols: u16) -> Option<Size> {
+    /// `rows` by `cols`, if neither is zero: a size read off the wire or a
+    /// command line, or a default such as 24 by 80.
+    pub fn new(rows: u16, cols: u16) -> Option<Size> {
         Some(Size::from((NonZeroU16::new(rows)?, NonZeroU16::new(cols)?)))
     }
 }
