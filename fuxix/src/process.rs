@@ -155,15 +155,18 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
 /// opened by a thread racing the spawn, goes no further (on macOS, all
 /// but one opened in the window `io::cloexec_from` states). With `terminal`,
 /// its stdin, a terminal, becomes the session's controlling terminal. The
-/// spawn clears the signal mask, and `exec` restores the dispositions Rust
-/// and signal handlers changed, so the program starts as it would from a
-/// shell.
+/// program starts with no signal blocked and with the dispositions this
+/// process inherited, as it would from a shell: what this process ignored
+/// stays ignored (`nohup`'s SIGHUP), and what it catches is the default
+/// again, but a signal ignored before a [`crate::signal::Pipe`] caught it is
+/// ignored again.
 pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
     use std::os::unix::process::CommandExt;
     // Listed now: between fork and exec nothing may allocate.
     let listed = crate::io::Listed::now();
     let lead = move || -> std::io::Result<()> {
         crate::io::cloexec_from(3, listed)?;
+        crate::signal::restore_inherited()?;
         // A new session, this process its leader, whose ID is its pid.
         // SAFETY: setsid takes nothing and touches no memory.
         check(unsafe { libc::setsid() })?;
@@ -178,8 +181,8 @@ pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
     // SAFETY: `lead` runs between fork and exec, where only
     // async-signal-safe calls may be made, and makes only those:
     // close_range, or open, getdents64, fcntl and close (macOS: getdtablesize and fcntl);
-    // setsid; ioctl. It allocates nothing, takes no lock, and its errors
-    // are numbers.
+    // sigemptyset, sigaction and sigprocmask; setsid; ioctl. It allocates
+    // nothing, takes no lock, and its errors are numbers.
     unsafe { command.pre_exec(lead) };
 }
 

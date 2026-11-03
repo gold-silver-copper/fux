@@ -3,7 +3,7 @@ use crate::errno::{Errno, Result, check};
 use crate::process::Signal;
 use std::io::PipeReader;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 /// A pipe that becomes readable when any of its signals arrives: each
 /// writes a byte to the other end, of which its notice holds a copy. Both
@@ -74,8 +74,10 @@ static RUNNING: AtomicUsize = AtomicUsize::new(0);
 ///
 /// The handler replaces what the signal did before, for good, with
 /// `SA_RESTART`. Once every notice of a signal is dropped, the signal is
-/// caught and does nothing. This fails with `NOSPC` when 64 notices are
-/// held already, leaving the signal as it was, and with `INVAL` for a
+/// caught and does nothing. A program this process starts with
+/// [`crate::process::lead_session`] gets the signal as it was before: the
+/// default, or ignored if it was. This fails with `NOSPC` when 64 notices
+/// are held already, leaving the signal as it was, and with `INVAL` for a
 /// signal that can't be caught (`KILL`, `STOP`).
 pub(crate) fn notify(signal: Signal, write: OwnedFd) -> Result<Notice> {
     crate::io::set_nonblocking(&write, true)?;
@@ -119,18 +121,60 @@ impl Drop for Notice {
     }
 }
 
-/// Makes [`handle`] what `signal` runs.
+/// The signals, by bit, that were ignored when a notice first caught them:
+/// [`restore_inherited`] ignores them again in a program this process
+/// starts, as `exec` would have kept them had nothing caught them.
+static IGNORED: AtomicU64 = AtomicU64::new(0);
+
+/// Makes [`handle`] what `signal` runs, noting whether it was ignored.
 fn install(signal: Signal) -> Result<()> {
+    let mut action = action(handle as extern "C" fn(libc::c_int) as libc::sighandler_t)?;
+    action.sa_flags = libc::SA_RESTART;
+    // SAFETY: as `action` says.
+    let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+    // SAFETY: `action` is a valid action for the call, and `old` a whole
+    // one for it to fill.
+    check(unsafe { libc::sigaction(signal.raw(), &action, &mut old) })?;
+    // SIGPIPE is ignored by Rust's runtime, not by whoever started this
+    // process, and std's spawn sets it back for the program.
+    if old.sa_sigaction == libc::SIG_IGN && signal != Signal::Pipe {
+        IGNORED.fetch_or(bit(signal.raw()), Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+/// An action that runs `handler`, with no flags and an empty mask.
+fn action(handler: libc::sighandler_t) -> Result<libc::sigaction> {
     // SAFETY: `sigaction` is plain data, for which all zeros is valid: no
     // handler, no flags, and an empty mask.
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-    action.sa_sigaction = handle as extern "C" fn(libc::c_int) as libc::sighandler_t;
-    action.sa_flags = libc::SA_RESTART;
+    action.sa_sigaction = handler;
     // SAFETY: the mask is a `sigset_t` this function owns.
     check(unsafe { libc::sigemptyset(&mut action.sa_mask) })?;
-    // SAFETY: `action` is a valid action for the call, and the old one is
-    // not asked for.
-    check(unsafe { libc::sigaction(signal.raw(), &action, std::ptr::null_mut()) }).map(drop)
+    Ok(action)
+}
+
+/// `signal`'s bit in [`IGNORED`]: every signal's number is below 64.
+fn bit(signal: libc::c_int) -> u64 {
+    u32::try_from(signal).map_or(0, |n| 1u64.checked_shl(n).unwrap_or(0))
+}
+
+/// Between `fork` and `exec`: ignores again each signal that was ignored
+/// before a notice caught it, and unblocks every signal: the program starts
+/// with the dispositions this process inherited, and no signal blocked.
+/// Only async-signal-safe calls; it allocates nothing.
+pub(crate) fn restore_inherited() -> Result<()> {
+    let ignored = IGNORED.load(Ordering::SeqCst);
+    let ignore = action(libc::SIG_IGN)?;
+    for signal in (1..64).filter(|&n| ignored & bit(n) != 0) {
+        // SAFETY: `ignore` is a valid action, and the old one is not asked
+        // for.
+        check(unsafe { libc::sigaction(signal, &ignore, std::ptr::null_mut()) })?;
+    }
+    // SAFETY: `ignore`'s mask is an empty `sigset_t`; the old mask is not
+    // asked for.
+    check(unsafe { libc::sigprocmask(libc::SIG_SETMASK, &ignore.sa_mask, std::ptr::null_mut()) })
+        .map(drop)
 }
 
 /// What every notified signal runs. It makes only async-signal-safe calls,

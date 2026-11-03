@@ -43,7 +43,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | `poll::poll` | `ppoll`, with an exact timeout | `poll`, the timeout rounded up to a millisecond | not offered |
 | `process::kill`, `kill_group` | `kill`, `killpg` | the same | std signals only its own children, and only with SIGKILL |
 | `process::geteuid`, `session` | `geteuid`, `getsid` | the same | not offered |
-| `process::lead_session`, `pty::Slave::spawn` | before `fork`, the highest descriptor in `/dev/fd`; between `fork` and `exec` (`pre_exec`): every descriptor from 3 up marked close-on-exec (`close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each up to past those listed; Android: always the latter), `setsid`, `TIOCSCTTY` | the same, by `fcntl` on each up to past those listed | std's spawn makes no session |
+| `process::lead_session`, `pty::Slave::spawn` | before `fork`, the highest descriptor in `/dev/fd`; between `fork` and `exec` (`pre_exec`): every descriptor from 3 up marked close-on-exec (`close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each up to past those listed; Android: always the latter), `sigaction(SIG_IGN)` on each signal ignored before a `signal::Pipe` caught it, `sigprocmask` to block none, `setsid`, `TIOCSCTTY` | the same, by `fcntl` on each up to past those listed | std's spawn makes no session |
 | `process::thread_cpu_time` (for fux-bench) | `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` | the same | not offered |
 | `process::ended` | `waitid(WEXITED, WNOHANG, WNOWAIT)` | the same, ignoring the stops macOS reports | std's `try_wait` reaps |
 | `process::reap` | `waitid(WEXITED, WNOHANG)` | the same, ignoring the stops macOS reports | for a pid, not a `Child` |
