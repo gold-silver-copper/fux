@@ -56,10 +56,6 @@ fn record(name: &str, cost: u64, longest: Duration) -> Result<(), String> {
         .map_err(|e| format!("FUX_VT_WORST_FEED: {e}"))
 }
 
-/// A host that hears nothing.
-struct Deaf;
-impl fux_vt::Sink for Deaf {}
-
 /// The options `setup` names, as the oracle's sides make them.
 fn options(mut setup: Setup) -> fux_vt::Options {
     let identity = setup.identity;
@@ -118,7 +114,7 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
                 .get(taken..)
                 .filter(|r| !r.is_empty() || parser.has_work_left())
             {
-                let (stop, done, took) = cost(|| parser.process_until_stop(rest, &mut Deaf));
+                let (stop, done, took) = cost(|| parser.process_until_stop(rest, &mut ()));
                 worst.longest = worst.longest.max(took);
                 let at = format!("{} at byte {}", recording.name, fed.saturating_add(taken));
                 weigh(&mut worst, done, parser.screen().size(), at.clone())?;
@@ -178,7 +174,7 @@ pub fn resize_history(history: usize, fill: usize) -> Result<(u64, u64), String>
     while written < fill {
         let mut rest = &line[..];
         while let Some((taken, _)) =
-            (parser.process_until_stop(rest, &mut Deaf)).map_err(|e| e.to_string())?
+            (parser.process_until_stop(rest, &mut ())).map_err(|e| e.to_string())?
         {
             rest = rest.get(taken..).unwrap_or_default();
         }

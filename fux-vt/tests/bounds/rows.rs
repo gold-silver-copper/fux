@@ -857,7 +857,7 @@ pub fn b19(scale: Scale, chunk: usize) -> Found {
     let mut held = Vec::with_capacity(n.saturating_add(2));
     held.extend_from_slice(b"\x1b[");
     let mut probe = Probe::new(&setup, bound, chunk, 1)?;
-    let begun = probe.host(0, |p| p.process_until_stop(b"\x1b[?2026h", &mut Sinkless))?;
+    let begun = probe.host(0, |p| p.process_until_stop(b"\x1b[?2026h", &mut ()))?;
     if !matches!(begun, Ok(Some((_, fux_vt::Stop::Begun)))) {
         return Err(format!("no frame begun: {begun:?}"));
     }
@@ -878,7 +878,7 @@ pub fn b19(scale: Scale, chunk: usize) -> Found {
     // A long DECRST that ends the frame, its parameter's leading zeros read
     // as they come and once: found at its final byte.
     let mut probe = Probe::new(&setup, bound, chunk, 1)?;
-    let _ = probe.host(0, |p| p.process_until_stop(b"\x1b[?2026h", &mut Sinkless))?;
+    let _ = probe.host(0, |p| p.process_until_stop(b"\x1b[?2026h", &mut ()))?;
     let decrst = [b("\x1b[?"), repeat(b"0", n), b("2026l")].concat();
     let mut held = Vec::with_capacity(decrst.len());
     let mut scan = probe.parser.frame_scan();
@@ -892,10 +892,6 @@ pub fn b19(scale: Scale, chunk: usize) -> Found {
     }
     probe.finish()
 }
-
-/// A sink that keeps nothing.
-struct Sinkless;
-impl fux_vt::Sink for Sinkless {}
 
 // B20: the OSC buffer holds at most 65,537 bytes.
 pub fn b20(scale: Scale, chunk: usize) -> Found {
@@ -2093,12 +2089,10 @@ pub fn b44(_: Scale, chunk: usize) -> Found {
 /// alternate screen 1049 asks room for. Synchronized output, before it or
 /// after it, is set, and the frame it begins is told.
 fn modes_past_a_refusal() -> Found {
-    struct Quiet;
-    impl fux_vt::Sink for Quiet {}
     for sequence in [&b"\x1b[?2026;1049h"[..], b"\x1b[?1049;2026h"] {
         let shown = sequence.escape_ascii();
         let mut parser = refusing(1)?;
-        let stop = parser.process_until_stop(sequence, &mut Quiet);
+        let stop = parser.process_until_stop(sequence, &mut ());
         fux_vt::refuse_next(0);
         let length = sequence.len();
         if !matches!(stop, Ok(Some((n, fux_vt::Stop::Begun))) if n == length) {

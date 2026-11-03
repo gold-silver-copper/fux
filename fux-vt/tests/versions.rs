@@ -290,10 +290,6 @@ fn the_common_redraw_changes_no_version() -> Result {
     Ok(())
 }
 
-/// Hears nothing.
-struct Deaf;
-impl fux_vt::Sink for Deaf {}
-
 /// `bytes` read as a host reads them, cut after each of `cuts`: each piece
 /// until it is read, as many calls as the budget takes, then the calls
 /// owed for work left over. How many calls left work over.
@@ -301,14 +297,14 @@ fn fed(p: &mut Parser, bytes: &[u8], cuts: &[usize]) -> Result<usize> {
     let (mut at, mut left) = (0, 0usize);
     for &end in cuts.iter().chain([&bytes.len()]) {
         let mut piece = bytes.get(at..end.max(at)).ok_or("a cut")?;
-        while let Some((taken, _)) = p.process_until_stop(piece, &mut Deaf)? {
+        while let Some((taken, _)) = p.process_until_stop(piece, &mut ())? {
             piece = piece.get(taken..).ok_or("taken")?;
             left = left.saturating_add(usize::from(p.has_work_left()));
         }
         at = end.max(at);
     }
     while p.has_work_left() {
-        p.process_until_stop(&[], &mut Deaf)?;
+        p.process_until_stop(&[], &mut ())?;
         left = left.saturating_add(1);
     }
     Ok(left)
@@ -323,7 +319,7 @@ fn the_revision_moves_on_through_work_left_over() -> Result {
     bytes.extend(std::iter::repeat_n(&b"\rx\x1b[4000b"[..], 4).flatten());
     let mut p = Parser::new(Size::new(1, 4096)?, 0)?;
     let (mut piece, mut left, mut revision) = (&bytes[..], 0usize, 0);
-    while let Some((taken, _)) = p.process_until_stop(piece, &mut Deaf)? {
+    while let Some((taken, _)) = p.process_until_stop(piece, &mut ())? {
         piece = piece.get(taken..).ok_or("taken")?;
         left = left.saturating_add(usize::from(p.has_work_left()));
         assert!(

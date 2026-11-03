@@ -133,13 +133,7 @@ fn grid(rows: u16, cols: u16) -> Grid {
 /// Reads `bytes` into `terminal` as fux reads a pane's output, from each
 /// stop on until none is left: whether it was read whole, nothing refused.
 fn feed(terminal: &mut Parser, bytes: &[u8]) -> bool {
-    struct Deaf;
-    impl fux_vt::Sink for Deaf {}
-    let (refused, mut rest) = (terminal.refused(), bytes);
-    while let Ok(Some((taken, _))) = terminal.process_until_stop(rest, &mut Deaf) {
-        rest = rest.get(taken..).unwrap_or_default();
-    }
-    terminal.refused() == refused
+    terminal.process_all(bytes, &mut ()).is_ok()
 }
 
 /// A cell's width, halves, text and attributes; a blank for no cell.

@@ -1,11 +1,6 @@
 //! What the tests feed a parser with and read its screen by, over the
-//! calls a host makes: [`Parser::process_until_stop`] until every byte is
-//! read, and the screen's window.
+//! calls a host makes: [`Parser::process_all`], and the screen's window.
 use fux_vt::{CellRef, Error, Hyperlink, Options, Parser, Row, Screen, Sink, Size};
-
-/// Takes nothing.
-struct Deaf;
-impl Sink for Deaf {}
 
 /// Gives each reply to a closure.
 struct Replies<F>(F);
@@ -19,13 +14,10 @@ impl<F: FnMut(&[u8])> Sink for Replies<F> {
 pub trait Feed: Sized {
     /// A parser with [`Options::default`].
     fn new(size: Size, history_bytes: usize) -> Result<Self, Error>;
-    /// Reads every byte, as a host does, giving `sink` the replies and
-    /// events: `Err(Error::Capacity)` if room was refused on the way.
-    fn process_with(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error>;
-    /// [`Feed::process_with`], each reply given to `reply`.
+    /// [`Parser::process_all`], each reply given to `reply`.
     fn process_with_replies(&mut self, bytes: &[u8], reply: impl FnMut(&[u8]))
     -> Result<(), Error>;
-    /// [`Feed::process_with`], the replies dropped.
+    /// [`Parser::process_all`], the replies dropped.
     fn process(&mut self, bytes: &[u8]) -> Result<(), Error>;
 }
 
@@ -33,26 +25,15 @@ impl Feed for Parser {
     fn new(size: Size, history_bytes: usize) -> Result<Self, Error> {
         Parser::with_options(size, history_bytes, Options::default())
     }
-    fn process_with(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
-        let refused = self.refused();
-        let mut rest = bytes;
-        while let Some((taken, _)) = self.process_until_stop(rest, sink)? {
-            rest = rest.get(taken..).unwrap_or_default();
-        }
-        match self.refused() == refused {
-            true => Ok(()),
-            false => Err(Error::Capacity),
-        }
-    }
     fn process_with_replies(
         &mut self,
         bytes: &[u8],
         reply: impl FnMut(&[u8]),
     ) -> Result<(), Error> {
-        self.process_with(bytes, &mut Replies(reply))
+        self.process_all(bytes, &mut Replies(reply))
     }
     fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.process_with(bytes, &mut Deaf)
+        self.process_all(bytes, &mut ())
     }
 }
 

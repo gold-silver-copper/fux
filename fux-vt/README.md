@@ -110,7 +110,7 @@ the table above. `Parser::with_options` turns each on independently: a
 `Feature` each (`Options::new().with(Feature::Reflow)`), and `identity`
 by `Options::with_identity`. `Parser::process_until_stop` delivers to a
 `Sink`, whose `reply`, `event`, `unhandled` and `picture` methods discard
-by default.
+by default; `()` is the sink that discards them all.
 
 | Feature | Behaviour | Tests |
 | --- | --- | --- |
@@ -544,7 +544,10 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   is not a time: at the largest panes one such operation alone can take
   far longer than a frame (THREATS.md 4.3). The host gives the rest of the
   input later, and calls again while `Parser::has_work_left` (REP's
-  copies left), even with no byte left.
+  copies left), even with no byte left. A host that holds no frames and
+  spreads no work over turns (a replay, a converter, a test) calls
+  `Parser::process_all`, which makes those calls itself until every byte
+  is read and no work is owed.
 - **Encoding a picture** (B08): `sixel::encode` reads each pixel of its
   crop twice and sets each sixel once, whatever its colours, and writes at
   most 12 bytes a pixel and 6 a colour a band of six rows.

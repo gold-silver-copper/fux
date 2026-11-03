@@ -848,6 +848,10 @@ pub trait Sink {
     fn picture(&mut self, _placed: bool) {}
 }
 
+/// Discards everything: the sink of a host with no program to answer, as
+/// one replaying recorded output.
+impl Sink for () {}
+
 /// Incremental byte parser and its terminal state. Replies and events are
 /// delivered synchronously to a caller-supplied sink; no unbounded queue exists.
 #[derive(Clone, Debug)]
@@ -1102,6 +1106,25 @@ impl Parser {
         sink: &mut impl Sink,
     ) -> Result<Option<(usize, Stop)>, Error> {
         self.run(bytes, sink)
+    }
+    /// Reads every byte of `bytes`, calling [`Parser::process_until_stop`]
+    /// again after each stop until none is left and no work is owed: for
+    /// a host that holds no frames and spreads no work over turns, as a
+    /// replay, a converter or a test does. `Err(Error::Capacity)` says
+    /// room was refused at least once on the way ([`Parser::refused`]
+    /// counts each): every byte was read all the same, and each refusal
+    /// lost only what it was for (a row of history, a picture, a resize;
+    /// THREATS.md 1.3), so the screen is still good to read.
+    pub fn process_all(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
+        let refused = self.refused;
+        let mut rest = bytes;
+        while let Some((taken, _)) = self.run(rest, sink)? {
+            rest = rest.get(taken..).unwrap_or_default();
+        }
+        match self.refused == refused {
+            true => Ok(()),
+            false => Err(Error::Capacity),
+        }
     }
     /// Whether the last call of [`Parser::process_until_stop`] stopped at
     /// its budget with work left to do: another call is owed, of no bytes

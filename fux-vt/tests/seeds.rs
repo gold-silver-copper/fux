@@ -1158,7 +1158,7 @@ fn replay(seed: &Seed) -> Result<Replayed> {
         decoder.timeout(&mut inputs);
     } else {
         for piece in pieces(&bytes) {
-            let fed = parser.process_with(piece, &mut events);
+            let fed = parser.process_all(piece, &mut events);
             if !matches!(seed.prefix, Prefix::Refused(_)) {
                 fed?;
             }

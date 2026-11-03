@@ -27,10 +27,6 @@ mod lines;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// A host that hears nothing.
-struct Deaf;
-impl fux_vt::Sink for Deaf {}
-
 /// `text` `n` times over.
 fn times(text: &str, n: usize) -> String {
     std::iter::repeat_n(text, n).collect()
@@ -442,14 +438,14 @@ fn a_host_cell_under_a_band_high_is_refused() -> Result {
 fn an_escape_with_an_intermediate_before_a_bracket_ends_no_frame() -> Result {
     let mut p = Parser::new(Size::new(4, 10)?, 0)?;
     assert_eq!(
-        p.process_until_stop(b"\x1b[?2026h", &mut Deaf)?,
+        p.process_until_stop(b"\x1b[?2026h", &mut ())?,
         Some((8, Stop::Begun))
     );
     let held = b"\x1b([?2026l";
     assert_eq!(p.frame_scan().end(held), None);
     assert_eq!(p.frame_scan().end(b"\x1b[?2026l"), Some(8));
     // The parser reads it so too: no frame ends in it.
-    assert_eq!(p.process_until_stop(held, &mut Deaf)?, None);
+    assert_eq!(p.process_until_stop(held, &mut ())?, None);
     Ok(())
 }
 
@@ -798,7 +794,7 @@ fn a_repeat_with_no_copy_to_a_row_spends_nothing() -> Result {
     // call may.
     let mut p = Parser::new(Size::new(2, 1)?, 0)?;
     let input = times("\u{4e00}\x1b[65535b", 2000);
-    assert_eq!(p.process_until_stop(input.as_bytes(), &mut Deaf)?, None);
+    assert_eq!(p.process_until_stop(input.as_bytes(), &mut ())?, None);
     Ok(())
 }
 
