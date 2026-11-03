@@ -13,7 +13,9 @@
 //! **`EINTR`:** no function retries. A call a signal interrupts fails with
 //! [`Errno::INTR`], as the system call did, and the caller decides: fux's
 //! loops retry, and its blocking reads let a signal through to be handled.
-//! The one retry fuxix makes is not of that kind: [`pty::open`] on macOS
+//! Two retry it: [`io::write_what_fits`], which is asked to, and
+//! [`terminal::Raw`]'s drop, which has no caller to tell. The other retry
+//! fuxix makes is not of that kind: [`pty::open`] on macOS
 //! works around two kernel bugs, retrying an open the kernel gave up on and
 //! replacing a PTY it left without a replica.
 #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]

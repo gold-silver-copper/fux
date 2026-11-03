@@ -24,6 +24,26 @@ pub fn write(fd: impl AsFd, bytes: &[u8]) -> Result<usize> {
     check_size(count)
 }
 
+/// Writes as much of `bytes` as `fd` takes now, a nonblocking one: until
+/// all are written or a write would wait (`AGAIN`), writing again when a
+/// signal interrupts one. How many were written, maybe none; an error only
+/// if none were, as one that came after some comes again with the next
+/// write. [`crate::Errno::is_peer_gone`] tells a reader gone.
+pub fn write_what_fits(fd: impl AsFd, bytes: &[u8]) -> Result<usize> {
+    let mut written = 0usize;
+    while let Some(rest) = bytes.get(written..).filter(|rest| !rest.is_empty()) {
+        match write(&fd, rest) {
+            Ok(0) => break,
+            Ok(n) => written = written.saturating_add(n),
+            Err(crate::Errno::INTR) => {}
+            Err(crate::Errno::AGAIN) => break,
+            Err(_) if written > 0 => break,
+            Err(errno) => return Err(errno),
+        }
+    }
+    Ok(written)
+}
+
 /// Makes reads and writes on `fd` return `AGAIN` rather than wait.
 pub fn set_nonblocking(fd: impl AsFd, nonblocking: bool) -> Result<()> {
     let raw = fd.as_fd().as_raw_fd();
@@ -241,6 +261,35 @@ mod tests {
         // Not "and 0 once the writer is dropped": on macOS std makes a pipe
         // close-on-exec a step after it makes it, and a child another test
         // spawns in between keeps the writer open.
+        Ok(())
+    }
+
+    /// What fits is written and counted, a full pipe takes none, and a
+    /// pipe with no reader says its reader is gone.
+    #[test]
+    fn a_write_takes_what_fits_and_tells_a_reader_gone() -> std::result::Result<(), String> {
+        let (reader, writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        set_nonblocking(&writer, true).map_err(|e| e.to_string())?;
+        let many = vec![b'x'; 1 << 20];
+        let fitted = write_what_fits(&writer, &many).map_err(|e| e.to_string())?;
+        assert!(fitted > 0 && fitted < many.len(), "{fitted}");
+        assert_eq!(write_what_fits(&writer, b"more"), Ok(0), "full");
+        drop(reader);
+        // A child another test forks holds the reader till its exec.
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(5))
+            .ok_or("a deadline")?;
+        let gone = loop {
+            match write_what_fits(&writer, b"more") {
+                Err(errno) => break errno,
+                Ok(_) if std::time::Instant::now() > deadline => {
+                    return Err("no reader gone".into());
+                }
+                Ok(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        };
+        assert!(gone.is_peer_gone(), "{gone:?}");
+        assert!(!Errno::AGAIN.is_peer_gone());
         Ok(())
     }
 

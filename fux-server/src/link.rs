@@ -485,16 +485,9 @@ impl End {
     /// Writes what is queued as far as the socket takes it: whether all of
     /// it went, or an error once the other end is gone.
     pub fn flush(&mut self) -> Result<bool, fuxix::Errno> {
-        while !self.out.is_empty() {
-            match fuxix::io::write(&self.stream, self.out.as_slice()) {
-                Ok(0) => return Ok(false),
-                Ok(n) => self.out.take(n),
-                Err(fuxix::Errno::INTR) => {}
-                Err(fuxix::Errno::AGAIN) => return Ok(false),
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(true)
+        let written = fuxix::io::write_what_fits(&self.stream, self.out.as_slice())?;
+        self.out.take(written);
+        Ok(self.out.is_empty())
     }
 
     /// Writes all it holds, waiting as it must: for a link's first word,

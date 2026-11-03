@@ -13,8 +13,11 @@ with. On any other platform it does not build.
   session is a `Pid`, which is positive; a failure is an `Errno` or `None`;
   a struct the kernel fills is read only after the call says it filled it.
 - No function retries a call a signal interrupted: it fails with
-  `Errno::INTR`, and the caller decides. A drop, which has no caller to
-  tell, retries: `terminal::Raw` putting a terminal's modes back.
+  `Errno::INTR`, and the caller decides. Two retry: `io::write_what_fits`,
+  which is asked to, and `terminal::Raw`'s drop, which has no caller to
+  tell.
+- `Errno::is_peer_gone` says `EPIPE` or `ECONNRESET`: the other end of a
+  pipe or socket went.
 
 ## `pty::open` on macOS
 
@@ -49,6 +52,7 @@ loop learns of the end from a `signal::Pipe` of `Chld`.
 | Function | Linux and Android | macOS | Why not std |
 | --- | --- | --- | --- |
 | `io::read`, `io::write` | `read`, `write` | the same | on a borrowed descriptor, with `AGAIN` and `INTR` as values |
+| `io::write_what_fits` | `write` again till all is written or it says `AGAIN`, again after `INTR` | the same | not offered on a bare descriptor |
 | `io::set_nonblocking` | `fcntl(F_SETFL, O_NONBLOCK)` | the same | not offered on a bare descriptor |
 | `io::redirect_stdout` | `dup2(fd, 1)` | the same | not offered |
 | `signal::Pipe` | `sigaction(SA_RESTART)`, a handler that writes the signal's number as a byte to each non-blocking pipe held for it (64 at most), saving `errno`: one pipe for several signals, told apart by `Pipe::next` | the same | not offered |
