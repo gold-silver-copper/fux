@@ -13,11 +13,13 @@ spikes found the hard way. Whoever starts the port starts here.
 - Microsoft's separately shipped ConPTY (`conpty.dll` + `OpenConsole.exe`) is **fetched by fux on first
   use on Windows**: the pinned NuGet package `Microsoft.Windows.Console.ConPTY` (MIT), its hash checked,
   the two files kept in fux's data folder.
-- Two details added by the study, for the owner to confirm: the download goes through Windows' own
-  `curl.exe` and `tar.exe` (Windows 11 ships both; D-82, lean on the OS), with the SHA-256 checked in Rust;
-  offline or on failure, fux uses Windows' built-in ConPTY and says once what that loses.
+- The download goes through Windows' own `curl.exe` and `tar.exe` (Windows 11 ships both; D-82, lean on
+  the OS), with the SHA-256 checked in Rust; offline or on failure, fux uses Windows' built-in ConPTY and
+  says once what that loses (confirmed by the owner, 2026-11-04).
 
-## Proposed DECISIONS.md rows (need the owner's yes before they're recorded)
+All of this is recorded as D-130; the design below as D-131 to D-138.
+
+## The settled design (DECISIONS.md D-131 to D-138)
 Settled by a six-seat panel (3 Claude Opus, 3 Codex) over two rounds; the two splits left after round 2
 were settled by an experiment both sides agreed on beforehand (spike S5).
 1. **The seam is a module switch.** Each fuxix concept keeps one public type with the same name on both

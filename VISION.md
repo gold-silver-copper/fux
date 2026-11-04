@@ -20,6 +20,14 @@ fuxth, a small Forth.** An agent driving it can:
 
 Every action acts on what was seen, says what it did, and never guesses.
 
+## Where it runs (D-130)
+
+fux runs on Linux and macOS, and is being ported to **Windows 11**
+(`WINDOWS.md` has the plan and its order of work). Nothing Linux or macOS
+does changes for Windows. Where Windows can't do what Unix does, such as
+job control or a signal with no Windows counterpart, fux does the nearest
+thing and says so, or refuses with an error; it never pretends.
+
 ## Who it is for
 
 1. **Agents first.** Claude, Codex and whatever comes next, driving fux one
