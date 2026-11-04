@@ -16,6 +16,9 @@ pub struct Notice {
     /// When it ends of itself, an alert's (`View::alert`); others end only
     /// on input or a screen.
     pub until: Option<std::time::Instant>,
+    /// Kept until input or a screen, though a program alerts: a move's
+    /// (`Session::tell_displaced`).
+    pub kept: bool,
 }
 
 /// What a view shows over its panes: nothing, or one of its client's
@@ -137,13 +140,18 @@ impl View {
             text,
             error,
             until: None,
+            kept: false,
         });
         self.dirty = true;
     }
 
     /// Shows a program's alert as a notice that ends [`ALERT`] after `now`,
-    /// unless input or a newer notice ends it first.
+    /// unless input or a newer notice ends it first; none over a notice
+    /// kept (`Notice::kept`).
     pub fn alert(&mut self, text: String, now: std::time::Instant) {
+        if self.notice.as_ref().is_some_and(|n| n.kept) {
+            return;
+        }
         self.notify(text, false);
         if let Some(notice) = &mut self.notice {
             notice.until = now.checked_add(ALERT);

@@ -4,7 +4,7 @@
 //! the terminal's attributes at their default, which the next one assumes.
 use crate::session::Session;
 use crate::view::{Mode, View};
-use crate::workspace::{Child, Node, Tab, Workspace};
+use crate::workspace::{Child, Node, Tab};
 use fux_vt::clusters;
 use fux_vt::sixel::Picture;
 use fux_vt::{
@@ -1453,14 +1453,11 @@ fn bar_fields(
             Field::Workspace => {
                 if let Some(place) = session.place(view.id) {
                     // The path of workspaces down to the one shown: `proj › agent1`.
-                    let path = session.parts.path(place.ws).into_iter();
-                    let labels: Vec<_> = (path.filter_map(|ws| session.workspace(ws)))
-                        .map(Workspace::label)
-                        .collect();
+                    let trail = session.parts.trail(place.ws);
                     push(
                         &mut parts,
                         &mut room,
-                        format!(" {} ", labels.join(" › ")),
+                        format!(" {trail} "),
                         base.with_bold(true),
                     );
                 }

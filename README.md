@@ -60,10 +60,15 @@ starts a server. Inside a fux pane, `fux` refuses to attach.
   workspace's path and its tabs on the left and the focused pane or what
   the keys do on the right; when it ends, the row shows the pane again. A
   bell or a program's notification (OSC 9, 777) shows in the bottom-right
-  corner for five seconds, or until your next key. A screen too small for
-  its tab shows the panes cut off, and the corner names them (`[hidden %3]
-  [cut %2]`). No pane is ever resized for fux's own feedback. To give the
-  bar a row of its own, see the cookbook's "The bar on a row of its own".
+  corner for five seconds, or until your next key. When a workspace you
+  are in closes by someone else's request (a kill, or its last program
+  ending), the corner says what closed, who closed it and where you are
+  now, until your next key: `harmony › meta-design killed by %12: 20 tabs
+  closed · now harmony › desktop-simple · C-b w g shows all`. A screen
+  too small for its tab shows the panes cut off, and the corner names
+  them (`[hidden %3] [cut %2]`). No pane is ever resized for fux's own
+  feedback. To give the bar a row of its own, see the cookbook's "The bar
+  on a row of its own".
 
 The server runs until its last pane closes, until `fux kill-server`
 (refused from its own panes and while a person's terminal is attached), or
@@ -125,9 +130,13 @@ command line doesn't.
   titled `history` that closes when the editor exits: search, select and
   copy there. It stands in for a copy mode and a pager.
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
-  or panes: Enter or `y` selects, `r` renames, `x` closes, Esc, `q` or
-  `n` cancels. They are the keys' own words over one `choose` primitive
-  (`choose-among`, `choose-move`, `choose-pane`; `fux help choose`).
+  or panes. `w g` lists every workspace on the server, each indented
+  under what holds it, with the tabs, panes and workspaces it holds
+  counted and `*` on yours and each holding it; the others list the
+  siblings of yours. Enter or `y` selects, `r` renames, `x` closes, Esc,
+  `q` or `n` cancels. They are the keys' own words over one `choose`
+  primitive (`choose-among`, `choose-move`, `choose-pane`; `fux help
+  choose`).
 - **The command prompt** (`e`) runs fuxth as your client, `me` and all,
   and shows what it printed, or its failure, in the bar. `prompt` opens
   a line of your own whose Enter runs your code with the line.

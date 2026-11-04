@@ -1274,6 +1274,20 @@ mod tests {
                 return Err(format!("{code}: no list"));
             };
             assert!(!list.items.is_empty());
+            if code.ends_with("workspace choose-among") {
+                // Every workspace on the server, +3 under +1 that holds it
+                // and the client's, none an empty row.
+                let labels: Vec<&str> = list.items.iter().map(|i| i.label.as_str()).collect();
+                let [one, three, two] = labels.as_slice() else {
+                    return Err(format!("{labels:?}"));
+                };
+                assert!(
+                    one.starts_with("* +1 ") && one.contains("1 workspace"),
+                    "{labels:?}"
+                );
+                assert!(three.starts_with("    +3 "), "{labels:?}");
+                assert!(two.starts_with("  +2 "), "{labels:?}");
+            }
             assert!(
                 list.items
                     .iter()
@@ -1313,7 +1327,7 @@ mod tests {
                 "me me focused workspace choose-among",
                 "j\r",
                 "me focused workspace string",
-                "+2\n",
+                "+3\n",
             ),
             ("me %2 %2 tab choose-move", "j\r", "%2 tab string", "@2\n"),
             (
