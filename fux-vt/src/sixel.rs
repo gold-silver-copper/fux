@@ -907,10 +907,13 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     let at = |px: u32, py: u32| picture.pixel(x.saturating_add(px), y.saturating_add(py));
     let mut seen = std::collections::BTreeSet::new();
     let mut exact = true;
+    // Neighbours often share a colour: the last one seen needs no search.
+    let mut last = None;
     'scan: for py in 0..height {
         for px in 0..width {
             if let Some([r, g, b, a]) = at(px, py)
                 && a >= 128
+                && last.replace([r, g, b]) != Some([r, g, b])
                 && seen.insert([r, g, b])
                 && seen.len() > 256
             {
@@ -971,6 +974,7 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     // so that a colour costs its own sixels, never the band's width.
     let mut sixels: Vec<Vec<(u32, u8)>> = vec![Vec::new(); palette.len()];
     let mut used = Vec::new();
+    let mut last = None;
     let mut top = 0;
     while top < height {
         let rows = height.saturating_sub(top).min(6);
@@ -979,7 +983,14 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
                 let Some([r, g, b, a]) = at(px, top.saturating_add(bit)) else {
                     continue;
                 };
-                let colour = index([r, g, b]);
+                let colour = match last {
+                    Some((rgb, colour)) if rgb == [r, g, b] => colour,
+                    _ => {
+                        let colour = index([r, g, b]);
+                        last = Some(([r, g, b], colour));
+                        colour
+                    }
+                };
                 let Some(columns) = sixels.get_mut(colour).filter(|_| a >= 128) else {
                     continue;
                 };
