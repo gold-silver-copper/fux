@@ -389,7 +389,11 @@ same however the output was cut into calls, where marks move on with
 each call. `Screen::history_numbers` numbers the primary screen's history
 rows: each row it takes gets the next number, so a host that noted the
 end finds the rows scrolled in since, and whether any went before it
-read them; a resize may number history afresh.
+read them; a resize may number history afresh. `Screen::scrolled_since`
+counts the rows scrolled up off the top of the screen shown since a mark,
+on either screen, with history or none: a host mirroring the screen moves
+the rows it sent up by that many, then sends those whose id or version
+differ.
 
 ## Bounds
 

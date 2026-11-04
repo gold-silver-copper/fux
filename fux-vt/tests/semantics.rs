@@ -283,6 +283,22 @@ fn a_double_width_row_ends_in_a_spacer_only_in_its_half() -> Result {
     Ok(())
 }
 
+/// The rows scrolled up off the top of the screen shown since a mark are
+/// counted on either screen, with or without history, a scroll inside a
+/// region below the top not among them.
+#[test]
+fn rows_scrolled_off_the_top_are_counted_whatever_the_screen() -> Result {
+    for (history, setup) in [(1 << 20, ""), (0, ""), (1 << 20, "\x1b[?1049h")] {
+        let mut p = Parser::new(Size::new(3, 10)?, history)?;
+        p.process(setup.as_bytes())?;
+        let mark = p.screen().mark();
+        p.process(b"\r\n\r\n\r\n\r\n\r\n\x1b[2;3r\x1b[3H\n")?;
+        assert_eq!(p.screen().scrolled_since(mark), 3, "{history} {setup:?}");
+        assert_eq!(p.screen().scrolled_since(p.screen().mark()), 0);
+    }
+    Ok(())
+}
+
 /// The blank a wide glyph that did not fit left at a soft-wrapped row's
 /// end is no part of the text, in the row's own last column: a history
 /// row narrower than the screen, after a resize without reflow, still

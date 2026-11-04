@@ -201,7 +201,11 @@ pub struct RowId(pub(crate) u64);
 
 /// Non-destructive observation mark. Only use with the screen that produced it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Mark(pub(crate) u64);
+pub struct Mark {
+    pub(crate) version: u64,
+    /// `Screen::scrolled_since`'s count then.
+    pub(crate) scrolled: u64,
+}
 
 /// A line's rendition (DEC STD 070, 5.6.1). A line that is not single width
 /// is half as long: cells past half the screen's width are lost when it is
@@ -285,7 +289,7 @@ impl<'a> Row<'a> {
     }
     /// Whether the row changed since `mark` was taken: an edit, or a resize.
     pub fn changed_since(&self, mark: Mark) -> bool {
-        self.version > mark.0
+        self.version > mark.version
     }
     /// Whether the row is soft-wrapped: its line goes on in the next row.
     pub(crate) fn wrapped(&self) -> bool {
