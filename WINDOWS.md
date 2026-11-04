@@ -110,6 +110,8 @@ programs built on the libraries (below) are the acceptance test for the whole po
   program's process handle; `Tree`, `Scan`, `Sent` and `Reach` move to `process.rs` for both.
 - A job is made only by `pty::Slave::spawn` (`Job::start` is crate-private), so Windows' ConPTY spawn
   makes its own. The server keeps a killed program as its `Job`, not a pid, till it is reaped.
+- macOS has no list of one session's processes (`sysctl` `KERN_PROC_SESSION` is `ENOENT` on macOS 15), so
+  `Job::members` there asks every listed process its session, privately; `tree()` lists descendants only.
 - Orphan adoption stays process-wide (`adopt_orphans`, `reap_orphans`), outside `Job`.
 
 ## Rules the spikes found (each cost a failed run)

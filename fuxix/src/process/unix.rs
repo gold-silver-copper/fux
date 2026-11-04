@@ -385,55 +385,39 @@ fn errno(error: &std::io::Error) -> Errno {
     Errno::from_io_error(error).unwrap_or(Errno::from_raw(libc::EIO))
 }
 
-/// The processes in the session `session`, as the kernel lists them
-/// (`sysctl` `KERN_PROC_SESSION`), each a `struct kinfo_proc`, which libc
-/// does not declare: 648 bytes on 64-bit macOS, with `kp_proc.p_pid` 40
-/// bytes in (`sys/sysctl.h`, `sys/proc.h`). A list that fills its buffer
-/// may have had more.
+/// The processes in the session `leader` leads. macOS lists no session's
+/// processes alone (`sysctl` has no `KERN_PROC_SESSION` node: `ENOENT`),
+/// so every process the system lists is asked its session, as many as
+/// there are (`kern.maxproc` bounds them). libproc says a failure with a
+/// count of 0.
 #[cfg(target_os = "macos")]
-fn in_session(session: Pid) -> Tree {
-    const SIZE: usize = 648;
-    const PID_AT: usize = 40;
+fn in_session(leader: Pid) -> Tree {
     let mut tree = Tree::default();
-    let mut name = [
-        libc::CTL_KERN,
-        libc::KERN_PROC,
-        libc::KERN_PROC_SESSION,
-        session.as_raw(),
-    ];
-    let Ok(length) = libc::c_uint::try_from(name.len()) else {
+    // SAFETY: a null buffer asks only for the count.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let Some(count) = usize::try_from(count).ok().filter(|n| *n > 0) else {
+        tree.incomplete(Scan::Failed(Errno::last()));
+        return tree;
+    };
+    // Room for processes started between the two calls; a list that fills
+    // it may have had more.
+    let mut pids: Vec<libc::c_int> = vec![0; count.saturating_add(64)];
+    let Ok(bytes) = libc::c_int::try_from(size_of_val(pids.as_slice())) else {
         tree.incomplete(Scan::Failed(Errno::INVAL));
         return tree;
     };
-    let mut bytes: libc::size_t = 0;
-    let null = std::ptr::null_mut();
-    // SAFETY: `name` is `length` ints; a null buffer asks only for the size,
-    // which goes to `bytes`.
-    let sized = unsafe { libc::sysctl(name.as_mut_ptr(), length, null, &raw mut bytes, null, 0) };
-    if let Err(errno) = check(sized) {
-        tree.incomplete(Scan::Failed(errno));
+    // SAFETY: the buffer is `bytes` long and writable.
+    let written = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    let Some(written) = usize::try_from(written).ok().filter(|n| *n > 0) else {
+        tree.incomplete(Scan::Failed(Errno::last()));
         return tree;
+    };
+    if written >= pids.len() {
+        tree.incomplete(Scan::Truncated);
     }
-    // Room for processes started between the two calls.
-    let mut list = vec![0u8; bytes.saturating_add(SIZE.saturating_mul(16))];
-    bytes = list.len();
-    let buffer = list.as_mut_ptr().cast();
-    // SAFETY: as above, with a buffer `bytes` long and writable.
-    let listed =
-        unsafe { libc::sysctl(name.as_mut_ptr(), length, buffer, &raw mut bytes, null, 0) };
-    match check(listed) {
-        Ok(_) => {}
-        Err(errno) if errno.raw() == libc::ENOMEM => tree.incomplete(Scan::Truncated),
-        Err(errno) => {
-            tree.incomplete(Scan::Failed(errno));
-            return tree;
-        }
-    }
-    let records = list.get(..bytes.min(list.len())).unwrap_or_default();
-    let pids = (records.as_chunks::<SIZE>().0.iter())
-        .filter_map(|record| record.get(PID_AT..)?.first_chunk::<4>().copied())
-        .filter_map(|pid| Pid::from_raw(i32::from_ne_bytes(pid)));
-    tree.pids = pids.collect();
+    pids.truncate(written);
+    let pids = pids.into_iter().filter_map(Pid::from_raw);
+    tree.pids = pids.filter(|pid| session(*pid) == Some(leader)).collect();
     tree
 }
 
@@ -490,7 +474,7 @@ impl Job {
     /// when the list is empty and its scan [`Scan::Complete`]. On Linux
     /// they are looked for in this process's [`tree`], which keeps the
     /// orphans it adopts ([`adopt_orphans`]); on macOS, where orphans go to
-    /// launchd, the kernel lists the session's processes wherever they are.
+    /// launchd, among every process the system lists.
     pub fn members(&self) -> Tree {
         let leader = self.0;
         #[cfg(not(target_os = "macos"))]
