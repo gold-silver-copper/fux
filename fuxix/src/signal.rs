@@ -38,9 +38,10 @@ impl Pipe {
     }
 
     /// The next signal that came, taken off the pipe: `None` once it is
-    /// empty, so `while let Some(signal) = pipe.next()` drains it. A signal
-    /// that came while the pipe was full is not told; one that came twice
-    /// before it was read may be told twice.
+    /// empty, so `while let Some(signal) = pipe.next()` drains it. Each
+    /// arrival is told once; one that came while the pipe was full is not
+    /// told. A signal sent twice is told twice, or once if the second came
+    /// before the first was handled (the system holds one of each pending).
     pub fn next(&self) -> Option<Signal> {
         let mut byte = [0u8];
         match crate::io::read(&self.reader, &mut byte) {

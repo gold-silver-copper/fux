@@ -18,7 +18,10 @@ impl Pid {
     }
 
     /// The ID of a child std started, for [`reap`], [`kill_group`] and the
-    /// rest.
+    /// rest. On Linux and macOS it is always `Some`: a pid there is a
+    /// positive `pid_t`. It stays an `Option` because std gives the ID as a
+    /// `u32`, and no made-up `Pid` could stand in for one that did not fit:
+    /// [`kill_group`] of a wrong one signals other processes.
     pub fn of(child: &std::process::Child) -> Option<Pid> {
         i32::try_from(child.id()).ok().and_then(Pid::from_raw)
     }
