@@ -1789,6 +1789,14 @@ impl Parser {
         byte: u8,
         sink: &mut impl Sink,
     ) -> Option<Stop> {
+        // Only SM and RM, XTRESTORE, DECSTR and DECSCL change synchronized
+        // output (`Screen::csi` keeps resizes out; `FrameScan::ends`
+        // restates the rest): the mode is read around those alone.
+        if !matches!(byte, b'h' | b'l' | b'r' | b'p') {
+            let dispatch = (self.screen).csi(&self.params, intermediates, byte, &self.options);
+            self.carry_out(dispatch, intermediates, byte, sink);
+            return None;
+        }
         let (begun, framing) = (
             self.screen.frames_begun(),
             self.screen.mode(Mode::SynchronizedOutput),
@@ -1802,6 +1810,20 @@ impl Parser {
             let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
             ended.then_some(Stop::Ended)
         };
+        self.carry_out(dispatch, intermediates, byte, sink);
+        framed
+    }
+
+    /// The rest of a CSI `Screen::csi` carried out as `dispatch` says: the
+    /// sequences it left to `other_csi`, a reply, or an unhandled one.
+    #[inline]
+    fn carry_out(
+        &mut self,
+        dispatch: Dispatch,
+        intermediates: &[u8],
+        byte: u8,
+        sink: &mut impl Sink,
+    ) {
         let dispatch = match dispatch {
             Dispatch::Unhandled => (self.screen)
                 .other_csi(&self.params, intermediates, byte, &self.options)
@@ -1817,7 +1839,6 @@ impl Parser {
                 action: byte,
             }),
         }
-        framed
     }
 
     /// Carries out the completed OSC string, cut short unless `whole`,
