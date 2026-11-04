@@ -161,11 +161,15 @@ macro_rules! side {
                 c.map(|c| (c.r, c.g, c.b))
             }
 
-            /// The number in a `RowId` or `Mark`, which shows it only in
-            /// its `Debug` form; `u64::MAX` if it has none.
+            /// The first number in a `RowId` or `Mark` (a mark's version),
+            /// which shows it only in its `Debug` form; `u64::MAX` if it
+            /// has none.
             fn number(value: impl std::fmt::Debug) -> u64 {
                 let text = format!("{value:?}");
-                let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+                let digits: String = (text.chars())
+                    .skip_while(|c| !c.is_ascii_digit())
+                    .take_while(char::is_ascii_digit)
+                    .collect();
                 digits.parse().unwrap_or(u64::MAX)
             }
 

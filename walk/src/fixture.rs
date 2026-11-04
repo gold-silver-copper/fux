@@ -326,10 +326,14 @@ impl Fixture {
         let socket = self.socket.clone();
         let dir = self.dir.clone();
         let (child, _) = slave
-            .spawn(&argv, fuxix::process::Dispositions::Default, |command| {
-                environment(command, &dir);
-                command.env("FUX_SOCKET", &socket);
-            })
+            .spawn(
+                &argv,
+                |command| {
+                    environment(command, &dir);
+                    command.env("FUX_SOCKET", &socket);
+                },
+                fuxix::process::Dispositions::Default,
+            )
             .map_err(|e| e.to_string())?;
         let deadline = after(CALL);
         let id = loop {

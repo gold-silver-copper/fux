@@ -369,10 +369,13 @@ cursor's position is. A
 picture's cells read as blanks (`CellRef::shown`), and
 `Row::ends_in_spacer` says whether a soft-wrapped row ends in the blank a
 wide glyph did not fit in, which a copy leaves out (a blank erased in a
-colour is a cell, and stays). `Row::glyphs` gives a row's glyphs with
-their columns, a wide glyph's second half and that spacer left out, and
-`Row::text` their text, blanks as spaces and trailing blanks kept: the
-texts of a line's rows, joined while `Row::continues`, are the line's.
+colour is a cell, and stays; a double-width row ends in the last column of
+its half). `Row::glyphs` gives a row's glyphs with their columns, a wide
+glyph's second half and that spacer left out, and `Row::text` their text,
+blanks as spaces: the texts of a line's rows, joined while
+`Row::continues`, are the line's. A row that ends its line stops at its
+last cell that is not a default blank, so reading it costs what it holds,
+not the screen's width.
 
 Marks (`Screen::mark`) are not consumed, so readers share them. A mark
 taken after any processing differs from one taken before;
@@ -386,7 +389,11 @@ same however the output was cut into calls, where marks move on with
 each call. `Screen::history_numbers` numbers the primary screen's history
 rows: each row it takes gets the next number, so a host that noted the
 end finds the rows scrolled in since, and whether any went before it
-read them; a resize may number history afresh.
+read them; a resize may number history afresh. `Screen::scrolled_since`
+counts the rows scrolled up off the top of the screen shown since a mark,
+on either screen, with history or none: a host mirroring the screen moves
+the rows it sent up by that many, then sends those whose id or version
+differ.
 
 ## Bounds
 
@@ -563,7 +570,8 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   copies left), even with no byte left. A host that holds no frames and
   spreads no work over turns (a replay, a converter, a test) calls
   `Parser::process_all`, which makes those calls itself until every byte
-  is read and no work is owed.
+  is read and no work is owed, and gives how many times room was refused
+  on the way (B44): the screen is good to read whatever the count.
 - **Encoding a picture** (B08): `sixel::encode` reads each pixel of its
   crop twice and sets each sixel once, whatever its colours, and writes at
   most 12 bytes a pixel and 6 a colour a band of six rows.

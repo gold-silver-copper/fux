@@ -416,9 +416,13 @@ impl Terminal {
             .ok_or("size")?;
         let (master, slave) = fuxix::pty::open(size).map_err(e)?;
         let (child, _) = slave
-            .spawn(argv, fuxix::process::Dispositions::Default, |command| {
-                command.current_dir(dir);
-            })
+            .spawn(
+                argv,
+                |command| {
+                    command.current_dir(dir);
+                },
+                fuxix::process::Dispositions::Default,
+            )
             .map_err(e)?;
         Ok(Self {
             master,

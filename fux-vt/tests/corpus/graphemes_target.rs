@@ -43,7 +43,7 @@ impl Pick {
 /// `parser` fed every byte of `bytes`, from each stop on, as a host does:
 /// whether no call failed and no room was refused.
 fn fed(parser: &mut Parser, bytes: &[u8]) -> bool {
-    parser.process_all(bytes, &mut ()).is_ok()
+    parser.process_all(bytes, &mut ()) == 0
 }
 
 /// Asserts row `row` holds `expected`, and nothing after it.

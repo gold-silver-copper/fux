@@ -58,7 +58,7 @@ const REPLIES: Options = Options::new().with(Feature::ExtendedReplies);
 fn run(options: Options, input: &[u8]) -> Result<Record> {
     let mut parser = Parser::with_options(Size::new(24, 80)?, 0, options)?;
     let mut record = Record::default();
-    parser.process_all(input, &mut record)?;
+    parser.process_into(input, &mut record)?;
     Ok(record)
 }
 
@@ -84,7 +84,7 @@ fn events_report_titles_icons_bells_and_clipboard_sets() -> Result {
         let mut parser = Parser::with_options(Size::new(24, 80)?, 0, EVENTS)?;
         let mut record = Record::default();
         for chunk in pieces::pieces(SAMPLE, size) {
-            parser.process_all(chunk, &mut record)?;
+            parser.process_into(chunk, &mut record)?;
         }
         assert_eq!(
             record.events,
@@ -114,10 +114,10 @@ fn the_screen_keeps_the_title_set_last() -> Result {
     let mut parser = Parser::with_options(Size::new(2, 20)?, 0, EVENTS)?;
     let title = |p: &Parser| (p.screen().title().bytes.to_vec(), p.screen().title().cut);
     assert_eq!(title(&parser), (b"".to_vec(), false));
-    parser.process_all(b"\x1b]0;both\x07\x1b]2;title\x1b\\\x1b]1;icon\x07", &mut ())?;
+    parser.process_into(b"\x1b]0;both\x07\x1b]2;title\x1b\\\x1b]1;icon\x07", &mut ())?;
     assert_eq!(title(&parser), (b"title".to_vec(), false));
     let long = [&b"\x1b]2;"[..], &vec![b'x'; OSC_PAYLOAD_LIMIT], b"\x07"].concat();
-    parser.process_all(&long, &mut ())?;
+    parser.process_into(&long, &mut ())?;
     assert_eq!(title(&parser), (vec![b'x'; OSC_PAYLOAD_LIMIT - 2], true));
     Ok(())
 }
@@ -127,11 +127,11 @@ fn osc_payloads_are_bounded_and_cancellable() -> Result {
     let mut parser = Parser::with_options(Size::new(4, 20)?, 0, EVENTS)?;
     let mut record = Record::default();
     // An over-limit title is consumed, its start told, cut.
-    parser.process_all(b"\x1b]2;", &mut record)?;
+    parser.process_into(b"\x1b]2;", &mut record)?;
     for _ in 0..OSC_PAYLOAD_LIMIT / 1024 + 2 {
-        parser.process_all(&[b'x'; 1024], &mut record)?;
+        parser.process_into(&[b'x'; 1024], &mut record)?;
     }
-    parser.process_all(b"\x07", &mut record)?;
+    parser.process_into(b"\x07", &mut record)?;
     let start = format!(
         "title:{} (cut)",
         std::iter::repeat_n('x', OSC_PAYLOAD_LIMIT - 2).collect::<String>()
@@ -142,12 +142,12 @@ fn osc_payloads_are_bounded_and_cancellable() -> Result {
     let mut exact = b"\x1b]2;".to_vec();
     exact.resize(4 + OSC_PAYLOAD_LIMIT - 2, b'y');
     exact.push(7);
-    parser.process_all(&exact, &mut record)?;
+    parser.process_into(&exact, &mut record)?;
     assert!(record.events.iter().all(|e| !e.ends_with("(cut)")));
     assert_eq!(record.events.len(), 1);
     // CAN cancels without an event, and the next string starts clean.
     record.events.clear();
-    parser.process_all(b"\x1b]2;gone\x18\x1b]2;kept\x07ok", &mut record)?;
+    parser.process_into(b"\x1b]2;gone\x18\x1b]2;kept\x07ok", &mut record)?;
     assert_eq!(record.events, ["title:kept"]);
     assert_eq!(
         parser.screen().cell(0, 0).map(|c| c.contents()),
@@ -168,7 +168,7 @@ fn controls_a_command_string_cannot_hold_are_left_out_of_an_osc() -> Result {
     let mut split = Parser::with_options(Size::new(4, 20)?, 0, EVENTS)?;
     let mut record = Record::default();
     for byte in input {
-        split.process_all(&[*byte], &mut record)?;
+        split.process_into(&[*byte], &mut record)?;
     }
     for events in [run(EVENTS, input)?.events, record.events] {
         assert_eq!(events, ["title:abcde\x08\t\n\x0b\x0c\rf"]);
@@ -371,7 +371,7 @@ fn process_all_reads_past_every_stop() -> Result {
         p.clone().process_until_stop(&bytes, &mut ())?.map(|s| s.1),
         Some(Stop::Budget)
     );
-    p.process_all(&bytes, &mut ())?;
+    p.process_into(&bytes, &mut ())?;
     assert!(!p.has_work_left() && !p.screen().mode(Mode::SynchronizedOutput));
     assert_eq!(p.screen().cell(0, 1).map(|c| c.contents()), Some("z"));
     Ok(())
@@ -389,7 +389,7 @@ fn in_band_resize_reports_the_size() -> Result {
         .with(Feature::InBandResize);
     let mut p = Parser::with_options(Size::new(24, 80)?, 0, options)?;
     let mut record = Record::default();
-    p.process_all(
+    p.process_into(
         b"\x1b[?2048$p\x1b[?2048h\x1b[?2048$p\x1b[?2048h\x1b[?2048;25h",
         &mut record,
     )?;
@@ -413,7 +413,7 @@ fn in_band_resize_reports_the_size() -> Result {
     // Without the option: not recognized, no report.
     let mut p = Parser::with_options(Size::new(24, 80)?, 0, Feature::ModeReports.into())?;
     let mut record = Record::default();
-    p.process_all(b"\x1b[?2048h\x1b[?2048$p", &mut record)?;
+    p.process_into(b"\x1b[?2048h\x1b[?2048$p", &mut record)?;
     assert_eq!(record.replies, [b"\x1b[?2048;0$y".to_vec()]);
     assert_eq!(p.resize_report(), None);
     Ok(())
@@ -427,9 +427,9 @@ fn size_reports_answer_the_text_area_in_characters() -> Result {
     let options = Options::new().with(Feature::SizeReports);
     let mut p = Parser::with_options(Size::new(24, 80)?, 0, options)?;
     let mut record = Record::default();
-    p.process_all(b"\x1b[18t\x1b[14t", &mut record)?;
+    p.process_into(b"\x1b[18t\x1b[14t", &mut record)?;
     p.resize(Size::new(30, 100)?)?;
-    p.process_all(b"\x1b[18t", &mut record)?;
+    p.process_into(b"\x1b[18t", &mut record)?;
     let expected: [&[u8]; 2] = [b"\x1b[8;24;80t", b"\x1b[8;30;100t"];
     assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
     assert!(run(Options::new(), b"\x1b[18t")?.replies.is_empty());
@@ -569,7 +569,7 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
     // printing goes on as before after it.
     let mut p = Parser::with_options(Size::new(1, 10)?, 0, SETTINGS)?;
     let mut record = Record::default();
-    p.process_all(b"a\x1bP$qm\x1b\\b\x1b[1m\x1bP$qm\x1b\\c", &mut record)?;
+    p.process_into(b"a\x1bP$qm\x1b\\b\x1b[1m\x1bP$qm\x1b\\c", &mut record)?;
     let expected: [&[u8]; 2] = [b"\x1bP1$r0m\x1b\\", b"\x1bP1$r0;1m\x1b\\"];
     assert_eq!(record.replies, expected.map(<[u8]>::to_vec));
     let text: String = (0..3)
@@ -647,7 +647,7 @@ fn setting_reports_are_the_same_in_any_pieces() -> Result {
         let mut parser = Parser::with_options(Size::new(24, 80)?, 0, SETTINGS)?;
         let mut record = Record::default();
         for piece in pieces::pieces(input, size) {
-            parser.process_all(piece, &mut record)?;
+            parser.process_into(piece, &mut record)?;
         }
         assert_eq!(record, whole, "pieces of {size}");
     }
@@ -682,7 +682,7 @@ fn colour_queries_are_events() -> Result {
         let mut parser = Parser::with_options(Size::new(24, 80)?, 0, EVENTS)?;
         let mut pieces_record = Record::default();
         for chunk in pieces::pieces(input, size) {
-            parser.process_all(chunk, &mut pieces_record)?;
+            parser.process_into(chunk, &mut pieces_record)?;
         }
         assert_eq!(pieces_record, record, "chunk size {size}");
     }
@@ -712,7 +712,7 @@ fn colour_scheme_updates_are_tracked() -> Result {
         .with(Feature::ColorSchemeUpdates);
     let mut p = Parser::with_options(Size::new(24, 80)?, 0, options)?;
     let mut said = Said::default();
-    p.process_all(b"\x1b[?2031$p\x1b[?2031h\x1b[?2031$p", &mut said)?;
+    p.process_into(b"\x1b[?2031$p\x1b[?2031h\x1b[?2031$p", &mut said)?;
     assert!(p.screen().mode(Mode::ColorSchemeUpdates));
     assert_eq!(said.0, ["\x1b[?2031;2$y", "\x1b[?2031;1$y"]);
     p.process(b"\x1b[?2031l")?;
@@ -720,12 +720,12 @@ fn colour_scheme_updates_are_tracked() -> Result {
     p.process(b"\x1b[?2031h\x1bc")?;
     assert!(!p.screen().mode(Mode::ColorSchemeUpdates), "RIS");
     let mut said = Said::default();
-    p.process_all(b"\x1b[?996n", &mut said)?;
+    p.process_into(b"\x1b[?996n", &mut said)?;
     assert_eq!(said.0.len(), 1);
     assert!(said.0.iter().all(|s| s.starts_with("unhandled Csi")));
     let mut p = Parser::with_options(Size::new(24, 80)?, 0, Feature::ModeReports.into())?;
     let mut said = Said::default();
-    p.process_all(b"\x1b[?2031h\x1b[?2031$p", &mut said)?;
+    p.process_into(b"\x1b[?2031h\x1b[?2031$p", &mut said)?;
     assert!(!p.screen().mode(Mode::ColorSchemeUpdates));
     assert_eq!(said.0, ["\x1b[?2031;0$y"]);
     Ok(())
@@ -805,9 +805,9 @@ fn rectangle_checksums_sum_the_cells() -> Result {
     ] {
         input.push_str(&format!("\x1b[{id};0;{rect}*y"));
     }
-    p.process_all(input.as_bytes(), &mut record)?;
+    p.process_into(input.as_bytes(), &mut record)?;
     // Origin mode: row 1 is the top margin, row 3.
-    p.process_all(b"\x1b[3;3r\x1b[?6hz\x1b[11;0;1;1;1;1*y", &mut record)?;
+    p.process_into(b"\x1b[3;3r\x1b[?6hz\x1b[11;0;1;1;1;1*y", &mut record)?;
     let whole: u16 = 0x61 + 0x62 + 0x63 + 0x80 + 0x64 + 0x30 + 0xe9 + 0x1b * 2 + 0x1d + 0x20 * 4;
     let expected = [
         (1, checksum(0x61)),
@@ -833,7 +833,7 @@ fn rectangle_checksums_sum_the_cells() -> Result {
         let mut p = Parser::with_options(Size::new(1, 2)?, 0, options)?;
         p.process(output.as_bytes())?;
         let mut record = Record::default();
-        p.process_all(checksums::QUERY, &mut record)?;
+        p.process_into(checksums::QUERY, &mut record)?;
         let expected = [(7, first), (8, second)]
             .map(|(id, sum)| format!("\x1bP{id}!~{:04X}\x1b\\", sum.wrapping_neg()).into_bytes());
         assert_eq!(record.replies, expected, "{output:?}");
@@ -863,7 +863,7 @@ fn rectangle_checksums_sum_a_designated_glyph_as_xterm_does() -> Result {
     for (row, col) in cells.clone() {
         input.push_str(&format!("\x1b[{row}{col};0;{row};{col};{row};{col}*y"));
     }
-    p.process_all(input.as_bytes(), &mut record)?;
+    p.process_into(input.as_bytes(), &mut record)?;
     let sums: [u16; 14] = [
         0x1d, 0x78, 0xc6, 0x85, 0xb0, 0xb7, 0xa3, 0x9d, // Special Graphics
         0x97, 0x98, 0x99, 0xc1, 0xa4, 0x1b, // DEC Supplemental

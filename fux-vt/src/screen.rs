@@ -565,6 +565,8 @@ pub struct Screen {
     next_id: u64,
     version: u64,
     structural: u64,
+    /// The rows scrolled up off the top of the screen shown (`scrolled_since`).
+    scrolled: u64,
     /// `revision`'s count, and whether a byte read is held from it while
     /// its work is left over.
     revision: u64,
@@ -817,6 +819,7 @@ impl Screen {
             next_id,
             version: 1,
             structural: 1,
+            scrolled: 0,
             revision: 0,
             held: false,
             alternate_active: false,
@@ -1203,7 +1206,10 @@ impl Screen {
     }
     /// A mark of the screen as it is now, to ask later what changed.
     pub fn mark(&self) -> Mark {
-        Mark(self.version)
+        Mark {
+            version: self.version,
+            scrolled: self.scrolled,
+        }
     }
     /// The screen's revision: the bytes of output read, one held back
     /// while a call has stopped at its budget with work left, plus one for
@@ -1218,7 +1224,21 @@ impl Screen {
     /// Whether a reader of `mark` must read every row again: a scroll,
     /// resize, reset or switch of screens happened since.
     pub fn full_refresh_since(&self, mark: Mark) -> bool {
-        mark.0 < self.structural || mark.0 > self.version
+        mark.version < self.structural || mark.version > self.version
+    }
+    /// How many rows scrolled up off the top of the screen shown since
+    /// `mark`, into history or not, on either screen: a scroll up of rows
+    /// from the top (LF or IND at the bottom margin, SU, DL on the top row),
+    /// by as many rows as the scroll moved. A scroll region that starts at
+    /// the top row is counted though it ends above the last: the rows below
+    /// it stay, so a host that moved them too sends them again. A host
+    /// mirroring the screen moves the rows it sent up by this many, then
+    /// sends those whose [`crate::Row::id`] or [`crate::Row::version`]
+    /// differ from what it now holds. Other moves (a scroll down or inside
+    /// left and right margins, a resize, a switch of screens) are not
+    /// counted; [`Screen::full_refresh_since`] tells of them.
+    pub fn scrolled_since(&self, mark: Mark) -> u64 {
+        self.scrolled.saturating_sub(mark.scrolled)
     }
     /// How many style sweeps both grids have made, with the `checks`
     /// feature: for the bounds tests.
@@ -1298,6 +1318,10 @@ impl Screen {
     /// reader's window is invalid, not just its newly blank rows.
     fn scroll_rows(&mut self, region: Span, count: u16, direction: Scroll) {
         self.structural = self.version;
+        if direction != Scroll::Down && region.first() == 0 {
+            let moved = count.min(region.len());
+            self.scrolled = self.scrolled.saturating_add(u64::from(moved));
+        }
         // The rows brought in take the pen's colours (`bce`), as in xterm.
         let blank = self.blank_style();
         self.with_grid(|g, next, version| {

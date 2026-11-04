@@ -162,7 +162,7 @@ fn each_command_started_and_ended_is_an_event() -> Result {
     let mut p = Parser::with_options(Size::new(8, 20)?, 10, options)?;
     let mut heard = Heard::default();
     let two = b"\x1b]133;C\x07\x07a\r\n\x1b]133;D;1\x07\x1b]133;C\x07b\r\n\x1b]133;D;0\x07";
-    p.process_all(two, &mut heard)?;
+    p.process_into(two, &mut heard)?;
     assert_eq!(
         heard.0,
         [
@@ -177,7 +177,7 @@ fn each_command_started_and_ended_is_an_event() -> Result {
     // none, and an `N` ends one, with no status.
     heard.0.clear();
     let more = b"\x1b]133;D;3\x07\x1b]133;C\x07\x1b]133;C\x07\x1b]133;N\x07";
-    p.process_all(more, &mut heard)?;
+    p.process_into(more, &mut heard)?;
     assert_eq!(heard.0, ["started", "ended:None"]);
     Ok(())
 }

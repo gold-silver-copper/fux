@@ -256,6 +256,49 @@ fn a_rows_texts_join_into_its_lines_text() -> Result {
     Ok(())
 }
 
+/// A row that ends its line gives its text up to its last cell that is not
+/// a default blank, whatever the screen's width, the same on the screen and
+/// in history; blanks inside are spaces.
+#[test]
+fn a_hard_ended_rows_text_stops_at_what_it_holds() -> Result {
+    let mut p = Parser::new(Size::new(1, 1000)?, 1 << 20)?;
+    p.process(b"a\x1b[5Cb")?;
+    let shown = p.screen().window().row(0).ok_or("row 0")?.text();
+    p.process(b"\r\n")?;
+    let kept = p.screen().rows().next().ok_or("a row")?.text();
+    assert_eq!((shown.as_str(), kept.as_str()), ("a     b", "a     b"));
+    Ok(())
+}
+
+/// A double-width row's line goes on from the last column of the half it
+/// holds, so a glyph there is no spacer, though the full width's last
+/// column is blank.
+#[test]
+fn a_double_width_row_ends_in_a_spacer_only_in_its_half() -> Result {
+    let mut p = Parser::new(Size::new(4, 10)?, 0)?;
+    p.process("\x1b#6abcde\u{4e16}".as_bytes())?;
+    let row = p.screen().window().row(0).ok_or("row 0")?;
+    let glyphs: String = row.glyphs().map(|(_, cell)| cell.shown()).collect();
+    assert_eq!((row.ends_in_spacer(), glyphs.as_str()), (false, "abcde"));
+    Ok(())
+}
+
+/// The rows scrolled up off the top of the screen shown since a mark are
+/// counted on either screen, with or without history, a scroll inside a
+/// region below the top not among them.
+#[test]
+fn rows_scrolled_off_the_top_are_counted_whatever_the_screen() -> Result {
+    for (history, setup) in [(1 << 20, ""), (0, ""), (1 << 20, "\x1b[?1049h")] {
+        let mut p = Parser::new(Size::new(3, 10)?, history)?;
+        p.process(setup.as_bytes())?;
+        let mark = p.screen().mark();
+        p.process(b"\r\n\r\n\r\n\r\n\r\n\x1b[2;3r\x1b[3H\n")?;
+        assert_eq!(p.screen().scrolled_since(mark), 3, "{history} {setup:?}");
+        assert_eq!(p.screen().scrolled_since(p.screen().mark()), 0);
+    }
+    Ok(())
+}
+
 /// The blank a wide glyph that did not fit left at a soft-wrapped row's
 /// end is no part of the text, in the row's own last column: a history
 /// row narrower than the screen, after a resize without reflow, still
@@ -384,10 +427,7 @@ fn a_window_walks_its_rows_and_reads_a_cell_by_its_position() -> Result {
     p.process(b"a\r\nb\r\nc\r\nd")?;
     let window = p.screen().window();
     let walked: Vec<(u16, String)> = window.iter().map(|(y, row)| (y, row.text())).collect();
-    assert_eq!(
-        walked,
-        [(0, "b   ".into()), (1, "c   ".into()), (2, "d   ".into())]
-    );
+    assert_eq!(walked, [(0, "b".into()), (1, "c".into()), (2, "d".into())]);
     assert_eq!(p.screen().cursor_position(), (2, 1));
     assert_eq!(window.cell(2, 0).map(|c| c.contents()), Some("d"));
     assert!(window.cell(3, 0).is_none() && window.cell(0, 4).is_none());
@@ -412,7 +452,7 @@ fn history_numbers_the_rows_it_takes_and_passes_those_let_go() -> Result {
     p.process(b"\r\ne")?;
     assert_eq!(p.screen().history_numbers(), 2..3);
     let taken: Vec<String> = p.screen().main_rows().take(1).map(|r| r.text()).collect();
-    assert_eq!(taken, ["c  "]);
+    assert_eq!(taken, ["c"]);
     Ok(())
 }
 

@@ -132,7 +132,6 @@ impl Terminal {
         let (child, _) = slave
             .spawn(
                 &argv.collect::<Vec<_>>(),
-                fuxix::process::Dispositions::Default,
                 |command| {
                     command.env("TERM", "xterm-256color");
                     for name in crate::feel::FOREIGN {
@@ -142,6 +141,7 @@ impl Terminal {
                         command.env(key, value);
                     }
                 },
+                fuxix::process::Dispositions::Default,
             )
             .map_err(|e| format!("starting {program}: {e}"))?;
         let seen = Seen {

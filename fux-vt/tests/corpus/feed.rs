@@ -19,6 +19,8 @@ pub trait Feed: Sized {
     -> Result<(), Error>;
     /// [`Parser::process_all`], the replies dropped.
     fn process(&mut self, bytes: &[u8]) -> Result<(), Error>;
+    /// [`Parser::process_all`] into `sink`.
+    fn process_into(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error>;
 }
 
 impl Feed for Parser {
@@ -30,10 +32,17 @@ impl Feed for Parser {
         bytes: &[u8],
         reply: impl FnMut(&[u8]),
     ) -> Result<(), Error> {
-        self.process_all(bytes, &mut Replies(reply))
+        self.process_into(bytes, &mut Replies(reply))
     }
     fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.process_all(bytes, &mut ())
+        self.process_into(bytes, &mut ())
+    }
+    /// A refusal of room is an error here, for a test to see.
+    fn process_into(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
+        match self.process_all(bytes, sink) {
+            0 => Ok(()),
+            _ => Err(Error::Capacity),
+        }
     }
 }
 

@@ -136,9 +136,11 @@ impl std::io::Write for Master {
 impl Slave {
     /// Starts `argv` on this PTY, as the leader of a new session with the
     /// PTY as its controlling terminal and its stdin, stdout and stderr,
-    /// and no other descriptor, its signals as `dispositions` says
-    /// ([`crate::process::lead_session`]); `setup`
-    /// sets its directory and environment. Returns once the program runs,
+    /// and no other descriptor; `setup` sets its directory and environment,
+    /// and its signals start as `dispositions` says
+    /// ([`crate::process::lead_session`]). `dispositions` comes last so that
+    /// leaving it out is told as a missing argument, not as a closure whose
+    /// type is unknown. Returns once the program runs,
     /// with its pid, or once it cannot, with the system's error as it is:
     /// a `NotFound` may be the program, its `#!` interpreter or the
     /// directory, which the system does not tell apart.
@@ -153,8 +155,8 @@ impl Slave {
     pub fn spawn<S: AsRef<OsStr>>(
         self,
         argv: &[S],
-        dispositions: crate::process::Dispositions,
         setup: impl FnOnce(&mut Command),
+        dispositions: crate::process::Dispositions,
     ) -> std::io::Result<(Child, Pid)> {
         let (program, args) = argv
             .split_first()
@@ -895,8 +897,8 @@ mod tests {
         let (mut child, pid) = slave
             .spawn(
                 &["sh", "-c", &script],
-                crate::process::Dispositions::Default,
                 |_| {},
+                crate::process::Dispositions::Default,
             )
             .map_err(|e| e.to_string())?;
         let deadline = std::time::Instant::now()

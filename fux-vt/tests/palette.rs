@@ -9,6 +9,7 @@ use fux_vt::{Event, Feature, Options, Parser, Sink, Size};
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
+use feed::Feed;
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -48,12 +49,12 @@ const BOTH: Options = Options::new().with(Feature::Palette).with(Feature::Events
 fn run(options: Options, input: &[u8]) -> Result<(Heard, Parser)> {
     let mut parser = Parser::with_options(Size::new(25, 80)?, 0, options)?;
     let mut heard = Heard::default();
-    parser.process_all(input, &mut heard)?;
+    parser.process_into(input, &mut heard)?;
     for size in [1, 2, 7] {
         let mut again = Parser::with_options(Size::new(25, 80)?, 0, options)?;
         let mut pieces_heard = Heard::default();
         for chunk in pieces::pieces(input, size) {
-            again.process_all(chunk, &mut pieces_heard)?;
+            again.process_into(chunk, &mut pieces_heard)?;
         }
         assert_eq!(pieces_heard, heard, "in pieces of {size}");
     }
@@ -336,7 +337,7 @@ fn run_hosted(
     }
     parser.set_host_palette(palette);
     let mut heard = Heard::default();
-    parser.process_all(input, &mut heard)?;
+    parser.process_into(input, &mut heard)?;
     Ok((heard, parser))
 }
 
@@ -394,7 +395,7 @@ fn host_colours_are_cleared_and_need_the_option() -> Result {
     let (_, mut parser) = run_hosted(PALETTE, &[(1, [1, 2, 3])], b"")?;
     parser.set_host_palette([None; 16]);
     let mut heard = Heard::default();
-    parser.process_all(b"\x1b]4;1;?\x07", &mut heard)?;
+    parser.process_into(b"\x1b]4;1;?\x07", &mut heard)?;
     assert_eq!(heard, said(&[]));
     // Clearing what was never set keeps no colours at all.
     let mut fresh = Parser::with_options(Size::new(25, 80)?, 0, PALETTE)?;
