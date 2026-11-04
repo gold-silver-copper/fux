@@ -275,6 +275,27 @@ impl Tree {
         true
     }
 
+    /// Keeps the processes in the session `leader` leads, but `leader`. One
+    /// gone since it was found is no member; one whose session the system
+    /// won't tell is a miss, said.
+    fn keep_session(&mut self, leader: Pid) {
+        let mut missed = None;
+        self.pids.retain(|pid| {
+            // SAFETY: getsid takes a number and touches no memory.
+            match check(unsafe { libc::getsid(pid.as_raw()) }) {
+                Ok(sid) => sid == leader.as_raw() && *pid != leader,
+                Err(Errno::SRCH) => false,
+                Err(errno) => {
+                    missed.get_or_insert(errno);
+                    false
+                }
+            }
+        });
+        if let Some(errno) = missed {
+            self.incomplete(Scan::Failed(errno));
+        }
+    }
+
     /// The scan missed something; the first miss is the one said.
     fn incomplete(&mut self, scan: Scan) {
         if self.scan == Scan::Complete {
@@ -335,7 +356,7 @@ impl Tree {
     /// Takes in the children of `pid` (`None`: this process), reading no
     /// more of the list than there is room for: whether all fit. One that
     /// ended since it was found has none; a list the system refuses is
-    /// said. libproc gives a count of pids, or -1 for a failure.
+    /// said. libproc gives a count of pids, and 0 for a failure as for none.
     #[cfg(target_os = "macos")]
     fn read_children(&mut self, pid: Option<Pid>) -> bool {
         // SAFETY: getpid cannot fail and touches no memory.
@@ -347,12 +368,19 @@ impl Tree {
             self.incomplete(Scan::Failed(Errno::INVAL));
             return true;
         };
+        clear_errno();
         // SAFETY: the buffer is `bytes` long and writable.
         let count = unsafe { libc::proc_listchildpids(parent, found.as_mut_ptr().cast(), bytes) };
-        let Ok(count) = usize::try_from(count) else {
-            self.incomplete(Scan::Failed(Errno::last()));
+        let count = usize::try_from(count).unwrap_or(0);
+        if count == 0 {
+            // A failure, said as no children: errno tells them apart. One
+            // that ended since it was found (`ESRCH`) has none.
+            match Errno::last() {
+                errno if errno.raw() == 0 || errno == Errno::SRCH => {}
+                errno => self.incomplete(Scan::Failed(errno)),
+            }
             return true;
-        };
+        }
         found.truncate(count);
         self.add(found.into_iter().filter_map(Pid::from_raw))
     }
@@ -379,19 +407,28 @@ pub fn tree() -> Tree {
     tree
 }
 
+/// Sets this thread's `errno` to 0, for a call that fails without saying so.
+#[cfg(target_os = "macos")]
+fn clear_errno() {
+    // SAFETY: __error takes nothing and returns this thread's errno's
+    // address, always valid.
+    let errno = unsafe { libc::__error() };
+    // SAFETY: it is this thread's errno, an int it may write.
+    unsafe { errno.write(0) };
+}
+
 /// The system's error behind `error`.
 #[cfg(not(target_os = "macos"))]
 fn errno(error: &std::io::Error) -> Errno {
     Errno::from_io_error(error).unwrap_or(Errno::from_raw(libc::EIO))
 }
 
-/// The processes in the session `leader` leads. macOS lists no session's
-/// processes alone (`sysctl` has no `KERN_PROC_SESSION` node: `ENOENT`),
-/// so every process the system lists is asked its session, as many as
-/// there are (`kern.maxproc` bounds them). libproc says a failure with a
-/// count of 0.
+/// Every process the system lists, as many as there are (`kern.maxproc`
+/// bounds them): where a [`Job`]'s members are looked for on macOS, which
+/// lists no session's processes alone (`sysctl` has no `KERN_PROC_SESSION`
+/// node: `ENOENT`). libproc says a failure with a count of 0.
 #[cfg(target_os = "macos")]
-fn in_session(leader: Pid) -> Tree {
+fn everyone() -> Tree {
     let mut tree = Tree::default();
     // SAFETY: a null buffer asks only for the count.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
@@ -416,8 +453,7 @@ fn in_session(leader: Pid) -> Tree {
         tree.incomplete(Scan::Truncated);
     }
     pids.truncate(written);
-    let pids = pids.into_iter().filter_map(Pid::from_raw);
-    tree.pids = pids.filter(|pid| session(*pid) == Some(leader)).collect();
+    tree.pids = pids.into_iter().filter_map(Pid::from_raw).collect();
     tree
 }
 
@@ -479,11 +515,9 @@ impl Job {
         let leader = self.0;
         #[cfg(not(target_os = "macos"))]
         let mut members = tree();
-        #[cfg(not(target_os = "macos"))]
-        members.pids.retain(|pid| session(*pid) == Some(leader));
         #[cfg(target_os = "macos")]
-        let mut members = in_session(leader);
-        members.pids.retain(|pid| *pid != leader);
+        let mut members = everyone();
+        members.keep_session(leader);
         members
     }
 

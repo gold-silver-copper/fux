@@ -113,6 +113,10 @@ programs built on the libraries (below) are the acceptance test for the whole po
 - macOS has no list of one session's processes (`sysctl` `KERN_PROC_SESSION` is `ENOENT` on macOS 15), so
   `Job::members` there asks every listed process its session, privately; `tree()` lists descendants only.
 - Orphan adoption stays process-wide (`adopt_orphans`, `reap_orphans`), outside `Job`.
+- Two shapes PR 6 must settle (the PR 3 judges named them): `Job::signal` takes a Unix `Signal`, so on
+  Windows only KILL (terminate the job with fux's exit code, D-136) is a job operation and the hangup is
+  closing the pseudo console, not a signal; and `Slave::spawn` returns std's `Child`, which a
+  `CreateProcessW` spawn doesn't have.
 
 ## Rules the spikes found (each cost a failed run)
 - **ConPTY**

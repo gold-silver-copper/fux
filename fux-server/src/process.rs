@@ -10,7 +10,10 @@ use std::path::Path;
 /// closed by fux: when it is hung up and killed, how far, and what is
 /// logged of what was missed is decided here.
 #[must_use = "a leader dropped unreaped is a zombie no one reaps"]
-pub struct Leader(Job, bool);
+pub struct Leader {
+    job: Job,
+    closed: bool,
+}
 
 /// A pane's program and the master side of its PTY.
 pub struct Child {
@@ -65,7 +68,7 @@ pub fn spawn(
     // std never waits on a dropped child.
     drop(child);
     Ok(Child {
-        leader: Leader(job, false),
+        leader: Leader { job, closed: false },
         master,
     })
 }
@@ -89,13 +92,13 @@ pub fn pixels(
 
 impl Leader {
     pub fn pid(&self) -> Pid {
-        self.0.leader()
+        self.job.leader()
     }
 
     /// Its pane is closed by fux, not ended by itself: its whole session
     /// goes when it is finished.
     pub fn closed(&mut self) {
-        self.1 = true;
+        self.closed = true;
     }
 
     /// Whether it has exited, without reaping it: its exit status, or
@@ -103,7 +106,7 @@ impl Leader {
     /// no signal interrupts it; it fails only for a pid that is no unreaped
     /// child, one gone, whose status is lost.
     pub fn exited(&self) -> Option<Ended> {
-        match self.0.ended() {
+        match self.job.ended() {
             Ok(status) => status.map(Ended::from),
             Err(_) => Some(Ended::Lost),
         }
@@ -121,7 +124,7 @@ impl Leader {
     /// server's log: a scan for them that did not finish, and each signal
     /// the system refused (one to a process gone already is no loss).
     fn signal(&self, signal: Signal, reach: Reach) {
-        let sent = self.0.signal(signal, reach);
+        let sent = self.job.signal(signal, reach);
         let refused: Vec<String> = (sent.failed.into_iter())
             .filter(|(_, errno)| *errno != fuxix::Errno::SRCH)
             .map(|(pid, errno)| format!("{pid}: {errno}"))
@@ -148,7 +151,7 @@ impl Leader {
     /// period, with the master closed.
     pub fn finish(self) -> Option<Job> {
         self.kill();
-        reaped(self.0)
+        reaped(self.job)
     }
 
     /// Kills its group and, if its pane is closed by fux, the rest of its
@@ -159,7 +162,11 @@ impl Leader {
         // session, a job in a group of its own that ignored the hangup
         // (`nohup cmd &`) too. A program that ended by itself leaves those
         // it meant to (`nohup job & exit`).
-        let reach = if self.1 { Reach::Session } else { Reach::Group };
+        let reach = if self.closed {
+            Reach::Session
+        } else {
+            Reach::Group
+        };
         self.signal(Signal::Kill, reach);
     }
 }

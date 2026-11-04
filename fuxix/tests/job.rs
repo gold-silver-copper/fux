@@ -68,7 +68,8 @@ fn a_tree_is_this_processs_descendants_and_no_other_process() -> Outcome {
 #[test]
 fn a_jobs_members_are_the_rest_of_its_session_till_they_are_gone() -> Outcome {
     fuxix::process::adopt_orphans()?;
-    let file = std::env::temp_dir().join(format!("fuxix-job-{}", std::process::id()));
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("fuxix-job-{}", std::process::id()));
     let path = file.to_string_lossy();
     let script = format!(
         "set -m; sleep 31 & echo $! > '{path}'; (sleep 32 & echo $! >> '{path}'); exec sleep 30"
