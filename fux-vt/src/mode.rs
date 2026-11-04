@@ -39,11 +39,10 @@ macro_rules! modes {
             /// DECSET and DECRST name by `n`, with `options`: without
             /// theirs, 2031 and 2048 are not recognized.
             pub(crate) fn of(n: u16, private: bool, options: &Options) -> Option<Self> {
-                const FEATURES: [Option<Feature>; Mode::ALL.len()] =
-                    [$(modes!(@feature $($feature)?),)*];
-                let at = Self::ALL.iter().position(|mode| mode.number() == (private, n))?;
-                let feature = FEATURES.get(at).copied().flatten();
-                let mode = Self::ALL.get(at).copied()?;
+                let (mode, feature): (Self, Option<Feature>) = match (private, n) {
+                    $(($private, $n) => (Self::$variant, modes!(@feature $($feature)?)),)*
+                    _ => return None,
+                };
                 feature.is_none_or(|f| options.has(f)).then_some(mode)
             }
 
