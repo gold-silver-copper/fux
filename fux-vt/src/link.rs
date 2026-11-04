@@ -138,6 +138,9 @@ pub(crate) struct Run {
     link: Hyperlink,
 }
 
+// The memory budget is set for 64-bit targets; a 32-bit one (wasm32) has
+// smaller pointers, so its runs are smaller still.
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(size_of::<Run>() == 32 && size_of::<KeptLinks>() == 32);
 
 impl KeptLinks {

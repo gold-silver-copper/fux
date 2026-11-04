@@ -2,7 +2,8 @@ name: CI
 
 # fux is developed on macOS and published for both platforms, and the two
 # differ in ways that have hidden real defects (bevy-final findings 010-013),
-# so every change runs on both.
+# so every change runs on both. The crates that already build on Windows run
+# there too, on the way to fux on Windows 11 (WINDOWS.md, D-130).
 
 on:
   pull_request:
@@ -139,6 +140,15 @@ jobs:
           if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
           cargo test -p fux-vt --features checks --release --locked --test external_corpora 2>&1 | tee "$CI_LOGS/external-corpora.log"
 
+      - name: fux-vt builds for wasm32 (the browser)
+        # fux-vt and fuxth have no OS dependency, so they build for a 32-bit
+        # target with no OS at all; this keeps them that way.
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          rustup target add wasm32-unknown-unknown
+          cargo check -p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth --target wasm32-unknown-unknown --locked 2>&1 | tee "$CI_LOGS/wasm.log"
+
       - name: Minimum Rust version
         # Every manifest says rust-version = "1.95"; the pinned toolchain is
         # newer, so nothing else would notice a newer feature creeping in.
@@ -272,6 +282,57 @@ jobs:
           path: ${{ runner.temp }}/fux-ci/
           retention-days: 7
           if-no-files-found: ignore
+
+  # The crates that build on Windows today, on Windows 11 25H2 (arm64) and
+  # Server 2025 (x64, Windows 11 24H2's code base). Each step of the port
+  # (WINDOWS.md, "Order of work") adds its crates and checks here.
+  windows:
+    name: windows (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-11-arm, windows-2025]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      # The arm64 image has no rustup; rust-toolchain.toml picks the
+      # toolchain either way.
+      - name: Platform and pinned toolchain
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+            Invoke-WebRequest "https://static.rust-lang.org/rustup/dist/$arch-pc-windows-msvc/rustup-init.exe" -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
+            & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain none --profile minimal
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            "$env:USERPROFILE\.cargo\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+          }
+          $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          "$($cv.ProductName) $($cv.DisplayVersion) build $($cv.CurrentBuild).$($cv.UBR) $env:PROCESSOR_ARCHITECTURE"
+          rustup show active-toolchain
+          rustc -Vv
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-${{ matrix.os }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+      - name: fux-vt and fuxth
+        run: |
+          set -euo pipefail
+          packages=(-p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth)
+          cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
+          cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings
+          cargo test "${packages[@]}" --locked
 
   # The agent benchmark's scripted tier for fux: every task, once, with fux
   # and python3 alone (no tmux, zellij, herdr or claude). A task fux used to
