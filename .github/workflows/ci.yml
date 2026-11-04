@@ -140,7 +140,7 @@ jobs:
           if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
           cargo test -p fux-vt --features checks --release --locked --test external_corpora 2>&1 | tee "$CI_LOGS/external-corpora.log"
 
-      - name: fux-vt in the browser (wasm32)
+      - name: fux-vt builds for wasm32 (the browser)
         # fux-vt and fuxth have no OS dependency, so they build for a 32-bit
         # target with no OS at all; this keeps them that way.
         if: runner.os == 'Linux'
