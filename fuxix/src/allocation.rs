@@ -102,7 +102,9 @@ pub trait Allocation {
         std::fmt::write(&mut Formatted { budget: self, out }, args).map_err(|_| Self::exceeded())
     }
 
-    /// Copy OS bytes with their exact admitted capacity.
+    /// Copy OS bytes with their exact admitted capacity. Unix only: a
+    /// Windows string is UTF-16, not bytes.
+    #[cfg(unix)]
     fn os_string(&mut self, bytes: &[u8]) -> Result<std::ffi::OsString, Self::Error> {
         use std::os::unix::ffi::OsStringExt;
         let mut out = self.vector(bytes.len())?;

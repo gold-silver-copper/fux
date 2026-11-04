@@ -6,7 +6,10 @@ use crate::command::{Limit, Percent};
 use fux_vt::keys::mouse::MouseButton;
 use fux_vt::keys::{Direction, KeyPress};
 use fuxix::process::Signal;
+#[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+#[cfg(windows)]
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 /// Why bytes are not the value they should be.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -245,20 +248,45 @@ impl Wire for String {
 }
 
 /// A system's string, as its bytes: on Unix a path or a variable's value
-/// is any bytes, never made text.
+/// is any bytes, never made text. On Windows it is any UTF-16 code units,
+/// a surrogate unpaired or not, and goes as them, a `Vec<u16>`.
 impl Wire for std::ffi::OsString {
+    #[cfg(unix)]
     fn put(&self, out: &mut impl crate::wire::Sink) {
         put_bytes(self.as_bytes(), out);
     }
+    #[cfg(windows)]
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        put_wide(self, out);
+    }
+    #[cfg(unix)]
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Vec::get(r).map(Self::from_vec)
+    }
+    #[cfg(windows)]
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Vec::<u16>::get(r).map(|units| Self::from_wide(&units))
+    }
+}
+
+/// A Windows string's UTF-16 code units, as a `Vec<u16>` goes.
+#[cfg(windows)]
+fn put_wide(text: &std::ffi::OsStr, out: &mut impl crate::wire::Sink) {
+    put_length(text.encode_wide().count(), out);
+    for unit in text.encode_wide() {
+        unit.put(out);
     }
 }
 
 /// A path, as its bytes.
 impl Wire for std::path::PathBuf {
+    #[cfg(unix)]
     fn put(&self, out: &mut impl crate::wire::Sink) {
         put_bytes(self.as_os_str().as_bytes(), out);
+    }
+    #[cfg(windows)]
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        put_wide(self.as_os_str(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         std::ffi::OsString::get(r).map(Self::from)
@@ -923,7 +951,13 @@ mod tests {
 
     #[test]
     fn a_directory_goes_as_its_bytes() -> TestResult {
+        #[cfg(unix)]
         let dir = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"));
+        // `C:\caf` and a lone surrogate: no text, but a Windows name.
+        #[cfg(windows)]
+        let dir = std::path::PathBuf::from(std::ffi::OsString::from_wide(&[
+            0x43, 0x3A, 0x5C, 0x63, 0x61, 0x66, 0xD800,
+        ]));
         let split = Command::Split {
             options: crate::command::PaneOptions {
                 history_bytes: crate::command::HistoryBytes::new(8 << 20).ok_or("history")?,

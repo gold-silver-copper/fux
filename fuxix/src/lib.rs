@@ -1,4 +1,7 @@
 //! The system calls fux makes, on Linux, Android and macOS, over `libc`.
+//! On Windows, so far only the types every OS shares: a [`process::Pid`],
+//! a [`process::Signal`]'s name, a [`process::Status`], an [`Errno`] and
+//! [`Allocation`]; the modules that make calls are Unix only.
 //!
 //! fux forbids `unsafe` code; this crate is where the `unsafe` it needs
 //! lives, one call per block, each with its reasoning. Every function is
@@ -18,18 +21,30 @@
 //! fuxix makes is not of that kind: [`pty::open`] on macOS
 //! works around two kernel bugs, retrying an open the kernel gave up on and
 //! replacing a PTY it left without a replica.
-#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
-compile_error!("fuxix supports Linux, Android and macOS");
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    windows
+)))]
+compile_error!("fuxix supports Linux, Android, macOS and Windows");
 
 mod allocation;
 mod errno;
+#[cfg(unix)]
 pub mod file;
+#[cfg(unix)]
 pub mod io;
+#[cfg(unix)]
 pub mod poll;
 pub mod process;
+#[cfg(unix)]
 pub mod pty;
+#[cfg(unix)]
 pub mod signal;
+#[cfg(unix)]
 pub mod socket;
+#[cfg(unix)]
 pub mod terminal;
 
 pub use allocation::Allocation;

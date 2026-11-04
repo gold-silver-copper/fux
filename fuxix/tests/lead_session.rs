@@ -3,6 +3,7 @@
 //! ignored stays ignored in it though a `signal::Pipe` caught it, and with
 //! `Default` it is the default. In a test binary of its own, as it changes
 //! what the whole process does with SIGHUP.
+#![cfg(unix)]
 use fuxix::process::{Dispositions, Pid, Signal, Status, lead_session};
 use std::time::{Duration, Instant};
 
