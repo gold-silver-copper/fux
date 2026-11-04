@@ -326,10 +326,10 @@ jobs:
           key: windows-${{ matrix.os }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
-      - name: fux-vt and fuxth
+      - name: fux-vt, fuxth, fuxix and fux-wire
         run: |
           set -euo pipefail
-          packages=(-p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth)
+          packages=(-p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth -p fuxix -p fux-wire)
           cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
           cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings
           cargo test "${packages[@]}" --locked

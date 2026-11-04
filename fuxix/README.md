@@ -3,7 +3,11 @@
 The system calls [fux](https://github.com/gold-silver-copper/fux) makes on
 Linux, Android and macOS, over `libc`, each behind a safe function. It
 holds only what fux's own crates call, and the one clock fux-bench times
-with. On any other platform it does not build.
+with. On Windows it builds with only the types every OS shares (`Pid`,
+`Signal`'s names, `Status`, `Errno`, `Allocation`); the modules that make
+calls are Unix only for now, and each OS's code sits in its own file
+(`process/unix.rs`, `process/windows.rs`). On any other platform it does
+not build.
 
 ## Rules
 

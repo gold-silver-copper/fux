@@ -6,7 +6,9 @@ use crate::id::{ClientId, PaneId};
 use crate::json::Json;
 use crate::wire::{closed_wire, wire, wire_enum};
 use fux_vt::{Attributes, Blink, Color, Rgb, UnderlineStyle};
-use fuxix::process::{Signal, Status};
+#[cfg(unix)]
+use fuxix::process::Signal;
+use fuxix::process::Status;
 
 wire! {
     /// What one pane answers, of an action or a wait on it.
@@ -223,6 +225,7 @@ impl From<Status> for Ended {
     fn from(status: Status) -> Self {
         match status {
             Status::Exited(code) => Ended::Exited(code),
+            #[cfg(unix)]
             Status::Signalled { signal, .. } => Ended::Signalled(signal),
         }
     }
@@ -250,10 +253,14 @@ impl std::fmt::Display for Told {
         match self.0 {
             Ended::Lost => out.write_str("ended, its status lost"),
             Ended::Exited(code) => write!(out, "exited {code}"),
+            #[cfg(unix)]
             Ended::Signalled(raw) => match Signal::from_raw(raw) {
                 Some(signal) => write!(out, "killed by SIG{}", signal.name()),
                 None => write!(out, "killed by signal {raw}"),
             },
+            // Windows numbers no signal, so has none to name.
+            #[cfg(not(unix))]
+            Ended::Signalled(raw) => write!(out, "killed by signal {raw}"),
         }
     }
 }

@@ -4,13 +4,13 @@ version = "0.9.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "The system calls fux makes on Linux, Android and macOS, over libc, each safe to call"
+description = "The system calls fux makes on Linux, Android and macOS, over libc, each safe to call; on Windows, the types they share"
 repository = "https://github.com/gold-silver-copper/fux"
 readme = "README.md"
 keywords = ["pty", "termios", "syscall", "unix", "fux"]
 categories = ["os::unix-apis"]
 
-[dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [lints.rust]

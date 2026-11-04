@@ -91,6 +91,17 @@ programs built on the libraries (below) are the acceptance test for the whole po
 8. **The client and fuxth-run on Windows:** console VT input and output, resize events, restore. Done when:
    `fux` runs in Windows Terminal on a Windows 11 machine and the dogfood programs pass.
 
+## Open questions the later PRs settle (found in PR 2)
+- **"Killed by fux" on Windows** (D-136): `Status` there is only `Exited(i32)`, the native code as std,
+  cmd and PowerShell show it (`0xC000013A` is -1073741510). The PR that adds terminate decides how the
+  server says fux ended a program: likely from the `Signal` it sent, which it knows, not from a number.
+- **Errno names on Windows:** `Errno` holds Windows' own error code and has no constants yet. The
+  event-loop PR adds `last()` and the codes it needs (`ERROR_BROKEN_PIPE`, `ERROR_NO_DATA` for a gone
+  peer, `ERROR_IO_PENDING`), checked on Windows, not guessed.
+- **JSON for a Windows path that isn't text:** the wire carries Windows strings as their UTF-16 units.
+  `docs/json.md`'s `{encoding: hex}` means a Unix path's bytes; the server PR picks and documents the
+  Windows form (for example WTF-8 bytes in `hex`).
+
 ## Rules the spikes found (each cost a failed run)
 - **ConPTY**
   - Load `conpty.dll` only from fux's own data folder, never through the search path.
