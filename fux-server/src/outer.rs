@@ -730,9 +730,7 @@ mod tests {
         let absent = |h: &mut crate::host::Host| h.set_process(crate::pane::Process::Absent);
         if let Some(crate::pane::Process::Reading(child)) = s.host_mut(id, absent, Instant::now()) {
             drop(child.master);
-            if let Err(pid) = child.leader.finish() {
-                crate::process::reaped(pid);
-            }
+            let _ = child.leader.finish().and_then(crate::process::reaped);
         }
         Ok(())
     }

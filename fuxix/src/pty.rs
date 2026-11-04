@@ -19,7 +19,7 @@
 //! at all. A poll loop learns of the end from a [`crate::signal::Pipe`] of
 //! `Chld`.
 use crate::errno::{Errno, check};
-use crate::process::Pid;
+use crate::process::Job;
 use crate::terminal::{self, Size};
 use std::ffi::OsStr;
 use std::fmt;
@@ -140,24 +140,20 @@ impl Slave {
     /// and its signals start as `dispositions` says
     /// ([`crate::process::lead_session`]). `dispositions` comes last so that
     /// leaving it out is told as a missing argument, not as a closure whose
-    /// type is unknown. Returns once the program runs,
-    /// with its pid, or once it cannot, with the system's error as it is:
-    /// a `NotFound` may be the program, its `#!` interpreter or the
-    /// directory, which the system does not tell apart.
+    /// type is unknown. Returns once the program runs, with its std handle
+    /// (which waits for nothing when dropped) and its [`Job`], or once it
+    /// cannot, with the system's error as it is: a `NotFound` may be the
+    /// program, its `#!` interpreter or the directory, which the system
+    /// does not tell apart.
     ///
-    /// The pid is also its process group's and its session's: to end what
-    /// it started, [`crate::process::kill_group`] reaches its group, and a
-    /// job in a group of its own (a shell's, with job control) is in its
-    /// session, which [`crate::process::session`] tells of each process in
-    /// [`crate::process::tree`]. A job it left may hold the PTY open after
-    /// it ends; [`crate::process::group_alive`] says when its group is
-    /// empty.
+    /// A job it left may hold the PTY open after it ends;
+    /// [`Job::members`] lists what is left.
     pub fn spawn<S: AsRef<OsStr>>(
         self,
         argv: &[S],
         setup: impl FnOnce(&mut Command),
         dispositions: crate::process::Dispositions,
-    ) -> std::io::Result<(Child, Pid)> {
+    ) -> std::io::Result<(Child, Job)> {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| std::io::Error::other("no program to run"))?;
@@ -168,11 +164,8 @@ impl Slave {
             .stdin(self.0.try_clone()?)
             .stdout(self.0.try_clone()?)
             .stderr(self.0);
-        crate::process::lead_session(&mut command, true, dispositions);
         // Dropping `command` closes this side's copies of the PTY.
-        let child = command.spawn()?;
-        let pid = Pid::of(&child).ok_or_else(|| std::io::Error::other("a child with no pid"))?;
-        Ok((child, pid))
+        Job::start(&mut command, true, dispositions)
     }
 }
 
@@ -894,7 +887,7 @@ mod tests {
         let script = format!(
             "(trap '' HUP; sleep 5) & i=0; while [ $i -lt {lines} ]; do echo line $i; i=$((i+1)); done"
         );
-        let (mut child, pid) = slave
+        let (mut child, job) = slave
             .spawn(
                 &["sh", "-c", &script],
                 |_| {},
@@ -907,7 +900,7 @@ mod tests {
         let (mut seen, mut buffer, mut closed) = (Vec::new(), [0u8; 4096], false);
         loop {
             // Asked before the reads that follow: then they read all.
-            let ended = crate::process::ended(pid).map_err(|e| e.to_string())?;
+            let ended = job.ended().map_err(|e| e.to_string())?;
             loop {
                 match crate::io::read(&master, &mut buffer) {
                     Ok(n) if n > 0 => seen.extend_from_slice(buffer.get(..n).unwrap_or_default()),
@@ -928,7 +921,7 @@ mod tests {
             crate::poll::poll(&mut ready, Some(std::time::Duration::from_millis(50)))
                 .map_err(|e| e.to_string())?;
         }
-        let _ = crate::process::kill_group(pid, crate::process::Signal::Kill);
+        let _ = job.signal(crate::process::Signal::Kill, crate::process::Reach::Group);
         let _ = child.wait();
         let text = String::from_utf8_lossy(&seen);
         assert_eq!(text.matches("line ").count(), lines);

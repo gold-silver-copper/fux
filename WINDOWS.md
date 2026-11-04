@@ -102,6 +102,16 @@ programs built on the libraries (below) are the acceptance test for the whole po
   `docs/json.md`'s `{encoding: hex}` means a Unix path's bytes; the server PR picks and documents the
   Windows form (for example WTF-8 bytes in `hex`).
 
+## What PR 6 builds on (found in PR 3)
+- **`process::Job`** is mechanism only: `leader`, `members` (a `Tree`), `signal(Signal, Reach)` (a
+  `Sent`: the members' scan and each failure), `ended`, `reap(self)` (the job back while it runs). When to
+  hang up, how far (`Reach::Group` or `Reach::Session`) and what is logged is fux-server's (`Leader`).
+  Windows adds its `Job` beside the Unix one in `process/windows.rs`, holding the job object and the
+  program's process handle; `Tree`, `Scan`, `Sent` and `Reach` move to `process.rs` for both.
+- A job is made only by `pty::Slave::spawn` (`Job::start` is crate-private), so Windows' ConPTY spawn
+  makes its own. The server keeps a killed program as its `Job`, not a pid, till it is reaped.
+- Orphan adoption stays process-wide (`adopt_orphans`, `reap_orphans`), outside `Job`.
+
 ## Rules the spikes found (each cost a failed run)
 - **ConPTY**
   - Load `conpty.dll` only from fux's own data folder, never through the search path.

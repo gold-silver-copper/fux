@@ -19,6 +19,7 @@ use fux_wire::code::{Error, Raise, fail};
 use fux_wire::command::{self, Input, Mouse, Run, Version};
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId};
+use fuxix::process::Job;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -36,9 +37,9 @@ pub struct Dying {
 impl Dying {
     /// Kills the program, its terminal closed first (a dying writer can hold
     /// on to it); its leader, if it has yet to exit.
-    pub fn kill(self) -> Option<Pid> {
+    pub fn kill(self) -> Option<Job> {
         drop(self.child.master);
-        self.child.leader.finish().err()
+        self.child.leader.finish()
     }
 }
 
@@ -95,7 +96,7 @@ pub struct Host {
     leftover: Option<Child>,
     dying: Vec<Dying>,
     /// Programs killed and not yet reaped.
-    killed: Vec<Pid>,
+    killed: Vec<Job>,
     out: Vec<FromPane>,
     /// It was closed: by fux if `true` (`kill`), else by its program's end.
     closed: Option<bool>,
@@ -799,7 +800,7 @@ impl Host {
     /// leader of its own.
     pub fn reap(&mut self, now: Instant) {
         self.changed();
-        self.killed.retain(|pid| !process::reaped(*pid));
+        self.reap_killed();
         let leaders: Vec<Pid> = (self.pane.process().child().into_iter())
             .chain(
                 (self.respawning.iter()).flat_map(|r| r.process.child().into_iter().chain(&r.old)),
@@ -807,12 +808,18 @@ impl Host {
             .chain(&self.leftover)
             .chain(self.dying.iter().map(|d| &d.child))
             .map(|child| child.leader.pid())
-            .chain(self.killed.iter().copied())
+            .chain(self.killed.iter().map(Job::leader))
             .collect();
         fuxix::process::reap_orphans(|pid| leaders.contains(&pid));
         if let Some(status) = (self.pane.process().child()).and_then(|c| c.leader.exited()) {
             self.exited(status, now);
         }
+    }
+
+    /// Reaps each program killed that has exited.
+    fn reap_killed(&mut self) {
+        let killed = std::mem::take(&mut self.killed).into_iter();
+        self.killed = killed.filter_map(process::reaped).collect();
     }
 
     /// Kills every program it has left, and waits for them, at most a
@@ -823,7 +830,7 @@ impl Host {
         self.killed
             .extend(dying.into_iter().filter_map(Dying::kill));
         for _ in 0..500 {
-            self.killed.retain(|pid| !process::reaped(*pid));
+            self.reap_killed();
             if self.killed.is_empty() {
                 break;
             }
@@ -1433,9 +1440,7 @@ impl Host {
     /// Kills and reaps every program it waits to end, at once.
     pub fn end_dying(&mut self) {
         for dying in std::mem::take(&mut self.dying) {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
-            }
+            let _ = dying.kill().and_then(process::reaped);
         }
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
