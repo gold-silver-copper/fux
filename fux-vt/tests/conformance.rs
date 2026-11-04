@@ -12,7 +12,7 @@ use lines::lines;
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
-use feed::{Feed, Look, cells_text};
+use feed::{Feed, Look};
 
 fn run(rows: u16, cols: u16, bytes: &[u8]) -> Result<Parser> {
     let mut parser = Parser::new(Size::new(rows, cols)?, 0)?;
@@ -676,7 +676,7 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     assert_eq!(p.screen().cursor_position(), (1, 3));
     assert!(p.screen().pending_wrap());
     assert_eq!(p.screen().history_len(), 3);
-    let history: Vec<String> = p.screen().rows().take(3).map(|r| cells_text(&r)).collect();
+    let history: Vec<String> = p.screen().rows().take(3).map(|r| r.text()).collect();
     assert_eq!(history, ["xxxx"; 3]);
     let p = run(2, 5, "界\x1b[65533b".as_bytes())?;
     assert_eq!(lines(&p), ["界界", "界界"]);
@@ -763,7 +763,7 @@ fn a_region_at_the_top_scrolls_its_rows_into_history() -> Result {
     assert_eq!(lines(&p), ["c", "d", "e", "stat"]);
     let history: Vec<String> = (p.screen().rows())
         .take(p.screen().history_len())
-        .map(|r| cells_text(&r).trim_end().to_owned())
+        .map(|r| r.text().trim_end().to_owned())
         .collect();
     assert_eq!(history, ["a", "b"]);
     let mut p = Parser::new(Size::new(4, 5)?, 1 << 16)?;
@@ -1041,7 +1041,7 @@ fn modes_1047_and_1048() -> Result {
     // What the program drew is kept to read until the screen is shown
     // again, cleared, as 1049's and 47's are.
     let kept: Vec<String> = (p.screen().alternate_rows())
-        .map(|r| cells_text(&r).trim_end().to_owned())
+        .map(|r| r.text().trim_end().to_owned())
         .collect();
     assert_eq!(kept, ["  X", ""]);
     p.process(b"\x1b[?47h")?;

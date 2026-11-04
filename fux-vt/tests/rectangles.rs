@@ -128,15 +128,36 @@ fn decera_and_decsera_erase_a_rectangle() -> Result {
     assert!(screen.cell(0, 0).is_some_and(|c| space(&c)));
     assert!(screen.cell(1, 2).is_some_and(|c| space(&c)));
     assert!(screen.cell(1, 4).is_some_and(|c| c.contents().is_empty()));
+    // Both cells of a wide glyph become spaces in the pen's colours.
+    let mut parser = Parser::new(Size::new(1, 3)?, 0)?;
+    parser.process("\x1b[41m\u{754c}\x1b[42m\x1b[1;1;1;2$z".as_bytes())?;
+    let erased = |x| {
+        parser
+            .screen()
+            .cell(0, x)
+            .map(|c| c.attributes().background())
+    };
+    let green = Some(fux_vt::Color::Idx(2));
+    assert_eq!((erased(0), erased(1)), (green, green));
     Ok(())
 }
 
 /// DEC STD 070, 5.12.1: the operations change no line, so a row they reach
 /// the last column of stays soft-wrapped, as xterm keeps it (`replay
-/// --engines xterm --size 2x3 'abcdef\e[1;1;1;3$z'`).
+/// --engines xterm --size 2x3 'abcdef\e[1;1;1;3$z'`), and a line going on
+/// into a row they cover whole still goes on (xterm's `ScrnFillRectangle`
+/// touches no line's wrap).
 #[test]
 fn rectangles_keep_soft_wraps() -> Result {
-    for op in ["\x1b[88;1;1;1;3$x", "\x1b[1;1;1;3$z", "\x1b[1;1;1;3${"] {
+    let ops = [
+        "\x1b[88;{0};1;{0};3$x",
+        "\x1b[{0};1;{0};3$z",
+        "\x1b[{0};1;{0};3${",
+    ];
+    for op in ops
+        .iter()
+        .flat_map(|op| [op.replace("{0}", "1"), op.replace("{0}", "2")])
+    {
         let mut parser = Parser::new(Size::new(2, 3)?, 0)?;
         parser.process(format!("abcdef{op}").as_bytes())?;
         let rows: Vec<bool> = parser.screen().rows().map(|r| r.continues()).collect();
@@ -202,6 +223,23 @@ fn deccra_blanks_a_wide_glyph_it_cuts() -> Result {
     let mut parser = Parser::new(Size::new(2, 4)?, 0)?;
     parser.process("\u{754c}\r\n\u{8a9e}\x1b[1;1;1;1;1;2;1;1$v".as_bytes())?;
     assert_eq!(lines(&parser), ["\u{754c}", ""]);
+    // Copied beside itself: the glyph there keeps both halves.
+    let mut parser = Parser::new(Size::new(1, 4)?, 0)?;
+    parser.process("\u{754c}\x1b[;;;;;;3$v".as_bytes())?;
+    assert_eq!(lines(&parser), ["\u{754c}\u{754c}"]);
+    // Copied to the last column, where only its first half lands.
+    let mut parser = Parser::new(Size::new(1, 3)?, 0)?;
+    parser.process("\u{754c}\x1b[;;;;;;3$v".as_bytes())?;
+    let halves = |x| (parser.screen().cell(0, x)).map(|c| (c.is_wide(), c.is_wide_continuation()));
+    let halves: Vec<_> = (0..3).map(halves).collect();
+    assert_eq!(
+        halves,
+        [
+            Some((true, false)),
+            Some((false, true)),
+            Some((false, false))
+        ]
+    );
     Ok(())
 }
 

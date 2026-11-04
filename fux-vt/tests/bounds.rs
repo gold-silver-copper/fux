@@ -252,7 +252,7 @@ bound!(picture_covering_has_bounded_work_and_memory, "B46");
 mod quota {
     use fux_vt::{Parser, Size, Stop};
 
-    use super::feed::{Feed, Look, cells_text};
+    use super::feed::{Feed, Look};
     use super::{Result, one_at_a_time, probe};
 
     /// A host that keeps its replies, in order.
@@ -291,7 +291,7 @@ mod quota {
         let most = probe::LIMIT.saturating_add(probe::most_at(rows, cols, 0));
         let (mut whole, mut alone) = (Parser::with_options(size, 0, options)?, Replies::default());
         whole.process(setup)?;
-        whole.process_with(input, &mut alone)?;
+        whole.process_all(input, &mut alone)?;
         let (mut parser, mut replies) =
             (Parser::with_options(size, 0, options)?, Replies::default());
         parser.process(setup)?;
@@ -377,7 +377,7 @@ mod quota {
         assert!((0..4095).all(|col| id(0, col) == even(col, ["c", "d"])));
         assert!((0..4095).all(|col| id(1, col).is_none()));
         assert_eq!([id(0, 4095), id(1, 4095)], [Some("b"), Some("d")]);
-        let text = |y| s.window().row(y).map(|r| cells_text(&r));
+        let text = |y| s.window().row(y).map(|r| r.text());
         let row = |cells: &[(char, usize)]| {
             cells
                 .iter()

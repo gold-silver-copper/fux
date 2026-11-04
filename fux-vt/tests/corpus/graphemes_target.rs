@@ -11,7 +11,7 @@
 //! however the output is cut up; and again after reflowing narrower and
 //! back.
 use arbitrary::Arbitrary;
-use fux_vt::{Feature, Options, Parser, Row, Sink, Size};
+use fux_vt::{Feature, Options, Parser, Row, Size};
 
 #[derive(Arbitrary, Debug)]
 pub enum Pick {
@@ -40,21 +40,10 @@ impl Pick {
     }
 }
 
-/// Takes nothing.
-struct Deaf;
-impl Sink for Deaf {}
-
 /// `parser` fed every byte of `bytes`, from each stop on, as a host does:
 /// whether no call failed and no room was refused.
 fn fed(parser: &mut Parser, bytes: &[u8]) -> bool {
-    let (mut rest, refused) = (bytes, parser.refused());
-    loop {
-        match parser.process_until_stop(rest, &mut Deaf) {
-            Ok(Some((taken, _))) => rest = rest.get(taken..).unwrap_or_default(),
-            Ok(None) => return parser.refused() == refused,
-            Err(_) => return false,
-        }
-    }
+    parser.process_all(bytes, &mut ()).is_ok()
 }
 
 /// Asserts row `row` holds `expected`, and nothing after it.

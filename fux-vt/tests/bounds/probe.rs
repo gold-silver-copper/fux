@@ -166,6 +166,7 @@ pub fn steady(setup: &Setup) -> usize {
         styles.saturating_mul(2),
         history,
         67_000,
+        65_536,
         6_000,
     ];
     let steady = terms.into_iter().fold(0, usize::saturating_add);

@@ -26,7 +26,7 @@ const PASTE_LIMIT: usize = 64 * 1024;
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
-use feed::{Feed, Look, cells_text};
+use feed::{Feed, Look};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -111,7 +111,7 @@ fn text_shows(r: &Replayed, text: &str) -> std::result::Result<(), String> {
         .parser
         .screen()
         .main_rows()
-        .map(|row| cells_text(&row))
+        .map(|row| row.text())
         .collect();
     ensure(shown.contains(text), || {
         format!("{text:?} not on the screen")
@@ -370,8 +370,8 @@ fn seeds() -> Vec<Seed> {
             reaches: |r| {
                 let s = r.parser.screen();
                 let newest = s.history_len().checked_sub(1).and_then(|i| s.rows().nth(i));
-                let full = newest
-                    .is_some_and(|row| cells_text(&row).bytes().eq(std::iter::repeat_n(b'x', 200)));
+                let full =
+                    newest.is_some_and(|row| row.text().bytes().eq(std::iter::repeat_n(b'x', 200)));
                 ensure(full && s.history_len() > 5000, || {
                     format!("{} rows", s.history_len())
                 })
@@ -1158,7 +1158,7 @@ fn replay(seed: &Seed) -> Result<Replayed> {
         decoder.timeout(&mut inputs);
     } else {
         for piece in pieces(&bytes) {
-            let fed = parser.process_with(piece, &mut events);
+            let fed = parser.process_all(piece, &mut events);
             if !matches!(seed.prefix, Prefix::Refused(_)) {
                 fed?;
             }

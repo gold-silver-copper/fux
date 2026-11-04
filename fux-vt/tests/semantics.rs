@@ -13,7 +13,7 @@ use lines::lines;
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
-use feed::{Feed, Look, cells_text};
+use feed::{Feed, Look};
 /// The row of history `n` rows above the screen's top.
 fn above(parser: &Parser, n: usize) -> Result<Row<'_>> {
     let s = parser.screen();
@@ -28,7 +28,7 @@ fn cell(parser: &Parser, row: u16, col: u16) -> Result<CellRef<'_>> {
 }
 /// A row's text, its blank tail trimmed.
 fn text(row: &Row<'_>) -> String {
-    cells_text(row).trim_end().to_owned()
+    row.text().trim_end().to_owned()
 }
 /// How many rows a reader of `mark` reads again.
 fn dirty(screen: &Screen, mark: Mark) -> usize {
@@ -214,10 +214,45 @@ fn copying_widened_history_joins_original_row_extents_without_padding() -> Resul
     // History's row keeps its five cells, unpadded, and goes on in the next.
     let row = p.screen().rows().next().ok_or("a row")?;
     assert!(row.continues());
-    assert_eq!((row.len(), cells_text(&row)), (5, "abcde".to_owned()));
+    assert_eq!((row.len(), row.text()), (5, "abcde".to_owned()));
     assert!(row.cell(5).is_none());
     let next = p.screen().rows().nth(1).ok_or("a row")?;
     assert_eq!(text(&next), "fgh");
+    Ok(())
+}
+
+/// A row's glyphs, each with its column, leave out a wide glyph's second
+/// half and the spacer a soft-wrapped row ends in, so the texts of a
+/// line's rows, joined, are the line's text.
+#[test]
+fn a_rows_texts_join_into_its_lines_text() -> Result {
+    let mut p = Parser::new(Size::new(3, 5)?, 0)?;
+    p.process("abcd\u{4e16}x\r\nend".as_bytes())?;
+    let columns = |r: Row<'_>| r.glyphs().map(|(x, _)| x).collect::<Vec<u16>>();
+    let columns: Vec<_> = p.screen().rows().map(columns).collect();
+    assert_eq!(
+        columns,
+        [vec![0, 1, 2, 3], vec![0, 2, 3, 4], vec![0, 1, 2, 3, 4]]
+    );
+    let (mut lines, mut line) = (Vec::new(), String::new());
+    for row in p.screen().rows() {
+        line.push_str(&row.text());
+        if !row.continues() {
+            lines.push(std::mem::take(&mut line).trim_end().to_owned());
+        }
+    }
+    assert_eq!(lines, ["abcd\u{4e16}x", "end"]);
+    // A double-width row holds half the columns, and its line goes on
+    // from the last of them.
+    let mut p = Parser::new(Size::new(4, 10)?, 0)?;
+    p.process(b"\x1b#6abcdefgh")?;
+    let row = p.screen().rows().next().ok_or("a row")?;
+    assert!(row.continues());
+    let next = p.screen().rows().nth(1).ok_or("a row")?;
+    assert_eq!(
+        format!("{}{}", row.text(), next.text()).trim_end(),
+        "abcdefgh"
+    );
     Ok(())
 }
 
@@ -338,6 +373,57 @@ fn a_rejected_resize_leaves_a_grapheme_open() -> Result {
     assert_eq!(cell(&p, 0, 0)?.contents(), "🇵🇯");
     assert!(cell(&p, 0, 2)?.contents().is_empty());
     Ok(())
+}
+
+/// A window walks its rows top to bottom with their numbers, those
+/// `Window::row` gives, and reads a cell at a row and column as the
+/// cursor's position names one.
+#[test]
+fn a_window_walks_its_rows_and_reads_a_cell_by_its_position() -> Result {
+    let mut p = Parser::new(Size::new(3, 4)?, 1 << 10)?;
+    p.process(b"a\r\nb\r\nc\r\nd")?;
+    let window = p.screen().window();
+    let walked: Vec<(u16, String)> = window.iter().map(|(y, row)| (y, row.text())).collect();
+    assert_eq!(
+        walked,
+        [(0, "b   ".into()), (1, "c   ".into()), (2, "d   ".into())]
+    );
+    assert_eq!(p.screen().cursor_position(), (2, 1));
+    assert_eq!(window.cell(2, 0).map(|c| c.contents()), Some("d"));
+    assert!(window.cell(3, 0).is_none() && window.cell(0, 4).is_none());
+    Ok(())
+}
+
+/// History numbers each row it takes in turn, through the alternate
+/// screen too, and lets the numbers of the rows it lets go pass.
+#[test]
+fn history_numbers_the_rows_it_takes_and_passes_those_let_go() -> Result {
+    let mut p = Parser::new(Size::new(2, 3)?, 1 << 20)?;
+    p.process(b"a\r\nb\r\nc\r\nd")?;
+    assert_eq!(p.screen().history_numbers(), 0..2);
+    p.process(b"\x1b[?1049h\r\nx\r\ny\r\nz")?;
+    assert_eq!(
+        p.screen().history_numbers(),
+        0..2,
+        "the alternate screen keeps none"
+    );
+    p.process(b"\x1b[?1049l")?;
+    p.clear_history();
+    p.process(b"\r\ne")?;
+    assert_eq!(p.screen().history_numbers(), 2..3);
+    let taken: Vec<String> = p.screen().main_rows().take(1).map(|r| r.text()).collect();
+    assert_eq!(taken, ["c  "]);
+    Ok(())
+}
+
+/// `Size::new` refuses no rows or no columns, and its error says which.
+#[test]
+fn a_size_of_no_rows_or_columns_says_which_it_lacks() {
+    let said = |rows, cols| Size::new(rows, cols).map_err(|e| e.to_string()).err();
+    assert!(said(0, 5).is_some_and(|e| e.starts_with("0 rows") && e.ends_with("one row")));
+    assert!(said(3, 0).is_some_and(|e| e.ends_with("one column")));
+    assert!(said(0, 0).is_some_and(|e| e.ends_with("one row and one column")));
+    assert_eq!(said(1, 1), None);
 }
 
 #[test]

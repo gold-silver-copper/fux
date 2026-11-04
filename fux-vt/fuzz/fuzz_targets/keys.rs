@@ -13,7 +13,7 @@
 use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::keys::encode::paste;
 use fux_vt::keys::mouse::{MouseAction, ScrollLines};
-use fux_vt::{Options, Parser, Sink, Size};
+use fux_vt::{Options, Parser, Size};
 use libfuzzer_sys::fuzz_target;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
@@ -25,15 +25,11 @@ const PASTE_LIMIT: usize = 64 * 1024;
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
-/// Takes nothing.
-struct Deaf;
-impl Sink for Deaf {}
-
 /// A screen that reports every mouse event, in SGR (`CSI ? 1003 h`,
 /// `CSI ? 1006 h`).
 fn reporting() -> Option<Parser> {
     let mut p = Parser::with_options(Size::new(1, 1).ok()?, 0, Options::new()).ok()?;
-    let read = p.process_until_stop(b"\x1b[?1003h\x1b[?1006h", &mut Deaf);
+    let read = p.process_until_stop(b"\x1b[?1003h\x1b[?1006h", &mut ());
     matches!(read, Ok(None)).then_some(p)
 }
 

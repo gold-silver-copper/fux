@@ -41,8 +41,6 @@ const MIRROR: fux_vt::Options = fux_vt::Options::new()
     .with(fux_vt::Feature::Hyperlinks)
     .with(fux_vt::Feature::Palette)
     .with(fux_vt::Feature::Pictures);
-struct Discard;
-impl fux_vt::Sink for Discard {}
 
 /// What it decodes next of its client's.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,14 +129,9 @@ impl Side {
             mirror.set_host_graphics(graphics);
         }
         mirror.set_picture_bytes(drawn.picture_bytes);
-        let mut bytes = drawn.screen.as_slice();
-        // Every byte read, budget or no: the bytes paint one screen.
-        while let Ok(Some((taken, _))) = mirror.process_until_stop(bytes, &mut Discard) {
-            bytes = bytes.get(taken..).unwrap_or_default();
-            if bytes.is_empty() && !mirror.has_work_left() {
-                break;
-            }
-        }
+        // Every byte read, budget or no: the bytes paint one screen. A
+        // refusal loses only what it was for.
+        let _ = mirror.process_all(&drawn.screen, &mut ());
     }
 }
 

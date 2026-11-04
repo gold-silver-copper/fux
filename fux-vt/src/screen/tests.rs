@@ -1,4 +1,5 @@
 use super::*;
+use crate::CellRef;
 use crate::test_feed::Refused;
 
 impl Screen {
@@ -399,7 +400,7 @@ fn a_cursor_on_a_left_out_glyph_goes_to_its_line_s_end() -> Result<(), Error> {
         p.resize(Size::of(4, 1))?;
         p.process(after)?;
         p.process(b"X")?;
-        let rows: Vec<String> = p.screen().rows().map(|r| r.cells_text()).collect();
+        let rows: Vec<String> = p.screen().rows().map(|r| r.text()).collect();
         assert_eq!(
             rows.get(..3),
             Some(&["a", "b", "X"].map(String::from)[..]),
@@ -771,7 +772,7 @@ fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
         p.screen()
             .primary
             .live_row(0)
-            .map(|r| r.cells_text())
+            .map(|r| r.text())
             .unwrap_or_default()
     };
     let ph = PLACEHOLDER;
@@ -827,7 +828,7 @@ fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
         assert_eq!(size.is_some(), placed, "{cell:?}");
         p.set_host_graphics(size.map_or(crate::Graphics::Text, crate::Graphics::Sixel));
         let mut refused = Refused::default();
-        p.process_with(&picture(6, 12), &mut refused)?;
+        p.process_all(&picture(6, 12), &mut refused)?;
         let shown = p.screen().pictures().next().map(|s| s.cell);
         assert_eq!(shown, placed.then_some(cell), "{cell:?}");
         assert_eq!(refused.0, u64::from(!placed), "{cell:?}");
@@ -845,10 +846,10 @@ fn a_picture_refused_room_is_counted() -> Result<(), Error> {
         crate::CellSize::new(10, 20).map_or(crate::Graphics::Text, crate::Graphics::Sixel),
     );
     let mut refused = Refused::default();
-    p.process_with(b"\x1bP9q\x1b\\\x1bP9q~\x18", &mut refused)?;
+    p.process_all(b"\x1bP9q\x1b\\\x1bP9q~\x18", &mut refused)?;
     assert_eq!(refused.0, 0);
     p.set_picture_bytes(0);
-    p.process_with(b"\x1bP9q~\x1b\\", &mut refused)?;
+    p.process_all(b"\x1bP9q~\x1b\\", &mut refused)?;
     assert_eq!(p.screen().pictures().count(), 0);
     assert_eq!(refused.0, 1);
     Ok(())
@@ -862,12 +863,12 @@ fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
     let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
     let mut refused = Refused::default();
-    p.process_with(
+    p.process_all(
         b"\x1bPq\x1b\\\x1bPq~\x18\x1bPq#1;2;100;0;0\x1b\\",
         &mut refused,
     )?;
     assert_eq!(refused.0, 0);
-    p.process_with(b"\x1bPq~\x1b\\", &mut refused)?;
+    p.process_all(b"\x1bPq~\x1b\\", &mut refused)?;
     assert_eq!(refused.0, 1);
     assert_eq!(p.screen().pictures().count(), 0);
     Ok(())
@@ -888,9 +889,9 @@ fn a_picture_whose_host_went_as_it_was_read_is_counted() -> Result<(), Error> {
             .split_at_checked(bytes.len() / 2)
             .ok_or(Error::Capacity)?;
         let mut refused = Refused::default();
-        p.process_with(begun, &mut refused)?;
+        p.process_all(begun, &mut refused)?;
         p.set_host_graphics(gone);
-        p.process_with(rest, &mut refused)?;
+        p.process_all(rest, &mut refused)?;
         assert_eq!(p.screen().pictures().count(), 0, "{gone:?}");
         assert_eq!(refused.0, 1, "{gone:?}");
     }

@@ -1,5 +1,5 @@
 //! Shared independent invariants for deterministic tests and cargo-fuzz.
-use fux_vt::{Attributes, Cells, Hyperlink, Mode, Parser, Sink};
+use fux_vt::{Attributes, Cells, Hyperlink, Mode, Parser};
 
 /// The most bytes a cell's cluster keeps.
 const CLUSTER_CAPACITY: usize = 128;
@@ -188,10 +188,6 @@ const MODES: [Mode; 37] = [
     Mode::GraphemeClustering,
 ];
 
-/// Takes nothing.
-struct Deaf;
-impl Sink for Deaf {}
-
 /// What the state no host reads does next, in a copy of `p`: the glyph
 /// printed at the top left takes the pen and the open link; then, in
 /// origin mode, the cursor homes to the top left of the margins and the
@@ -215,10 +211,7 @@ fn probe(p: &Parser) -> Probed {
 
 /// `p` fed every byte of `bytes`, as a host does; the cursor then.
 fn fed(p: &mut Parser, bytes: &[u8]) -> (u16, u16) {
-    let mut rest = bytes;
-    while let Ok(Some((taken, _))) = p.process_until_stop(rest, &mut Deaf) {
-        rest = rest.get(taken..).unwrap_or_default();
-    }
+    let _ = p.process_all(bytes, &mut ());
     p.screen().cursor_position()
 }
 

@@ -4108,7 +4108,6 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use crate::session::testing::TestResult;
-    use crate::vt_feed::cells_text;
     /// `rows` by `cols`.
     fn sized(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
         fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())
@@ -5556,7 +5555,7 @@ mod tests {
                         .screen(id)
                         .ok_or("its screen")?
                         .rows()
-                        .any(|row| cells_text(&row).contains("saved"))
+                        .any(|row| row.text().contains("saved"))
                 );
             } else {
                 assert!(session.pane(id).is_err());
@@ -6785,7 +6784,7 @@ mod tests {
             assert_eq!(pane.exit_status(), Some(Ended::Exited(0)));
             let text = (s.screen(id).ok_or("its screen")?)
                 .rows()
-                .map(|r| cells_text(&r))
+                .map(|r| r.text())
                 .collect::<String>();
             assert!(
                 text.contains("DONE"),

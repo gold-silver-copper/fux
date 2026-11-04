@@ -837,7 +837,8 @@ pub trait Sink {
     /// A sixel picture, with [`Feature::Pictures`], ended: placed whole,
     /// or not: begun while the host drew no sixel (`set_host_graphics`),
     /// and not kept; ended once it had no cell size; lifted past a scroll
-    /// region's top as it was placed; or cut, placed or not: what it drew
+    /// region's top, or cut by a double-width line's end, as it was
+    /// placed; or cut, placed or not: what it drew
     /// past what a picture may keep ([`crate::sixel::MAX_SIDE`] a side,
     /// [`crate::sixel::MAX_PIXELS`] in all, and the pictures' budget,
     /// [`Parser::set_picture_bytes`]) is not kept. One that drew nothing,
@@ -846,6 +847,10 @@ pub trait Sink {
     /// the room, is not told again, as history let go is not.
     fn picture(&mut self, _placed: bool) {}
 }
+
+/// Discards everything: the sink of a host with no program to answer, as
+/// one replaying recorded output.
+impl Sink for () {}
 
 /// Incremental byte parser and its terminal state. Replies and events are
 /// delivered synchronously to a caller-supplied sink; no unbounded queue exists.
@@ -1101,6 +1106,25 @@ impl Parser {
         sink: &mut impl Sink,
     ) -> Result<Option<(usize, Stop)>, Error> {
         self.run(bytes, sink)
+    }
+    /// Reads every byte of `bytes`, calling [`Parser::process_until_stop`]
+    /// again after each stop until none is left and no work is owed: for
+    /// a host that holds no frames and spreads no work over turns, as a
+    /// replay, a converter or a test does. `Err(Error::Capacity)` says
+    /// room was refused at least once on the way ([`Parser::refused`]
+    /// counts each): every byte was read all the same, and each refusal
+    /// lost only what it was for (a row of history, a picture, a resize;
+    /// THREATS.md 1.3), so the screen is still good to read.
+    pub fn process_all(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
+        let refused = self.refused;
+        let mut rest = bytes;
+        while let Some((taken, _)) = self.run(rest, sink)? {
+            rest = rest.get(taken..).unwrap_or_default();
+        }
+        match self.refused == refused {
+            true => Ok(()),
+            false => Err(Error::Capacity),
+        }
     }
     /// Whether the last call of [`Parser::process_until_stop`] stopped at
     /// its budget with work left to do: another call is owed, of no bytes
@@ -1778,23 +1802,20 @@ impl Parser {
             let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
             ended.then_some(Stop::Ended)
         };
+        let dispatch = match dispatch {
+            Dispatch::Unhandled => (self.screen)
+                .other_csi(&self.params, intermediates, byte, &self.options)
+                .unwrap_or(Dispatch::Unhandled),
+            done @ (Dispatch::Done | Dispatch::Reply(_)) => done,
+        };
         match dispatch {
             Dispatch::Done => {}
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
-            Dispatch::Unhandled => {
-                match self
-                    .screen
-                    .other_csi(&self.params, intermediates, byte, &self.options)
-                {
-                    Some(Dispatch::Done) => {}
-                    Some(Dispatch::Reply(reply)) => sink.reply(reply.as_bytes()),
-                    Some(Dispatch::Unhandled) | None => sink.unhandled(Unhandled::Csi {
-                        params: Params(&self.params),
-                        intermediates,
-                        action: byte,
-                    }),
-                }
-            }
+            Dispatch::Unhandled => sink.unhandled(Unhandled::Csi {
+                params: Params(&self.params),
+                intermediates,
+                action: byte,
+            }),
         }
         framed
     }
@@ -1866,11 +1887,15 @@ impl Parser {
         let kept = |bytes| Kept { bytes, cut: !whole };
         match command {
             b"0" => {
+                self.screen.set_title(kept(rest));
                 sink.event(Event::IconName(kept(rest)));
                 sink.event(Event::Title(kept(rest)));
             }
             b"1" => sink.event(Event::IconName(kept(rest))),
-            b"2" => sink.event(Event::Title(kept(rest))),
+            b"2" => {
+                self.screen.set_title(kept(rest));
+                sink.event(Event::Title(kept(rest)));
+            }
             // OSC 9 ; 4 is ConEmu's progress report, not a notification.
             b"9" if !rest.starts_with(b"4;") => sink.event(Event::Notification(kept(rest))),
             b"777" => {

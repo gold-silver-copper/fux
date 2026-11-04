@@ -133,13 +133,7 @@ fn grid(rows: u16, cols: u16) -> Grid {
 /// Reads `bytes` into `terminal` as fux reads a pane's output, from each
 /// stop on until none is left: whether it was read whole, nothing refused.
 fn feed(terminal: &mut Parser, bytes: &[u8]) -> bool {
-    struct Deaf;
-    impl fux_vt::Sink for Deaf {}
-    let (refused, mut rest) = (terminal.refused(), bytes);
-    while let Ok(Some((taken, _))) = terminal.process_until_stop(rest, &mut Deaf) {
-        rest = rest.get(taken..).unwrap_or_default();
-    }
-    terminal.refused() == refused
+    terminal.process_all(bytes, &mut ()).is_ok()
 }
 
 /// A cell's width, halves, text and attributes; a blank for no cell.
@@ -221,7 +215,7 @@ fuzz_target!(|data: &[u8]| {
             if !new.underline_styles && want.3.underline() {
                 want.3 = want.3.with_underline(true);
             }
-            let got = seen(window.row(y).and_then(|row| row.cell(usize::from(x))));
+            let got = seen(window.cell(y, x));
             assert_eq!((got.0, got.1), (want.0, want.1), "width at {y},{x}");
             if !want.1 {
                 assert_eq!(got.2, want.2, "text at {y},{x}");

@@ -6,8 +6,8 @@ use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, SET_FOR_GOOD, S
 use crate::parser::Chars;
 use crate::unicode::{Cluster, Properties};
 use crate::{
-    Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark,
-    Options, Reply, Rgb, RowId, Rows, SgrForm, UnderlineStyle, Window,
+    Attributes, Blink, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark, Options,
+    Reply, Rgb, RowId, Rows, SgrForm, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Erase, Grid, Scroll, put},
     palette::Colours,
@@ -621,6 +621,9 @@ pub struct Screen {
     /// The colours the program set, with `Feature::Palette`: made when
     /// the first is set, so a screen whose program sets none keeps none.
     colours: Option<Box<Colours>>,
+    /// The window title the program set last, with `Feature::Events`
+    /// (OSC 0 or 2), and whether its string went on past it.
+    title: (Vec<u8>, bool),
 }
 
 /// The screen's part of the invariant checker (THREATS.md section 6).
@@ -835,6 +838,7 @@ impl Screen {
             links_seen: false,
             next_link: 1,
             colours: None,
+            title: (Vec::new(), false),
         })
     }
     /// The primary screen's grid, as a test starts from it.
@@ -1028,6 +1032,28 @@ impl Screen {
         (u32::from(g.cursor_line()) + 1, u32::from(col) + 1)
     }
 
+    /// The window title the program set last (OSC 0 or OSC 2), with
+    /// `Feature::Events`, which reads them; empty until one is set. Its
+    /// raw bytes, at most [`crate::OSC_PAYLOAD_LIMIT`], `cut` if the
+    /// string went on past them, as [`crate::Event::Title`] gives it.
+    pub fn title(&self) -> crate::Kept<'_> {
+        crate::Kept {
+            bytes: &self.title.0,
+            cut: self.title.1,
+        }
+    }
+    /// Keeps `title` as the window title, or, refused room, an empty one
+    /// cut (THREATS.md 1.3).
+    pub(crate) fn set_title(&mut self, title: crate::Kept<'_>) {
+        self.title.0.clear();
+        let kept = crate::reserve(&mut self.title.0, title.bytes.len()).is_ok();
+        if kept {
+            self.title.0.extend_from_slice(title.bytes);
+        } else {
+            crate::degraded();
+        }
+        self.title.1 = title.cut || !kept;
+    }
     /// The colour palette entry `index` shows if the program changed it
     /// (OSC 4, with `Feature::Palette`); `None` while it is the terminal's.
     pub fn palette_color(&self, index: u8) -> Option<Rgb> {
@@ -1143,6 +1169,20 @@ impl Screen {
     /// use: what a program printed before it took the alternate screen.
     pub fn main_rows(&self) -> Rows<'_> {
         Rows::of(&self.primary)
+    }
+    /// The numbers of the rows the primary screen's history keeps, oldest
+    /// first, whichever screen is in use: each row that scrolls into it
+    /// takes the next number, never reused, so `end` moves on by every row
+    /// it takes, and `start` by every row let go, to its budget or
+    /// [`crate::Parser::clear_history`]. The history rows of
+    /// [`Screen::main_rows`] are these, in order. A host that noted `end`
+    /// finds the rows taken since numbered from it on, and, if `start` has
+    /// passed it, that some went before it read them. A resize lays
+    /// history out again and may number it afresh: numbers compare only
+    /// between resizes.
+    pub fn history_numbers(&self) -> Range<u64> {
+        let (start, end) = self.primary.history_numbers();
+        start..end
     }
     /// The alternate screen's rows, whichever screen is in use: what a
     /// full-screen program drew last, kept until it is shown again.
@@ -2714,11 +2754,9 @@ impl Screen {
             // A double-width line holds half the columns (DEC STD 070,
             // 5.6.1): the rectangle stops at its end.
             let row = columns.each().take_while(|x| *x < g.row_end(y));
-            let cells: Vec<CellRef<'_>> = row.filter_map(|x| g.cell(y, x)).collect();
-            crate::budget::spend(cells.len());
-            let read = cells.iter().map(|cell| cell.contents().len());
-            crate::budget::spend(read.fold(0usize, usize::saturating_add));
-            for cell in cells {
+            for cell in row.filter_map(|x| g.cell(y, x)) {
+                // The cell, and its text read.
+                crate::budget::spend(cell.contents().len().saturating_add(1));
                 let mut chars = cell.contents().chars();
                 let base = match chars.next() {
                     None if cell.is_wide_continuation() => ESC,

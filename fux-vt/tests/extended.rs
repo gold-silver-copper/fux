@@ -18,7 +18,7 @@ use lines::lines;
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
-use feed::{Feed, Look, cells_text};
+use feed::{Feed, Look};
 
 /// The most bytes a cell's cluster keeps.
 const CLUSTER_CAPACITY: usize = 128;
@@ -102,7 +102,7 @@ impl Sink for Record {
 
 fn run(parser: &mut Parser, input: &[u8]) -> std::result::Result<Record, Error> {
     let mut record = Record::default();
-    parser.process_with(input, &mut record)?;
+    parser.process_all(input, &mut record)?;
     Ok(record)
 }
 
@@ -1183,7 +1183,7 @@ fn margin_placement_preserves_refusal_and_unmoved_bands() -> Result {
         let tail: String = std::iter::repeat_n('-', trailing).collect();
         let picture = format!("\x1bPq\"1;1{bands}~{tail}\x1b\\");
         let mut refusals = Refusals(0);
-        p.process_with(picture.as_bytes(), &mut refusals)?;
+        p.process_all(picture.as_bytes(), &mut refusals)?;
         assert_eq!(refusals.0, refused, "{at}/{col}/{rows}/{trailing}");
         assert_eq!(p.screen().pictures().count(), shown);
         for y in 0..6 {
@@ -1507,7 +1507,7 @@ fn a_copy_over_a_picture_reads_its_cells_as_blanks() -> Result {
     assert_eq!(p.screen().pictures().count(), 1);
     assert_eq!(cell(&p, 1, 3)?.contents(), fux_vt::PLACEHOLDER);
     let row = p.screen().window().row(1).ok_or("a row")?;
-    assert_eq!(cells_text(&row).trim_end(), "       z");
+    assert_eq!(row.text().trim_end(), "       z");
     Ok(())
 }
 
@@ -1643,7 +1643,7 @@ fn c0_controls_inside_sixel_are_ignored_and_bel_rings() -> Result {
     let options = PICTURES.with(fux_vt::Feature::Events);
     let mut p = pictured(6, 10, 10, options)?;
     let mut bells = Bells(0);
-    p.process_with(b"\x1bPq#1;2;100;0;0~\x07~\x1b\\", &mut bells)?;
+    p.process_all(b"\x1bPq#1;2;100;0;0~\x07~\x1b\\", &mut bells)?;
     assert_eq!(bells.0, 1);
     let shown = p.screen().pictures().next().ok_or("no picture")?;
     assert_eq!(shown.picture.width(), 2);
@@ -1751,6 +1751,32 @@ fn a_picture_is_clipped_at_the_right_margin_and_keeps_its_clip() -> Result {
     p.resize(Size::new(4, 30)?)?;
     let shown: Vec<_> = p.screen().pictures().map(|s| (s.col, s.cols)).collect();
     assert_eq!(shown, [(0, 10)]);
+    Ok(())
+}
+
+/// DEC STD 070, 5.6.1: a double-width line holds half the columns. A
+/// picture whose bands go on onto one takes its cells there only to that
+/// line's end, and the cursor it leaves there stays on the line.
+#[test]
+fn a_picture_onto_a_double_width_line_stops_at_its_end() -> Result {
+    let graphics =
+        fux_vt::CellSize::new(2, 6).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel);
+    let mut p = Parser::with_options(Size::new(2, 6)?, 0, PICTURES)?;
+    p.set_host_graphics(graphics);
+    // One cell wide and two high, from column 5; row 2 holds 3 columns.
+    p.process(b"\x1b[2;1H\x1b#6\x1b[1;5H\x1bPq\"1;1;2;12\x1b\\")?;
+    assert_eq!(p.screen().cursor_position(), (1, 2));
+    assert!(cell(&p, 1, 4)?.contents().is_empty());
+    assert_eq!(
+        p.screen().pictures().count(),
+        0,
+        "a cut picture is not kept"
+    );
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
     Ok(())
 }
 

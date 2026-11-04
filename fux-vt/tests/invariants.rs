@@ -11,7 +11,7 @@ use fux_vt::{Feature, Identity, Mode, Options, Parser, Screen, Sink, Size};
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
-use feed::{Feed, cells_text};
+use feed::Feed;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// The screen's text: each line's trailing blanks cut, a row whose line
@@ -20,7 +20,7 @@ fn text(s: &Screen) -> String {
     let w = s.window();
     let (mut text, mut line) = (String::new(), String::new());
     for (y, row) in (0..w.rows()).filter_map(|y| Some((y, w.row(y)?))) {
-        line.push_str(&cells_text(&row));
+        line.push_str(&row.text());
         let last = y.saturating_add(1) == w.rows();
         if last || !row.continues() {
             text.push_str(line.trim_end_matches(' '));
@@ -131,10 +131,10 @@ fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
                         bytes.extend_from_slice(more);
                     }
                     let (mut a, mut b) = (Replies::default(), Replies::default());
-                    whole.process_with(&bytes, &mut a)?;
+                    whole.process_all(&bytes, &mut a)?;
                     let size = usize::try_from(r % 7)?.saturating_add(1);
                     for chunk in pieces::pieces(&bytes, size) {
-                        split.process_with(chunk, &mut b)?;
+                        split.process_all(chunk, &mut b)?;
                     }
                     assert_eq!(a.0, b.0, "replies");
                     if !extras.is_empty() && r.is_multiple_of(97) {

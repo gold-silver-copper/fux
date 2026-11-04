@@ -1,5 +1,6 @@
 //! A screen's size, and the runs of its rows or columns its margins bound.
-use std::num::{NonZeroU16, TryFromIntError};
+use std::fmt;
+use std::num::NonZeroU16;
 
 /// A screen's size: how many rows and columns it has, never none of either,
 /// so a screen always has a last row and a last column.
@@ -10,9 +11,14 @@ pub struct Size {
 }
 
 impl Size {
-    /// `rows` by `cols`; an error if either is zero.
-    pub fn new(rows: u16, cols: u16) -> Result<Self, TryFromIntError> {
-        Ok(Self::from((rows.try_into()?, cols.try_into()?)))
+    /// `rows` by `cols`; an error that says which is zero if either is.
+    /// A size past the bound on cells is refused later, where a screen of
+    /// it would be made ([`crate::fits`]).
+    pub fn new(rows: u16, cols: u16) -> Result<Self, SizeError> {
+        match (NonZeroU16::new(rows), NonZeroU16::new(cols)) {
+            (Some(rows), Some(cols)) => Ok(Self { rows, cols }),
+            _ => Err(SizeError { rows, cols }),
+        }
     }
     /// How many rows.
     pub fn rows(self) -> u16 {
@@ -38,6 +44,30 @@ impl Size {
         Span::whole(self.cols)
     }
 }
+
+/// Why [`Size::new`] made no size: no rows, or no columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SizeError {
+    rows: u16,
+    cols: u16,
+}
+
+impl fmt::Display for SizeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let needs = match (self.rows, self.cols) {
+            (0, 0) => "one row and one column",
+            (0, _) => "one row",
+            _ => "one column",
+        };
+        let (rows, cols) = (self.rows, self.cols);
+        write!(
+            f,
+            "{rows} rows by {cols} columns: a screen needs at least {needs}"
+        )
+    }
+}
+
+impl std::error::Error for SizeError {}
 
 impl From<(NonZeroU16, NonZeroU16)> for Size {
     fn from((rows, cols): (NonZeroU16, NonZeroU16)) -> Self {

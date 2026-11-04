@@ -252,7 +252,7 @@ impl Screen {
             Some(top)
         };
         let tail_scrolls = extra.saturating_sub(room.saturating_sub(bands));
-        let mut bottom = top;
+        let (mut bottom, mut cut) = (top, false);
         for row in 0..u32::from(rows) {
             let logical = start.saturating_add(row);
             let moved = scrolls > 0 && logical >= u32::from(region.first());
@@ -278,8 +278,13 @@ impl Screen {
             self.grid_mut().cursor.pending_wrap = false;
             self.with_grid(|g, _, v| {
                 let wrapped = g.live_wrapped(y);
+                // To a double-width line's end (DEC STD 070, 5.6.1),
+                // which cuts the picture.
+                let end = span.1.min(g.row_end(y));
+                cut |= end < span.1;
                 // NUL fills empty cells, clearing links and keeping the used mark.
-                g.fill(y, span, if whole { placeholder } else { '\0' }, 0, v);
+                let c = if whole { placeholder } else { '\0' };
+                g.fill(y, (span.0.min(end), end), c, 0, v);
                 g.wrap(y, wrapped, v);
             });
             bottom = self.grid().live_row(y).map_or(top, |r| r.id());
@@ -298,8 +303,9 @@ impl Screen {
                 }
             }
             self.grid_mut().set_col(col);
+            self.grid_mut().fit_cursor();
         }
-        let Some(top) = placed_top else {
+        let Some(top) = placed_top.filter(|_| !cut) else {
             return false;
         };
         #[cfg(test)]

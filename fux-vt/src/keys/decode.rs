@@ -695,23 +695,9 @@ fn press(key: Key, mods: Modifiers) -> Option<Input> {
 /// Whether `bytes` are the beginning of a character as UTF-8 may begin
 /// one, well-formed (Unicode 17.0, 3.9, Table 3-7) but short of its bytes.
 fn utf8_begun(bytes: &[u8]) -> bool {
-    let Some((&first, rest)) = bytes.split_first() else {
-        return false;
-    };
-    let (need, second) = match first {
-        0xc2..=0xdf => (2, 0x80..=0xbf),
-        0xe0 => (3, 0xa0..=0xbf),
-        0xe1..=0xec | 0xee..=0xef => (3, 0x80..=0xbf),
-        0xed => (3, 0x80..=0x9f),
-        0xf0 => (4, 0x90..=0xbf),
-        0xf1..=0xf3 => (4, 0x80..=0xbf),
-        0xf4 => (4, 0x80..=0x8f),
-        _ => return false,
-    };
-    let mut rest = rest.iter();
-    bytes.len() < need
-        && rest.next().is_none_or(|b| second.contains(b))
-        && rest.all(|b| (0x80..=0xbf).contains(b))
+    bytes.len() < 4
+        && std::str::from_utf8(bytes)
+            .is_err_and(|e| e.valid_up_to() == 0 && e.error_len().is_none())
 }
 
 /// One control byte or character, without an Escape prefix, and how many
