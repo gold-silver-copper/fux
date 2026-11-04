@@ -40,7 +40,7 @@ pub fn spawn(
         let _ = fuxix::terminal::set_window_size(&master, size.nonzero().into(), Some(pixels));
     }
     let (child, pid) = slave
-        .spawn(argv, |command| {
+        .spawn(argv, fuxix::process::Dispositions::Default, |command| {
             // TERM_PROGRAM is fux's, as tmux sets its own: the outer
             // terminal's would have programs use features of a terminal they
             // are not talking to (Claude Code, under Ghostty, pushed kitty

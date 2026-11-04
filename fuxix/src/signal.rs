@@ -87,9 +87,9 @@ static RUNNING: AtomicUsize = AtomicUsize::new(0);
 ///
 /// The handler replaces what the signal did before, for good, with
 /// `SA_RESTART`. Once every notice of a signal is dropped, the signal is
-/// caught and does nothing. A program this process starts with
-/// [`crate::process::lead_session`] gets the signal as it was before: the
-/// default, or ignored if it was. This fails with `NOSPC` when 64 notices
+/// caught and does nothing. A program [`crate::process::lead_session`]
+/// starts gets the signal as `Dispositions` says: as it was before, the
+/// default or ignored, or the default. This fails with `NOSPC` when 64 notices
 /// are held already, leaving the signal as it was, and with `INVAL` for a
 /// signal that can't be caught (`KILL`, `STOP`).
 pub(crate) fn notify(signal: Signal, write: OwnedFd) -> Result<Notice> {
@@ -135,8 +135,9 @@ impl Drop for Notice {
 }
 
 /// The signals, by bit, that were ignored when a notice first caught them:
-/// [`restore_inherited`] ignores them again in a program this process
-/// starts, as `exec` would have kept them had nothing caught them.
+/// [`start`] ignores them again in a program started with
+/// `Dispositions::Inherited`, as `exec` would have kept them had nothing
+/// caught them.
 static IGNORED: AtomicU64 = AtomicU64::new(0);
 
 /// Makes [`handle`] what `signal` runs, noting whether it was ignored.
@@ -172,21 +173,37 @@ fn bit(signal: libc::c_int) -> u64 {
     u32::try_from(signal).map_or(0, |n| 1u64.checked_shl(n).unwrap_or(0))
 }
 
-/// Between `fork` and `exec`: ignores again each signal that was ignored
-/// before a notice caught it, and unblocks every signal: the program starts
-/// with the dispositions this process inherited, and no signal blocked.
-/// Only async-signal-safe calls; it allocates nothing.
-pub(crate) fn restore_inherited() -> Result<()> {
-    let ignored = IGNORED.load(Ordering::SeqCst);
-    let ignore = action(libc::SIG_IGN)?;
-    for signal in (1..64).filter(|&n| ignored & bit(n) != 0) {
-        // SAFETY: `ignore` is a valid action, and the old one is not asked
-        // for.
-        check(unsafe { libc::sigaction(signal, &ignore, std::ptr::null_mut()) })?;
+/// Between `fork` and `exec`: sets the program's dispositions as
+/// `dispositions` says, and unblocks every signal. Only async-signal-safe
+/// calls; it allocates nothing.
+pub(crate) fn start(dispositions: crate::process::Dispositions) -> Result<()> {
+    use crate::process::Dispositions;
+    match dispositions {
+        Dispositions::Inherited => {
+            let ignored = IGNORED.load(Ordering::SeqCst);
+            let ignore = action(libc::SIG_IGN)?;
+            for signal in (1..64).filter(|&n| ignored & bit(n) != 0) {
+                // SAFETY: `ignore` is a valid action, and the old one is not
+                // asked for.
+                check(unsafe { libc::sigaction(signal, &ignore, std::ptr::null_mut()) })?;
+            }
+        }
+        Dispositions::Default => {
+            let default = action(libc::SIG_DFL)?;
+            // Every number a signal may have: one that is none, or can't be
+            // set (KILL, STOP), refuses, which leaves nothing to undo.
+            for signal in 1..65 {
+                // SAFETY: `default` is a valid action, and the old one is
+                // not asked for.
+                unsafe { libc::sigaction(signal, &default, std::ptr::null_mut()) };
+            }
+        }
     }
-    // SAFETY: `ignore`'s mask is an empty `sigset_t`; the old mask is not
-    // asked for.
-    check(unsafe { libc::sigprocmask(libc::SIG_SETMASK, &ignore.sa_mask, std::ptr::null_mut()) })
+    let mut none = std::mem::MaybeUninit::<libc::sigset_t>::zeroed();
+    // SAFETY: the set is a whole `sigset_t`, which the call fills.
+    check(unsafe { libc::sigemptyset(none.as_mut_ptr()) })?;
+    // SAFETY: the set is whole and empty; the old mask is not asked for.
+    check(unsafe { libc::sigprocmask(libc::SIG_SETMASK, none.as_ptr(), std::ptr::null_mut()) })
         .map(drop)
 }
 

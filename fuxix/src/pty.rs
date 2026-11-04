@@ -136,7 +136,8 @@ impl std::io::Write for Master {
 impl Slave {
     /// Starts `argv` on this PTY, as the leader of a new session with the
     /// PTY as its controlling terminal and its stdin, stdout and stderr,
-    /// and no other descriptor ([`crate::process::lead_session`]); `setup`
+    /// and no other descriptor, its signals as `dispositions` says
+    /// ([`crate::process::lead_session`]); `setup`
     /// sets its directory and environment. Returns once the program runs,
     /// with its pid, or once it cannot, with the system's error as it is:
     /// a `NotFound` may be the program, its `#!` interpreter or the
@@ -152,6 +153,7 @@ impl Slave {
     pub fn spawn<S: AsRef<OsStr>>(
         self,
         argv: &[S],
+        dispositions: crate::process::Dispositions,
         setup: impl FnOnce(&mut Command),
     ) -> std::io::Result<(Child, Pid)> {
         let (program, args) = argv
@@ -164,7 +166,7 @@ impl Slave {
             .stdin(self.0.try_clone()?)
             .stdout(self.0.try_clone()?)
             .stderr(self.0);
-        crate::process::lead_session(&mut command, true);
+        crate::process::lead_session(&mut command, true, dispositions);
         // Dropping `command` closes this side's copies of the PTY.
         let child = command.spawn()?;
         let pid = Pid::of(&child).ok_or_else(|| std::io::Error::other("a child with no pid"))?;
@@ -891,7 +893,11 @@ mod tests {
             "(trap '' HUP; sleep 5) & i=0; while [ $i -lt {lines} ]; do echo line $i; i=$((i+1)); done"
         );
         let (mut child, pid) = slave
-            .spawn(&["sh", "-c", &script], |_| {})
+            .spawn(
+                &["sh", "-c", &script],
+                crate::process::Dispositions::Default,
+                |_| {},
+            )
             .map_err(|e| e.to_string())?;
         let deadline = std::time::Instant::now()
             .checked_add(std::time::Duration::from_secs(20))

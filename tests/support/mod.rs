@@ -1046,7 +1046,7 @@ impl Terminal {
         let (child, _) = {
             let _guard = SPAWN.lock().map_err(e)?;
             slave
-                .spawn(argv, |command| {
+                .spawn(argv, fuxix::process::Dispositions::Default, |command| {
                     command
                         .env("TERM", "xterm-256color")
                         .env_remove("FUX_PANE")

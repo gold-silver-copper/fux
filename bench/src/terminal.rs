@@ -130,15 +130,19 @@ impl Terminal {
         fuxix::io::set_nonblocking(&master, false).map_err(|e| e.to_string())?;
         let argv = std::iter::once(program).chain(args.iter().copied());
         let (child, _) = slave
-            .spawn(&argv.collect::<Vec<_>>(), |command| {
-                command.env("TERM", "xterm-256color");
-                for name in crate::feel::FOREIGN {
-                    command.env_remove(name);
-                }
-                for (key, value) in env {
-                    command.env(key, value);
-                }
-            })
+            .spawn(
+                &argv.collect::<Vec<_>>(),
+                fuxix::process::Dispositions::Default,
+                |command| {
+                    command.env("TERM", "xterm-256color");
+                    for name in crate::feel::FOREIGN {
+                        command.env_remove(name);
+                    }
+                    for (key, value) in env {
+                        command.env(key, value);
+                    }
+                },
+            )
             .map_err(|e| format!("starting {program}: {e}"))?;
         let seen = Seen {
             watch: watch.map(<[u8]>::to_vec),

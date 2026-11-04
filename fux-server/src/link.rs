@@ -705,7 +705,7 @@ impl Link {
                 listener,
             )))
             .stdout(std::process::Stdio::null());
-        fuxix::process::lead_session(&mut command, false);
+        fuxix::process::lead_session(&mut command, false, fuxix::process::Dispositions::Default);
         let child = command
             .spawn()
             .map_err(|e| format!("starting its process, {}: {e}", exe.display()))?;

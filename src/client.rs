@@ -570,7 +570,7 @@ pub fn start_server(
         .stderr(output);
     // A daemon (daemon(7)): a session of its own, no descriptors of the
     // client's but stdio, no directory kept busy.
-    fuxix::process::lead_session(&mut command, false);
+    fuxix::process::lead_session(&mut command, false, fuxix::process::Dispositions::Default);
     let mut child = command.spawn().map_err(failed("starting a server"))?;
     let mut said = Vec::new();
     if let Some(stdout) = child.stdout.take() {

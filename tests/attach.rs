@@ -799,20 +799,13 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
     Ok(())
 }
 
-/// A pane's program ignores no signal fux ignores: the Rust runtime ignores
-/// SIGPIPE and fux catches others, and neither reaches the program.
-/// Dispositions fux itself inherited ignored (a container's, say) pass on,
-/// as they would to any child, so the baseline is what a plain child of
-/// this test inherits. Linux reports dispositions in /proc.
+/// A pane's program ignores no signal, as a new terminal's program does,
+/// whatever fux was started ignoring (`nohup`, a background job's SIGINT):
+/// ^C interrupts it. Linux reports dispositions in /proc.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_panes_program_ignores_no_signal_fux_ignores() -> Outcome {
+fn a_panes_program_ignores_no_signal() -> Outcome {
     let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let baseline = std::process::Command::new("sh")
-        .args(["-c", "grep SigIgn /proc/self/status"])
-        .output()
-        .map_err(e)?;
-    let baseline = squash(&String::from_utf8_lossy(&baseline.stdout));
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
@@ -825,7 +818,7 @@ fn a_panes_program_ignores_no_signal_fux_ignores() -> Outcome {
         .into_iter()
         .find(|l| l.starts_with("SigIgn:"))
         .unwrap_or_default();
-    assert_eq!(squash(&pane), baseline);
+    assert_eq!(squash(&pane), "SigIgn: 0000000000000000");
     Ok(())
 }
 

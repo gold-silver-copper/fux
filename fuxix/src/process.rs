@@ -171,18 +171,19 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
 /// opened by a thread racing the spawn, goes no further (on macOS, all
 /// but one opened in the window `io::cloexec_from` states). With `terminal`,
 /// its stdin, a terminal, becomes the session's controlling terminal. The
-/// program starts with no signal blocked and with the dispositions this
-/// process inherited, as it would from a shell: what this process ignored
-/// stays ignored (`nohup`'s SIGHUP), and what it catches is the default
-/// again, but a signal ignored before a [`crate::signal::Pipe`] caught it is
-/// ignored again.
-pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
+/// program starts with no signal blocked, and with each signal's
+/// disposition as `dispositions` says.
+pub fn lead_session(
+    command: &mut std::process::Command,
+    terminal: bool,
+    dispositions: Dispositions,
+) {
     use std::os::unix::process::CommandExt;
     // Listed now: between fork and exec nothing may allocate.
     let listed = crate::io::Listed::now();
     let lead = move || -> std::io::Result<()> {
         crate::io::cloexec_from(3, listed)?;
-        crate::signal::restore_inherited()?;
+        crate::signal::start(dispositions)?;
         // A new session, this process its leader, whose ID is its pid.
         // SAFETY: setsid takes nothing and touches no memory.
         check(unsafe { libc::setsid() })?;
@@ -200,6 +201,21 @@ pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
     // sigemptyset, sigaction and sigprocmask; setsid; ioctl. It allocates
     // nothing, takes no lock, and its errors are numbers.
     unsafe { command.pre_exec(lead) };
+}
+
+/// What a program [`lead_session`] starts does with each signal as it
+/// begins. Either way no signal is blocked.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dispositions {
+    /// As this process inherited them, as from a shell: a signal it ignores
+    /// stays ignored (`nohup`'s SIGHUP), and so does one ignored before a
+    /// [`crate::signal::Pipe`] caught it; one it catches is the default.
+    /// For a wrapper, which runs a command as it was itself run.
+    Inherited,
+    /// Every signal the default, as a new terminal's program begins
+    /// (tmux's and screen's choice): ^C interrupts, whatever this process
+    /// was started ignoring.
+    Default,
 }
 
 /// The session of `pid`. `None` if there is none to name: the process is
