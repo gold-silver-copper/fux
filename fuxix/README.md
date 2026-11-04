@@ -69,7 +69,7 @@ loop learns of the end from a `signal::Pipe` of `Chld`.
 | `process::cwd_observed` | `/proc/PID/cwd` | `proc_pidinfo(PROC_PIDVNODEPATHINFO)` | not offered |
 | `pty::open` | `posix_openpt(O_CLOEXEC)`, `grantpt`, `unlockpt`, `ptsname_r` | `posix_openpt(O_CLOEXEC)` (retried as above; marked close-on-exec after if a release refuses the flag), `TIOCPTYGNAME` and a check of the replica, `grantpt` under a watchdog, `unlockpt` | not offered |
 | `terminal::attributes`, `set_attributes`, `Termios::make_raw`, `edits_lines`, `echoes`, `end_of_file`, `newline_as_crlf`, `set_newline_as_crlf` | `tcgetattr`, `tcsetattr(TCSANOW)`, `cfmakeraw`; `ICANON`, `ECHO`, `VEOF`, `OPOST` and `ONLCR` | the same | not offered |
-| `terminal::Raw` | `tcsetattr(TCSADRAIN)` to raw mode, and back once dropped or, from a panic hook it chains, before a panic's message | the same | not offered |
+| `terminal::Raw` | `tcsetattr` to raw mode, and back once dropped or, for every live one, from a panic hook it chains, before a panic's message: `TCSANOW` (`enter`) or `TCSADRAIN` (`enter_draining`) | the same | not offered |
 | `terminal::window_size`, `set_window_size` | `TIOCGWINSZ`, `TIOCSWINSZ` | the same | not offered |
 | `terminal::foreground_group` | `tcgetpgrp` | the same | not offered |
 | `socket::stream`, `bind`, `listen`, `connect` | `socket(SOCK_CLOEXEC)`, `bind`, `listen`, `connect` | `socket`, then close-on-exec | `UnixListener::bind` binds and listens in one step; fux sets the socket's mode between them |

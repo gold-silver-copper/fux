@@ -83,28 +83,45 @@ fn set(raw: libc::c_int, when: libc::c_int, termios: &Termios) -> Result<()> {
 
 /// The terminal `fd` in raw mode ([`Termios::make_raw`]) until dropped,
 /// then in the modes it had, however that comes: a return, an error, a
-/// panic. Both changes wait for what was written to be sent first
-/// (`TCSADRAIN`), so it is not sent in the other mode. Putting the modes
-/// back is retried while a signal interrupts it, as nothing could retry it
-/// for a drop.
+/// panic. [`Raw::enter`] changes them at once (`TCSANOW`), so leaving never
+/// waits on a terminal that stopped reading; [`Raw::enter_draining`] first
+/// waits for what was written to be sent (`TCSADRAIN`), so it is not sent
+/// in the other mode. Putting the modes back is retried while a signal
+/// interrupts it, as nothing could retry it for a drop.
 ///
-/// A panic puts them back before its message is printed, in the panic hook
-/// the first `enter` installs, which then calls the hook that was there:
-/// a program that writes something to its terminal as it leaves (the
-/// alternate screen's end) sets its own hook after entering, to run first.
-/// The hook puts back the latest terminal entered, one at a time.
+/// A panic puts back every terminal a live `Raw` holds, the latest first,
+/// before its message is printed, in the panic hook the first `enter`
+/// installs, which then calls the hook that was there: a program that
+/// writes something to its terminal as it leaves (the alternate screen's
+/// end) sets its own hook after entering, to run first.
 pub struct Raw<F: AsFd> {
     fd: F,
     saved: Termios,
+    when: libc::c_int,
+    /// Its registration in [`HELD`].
+    id: u64,
 }
 
-/// The modes the panic hook puts back, and on what descriptor: the latest
-/// `Raw`'s, cleared, under the lock, before that `Raw` lets its descriptor
-/// go.
-static SAVED: std::sync::Mutex<Option<(libc::c_int, Termios)>> = std::sync::Mutex::new(None);
+/// What the panic hook puts back: each live `Raw`'s id, descriptor, modes
+/// and how to set them, in the order entered. A `Raw` takes its own out,
+/// under the lock, before it lets its descriptor go.
+static HELD: std::sync::Mutex<Vec<(u64, libc::c_int, Termios, libc::c_int)>> =
+    std::sync::Mutex::new(Vec::new());
 
 impl<F: AsFd> Raw<F> {
+    /// Raw mode now, and the modes back now once dropped.
     pub fn enter(fd: F) -> Result<Raw<F>> {
+        Raw::enter_with(fd, libc::TCSANOW)
+    }
+
+    /// Raw mode, and the modes back once dropped, each once what was
+    /// written has been sent.
+    pub fn enter_draining(fd: F) -> Result<Raw<F>> {
+        Raw::enter_with(fd, libc::TCSADRAIN)
+    }
+
+    fn enter_with(fd: F, when: libc::c_int) -> Result<Raw<F>> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let saved = attributes(&fd)?;
         let mut raw = saved.clone();
         raw.make_raw();
@@ -113,33 +130,37 @@ impl<F: AsFd> Raw<F> {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
                 // Not waited for: the panic may have come with it held.
-                if let Ok(mut saved) = SAVED.try_lock()
-                    && let Some((raw, termios)) = saved.take()
-                {
-                    let _ = set(raw, libc::TCSADRAIN, &termios);
+                if let Ok(held) = HELD.try_lock() {
+                    for (_, raw, termios, when) in held.iter().rev() {
+                        let _ = set(*raw, *when, termios);
+                    }
                 }
                 previous(info);
             }));
         });
-        if let Ok(mut held) = SAVED.lock() {
-            *held = Some((fd.as_fd().as_raw_fd(), saved.clone()));
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(mut held) = HELD.lock() {
+            held.push((id, fd.as_fd().as_raw_fd(), saved.clone(), when));
         }
         // Made first, so that failing to set raw mode puts the modes back.
-        let entered = Raw { fd, saved };
-        set(entered.fd.as_fd().as_raw_fd(), libc::TCSADRAIN, &raw)?;
+        let entered = Raw {
+            fd,
+            saved,
+            when,
+            id,
+        };
+        set(entered.fd.as_fd().as_raw_fd(), when, &raw)?;
         Ok(entered)
     }
 }
 
 impl<F: AsFd> Drop for Raw<F> {
     fn drop(&mut self) {
-        let raw = self.fd.as_fd().as_raw_fd();
-        if let Ok(mut held) = SAVED.lock()
-            && held.as_ref().is_some_and(|(fd, _)| *fd == raw)
-        {
-            *held = None;
+        if let Ok(mut held) = HELD.lock() {
+            held.retain(|(id, ..)| *id != self.id);
         }
-        while set(raw, libc::TCSADRAIN, &self.saved) == Err(Errno::INTR) {}
+        let raw = self.fd.as_fd().as_raw_fd();
+        while set(raw, self.when, &self.saved) == Err(Errno::INTR) {}
     }
 }
 
@@ -270,9 +291,17 @@ mod tests {
         assert!(restored.newline_as_crlf());
         assert_eq!(restored.end_of_file(), Some(0x04), "ended by ^D");
         {
-            let _raw = Raw::enter(&slave).map_err(|e| e.to_string())?;
+            let _raw = Raw::enter_draining(&slave).map_err(|e| e.to_string())?;
             let raw = attributes(&slave).map_err(|e| e.to_string())?;
             assert!(!raw.echoes() && !raw.edits_lines() && !raw.newline_as_crlf());
+            // Another held and dropped leaves this one for the panic hook.
+            let (_other_master, other) = pty::open(size(2, 2)?).map_err(|e| e.to_string())?;
+            drop(Raw::enter(&other).map_err(|e| e.to_string())?);
+            let fd = slave.as_fd().as_raw_fd();
+            let kept = (HELD.lock().map_err(|e| e.to_string())?)
+                .iter()
+                .any(|(_, raw, ..)| *raw == fd);
+            assert!(kept);
         }
         let mut back = attributes(&slave).map_err(|e| e.to_string())?;
         assert!(back.echoes() && back.edits_lines() && back.newline_as_crlf());
