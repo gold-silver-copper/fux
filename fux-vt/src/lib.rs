@@ -318,9 +318,18 @@ impl<'a> Row<'a> {
     }
     /// Whether the row, soft-wrapped, ends in a spacer: the blank last
     /// column a wide glyph starting the next row did not fit in, which
-    /// reflow and copies skip. A blank erased in a colour is no spacer.
+    /// reflow and copies skip. A blank erased in a colour is no spacer. A
+    /// double-width row's last column is the last of the half it holds.
     pub fn ends_in_spacer(&self) -> bool {
-        self.spacer_before(self.width)
+        self.spacer_before(self.held())
+    }
+    /// The columns the row holds: half its width if double width (DEC STD
+    /// 070, 5.6.1).
+    fn held(&self) -> usize {
+        match self.rendition().is_double() {
+            true => (self.width / 2).max(1),
+            false => self.width,
+        }
     }
     /// Whether the row, soft-wrapped, has a spacer in column `end - 1`.
     fn spacer_before(&self, end: usize) -> bool {
@@ -381,22 +390,30 @@ impl<'a> Row<'a> {
     /// half a double-width row holds (DEC STD 070, 5.6.1), so the glyphs
     /// of a line's rows, one row after another, are the line's.
     pub fn glyphs(&self) -> impl Iterator<Item = (u16, CellRef<'a>)> + Clone + use<'a> {
-        let end = match self.rendition().is_double() {
-            true => (self.width / 2).max(1),
-            false => self.width,
-        };
-        let end = end.saturating_sub(usize::from(self.spacer_before(end)));
+        self.glyphs_to(self.glyphs_end())
+    }
+    /// The column past the row's last glyph: [`Row::held`] less a spacer.
+    fn glyphs_end(&self) -> usize {
+        let end = self.held();
+        end.saturating_sub(usize::from(self.spacer_before(end)))
+    }
+    fn glyphs_to(&self, end: usize) -> impl Iterator<Item = (u16, CellRef<'a>)> + Clone + use<'a> {
         (0..=u16::MAX)
             .zip(self.cells().take(end))
             .filter(|(_, cell)| !cell.is_wide_continuation())
     }
-    /// The row's text: each of its [`Row::glyphs`] as shown, a blank as a
-    /// space ([`CellRef::shown`]). Trailing blanks stay; a reader trims
-    /// them from a line's end. The text of a line that goes on over rows
-    /// ([`Row::continues`]) is its rows' texts joined: a row that does
-    /// not continue ends it.
+    /// The row's text: its [`Row::glyphs`] as shown, a blank as a space
+    /// ([`CellRef::shown`]). A row whose line goes on ([`Row::continues`])
+    /// gives them all, so a line's text is its rows' texts joined; a row
+    /// that ends its line stops at its last stored cell that is not a
+    /// default blank, so reading it costs what it holds, not its width.
     pub fn text(&self) -> String {
-        self.glyphs().map(|(_, cell)| cell.shown()).collect()
+        let mut end = self.glyphs_end();
+        if !self.continues() {
+            let stored = self.cells.get(..self.stored_len()).unwrap_or_default();
+            end = end.min(history::trimmed(stored).len());
+        }
+        self.glyphs_to(end).map(|(_, cell)| cell.shown()).collect()
     }
     /// The row's cells, left to right.
     pub fn cells(

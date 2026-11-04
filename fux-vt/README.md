@@ -369,10 +369,13 @@ cursor's position is. A
 picture's cells read as blanks (`CellRef::shown`), and
 `Row::ends_in_spacer` says whether a soft-wrapped row ends in the blank a
 wide glyph did not fit in, which a copy leaves out (a blank erased in a
-colour is a cell, and stays). `Row::glyphs` gives a row's glyphs with
-their columns, a wide glyph's second half and that spacer left out, and
-`Row::text` their text, blanks as spaces and trailing blanks kept: the
-texts of a line's rows, joined while `Row::continues`, are the line's.
+colour is a cell, and stays; a double-width row ends in the last column of
+its half). `Row::glyphs` gives a row's glyphs with their columns, a wide
+glyph's second half and that spacer left out, and `Row::text` their text,
+blanks as spaces: the texts of a line's rows, joined while
+`Row::continues`, are the line's. A row that ends its line stops at its
+last cell that is not a default blank, so reading it costs what it holds,
+not the screen's width.
 
 Marks (`Screen::mark`) are not consumed, so readers share them. A mark
 taken after any processing differs from one taken before;

@@ -478,8 +478,13 @@ fn columns(
     } else {
         row.len()
     };
+    // A double-width row holds half its columns (DEC STD 070, 5.6.1).
+    let held = match row.rendition().is_double() {
+        true => (row.len() / 2).max(1),
+        false => row.len(),
+    };
     let spacer = usize::from(!view.wrapped && row.ends_in_spacer());
-    let end = row.len().saturating_sub(spacer).min(retained).min(span.end);
+    let end = held.saturating_sub(spacer).min(retained).min(span.end);
     let (skip, count) = view.cols.map_or((0, usize::MAX), |(a, b)| {
         (
             usize::from(a),
@@ -1225,6 +1230,17 @@ mod tests {
                 assert_eq!(styled, !line.runs.is_empty());
             }
         }
+        Ok(())
+    }
+
+    /// A double-width row's line goes on from the last column of the half
+    /// it holds: the padding past it is no text, and a glyph there no spacer.
+    #[test]
+    fn a_double_width_rows_line_joins_from_its_half() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(3, 10, 0)?;
+        pane.output("\x1b#6abcde\u{4e16}".as_bytes());
+        let got = captured(&pane, journal()?, None, CaptureView::default())?;
+        assert_eq!(got.text()?.trim_end(), "abcde\u{4e16}");
         Ok(())
     }
 

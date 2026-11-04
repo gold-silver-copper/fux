@@ -176,14 +176,14 @@ fn the_three_column_character_takes_one_column() -> Result {
     parser.process("XYZW\r\u{17D8}".as_bytes())?;
     assert_eq!(
         parser.screen().window().row(0).map(|r| r.text()),
-        Some("\u{17D8}YZW      ".into())
+        Some("\u{17D8}YZW".into())
     );
     assert_eq!(parser.screen().cursor_position(), (0, 1));
     let mut parser = Parser::new(Size::new(1, 10)?, 0)?;
     parser.process("\x1b[?69h\x1b[1;2s\u{17D8}x".as_bytes())?;
     assert_eq!(
         parser.screen().window().row(0).map(|r| r.text()),
-        Some("\u{17D8}x        ".into())
+        Some("\u{17D8}x".into())
     );
     Ok(())
 }
