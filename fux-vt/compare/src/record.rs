@@ -21,9 +21,7 @@
 use crate::escape;
 use fuxix::poll::{Events, PollFd};
 use fuxix::process::{Pid, Signal};
-use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -226,7 +224,7 @@ pub fn replies_now(recording: &crate::corpus::Recording) -> Result<Vec<u8>, Stri
 
 /// The program on its PTY, the parser beside it, and everything read.
 struct Session {
-    master: File,
+    master: fuxix::pty::Master,
     parser: fux_vt::Parser,
     output: Vec<u8>,
     replies: Vec<u8>,
@@ -303,23 +301,22 @@ pub fn start(
     cols: u16,
     argv: &[String],
     setup: impl FnOnce(&mut Command),
-) -> Result<(File, Child), String> {
+) -> Result<(fuxix::pty::Master, Child), String> {
     let size = std::num::NonZeroU16::new(rows)
         .zip(std::num::NonZeroU16::new(cols))
         .map(fuxix::terminal::Size::from)
         .ok_or("a terminal of no size")?;
     let (master, slave) = fuxix::pty::open(size).map_err(|e| format!("opening a PTY: {e}"))?;
-    let master = OwnedFd::from(master);
     fuxix::io::set_nonblocking(&master, false).map_err(|e| format!("the PTY: {e}"))?;
     let (child, _) = slave
-        .spawn(argv, setup)
+        .spawn(argv, fuxix::process::Dispositions::Default, setup)
         .map_err(|e| format!("starting {:?}: {e}", argv.first()))?;
-    Ok((File::from(master), child))
+    Ok((master, child))
 }
 
 /// Starts the program on a PTY, with the environment `env` alone, besides
 /// `TERM`, and `PATH` if `env` has none.
-fn spawn(request: &Request) -> Result<(File, Child), String> {
+fn spawn(request: &Request) -> Result<(fuxix::pty::Master, Child), String> {
     let env = request
         .env
         .iter()

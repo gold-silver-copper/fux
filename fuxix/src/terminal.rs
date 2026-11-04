@@ -24,6 +24,39 @@ impl Termios {
         // SAFETY: the pointer is to a whole termios, which the call changes.
         unsafe { libc::cfmakeraw(&mut self.0) };
     }
+
+    /// Whether input is edited and read a line at a time (`ICANON`): then
+    /// the end-of-file key, typed at a line's start, ends a read.
+    pub fn edits_lines(&self) -> bool {
+        self.0.c_lflag & libc::ICANON != 0
+    }
+
+    /// Whether what is typed is echoed (`ECHO`).
+    pub fn echoes(&self) -> bool {
+        self.0.c_lflag & libc::ECHO != 0
+    }
+
+    /// The end-of-file key (`VEOF`, usually ^D), unless it is disabled.
+    pub fn end_of_file(&self) -> Option<u8> {
+        let key = *self.0.c_cc.get(libc::VEOF)?;
+        (key != libc::_POSIX_VDISABLE).then_some(key)
+    }
+
+    /// Whether a newline written goes out as a carriage return and a
+    /// newline (`OPOST` and `ONLCR`).
+    pub fn newline_as_crlf(&self) -> bool {
+        self.0.c_oflag & libc::OPOST != 0 && self.0.c_oflag & libc::ONLCR != 0
+    }
+
+    /// Makes a newline written go out as a carriage return and a newline,
+    /// or as it is, leaving the rest of output processing alone (on, it
+    /// turns `OPOST` on too).
+    pub fn set_newline_as_crlf(&mut self, on: bool) {
+        match on {
+            true => self.0.c_oflag |= libc::OPOST | libc::ONLCR,
+            false => self.0.c_oflag &= !libc::ONLCR,
+        }
+    }
 }
 
 /// The modes of the terminal `fd`.
@@ -37,8 +70,102 @@ pub fn attributes(fd: impl AsFd) -> Result<Termios> {
 
 /// Sets the modes of the terminal `fd`, now.
 pub fn set_attributes(fd: impl AsFd, termios: &Termios) -> Result<()> {
-    // SAFETY: the pointer is to a whole termios, which the call reads.
-    check(unsafe { libc::tcsetattr(fd.as_fd().as_raw_fd(), libc::TCSANOW, &termios.0) }).map(drop)
+    set(fd.as_fd().as_raw_fd(), libc::TCSANOW, termios)
+}
+
+/// `tcsetattr` on the descriptor `raw`, open for the call, `when` saying
+/// whether first to wait for the output written to be sent.
+fn set(raw: libc::c_int, when: libc::c_int, termios: &Termios) -> Result<()> {
+    // SAFETY: the pointer is to a whole termios, which the call reads; the
+    // descriptor is a number, which the call checks.
+    check(unsafe { libc::tcsetattr(raw, when, &termios.0) }).map(drop)
+}
+
+/// The terminal `fd` in raw mode ([`Termios::make_raw`]) until dropped,
+/// then in the modes it had, however that comes: a return, an error, a
+/// panic. [`Raw::enter`] changes them at once (`TCSANOW`), so leaving never
+/// waits on a terminal that stopped reading; [`Raw::enter_draining`] first
+/// waits for what was written to be sent (`TCSADRAIN`), so it is not sent
+/// in the other mode. Putting the modes back is retried while a signal
+/// interrupts it, as nothing could retry it for a drop.
+///
+/// A panic puts back every terminal a live `Raw` holds, the latest first,
+/// before its message is printed, in the panic hook the first `enter`
+/// installs, which then calls the hook that was there: a program that
+/// writes something to its terminal as it leaves (the alternate screen's
+/// end) sets its own hook after entering, to run first.
+pub struct Raw<F: AsFd> {
+    fd: F,
+    saved: Termios,
+    when: libc::c_int,
+    /// Its registration in [`HELD`].
+    id: u64,
+}
+
+/// What the panic hook puts back: each live `Raw`'s id, descriptor, modes
+/// and how to set them, in the order entered. A `Raw` takes its own out,
+/// under the lock, before it lets its descriptor go.
+static HELD: std::sync::Mutex<Vec<(u64, libc::c_int, Termios, libc::c_int)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// [`HELD`], locked. A poisoned lock still holds a whole list: nothing
+/// that runs under it leaves one half changed.
+fn held() -> std::sync::MutexGuard<'static, Vec<(u64, libc::c_int, Termios, libc::c_int)>> {
+    HELD.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl<F: AsFd> Raw<F> {
+    /// Raw mode now, and the modes back now once dropped.
+    pub fn enter(fd: F) -> Result<Raw<F>> {
+        Raw::enter_with(fd, libc::TCSANOW)
+    }
+
+    /// Raw mode, and the modes back once dropped, each once what was
+    /// written has been sent.
+    pub fn enter_draining(fd: F) -> Result<Raw<F>> {
+        Raw::enter_with(fd, libc::TCSADRAIN)
+    }
+
+    fn enter_with(fd: F, when: libc::c_int) -> Result<Raw<F>> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let saved = attributes(&fd)?;
+        let mut raw = saved.clone();
+        raw.make_raw();
+        static HOOKED: std::sync::Once = std::sync::Once::new();
+        HOOKED.call_once(|| {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                // Waited for: only a push, a retain and this loop run
+                // under the lock, none of which panics, so the panicking
+                // thread never holds it, and another holds it only for an
+                // instant.
+                for (_, raw, termios, when) in held().iter().rev() {
+                    let _ = set(*raw, *when, termios);
+                }
+                previous(info);
+            }));
+        });
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        held().push((id, fd.as_fd().as_raw_fd(), saved.clone(), when));
+        // Made first, so that failing to set raw mode puts the modes back.
+        let entered = Raw {
+            fd,
+            saved,
+            when,
+            id,
+        };
+        set(entered.fd.as_fd().as_raw_fd(), when, &raw)?;
+        Ok(entered)
+    }
+}
+
+impl<F: AsFd> Drop for Raw<F> {
+    fn drop(&mut self) {
+        held().retain(|(id, ..)| *id != self.id);
+        let raw = self.fd.as_fd().as_raw_fd();
+        while set(raw, self.when, &self.saved) == Err(Errno::INTR) {}
+    }
 }
 
 /// A terminal's size: never no rows or no columns, which a program would
@@ -50,8 +177,9 @@ pub struct Size {
 }
 
 impl Size {
-    /// `rows` by `cols`, if neither is zero.
-    pub(crate) fn new(rows: u16, cols: u16) -> Option<Size> {
+    /// `rows` by `cols`, if neither is zero: a size read off the wire or a
+    /// command line, or a default such as 24 by 80.
+    pub fn new(rows: u16, cols: u16) -> Option<Size> {
         Some(Size::from((NonZeroU16::new(rows)?, NonZeroU16::new(cols)?)))
     }
 }
@@ -133,14 +261,6 @@ mod tests {
     use super::*;
     use crate::pty;
 
-    fn echoes(termios: &Termios) -> bool {
-        termios.0.c_lflag & libc::ECHO != 0
-    }
-
-    fn edits_lines(termios: &Termios) -> bool {
-        termios.0.c_lflag & libc::ICANON != 0
-    }
-
     fn size(rows: u16, cols: u16) -> std::result::Result<Size, String> {
         Size::new(rows, cols).ok_or_else(|| "a size".to_owned())
     }
@@ -156,20 +276,41 @@ mod tests {
         set_window_size(&master, size(5, 7)?, pixels).map_err(|e| e.to_string())?;
         assert_eq!(window_size(&slave), Some((size(5, 7)?, pixels)));
         let mut modes = attributes(&slave).map_err(|e| e.to_string())?;
-        assert!(echoes(&modes), "a new terminal echoes");
-        assert!(edits_lines(&modes), "and edits a line at a time");
+        assert!(modes.echoes(), "a new terminal echoes");
+        assert!(modes.edits_lines(), "and edits a line at a time");
         let saved = modes.clone();
         modes.make_raw();
         set_attributes(&slave, &modes).map_err(|e| e.to_string())?;
         let again = attributes(&slave).map_err(|e| e.to_string())?;
-        assert!(!echoes(&again) && !edits_lines(&again));
+        assert!(!again.echoes() && !again.edits_lines());
         // The master reads the modes the program set on its side.
         let seen = attributes(&master).map_err(|e| e.to_string())?;
-        assert!(!echoes(&seen) && !edits_lines(&seen));
+        assert!(!seen.echoes() && !seen.edits_lines());
         // Restoring the complete saved attributes restores both flags.
         set_attributes(&slave, &saved).map_err(|e| e.to_string())?;
         let restored = attributes(&slave).map_err(|e| e.to_string())?;
-        assert!(echoes(&restored) && edits_lines(&restored));
+        assert!(restored.echoes() && restored.edits_lines());
+        // Raw while the guard lives, as it was once it is dropped; its
+        // newlines and end-of-file key read as they are set.
+        assert!(restored.newline_as_crlf());
+        assert_eq!(restored.end_of_file(), Some(0x04), "ended by ^D");
+        {
+            let _raw = Raw::enter_draining(&slave).map_err(|e| e.to_string())?;
+            let raw = attributes(&slave).map_err(|e| e.to_string())?;
+            assert!(!raw.echoes() && !raw.edits_lines() && !raw.newline_as_crlf());
+            // Another held and dropped leaves this one for the panic hook.
+            let (_other_master, other) = pty::open(size(2, 2)?).map_err(|e| e.to_string())?;
+            drop(Raw::enter(&other).map_err(|e| e.to_string())?);
+            let fd = slave.as_fd().as_raw_fd();
+            let kept = (HELD.lock().map_err(|e| e.to_string())?)
+                .iter()
+                .any(|(_, raw, ..)| *raw == fd);
+            assert!(kept);
+        }
+        let mut back = attributes(&slave).map_err(|e| e.to_string())?;
+        assert!(back.echoes() && back.edits_lines() && back.newline_as_crlf());
+        back.set_newline_as_crlf(false);
+        assert!(!back.newline_as_crlf() && back.echoes());
         // No session has it as its terminal: no foreground group.
         assert_eq!(foreground_group(&master), Ok(None));
         assert!(attributes(std::fs::File::open("/dev/null").map_err(|e| e.to_string())?).is_err());

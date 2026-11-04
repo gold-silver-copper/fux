@@ -485,16 +485,9 @@ impl End {
     /// Writes what is queued as far as the socket takes it: whether all of
     /// it went, or an error once the other end is gone.
     pub fn flush(&mut self) -> Result<bool, fuxix::Errno> {
-        while !self.out.is_empty() {
-            match fuxix::io::write(&self.stream, self.out.as_slice()) {
-                Ok(0) => return Ok(false),
-                Ok(n) => self.out.take(n),
-                Err(fuxix::Errno::INTR) => {}
-                Err(fuxix::Errno::AGAIN) => return Ok(false),
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(true)
+        let written = fuxix::io::write_what_fits(&self.stream, self.out.as_slice())?;
+        self.out.take(written);
+        Ok(self.out.is_empty())
     }
 
     /// Writes all it holds, waiting as it must: for a link's first word,
@@ -712,13 +705,11 @@ impl Link {
                 listener,
             )))
             .stdout(std::process::Stdio::null());
-        fuxix::process::lead_session(&mut command, false);
+        fuxix::process::lead_session(&mut command, false, fuxix::process::Dispositions::Default);
         let child = command
             .spawn()
             .map_err(|e| format!("starting its process, {}: {e}", exe.display()))?;
-        let pid = i32::try_from(child.id())
-            .ok()
-            .and_then(fuxix::process::Pid::from_raw);
+        let pid = fuxix::process::Pid::of(&child);
         // fux reaps it by its pid; std never waits on a dropped child.
         drop(child);
         let pid = pid.ok_or("its process has no pid")?;

@@ -6,6 +6,18 @@
 //! as the leader of a session of its own with the PTY as its controlling
 //! terminal, and leaves the parent without it (but on macOS, where the
 //! master holds it too: [`Master`]).
+//!
+//! **The end of a program and of its output**, the same on both systems:
+//! once [`crate::process::ended`] (or `reap`) says the program has ended,
+//! read the master until it says `AGAIN`, or that it is closed (0, or
+//! `IO`); then everything the program wrote has been read, as each of its
+//! writes is readable on the master by the time it returns. Waiting for the
+//! master to close does not tell the end: on Linux it closes once every
+//! holder of the slave has closed it, which a job the program left running
+//! may never do, and which a program whose stdin is elsewhere may do before
+//! it exits; on macOS, where the master holds the slave, it may not close
+//! at all. A poll loop learns of the end from a [`crate::signal::Pipe`] of
+//! `Chld`.
 use crate::errno::{Errno, check};
 use crate::process::Pid;
 use crate::terminal::{self, Size};
@@ -45,8 +57,8 @@ fn at<E: Into<std::io::Error>>(call: &'static str) -> impl FnOnce(E) -> Error {
 
 /// A PTY's master: close-on-exec, so no program this process starts holds
 /// the PTY open, and nonblocking, so a read or write that would wait fails
-/// with `AGAIN` instead. Read and write it with [`crate::io`], and wait for
-/// it with [`crate::poll`]. It keeps its slave's path.
+/// with `AGAIN` instead. Read and write it with [`crate::io`] or as a
+/// `std::io` reader and writer, and wait for it with [`crate::poll`].
 ///
 /// On macOS it keeps the slave open too, for as long as it lives. There the
 /// last close of a slave throws away the output not yet read from the
@@ -56,8 +68,8 @@ fn at<E: Into<std::io::Error>>(call: &'static str) -> impl FnOnce(E) -> Error {
 /// be anyone's: this process's copies as it starts a program that has
 /// already printed and exited. Held, the slave is closed last with the
 /// master, after its output was read. Its end is told by the program's
-/// exit, not by the master's hangup, which never comes while the slave is
-/// held.
+/// exit, not by the master's hangup, which need not come while the slave is
+/// held (the module's doc says how).
 #[derive(Debug)]
 pub struct Master(
     OwnedFd,
@@ -84,25 +96,64 @@ impl AsFd for Slave {
     }
 }
 
-/// The master as a plain descriptor, for a caller that wants it otherwise:
-/// blocking, say.
-impl From<Master> for OwnedFd {
-    fn from(master: Master) -> Self {
-        master.0
+/// Read as `std::io` reads: with `AGAIN` as `WouldBlock`, until a caller
+/// that wants to wait makes it blocking (`io::set_nonblocking`). There is
+/// no plain descriptor to take out of it: on macOS that would close the
+/// slave it holds, and lose what was not read yet.
+impl std::io::Read for &Master {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        crate::io::read(self, buffer).map_err(Into::into)
+    }
+}
+
+impl std::io::Read for Master {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        (&*self).read(buffer)
+    }
+}
+
+/// Written as `std::io` writes, as it reads.
+impl std::io::Write for &Master {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        crate::io::write(self, bytes).map_err(Into::into)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl std::io::Write for Master {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        (&*self).write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
 impl Slave {
     /// Starts `argv` on this PTY, as the leader of a new session with the
     /// PTY as its controlling terminal and its stdin, stdout and stderr,
-    /// and no other descriptor ([`crate::process::lead_session`]); `setup`
+    /// and no other descriptor, its signals as `dispositions` says
+    /// ([`crate::process::lead_session`]); `setup`
     /// sets its directory and environment. Returns once the program runs,
     /// with its pid, or once it cannot, with the system's error as it is:
     /// a `NotFound` may be the program, its `#!` interpreter or the
     /// directory, which the system does not tell apart.
+    ///
+    /// The pid is also its process group's and its session's: to end what
+    /// it started, [`crate::process::kill_group`] reaches its group, and a
+    /// job in a group of its own (a shell's, with job control) is in its
+    /// session, which [`crate::process::session`] tells of each process in
+    /// [`crate::process::tree`]. A job it left may hold the PTY open after
+    /// it ends; [`crate::process::group_alive`] says when its group is
+    /// empty.
     pub fn spawn<S: AsRef<OsStr>>(
         self,
         argv: &[S],
+        dispositions: crate::process::Dispositions,
         setup: impl FnOnce(&mut Command),
     ) -> std::io::Result<(Child, Pid)> {
         let (program, args) = argv
@@ -115,7 +166,7 @@ impl Slave {
             .stdin(self.0.try_clone()?)
             .stdout(self.0.try_clone()?)
             .stderr(self.0);
-        crate::process::lead_session(&mut command, true);
+        crate::process::lead_session(&mut command, true, dispositions);
         // Dropping `command` closes this side's copies of the PTY.
         let child = command.spawn()?;
         let pid = Pid::of(&child).ok_or_else(|| std::io::Error::other("a child with no pid"))?;
@@ -810,6 +861,78 @@ mod tests {
     const STRESS_WORKERS: usize = 16;
     const STRESS_WORKER_ROUNDS: usize = 1500;
     const STRESS_DEADLINE_SECS: u64 = 120;
+
+    /// What the program wrote before the last slave close is read from the
+    /// master, though the slave closes nonblocking, which on macOS throws
+    /// away what is unread unless the master holds it (`Master`).
+    #[test]
+    fn output_written_before_the_last_slave_close_is_read() -> std::result::Result<(), String> {
+        use std::io::Read;
+        let (mut master, slave) = open(size()).map_err(|e| e.to_string())?;
+        crate::io::set_nonblocking(&slave, true).map_err(|e| e.to_string())?;
+        assert_eq!(crate::io::write(&slave, b"X"), Ok(1));
+        drop(slave);
+        let mut ready = [crate::poll::PollFd::new(&master, crate::poll::Events::IN)];
+        crate::poll::poll(&mut ready, Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        let mut buffer = [0u8; 8];
+        assert_eq!(master.read(&mut buffer).map_err(|e| e.to_string())?, 1);
+        assert_eq!(buffer.first(), Some(&b'X'));
+        Ok(())
+    }
+
+    /// Once a program has ended, reading the master until `AGAIN` (or its
+    /// close) reads all it wrote, though a job it left holds the terminal
+    /// open.
+    #[test]
+    fn once_a_program_has_ended_its_output_is_read_until_again() -> std::result::Result<(), String>
+    {
+        let lines = 2000;
+        let (master, slave) = open(size()).map_err(|e| e.to_string())?;
+        let script = format!(
+            "(trap '' HUP; sleep 5) & i=0; while [ $i -lt {lines} ]; do echo line $i; i=$((i+1)); done"
+        );
+        let (mut child, pid) = slave
+            .spawn(
+                &["sh", "-c", &script],
+                crate::process::Dispositions::Default,
+                |_| {},
+            )
+            .map_err(|e| e.to_string())?;
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(20))
+            .ok_or("a deadline")?;
+        let (mut seen, mut buffer, mut closed) = (Vec::new(), [0u8; 4096], false);
+        loop {
+            // Asked before the reads that follow: then they read all.
+            let ended = crate::process::ended(pid).map_err(|e| e.to_string())?;
+            loop {
+                match crate::io::read(&master, &mut buffer) {
+                    Ok(n) if n > 0 => seen.extend_from_slice(buffer.get(..n).unwrap_or_default()),
+                    Err(Errno::INTR) => {}
+                    Err(Errno::AGAIN) => break,
+                    // Closed: on macOS as the session's leader exits.
+                    Ok(_) | Err(Errno::IO) => {
+                        closed = true;
+                        break;
+                    }
+                    Err(errno) => return Err(errno.to_string()),
+                }
+            }
+            if ended.is_some() || closed || std::time::Instant::now() > deadline {
+                break;
+            }
+            let mut ready = [crate::poll::PollFd::new(&master, crate::poll::Events::IN)];
+            crate::poll::poll(&mut ready, Some(std::time::Duration::from_millis(50)))
+                .map_err(|e| e.to_string())?;
+        }
+        let _ = crate::process::kill_group(pid, crate::process::Signal::Kill);
+        let _ = child.wait();
+        let text = String::from_utf8_lossy(&seen);
+        assert_eq!(text.matches("line ").count(), lines);
+        assert!(text.ends_with(&format!("line {}\r\n", lines - 1)));
+        Ok(())
+    }
 
     #[test]
     fn a_name_stops_at_its_nul() {

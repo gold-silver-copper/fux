@@ -36,6 +36,14 @@ impl Errno {
         self.0
     }
 
+    /// Whether it says the other end of a pipe or socket is gone: `PIPE`,
+    /// written with no reader left, or `CONNRESET`, the peer closed with
+    /// something unread. A PTY's master says `IO` instead once no slave is
+    /// open (Linux).
+    pub fn is_peer_gone(self) -> bool {
+        self.0 == libc::EPIPE || self.0 == libc::ECONNRESET
+    }
+
     /// The system description and code, with every owned buffer admitted
     /// before allocation. The ordinary strerror result fits on the stack;
     /// longer locale messages grow under the caller's shared grant.

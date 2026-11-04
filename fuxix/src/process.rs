@@ -17,8 +17,9 @@ impl Pid {
         NonZeroI32::new(raw).filter(|n| n.get() > 0).map(Pid)
     }
 
-    /// A child's ID.
-    pub(crate) fn of(child: &std::process::Child) -> Option<Pid> {
+    /// The ID of a child std started, for [`reap`], [`kill_group`] and the
+    /// rest.
+    pub fn of(child: &std::process::Child) -> Option<Pid> {
         i32::try_from(child.id()).ok().and_then(Pid::from_raw)
     }
 
@@ -127,6 +128,21 @@ pub fn kill_group(group: Pid, signal: Signal) -> Result<()> {
     check(unsafe { libc::killpg(group.as_raw(), signal.raw()) }).map(drop)
 }
 
+/// Whether the group `group` has a process in it, found by sending it no
+/// signal (`killpg(group, 0)`): one this process may not signal counts too.
+/// A program's group outlives it while a job it left runs, for [`tree`]
+/// and [`session`] to find, or [`kill_group`] to end.
+pub fn group_alive(group: Pid) -> Result<bool> {
+    // SAFETY: killpg takes two numbers and touches no memory; with no
+    // signal it only checks.
+    match check(unsafe { libc::killpg(group.as_raw(), 0) }) {
+        Ok(_) => Ok(true),
+        Err(Errno::SRCH) => Ok(false),
+        Err(errno) if errno.raw() == libc::EPERM => Ok(true),
+        Err(errno) => Err(errno),
+    }
+}
+
 /// This process's effective user ID.
 pub fn geteuid() -> u32 {
     // SAFETY: geteuid cannot fail and touches no memory.
@@ -155,15 +171,19 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
 /// opened by a thread racing the spawn, goes no further (on macOS, all
 /// but one opened in the window `io::cloexec_from` states). With `terminal`,
 /// its stdin, a terminal, becomes the session's controlling terminal. The
-/// spawn clears the signal mask, and `exec` restores the dispositions Rust
-/// and signal handlers changed, so the program starts as it would from a
-/// shell.
-pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
+/// program starts with no signal blocked, and with each signal's
+/// disposition as `dispositions` says.
+pub fn lead_session(
+    command: &mut std::process::Command,
+    terminal: bool,
+    dispositions: Dispositions,
+) {
     use std::os::unix::process::CommandExt;
     // Listed now: between fork and exec nothing may allocate.
     let listed = crate::io::Listed::now();
     let lead = move || -> std::io::Result<()> {
         crate::io::cloexec_from(3, listed)?;
+        crate::signal::start(dispositions)?;
         // A new session, this process its leader, whose ID is its pid.
         // SAFETY: setsid takes nothing and touches no memory.
         check(unsafe { libc::setsid() })?;
@@ -178,9 +198,24 @@ pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
     // SAFETY: `lead` runs between fork and exec, where only
     // async-signal-safe calls may be made, and makes only those:
     // close_range, or open, getdents64, fcntl and close (macOS: getdtablesize and fcntl);
-    // setsid; ioctl. It allocates nothing, takes no lock, and its errors
-    // are numbers.
+    // sigemptyset, sigaction and sigprocmask; setsid; ioctl. It allocates
+    // nothing, takes no lock, and its errors are numbers.
     unsafe { command.pre_exec(lead) };
+}
+
+/// What a program [`lead_session`] starts does with each signal as it
+/// begins. Either way no signal is blocked.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dispositions {
+    /// As this process inherited them, as from a shell: a signal it ignores
+    /// stays ignored (`nohup`'s SIGHUP), and so does one ignored before a
+    /// [`crate::signal::Pipe`] caught it; one it catches is the default.
+    /// For a wrapper, which runs a command as it was itself run.
+    Inherited,
+    /// Every signal the default, as a new terminal's program begins
+    /// (tmux's and screen's choice): ^C interrupts, whatever this process
+    /// was started ignoring.
+    Default,
 }
 
 /// The session of `pid`. `None` if there is none to name: the process is
@@ -195,8 +230,10 @@ pub fn session(pid: Pid) -> Option<Pid> {
 pub enum Status {
     /// It exited with this code.
     Exited(i32),
-    /// This signal killed it.
-    Signalled(i32),
+    /// The signal numbered `signal` killed it ([`Signal::from_raw`] names
+    /// it, unless it is one Signal has no name for: a real-time one), and
+    /// whether it dumped core.
+    Signalled { signal: i32, core_dumped: bool },
 }
 
 /// Whether `pid`, a child of this process, has ended, without reaping it:
@@ -241,7 +278,14 @@ fn waited(pid: Pid, keep: libc::c_int) -> Result<Option<Status>> {
     let status = unsafe { info.si_status() };
     Ok(match info.si_code {
         libc::CLD_EXITED => Some(Status::Exited(status)),
-        libc::CLD_KILLED | libc::CLD_DUMPED => Some(Status::Signalled(status)),
+        libc::CLD_KILLED => Some(Status::Signalled {
+            signal: status,
+            core_dumped: false,
+        }),
+        libc::CLD_DUMPED => Some(Status::Signalled {
+            signal: status,
+            core_dumped: true,
+        }),
         _ => None,
     })
 }
@@ -264,26 +308,36 @@ pub fn adopt_orphans() -> Result<()> {
 
 /// Reaps every child of this process that has exited and that `kept` does
 /// not keep: the orphans it adopted ([`adopt_orphans`]); none on macOS. Its
-/// own children are kept, for whoever waits for them.
-pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
+/// own children are kept, for whoever waits for them. Each reaped, and how
+/// it ended.
+pub fn reap_orphans(kept: impl Fn(Pid) -> bool) -> Vec<(Pid, Status)> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = kept;
+        Vec::new()
+    }
     // Each child is looked at, however many: not cut at `TREE_MAX`, as
     // live ones listed first would hide every zombie after them.
     #[cfg(not(target_os = "macos"))]
-    for task in std::fs::read_dir("/proc/self/task")
-        .into_iter()
-        .flatten()
-        .flatten()
     {
-        let listed = std::fs::read_to_string(task.path().join("children"));
-        let children = listed.iter().flat_map(|l| l.split_whitespace());
-        for pid in children.filter_map(|c| Pid::from_raw(c.parse().ok()?)) {
-            if !kept(pid) {
-                let _ = reap(pid);
+        let mut reaped = Vec::new();
+        for task in std::fs::read_dir("/proc/self/task")
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let listed = std::fs::read_to_string(task.path().join("children"));
+            let children = listed.iter().flat_map(|l| l.split_whitespace());
+            for pid in children.filter_map(|c| Pid::from_raw(c.parse().ok()?)) {
+                if !kept(pid)
+                    && let Ok(Some(status)) = reap(pid)
+                {
+                    reaped.push((pid, status));
+                }
             }
         }
+        reaped
     }
-    #[cfg(target_os = "macos")]
-    let _ = kept;
 }
 
 /// The most processes a [`tree`] holds on Linux: a runaway tree is cut
@@ -607,10 +661,30 @@ mod tests {
         kill(pid, Signal::Cont).map_err(|e| e.to_string())?;
         kill(pid, Signal::Kill).map_err(|e| e.to_string())?;
         let status = wait_ended(pid);
-        assert_eq!(status, Some(Status::Signalled(libc::SIGKILL)));
+        let killed = Status::Signalled {
+            signal: libc::SIGKILL,
+            core_dumped: false,
+        };
+        assert_eq!(status, Some(killed));
         // Reported without reaping: it is still there to reap.
-        assert_eq!(reap(pid), Ok(Some(Status::Signalled(libc::SIGKILL))));
+        assert_eq!(reap(pid), Ok(Some(killed)));
         let _ = child.try_wait();
+        Ok(())
+    }
+
+    #[test]
+    fn a_group_is_alive_until_its_last_process_is_reaped() -> std::result::Result<(), String> {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pid = Pid::of(&child).ok_or("a pid")?;
+        assert_eq!(group_alive(pid), Ok(true));
+        kill_group(pid, Signal::Kill).map_err(|e| e.to_string())?;
+        child.wait().map_err(|e| e.to_string())?;
+        assert_eq!(group_alive(pid), Ok(false));
         Ok(())
     }
 
@@ -623,6 +697,34 @@ mod tests {
         let pid = Pid::of(&child).ok_or("a pid")?;
         assert_eq!(wait_ended(pid), Some(Status::Exited(3)));
         assert_eq!(reap(pid), Ok(Some(Status::Exited(3))));
+        Ok(())
+    }
+
+    /// An adopted orphan is reaped and told with how it ended, and a child
+    /// kept is left alone; on macOS nothing is adopted.
+    #[test]
+    fn reaped_orphans_are_told_with_their_ends() -> std::result::Result<(), String> {
+        adopt_orphans().map_err(|e| e.to_string())?;
+        // The orphan writes its pid, then exits 5 once its parent is gone.
+        let out = Command::new("sh")
+            .args(["-c", "sh -c 'echo $$; sleep 0.2; exit 5' &"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let orphan = Pid::from_raw(text.trim().parse().map_err(|_| "a pid")?).ok_or("a pid")?;
+        let deadline = Instant::now().checked_add(Duration::from_secs(5));
+        let mut reaped = Vec::new();
+        while cfg!(not(target_os = "macos")) && reaped.is_empty() {
+            // Only the orphan: the other tests' children are theirs.
+            reaped.extend(reap_orphans(|pid| pid != orphan));
+            if deadline.is_none_or(|d| Instant::now() > d) {
+                return Err("never reaped".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if cfg!(not(target_os = "macos")) {
+            assert_eq!(reaped, [(orphan, Status::Exited(5))]);
+        }
         Ok(())
     }
 

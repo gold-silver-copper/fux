@@ -326,7 +326,7 @@ impl Fixture {
         let socket = self.socket.clone();
         let dir = self.dir.clone();
         let (child, _) = slave
-            .spawn(&argv, |command| {
+            .spawn(&argv, fuxix::process::Dispositions::Default, |command| {
                 environment(command, &dir);
                 command.env("FUX_SOCKET", &socket);
             })
