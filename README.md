@@ -130,9 +130,13 @@ command line doesn't.
   titled `history` that closes when the editor exits: search, select and
   copy there. It stands in for a copy mode and a pager.
 - **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
-  or panes: Enter or `y` selects, `r` renames, `x` closes, Esc, `q` or
-  `n` cancels. They are the keys' own words over one `choose` primitive
-  (`choose-among`, `choose-move`, `choose-pane`; `fux help choose`).
+  or panes. `w g` lists every workspace on the server, each indented
+  under what holds it, with the tabs, panes and workspaces it holds
+  counted and `*` on yours and each holding it; the others list the
+  siblings of yours. Enter or `y` selects, `r` renames, `x` closes, Esc,
+  `q` or `n` cancels. They are the keys' own words over one `choose`
+  primitive (`choose-among`, `choose-move`, `choose-pane`; `fux help
+  choose`).
 - **The command prompt** (`e`) runs fuxth as your client, `me` and all,
   and shows what it printed, or its failure, in the bar. `prompt` opens
   a line of your own whose Enter runs your code with the line.

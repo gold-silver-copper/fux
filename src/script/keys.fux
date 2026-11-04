@@ -74,11 +74,45 @@ define chooser-siblings
     dup str id get kind str pane eq if chooser-row else s swap chooser-container-row then
   end end
 end
-# client handle -- : choose among the handle's siblings from one topology observation, and show the one chosen
+# n noun -- s : `1 tab`, `2 tabs`
+define chooser-count
+  let noun let n list n string str ' ' noun n 1 eq if else str s then end glue
+end
+# snapshot handle -- ids : the workspace's id and each holding it, as strings
+define chooser-path
+  let ws let s
+  list begin ws kind str null eq not while
+    ws string s str workspaces get ws chooser-find str parent get to ws
+  end end
+end
+# snapshot handle -- rows : a row for every workspace on the server, each under what holds it, with what it holds counted; `*` marks the handle's and each holding it
+define chooser-tree
+  let it let s s it chooser-path let here
+  list s str workspaces get each let w
+    w str id get let id w str children get let kids
+    list kids each kind end end let kinds
+    list s str panes get each str tab get kids swap contains end end true count let panes
+    list
+      kinds str tab count dup 0 gt if str tab chooser-count else drop then
+      panes 0 gt if panes str pane chooser-count then
+      kinds str workspace count dup 0 gt if str workspace chooser-count else drop then
+    end str ', ' join let held
+    list id list
+      here id string contains if str '* ' else str '  ' then
+      str '  ' s id chooser-path len 1 sub copies
+      w chooser-row last str ' — ' held
+    end glue end
+  end end
+end
+# client handle -- : choose among the handle's siblings, or for a workspace among every workspace (`chooser-tree`), from one topology observation, and show the one chosen
 define choose-among
-  let it let c all str topology snapshot it chooser-siblings let rows
+  let it let c all str topology snapshot let s
+  it kind str workspace eq let tree
+  tree if s it chooser-tree else s it chooser-siblings then let rows
   rows it chooser-index let current
-  c list it kind str s end glue rows current rows current chooser-selected code show end choose
+  c list it kind str s end glue rows
+  tree if list end current else current rows current chooser-selected then
+  code show end choose
 end
 # client pane handle -- : choose where to move the pane: one of the siblings of handle, a tab or workspace, from one topology observation
 define choose-move
@@ -102,7 +136,7 @@ define choose-pane
   list end list 0 end list list source end code nip swap-with end end choose
 end
 hide chooser-row hide chooser-find hide chooser-container-row hide chooser-index hide chooser-selected
-hide chooser-siblings
+hide chooser-siblings hide chooser-count hide chooser-path hide chooser-tree
 
 str 'C-b v' code me focused str horizontal axis split drop end bind  str 'split side by side' label  str Panes group
 str 'C-b s' code me focused str vertical axis split drop end bind  str 'split stacked' label  str Panes group
