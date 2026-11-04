@@ -1227,14 +1227,16 @@ impl Screen {
         mark.version < self.structural || mark.version > self.version
     }
     /// How many rows scrolled up off the top of the screen shown since
-    /// `mark`, into history or not, on either screen: a scroll up of
-    /// rows from the top (LF or IND at the bottom margin, SU, DL on the top
-    /// row), by as many rows as the scroll moved. A host mirroring the
-    /// screen moves the rows it sent up by this many, then sends those whose
-    /// [`crate::Row::id`] or [`crate::Row::version`] differ from what it now
-    /// holds. Other moves (a scroll down or inside margins, a resize, a
-    /// switch of screens) are not counted; [`Screen::full_refresh_since`]
-    /// tells of them.
+    /// `mark`, into history or not, on either screen: a scroll up of rows
+    /// from the top (LF or IND at the bottom margin, SU, DL on the top row),
+    /// by as many rows as the scroll moved. A scroll region that starts at
+    /// the top row is counted though it ends above the last: the rows below
+    /// it stay, so a host that moved them too sends them again. A host
+    /// mirroring the screen moves the rows it sent up by this many, then
+    /// sends those whose [`crate::Row::id`] or [`crate::Row::version`]
+    /// differ from what it now holds. Other moves (a scroll down or inside
+    /// left and right margins, a resize, a switch of screens) are not
+    /// counted; [`Screen::full_refresh_since`] tells of them.
     pub fn scrolled_since(&self, mark: Mark) -> u64 {
         self.scrolled.saturating_sub(mark.scrolled)
     }

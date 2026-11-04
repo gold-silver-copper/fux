@@ -1115,6 +1115,7 @@ impl Parser {
     /// 0: every byte is read all the same, and each refusal lost only what
     /// it was for (a row of history, a picture, a resize; THREATS.md 1.3),
     /// so the screen is good to read whatever the count.
+    #[must_use = "a refusal lost what it was for (a row of history, a picture): count it, or say why not"]
     pub fn process_all(&mut self, bytes: &[u8], sink: &mut impl Sink) -> u64 {
         let refused = self.refused;
         let mut rest = bytes;

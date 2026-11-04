@@ -102,7 +102,7 @@ impl Sink for Record {
 
 fn run(parser: &mut Parser, input: &[u8]) -> std::result::Result<Record, Error> {
     let mut record = Record::default();
-    parser.process_all(input, &mut record);
+    parser.process_into(input, &mut record)?;
     Ok(record)
 }
 
@@ -1183,7 +1183,7 @@ fn margin_placement_preserves_refusal_and_unmoved_bands() -> Result {
         let tail: String = std::iter::repeat_n('-', trailing).collect();
         let picture = format!("\x1bPq\"1;1{bands}~{tail}\x1b\\");
         let mut refusals = Refusals(0);
-        p.process_all(picture.as_bytes(), &mut refusals);
+        p.process_into(picture.as_bytes(), &mut refusals)?;
         assert_eq!(refusals.0, refused, "{at}/{col}/{rows}/{trailing}");
         assert_eq!(p.screen().pictures().count(), shown);
         for y in 0..6 {
@@ -1643,7 +1643,7 @@ fn c0_controls_inside_sixel_are_ignored_and_bel_rings() -> Result {
     let options = PICTURES.with(fux_vt::Feature::Events);
     let mut p = pictured(6, 10, 10, options)?;
     let mut bells = Bells(0);
-    p.process_all(b"\x1bPq#1;2;100;0;0~\x07~\x1b\\", &mut bells);
+    p.process_into(b"\x1bPq#1;2;100;0;0~\x07~\x1b\\", &mut bells)?;
     assert_eq!(bells.0, 1);
     let shown = p.screen().pictures().next().ok_or("no picture")?;
     assert_eq!(shown.picture.width(), 2);

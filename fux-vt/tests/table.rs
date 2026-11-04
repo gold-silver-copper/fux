@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 #[path = "corpus/feed.rs"]
 #[expect(dead_code, reason = "each test binary uses some of the helpers")]
 mod feed;
+use feed::Feed;
 
 const TABLE: &str = include_str!("data/conformance.txt");
 #[path = "corpus/escapes.rs"]
@@ -261,7 +262,7 @@ fn context(without: &str) -> Result<Parser, Box<dyn std::error::Error>> {
     let mut parser = Parser::with_options(Size::new(6, 12)?, 1 << 16, options(without))?;
     parser.set_host_graphics(fux_vt::CellSize::new(10, 20).map_or(Graphics::Text, Graphics::Sixel));
     let text = b"\x1b[Habcdefghijk\r\nlmnopqrstuv\r\nwxyzABCDEFG\r\nHIJKLMNOPQR\x1b[3;5H\x1b[m";
-    parser.process_all(text, &mut Record::default());
+    parser.process_into(text, &mut Record::default())?;
     Ok(parser)
 }
 
@@ -300,10 +301,10 @@ fn observe(probe: &str) -> Result<&'static str, Box<dyn std::error::Error>> {
     };
     let (setup, probe) = probe.split_once(" >> ").unwrap_or(("", probe));
     let mut parser = context(without)?;
-    parser.process_all(&bytes(setup), &mut Record::default());
+    parser.process_into(&bytes(setup), &mut Record::default())?;
     let before = state(&parser);
     let mut record = Record::default();
-    parser.process_all(&bytes(probe), &mut record);
+    parser.process_into(&bytes(probe), &mut record)?;
     Ok(if record.unhandled > 0 {
         "unhandled"
     } else if !record.replies.is_empty() {
@@ -390,7 +391,7 @@ fn an_implemented_parameter_default_is_its_implicit_and_explicit_form()
             let mut bytes = format!("\x1b[{parameter}").into_bytes();
             bytes.extend_from_slice(&final_byte);
             let mut record = Record::default();
-            parser.process_all(&bytes, &mut record);
+            parser.process_into(&bytes, &mut record)?;
             screens.push((state(&parser), record.replies));
         }
         checked += 1;

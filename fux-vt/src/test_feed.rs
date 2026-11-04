@@ -17,9 +17,13 @@ impl Parser {
         Self::with_options(size, history_bytes, Options::default())
     }
     /// [`Parser::process_all`], the replies dropped.
-    /// A refusal of room is an error here, for a test to see.
     pub(crate) fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        match self.process_all(bytes, &mut ()) {
+        self.process_into(bytes, &mut ())
+    }
+    /// [`Parser::process_all`] into `sink`; a refusal of room is an error
+    /// here, for a test to see.
+    pub(crate) fn process_into(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
+        match self.process_all(bytes, sink) {
             0 => Ok(()),
             _ => Err(Error::Capacity),
         }
