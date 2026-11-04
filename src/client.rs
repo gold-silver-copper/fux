@@ -1261,15 +1261,18 @@ const STOPPED: &str = "detached by a signal";
 
 /// The signals an attached client answers: a new size, and those that
 /// detach it.
-struct Signals(fuxix::signal::Pipe);
+struct Signals {
+    winch: fuxix::signal::Pipe,
+    stops: fuxix::signal::Pipe,
+}
 
 impl Signals {
     fn new() -> Result<Signals, Error> {
-        let [term, int, hup] = fux_server::STOPS;
-        let signals = [fuxix::process::Signal::Winch, term, int, hup];
-        Ok(Signals(
-            fuxix::signal::Pipe::new(&signals).map_err(io::Error::from)?,
-        ))
+        Ok(Signals {
+            winch: fuxix::signal::Pipe::new(&[fuxix::process::Signal::Winch])
+                .map_err(io::Error::from)?,
+            stops: fuxix::signal::Pipe::new(&fux_server::STOPS).map_err(io::Error::from)?,
+        })
     }
 }
 
@@ -1438,7 +1441,7 @@ fn attached(
     attaching: &Attaching,
     mut output: Option<&mut Output>,
 ) -> Result<String, Error> {
-    let Signals(signals) = signals;
+    let Signals { winch, stops } = signals;
     wait_at_most(stream, None);
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -1449,7 +1452,8 @@ fn attached(
     let mut acts = Vec::new();
     let mut frames = 0u64;
     const STREAM: Option<usize> = Some(0);
-    const SIGNALS: Option<usize> = Some(1);
+    const WINCH: Option<usize> = Some(1);
+    const STOPS: Option<usize> = Some(2);
     loop {
         // Every whole frame the server sent, while the terminal has room
         // for their paints.
@@ -1532,7 +1536,8 @@ fn attached(
         };
         let mut fds = vec![
             PollFd::new(&*stream, reads),
-            PollFd::new(signals.reader(), PollFlags::IN),
+            PollFd::new(winch.reader(), PollFlags::IN),
+            PollFd::new(stops.reader(), PollFlags::IN),
         ];
         let mut add = |fd| {
             fds.push(fd);
@@ -1567,11 +1572,7 @@ fn attached(
         let ready: Vec<bool> = fds.iter().map(|fd| !fd.revents().is_empty()).collect();
         drop(fds);
         let is = |i: Option<usize>| i.and_then(|i| ready.get(i)).copied().unwrap_or(false);
-        let came: Vec<_> = match is(SIGNALS) {
-            true => std::iter::from_fn(|| signals.next()).collect(),
-            false => Vec::new(),
-        };
-        if came.iter().any(|signal| fux_server::STOPS.contains(signal)) {
+        if is(STOPS) {
             // What the server paints until it lets go is written before the
             // terminal is put back, not after, on the shell.
             // Welcomed, its only error is the terminal's writer's.
@@ -1588,7 +1589,8 @@ fn attached(
         {
             output.woke()?;
         }
-        if came.contains(&fuxix::process::Signal::Winch) {
+        if is(WINCH) {
+            while winch.next().is_some() {}
             // A terminal that says no size now keeps the last it said.
             if terminal && let Some(size) = window_size() {
                 pending_resize = Some(size);
