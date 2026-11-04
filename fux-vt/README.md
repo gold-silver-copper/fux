@@ -570,7 +570,8 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   copies left), even with no byte left. A host that holds no frames and
   spreads no work over turns (a replay, a converter, a test) calls
   `Parser::process_all`, which makes those calls itself until every byte
-  is read and no work is owed.
+  is read and no work is owed, and gives how many times room was refused
+  on the way (B44): the screen is good to read whatever the count.
 - **Encoding a picture** (B08): `sixel::encode` reads each pixel of its
   crop twice and sets each sixel once, whatever its colours, and writes at
   most 12 bytes a pixel and 6 a colour a band of six rows.

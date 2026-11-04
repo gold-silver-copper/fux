@@ -1,5 +1,5 @@
 //! What the unit tests feed a parser with: the calls a host makes,
-//! [`Parser::process_all`].
+//! [`Parser::process_all`], a refusal of room an error.
 use crate::{Error, Options, Parser, Sink, Size};
 
 /// Counts the pictures told not placed (`Sink::picture`).
@@ -17,7 +17,11 @@ impl Parser {
         Self::with_options(size, history_bytes, Options::default())
     }
     /// [`Parser::process_all`], the replies dropped.
+    /// A refusal of room is an error here, for a test to see.
     pub(crate) fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.process_all(bytes, &mut ())
+        match self.process_all(bytes, &mut ()) {
+            0 => Ok(()),
+            _ => Err(Error::Capacity),
+        }
     }
 }

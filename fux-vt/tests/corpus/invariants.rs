@@ -211,7 +211,7 @@ fn probe(p: &Parser) -> Probed {
 
 /// `p` fed every byte of `bytes`, as a host does; the cursor then.
 fn fed(p: &mut Parser, bytes: &[u8]) -> (u16, u16) {
-    let _ = p.process_all(bytes, &mut ());
+    p.process_all(bytes, &mut ());
     p.screen().cursor_position()
 }
 

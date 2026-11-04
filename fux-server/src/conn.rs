@@ -131,7 +131,7 @@ impl Side {
         mirror.set_picture_bytes(drawn.picture_bytes);
         // Every byte read, budget or no: the bytes paint one screen. A
         // refusal loses only what it was for.
-        let _ = mirror.process_all(&drawn.screen, &mut ());
+        mirror.process_all(&drawn.screen, &mut ());
     }
 }
 

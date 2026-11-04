@@ -291,7 +291,7 @@ mod quota {
         let most = probe::LIMIT.saturating_add(probe::most_at(rows, cols, 0));
         let (mut whole, mut alone) = (Parser::with_options(size, 0, options)?, Replies::default());
         whole.process(setup)?;
-        whole.process_all(input, &mut alone)?;
+        whole.process_all(input, &mut alone);
         let (mut parser, mut replies) =
             (Parser::with_options(size, 0, options)?, Replies::default());
         parser.process(setup)?;

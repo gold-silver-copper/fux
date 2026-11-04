@@ -30,10 +30,18 @@ impl Feed for Parser {
         bytes: &[u8],
         reply: impl FnMut(&[u8]),
     ) -> Result<(), Error> {
-        self.process_all(bytes, &mut Replies(reply))
+        refusals(self.process_all(bytes, &mut Replies(reply)))
     }
     fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.process_all(bytes, &mut ())
+        refusals(self.process_all(bytes, &mut ()))
+    }
+}
+
+/// A refusal of room is an error here, for a test to see.
+fn refusals(refused: u64) -> Result<(), Error> {
+    match refused {
+        0 => Ok(()),
+        _ => Err(Error::Capacity),
     }
 }
 

@@ -131,10 +131,10 @@ fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
                         bytes.extend_from_slice(more);
                     }
                     let (mut a, mut b) = (Replies::default(), Replies::default());
-                    whole.process_all(&bytes, &mut a)?;
+                    whole.process_all(&bytes, &mut a);
                     let size = usize::try_from(r % 7)?.saturating_add(1);
                     for chunk in pieces::pieces(&bytes, size) {
-                        split.process_all(chunk, &mut b)?;
+                        split.process_all(chunk, &mut b);
                     }
                     assert_eq!(a.0, b.0, "replies");
                     if !extras.is_empty() && r.is_multiple_of(97) {

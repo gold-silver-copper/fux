@@ -151,6 +151,21 @@ fn needs_room(p: &mut Parser, row: &str) -> Result<bool> {
     Ok(needed)
 }
 
+/// `process_all` reads every byte past a refusal of room and says how many
+/// there were: the screen is good to read.
+#[cfg(feature = "checks")]
+#[test]
+fn process_all_reads_past_a_refusal_and_counts_it() -> Result {
+    let mut p = Parser::new(Size::new(1, 10)?, 1 << 20)?;
+    fux_vt::refuse_next(1);
+    let refused = p.process_all(b"lost\r\nshown", &mut ());
+    fux_vt::refuse_next(0);
+    assert_eq!((refused, p.refused()), (1, 1));
+    assert_eq!(p.screen().history_len(), 0);
+    assert_eq!(lines::lines(&p), ["shown"]);
+    Ok(())
+}
+
 /// B17: the newest block doubles up to a block, a row half a block long starts a whole block, and a row that fits needs no room.
 #[cfg(feature = "checks")]
 #[test]
