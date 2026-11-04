@@ -1907,6 +1907,7 @@ impl Session {
     /// Ends each view's mode if what it shows is gone, then sizes the PTYs:
     /// run after every event.
     pub fn settle(&mut self, now: Instant) {
+        self.tell_displaced();
         // Out of the session while they are repaired, which reads no view.
         let mut views = std::mem::take(&mut self.views);
         let ended: Vec<Outgoing> = (views.values_mut())
@@ -1924,6 +1925,15 @@ impl Session {
         self.pump(now);
         if let Err(error) = self.commit() {
             log!("{error}");
+        }
+    }
+
+    /// Tells each client a close moved, by a request it did not make, what
+    /// closed and where it is now (`Parts::take_displaced`), until its next
+    /// key.
+    fn tell_displaced(&mut self) {
+        for (client, told) in self.parts.take_displaced() {
+            self.notify_to(client, told, false);
         }
     }
 
@@ -2319,12 +2329,13 @@ impl Session {
                 self.closed.push(pane);
             }
         }
-        self.after_close(now);
+        // Before it settles: one a close moved is told that instead.
         if let Some((told, failed)) = notice {
             for client in viewers {
                 self.notify_to(client, told.clone(), failed);
             }
         }
+        self.after_close(now);
     }
 
     /// Removes a tab and whatever panes are in it, killed as `killing`
@@ -8631,6 +8642,40 @@ mod tests {
             ]
             .join("\n")
         );
+        Ok(())
+    }
+
+    /// A client moved out of a workspace another closed is told what
+    /// closed, who closed it and where it is now, until its next key; the
+    /// client that closed it is told nothing.
+    #[test]
+    fn a_client_moved_by_anothers_kill_is_told_and_the_killer_is_not() -> TestResult {
+        let (mut s, watcher) = attached(24, 80)?;
+        let killer = s.attach(24, 80, None)?;
+        run(&mut s, "+1 str harmony rename")?;
+        run(
+            &mut s,
+            "opts +1 in str meta-design in 80 24 size new-tab drop",
+        )?;
+        run(&mut s, "opts +2 in 80 24 size new-tab drop")?;
+        run(
+            &mut s,
+            "opts +1 in str desktop-simple in 80 24 size new-tab drop",
+        )?;
+        for client in [watcher, killer] {
+            run(&mut s, &format!("str {client} client str @2 tab show"))?;
+        }
+        output_as(&mut s, Some(killer), "+2 kill")?;
+        let notice = |s: &Session, c| s.views.get(&c).and_then(|v| v.notice.clone());
+        assert_eq!(
+            notice(&s, watcher).map(|n| n.text).as_deref(),
+            Some(
+                "harmony › meta-design killed by c2: 2 tabs closed · now harmony · C-b w g shows all"
+            )
+        );
+        assert!(notice(&s, killer).is_none());
+        s.input(watcher, b"x");
+        assert!(notice(&s, watcher).is_none());
         Ok(())
     }
 

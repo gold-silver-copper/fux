@@ -60,10 +60,15 @@ starts a server. Inside a fux pane, `fux` refuses to attach.
   workspace's path and its tabs on the left and the focused pane or what
   the keys do on the right; when it ends, the row shows the pane again. A
   bell or a program's notification (OSC 9, 777) shows in the bottom-right
-  corner for five seconds, or until your next key. A screen too small for
-  its tab shows the panes cut off, and the corner names them (`[hidden %3]
-  [cut %2]`). No pane is ever resized for fux's own feedback. To give the
-  bar a row of its own, see the cookbook's "The bar on a row of its own".
+  corner for five seconds, or until your next key. When a workspace you
+  are in closes by someone else's request (a kill, or its last program
+  ending), the corner says what closed, who closed it and where you are
+  now, until your next key: `harmony › meta-design killed by %12: 20 tabs
+  closed · now harmony › desktop-simple · C-b w g shows all`. A screen
+  too small for its tab shows the panes cut off, and the corner names
+  them (`[hidden %3] [cut %2]`). No pane is ever resized for fux's own
+  feedback. To give the bar a row of its own, see the cookbook's "The bar
+  on a row of its own".
 
 The server runs until its last pane closes, until `fux kill-server`
 (refused from its own panes and while a person's terminal is attached), or

@@ -505,6 +505,19 @@ pub struct Parts {
     /// Each in one tab: a pane is added in its place and leaves with it.
     panes: BTreeMap<PaneId, Pane>,
     journal: Journal,
+    /// The workspaces tabs closed in since the session last settled.
+    closing: BTreeMap<WsId, Closing>,
+    /// The clients a close moved since then, each with what to tell it
+    /// (`take_displaced`).
+    displaced: Vec<(ClientId, String)>,
+}
+
+/// A workspace tabs closed in (`Parts::closing`): how many, and its trail
+/// and why if it closed too.
+#[derive(Default)]
+struct Closing {
+    tabs: usize,
+    closed: Option<(String, Close)>,
 }
 
 /// A tree as it was, to be put back (`Parts::structure`).
@@ -636,6 +649,8 @@ impl Parts {
             },
             panes: BTreeMap::new(),
             journal: Journal::new(journal),
+            closing: BTreeMap::new(),
+            displaced: Vec::new(),
         }
     }
 
@@ -697,6 +712,24 @@ impl Parts {
     /// The workspaces from the top down to `id`, none if it is not there.
     pub fn path(&self, id: WsId) -> Vec<WsId> {
         path(&self.workspaces, id)
+    }
+
+    /// The labels of the workspaces from the top down to `id`:
+    /// `proj › agent1`.
+    pub fn trail(&self, id: WsId) -> String {
+        let path = self.path(id).into_iter();
+        let labels: Vec<_> = (path.filter_map(|ws| self.workspace(ws)))
+            .map(Workspace::label)
+            .collect();
+        labels.join(" › ")
+    }
+
+    /// The clients moved out of a workspace that closed since this was last
+    /// asked, by requests they did not make, each with what to tell it
+    /// (`moved`).
+    pub(crate) fn take_displaced(&mut self) -> Vec<(ClientId, String)> {
+        self.closing.clear();
+        std::mem::take(&mut self.displaced)
     }
 
     /// The workspace workspace `id` is in, none at the top; none at all if
@@ -824,6 +857,9 @@ impl Parts {
     /// is shown a pane there before and after, is not as `before`: the
     /// place left in the workspaces as they were nested then (`nesting`),
     /// the one reached as they are now, and one place that stays in both.
+    /// One a workspace's close moved, by a request not its own, is
+    /// `displaced`: told the outermost that closed where it was, why, the
+    /// tabs that closed in it, who closed it, and where it is now.
     fn moved(&mut self, before: BTreeMap<ClientId, Place>, nesting: &BTreeMap<WsId, WsId>) {
         let after = self.places();
         let clients: BTreeSet<ClientId> = before.keys().chain(after.keys()).copied().collect();
@@ -850,6 +886,38 @@ impl Parts {
                 }
                 None => self.journal.push_then(shown(now), nesting, true),
             }
+            let by = self.journal.current_actor();
+            if by == Actor::Client(client) {
+                continue;
+            }
+            // The outermost workspace that closed of those it was in.
+            let up = |ws: &WsId| nesting.get(ws).copied();
+            let was = was.map(|((ws, _), _)| ws);
+            let closed = (std::iter::successors(was, up).take(nesting.len().saturating_add(1)))
+                .filter_map(|ws| self.closing.get(&ws))
+                .filter_map(|c| Some((c.closed.clone()?, c.tabs)))
+                .last();
+            let (Some(((trail, why), tabs)), Some(((here, _), _))) = (closed, now) else {
+                continue;
+            };
+            let why = match why {
+                Close::Killed => "killed",
+                Close::Exited | Close::Emptied => "closed",
+            };
+            let by = match by {
+                Actor::Client(client) => client.to_string(),
+                Actor::Pane(pane, _) | Actor::Program(pane, _) => pane.to_string(),
+                Actor::Outside => "a command outside fux".to_owned(),
+                Actor::Server => "fux".to_owned(),
+            };
+            let tabs = match tabs {
+                1 => "1 tab".to_owned(),
+                n => format!("{n} tabs"),
+            };
+            let here = self.trail(here);
+            let told =
+                format!("{trail} {why} by {by}: {tabs} closed · now {here} · C-b w g shows all");
+            self.displaced.push((client, told));
         }
     }
 
@@ -1301,6 +1369,10 @@ impl Parts {
         let Some((ws, _)) = self.tab(tab) else {
             return;
         };
+        for within in self.path(ws) {
+            let closing = self.closing.entry(within).or_default();
+            closing.tabs = closing.tabs.saturating_add(1);
+        }
         let Some(w) = ws_mut(&mut self.workspaces, ws) else {
             return;
         };
@@ -1327,6 +1399,8 @@ impl Parts {
                 Killing::Within(w) if self.within(ws, w) => Close::Killed,
                 Killing::Within(_) | Killing::None => Close::Emptied,
             };
+            let trail = self.trail(ws);
+            self.closing.entry(ws).or_default().closed = Some((trail, why));
             self.take_workspace(ws);
             self.journal
                 .push(Event::Workspace((parent, ws), Change::Closed(why)));
