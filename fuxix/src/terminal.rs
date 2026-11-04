@@ -108,6 +108,13 @@ pub struct Raw<F: AsFd> {
 static HELD: std::sync::Mutex<Vec<(u64, libc::c_int, Termios, libc::c_int)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// [`HELD`], locked. A poisoned lock still holds a whole list: nothing
+/// that runs under it leaves one half changed.
+fn held() -> std::sync::MutexGuard<'static, Vec<(u64, libc::c_int, Termios, libc::c_int)>> {
+    HELD.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl<F: AsFd> Raw<F> {
     /// Raw mode now, and the modes back now once dropped.
     pub fn enter(fd: F) -> Result<Raw<F>> {
@@ -129,19 +136,18 @@ impl<F: AsFd> Raw<F> {
         HOOKED.call_once(|| {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                // Not waited for: the panic may have come with it held.
-                if let Ok(held) = HELD.try_lock() {
-                    for (_, raw, termios, when) in held.iter().rev() {
-                        let _ = set(*raw, *when, termios);
-                    }
+                // Waited for: only a push, a retain and this loop run
+                // under the lock, none of which panics, so the panicking
+                // thread never holds it, and another holds it only for an
+                // instant.
+                for (_, raw, termios, when) in held().iter().rev() {
+                    let _ = set(*raw, *when, termios);
                 }
                 previous(info);
             }));
         });
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if let Ok(mut held) = HELD.lock() {
-            held.push((id, fd.as_fd().as_raw_fd(), saved.clone(), when));
-        }
+        held().push((id, fd.as_fd().as_raw_fd(), saved.clone(), when));
         // Made first, so that failing to set raw mode puts the modes back.
         let entered = Raw {
             fd,
@@ -156,9 +162,7 @@ impl<F: AsFd> Raw<F> {
 
 impl<F: AsFd> Drop for Raw<F> {
     fn drop(&mut self) {
-        if let Ok(mut held) = HELD.lock() {
-            held.retain(|(id, ..)| *id != self.id);
-        }
+        held().retain(|(id, ..)| *id != self.id);
         let raw = self.fd.as_fd().as_raw_fd();
         while set(raw, self.when, &self.saved) == Err(Errno::INTR) {}
     }
