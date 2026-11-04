@@ -112,7 +112,9 @@ jobs:
           cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds --no-run 2>&1 | tee "$CI_LOGS/bounds-build.log"
 
       - name: fux-vt bounds and seeds
-        timeout-minutes: 5
+        # bounds.rs alone takes 200-250 s on macOS runners (master b65347072:
+        # 247 s), so 5 minutes left no room for a slow runner.
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           # macOS refuses a data limit; the probes' own counts still bound it there.
