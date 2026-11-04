@@ -309,7 +309,7 @@ pub fn start(
     let (master, slave) = fuxix::pty::open(size).map_err(|e| format!("opening a PTY: {e}"))?;
     fuxix::io::set_nonblocking(&master, false).map_err(|e| format!("the PTY: {e}"))?;
     let (child, _) = slave
-        .spawn(argv, fuxix::process::Dispositions::Default, setup)
+        .spawn(argv, setup, fuxix::process::Dispositions::Default)
         .map_err(|e| format!("starting {:?}: {e}", argv.first()))?;
     Ok((master, child))
 }

@@ -1046,13 +1046,17 @@ impl Terminal {
         let (child, _) = {
             let _guard = SPAWN.lock().map_err(e)?;
             slave
-                .spawn(argv, fuxix::process::Dispositions::Default, |command| {
-                    command
-                        .env("TERM", "xterm-256color")
-                        .env_remove("FUX_PANE")
-                        .env_remove("FUX_SERVER");
-                    setup(command);
-                })
+                .spawn(
+                    argv,
+                    |command| {
+                        command
+                            .env("TERM", "xterm-256color")
+                            .env_remove("FUX_PANE")
+                            .env_remove("FUX_SERVER");
+                        setup(command);
+                    },
+                    fuxix::process::Dispositions::Default,
+                )
                 .map_err(e)?
         };
         Ok(Terminal {

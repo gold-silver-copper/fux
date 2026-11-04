@@ -40,23 +40,27 @@ pub fn spawn(
         let _ = fuxix::terminal::set_window_size(&master, size.nonzero().into(), Some(pixels));
     }
     let (child, pid) = slave
-        .spawn(argv, fuxix::process::Dispositions::Default, |command| {
-            // TERM_PROGRAM is fux's, as tmux sets its own: the outer
-            // terminal's would have programs use features of a terminal they
-            // are not talking to (Claude Code, under Ghostty, pushed kitty
-            // keyboard flags fux does not honour).
-            command
-                .current_dir(cwd)
-                .env("TERM", "xterm-256color")
-                .env("TERM_PROGRAM", "fux")
-                .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
-            for key in unset {
-                command.env_remove(key);
-            }
-            for (key, value) in env {
-                command.env(key, value);
-            }
-        })
+        .spawn(
+            argv,
+            |command| {
+                // TERM_PROGRAM is fux's, as tmux sets its own: the outer
+                // terminal's would have programs use features of a terminal they
+                // are not talking to (Claude Code, under Ghostty, pushed kitty
+                // keyboard flags fux does not honour).
+                command
+                    .current_dir(cwd)
+                    .env("TERM", "xterm-256color")
+                    .env("TERM_PROGRAM", "fux")
+                    .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+                for key in unset {
+                    command.env_remove(key);
+                }
+                for (key, value) in env {
+                    command.env(key, value);
+                }
+            },
+            fuxix::process::Dispositions::Default,
+        )
         .map_err(|source| format!("starting {program} in {cwd:?}: {source}"))?;
     // The std handle is dropped without waiting: fux reaps the pid itself, and
     // std never waits on a dropped child.
