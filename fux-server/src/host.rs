@@ -94,6 +94,10 @@ pub struct Host {
     /// A program whose exit is told, its terminal still read till it is
     /// empty or closed (`read_left`); then its pane is frozen (D-90).
     leftover: Option<Child>,
+    /// Till when an ended program's last output may still be coming
+    /// (`fuxix::pty::SETTLE`): its terminal found empty till then is
+    /// waited on, not done with.
+    settling: Option<Instant>,
     dying: Vec<Dying>,
     /// Programs killed and not yet reaped.
     killed: Vec<Job>,
@@ -199,6 +203,7 @@ impl Host {
             shown: false,
             sent_facts: None,
             offered: None,
+            settling: None,
             dirty: true,
             revision: 0,
             whole: 0,
@@ -562,6 +567,8 @@ impl Host {
         // since too. Its terminal is read on after its exit is told, a turn
         // at a time, till it is empty or closed (D-90).
         if pane.exiting.is_none() {
+            let settle = fuxix::pty::SETTLE;
+            self.settling = (!settle.is_zero()).then(|| crate::after(now, settle));
             let mut pane = self.pane_mut();
             pane.exiting(ended);
             pane.drain(true);
@@ -657,7 +664,7 @@ impl Host {
         }
         match drain {
             Drain::More => return,
-            Drain::Empty if !empty_ends => return,
+            Drain::Empty if !empty_ends || self.settling.is_some_and(|at| now < at) => return,
             Drain::Empty | Drain::Closed => {}
             Drain::Failed(error) => {
                 let mut pane = self.pane_mut();
@@ -668,6 +675,7 @@ impl Host {
             }
         }
         self.pane_mut().drain(false);
+        self.settling = None;
         if let Some(r) = &mut self.respawning
             && let Some(child) = r.old.take()
         {
@@ -680,6 +688,22 @@ impl Host {
                 deadline: now,
             });
         }
+    }
+
+    /// The terminal whose last output is awaited (`settling`), nothing
+    /// read waiting: polled, so that what comes, or its close, is read as
+    /// it comes, not when the time is up.
+    fn settling(&self) -> Option<&Child> {
+        self.settling
+            .filter(|_| self.pane.draining && !self.pane.has_unread())?;
+        let old = self.respawning.as_ref().and_then(|r| r.old.as_ref());
+        (old.or(self.leftover.as_ref())).or_else(|| self.pane.process().child())
+    }
+
+    /// Its output, awaited (`settling`), came or closed.
+    fn settled(&mut self, now: Instant) {
+        self.read_left(true, now);
+        self.after_turn(now);
     }
 
     /// Output from its program.
@@ -762,7 +786,8 @@ impl Host {
         let respawn = self.respawning.is_some();
         let frame = (self.pane.frame_deadline().filter(|_| !respawn)).map(|at| (at, Timer::Frame));
         let unread = (self.pane.unread_due()).or(self.respawning.as_ref().map(|r| r.since));
-        let unread = unread.map(|at| (at, Timer::Unread));
+        let settling = self.settling().and(self.settling);
+        let unread = settling.or(unread).map(|at| (at, Timer::Unread));
         let grace = (self.dying.iter().map(|d| d.deadline).min()).map(|at| (at, Timer::Grace));
         [frame, unread, grace].into_iter().flatten()
     }
@@ -1312,7 +1337,10 @@ impl Host {
     /// program its server was not offered yet: Windows' alone, as a Unix
     /// server adopts its panes' orphans instead.
     pub fn offer(&mut self) -> Option<crate::link::Offered> {
-        let child = self.pane.process().child()?;
+        // A respawn's as soon as it runs, not once what the old one left
+        // is read: a crash till then ends it too.
+        let new = self.respawning.as_ref().and_then(|r| r.process.child());
+        let child = new.or_else(|| self.pane.process().child())?;
         let offer = child.leader.offer()?;
         if self.offered == Some(offer.program) {
             return None;
@@ -1498,6 +1526,11 @@ impl Host {
     /// Whether a respawn is under way.
     pub fn respawning(&self) -> bool {
         self.respawning.is_some()
+    }
+    /// Its ended program's last output is awaited till `at`.
+    #[cfg(all(test, unix))]
+    pub(crate) fn settle_till(&mut self, at: Instant) {
+        self.settling = Some(at);
     }
     /// Whether a program whose exit is told is still read.
     pub fn leftover(&self) -> bool {
@@ -1905,7 +1938,10 @@ pub fn serve(
             .map(|end| fds.push(PollFd::new(&end.stream, writes(!end.out.is_empty()))));
         let reaped = fds.push(PollFd::new(children.reader(), Events::IN));
         let reached = fds.push(PollFd::new(&listener, Events::IN));
-        let program = reading.map(|child| fds.push(PollFd::new(&child.master, writes(host.input))));
+        let settling = host.settling();
+        let program = (reading
+            .map(|child| fds.push(PollFd::new(&child.master, writes(host.input)))))
+        .or_else(|| settling.map(|child| fds.push(PollFd::new(&child.master, Events::IN))));
         let peered: Vec<_> = (peers.iter())
             .map(|peer| {
                 fds.push(PollFd::new(
@@ -1967,11 +2003,15 @@ pub fn serve(
             }
         }
         if !program.is_empty() {
-            if program.intersects(Events::OUT) {
-                host.write_input();
-            }
-            if program.intersects(Events::IN | Events::HUP | Events::ERR) {
-                read_program(&mut host, &mut buffer, &mut clock, now);
+            if host.settling().is_some() {
+                host.settled(now);
+            } else {
+                if program.intersects(Events::OUT) {
+                    host.write_input();
+                }
+                if program.intersects(Events::IN | Events::HUP | Events::ERR) {
+                    read_program(&mut host, &mut buffer, &mut clock, now);
+                }
             }
         }
         // What reached it: each peer's words, in order, then its end.

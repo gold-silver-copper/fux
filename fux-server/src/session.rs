@@ -1077,7 +1077,18 @@ impl Session {
     /// orphans), else none; then the role rule. Every question it was
     /// asked and did not answer is `indeterminate`: it may have done it.
     fn pane_lost(&mut self, id: PaneId, how: &str, now: Instant) {
-        self.links.remove(&id);
+        let link = self.links.remove(&id);
+        // The copy of a program's handle it holds is let go, unless that
+        // program still runs, to be reaped below.
+        let running = (self.parts.panes().get(&id))
+            .filter(|pane| pane.exit_status().is_none())
+            .and_then(|pane| pane.pid());
+        if let Some(Link::Remote(remote)) = link
+            && let Some(adopted) = remote.adopted
+            && running != Some(adopted)
+        {
+            fuxix::process::release(adopted);
+        }
         let unanswered: Vec<u64> = (self.asks.iter())
             .filter(|(_, pane)| **pane == id)
             .map(|(ask, _)| *ask)
@@ -6911,6 +6922,40 @@ mod tests {
             frozen,
             "still read in {drained} turns once the writing stopped"
         );
+        Ok(())
+    }
+
+    /// An ended program's terminal found empty before its last output
+    /// can have come (`fuxix::pty::SETTLE`) is waited on, its next turn due
+    /// when that time is up; then, or as it closes, it is done with.
+    #[test]
+    fn a_terminal_found_empty_is_waited_on_till_it_settles() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "opts str agent in 80 24 size str /bin/true program new-tab",
+        )?;
+        let id = PaneId::of(2);
+        run(&mut s, "%2 respawn")?;
+        let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+        let pid = child.leader.pid();
+        give(&mut s, id, Process::Reading(child))?;
+        s.end_program(id, Ended::Exited(0));
+        let now = Instant::now();
+        let at = crate::after(now, Duration::from_secs(5));
+        host(&mut s, id, |h| h.settle_till(at))?;
+        let empty = |_: &fuxix::pty::Master, _: &mut [u8]| Err(fuxix::Errno::AGAIN);
+        host(&mut s, id, |h| h.read_left_with(true, empty, now))?;
+        let waited = host(&mut s, id, |h| h.leftover())?;
+        let due = host(&mut s, id, |h| h.timer())?;
+        host(&mut s, id, |h| h.read_left_with(true, empty, at))?;
+        let drained = !host(&mut s, id, |h| h.leftover())?;
+        let _ = fuxix::process::kill_group(pid, fuxix::process::Signal::Kill);
+        reap(&mut s);
+        assert!(waited, "done with before its time was up");
+        assert_eq!(due, Some((at, crate::host::Timer::Unread)));
+        assert!(drained, "still waited on after its time was up");
         Ok(())
     }
 

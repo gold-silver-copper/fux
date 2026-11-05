@@ -53,6 +53,12 @@ pub const BREAK: &[u8] =
 /// (D-136), which runs from the hang-up, not from the close.
 const DRAIN: Duration = Duration::from_millis(50);
 
+/// How long a terminal's last output may still be coming after its
+/// program's end: read on till the pipe breaks, 1 to 5 ms with
+/// `ReleasePseudoConsole`, or this long, as the built-in ConPTY's breaks
+/// only once its console is closed, which its user does after this.
+pub const SETTLE: Duration = Duration::from_millis(100);
+
 /// A pseudo console, closed once: by [`Master::hang_up`], or as the last
 /// of the master and slave drops. Never on the caller's thread, where a
 /// close that waits for its output to be read would wait for itself.
