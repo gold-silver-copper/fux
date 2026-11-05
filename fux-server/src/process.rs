@@ -2,16 +2,18 @@
 //! it and its session are ended.
 use fux_wire::answer::Ended;
 pub use fuxix::process::Pid;
-use fuxix::process::{Scan, Signal};
+use fuxix::process::{Job, Reach, Scan, Signal};
 use fuxix::pty::Master;
 use std::path::Path;
 
-/// A pane's program: the leader of a session of its own, started by fux
-/// and not yet reaped. Unreaped, its pid is its group's and its session's
-/// ID and cannot be reused, so it is signalled through this alone; reaping
-/// it takes it.
+/// A pane's program, the leader of its [`Job`], and whether its pane is
+/// closed by fux: when it is hung up and killed, how far, and what is
+/// logged of what was missed is decided here.
 #[must_use = "a leader dropped unreaped is a zombie no one reaps"]
-pub struct Leader(Pid, bool);
+pub struct Leader {
+    job: Job,
+    closed: bool,
+}
 
 /// A pane's program and the master side of its PTY.
 pub struct Child {
@@ -39,7 +41,7 @@ pub fn spawn(
     if let Some(pixels) = pixels(size, cell) {
         let _ = fuxix::terminal::set_window_size(&master, size.nonzero().into(), Some(pixels));
     }
-    let (child, pid) = slave
+    let (child, job) = slave
         .spawn(
             argv,
             |command| {
@@ -66,7 +68,7 @@ pub fn spawn(
     // std never waits on a dropped child.
     drop(child);
     Ok(Child {
-        leader: Leader(pid, false),
+        leader: Leader { job, closed: false },
         master,
     })
 }
@@ -90,13 +92,13 @@ pub fn pixels(
 
 impl Leader {
     pub fn pid(&self) -> Pid {
-        self.0
+        self.job.leader()
     }
 
     /// Its pane is closed by fux, not ended by itself: its whole session
     /// goes when it is finished.
     pub fn closed(&mut self) {
-        self.1 = true;
+        self.closed = true;
     }
 
     /// Whether it has exited, without reaping it: its exit status, or
@@ -104,7 +106,7 @@ impl Leader {
     /// no signal interrupts it; it fails only for a pid that is no unreaped
     /// child, one gone, whose status is lost.
     pub fn exited(&self) -> Option<Ended> {
-        match fuxix::process::ended(self.0) {
+        match self.job.ended() {
             Ok(status) => status.map(Ended::from),
             Err(_) => Some(Ended::Lost),
         }
@@ -112,64 +114,44 @@ impl Leader {
 
     /// Signals its process group and every other process in its session.
     /// A background job started by dash sits in its own group, out of reach
-    /// of the group signal, but stays in the session. The session is looked
-    /// for in the server's own tree, which keeps the orphans its panes
-    /// leave (`fuxix::process::tree`).
+    /// of the group signal, but stays in the session, as an orphan does
+    /// ([`Job::members`]).
     pub fn hang_up(&self) {
-        // Found before any signal: once the group's leader dies, its
-        // children are on their way to this process, in no one's list.
-        self.signal(self.session(), Signal::Hup);
+        self.signal(Signal::Hup, Reach::Session);
     }
 
-    /// Signals its process group, then each of `others`. What it may have
-    /// missed goes to the server's log: a scan for them that did not
-    /// finish, and each signal the system refused (one to a process gone
-    /// already is no loss).
-    fn signal(&self, (others, scan): (Vec<Pid>, Scan), signal: Signal) {
-        let group = fuxix::process::kill_group(self.0, signal).err();
-        let refused: Vec<String> = (group.map(|errno| (self.0, errno)).into_iter())
-            .chain(
-                others
-                    .into_iter()
-                    .filter_map(|pid| Some((pid, fuxix::process::kill(pid, signal).err()?))),
-            )
+    /// Signals as far as `reach` says. What it may have missed goes to the
+    /// server's log: a scan for them that did not finish, and each signal
+    /// the system refused (one to a process gone already is no loss).
+    fn signal(&self, signal: Signal, reach: Reach) {
+        let sent = self.job.signal(signal, reach);
+        let refused: Vec<String> = (sent.failed.into_iter())
             .filter(|(_, errno)| *errno != fuxix::Errno::SRCH)
             .map(|(pid, errno)| format!("{pid}: {errno}"))
             .collect();
-        let name = signal.name();
-        match scan {
+        let (name, session) = (signal.name(), self.pid());
+        match sent.scan {
             Scan::Complete => {}
             Scan::Truncated => log!(
-                "SIG{name} to session {}: the scan of processes was cut short, the rest not found",
-                self.0
+                "SIG{name} to session {session}: the scan of processes was cut short, the rest not found"
             ),
-            Scan::Failed(errno) => log!(
-                "SIG{name} to session {}: processes not all found: {errno}",
-                self.0
-            ),
+            Scan::Failed(errno) => {
+                log!("SIG{name} to session {session}: processes not all found: {errno}")
+            }
         }
         if !refused.is_empty() {
             let refused = refused.join(", ");
-            log!("SIG{name} to session {} refused: {refused}", self.0);
+            log!("SIG{name} to session {session} refused: {refused}");
         }
     }
 
-    /// The other processes in its session, in the server's tree, and how
-    /// the scan of the tree went.
-    fn session(&self) -> (Vec<Pid>, Scan) {
-        let tree = fuxix::process::tree();
-        let session = (tree.pids.into_iter())
-            .filter(|pid| *pid != self.0 && fuxix::process::session(*pid) == Some(self.0));
-        (session.collect(), tree.scan)
-    }
-
     /// Ends its group and the rest of its session and reaps it, without
-    /// waiting, so uninterrupted: its pid back if it has not exited yet,
+    /// waiting, so uninterrupted: its job back if it has not exited yet,
     /// for `reaped` to reap once it has. Called after `hang_up` and a grace
     /// period, with the master closed.
-    pub fn finish(self) -> Result<(), Pid> {
+    pub fn finish(self) -> Option<Job> {
         self.kill();
-        reaped(self.0).then_some(()).ok_or(self.0)
+        reaped(self.job)
     }
 
     /// Kills its group and, if its pane is closed by fux, the rest of its
@@ -178,34 +160,43 @@ impl Leader {
     pub fn kill(&self) {
         // Its pane closed by fux: as the hangup, every process left in its
         // session, a job in a group of its own that ignored the hangup
-        // (`nohup cmd &`) too, found first. A program that ended by itself
-        // leaves those it meant to (`nohup job & exit`).
-        let session = if self.1 {
-            self.session()
+        // (`nohup cmd &`) too. A program that ended by itself leaves those
+        // it meant to (`nohup job & exit`).
+        let reach = if self.closed {
+            Reach::Session
         } else {
-            (Vec::new(), Scan::Complete)
+            Reach::Group
         };
-        self.signal(session, Signal::Kill);
+        self.signal(Signal::Kill, reach);
     }
 }
 
-/// Reaps `pid`, a leader killed and not yet reaped, if it has exited:
-/// whether it is gone.
-pub fn reaped(pid: Pid) -> bool {
-    !matches!(fuxix::process::reap(pid), Ok(None))
+/// Reaps `job`, a leader killed and not yet reaped, if it has exited: the
+/// job back while it runs.
+pub fn reaped(job: Job) -> Option<Job> {
+    job.reap().err()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A leader whose status can't be read (no child of this process, its
+    /// A leader whose status can't be read (reaped behind its back, its
     /// status lost) is told ended, its status unknown: never a success.
     #[test]
     fn a_status_not_read_is_no_success() -> Result<(), String> {
-        let me = i32::try_from(std::process::id()).map_err(|e| e.to_string())?;
-        let leader = Leader(Pid::from_raw(me).ok_or("no pid")?, false);
-        assert_eq!(leader.exited(), Some(Ended::Lost));
+        let argv = ["/bin/sh".to_owned(), "-c".to_owned(), "exit 0".to_owned()];
+        let size = fux_vt::Size::new(4, 20).map_err(|e| format!("{e:?}"))?;
+        let child = spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
+        let pid = child.leader.pid();
+        for _ in 0..500 {
+            if !matches!(fuxix::process::reap(pid), Ok(None)) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(child.leader.exited(), Some(Ended::Lost));
+        assert!(child.leader.finish().is_none());
         Ok(())
     }
 }

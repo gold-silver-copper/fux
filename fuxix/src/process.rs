@@ -1,6 +1,6 @@
 //! Processes: their IDs, signals, and how they end. What a process ID is
 //! differs by OS, and so does what can be done to a process: on Unix, the
-//! signals, sessions, reaping and tree in `unix.rs`. The signal names and
+//! signals, sessions, reaping, tree and `Job` in `unix.rs`. The signal names and
 //! how a process ended are fux's on every OS, as the wire carries them.
 #[cfg(unix)]
 mod unix;

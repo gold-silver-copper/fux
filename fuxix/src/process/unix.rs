@@ -52,21 +52,6 @@ pub fn kill_group(group: Pid, signal: Signal) -> Result<()> {
     check(unsafe { libc::killpg(group.as_raw(), signal.raw()) }).map(drop)
 }
 
-/// Whether the group `group` has a process in it, found by sending it no
-/// signal (`killpg(group, 0)`): one this process may not signal counts too.
-/// A program's group outlives it while a job it left runs, for [`tree`]
-/// and [`session`] to find, or [`kill_group`] to end.
-pub fn group_alive(group: Pid) -> Result<bool> {
-    // SAFETY: killpg takes two numbers and touches no memory; with no
-    // signal it only checks.
-    match check(unsafe { libc::killpg(group.as_raw(), 0) }) {
-        Ok(_) => Ok(true),
-        Err(Errno::SRCH) => Ok(false),
-        Err(errno) if errno.raw() == libc::EPERM => Ok(true),
-        Err(errno) => Err(errno),
-    }
-}
-
 /// This process's effective user ID.
 pub fn geteuid() -> u32 {
     // SAFETY: geteuid cannot fail and touches no memory.
@@ -253,9 +238,7 @@ pub fn reap_orphans(kept: impl Fn(Pid) -> bool) -> Vec<(Pid, Status)> {
     }
 }
 
-/// The most processes a [`tree`] holds on Linux: a runaway tree is cut
-/// short here.
-#[cfg(not(target_os = "macos"))]
+/// The most processes a [`tree`] holds: a runaway tree is cut short here.
 pub(crate) const TREE_MAX: usize = 4096;
 
 /// What a [`tree`] found, and whether it looked everywhere.
@@ -272,8 +255,8 @@ pub struct Tree {
 pub enum Scan {
     #[default]
     Complete,
-    /// There may be more: past `TREE_MAX` on Linux, or a list that
-    /// filled its buffer on macOS.
+    /// There may be more: past `TREE_MAX`, or a list of a session's
+    /// members that filled its buffer on macOS.
     Truncated,
     /// The system refused a list, with this error; it read the others.
     Failed(Errno),
@@ -281,7 +264,6 @@ pub enum Scan {
 
 impl Tree {
     /// Takes `found` in until it holds [`TREE_MAX`]: whether all fit.
-    #[cfg(not(target_os = "macos"))]
     fn add(&mut self, found: impl IntoIterator<Item = Pid>) -> bool {
         for pid in found {
             if self.pids.len() >= TREE_MAX {
@@ -291,6 +273,27 @@ impl Tree {
             self.pids.push(pid);
         }
         true
+    }
+
+    /// Keeps the processes in the session `leader` leads, but `leader`. One
+    /// gone since it was found is no member; one whose session the system
+    /// won't tell is a miss, said.
+    fn keep_session(&mut self, leader: Pid) {
+        let mut missed = None;
+        self.pids.retain(|pid| {
+            // SAFETY: getsid takes a number and touches no memory.
+            match check(unsafe { libc::getsid(pid.as_raw()) }) {
+                Ok(sid) => sid == leader.as_raw() && *pid != leader,
+                Err(Errno::SRCH) => false,
+                Err(errno) => {
+                    missed.get_or_insert(errno);
+                    false
+                }
+            }
+        });
+        if let Some(errno) = missed {
+            self.incomplete(Scan::Failed(errno));
+        }
     }
 
     /// The scan missed something; the first miss is the one said.
@@ -349,15 +352,48 @@ impl Tree {
         }
         true
     }
+
+    /// Takes in the children of `pid` (`None`: this process), reading no
+    /// more of the list than there is room for: whether all fit. One that
+    /// ended since it was found has none; a list the system refuses is
+    /// said. libproc gives a count of pids, and 0 for a failure as for none.
+    #[cfg(target_os = "macos")]
+    fn read_children(&mut self, pid: Option<Pid>) -> bool {
+        // SAFETY: getpid cannot fail and touches no memory.
+        let parent = pid.map_or_else(|| unsafe { libc::getpid() }, Pid::as_raw);
+        // Room and one more: a list that fills it may have had more.
+        let room = TREE_MAX.saturating_sub(self.pids.len()).saturating_add(1);
+        let mut found: Vec<libc::c_int> = vec![0; room];
+        let Ok(bytes) = libc::c_int::try_from(size_of_val(found.as_slice())) else {
+            self.incomplete(Scan::Failed(Errno::INVAL));
+            return true;
+        };
+        clear_errno();
+        // SAFETY: the buffer is `bytes` long and writable.
+        let count = unsafe { libc::proc_listchildpids(parent, found.as_mut_ptr().cast(), bytes) };
+        let count = usize::try_from(count).unwrap_or(0);
+        if count == 0 {
+            // A failure, said as no children: errno tells them apart. One
+            // that ended since it was found (`ESRCH`) has none.
+            match Errno::last() {
+                errno if errno.raw() == 0 || errno == Errno::SRCH => {}
+                errno => self.incomplete(Scan::Failed(errno)),
+            }
+            return true;
+        }
+        found.truncate(count);
+        self.add(found.into_iter().filter_map(Pid::from_raw))
+    }
 }
 
 /// The processes this one started, those they started in turn, and the
-/// orphans it adopted ([`adopt_orphans`]); not itself. Found by each one's
-/// threads' children, at most [`TREE_MAX`].
-#[cfg(not(target_os = "macos"))]
+/// orphans it adopted ([`adopt_orphans`], Linux only: on macOS an orphan
+/// leaves for launchd); not itself, and no other process. Found by each
+/// one's children (on Linux, each of its threads'), at most [`TREE_MAX`].
 pub fn tree() -> Tree {
     let mut tree = Tree::default();
     // A kernel without the lists has none to read for any thread.
+    #[cfg(not(target_os = "macos"))]
     if let Err(error) = std::fs::metadata("/proc/thread-self/children") {
         tree.incomplete(Scan::Failed(errno(&error)));
     }
@@ -371,18 +407,28 @@ pub fn tree() -> Tree {
     tree
 }
 
+/// Sets this thread's `errno` to 0, for a call that fails without saying so.
+#[cfg(target_os = "macos")]
+fn clear_errno() {
+    // SAFETY: __error takes nothing and returns this thread's errno's
+    // address, always valid.
+    let errno = unsafe { libc::__error() };
+    // SAFETY: it is this thread's errno, an int it may write.
+    unsafe { errno.write(0) };
+}
+
 /// The system's error behind `error`.
 #[cfg(not(target_os = "macos"))]
 fn errno(error: &std::io::Error) -> Errno {
     Errno::from_io_error(error).unwrap_or(Errno::from_raw(libc::EIO))
 }
 
-/// macOS has no reaper of orphans but launchd: an orphan leaves this
-/// process's tree, so every process the system lists is taken to be in it,
-/// as many as there are (`kern.maxproc` bounds them). libproc says a
-/// failure with a count of 0.
+/// Every process the system lists, as many as there are (`kern.maxproc`
+/// bounds them): where a [`Job`]'s members are looked for on macOS, which
+/// lists no session's processes alone (`sysctl` has no `KERN_PROC_SESSION`
+/// node: `ENOENT`). libproc says a failure with a count of 0.
 #[cfg(target_os = "macos")]
-pub fn tree() -> Tree {
+fn everyone() -> Tree {
     let mut tree = Tree::default();
     // SAFETY: a null buffer asks only for the count.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
@@ -409,6 +455,106 @@ pub fn tree() -> Tree {
     pids.truncate(written);
     tree.pids = pids.into_iter().filter_map(Pid::from_raw).collect();
     tree
+}
+
+/// A program started contained, and what it starts: the leader of a new
+/// session and process group, whose IDs are its pid ([`lead_session`]),
+/// not yet reaped. Unreaped, its pid cannot be reused, so its group and
+/// session are signalled through this alone; reaping it takes it. When to
+/// signal it, how far, and what to say of what was missed is the user's.
+#[must_use = "a job dropped with its leader unreaped leaves a zombie no one reaps"]
+#[derive(Debug, PartialEq, Eq)]
+pub struct Job(Pid);
+
+/// Which of a [`Job`]'s processes a signal reaches.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Reach {
+    /// Its leader's process group: what it started, but a job a shell put
+    /// in a group of its own, or one that left the group.
+    Group,
+    /// Its group and every other process in its session ([`Job::members`]).
+    Session,
+}
+
+/// What a [`Job::signal`] may have missed: the members it did not find
+/// (the scan for them, [`Scan::Complete`] for [`Reach::Group`]), and each
+/// process or group (its leader's pid) the system did not signal, with
+/// the error as it is: [`Errno::SRCH`] for one gone already.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sent {
+    pub scan: Scan,
+    pub failed: Vec<(Pid, Errno)>,
+}
+
+impl Job {
+    /// Starts `command` contained ([`lead_session`]), with the std handle,
+    /// which waits for nothing when dropped.
+    pub(crate) fn start(
+        command: &mut std::process::Command,
+        terminal: bool,
+        dispositions: Dispositions,
+    ) -> std::io::Result<(std::process::Child, Job)> {
+        lead_session(command, terminal, dispositions);
+        let child = command.spawn()?;
+        let pid = Pid::of(&child).ok_or_else(|| std::io::Error::other("a child with no pid"))?;
+        Ok((child, Job(pid)))
+    }
+
+    /// Its leader's pid, which is also its group's and its session's ID.
+    pub fn leader(&self) -> Pid {
+        self.0
+    }
+
+    /// The processes in its session but its leader: what it started, a job
+    /// in a group of its own, and an orphan. None are left but the leader
+    /// when the list is empty and its scan [`Scan::Complete`]. On Linux
+    /// they are looked for in this process's [`tree`], which keeps the
+    /// orphans it adopts ([`adopt_orphans`]); on macOS, where orphans go to
+    /// launchd, among every process the system lists.
+    pub fn members(&self) -> Tree {
+        let leader = self.0;
+        #[cfg(not(target_os = "macos"))]
+        let mut members = tree();
+        #[cfg(target_os = "macos")]
+        let mut members = everyone();
+        members.keep_session(leader);
+        members
+    }
+
+    /// Sends `signal` to its group and, as far as `reach` says, to each of
+    /// its other members, found first: once its leader dies, the processes
+    /// it started are on their way to their new parent, in no one's list.
+    pub fn signal(&self, signal: Signal, reach: Reach) -> Sent {
+        let others = match reach {
+            Reach::Group => Tree::default(),
+            Reach::Session => self.members(),
+        };
+        let group = kill_group(self.0, signal)
+            .err()
+            .map(|errno| (self.0, errno));
+        let each =
+            (others.pids.into_iter()).filter_map(|pid| Some((pid, kill(pid, signal).err()?)));
+        Sent {
+            scan: others.scan,
+            failed: group.into_iter().chain(each).collect(),
+        }
+    }
+
+    /// Whether its leader has ended, without reaping it ([`ended`]).
+    pub fn ended(&self) -> Result<Option<Status>> {
+        ended(self.0)
+    }
+
+    /// Reaps its leader if it has ended ([`reap`]): how it ended, or the
+    /// error that lost its status, once it is gone; the job back while it
+    /// runs.
+    pub fn reap(self) -> std::result::Result<Result<Status>, Job> {
+        match reap(self.0) {
+            Ok(None) => Err(self),
+            Ok(Some(status)) => Ok(Ok(status)),
+            Err(errno) => Ok(Err(errno)),
+        }
+    }
 }
 
 /// Opens one proc file without a heap-allocated path or CString.
@@ -586,22 +732,6 @@ mod tests {
     }
 
     #[test]
-    fn a_group_is_alive_until_its_last_process_is_reaped() -> std::result::Result<(), String> {
-        use std::os::unix::process::CommandExt;
-        let mut child = Command::new("sleep")
-            .arg("30")
-            .process_group(0)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        let pid = Pid::of(&child).ok_or("a pid")?;
-        assert_eq!(group_alive(pid), Ok(true));
-        kill_group(pid, Signal::Kill).map_err(|e| e.to_string())?;
-        child.wait().map_err(|e| e.to_string())?;
-        assert_eq!(group_alive(pid), Ok(false));
-        Ok(())
-    }
-
-    #[test]
     fn an_exit_code_is_reported() -> std::result::Result<(), String> {
         let child = Command::new("sh")
             .args(["-c", "exit 3"])
@@ -641,8 +771,8 @@ mod tests {
         Ok(())
     }
 
-    /// The tree finds a child, says its scan finished, and, on Linux,
-    /// stops at its bound saying so.
+    /// The tree finds a child, says its scan finished, and stops at its
+    /// bound saying so.
     #[test]
     fn a_tree_says_whether_it_was_cut_short() -> std::result::Result<(), String> {
         let mut child = Command::new("sleep")
@@ -655,16 +785,13 @@ mod tests {
         let _ = child.wait();
         assert!(found.pids.contains(&pid));
         assert_eq!(found.scan, Scan::Complete);
-        #[cfg(not(target_os = "macos"))]
-        {
-            let mut cut = Tree::default();
-            let many =
-                (1..=i32::try_from(TREE_MAX).map_err(|e| e.to_string())?).filter_map(Pid::from_raw);
-            assert!(cut.add(many));
-            assert_eq!(cut.scan, Scan::Complete);
-            assert!(!cut.add([pid]));
-            assert_eq!((cut.pids.len(), cut.scan), (TREE_MAX, Scan::Truncated));
-        }
+        let mut cut = Tree::default();
+        let many =
+            (1..=i32::try_from(TREE_MAX).map_err(|e| e.to_string())?).filter_map(Pid::from_raw);
+        assert!(cut.add(many));
+        assert_eq!(cut.scan, Scan::Complete);
+        assert!(!cut.add([pid]));
+        assert_eq!((cut.pids.len(), cut.scan), (TREE_MAX, Scan::Truncated));
         Ok(())
     }
 

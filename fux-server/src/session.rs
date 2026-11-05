@@ -6235,7 +6235,7 @@ mod tests {
         reap(&mut s);
         let mut gone = false;
         for _ in 0..200 {
-            gone = process::reaped(old_pid);
+            gone = !matches!(fuxix::process::reap(old_pid), Ok(None));
             if gone {
                 break;
             }
@@ -6465,9 +6465,7 @@ mod tests {
         let told = fuxix::terminal::window_size(&child.master).and_then(|(_, p)| p);
         let told = told.map(|p| (p.width.get(), p.height.get()));
         drop(child.master);
-        if let Err(pid) = child.leader.finish() {
-            process::reaped(pid);
-        }
+        let _ = child.leader.finish().and_then(process::reaped);
         assert_eq!(told, Some((size.cols() * 10, size.rows() * 20)));
         Ok(())
     }
@@ -6515,9 +6513,7 @@ mod tests {
         assert_eq!(pixels(&mut s)?, Some((400, 200)));
         if let Process::Reading(child) = host(&mut s, id, |h| h.set_process(Process::Absent))? {
             drop(child.master);
-            if let Err(pid) = child.leader.finish() {
-                process::reaped(pid);
-            }
+            let _ = child.leader.finish().and_then(process::reaped);
         }
         Ok(())
     }
@@ -6551,9 +6547,7 @@ mod tests {
         assert!(unknown(&mut s), "detached");
         if let Process::Reading(child) = host(&mut s, id, |h| h.set_process(Process::Absent))? {
             drop(child.master);
-            if let Err(pid) = child.leader.finish() {
-                process::reaped(pid);
-            }
+            let _ = child.leader.finish().and_then(process::reaped);
         }
         Ok(())
     }
