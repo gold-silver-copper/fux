@@ -76,9 +76,7 @@ fn parent(pid: i32) -> Result<i32, String> {
 
 /// The pid of `pane`'s program.
 fn program_pid(server: &Server, pane: &str) -> Result<i32, String> {
-    let pid = server.ok(&[
-        "str", pane, "pane", "str", "program", "get", "str", "pid", "get",
-    ])?;
+    let pid = server.ok(&[&format!("(sequence! (define! value-1242 (pane {})) \"program\" (define! value-1244 (get value-1242 \"program\")) \"pid\" (get value-1244 \"process-id\"))", fux::script::quoted(pane))])?;
     pid.trim()
         .parse()
         .map_err(|_| format!("{pane}'s program: {pid}"))
@@ -130,7 +128,10 @@ fn peak_kib(pid: i32) -> Result<u64, String> {
 
 /// The journal's entries from `cursor` on, as JSON lines.
 fn told(server: &Server, cursor: &str) -> Result<String, String> {
-    server.ok(&["all", "str", cursor, "0", "next-events"])
+    server.ok(&[&format!(
+        "(next-events (all) {} 0)",
+        fux::script::quoted(cursor)
+    )])
 }
 
 /// Where the run on `server`'s socket keeps what outlives its server.
@@ -192,9 +193,7 @@ fn a_pane_process_killed_ends_its_pane_alone() -> Outcome {
     server.type_line(&shell, "echo still-here")?;
     server.shows(&shell, "still-here")?;
     // A program's pane stays, its program ended.
-    let state = server.ok(&[
-        "str", &sleeper, "pane", "str", "program", "get", "str", "state", "get",
-    ])?;
+    let state = server.ok(&[&format!("(sequence! (define! value-1253 (pane {})) \"program\" (define! value-1255 (get value-1253 \"program\")) \"state\" (get value-1255 \"state\"))", fux::script::quoted(&sleeper))])?;
     assert_eq!(state.trim(), "ended");
     Ok(())
 }
@@ -251,7 +250,9 @@ fn a_client_that_stops_reading_ends_only_its_connection() -> Outcome {
     server.type_line(&shell, copies)?;
     eventually("its connection's process to end", || Ok(!alive(conn)))?;
     eventually("its client gone", || {
-        Ok(!server.ok(&["ls", "listing"])?.contains("client "))
+        Ok(!server
+            .ok(&["(listing (list-session))"])?
+            .contains("client "))
     })?;
     assert!(alive(pid), "the server");
     let mut other = server.attach(10, 40)?;
@@ -272,19 +273,14 @@ fn a_stale_expect_is_refused_by_its_pane_and_queues_nothing() -> Outcome {
     server.type_line(&shell, "echo moved")?;
     server.shows(&shell, "moved")?;
     let cursor = cursor(&server)?;
-    let stale = server.fux(&[
-        "str",
-        &seen,
-        "expect",
-        "str",
-        "NOT-SENT",
-        "text",
-        "send-keys",
-    ])?;
+    let stale = server.fux(&[&format!(
+        "(send-keys (text (expect {}) \"NOT-SENT\"))",
+        fux::script::quoted(&seen)
+    )])?;
     assert!(stale.stderr.contains("stale: "), "{}", stale.stderr);
     let lines = told(&server, &cursor)?;
     assert!(!lines.contains(r#""event":"input""#), "{lines}");
-    let capture = server.ok(&["str", &shell, "pane", "capture"])?;
+    let capture = server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(&shell))])?;
     assert!(!capture.contains("NOT-SENT"), "{capture}");
     Ok(())
 }
@@ -303,8 +299,14 @@ fn keys_for_a_tab_go_to_each_pane_that_takes_them() -> Outcome {
     ]
     .concat())?);
     assert_eq!(server.exits(&ended)?, "3");
-    let tab = server.ok(&["str", &shell, "pane", "str", "tab", "get"])?;
-    let sent = server.fux(&["str", tab.trim(), "tab", "str", "TOOK", "text", "send-keys"])?;
+    let tab = server.ok(&[&format!(
+        "(sequence! (define! value-1273 (pane {})) \"tab\" (get value-1273 \"tab\"))",
+        fux::script::quoted(&shell)
+    )])?;
+    let sent = server.fux(&[&format!(
+        "(send-keys (text (tab {}) \"TOOK\"))",
+        fux::script::quoted(tab.trim())
+    )])?;
     assert_ne!(sent.status, 0);
     assert!(sent.stderr.contains("not_running: "), "{}", sent.stderr);
     assert!(
@@ -326,7 +328,10 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
     let _stop = Stop(&started);
     let server = &started;
     let shell = pane(server, "work", &["sh"])?;
-    server.ok(&["str", &shell, "pane", "str", "editor", "rename"])?;
+    server.ok(&[&format!(
+        "(sequence! (rename (pane {}) \"editor\") #inert)",
+        fux::script::quoted(&shell)
+    )])?;
     let sleeper = id(&server.ok(&[
         &["str", &shell, "pane", "str", "vertical", "axis"][..],
         &program(&["sleep", "1000"]),
@@ -349,15 +354,18 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
     for program in programs {
         assert!(alive(program), "{program} ended with the server");
     }
-    server.ok(&["start"])?;
+    server.ok(&["(sequence! (start) #inert)"])?;
     assert_eq!(layout(server)?, before);
     assert_eq!(run(server, &shell)?, was);
     assert!(
         server
-            .ok(&["str", &shell, "pane", "capture"])?
+            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(&shell))])?
             .contains("MARK-BEFORE")
     );
-    let lost = server.fux(&["all", "str", &cursor, "0", "next-events"])?;
+    let lost = server.fux(&[&format!(
+        "(next-events (all) {} 0)",
+        fux::script::quoted(&cursor)
+    )])?;
     assert!(
         lost.stderr.contains("is not this server's journal"),
         "{}",
@@ -426,7 +434,7 @@ fn taken_back_with_its_spare_stopped(full: bool) -> Outcome {
         }
     }
     // Asked with a bound: a client of the old socket would wait for good.
-    let taken = server.ok(&["start"]).and_then(|_| {
+    let taken = server.ok(&["(sequence! (start) #inert)"]).and_then(|_| {
         let status = within(server, 30, &["status"])?;
         match status.status {
             0 => layout(server),
@@ -444,7 +452,7 @@ fn taken_back_with_its_spare_stopped(full: bool) -> Outcome {
     assert!(still, "the spare ran meanwhile");
     assert!(
         server
-            .ok(&["str", &shell, "pane", "capture"])?
+            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(&shell))])?
             .contains("MARK-BEFORE")
     );
     eventually("the old connection's process gone", || Ok(!alive(spare)))
@@ -454,13 +462,13 @@ struct Stop<'a>(&'a Server);
 
 impl Drop for Stop<'_> {
     fn drop(&mut self) {
-        let _ = self.0.fux(&["kill-server"]);
+        let _ = self.0.fux(&["(sequence! (kill-server) #inert)"]);
     }
 }
 
 /// What `ls listing` says of a server's workspaces, tabs and panes.
 fn layout(server: &Server) -> Result<String, String> {
-    let listing = server.ok(&["ls", "listing"])?;
+    let listing = server.ok(&["(listing (list-session))"])?;
     let kept = (listing.lines()).filter(|line| {
         !["client ", "cursor "]
             .iter()
@@ -479,7 +487,7 @@ fn stopping_ends_the_run_and_its_pane_processes() -> Outcome {
         let own = own_process(&server, &sleeper)?;
         let program = program_pid(&server, &sleeper)?;
         match stop {
-            "kill-server" => drop(server.ok(&["kill-server"])?),
+            "kill-server" => drop(server.ok(&["(sequence! (kill-server) #inert)"])?),
             _ => signal(
                 i32::try_from(server.pid().ok_or("pid")?).map_err(e)?,
                 Signal::Term,
@@ -511,7 +519,7 @@ fn a_run_that_cannot_be_taken_back_is_refused_naming_its_panes() -> Outcome {
         signal(pid, Signal::Kill);
         eventually("the server gone", || Ok(!alive(pid)))?;
         std::fs::remove_file(kept(&server).join(gone)).map_err(e)?;
-        let refused = server.fux(&["start"])?;
+        let refused = server.fux(&["(sequence! (start) #inert)"])?;
         assert_ne!(refused.status, 0, "{gone}");
         let waits = format!("{sleeper} (pid {own})");
         let said = &refused.stderr;
@@ -644,14 +652,17 @@ fn a_capture_never_passes_through_the_server() -> Outcome {
     let deadline = after(std::time::Duration::from_secs(120));
     let mut since = server.version(&lines)?;
     while !server
-        .ok(&["str", &lines, "pane", "capture"])?
+        .ok(&[&format!("(capture (pane {}))", fux::script::quoted(&lines))])?
         .contains("all-out")
     {
         since = server.changed(&lines, &since, deadline)?;
     }
     let pid = server_pid(&server)?;
     let before = peak_kib(pid)?;
-    let captured = server.ok(&["str", &lines, "pane", "all-history", "capture"])?;
+    let captured = server.ok(&[&format!(
+        "(capture (all-history (pane {})))",
+        fux::script::quoted(&lines)
+    )])?;
     assert!(captured.len() > 3 << 20, "{} bytes", captured.len());
     let grew = peak_kib(pid)?.saturating_sub(before);
     assert!(grew < 2 << 10, "the server grew {grew} KiB");
@@ -751,35 +762,44 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
     let _stop = Stop(&started);
     let server = &started;
     let shell = pane(server, "a", &["sh"])?;
-    server.ok(&["str", &shell, "pane", "str", "one", "rename"])?;
+    server.ok(&[&format!(
+        "(sequence! (rename (pane {}) \"one\") #inert)",
+        fux::script::quoted(&shell)
+    )])?;
     let blocked = kept(server).join("run.new");
     std::fs::create_dir(&blocked).map_err(e)?;
-    let refused = server.fux(&["str", &shell, "pane", "str", "two", "rename"])?;
+    let refused = server.fux(&[&format!(
+        "(sequence! (rename (pane {}) \"two\") #inert)",
+        fux::script::quoted(&shell)
+    )])?;
     assert_ne!(refused.status, 0);
     assert!(
         refused.stderr.contains("could not be written"),
         "{}",
         refused.stderr
     );
-    let listing = server.ok(&["ls", "listing"])?;
+    let listing = server.ok(&["(listing (list-session))"])?;
     assert!(
         listing.contains(" one ") && !listing.contains(" two "),
         "{listing}"
     );
     // A close is undone whole: its pane stays, and takes input.
-    let refused = server.fux(&["str", &shell, "pane", "kill"])?;
+    let refused = server.fux(&[&format!(
+        "(sequence! (kill (pane {})) #inert)",
+        fux::script::quoted(&shell)
+    )])?;
     assert_ne!(refused.status, 0, "{}", refused.stdout);
     assert!(
         server
-            .ok(&["ls", "listing"])?
+            .ok(&["(listing (list-session))"])?
             .contains(&format!("    {shell} "))
     );
     std::fs::remove_dir(&blocked).map_err(e)?;
     server.type_line(&shell, "echo still-here")?;
     server.shows(&shell, "still-here")?;
     signal(server_pid(server)?, Signal::Kill);
-    server.ok(&["start"])?;
-    let listing = server.ok(&["ls", "listing"])?;
+    server.ok(&["(sequence! (start) #inert)"])?;
+    let listing = server.ok(&["(listing (list-session))"])?;
     assert!(listing.contains(" one "), "{listing}");
     Ok(())
 }
@@ -848,7 +868,7 @@ fn a_takeover_mid_frame_gets_its_first_screen() -> Outcome {
     std::thread::sleep(std::time::Duration::from_millis(1200));
     let taken = within(server, 20, &["start"])?;
     assert_eq!(taken.status, 0, "{}", taken.stderr);
-    assert!(server.ok(&["ls", "listing"])?.contains(&framed));
+    assert!(server.ok(&["(listing (list-session))"])?.contains(&framed));
     Ok(())
 }
 
@@ -889,15 +909,13 @@ fn a_takeover_keeps_ended_program_panes_by_their_role() -> Outcome {
     let ended = pane(server, "w", &["sleep", "1003"])?;
     let lost = pane(server, "w", &["sleep", "1004"])?;
     // A shell's pane, as no program is given.
-    let shell = id(&server.ok(&["opts", "str", "w", "in", "80", "24", "size", "new-tab"])?);
+    let shell = id(&server.ok(&["(new-tab (size (in (options) \"w\") 80 24))"])?);
     let _reap = reap_run(server)?;
     signal(own_process(server, &ended)?, Signal::Kill);
     // Ended, or on macOS, which gives the server no orphan to reap, its
     // terminal's read failed: either way no longer running.
     eventually("its program no longer running", || {
-        let state = server.ok(&[
-            "str", &ended, "pane", "str", "program", "get", "str", "state", "get",
-        ])?;
+        let state = server.ok(&[&format!("(sequence! (define! value-1357 (pane {})) \"program\" (define! value-1359 (get value-1357 \"program\")) \"state\" (get value-1359 \"state\"))", fux::script::quoted(&ended))])?;
         Ok(state.trim() != "running")
     })?;
     let (lost_own, shell_own) = (own_process(server, &lost)?, own_process(server, &shell)?);
@@ -909,16 +927,14 @@ fn a_takeover_keeps_ended_program_panes_by_their_role() -> Outcome {
     eventually("their processes gone", || {
         Ok(!alive(lost_own) && !alive(shell_own))
     })?;
-    server.ok(&["start"])?;
-    let listing = server.ok(&["ls", "listing"])?;
+    server.ok(&["(sequence! (start) #inert)"])?;
+    let listing = server.ok(&["(listing (list-session))"])?;
     for kept in [&ended, &lost] {
         assert!(
             listing.contains(&format!("    {kept} ")),
             "{kept}: {listing}"
         );
-        let state = server.ok(&[
-            "str", kept, "pane", "str", "program", "get", "str", "state", "get",
-        ])?;
+        let state = server.ok(&[&format!("(sequence! (define! value-1369 (pane {})) \"program\" (define! value-1371 (get value-1369 \"program\")) \"state\" (get value-1371 \"state\"))", fux::script::quoted(kept))])?;
         assert_eq!(state.trim(), "ended", "{kept}");
     }
     assert!(!listing.contains(&format!("    {shell} ")), "{listing}");
@@ -1073,7 +1089,10 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
             .any(|asker| asker != conn && peak_kib(asker).is_ok_and(|k| k > 32 << 10)))
     })?;
     std::thread::sleep(std::time::Duration::from_millis(200));
-    server.ok(&["str", &id, "client", "detach"])?;
+    server.ok(&[&format!(
+        "(sequence! (detach (client {})) #inert)",
+        fux::script::quoted(&id)
+    )])?;
     signal(conn, Signal::Cont);
     let (typed, said) = finish(sending, &mut client)?;
     assert!(!typed && said.contains("did not reach"), "{said}");
@@ -1085,7 +1104,10 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
         let conn = the_clients(&server)?;
         let sending = paste(&server, &id, &vec![b'y'; SIZE])?;
         std::thread::sleep(std::time::Duration::from_millis(delay));
-        server.ok(&["str", &id, "client", "detach"])?;
+        server.ok(&[&format!(
+            "(sequence! (detach (client {})) #inert)",
+            fux::script::quoted(&id)
+        )])?;
         let (typed, said) = finish(sending, &mut client)?;
         if typed {
             let whole = u64::try_from(SIZE).map_err(e)?;

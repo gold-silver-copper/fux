@@ -6,20 +6,20 @@ use support::*;
 #[test]
 fn a_server_answers_ls_and_stops_on_kill_server() -> Outcome {
     let mut server = Server::start("")?;
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     assert!(ls.contains("+1 main"), "{ls}");
-    assert!(ls.contains("@1 %1"), "{ls}");
+    assert!(ls.contains("(list (tab 1) (pane 1))"), "{ls}");
     assert!(ls.contains("%1"), "{ls}");
-    let json = server.ok(&["ls", "json"])?;
+    let json = server.ok(&["(list-session)"])?;
     assert!(json.contains("\"workspaces\":[{\"id\":\"+1\""), "{json}");
     assert!(json.contains("\"clients\":[]"), "{json}");
-    let killed = server.fux(&["kill-server"])?;
+    let killed = server.fux(&["(sequence! (kill-server) #inert)"])?;
     assert_eq!(killed.status, 0, "{}", killed.stderr);
     // The socket goes as the server starts stopping, before its panes'
     // programs have ended: a command right after finds no server, and
     // says so.
     assert!(!server.socket.exists(), "the socket is removed at once");
-    let out = server.fux(&["ls"])?;
+    let out = server.fux(&["(list-session)"])?;
     assert_eq!(out.status, 1);
     assert!(
         out.stderr.contains("no fux server is running"),
@@ -48,7 +48,7 @@ fn a_second_server_on_the_same_socket_is_refused() -> Outcome {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("another fux server"), "{stderr}");
     assert_eq!(
-        server.ok(&["ls", "listing"])?.lines().count(),
+        server.ok(&["(listing (list-session))"])?.lines().count(),
         4,
         "the first server is untouched"
     );
@@ -67,7 +67,7 @@ fn a_pane_is_told_it_runs_in_fux() -> Outcome {
     let expected = format!("is-fux-{}-xterm-256color", env!("CARGO_PKG_VERSION"));
     eventually("the pane's environment", || {
         Ok(server
-            .ok(&["str", "%1", "pane", "capture"])?
+            .ok(&["(capture (pane \"%1\"))"])?
             .lines()
             .any(|l| l == expected))
     })

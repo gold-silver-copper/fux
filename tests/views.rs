@@ -6,7 +6,7 @@ use support::*;
 const PREFIX: &str = "\x02";
 
 fn client_line(server: &Server, id: &str) -> Result<String, String> {
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     ls.lines()
         .find(|l| l.starts_with(&format!("client {id} ")))
         .map(str::to_owned)
@@ -38,10 +38,8 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
         Ok(client_line(&server, "c1")?.contains(" @1 "))
     })?;
     // new-tab from the CLI, with a name.
-    server.words("opts 60 10 size str +1 workspace in str logs name new-tab")?;
-    server.ok(&[
-        "str", "c1", "client", "dup", "focused", "tab", "str", "last", "step",
-    ])?;
+    server.words("(new-tab (name (in (size (options) 60 10) (workspace \"+1\")) \"logs\"))")?;
+    server.ok(&["(sequence! (define! value-1875 (client \"c1\")) (step value-1875 (tab (focused value-1875)) \"last\") #inert)"])?;
     assert!(client_line(&server, "c1")?.contains(" @2 "));
     client.wait_for("on-two")?;
     Ok(())
@@ -62,25 +60,15 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
     eventually("+2 again", || {
         Ok(client_line(&server, "c1")?.contains(" +2 "))
     })?;
-    server.words("opts 60 10 size str third in new-tab")?;
-    server.ok(&["str", "c1", "client", "str", "third", "workspace", "show"])?;
+    server.words("(new-tab (in (size (options) 60 10) \"third\"))")?;
+    server.ok(&["(sequence! (show (client \"c1\") (workspace \"third\")) #inert)"])?;
     eventually("on the third", || {
         Ok(client_line(&server, "c1")?.contains(" +3 "))
     })?;
     // Attaching to a workspace by name.
     let mut other = server.attach_to(10, 60, "third")?;
     other.wait_for("$")?;
-    server.ok(&[
-        "str",
-        "c1",
-        "client",
-        "dup",
-        "focused",
-        "workspace",
-        "str",
-        "last",
-        "step",
-    ])?;
+    server.ok(&["(sequence! (define! value-1888 (client \"c1\")) (step value-1888 (workspace (focused value-1888)) \"last\") #inert)"])?;
     assert!(client_line(&server, "c1")?.contains(" +2 "));
     assert!(client_line(&server, "c2")?.contains(" +3 "));
     Ok(())
@@ -111,7 +99,7 @@ fn two_clients_have_independent_views() -> Outcome {
         client.wait_for("typed-by-one")?;
         client.wait_for("typed-by-two")?;
     }
-    let right = server.ok(&["str", "%2", "pane", "capture"])?;
+    let right = server.ok(&["(capture (pane \"%2\"))"])?;
     assert!(
         right.contains("typed-by-one") && !right.contains("typed-by-two"),
         "{right}"
@@ -147,7 +135,9 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     let mut small = server.attach(10, 40)?;
     small.wait_for("$")?;
     eventually("the small size wins", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("%1 40x10"))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 40x10"))
     })?;
     // The big client shows the pane at the top left, the rest blank.
     big.keys("stty size\r")?;
@@ -157,16 +147,22 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     // When the small client looks elsewhere, the pane grows.
     small.keys(&format!("{PREFIX}tn"))?;
     eventually("grown to the big client", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("%1 100x30"))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 100x30"))
     })?;
     // And when it detaches, only the big client counts.
     small.keys(&format!("{PREFIX}b"))?;
     eventually("small again", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("%1 40x10"))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 40x10"))
     })?;
     small.detach()?;
     eventually("the small client gone", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("%1 100x30"))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 100x30"))
     })?;
     Ok(())
 }
@@ -178,19 +174,19 @@ fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 80)?;
     client.wait_for("$")?;
-    server.words("opts 80 20 size str +1 workspace in new-tab")?;
-    server.ok(&["str", "c1", "client", "str", "@1", "tab", "show"])?;
-    server.ok(&["str", "%1", "pane", "str", "@2", "tab", "move"])?;
-    let ls = server.ok(&["ls", "listing"])?;
+    server.words("(new-tab (in (size (options) 80 20) (workspace \"+1\")))")?;
+    server.ok(&["(sequence! (show (client \"c1\") (tab \"@1\")) #inert)"])?;
+    server.ok(&["(sequence! (move (pane \"%1\") (tab \"@2\")) #inert)"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     assert!(
         !ls.contains("@1 ") && ls.contains("client c1 80x20 +1 @2 "),
         "{ls}"
     );
     // Moving to a new tab and a new workspace creates them; the tab and
     // the workspace each leaves with nothing in them close.
-    server.ok(&["str", "%2", "pane", "str", "new-tab", "move"])?;
-    server.ok(&["str", "%1", "pane", "str", "new-workspace", "move"])?;
-    let ls = server.ok(&["ls", "listing"])?;
+    server.ok(&["(sequence! (move (pane \"%2\") \"new-tab\") #inert)"])?;
+    server.ok(&["(sequence! (move (pane \"%1\") \"new-workspace\") #inert)"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     assert!(ls.contains("+2") && !ls.contains("@2 "), "{ls}");
     Ok(())
 }
@@ -201,20 +197,20 @@ fn client_capture_includes_ui_without_a_pane_version() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 90)?;
     client.wait_for("$")?;
-    server.ok(&["all", "str", "session-notice", "notify"])?;
+    server.ok(&["(sequence! (notify (all) \"session-notice\") #inert)"])?;
     client.wait_for("session-notice")?;
     assert!(
         server
-            .ok(&["str", "c1", "client", "capture"])?
+            .ok(&["(capture (client \"c1\"))"])?
             .contains("session-notice")
     );
     client.keys("\x02e")?;
     client.wait_for("Enter accept")?;
-    let capture = server.ok(&["str", "c1", "client", "capture"])?;
+    let capture = server.ok(&["(capture (client \"c1\"))"])?;
     assert!(capture.contains("Enter accept"), "{capture}");
     assert_eq!(capture.lines().count(), 20);
     // As JSON: the client, its size, the cursor or null, and the rows.
-    let json = server.ok(&["str", "c1", "client", "capture", "json"])?;
+    let json = server.ok(&["(capture (client \"c1\"))"])?;
     assert!(
         json.starts_with(
             "{\"client\":\"c1\",\"screen_rows\":20,\"screen_cols\":90,\"screen_cursor\":"
@@ -225,7 +221,7 @@ fn client_capture_includes_ui_without_a_pane_version() -> Outcome {
     let rows = json.split_once("\"lines\":[").map_or("", |(_, rows)| rows);
     assert_eq!(rows.matches("\",\"").count() + 1, 20, "twenty rows: {json}");
     // A client that is not there is an error.
-    assert_eq!(server.fux(&["str", "c9", "client", "capture"])?.status, 1);
+    assert_eq!(server.fux(&["(capture (client \"c9\"))"])?.status, 1);
     Ok(())
 }
 
@@ -246,20 +242,30 @@ fn a_fixed_tab_keeps_its_size_and_a_fitting_one_its_last_screen() -> Outcome {
     let pane = pane.split(':').next().unwrap_or_default();
     let sized = |size: &str| {
         Ok(server
-            .ok(&["ls", "listing"])?
+            .ok(&["(listing (list-session))"])?
             .contains(&format!("hid {size}")))
     };
     eventually("its own size", || sized("100x40"))?;
-    server.ok(&["str", "c1", "client", pane, "tab", "show"])?;
+    server.ok(&[&format!(
+        "(sequence! (show (client \"c1\") (tab {})) #inert)",
+        support::reference(pane)
+    )])?;
     assert!(sized("100x40")?, "its own size, shown");
-    server.ok(&[pane, "resize-auto"])?;
+    server.ok(&[&format!(
+        "(sequence! (resize-auto {}) #inert)",
+        support::reference(pane)
+    )])?;
     eventually("the client's size", || sized("84x25"))?;
-    let other =
-        server.words("opts str agent in 60 20 size str sleep program str 60 arg new-tab")?;
+    let other = server.words(
+        "(new-tab (argument (program (size (in (options) \"agent\") 60 20) \"sleep\") \"60\"))",
+    )?;
     let other = other.split(':').next().unwrap_or_default();
-    server.ok(&["str", "c1", "client", other, "tab", "show"])?;
+    server.ok(&[&format!(
+        "(sequence! (show (client \"c1\") (tab {})) #inert)",
+        support::reference(other)
+    )])?;
     assert!(sized("84x25")?, "its last screen, another tab shown");
-    server.ok(&["str", "c1", "client", "str", "main", "workspace", "show"])?;
+    server.ok(&["(sequence! (show (client \"c1\") (workspace \"main\")) #inert)"])?;
     assert!(sized("84x25")?, "its last screen, another workspace shown");
     Ok(())
 }
@@ -272,13 +278,13 @@ fn a_bar_off_attach_keeps_pane_geometry_under_feedback() -> Outcome {
     let server = Server::empty()?;
     let mut client = server.attach(1, 60)?;
     client.wait_for("$")?;
-    let capture = || server.ok(&["%1", "capture"]);
+    let capture = || server.ok(&["(capture (pane 1))"]);
     assert_eq!(capture()?.lines().count(), 1);
-    server.ok(&["all", "str", "overlay-notice", "notify"])?;
+    server.ok(&["(sequence! (notify (all) \"overlay-notice\") #inert)"])?;
     client.wait_for("overlay-notice")?;
     assert!(
         server
-            .ok(&["str", "c1", "client", "capture"])?
+            .ok(&["(capture (client \"c1\"))"])?
             .contains("overlay-notice")
     );
     assert!(!capture()?.contains("overlay-notice"));

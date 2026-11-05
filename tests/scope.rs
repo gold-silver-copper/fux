@@ -9,8 +9,8 @@ use support::*;
 fn another_runs_handles_are_refused_before_mutating() -> Outcome {
     let a = Server::start("")?;
     let b = Server::start("")?;
-    let theirs = a.words("opts str agent in 80 24 size str cat program new-tab")?;
-    b.words("opts str agent in 80 24 size str cat program new-tab")?;
+    let theirs = a.words("(new-tab (program (size (in (options) \"agent\") 80 24) \"cat\"))")?;
+    b.words("(new-tab (program (size (in (options) \"agent\") 80 24) \"cat\"))")?;
     for action in [
         "expect str forbidden text send-keys",
         "pane kill",
@@ -21,7 +21,7 @@ fn another_runs_handles_are_refused_before_mutating() -> Outcome {
         assert_eq!(out.status, 1, "{action}: {}", out.stderr);
         assert!(out.stderr.contains("server run"), "{}", out.stderr);
         assert_eq!(b.panes()?.len(), 2);
-        assert!(!b.ok(&["%2", "capture"])?.contains("forbidden"));
+        assert!(!b.ok(&["(capture (pane 2))"])?.contains("forbidden"));
     }
     Ok(())
 }
@@ -44,31 +44,15 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
         status.display()
     );
     let script = format!("setsid sh -c '{descendant}' & echo \"$FUX_PANE\"; exec cat");
-    server.ok(&[
-        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "str", "-c",
-        "arg", "str", &script, "arg", "new-tab",
-    ])?;
+    server.ok(&[&format!("(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") {}))", fux::script::quoted(&script))])?;
     let descendant = pid_in(&pid)?;
     let _reap = Reap(vec![descendant]);
     eventually("the initial program identity", || {
-        Ok(server.ok(&["%2", "capture"])?.contains("%2:0"))
+        Ok(server.ok(&["(capture (pane 2))"])?.contains("%2:0"))
     })?;
-    server.ok(&[
-        "%2",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "echo \"$FUX_PANE\"; exec cat",
-        "arg",
-        "kill-first",
-        "respawn",
-    ])?;
+    server.ok(&["(respawn (kill-first (argument (argument (program (pane 2) \"sh\") \"-c\") \"echo \\\"$FUX_PANE\\\"; exec cat\")))"])?;
     eventually("the replacement's program identity", || {
-        Ok(server.ok(&["%2", "capture"])?.contains("%2:1"))
+        Ok(server.ok(&["(capture (pane 2))"])?.contains("%2:1"))
     })?;
     std::fs::write(&released, "go").map_err(e)?;
     eventually("the old caller's status", || {
@@ -87,7 +71,7 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
     let version = server.version("%2")?;
     let run = version.rsplit(':').next().ok_or("run")?;
     let out = server.fux_env(
-        &["%2", "capture"],
+        &["(capture (pane 2))"],
         &[("FUX_PANE", "%2:0"), ("FUX_SERVER", run)],
     )?;
     assert_eq!(out.status, 0, "{}", out.stderr);
@@ -114,7 +98,9 @@ fn a_pipeline_keeps_its_group_when_its_leader_is_gone() -> Outcome {
 #[test]
 fn a_keyboard_worker_cannot_act_as_a_client_of_a_replacement_run() -> Outcome {
     let a = Server::start("")?;
-    let b = Server::start("str F5 code me focused kill end bind")?;
+    let b = Server::start(
+        "(sequence! (bind-key \"F5\" (code! (lambda! () (sequence! (kill (focused (me))) #inert)))) #inert)",
+    )?;
     let mut client = b.attach(24, 80)?;
     client.ready()?;
     let id = client.id.as_deref().ok_or("an attached client id")?;

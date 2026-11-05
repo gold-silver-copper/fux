@@ -19,13 +19,13 @@ fn a_read_only_client_watches_and_can_only_detach() -> Outcome {
     watcher.keys("echo typed\r")?;
     watcher.wait("the notice", |t| t.contains("watching only"))?;
     watcher.keys("\x02c")?;
-    let screen = server.ok(&["str", "%1", "pane", "capture"])?;
+    let screen = server.ok(&["(capture (pane \"%1\"))"])?;
     assert!(
         !screen.contains("typed"),
         "its keys reached the pane: {screen}"
     );
     assert!(
-        !server.ok(&["ls", "listing"])?.contains("%2"),
+        !server.ok(&["(listing (list-session))"])?.contains("%2"),
         "no window opened"
     );
     watcher.keys("\x02d")?;
@@ -39,14 +39,14 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     let mut client = server.attach(10, 40)?;
     client.wait_for("$")?;
     // With no bar, the pane has every row.
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     assert!(ls.contains("%1 40x10"), "{ls}");
     assert!(ls.contains("client c1 40x10 +1 @1 %1"), "{ls}");
     client.keys("echo before-detach\r")?;
     client.wait("output", |t| t.lines().any(|l| l == "before-detach"))?;
     client.keys("\x02d")?;
     assert_eq!(client.wait_exit()?, "detached");
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     assert!(!ls.contains("client"), "the client is gone: {ls}");
     let mut again = server.attach(10, 40)?;
     again.wait("the old output", |t| {
@@ -55,7 +55,7 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     again.keys("echo after\r")?;
     again.wait("new output", |t| t.lines().any(|l| l == "after"))?;
     // detach from the command line needs the client.
-    let out = server.fux(&["str", "c2", "client", "detach"])?;
+    let out = server.fux(&["(sequence! (detach (client \"c2\")) #inert)"])?;
     assert_eq!(out.status, 0, "{}", out.stderr);
     assert_eq!(again.wait_exit()?, "detached");
     Ok(())
@@ -70,7 +70,7 @@ fn a_connection_that_ends_takes_its_client_with_it() -> Outcome {
     let server = Server::start("")?;
     let clients = || -> Result<usize, String> {
         Ok(server
-            .ok(&["ls", "listing"])?
+            .ok(&["(listing (list-session))"])?
             .lines()
             .filter(|l| l.starts_with("client "))
             .count())
@@ -124,7 +124,7 @@ fn an_unchanged_screen_is_not_painted_again() -> Outcome {
     client.pump()?;
     let before = client.painted.len();
     // Selecting the pane already selected changes nothing on screen.
-    server.ok(&["str", "c1", "client", "str", "%1", "pane", "show"])?;
+    server.ok(&["(sequence! (show (client \"c1\") (pane \"%1\")) #inert)"])?;
     std::thread::sleep(std::time::Duration::from_millis(200));
     client.pump()?;
     assert_eq!(
@@ -144,33 +144,41 @@ fn a_resize_reaches_the_program() -> Outcome {
     client.resize(20, 60)?;
     client.keys("stty size\r")?;
     client.wait("the new size", |t| t.lines().any(|l| l == "20 60"))?;
-    assert!(server.ok(&["ls", "listing"])?.contains("%1 60x20"));
+    assert!(
+        server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 60x20")
+    );
     // Past what a grid holds, refused and said: the view keeps its size.
     let past = fux_wire::protocol::AttachedFrame::Resize(sized(60000, 60000)?);
     client.frame(&past)?;
     client.wait("the refusal", |t| {
         t.contains("60000 columns by 60000 rows: no screen")
     })?;
-    assert!(server.ok(&["ls", "listing"])?.contains("client c1 60x20"));
+    assert!(
+        server
+            .ok(&["(listing (list-session))"])?
+            .contains("client c1 60x20")
+    );
     Ok(())
 }
 
 #[test]
 fn capture_pane_shows_the_screen_and_history() -> Outcome {
-    let server = Server::start("str history-bytes 100000 set")?;
+    let server = Server::start("(sequence! (set \"history-bytes\" 100000) #inert)")?;
     let mut client = server.attach(6, 30)?;
     client.wait_for("$")?;
     client.keys("for i in 1 2 3 4 5 6 7 8; do echo line$i; done\r")?;
     client.wait("the loop", |t| t.lines().any(|l| l == "line8"))?;
-    let screen = server.ok(&["str", "%1", "pane", "capture"])?;
+    let screen = server.ok(&["(capture (pane \"%1\"))"])?;
     assert!(screen.contains("line8"), "{screen}");
     assert!(
         !screen.contains("line1\n"),
         "line1 has scrolled into history: {screen}"
     );
-    let history = server.ok(&["str", "%1", "pane", "20", "history", "capture"])?;
+    let history = server.ok(&["(capture (history (pane \"%1\") 20))"])?;
     assert!(history.contains("line1\n"), "{history}");
-    let json = server.ok(&["str", "%1", "pane", "capture", "json"])?;
+    let json = server.ok(&["(capture (pane \"%1\"))"])?;
     assert!(
         json.starts_with("{\"id\":\"%1\",\"tab\":\"@1\",")
             && json.contains(",\"rows\":6,\"cols\":30,")
@@ -183,7 +191,7 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     let version = server.version("%1")?;
     let run = version.rsplit(':').next().unwrap_or_default();
     let inside = server.fux_env(
-        &["here", "capture"],
+        &["(capture (here))"],
         &[("FUX_PANE", "%1:0"), ("FUX_SERVER", run)],
     )?;
     assert_eq!(inside.status, 0);
@@ -195,7 +203,7 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
 /// title, its own saved first and restored on leaving; a bell rings it.
 #[test]
 fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
-    let server = Server::start("str titles true set")?;
+    let server = Server::start("(sequence! (set \"titles\" #true) #inert)")?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
     terminal.wait_for("%1")?;
     terminal.type_bytes(b"printf '\\033]2;my-title\\007\\007'; echo rang''-it\r")?;
@@ -277,7 +285,10 @@ fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
         assert!(out.stderr.contains("unset FUX_PANE"), "{}", out.stderr);
     }
     // With FUX_PANE emptied it would attach, if it had a terminal.
-    let out = server.fux_env(&["opts", "attach"], &[("FUX_PANE", "")])?;
+    let out = server.fux_env(
+        &["(sequence! (attach (options)) #inert)"],
+        &[("FUX_PANE", "")],
+    )?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.contains("needs a terminal"), "{}", out.stderr);
     Ok(())
@@ -308,10 +319,12 @@ fn edit_history_opens_the_terminals_editor_at_the_end() -> Outcome {
     terminal.type_bytes(b"\x02c")?;
     eventually("the editor's arguments", || Ok(args.exists()))?;
     let got = std::fs::read_to_string(&args).map_err(e)?;
-    let lines = server.ok(&["str", "%1", "pane", "all-history", "capture"])?;
+    let lines = server.ok(&["(capture (all-history (pane \"%1\")))"])?;
     let last = format!("+{}\n", lines.lines().count());
     assert!(got.starts_with(&last), "{got} (wanted {last})");
-    let label = server.ok(&["str", "%2", "pane", "str", "label", "get"])?;
+    let label = server.ok(&[
+        "(sequence! (define! value-378 (pane \"%2\")) \"label\" (get value-378 \"label\"))",
+    ])?;
     assert_eq!(label.trim(), "history");
     eventually("the split closed", || Ok(server.panes()?.len() == 1))?;
     terminal.type_bytes(b"\x02d")?;
@@ -362,7 +375,11 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
         // What it types into its own pane, a key or a paste, is refused out
         // loud, not handed back to it.
         for input in ["text", "paste"] {
-            server.ok(&[&pane, "str", "x", input, "send-keys"])?;
+            server.ok(&[&format!(
+                "(list {} \"x\" (send-keys {}))",
+                support::reference(input),
+                support::reference(&pane)
+            )])?;
             server.shows(&pane, "runs this client")?;
             eventually("the pane's screen still", still)?;
         }
@@ -382,15 +399,21 @@ fn a_headless_client_in_its_own_pane_keeps_its_capture_and_sizing() -> Outcome {
     ];
     let pane = server.ok(&launch)?;
     let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
-    server.ok(&[&pane, "resize-auto"])?;
+    server.ok(&[&format!(
+        "(sequence! (resize-auto {}) #inert)",
+        support::reference(&pane)
+    )])?;
     server.shows(&pane, "c1")?;
     eventually("the tab sized by the client", || {
         Ok(server
-            .ok(&["str", &pane, "pane", "str", "cols", "get"])?
+            .ok(&[&format!(
+                "(sequence! (define! value-388 (pane {})) \"cols\" (get value-388 \"columns\"))",
+                fux::script::quoted(&pane)
+            )])?
             .trim()
             == "50")
     })?;
-    let captured = server.ok(&["str", "c1", "client", "capture"])?;
+    let captured = server.ok(&["(capture (client \"c1\"))"])?;
     assert!(
         captured.contains("c1") && !captured.contains("this client"),
         "{captured}"
@@ -643,7 +666,7 @@ fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
             };
             assert!(reason.contains("takes no kill"), "{reason}");
             assert!(
-                server.ok(&["ls", "listing"])?.contains("%1"),
+                server.ok(&["(listing (list-session))"])?.contains("%1"),
                 "the server lives"
             );
             continue;
@@ -829,29 +852,11 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     // stdin, with the program's own group in the foreground. (Without one,
     // macOS names some other terminal, and Linux none.)
     let server = Server::start("")?;
-    let pane = server.ok(&[
-        "opts",
-        "str",
-        "agent",
-        "in",
-        "80",
-        "24",
-        "size",
-        "str",
-        "/bin/sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60",
-        "arg",
-        "new-tab",
-    ])?;
+    let pane = server.ok(&["(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"/bin/sh\") \"-c\") \"echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60\"))"])?;
     let pane = pane.split(':').next().unwrap_or_default();
     let mut fields = Vec::new();
     eventually("the program's report", || {
-        let screen = server.ok(&["str", pane, "pane", "capture"])?;
+        let screen = server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(pane))])?;
         let mut lines = screen.lines().skip_while(|l| l.trim().is_empty());
         fields = lines
             .next()
@@ -936,7 +941,7 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     std::fs::set_permissions(&script, executable).map_err(e)?;
     let (here, nowhere) = (&server.dir, &server.dir.join("no-such-dir"));
     let not_found = "No such file or directory (os error 2)";
-    let before = server.ok(&["ls", "listing"])?;
+    let before = server.ok(&["(listing (list-session))"])?;
     for (program, cwd, error) in [
         (&missing, here, not_found),
         (&not_executable, here, "Permission denied (os error 13)"),
@@ -950,26 +955,7 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     ] {
         let program = program.to_string_lossy();
         let cwd_text = cwd.to_string_lossy();
-        let out = server.fux(&[
-            "str",
-            "shell",
-            "list",
-            "str",
-            &program,
-            "end",
-            "set",
-            "opts",
-            "str",
-            "new-workspace",
-            "in",
-            "80",
-            "24",
-            "size",
-            "str",
-            &cwd_text,
-            "cwd",
-            "new-tab",
-        ])?;
+        let out = server.fux(&[&format!("(sequence! (set \"shell\" (list \"RUSTVALUE0\")) (new-tab (directory (size (in (options) \"new-workspace\") 80 24) {})))", fux::script::quoted(&cwd_text))])?;
         assert_eq!(out.status, 1);
         assert!(
             out.stderr
@@ -979,19 +965,10 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
         );
     }
     // Nothing a failed start made is left.
-    assert_eq!(server.ok(&["ls", "listing"])?, before);
+    assert_eq!(server.ok(&["(listing (list-session))"])?, before);
     // The server is unharmed, and a good shell starts again.
-    server.ok(&["str", "shell", "list", "str", "/bin/sh", "end", "set"])?;
-    server.ok(&[
-        "opts",
-        "str",
-        "new-workspace",
-        "in",
-        "80",
-        "24",
-        "size",
-        "new-tab",
-    ])?;
+    server.ok(&["(sequence! (set \"shell\" (list \"/bin/sh\")) #inert)"])?;
+    server.ok(&["(new-tab (size (in (options) \"new-workspace\") 80 24))"])?;
     Ok(())
 }
 
@@ -1104,7 +1081,7 @@ fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
 #[test]
 fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
     let server = Server::start("")?;
-    let before = server.ok(&["ls", "listing"])?;
+    let before = server.ok(&["(listing (list-session))"])?;
     for (i, given) in ["", "str . cwd", "str tmp cwd"].into_iter().enumerate() {
         let gone = server.dir.join(format!("gone-{i}"));
         std::fs::create_dir_all(&gone).map_err(e)?;
@@ -1124,7 +1101,7 @@ fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
             out.stderr
         );
     }
-    assert_eq!(server.ok(&["ls", "listing"])?, before);
+    assert_eq!(server.ok(&["(listing (list-session))"])?, before);
     let whole = server.dir.join("gone-whole");
     std::fs::create_dir_all(&whole).map_err(e)?;
     let script = r#"cd "$1" && rmdir "$1" && fux opts str main in 80 24 size str "$2" cwd new-tab"#;
@@ -1216,8 +1193,7 @@ fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
 /// next key's program asks on as before.
 #[test]
 fn a_stopped_key_program_leaves_the_next_one_asking() -> Outcome {
-    let keys = "str 'C-b j' code me focused 600 timeout wait drop end bind \
-                str 'C-b k' code me focused str next-''ok text send-keys end bind";
+    let keys = "(sequence! (bind-key \"C-b j\" (code! (lambda! () (sequence! (wait (timeout (focused (me)) 600)) #inert)))) (bind-key \"C-b k\" (code! (lambda! () (send-keys (text (focused (me)) \"next-ok\"))))) #inert)";
     let server = Server::start(keys)?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
     terminal.wait_for("$")?;
@@ -1390,7 +1366,7 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
         0,
         "unadmitted connection closes"
     );
-    let empty = server.ok(&["ls", "listing"])?;
+    let empty = server.ok(&["(listing (list-session))"])?;
     assert!(
         !empty.contains("%1") && !empty.contains("client "),
         "{empty}"
@@ -1418,7 +1394,7 @@ fn concurrent_empty_attaches_create_one_workspace() -> Outcome {
             matches!(decoder.frame::<ToAttached>().map_err(e)?, Some(ToAttached::Welcome(client, _)) if client.to_string() == id)
         );
     }
-    let listed = server.ok(&["ls", "listing"])?;
+    let listed = server.ok(&["(listing (list-session))"])?;
     assert!(
         listed.contains("first") && !listed.contains("unused"),
         "{listed}"
@@ -1463,7 +1439,7 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
     assert!(terminal.wait_exit()?.success());
     let output = String::from_utf8_lossy(&terminal.output);
     assert!(!output.contains("launch unavailable"), "{output}");
-    assert!(!server.ok(&["ls", "listing"])?.contains("%2"));
+    assert!(!server.ok(&["(listing (list-session))"])?.contains("%2"));
     Ok(())
 }
 
@@ -1476,12 +1452,16 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
     let empty = Server::empty()?;
     let (launch, why) = (["str", "", "program"], "a program is needed");
     for (server, size, refused) in [
-        (&existing, "opts 40 10 size", None),
-        (&empty, "opts 40 10 size", Some("no launch to start one")),
+        (&existing, "(size (options) 40 10)", None),
+        (
+            &empty,
+            "(size (options) 40 10)",
+            Some("no launch to start one"),
+        ),
         // The server's own reason stays first: a size that fits no pane.
         (
             &empty,
-            "str bar list str bottom list end list end false end set opts 40 1 size",
+            "(sequence! (set \"bar\" (list \"bottom\" (list) (list) #false)) (size (options) 40 1))",
             Some("no room for a pane below its bar"),
         ),
     ] {
@@ -1494,7 +1474,9 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
         match refused {
             None => {
                 eventually("the attached client", || {
-                    Ok(server.ok(&["ls", "listing"])?.contains("client "))
+                    Ok(server
+                        .ok(&["(listing (list-session))"])?
+                        .contains("client "))
                 })?;
             }
             Some(reason) => {
@@ -1507,7 +1489,9 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
         drop(terminal);
         assert_eq!(server.panes()?.len(), panes, "{why}: {args:?}");
         eventually("the client gone", || {
-            Ok(!server.ok(&["ls", "listing"])?.contains("client "))
+            Ok(!server
+                .ok(&["(listing (list-session))"])?
+                .contains("client "))
         })?;
     }
     Ok(())
@@ -1542,12 +1526,12 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
 
 #[test]
 fn attach_preferences_apply_before_explicit_operands() -> Outcome {
-    let server = Server::start("opts str second in attach-defaults")?;
-    server.words("opts str second in 80 24 size new-tab drop")?;
+    let server = Server::start("(sequence! (attach-defaults (in (options) \"second\")) #inert)")?;
+    server.words("(sequence! (new-tab (size (in (options) \"second\") 80 24)) #inert)")?;
     for (args, expected) in [(&[][..], "%2"), (&["%1", "attach"][..], "%1")] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
         eventually(&format!("the client on {expected}"), || {
-            let listed = server.ok(&["ls", "listing"])?;
+            let listed = server.ok(&["(listing (list-session))"])?;
             Ok(
                 (listed.lines())
                     .any(|line| line.starts_with("client ") && line.ends_with(expected)),
@@ -1556,7 +1540,9 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
         terminal.type_bytes(b"\x02d")?;
         terminal.wait_exit()?;
         eventually("the detached view", || {
-            Ok(!server.ok(&["ls", "listing"])?.contains("client "))
+            Ok(!server
+                .ok(&["(listing (list-session))"])?
+                .contains("client "))
         })?;
     }
     Ok(())
@@ -1564,7 +1550,7 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
 
 #[test]
 fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
-    let server = Server::start("opts str main in attach-defaults")?;
+    let server = Server::start("(sequence! (attach-defaults (in (options) \"main\")) #inert)")?;
     for args in [
         &["opts", "str", "/bin/sh", "program", "attach"][..],
         &[
@@ -1580,7 +1566,11 @@ fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
             "{diagnostic}"
         );
     }
-    assert!(!server.ok(&["ls", "listing"])?.contains("client "));
+    assert!(
+        !server
+            .ok(&["(listing (list-session))"])?
+            .contains("client ")
+    );
     assert_eq!(server.panes()?.len(), 1);
     Ok(())
 }
@@ -1608,8 +1598,7 @@ fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
     let server = Server::empty()?;
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
-        "str shell list str /bin/cat end set\n\
-         str F5 code ls drop str fence-complete end bind\n",
+        "(sequence! (set \"shell\" (list \"/bin/cat\")) (bind-key \"F5\" (code! (lambda! () (sequence! (list-session) \"fence-complete\")))) #inert)",
     )
     .map_err(e)?;
     // Hold the attach connection between the client and the real server
@@ -1661,12 +1650,14 @@ fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
         std::thread::spawn(move || std::io::copy(&mut from, &mut to));
     }
     eventually("the attached client", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("client "))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("client "))
     })?;
     terminal.type_bytes(b"\x1b[15~")?;
     terminal.wait_for("fence-complete")?;
     eventually("the latest size", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("50x12"))
+        Ok(server.ok(&["(listing (list-session))"])?.contains("50x12"))
     })?;
     terminal.type_bytes(b"\x02d")?;
     assert!(terminal.wait_exit()?.success());

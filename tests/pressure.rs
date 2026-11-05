@@ -16,7 +16,7 @@ fn pressure_lines(server: &Server) -> usize {
 
 /// A pane's screen.
 fn screen(server: &Server, pane: &str) -> Result<String, String> {
-    server.ok(&["str", pane, "pane", "capture"])
+    server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(pane))])
 }
 
 /// Sends keys to a pane.
@@ -35,7 +35,7 @@ fn send_now(server: &Server, pane: &str, keys: &[&str]) -> Outcome {
 #[test]
 fn a_server_out_of_descriptors_recovers() -> Outcome {
     let server = Server::start_limited("", "-n 64")?;
-    assert_eq!(server.fux(&["ls"])?.status, 0);
+    assert_eq!(server.fux(&["(list-session)"])?.status, 0);
     // A full backlog is refused by the kernel at once, which is fine.
     let connect = || match UnixStream::connect(&server.socket) {
         Ok(stream) => Ok(Some(stream)),
@@ -50,11 +50,16 @@ fn a_server_out_of_descriptors_recovers() -> Outcome {
     assert!(held.len() > 64, "only {} connections held", held.len());
     eventually("the shortage logged", || Ok(pressure_lines(&server) > 0))?;
     drop(held);
-    eventually("served again", || Ok(server.fux(&["ls"])?.status == 0))?;
+    eventually("served again", || {
+        Ok(server.fux(&["(list-session)"])?.status == 0)
+    })?;
     for _ in 0..200 {
         drop(connect()?);
     }
-    eventually("served", || Ok(server.fux(&["ls"])?.status == 0))?;
+    eventually(
+        "served",
+        || Ok(server.fux(&["(list-session)"])?.status == 0),
+    )?;
     let lines = pressure_lines(&server);
     assert!(lines <= 2, "{lines} log lines about descriptors");
     Ok(())
@@ -111,7 +116,9 @@ fn received(out: &std::path::Path, expected: &[u8]) -> Outcome {
 /// prefix, and held keys follow the completed program.
 #[test]
 fn a_bound_program_follows_the_keys_before_it() -> Outcome {
-    let server = Server::start("str F5 code me focused str Z text send-keys drop end bind")?;
+    let server = Server::start(
+        "(sequence! (bind-key \"F5\" (code! (lambda! () (sequence! (send-keys (text (focused (me)) \"Z\")) #inert)))) #inert)",
+    )?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
     let (cat, out) = recorder(&server, "")?;
@@ -219,7 +226,7 @@ fn frames_past_a_turn_wait_for_the_next() -> Outcome {
 fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
     let server = Server::start("")?;
     eventually("a prompt", || Ok(screen(&server, "%1")?.contains('$')))?;
-    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"horizontal\"))"])?;
     eventually(
         "a prompt in %2",
         || Ok(screen(&server, "%2")?.contains('$')),
@@ -228,9 +235,9 @@ fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
     let line = "exec sleep 1 <&- >&- 2>&-";
     send_now(&server, "%2", &["str", line, "text", "str", "Enter", "key"])?;
     eventually("%2 to close when sleep exits", || {
-        Ok(!server.ok(&["ls", "listing"])?.contains("%2 "))
+        Ok(!server.ok(&["(listing (list-session))"])?.contains("%2 "))
     })?;
-    assert_eq!(server.fux(&["ls"])?.status, 0);
+    assert_eq!(server.fux(&["(list-session)"])?.status, 0);
     Ok(())
 }
 
@@ -247,18 +254,7 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     // input queue grows: memory is the user's and the OS's to bound. A sleeping program never settles: the keys wait
     // for what the shell prints just before it starts sleep, computed so
     // the echo never matches.
-    server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "str",
-        "printf 'sleep-%s\\n' started; sleep 60",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
+    server.ok(&["(send-keys (key (text (pane \"%1\") \"printf 'sleep-%s\\\\n' started; sleep 60\") \"Enter\"))"])?;
     server.shows("%1", "sleep-started")?;
     let socket = server.socket.clone();
     std::thread::spawn(move || -> Outcome {
@@ -295,7 +291,7 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     });
     std::thread::sleep(Duration::from_millis(300));
     for _ in 0..5 {
-        let out = server.fux(&["ls"])?;
+        let out = server.fux(&["(list-session)"])?;
         assert_eq!(out.status, 0, "{}", out.stderr);
     }
     Ok(())
@@ -310,13 +306,10 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
 fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
     let server = Server::start("")?;
     let code = "printf 'X\\033[65535b%.0s' $(seq 4000); echo; echo DO''NE";
-    let out = server.fux(&[
-        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "str", "-c",
-        "arg", "str", code, "arg", "new-tab",
-    ])?;
+    let out = server.fux(&[&format!("(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") {}))", fux::script::quoted(code))])?;
     let pane = out.stdout.split(':').next().ok_or("its pane")?;
     assert_eq!(server.exits(pane)?, "0");
-    let out = server.fux(&["str", pane, "pane", "capture"])?;
+    let out = server.fux(&[&format!("(capture (pane {}))", fux::script::quoted(pane))])?;
     assert!(
         out.stdout.contains("DONE"),
         "no DONE on its screen: {}",
@@ -356,12 +349,14 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
     let writer = pid_in(&pid_file)?;
     let group = fuxix::process::Pid::from_raw(writer).ok_or("the writer's group")?;
     let _reap = Reap(vec![writer]);
-    let listed = || server.ok(&["ls", "listing"]);
+    let listed = || server.ok(&["(listing (list-session))"]);
     eventually("the exit told, the writer still writing", || {
         Ok(listed()?.contains("%2 sh 80x24 exited 3"))
     })?;
     let screen_count = || -> Result<u64, String> {
-        let count = server.ok(&["str", "%2", "pane", "str", "screen", "get"])?;
+        let count = server.ok(&[
+            "(sequence! (define! value-1434 (pane \"%2\")) \"screen\" (get value-1434 \"screen\"))",
+        ])?;
         count.trim().parse().map_err(e)
     };
     // Read on: its screen's revision grows. macOS takes the terminal from
@@ -371,18 +366,7 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         let at_exit = screen_count()?;
         eventually("its terminal read on", || Ok(screen_count()? > at_exit))?;
     }
-    server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "str",
-        "echo rea''dy",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
+    server.ok(&["(send-keys (key (text (pane \"%1\") \"echo rea''dy\") \"Enter\"))"])?;
     server.shows("%1", "ready")?;
     // Once the writer is killed, its terminal drained, it is frozen.
     let _ = fuxix::process::kill_group(group, fuxix::process::Signal::Kill);

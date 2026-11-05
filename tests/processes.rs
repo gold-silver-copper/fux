@@ -13,20 +13,15 @@ const GONE_WITHIN: Duration = Duration::from_secs(3);
 /// pane's shell shows a prompt.
 fn start_line(server: &Server, pane: &str, line: &str) -> Outcome {
     eventually(&format!("a prompt in {pane}"), || {
-        Ok(server.ok(&["str", pane, "pane", "capture"])?.contains('$'))
+        Ok(server
+            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(pane))])?
+            .contains('$'))
     })?;
-    server.ok(&[
-        "str",
-        pane,
-        "pane",
-        "str",
-        line,
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
+    server.ok(&[&format!(
+        "(send-keys (key (text (pane {}) {}) \"Enter\"))",
+        fux::script::quoted(pane),
+        fux::script::quoted(line)
+    )])?;
     Ok(())
 }
 
@@ -62,9 +57,9 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     let mut reap = Reap::default();
     for how in ["pane kill", "exit", "workspace kill"] {
         let launch = if how == "workspace kill" {
-            "opts 80 24 size str doomed in new-tab"
+            "(new-tab (in (size (options) 80 24) \"doomed\"))"
         } else {
-            "%1 str horizontal axis split"
+            "(split (axis (pane 1) \"horizontal\"))"
         };
         server.ok(&[&format!("str shell list str {dash} end set {launch}")])?;
         let (pane, _) = server.newest_pane()?;
@@ -94,7 +89,10 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
         })?;
         match how {
             "pane kill" => {
-                server.ok(&["str", &pane, "pane", "kill"])?;
+                server.ok(&[&format!(
+                    "(sequence! (kill (pane {})) #inert)",
+                    fux::script::quoted(&pane)
+                )])?;
             }
             // The shell exits and its pane closes: answered with status 4.
             "exit" => {
@@ -103,7 +101,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
                 assert!(matches!(out.status, 0 | 4), "{}", out.stderr);
             }
             _ => {
-                server.ok(&["str", "doomed", "workspace", "kill"])?;
+                server.ok(&["(sequence! (kill (workspace \"doomed\")) #inert)"])?;
             }
         }
         gone(job, &format!("a background job, after {how}"))?;
@@ -121,7 +119,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
 #[test]
 fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"horizontal\"))"])?;
     let (pane, shell) = server.newest_pane()?;
     let job = server.dir.join("job");
     let front = server.dir.join("front");
@@ -136,14 +134,20 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     )?;
     let (job, front) = (pid_in(&job)?, pid_in(&front)?);
     let _reap = Reap(vec![job, front]);
-    let answer = server.ok(&["str", &pane, "pane", "str", "TERM", "signal"])?;
+    let answer = server.ok(&[&format!(
+        "(signal (pane {}) \"TERM\")",
+        fux::script::quoted(&pane)
+    )])?;
     assert!(answer.starts_with(&format!("{pane}:")), "{answer}");
     gone(front, "the foreground program, after signal TERM")?;
     assert!(alive(job), "signal ended a background job");
     assert!(alive(shell), "signal ended the shell");
     assert!(server.panes()?.iter().any(|(id, _)| *id == pane));
     // Closing the pane ends the job.
-    server.ok(&["str", &pane, "pane", "kill"])?;
+    server.ok(&[&format!(
+        "(sequence! (kill (pane {})) #inert)",
+        fux::script::quoted(&pane)
+    )])?;
     gone(job, "a background job, after pane kill")
 }
 
@@ -154,12 +158,14 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
 #[test]
 fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"horizontal\"))"])?;
     let mut client = server.attach(20, 100)?;
     let (pane, leader) = server.newest_pane()?;
     // Settled: the new shell has a prompt.
     eventually("a prompt", || {
-        Ok(server.ok(&["str", &pane, "pane", "capture"])?.contains('$'))
+        Ok(server
+            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(&pane))])?
+            .contains('$'))
     })?;
     signal(leader, Signal::Stop);
     // Stopped, the kernel has sent the server SIGCHLD; two round trips
@@ -173,13 +179,13 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
             .trim_start()
             .starts_with('T'))
     })?;
-    server.ok(&["ls", "listing"])?;
-    server.ok(&["ls", "listing"])?;
+    server.ok(&["(listing (list-session))"])?;
+    server.ok(&["(listing (list-session))"])?;
     assert!(alive(leader), "the stopped shell is gone");
     assert!(
         server.panes()?.iter().any(|(id, _)| *id == pane),
         "the stopped pane closed: {}",
-        server.ok(&["ls", "listing"])?
+        server.ok(&["(listing (list-session))"])?
     );
     client.pump()?;
     assert!(!client.bar().contains("exited"), "{}", client.bar());
@@ -187,7 +193,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     server.type_line(&pane, "echo alive-$((1+1))")?;
     eventually("the shell answers", || {
         Ok(server
-            .ok(&["str", &pane, "pane", "capture"])?
+            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(&pane))])?
             .contains("alive-2"))
     })?;
     // A kill closes it, with the signal's status: 128 + 9.
@@ -208,7 +214,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
 #[test]
 fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"horizontal\"))"])?;
     let (pane, _) = server.newest_pane()?;
     let front = server.dir.join("front");
     start_line(
@@ -221,16 +227,22 @@ fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     )?;
     let job = pid_in(&front)?;
     let _reap = Reap(vec![job]);
-    server.ok(&["str", &pane, "pane", "str", "C-z", "press"])?;
+    server.ok(&[&format!(
+        "(press (pane {}) \"C-z\")",
+        fux::script::quoted(&pane)
+    )])?;
     server.type_line(&pane, "echo still-$((2+2))")?;
     eventually("the shell answers", || {
         Ok(server
-            .ok(&["str", &pane, "pane", "capture"])?
+            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(&pane))])?
             .contains("still-4"))
     })?;
     assert!(alive(job), "the stopped job ended");
     assert!(server.panes()?.iter().any(|(id, _)| *id == pane));
-    server.ok(&["str", &pane, "pane", "kill"])?;
+    server.ok(&[&format!(
+        "(sequence! (kill (pane {})) #inert)",
+        fux::script::quoted(&pane)
+    )])?;
     gone(job, "a stopped job, after pane kill")
 }
 
@@ -246,10 +258,7 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     // the terminal, so only cat can make the pane read.
     let code = "mkfifo \"$0\"; (cat </dev/tty & echo $! > \"$1\"); read x <> \"$0\"";
     let (fifo, pidfile) = (fifo.to_string_lossy(), pidfile.to_string_lossy());
-    let answer = server.ok(&[
-        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "str", "-c",
-        "arg", "str", code, "arg", "str", &fifo, "arg", "str", &pidfile, "arg", "new-tab",
-    ])?;
+    let answer = server.ok(&[&format!("(new-tab (argument (argument (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") {}) {}) {}))", fux::script::quoted(code), fux::script::quoted(&fifo), fux::script::quoted(&pidfile))])?;
     let pane = answer
         .split_whitespace()
         .next()
@@ -267,13 +276,14 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
             .and_then(|r| r.split_whitespace().nth(1));
         Ok(parent.map(str::to_owned))
     };
-    let program = server.ok(&[
-        "str", &pane, "pane", "str", "program", "get", "str", "pid", "get",
-    ])?;
+    let program = server.ok(&[&format!("(sequence! (define! value-1540 (pane {})) \"program\" (define! value-1542 (get value-1540 \"program\")) \"pid\" (get value-1542 \"process-id\"))", fux::script::quoted(&pane))])?;
     let own = parent(program.trim())?.ok_or("the program's parent")?;
     eventually("the orphan adopted", || {
         Ok(parent(&orphan.to_string())?.as_deref() == Some(&own))
     })?;
-    server.ok(&["str", &pane, "pane", "str", "C-d", "press"])?;
+    server.ok(&[&format!(
+        "(press (pane {}) \"C-d\")",
+        fux::script::quoted(&pane)
+    )])?;
     eventually("the orphan reaped", || Ok(!support::exists(gone.as_raw())))
 }

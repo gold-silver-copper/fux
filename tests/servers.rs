@@ -56,7 +56,7 @@ fn private(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
 fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     let server = Server::start("")?;
     // `status` names the server's process, where the system says it.
-    let ours = server.fux(&["status", "json"])?;
+    let ours = server.fux(&["(status)"])?;
     let pid = format!("\"server_pid\":{},", server.pid().ok_or("no pid")?);
     assert_eq!(
         ours.stdout.contains(&pid),
@@ -97,7 +97,8 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     // The test server's pane, as an agent in it would carry it, reaches
     // the private server: it is not that server's, and nothing is done to
     // what has its number there.
-    let pane = server.ok(&["str", "%1", "pane", "str", "id", "get"])?;
+    let pane = server
+        .ok(&["(sequence! (define! value-1588 (pane \"%1\")) \"id\" (get value-1588 \"id\"))"])?;
     let identity = format!("{}:0", pane.trim());
     let theirs = [
         ("FUX_PANE", identity.as_str()),
@@ -119,7 +120,7 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     );
     // A terminal attached to the server also guards normal CLI shutdown.
     let mut client = server.attach(10, 40)?;
-    let refused = server.fux(&["kill-server"])?;
+    let refused = server.fux(&["(sequence! (kill-server) #inert)"])?;
     assert_eq!(refused.status, 1);
     assert!(
         refused.stderr.contains("people_attached"),
@@ -128,27 +129,22 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     );
     // From one of its own panes, kill-server is refused as well.
     let sh =
-        server.words("opts str agent in 80 24 size str sh program new-tab dup str sh rename")?;
+        server.words("(sequence! (define! value-661 (new-tab (program (size (in (options) \"agent\") 80 24) \"sh\"))) (rename value-661 \"sh\") value-661)")?;
     let sh = first_word(&sh);
     let line = format!("'{FUX}' kill-server; echo status=$?");
-    let sent = server.ok(&[
-        "str",
-        sh,
-        "pane",
-        "str",
-        &line,
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
+    let sent = server.ok(&[&format!(
+        "(send-keys (key (text (pane {}) {}) \"Enter\"))",
+        fux::script::quoted(sh),
+        fux::script::quoted(&line)
+    )])?;
     let since = sent.split_whitespace().next().unwrap_or_default();
     server.until(sh, since, |c| {
         c.contains("own_server:") && c.contains("status=1")
     })?;
     assert!(
-        server.ok(&["ls", "listing"])?.contains("+1 main"),
+        server
+            .ok(&["(listing (list-session))"])?
+            .contains("+1 main"),
         "the server still runs"
     );
     // `kill` on its process stops it anyway.
@@ -246,28 +242,10 @@ fn streaming(server: &Server, args: &[&str]) -> Result<(std::process::Child, Nex
 #[test]
 fn events_tell_what_happens() -> Outcome {
     let server = Server::start("")?;
-    let cursor = server.ok(&["all", "str", "", "0", "next-events", "str", "next", "get"])?;
+    let cursor = server.ok(&["(sequence! (define! value-1607 (next-events (all) \"\" 0)) \"next\" (get value-1607 \"next\"))"])?;
     let (mut events, next) = streaming(&server, &["all", "str", cursor.trim(), "events"])?;
     let told = (|| {
-        let pane = server.ok(&[
-            "opts",
-            "str",
-            "agent",
-            "in",
-            "80",
-            "24",
-            "size",
-            "str",
-            "sh",
-            "program",
-            "str",
-            "-c",
-            "arg",
-            "str",
-            "printf '\\a'; exit 7",
-            "arg",
-            "new-tab",
-        ])?;
+        let pane = server.ok(&["(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") \"printf '\\\\a'; exit 7\"))"])?;
         let pane = first_word(&pane);
         let created = next(r#""event":"created""#)?;
         assert!(created.contains(r#""name":"agent""#), "{created}");
@@ -310,11 +288,11 @@ fn events_tell_what_happens() -> Outcome {
 #[test]
 fn a_stream_from_ls_misses_nothing() -> Outcome {
     let server = Server::start("")?;
-    let listing = server.ok(&["ls", "json"])?;
+    let listing = server.ok(&["(list-session)"])?;
     let cursor = (listing.split(r#""cursor":""#).nth(1))
         .and_then(|rest| rest.split('"').next())
         .ok_or(format!("no cursor in {listing}"))?;
-    server.words("opts str w in 80 24 size new-tab")?;
+    server.words("(new-tab (size (in (options) \"w\") 80 24))")?;
     let (mut events, next) = streaming(&server, &["all", "str", cursor, "events"])?;
     let told = next("");
     let _ = events.kill();
@@ -324,7 +302,10 @@ fn a_stream_from_ls_misses_nothing() -> Outcome {
     assert!(created.contains(r#""name":"w"#), "{created}");
     let (seq, run) = cursor.split_once(':').ok_or("no run")?;
     let ahead = format!("{}:{run}", seq.parse::<u64>().map_err(e)? + 100);
-    let refused = server.fux(&["all", "str", &ahead, "0", "next-events", "drop"])?;
+    let refused = server.fux(&[&format!(
+        "(sequence! (next-events (all) {} 0) #inert)",
+        fux::script::quoted(&ahead)
+    )])?;
     assert_ne!(refused.status, 0);
     assert!(
         refused.stderr.contains("past the journal's end"),
@@ -360,19 +341,10 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let b = first_word(&b);
     // Each pane takes them, answering its version before them, and writes
     // the command's output.
-    let both = server.ok(&[
-        "str",
-        a,
-        "pane",
-        "tab",
-        "str",
-        "echo both-$((40+2))",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
+    let both = server.ok(&[&format!(
+        "(send-keys (key (text (tab (pane {})) \"echo both-$((40+2))\") \"Enter\"))",
+        fux::script::quoted(a)
+    )])?;
     for (pane, line) in [a, b].into_iter().zip(both.lines()) {
         assert!(line.starts_with(&format!("{pane}:")), "{both}");
         server.until(pane, line, |c| c.contains("\nboth-42"))?;
@@ -391,18 +363,10 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     ];
     let a = server.ok(&run)?;
     let a = first_word(&a);
-    let b = server.ok(&[
-        "str",
-        a,
-        "pane",
-        "str",
-        "horizontal",
-        "axis",
-        "str",
-        "cat",
-        "program",
-        "split",
-    ])?;
+    let b = server.ok(&[&format!(
+        "(split (program (axis (pane {}) \"horizontal\") \"cat\"))",
+        fux::script::quoted(a)
+    )])?;
     let c = server.ok(&run)?;
     let (b, c) = (first_word(&b), first_word(&c));
     let agent = ["str", "agent", "workspace"];
@@ -418,15 +382,22 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     let each = ["tabs", "each", "panes", "len", "print", "end"];
     assert_eq!(server.ok(&[&agent[..], &each].concat())?, "2\n1\n");
     // The order is the layout's, not the ids'.
-    server.ok(&["str", a, "pane", "str", b, "pane", "swap-with"])?;
-    server.ok(&["str", t2, "tab", "str", "previous", "reorder"])?;
+    server.ok(&[&format!(
+        "(sequence! (swap-with (pane {}) (pane {})) #inert)",
+        fux::script::quoted(a),
+        fux::script::quoted(b)
+    )])?;
+    server.ok(&[&format!(
+        "(sequence! (reorder (tab {}) \"previous\") #inert)",
+        fux::script::quoted(t2)
+    )])?;
     let panes = server.ok(&[&agent[..], &["panes"]].concat())?;
     assert_eq!(panes, format!("{c}\n{b}\n{a}\n"));
     let tabs = server.ok(&[&agent[..], &["tabs"]].concat())?;
     assert_eq!(tabs, format!("{t2}\n{t1}\n"));
     // A place gone fails as it would for any word; another workspace
     // keeps the server up.
-    server.words("opts 80 24 size str keep in new-tab")?;
+    server.words("(new-tab (in (size (options) 80 24) \"keep\"))")?;
     for (gone, code) in [
         (["str", b, "pane", "dup", "kill", "panes"], "no_pane"),
         (["str", t2, "tab", "dup", "kill", "tabs"], "no_tab"),
@@ -552,36 +523,15 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
 #[test]
 fn a_dump_makes_its_workspace_again() -> Outcome {
     let server = Server::start("")?;
-    let pane = server.words("opts 80 24 size str build in new-tab")?;
-    let worker = server.ok(&[
-        "str",
-        first_word(&pane),
-        "pane",
-        "str",
-        "vertical",
-        "axis",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "echo built; sleep 60",
-        "arg",
-        "split",
-    ])?;
-    server.ok(&[
-        "str",
-        first_word(&worker),
-        "pane",
-        "str",
-        "worker",
-        "rename",
-    ])?;
-    let dump = server.ok(&["str", "build", "workspace", "dump"])?;
-    server.ok(&["str", "build", "workspace", "kill"])?;
-    assert!(!server.ok(&["ls", "listing"])?.contains("build"));
+    let pane = server.words("(new-tab (in (size (options) 80 24) \"build\"))")?;
+    let worker = server.ok(&[&format!("(split (argument (argument (program (axis (pane {}) \"vertical\") \"sh\") \"-c\") \"echo built; sleep 60\"))", fux::script::quoted(first_word(&pane)))])?;
+    server.ok(&[&format!(
+        "(sequence! (rename (pane {}) \"worker\") #inert)",
+        fux::script::quoted(first_word(&worker))
+    )])?;
+    let dump = server.ok(&["(dump (workspace \"build\"))"])?;
+    server.ok(&["(sequence! (kill (workspace \"build\")) #inert)"])?;
+    assert!(!server.ok(&["(listing (list-session))"])?.contains("build"));
     // A script: made runnable, it runs as it is.
     let file = server.dir.join("build.fux");
     std::fs::write(&file, &dump).map_err(e)?;
@@ -589,7 +539,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
     let ran = server.piped(&file, &[], "")?;
     assert_eq!(ran.status, 0, "{}", ran.stderr);
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     assert!(
         ls.contains(" build\n") && ls.contains(" worker "),
         "{ls}\nfrom\n{dump}"
@@ -597,18 +547,18 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     let (made, _) = server.newest_pane()?;
     eventually("the worker's output", || {
         Ok(server
-            .ok(&["str", &made, "pane", "capture"])?
+            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(&made))])?
             .contains("built"))
     })?;
     // A workspace new-tab made: its dump takes the workspace from the answer
     // new-tab leaves.
     server
-        .words("opts 80 24 size str jobs in str sleep program str 60 arg new-tab str job rename")?;
-    let dump = server.ok(&["str", "jobs", "workspace", "dump"])?;
-    server.ok(&["str", "jobs", "workspace", "kill"])?;
+        .words("(sequence! (rename (new-tab (argument (program (in (size (options) 80 24) \"jobs\") \"sleep\") \"60\")) \"job\") #inert)")?;
+    let dump = server.ok(&["(dump (workspace \"jobs\"))"])?;
+    server.ok(&["(sequence! (kill (workspace \"jobs\")) #inert)"])?;
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&["--file", &file.to_string_lossy()])?;
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     assert!(
         ls.contains(" jobs\n") && ls.contains(" job "),
         "{ls}\nfrom\n{dump}"
@@ -661,8 +611,8 @@ fn a_nested_dump_replays_under_another_workspace() -> Outcome {
     };
     let before = shape()?;
     let file = server.dir.join("proj.fux");
-    std::fs::write(&file, server.ok(&["str", "proj", "workspace", "dump"])?).map_err(e)?;
-    server.ok(&["str", "proj", "workspace", "kill"])?;
+    std::fs::write(&file, server.ok(&["(dump (workspace \"proj\"))"])?).map_err(e)?;
+    server.ok(&["(sequence! (kill (workspace \"proj\")) #inert)"])?;
     server.ok(&["--file", &file.to_string_lossy(), "home"])?;
     assert_eq!(shape()?, before.replacen("proj in top", "proj in home", 1));
     assert!(
@@ -687,18 +637,18 @@ fn a_nested_dump_replays_under_another_workspace() -> Outcome {
 #[test]
 fn a_dump_replayed_beside_itself_makes_nothing_from_a_deleted_directory() -> Outcome {
     let server = Server::start("")?;
-    server.ok(&["str", "%1", "pane", "str", "runner", "rename"])?;
+    server.ok(&["(sequence! (rename (pane \"%1\") \"runner\") #inert)"])?;
     let file = server.dir.join("runner.fux");
-    std::fs::write(&file, server.ok(&["all", "dump"])?).map_err(e)?;
+    std::fs::write(&file, server.ok(&["(dump (all))"])?).map_err(e)?;
     let gone = server.dir.join("gone");
     std::fs::create_dir(&gone).map_err(e)?;
-    let before = server.ok(&["ls", "json"])?;
+    let before = server.ok(&["(list-session)"])?;
     let (gone, file) = (gone.to_str().ok_or("path")?, file.to_str().ok_or("path")?);
     let replay = r#"cd "$1" && rmdir "$1" && exec fux --file "$2""#;
     let ran = server.piped("/bin/sh".as_ref(), &["-c", replay, "sh", gone, file], "")?;
     let taken = ran.stderr.starts_with("fux: name_taken: ") && ran.stderr.contains("%1, a pane,");
     assert!(taken, "{}", ran.stderr);
-    assert_eq!(server.ok(&["ls", "json"])?, before);
+    assert_eq!(server.ok(&["(list-session)"])?, before);
     Ok(())
 }
 
@@ -708,23 +658,23 @@ fn a_dump_replayed_beside_itself_makes_nothing_from_a_deleted_directory() -> Out
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
     source.words(
-        "opts 80 24 size str main in str sleep program str 60 arg new-tab str tab-2 rename",
+        "(sequence! (rename (new-tab (argument (program (in (size (options) 80 24) \"main\") \"sleep\") \"60\")) \"tab-2\") #inert)",
     )?;
-    source.ok(&["str", "tab-2", "pane", "str", "new-workspace", "move"])?;
-    let dump = source.ok(&["all", "dump"])?;
+    source.ok(&["(sequence! (move (pane \"tab-2\") \"new-workspace\") #inert)"])?;
+    let dump = source.ok(&["(dump (all))"])?;
     let server = Server::start("")?;
-    server.words("opts 80 24 size str workspace-2 in new-tab")?;
+    server.words("(new-tab (in (size (options) 80 24) \"workspace-2\"))")?;
     let file = server.dir.join("source.fux");
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&["--file", &file.to_string_lossy()])?;
-    let named = server.ok(&["str", "tab-2", "pane"])?;
+    let named = server.ok(&["(pane \"tab-2\")"])?;
     assert_eq!(
-        server.ok(&["str", "tab-2", "pane", "workspace", "str", "name", "get"])?,
+        server.ok(&["(sequence! (define! value-1780 (workspace (pane \"tab-2\"))) \"name\" (get value-1780 \"name\"))"])?,
         "null\n"
     );
-    let held = server.ok(&["str", "workspace-2", "workspace", "panes", "len"])?;
+    let held = server.ok(&["(length (panes (workspace \"workspace-2\")))"])?;
     assert_eq!(held, "1\n");
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     assert!(
         ls.contains(&format!("{} tab-2 ", first_word(&named))),
         "{named}\n{ls}\nfrom\n{dump}"
@@ -738,13 +688,13 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome {
     let source = Server::start("")?;
     source.words(
-        "opts str agent in 80 24 size str cat program new-tab dup str first rename str new-workspace move",
+        "(sequence! (define! value-770 (new-tab (program (size (in (options) \"agent\") 80 24) \"cat\"))) (rename value-770 \"first\") (move value-770 \"new-workspace\") #inert)",
     )?;
-    source.words("str first pane str horizontal axis str cat program split str second rename")?;
+    source.words("(sequence! (rename (split (program (axis (pane \"first\") \"horizontal\") \"cat\")) \"second\") #inert)")?;
     source.words(
-        "opts str first pane workspace in 80 24 size str cat program new-tab str third rename",
+        "(sequence! (rename (new-tab (program (size (in (options) (workspace (pane \"first\"))) 80 24) \"cat\")) \"third\") #inert)",
     )?;
-    let dump = source.ok(&["str", "first", "pane", "workspace", "dump"])?;
+    let dump = source.ok(&["(dump (workspace (pane \"first\")))"])?;
     for shell in [
         &["str", "/no/such/fux-shell"][..],
         &["str", "sh", "str", "-c", "str", "exit 0"],
@@ -762,11 +712,11 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
         std::fs::write(&file, format!("{prefix}\n{dump}")).map_err(e)?;
         server.ok(&["--file", &file.to_string_lossy()])?;
         assert_eq!(
-            server.ok(&["str", "first", "pane", "workspace", "panes", "len"])?,
+            server.ok(&["(length (panes (workspace (pane \"first\"))))"])?,
             "3\n"
         );
         assert_eq!(
-            server.ok(&["str", "first", "pane", "workspace", "tabs", "len"])?,
+            server.ok(&["(length (tabs (workspace (pane \"first\"))))"])?,
             "2\n"
         );
         for name in ["first", "second", "third"] {
@@ -783,14 +733,19 @@ fn an_unnamed_workspace_replays_independently_of_the_default_shell() -> Outcome 
 #[test]
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let server = Server::start("")?;
-    let pane = server.words("opts 80 24 size str moved in str sleep program str 60 arg new-tab")?;
-    server.ok(&["str", first_word(&pane), "pane", "str", "new-tab", "move"])?;
-    let dump = server.ok(&["str", "moved", "workspace", "dump"])?;
-    server.ok(&["str", "moved", "workspace", "kill"])?;
+    let pane = server.words(
+        "(new-tab (argument (program (in (size (options) 80 24) \"moved\") \"sleep\") \"60\"))",
+    )?;
+    server.ok(&[&format!(
+        "(sequence! (move (pane {}) \"new-tab\") #inert)",
+        fux::script::quoted(first_word(&pane))
+    )])?;
+    let dump = server.ok(&["(dump (workspace \"moved\"))"])?;
+    server.ok(&["(sequence! (kill (workspace \"moved\")) #inert)"])?;
     let file = server.dir.join("moved.fux");
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&["--file", &file.to_string_lossy()])?;
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     assert!(
         ls.contains(" moved\n") && ls.contains(" sleep "),
         "{ls}\nfrom\n{dump}"
@@ -865,7 +820,7 @@ fn a_socket_served_by_another_uid_is_refused() -> Outcome {
         return Ok(());
     }
     let socket = socket.to_string_lossy();
-    let out = server.fux_env(&["ls"], &[("FUX_SOCKET", &socket)])?;
+    let out = server.fux_env(&["(list-session)"], &[("FUX_SOCKET", &socket)])?;
     let euid = fuxix::process::geteuid();
     assert_eq!(out.status, 1);
     assert!(
@@ -905,9 +860,11 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
         let pane = answer.trim().split(':').next().ok_or("pane")?;
         // It prints once it changed directory.
         eventually("the program changed directory", || {
-            Ok(server.ok(&[pane, "capture"])?.contains("saved-launch"))
+            Ok(server
+                .ok(&[&format!("(capture {})", support::reference(pane))])?
+                .contains("saved-launch"))
         })?;
-        let dump = server.ok(&[pane, "tab", "dump"])?;
+        let dump = server.ok(&[&format!("(dump (tab {}))", support::reference(pane))])?;
         assert!(
             dump.contains(&format!("str '{}' cwd", directory.display())),
             "{dump}"
@@ -916,7 +873,9 @@ fn dump_replays_the_saved_launch_after_the_program_changes_directory() -> Outcom
         let (replayed, _) = server.newest_pane()?;
         assert_ne!(replayed, pane);
         eventually("the saved launch replayed", || {
-            Ok(server.ok(&[&replayed, "capture"])?.contains("saved-launch"))
+            Ok(server
+                .ok(&[&format!("(capture {})", support::reference(&replayed))])?
+                .contains("saved-launch"))
         })?;
     }
     Ok(())
@@ -938,18 +897,22 @@ fn dump_replays_a_shell_in_its_current_directory() -> Outcome {
     let pane = answer.trim().split(':').next().ok_or("pane")?;
     let in_child = format!("str '{}' cwd", child.display());
     eventually("the shell changed directory", || {
-        Ok(server.ok(&[pane, "capture"])?.contains("shell-directory"))
+        Ok(server
+            .ok(&[&format!("(capture {})", support::reference(pane))])?
+            .contains("shell-directory"))
     })?;
-    let dump = server.ok(&[pane, "tab", "dump"])?;
+    let dump = server.ok(&[&format!("(dump (tab {}))", support::reference(pane))])?;
     assert!(dump.contains(&in_child), "{dump}");
     server.ok(&[&dump])?;
     let (replayed, _) = server.newest_pane()?;
     assert_ne!(replayed, pane);
     eventually("the shell replayed in its current directory", || {
         Ok(server
-            .ok(&[&replayed, "capture"])?
+            .ok(&[&format!("(capture {})", support::reference(&replayed))])?
             .contains("shell-directory")
-            && server.ok(&[&replayed, "tab", "dump"])?.contains(&in_child))
+            && server
+                .ok(&[&format!("(dump (tab {}))", support::reference(&replayed))])?
+                .contains(&in_child))
     })?;
     Ok(())
 }
@@ -960,8 +923,8 @@ fn addressing_a_client_does_not_claim_its_origin() -> Outcome {
     let mut view = server.attach(12, 80)?;
     view.ready()?;
     let client = view.id.as_deref().ok_or("client")?;
-    server.ok(&["%1 str horizontal axis split drop"])?;
-    let cursor = server.ok(&["all str '' 0 next-events str next get"])?;
+    server.ok(&["(sequence! (split (axis (pane 1) \"horizontal\")) #inert)"])?;
+    let cursor = server.ok(&["(sequence! (define! value-1851 (next-events (all) \"\" 0)) \"next\" (get value-1851 \"next\"))"])?;
     server.ok(&[&format!("str {client} client %1 show")])?;
     let origins = server.ok(&[&format!("all str {} 0 next-events str events get each let event event str event get str shown eq if event str origin get str kind get print then end", cursor.trim())])?;
     assert!(!origins.trim().is_empty());

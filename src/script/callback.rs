@@ -23,6 +23,8 @@ fn within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
         )
     })?;
     Ok(match v {
+        Value::Float(n) => Data::FloatBits(n.to_bits()),
+        Value::Bytes(bytes) => Data::Bytes((**bytes).clone()),
         Value::Int(n) => Data::Int(*n),
         Value::Bool(b) => Data::Bool(*b),
         Value::Str(s) => Data::Text(s.to_string()),
@@ -59,6 +61,8 @@ fn within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
 }
 pub(super) fn value(v: &Data) -> Result<Value<Fux>, Failed> {
     Ok(match v {
+        Data::FloatBits(bits) => Value::Float(f64::from_bits(*bits)),
+        Data::Bytes(bytes) => Value::Bytes(Rc::new(bytes.clone())),
         Data::Int(n) => Value::Int(*n),
         Data::Bool(b) => Value::Bool(*b),
         Data::Text(s) => Value::str(s),
@@ -164,4 +168,102 @@ pub fn admit(
         }
     }
     Ok(open.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::script::{AsClient, Asks, Host};
+    use fux_wire::protocol::{Asked, Context, Reply};
+    struct NoRequests;
+    impl Asks for NoRequests {
+        fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+            Err(Failed::new(
+                fux_wire::code::Code::Client,
+                "unexpected server request",
+            ))
+        }
+    }
+    #[test]
+    fn callbacks_use_the_receiving_dictionary_and_preserve_nested_typed_data() -> crate::TestResult
+    {
+        let run = "1-2".parse().map_err(|()| "run")?;
+        let client = "c1".parse().map_err(|e| format!("{e}"))?;
+        let payload = Data::Record {
+            of: Some(run),
+            fields: vec![(
+                "value".into(),
+                Data::List(vec![
+                    Data::Handle("%3".parse().map_err(|()| "id")?, Some(run)),
+                    Data::Null,
+                    Data::List(Vec::new()),
+                    Data::Bool(true),
+                    Data::Int(-3),
+                    Data::Text("(kill (all))".into()),
+                    Data::Bytes(vec![0, 255, 3]),
+                    Data::FloatBits(1.5f64.to_bits()),
+                ]),
+            )],
+        };
+        let mut state = crate::script::default_state()?.draft();
+        state.config = Some(std::sync::Arc::new(crate::script::source::Frozen::text(
+            "receiver.grift",
+            "(define! receiver-only (lambda! (client payload) (display (get payload \"value\"))))",
+        )));
+        let code = Code {
+            source: "(lambda! (client payload) (receiver-only client payload))".into(),
+        };
+        let job =
+            crate::screens::Job::call(&code.into(), [Data::Client(client, Some(run)), payload]);
+        let mut machine = job.machine(state.config.as_ref(), None)?;
+        let mut out = Vec::new();
+        let context = Context {
+            client: Some(client),
+            of: Some(run),
+            ..Default::default()
+        };
+        let mut host = Host::job(context, &mut state, &mut out);
+        crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
+        let text = String::from_utf8(out)?;
+        assert!(text.contains("none () #true -3"), "{text}");
+        assert!(text.contains("#bytes(0 255 3) 1.5"), "{text}");
+        assert!(text.contains("\"(kill (all))\""), "{text}");
+        Ok(())
+    }
+    #[test]
+    fn callback_admission_retains_absence_empty_lists_bytes_and_float_bits() -> crate::TestResult {
+        let payload = Data::List(vec![
+            Data::Null,
+            Data::List(Vec::new()),
+            Data::Bytes(vec![0, 255]),
+            Data::FloatBits((-0.0f64).to_bits()),
+        ]);
+        let code=Code{source:"(lambda! (payload) (choose (me) \"typed data\" (list (list payload \"Data\")) () (list 0) (code! (lambda! (client payload) #inert))))".into()};
+        let job = crate::screens::Job::call(&code.into(), [payload.clone()]);
+        let mut machine = job.machine(None, None)?;
+        let mut state = crate::script::default_state()?.draft();
+        let mut out = Vec::new();
+        let mut transport = NoRequests;
+        let context = Context {
+            client: Some("c1".parse().map_err(|e| format!("{e}"))?),
+            ..Default::default()
+        };
+        let mut asks = AsClient {
+            asks: &mut transport,
+            context: context.clone(),
+            opened: None,
+            on_commit: None,
+            stop: None,
+        };
+        let mut host = Host::job(context, &mut state, &mut out);
+        crate::script::run(&mut machine, &mut host, &mut asks, None)?;
+        let Some(crate::screens::Screen::List(screen)) = asks.opened else {
+            return Err("list not opened".into());
+        };
+        assert_eq!(screen.items.first().ok_or("row")?.payload, payload);
+        let encoded = fux_wire::wire::encode(&screen.items.first().ok_or("row")?.payload);
+        let decoded: Data = fux_wire::wire::Reader::new(&encoded).whole()?;
+        assert_eq!(decoded, payload);
+        Ok(())
+    }
 }

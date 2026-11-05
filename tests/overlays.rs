@@ -12,7 +12,7 @@ const CLEAR: &str = "\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7
 
 fn panes(server: &Server) -> Result<Vec<String>, String> {
     Ok(server
-        .ok(&["ls", "listing"])?
+        .ok(&["(listing (list-session))"])?
         .lines()
         .filter_map(|l| l.trim_start().split(' ').next())
         .filter(|w| w.starts_with('%'))
@@ -65,7 +65,7 @@ fn the_column_runs_the_selected_command_and_explains_unavailable_ones() -> Outco
     client.wait("closed by Esc", |t| !t.contains("split side by side"))?;
     assert_eq!(panes(&server)?.len(), 2);
     // An unavailable command is shown dimmed, and running it says why.
-    server.ok(&["str", "%2", "pane", "kill"])?;
+    server.ok(&["(sequence! (kill (pane \"%2\")) #inert)"])?;
     client.keys(PREFIX)?;
     client.wait_for("next pane")?;
     let painted = String::from_utf8_lossy(&client.painted).into_owned();
@@ -92,8 +92,8 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 90)?;
     client.wait_for("$")?;
-    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
-    server.ok(&["str", "c1", "client", "str", "%2", "pane", "show"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"horizontal\"))"])?;
+    server.ok(&["(sequence! (show (client \"c1\") (pane \"%2\")) #inert)"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %2?")?;
     client.keys("n")?;
@@ -102,16 +102,16 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     // Ask about %2, move focus to %1 meanwhile: y still closes %2.
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %2?")?;
-    server.ok(&["str", "c1", "client", "str", "%1", "pane", "show"])?;
+    server.ok(&["(sequence! (show (client \"c1\") (pane \"%1\")) #inert)"])?;
     client.keys("y")?;
     pumped(&mut client, "%2 closed", || Ok(panes(&server)? == ["%1"]))?;
     // A question about a pane that goes stays; its y, run, says so and
     // closes nothing else.
-    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
-    server.ok(&["str", "c1", "client", "str", "%3", "pane", "show"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"horizontal\"))"])?;
+    server.ok(&["(sequence! (show (client \"c1\") (pane \"%3\")) #inert)"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %3")?;
-    server.ok(&["str", "%3", "pane", "kill"])?;
+    server.ok(&["(sequence! (kill (pane \"%3\")) #inert)"])?;
     client.keys("y")?;
     bar_has(&mut client, "no pane %3")?;
     assert_eq!(panes(&server)?, ["%1"], "a late y closes nothing");
@@ -123,18 +123,21 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
 /// beside the defaults.
 #[test]
 fn pane_actions_are_bindings_a_config_extends() -> Outcome {
-    let server =
-        Server::start("str 'C-b a g' code me focused str hello notify end bind  str greet label")?;
+    let server = Server::start(
+        "(sequence! (bind-key \"C-b a g\" (code! (lambda! () (sequence! (notify (focused (me)) \"hello\") #inert)))) (label \"greet\") #inert)",
+    )?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
-    server.ok(&["str", "%1", "pane", "str", "horizontal", "axis", "split"])?;
-    server.ok(&["str", "c1", "client", "str", "%2", "pane", "show"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"horizontal\"))"])?;
+    server.ok(&["(sequence! (show (client \"c1\") (pane \"%2\")) #inert)"])?;
     client.keys(&format!("{PREFIX}a"))?;
     client.wait_for("move to a new tab")?;
     client.wait_for("greet")?;
     client.keys("n")?;
     pumped(&mut client, "%2 in a new tab", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("@2 %2\n    %2"))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("(list (tab 2) (pane 2) (pane 2))"))
     })?;
     Ok(())
 }
@@ -144,8 +147,8 @@ fn choosers_select_rename_and_close() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
-    server.words("opts 100 29 size str +1 workspace in str second name new-tab")?;
-    server.words("opts 100 29 size str +1 workspace in str third name new-tab")?;
+    server.words("(new-tab (name (in (size (options) 100 29) (workspace \"+1\")) \"second\"))")?;
+    server.words("(new-tab (name (in (size (options) 100 29) (workspace \"+1\")) \"third\"))")?;
     client.keys(&format!("{PREFIX}tg"))?;
     client.wait("the tab chooser, current marked", |t| {
         t.contains("* @1 %1") && t.contains("@3 third")
@@ -153,7 +156,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.keys(&format!("{DOWN}\r"))?;
     pumped(&mut client, "on @2", || {
         Ok(server
-            .ok(&["ls", "listing"])?
+            .ok(&["(listing (list-session))"])?
             .contains("client c1 100x30 +1 @2"))
     })?;
     // r renames the selected tab.
@@ -163,7 +166,9 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.wait_for("rename tab @3")?;
     client.keys(&format!("{CLEAR}renamed\r"))?;
     pumped(&mut client, "renamed", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("@3 renamed"))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("@3 renamed"))
     })?;
     // x closes it, after asking.
     client.keys(&format!("{PREFIX}tg"))?;
@@ -172,10 +177,10 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.wait_for("close tab @3 renamed?")?;
     client.keys("y")?;
     pumped(&mut client, "closed", || {
-        Ok(!server.ok(&["ls", "listing"])?.contains("@3"))
+        Ok(!server.ok(&["(listing (list-session))"])?.contains("@3"))
     })?;
     // The workspace chooser lists every workspace with its panes.
-    server.words("opts 100 29 size str elsewhere in new-tab")?;
+    server.words("(new-tab (in (size (options) 100 29) \"elsewhere\"))")?;
     client.keys(&format!("{PREFIX}wg"))?;
     client.wait("the workspace chooser", |t| {
         t.contains("+2 elsewhere") && t.contains("* +1 main")
@@ -183,17 +188,17 @@ fn choosers_select_rename_and_close() -> Outcome {
     client.keys(&format!("{DOWN}\r"))?;
     pumped(&mut client, "on +2", || {
         Ok(server
-            .ok(&["ls", "listing"])?
+            .ok(&["(listing (list-session))"])?
             .contains("client c1 100x30 +2"))
     })?;
     // The move chooser of the pane actions moves the pane there.
-    server.ok(&["str", "%4", "pane", "str", "horizontal", "axis", "split"])?;
+    server.ok(&["(split (axis (pane \"%4\") \"horizontal\"))"])?;
     client.keys(&format!("{PREFIX}aw"))?;
     client.wait_for("move %5 to workspace")?;
     // The chooser starts on the current workspace; +1 is above it.
     client.keys(&format!("{UP}\r"))?;
     pumped(&mut client, "%5 moved to +1", || {
-        let ls = server.ok(&["ls", "listing"])?;
+        let ls = server.ok(&["(listing (list-session))"])?;
         Ok(ls.find("%5").unwrap_or(usize::MAX) < ls.find("+2").unwrap_or(0))
     })?;
     Ok(())
@@ -225,7 +230,10 @@ fn a_clients_opening_names_its_screen_as_its_screen_events_do() -> Outcome {
             || Ok(server.ok(&opening)?.trim() == kind),
         )?;
     }
-    let events = server.ok(&["all", "str", cursor.trim(), "0", "next-events"])?;
+    let events = server.ok(&[&format!(
+        "(next-events (all) {} 0)",
+        fux::script::quoted(cursor.trim())
+    )])?;
     let kinds: Vec<&str> = (events.lines())
         .filter(|e| e.starts_with(r#"{"event":"screen""#) && e.contains(r#""client":"c1""#))
         .filter_map(|e| e.split(r#""kind":"#).nth(1)?.split([',', '}']).next())
@@ -249,15 +257,17 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
     client
-        .keys("me focused str vertical axis str echo program str 'from the prompt' arg split\r")?;
+        .keys("(split (argument (program (axis (focused (me)) \"vertical\") \"echo\") \"from the prompt\"))")?;
     client.wait("typed into the new pane", |t| {
         t.lines().any(|l| l == "from the prompt")
     })?;
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
-    client.keys("str %1 pane str left rename\r")?;
+    client.keys("(sequence! (rename (pane \"%1\") \"left\") #inert)")?;
     pumped(&mut client, "renamed", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("%1 left"))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 left"))
     })?;
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
@@ -266,15 +276,19 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     // A failure after an action says the action took effect (D-25).
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
-    client.keys("str %1 pane str acted rename str boom fail\r")?;
+    client.keys("(sequence! (rename (pane \"%1\") \"acted\") (raise (error (quote! fail) \"boom\")) #inert)")?;
     bar_has(&mut client, "already took effect")?;
-    assert!(server.ok(&["ls", "listing"])?.contains("%1 acted"));
-    server.ok(&["%1", "str", "left", "rename"])?;
+    assert!(
+        server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 acted")
+    );
+    server.ok(&["(sequence! (rename (pane 1) \"left\") #inert)"])?;
     // The focused program exited, so it has no readable nearby cwd.
     server.exits("%2")?;
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
-    client.keys("opts new-tab\r")?;
+    client.keys("(new-tab (options))")?;
     bar_has(&mut client, "working directory is unknown")?;
     assert_eq!(panes(&server)?.len(), 2);
     // Editing: typing, moving and deleting before Enter.
@@ -284,7 +298,7 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
         "opts str / cwd str edited nameX\x7f new-tab\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[H\x1b[F\r",
     )?;
     pumped(&mut client, "the edited command ran", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("edited"))
+        Ok(server.ok(&["(listing (list-session))"])?.contains("edited"))
     })?;
     // A paste of more lines than one is refused whole, and said; one line
     // goes into the prompt, its line end left out, never run by itself.
@@ -295,12 +309,16 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.keys("\x1b[200~str %1 pane str pasted rename\n\x1b[201~")?;
     client.wait_for("str %1 pane str pasted rename▏")?;
     assert!(
-        server.ok(&["ls", "listing"])?.contains("%1 left"),
+        server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 left"),
         "nothing ran yet"
     );
     client.keys("\r")?;
     pumped(&mut client, "renamed by the pasted line", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("%1 pasted"))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 pasted"))
     })?;
     Ok(())
 }
@@ -315,7 +333,9 @@ fn rename_prompts_start_from_the_current_name() -> Outcome {
     client.wait_for("▏")?;
     client.keys("shell\r")?;
     pumped(&mut client, "renamed", || {
-        Ok(server.ok(&["ls", "listing"])?.contains("%1 shell"))
+        Ok(server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 shell"))
     })?;
     // An empty name is refused, and says so.
     client.keys(&format!("{PREFIX}ar"))?;
@@ -336,14 +356,14 @@ fn detaching_with_an_overlay_open_is_safe() -> Outcome {
     client.wait_for("$")?;
     client.keys(&format!("{PREFIX}tg"))?;
     client.wait_for("* @1")?;
-    server.ok(&["str", "c1", "client", "detach"])?;
+    server.ok(&["(sequence! (detach (client \"c1\")) #inert)"])?;
     assert_eq!(client.wait_exit()?, "detached");
     let mut other = server.attach(20, 100)?;
     other.wait_for("$")?;
     other.keys(&format!("{PREFIX}tg"))?;
     other.wait_for("* @1")?;
     other.detach()?;
-    assert!(server.ok(&["ls", "listing"])?.contains("%1"));
+    assert!(server.ok(&["(listing (list-session))"])?.contains("%1"));
     Ok(())
 }
 
@@ -351,14 +371,16 @@ fn detaching_with_an_overlay_open_is_safe() -> Outcome {
 /// dictionary, from its words.
 #[test]
 fn a_remote_custom_chooser_delivers_inert_payload_to_the_receiving_dictionary() -> Outcome {
-    let server = Server::start("define shown nip print end")?;
+    let server = Server::start(
+        "(sequence! (define! shown (lambda! (argument-592 argument-593) (sequence! (print argument-593) #inert))) #inert)",
+    )?;
     let mut client = server.attach(12, 70)?;
     client.wait_for("$")?;
     // The CLI's own shown prints nothing; the label is never executable.
-    server.ok(&["define shown 2drop end str c1 client str Hosts list list str '%1 kill' str 'me focused kill' end end list end list 0 end code shown end choose"])?;
+    server.ok(&["(sequence! (define! shown (lambda! (argument-1216 argument-1217) #inert)) (choose (client \"c1\") \"Hosts\" (list (list \"%1 kill\" \"me focused kill\")) (list) (list 0) (code! (lambda! (argument-1232 argument-1233) (sequence! (shown argument-1232 argument-1233) #inert)))) #inert)"])?;
     client.wait_for("Hosts")?;
     client.keys("\r")?;
-    client.wait_for("%1 kill")?;
-    assert!(server.ok(&["ls", "listing"])?.contains("%1"));
+    client.wait_for("(sequence! (kill (pane 1)) #inert)")?;
+    assert!(server.ok(&["(listing (list-session))"])?.contains("%1"));
     Ok(())
 }

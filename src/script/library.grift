@@ -1,3 +1,4 @@
+(define! none (quote! none))
 ; fux policy. Native operations keep the fuxth words' meanings and take positional arguments.
 (define! code! (vau! (expression) #ignore (list (quote! code) expression)))
 (define! load-forms (lambda! (path caller once)
@@ -45,7 +46,7 @@
 (define! me-focused (lambda! () (list (me) (focused (me)))))
 (define! outer (lambda! (client target)
   (let! ((workspace-value (workspace target)))
-    (if! (empty-list? (get workspace-value "parent")) (raise (error (quote! no-workspace) target))
+    (if! (same? (get workspace-value "parent") none) (raise (error (quote! no-workspace) target))
       (catch-kind! (step client workspace-value "last") no-workspace failure
         (step client workspace-value "next"))))))
 (define! inner (lambda! (target)
@@ -54,7 +55,7 @@
 (define! rename-prompt (lambda! (client target)
   (let! ((name-value (get target "name")))
     (prompt client (string-append "rename " (kind target) " " (string target))
-      (if! (empty-list? name-value) "" name-value)
+      (if! (same? name-value none) "" name-value)
       (list (list target) (code! (lambda! (target new-name) (rename target new-name))))))))
 (define! confirm-close (lambda! (client target)
   (choose client (string-append "close " (kind target) " " (string target) "?")
@@ -85,7 +86,7 @@
       (filter (lambda! (item) (equal? (get item holder) held)) records)))))
 (define! chooser-count (lambda! (number noun) (string-append (integer-to-string number) " " noun (if! (same? number 1) "" "s"))))
 (define! chooser-path (lambda! (snapshot-value target)
-  (if! (empty-list? target) () (pair (string target) (chooser-path snapshot-value (get (chooser-find (get snapshot-value "workspaces") target) "parent"))))))
+  (if! (same? target none) () (pair (string target) (chooser-path snapshot-value (get (chooser-find (get snapshot-value "workspaces") target) "parent"))))))
 (define! chooser-tree (lambda! (snapshot-value target)
   (map (lambda! (item) (chooser-container-row snapshot-value item)) (get snapshot-value "workspaces"))))
 (define! choose-among (lambda! (client target)

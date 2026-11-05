@@ -9,7 +9,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     let server = Server::start("")?;
     std::fs::write(
         server.dir.join("config/fux/config.fux"),
-        "str shell list str /no/such/leaked-shell end set\nstr C-b str C-a move-keys\n",
+        "(sequence! (set \"shell\" (list \"/no/such/leaked-shell\")) (move-keys \"C-b\" \"C-a\") #inert)",
     )
     .map_err(e)?;
     // With the bundled shell, this starts a shell and waits for its
@@ -23,7 +23,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     let socket = socket.to_str().ok_or("a text socket path")?;
     let env = [("FUX_SOCKET", socket)];
     let started = (|| {
-        let out = server.fux_env(&["start"], &env)?;
+        let out = server.fux_env(&["(sequence! (start) #inert)"], &env)?;
         if out.status != 0 || !out.stderr.is_empty() {
             return Err(format!("start: {}", out.stderr));
         }
@@ -36,7 +36,11 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     let stopped = stop_server(std::path::Path::new(socket));
     started?;
     stopped?;
-    assert!(server.ok(&["list-keys"])?.contains("str 'C-b d' code"));
+    assert!(
+        server
+            .ok(&["(sequence! (list-keys) #inert)"])?
+            .contains("str 'C-b d' code")
+    );
     for args in [
         &["opts", "watch", "attach"][..],
         &["opts", "80", "10", "size", "attach"],
@@ -46,7 +50,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
         let mut id = String::new();
         eventually("the attached client", || {
             id = server
-                .ok(&["ls", "listing"])?
+                .ok(&["(listing (list-session))"])?
                 .lines()
                 .find_map(|line| line.strip_prefix("client "))
                 .and_then(|line| line.split_whitespace().next())
@@ -57,18 +61,10 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
         let out = server.fux(&waiting)?;
         assert_eq!(out.status, 0, "{args:?}: {}", out.stderr);
         // Bundled C-b d works even though the user's prefix is C-a.
-        server.ok(&[
-            "str",
-            &id,
-            "client",
-            "str",
-            "C-b",
-            "key",
-            "str",
-            "d",
-            "key",
-            "send-keys",
-        ])?;
+        server.ok(&[&format!(
+            "(send-keys (key (key (client {}) \"C-b\") \"d\"))",
+            fux::script::quoted(&id)
+        )])?;
         terminal.wait_exit()?;
     }
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
@@ -82,12 +78,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
 #[test]
 fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     let server = Server::start(
-        "str C-b str C-a move-keys\n\
-         define split-below me focused str vertical axis split drop end\n\
-         str 'C-a y' code split-below end bind\n\
-         str 'C-a h' unbind\n\
-         str 'C-a g' code me focused str horizontal axis str sh program str -c arg str \"echo from-g; exec sh\" arg split drop end bind\n\
-         str Tools group\n",
+        "(sequence! (move-keys \"C-b\" \"C-a\") (define! split-below (lambda! () (sequence! (split (axis (focused (me)) \"vertical\")) #inert))) (bind-key \"C-a y\" (code! (lambda! () (sequence! (split-below) #inert)))) (unbind \"C-a h\") (bind-key \"C-a g\" (code! (lambda! () (sequence! (split (argument (argument (program (axis (focused (me)) \"horizontal\") \"sh\") \"-c\") \"echo from-g; exec sh\")) #inert)))) (group \"Tools\") #inert)",
     )?;
     let mut client = server.attach(24, 90)?;
     client.wait_for("$")?;
@@ -134,9 +125,9 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
 #[test]
 fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     // Three rows of two cells or more: 24 bytes a row and 8 a cell.
-    let server = Server::start("str history-bytes 120 set")?;
+    let server = Server::start("(sequence! (set \"history-bytes\" 120) #inert)")?;
     // History bytes apply to new panes.
-    let pane = server.words("%1 str vertical axis 120 history-bytes split")?;
+    let pane = server.words("(split (history-bytes (axis (pane 1) \"vertical\") 120))")?;
     let pane = pane.split(':').next().unwrap_or_default();
     server.type_line(
         pane,
@@ -144,41 +135,33 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     )?;
     eventually("the loop", || {
         Ok(server
-            .ok(&["str", pane, "pane", "capture"])?
+            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(pane))])?
             .contains("h15"))
     })?;
-    let history = server.ok(&["str", pane, "pane", "100", "history", "capture"])?;
+    let history = server.ok(&[&format!(
+        "(capture (history (pane {}) 100))",
+        fux::script::quoted(pane)
+    )])?;
     let rows = history.lines().count();
     let screen = server
-        .ok(&["str", pane, "pane", "capture"])?
+        .ok(&[&format!("(capture (pane {}))", fux::script::quoted(pane))])?
         .lines()
         .count();
     assert!(rows <= screen + 3, "at most 3 lines of history: {history}");
     // A failing local script leaves launch policy alone.
     let failed = server.fux(&[
-        "str",
-        "shell",
-        "list",
-        "str",
-        "/no/such/failed-shell",
-        "end",
-        "set",
-        "str",
-        "Nope",
-        "unbind",
+        "(sequence! (set \"shell\" (list \"/no/such/failed-shell\")) (unbind \"Nope\") #inert)",
     ])?;
     assert_eq!(failed.status, 1);
     // A new shell program applies to new panes.
-    let custom = server.words("str shell list str /usr/bin/env str PS1=custom$ str /bin/sh end set %1 str horizontal axis split")?;
+    let custom = server.words("(sequence! (set \"shell\" (list \"/usr/bin/env\" \"PS1=custom$\" \"/bin/sh\")) (split (axis (pane 1) \"horizontal\")))")?;
 
     eventually("the custom prompt", || {
         Ok(server
-            .ok(&[
-                "str",
-                custom.split_whitespace().next().unwrap_or_default(),
-                "pane",
-                "capture",
-            ])?
+            .ok(&[&format!(
+                "(capture (pane {}))",
+                fux::script::quoted(custom.split_whitespace().next().unwrap_or_default())
+            )])?
             .contains("custom$"))
     })?;
     // Bad values are refused; keys are a client's, never the server's.
@@ -202,36 +185,33 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     let mut b = server.attach(8, 80)?;
     a.wait_for("$")?;
     b.wait_for("$")?;
-    let before = server.ok(&["ls", "listing"])?;
+    let before = server.ok(&["(listing (list-session))"])?;
     std::fs::write(directory.join("config.fux"), "require shared.fux").map_err(e)?;
     std::fs::write(
         directory.join("shared.fux"),
-        "str titles true set str history-bytes 0 set",
+        "(sequence! (set \"titles\" #true) (set \"history-bytes\" 0) #inert)",
     )
     .map_err(e)?;
     let configured = fux::script::run_file(&directory.join("config.fux")).map_err(e)?;
     assert_eq!(configured.preferences.history_bytes.get(), 0);
     assert!(configured.preferences.titles);
-    assert_eq!(server.ok(&["ls", "listing"])?, before);
+    assert_eq!(server.ok(&["(listing (list-session))"])?, before);
     a.pump()?;
     b.pump()?;
     assert!(!String::from_utf8_lossy(&a.painted).contains("\x1b]2;"));
     assert!(!String::from_utf8_lossy(&b.painted).contains("\x1b]2;"));
     std::fs::write(
         directory.join("shared.fux"),
-        "str C-b str C-a move-keys str titles true set \
-         opts str missing in attach-defaults \
-         define only-in-failed-config 41 end \
-         %1 str horizontal axis split drop",
+        "(sequence! (move-keys \"C-b\" \"C-a\") (set \"titles\" #true) (attach-defaults (in (options) \"missing\")) (define! only-in-failed-config (lambda! () 41)) (split (axis (pane 1) \"horizontal\")) #inert)",
     )
     .map_err(e)?;
-    let before = server.ok(&["ls", "listing"])?;
+    let before = server.ok(&["(listing (list-session))"])?;
     let failed = fux::script::run_file(&directory.join("config.fux"))
         .err()
         .ok_or("config acted on the server")?;
     assert_eq!(failed.code, fux_wire::code::Code::NotConfig);
     assert!(failed.notice().contains("shared.fux"));
-    assert_eq!(server.ok(&["ls", "listing"])?, before);
+    assert_eq!(server.ok(&["(listing (list-session))"])?, before);
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
     terminal.wait_for("a config changes only its own client state")?;
     terminal.type_bytes(b"\x02")?;
@@ -239,10 +219,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     terminal.type_bytes(b"d")?;
     terminal.wait_exit()?;
     assert_eq!(server.panes()?.len(), 1);
-    let probe = server.fux(&[
-        "opts", "str", "agent", "in", "80", "24", "size", "str", "/bin/sh", "program", "str", "-c",
-        "arg", "str", "sleep 1", "arg", "new-tab", "wait",
-    ])?;
+    let probe = server.fux(&["(wait (new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"/bin/sh\") \"-c\") \"sleep 1\")))"])?;
     assert_eq!(
         probe.status, 0,
         "a failed config changed another invocation's wait: {}",
@@ -258,7 +235,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
 fn a_bad_config_is_reported() -> Outcome {
     let server = Server::start("")?;
     let config = server.dir.join("config").join("fux").join("config.fux");
-    std::fs::write(&config, "str Nope str C-a move-keys\n").map_err(e)?;
+    std::fs::write(&config, "(sequence! (move-keys \"Nope\" \"C-a\") #inert)").map_err(e)?;
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
     terminal.wait_for("bad_binding: move-keys:")?;
     // The defaults: C-b opens the column.
@@ -276,13 +253,12 @@ fn a_bad_config_is_reported() -> Outcome {
         failed.to_string().contains("config.fux:2: frobnicate"),
         "{failed}"
     );
-    std::fs::write(&config, "str C-b str C-a move-keys\n").map_err(e)?;
+    std::fs::write(&config, "(sequence! (move-keys \"C-b\" \"C-a\") #inert)").map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
     // A binding sees the config's definitions made before it, as code
     // compiled there does; one not made yet is said at the binding's line,
     // before the binding is made.
-    let ok =
-        "define sr me focused str horizontal axis split drop end\nstr 'C-b v' code sr end bind\n";
+    let ok = "(sequence! (define! sr (lambda! () (sequence! (split (axis (focused (me)) \"horizontal\")) #inert))) (bind-key \"C-b v\" (code! (lambda! () (sequence! (sr) #inert)))) #inert)";
     std::fs::write(&config, ok).map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
     let text =
@@ -322,7 +298,11 @@ fn optional_config_reports_read_failures() -> Outcome {
             "directory" => std::fs::create_dir(&path).map_err(e)?,
             _ => std::fs::write(&path, [0xff]).map_err(e)?,
         }
-        assert!(server.ok(&["list-keys"])?.contains("'C-b d'"));
+        assert!(
+            server
+                .ok(&["(sequence! (list-keys) #inert)"])?
+                .contains("'C-b d'")
+        );
         let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
         terminal.wait_for("read:")?;
         if kind == "non-text" {
@@ -345,7 +325,7 @@ fn optional_config_reports_read_failures() -> Outcome {
 fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
     let server = Server::start("")?;
     let path = server.dir.join("config/fux/config.fux");
-    std::fs::write(&path, "str history-bytes -1 set").map_err(e)?;
+    std::fs::write(&path, "(sequence! (set \"history-bytes\" -1) #inert)").map_err(e)?;
     let failure = fux::script::run_file(&path)
         .err()
         .ok_or("expected a bad setting")?;
@@ -371,7 +351,10 @@ fn the_config_words_examples_run_as_a_config() -> Outcome {
     let server = Server::start("")?;
     let config = server.dir.join("config.fux");
     for word in ["bind", "move-keys", "repeat"] {
-        let explained = server.ok(&["str", word, "explain"])?;
+        let explained = server.ok(&[&format!(
+            "(sequence! (explain {}) #inert)",
+            fux::script::quoted(word)
+        )])?;
         let example = (explained.lines())
             .find_map(|line| line.split_once("; e.g. "))
             .map(|(_, example)| example)
@@ -385,21 +368,7 @@ fn the_config_words_examples_run_as_a_config() -> Outcome {
 #[test]
 fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
     let server = Server::start("")?;
-    let result = server.fux(&[
-        "str",
-        "shell",
-        "list",
-        "str",
-        "/no/such/fux-review-shell",
-        "end",
-        "set",
-        "%1",
-        "str",
-        "horizontal",
-        "axis",
-        "split",
-        "drop",
-    ])?;
+    let result = server.fux(&["(sequence! (set \"shell\" (list \"/no/such/fux-review-shell\")) (split (axis (pane 1) \"horizontal\")) #inert)"])?;
     assert_eq!(
         result.status, 1,
         "split used the previous shell: {}",
@@ -416,29 +385,14 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
 
 /// A new small pane uses its invocation's history budget.
 fn history_rows(server: &Server) -> Result<usize, String> {
-    let answer = server.ok(&[
-        "opts",
-        "str",
-        "agent",
-        "in",
-        "80",
-        "5",
-        "size",
-        "str",
-        "/bin/sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "i=0; while [ \"$i\" -lt 40 ]; do echo row; i=$((i+1)); done",
-        "arg",
-        "new-tab",
-    ])?;
+    let answer = server.ok(&["(new-tab (argument (argument (program (size (in (options) \"agent\") 80 5) \"/bin/sh\") \"-c\") \"i=0; while [ \\\"$i\\\" -lt 40 ]; do echo row; i=$((i+1)); done\"))"])?;
     let pane = answer.trim().split(':').next().ok_or("pane")?;
     server.exits(pane)?;
     Ok(server
-        .ok(&[pane, "all-history", "capture"])?
+        .ok(&[&format!(
+            "(capture (all-history {}))",
+            support::reference(pane)
+        )])?
         .lines()
         .count())
 }
@@ -447,7 +401,10 @@ fn history_rows(server: &Server) -> Result<usize, String> {
 #[test]
 fn launch_defaults_do_not_change_the_server() -> Outcome {
     let server = Server::start("")?;
-    for code in ["str history-bytes 0 set", "str history-bytes 0 set ls"] {
+    for code in [
+        "(sequence! (set \"history-bytes\" 0) #inert)",
+        "(sequence! (set \"history-bytes\" 0) (list-session))",
+    ] {
         let out = server.fux(&[code])?;
         assert_eq!(out.status, 0, "{}", out.stderr);
         assert!(
@@ -533,7 +490,11 @@ fn non_text_shell_defaults_report_the_library_fallback() -> Outcome {
 #[test]
 fn explicit_settings_survive_a_failed_attach_config() -> Outcome {
     let server = Server::start("")?;
-    std::fs::write(server.dir.join("config/fux/config.fux"), "str Nope unbind").map_err(e)?;
+    std::fs::write(
+        server.dir.join("config/fux/config.fux"),
+        "(sequence! (unbind \"Nope\") #inert)",
+    )
+    .map_err(e)?;
     let mut terminal = Terminal::attach(
         &server,
         12,
@@ -567,31 +528,36 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
         let answer = server.ok(&[&code])?;
         let pane = answer.trim().split(':').next().ok_or("shell pane")?;
         eventually("shell output", || {
-            Ok(server.ok(&[pane, "capture"])?.contains(marker))
+            Ok(server
+                .ok(&[&format!("(capture {})", support::reference(pane))])?
+                .contains(marker))
         })?;
-        let saved = server.ok(&[pane, "info", "json"])?;
+        let saved = server.ok(&[&format!("(info {})", support::reference(pane))])?;
         assert!(
             saved.contains(&format!("printf {marker}; exec /bin/cat")),
             "{saved}"
         );
         assert!(
             server
-                .fux(&[pane, "respawn"])?
+                .fux(&[&format!("(respawn {})", support::reference(pane))])?
                 .stderr
                 .contains("runs a shell")
         );
         assert!(
             server
-                .fux(&[pane, "str", "TERM", "signal"])?
+                .fux(&[&format!("(signal {} \"TERM\")", support::reference(pane))])?
                 .stderr
                 .contains("only_shell")
         );
-        server.ok(&[pane, "str", "C-d", "key", "send-keys", "drop"])?;
+        server.ok(&[&format!(
+            "(sequence! (send-keys (key {} \"C-d\")) #inert)",
+            support::reference(pane)
+        )])?;
         eventually("shell closes", || {
             Ok(!server.panes()?.iter().any(|(p, _)| p == pane))
         })?;
     }
-    let split = server.ok(&["%1", "str", "horizontal", "axis", "split", "info", "json"])?;
+    let split = server.ok(&["(info (split (axis (pane 1) \"horizontal\")))"])?;
     assert!(
         split.contains(r#""generation":0,"argv":["/bin/sh"]"#),
         "{split}"
@@ -600,11 +566,11 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     let before = server.panes()?.len();
     for (conflict, code) in [
         (
-            "opts str main in 80 24 size list str /bin/sh end shell-program str /bin/cat program new-tab",
+            "(new-tab (program (shell-program (size (in (options) \"main\") 80 24) (list \"/bin/sh\")) \"/bin/cat\"))",
             "unused",
         ),
         (
-            "opts str main in 80 24 size str /bin/cat program list str /bin/sh end shell-program new-tab",
+            "(new-tab (shell-program (program (size (in (options) \"main\") 80 24) \"/bin/cat\") (list \"/bin/sh\")))",
             "unused",
         ),
     ] {
@@ -623,7 +589,9 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
 /// A remote client action commits while its subsequent wait is still pending.
 #[test]
 fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outcome {
-    let server = Server::start("str F5 code str titles true set %1 30 timeout wait drop end bind")?;
+    let server = Server::start(
+        "(sequence! (bind-key \"F5\" (code! (lambda! () (sequence! (set \"titles\" #true) (wait (timeout (pane 1) 30)) #inert)))) #inert)",
+    )?;
     let mut a = server.attach(8, 60)?;
     let mut b = server.attach(8, 60)?;
     a.wait_for("$")?;
@@ -649,24 +617,39 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
 #[test]
 fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Outcome {
     let server = Server::start("")?;
-    let created = server.ok(&["str history-bytes 4096 set str program-clipboard true set opts str agent in 40 6 size 0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard str /bin/cat program new-tab"])?;
+    let created = server.ok(&["(sequence! (set \"history-bytes\" 4096) (set \"program-clipboard\" #true) (new-tab (program (program-clipboard (picture-bytes (alternate-scroll-lines (reflow (history-bytes (size (in (options) \"agent\") 40 6) 0) #false) 0) 0) #false) \"/bin/cat\")))"])?;
     let pane = created.trim().split(':').next().ok_or("pane")?;
     assert_eq!(
-        server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),
+        server
+            .ok(&[&format!(
+                "(sequence! \"history_bytes\" (get {} \"history-bytes\"))",
+                support::reference(pane)
+            )])?
+            .trim(),
         "0"
     );
     assert_eq!(
         server
-            .ok(&[pane, "str", "program_clipboard", "get"])?
+            .ok(&[&format!(
+                "(sequence! \"program_clipboard\" (get {} \"program-clipboard\"))",
+                support::reference(pane)
+            )])?
             .trim(),
         "false"
     );
-    server.words("str history-bytes 1024 set str program-clipboard true set")?;
+    server.words(
+        "(sequence! (set \"history-bytes\" 1024) (set \"program-clipboard\" #true) #inert)",
+    )?;
     assert_eq!(
-        server.ok(&[pane, "str", "history_bytes", "get"])?.trim(),
+        server
+            .ok(&[&format!(
+                "(sequence! \"history_bytes\" (get {} \"history-bytes\"))",
+                support::reference(pane)
+            )])?
+            .trim(),
         "0"
     );
-    let recipe = server.ok(&[pane, "tab", "dump"])?;
+    let recipe = server.ok(&[&format!("(dump (tab {}))", support::reference(pane))])?;
     assert!(
         recipe.contains("0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard"),
         "{recipe}"
@@ -676,7 +659,16 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
         ("alternate_scroll_lines", "0"),
         ("picture_bytes", "0"),
     ] {
-        assert_eq!(server.ok(&[pane, "str", field, "get"])?.trim(), value);
+        assert_eq!(
+            server
+                .ok(&[&format!(
+                    "(get {} {})",
+                    fux::script::quoted(field),
+                    support::reference(pane)
+                )])?
+                .trim(),
+            value
+        );
     }
     let replay = server.dir.join("pane-policy.fux");
     std::fs::write(
@@ -686,12 +678,12 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
     .map_err(e)?;
     server.ok(&["--file", &replay.to_string_lossy()])?;
     assert_eq!(
-        server.ok(&["%3", "str", "history_bytes", "get"])?.trim(),
+        server.ok(&["(sequence! (define! value-975 (pane 3)) \"history_bytes\" (get value-975 \"history-bytes\"))"])?.trim(),
         "0"
     );
     assert_eq!(
         server
-            .ok(&["%3", "str", "program_clipboard", "get"])?
+            .ok(&["(sequence! (define! value-979 (pane 3)) \"program_clipboard\" (get value-979 \"program-clipboard\"))"])?
             .trim(),
         "false"
     );
@@ -700,7 +692,12 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
         ("alternate_scroll_lines", "0"),
         ("picture_bytes", "0"),
     ] {
-        assert_eq!(server.ok(&["%3", "str", field, "get"])?.trim(), value);
+        assert_eq!(
+            server
+                .ok(&[&format!("(get (pane 3) {})", fux::script::quoted(field))])?
+                .trim(),
+            value
+        );
     }
     Ok(())
 }
@@ -726,13 +723,19 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     )?;
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
     terminal.wait_for("$")?;
-    let listing = server.ok(&["ls", "listing"])?;
+    let listing = server.ok(&["(listing (list-session))"])?;
     let id = (listing.lines())
         .find_map(|line| line.strip_prefix("client "))
         .and_then(|line| line.split_whitespace().next())
         .ok_or(format!("no client: {listing}"))?
         .to_owned();
-    let read = |what: &str| server.ok(&["str", &id, "client", what, "json"]);
+    let read = |what: &str| {
+        server.ok(&[&format!(
+            "(list (client {}) {})",
+            fux::script::quoted(&id),
+            support::reference(what)
+        )])
+    };
     let keys = read("keys")?;
     for said in [
         r#"{"at":"","keymap":[{"kind":"map","key":"C-b","repeat":false,"keymap":["#,
@@ -890,7 +893,7 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     );
     terminal.type_bytes(b"\x02d")?;
     terminal.wait_exit()?;
-    let gone = server.fux(&["str", &id, "client", "keys"])?;
+    let gone = server.fux(&[&format!("(keys (client {}))", fux::script::quoted(&id))])?;
     assert!(gone.stderr.contains("no_client"), "{}", gone.stderr);
     Ok(())
 }

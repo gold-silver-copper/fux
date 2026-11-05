@@ -25,7 +25,7 @@ op_save_session() { printf '%s\n' '(dump (all))'; }
 op_restore_session() { printf '%s\n' '--file' "$1"; }
 op_start_server() { printf '%s\n' '(start)'; }
 op_stop_server() { printf '%s\n' '(kill-server)'; }
-op_setting() { printf '(get (first (filter (lambda! (setting-value) (same? (get setting-value "name") "%s")) (preferences (get (first (get (list-session) "clients")) "id")))) "value")\n' "$1"; }
+op_setting() { printf '(display (get (first (filter (lambda! (setting-value) (same? (get setting-value "name") "%s")) (preferences (get (first (get (list-session) "clients")) "id")))) "value"))\n' "$1"; }
 op_list_keys() { printf '%s\n' '(list-keys)'; }
 op_help() { printf '%s\n' '(help)'; }
 op_help_split() { printf '%s\n' '(explain "split")'; }

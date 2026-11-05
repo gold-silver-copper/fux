@@ -5,11 +5,13 @@ use std::rc::Rc;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value<A = Fux> {
     Int(i64),
+    Float(f64),
     Bool(bool),
     Str(Rc<String>),
     List(Rc<List<A>>),
     App(A),
     Bytes(Rc<Vec<u8>>),
+    Printed(Rc<String>),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct List<A> {
@@ -58,11 +60,13 @@ impl Value<Fux> {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Int(_) => "integer",
+            Self::Float(_) => "float",
             Self::Bool(_) => "boolean",
             Self::Str(_) => "string",
             Self::List(_) => "list",
             Self::App(v) => v.kind(),
             Self::Bytes(_) => "bytes",
+            Self::Printed(_) => "grift value",
         }
     }
     pub fn text(&self) -> Result<String, Failure> {
@@ -72,7 +76,7 @@ impl Value<Fux> {
     }
     pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         let result = match self {
-            Self::Str(s) => out.write_str(s),
+            Self::Str(s) | Self::Printed(s) => out.write_str(s),
             Self::App(v) => return v.write_text(out),
             _ => self.write_data(out),
         };
@@ -80,6 +84,11 @@ impl Value<Fux> {
     }
     pub fn write_data(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         match self {
+            Self::Printed(text) => out.write_str(text),
+            Self::Float(n) if n.is_nan() => out.write_str("#not-a-number"),
+            Self::Float(n) if *n == f64::INFINITY => out.write_str("#infinity"),
+            Self::Float(n) if *n == f64::NEG_INFINITY => out.write_str("#-infinity"),
+            Self::Float(n) => write!(out, "{n:?}"),
             Self::Int(n) => write!(out, "{n}"),
             Self::Bool(b) => write!(out, "#{b}"),
             Self::Str(s) => write_quoted(s, out),
@@ -104,7 +113,7 @@ impl Value<Fux> {
                 out.write_str(")")
             }
             Self::App(Fux::Record(r)) => r.write(out),
-            Self::App(Fux::Null) => out.write_str("()"),
+            Self::App(Fux::Null) => out.write_str("none"),
             Self::App(v) => v.write_text(out).map_err(|_| std::fmt::Error),
         }
     }
@@ -130,4 +139,11 @@ pub fn quoted(text: &str) -> String {
     let mut out = String::new();
     let _ = write_quoted(text, &mut out);
     out
+}
+
+pub(super) struct Text<'a>(pub &'a Value<Fux>);
+impl std::fmt::Display for Text<'_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.write_text(out).map_err(|_| std::fmt::Error)
+    }
 }

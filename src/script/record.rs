@@ -27,7 +27,7 @@ impl Record {
     pub(super) fn get(&self, field: &str) -> Result<V, Failure> {
         self.fields
             .iter()
-            .find(|(key, _)| super::field_name(key) == field)
+            .find(|(key, _)| key == field)
             .map(|(_, v)| v.clone())
             .ok_or_else(|| {
                 Failure::new(
@@ -53,7 +53,7 @@ impl Record {
             if i > 0 {
                 out.write_str(" ")?;
             }
-            write!(out, "({} ", super::field_name(key))?;
+            write!(out, "({} ", key)?;
             value.write_data(out)?;
             out.write_str(")")?;
         }
@@ -117,6 +117,10 @@ impl Builder {
         self.finish(out, None)
     }
     fn finish(&mut self, fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
+        let fields = fields
+            .into_iter()
+            .map(|(name, value)| (super::field_name(&name), value))
+            .collect();
         let batch = false;
         Ok(Value::App(Fux::Record(Rc::new(Record {
             fields,
@@ -149,7 +153,11 @@ impl Builder {
 }
 
 pub(super) fn from_fields(fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
-    Builder.finish(fields, of)
+    Ok(Value::App(Fux::Record(Rc::new(Record {
+        fields,
+        of,
+        batch: false,
+    }))))
 }
 
 pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
@@ -627,15 +635,15 @@ mod tests {
                     "tab",
                     "workspace",
                     "client",
-                    "from_tab",
-                    "from_workspace",
+                    "from-tab",
+                    "from-workspace",
                     "name",
                     "origin",
-                    "seq",
+                    "sequence",
                     "next"
                 ]
             );
-            assert_eq!(event.get("seq")?, Value::Int(0));
+            assert_eq!(event.get("sequence")?, Value::Int(0));
             assert_eq!(
                 event.get("pane")?,
                 id(AnyRef::Pane(PaneId::of(1)), next.run)

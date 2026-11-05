@@ -52,6 +52,7 @@ struct Runtime<'a, 'b> {
     asks: &'a mut dyn Asks,
     stop: Option<&'a Stop>,
     configuring: bool,
+    exiting: bool,
 }
 type Interpreter<'a, 'b> = Grift<Runtime<'a, 'b>>;
 fn failure(g: &mut Interpreter<'_, '_>, f: Failure) -> Error {
@@ -85,17 +86,29 @@ fn output(
     state: &mut Runtime<'_, '_>,
     args: &[G],
 ) -> Result<G, Error> {
-    for arg in args {
-        let v = from_grift(g, arg)?;
-        let text = v.text().map_err(|f| failure(g, f))?;
-        state
-            .host
-            .out
-            .write_all(text.as_bytes())
-            .map_err(|e| failure(g, Failure::new(Code::Output, e.to_string())))?;
+    for argument in args {
+        let result = if let Some(text) = g.as_str(argument)? {
+            state.host.out.write_all(text.as_bytes())
+        } else if native_data(g, argument)? {
+            let value = from_grift(g, argument)?;
+            write!(state.host.out, "{}", super::value::Text(&value))
+        } else {
+            write!(state.host.out, "{}", DataText { g, value: argument })
+        };
+        result.map_err(|error| failure(g, Failure::new(Code::Output, error.to_string())))?;
     }
     Ok(G::Inert)
 }
+struct DataText<'g, 'a, 'b> {
+    g: &'g Interpreter<'a, 'b>,
+    value: &'g G,
+}
+impl std::fmt::Display for DataText<'_, '_, '_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write_data(self.g, self.value, out)
+    }
+}
+
 fn read_source(
     g: &mut Interpreter<'_, '_>,
     state: &mut Runtime<'_, '_>,
@@ -230,10 +243,14 @@ fn request(
         .position(|w| *w == word)
         .ok_or_else(|| g.error("unbound-symbol", args))?;
     let mut out = Vec::new();
-    let done = state
-        .host
-        .call(id, values, &mut out)
-        .map_err(|f| failure(g, f))?;
+    let done = match state.host.call(id, values, &mut out) {
+        Ok(done) => done,
+        Err(failed) => {
+            let mut values = vec![g.string(&failed.message)?];
+            values.extend_from_slice(args);
+            return Err(g.error(failed.code.name(), &values));
+        }
+    };
     match done {
         Done::Now => {}
         Done::Later(Ask::Server {
@@ -297,12 +314,21 @@ fn request(
                     Failure::new(Code::NotConfig, "a config changes only its client state"),
                 ));
             }
+            if matches!(what, Local::Open(_))
+                && let Some(draft) = state.host.state.as_deref_mut()
+            {
+                state
+                    .asks
+                    .checkpoint(draft, state.host.context.clone())
+                    .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+            }
             out = state
                 .asks
                 .local(&what, state.host.state.as_deref_mut(), state.host.out)
                 .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
             if matches!(what, Local::Shell(Shell::Exit(_))) {
-                return Err(g.error("fux-exit", &[]));
+                runtime_exit(g, state);
+                return Err(g.error("interrupted", &[]));
             }
         }
         Done::Later(Ask::Dictionary(_) | Ask::Code(_)) => {
@@ -379,6 +405,7 @@ pub(super) fn run(
         asks,
         stop,
         configuring: false,
+        exiting: false,
     };
     let mut definitions = String::new();
     for word in Word::ALL {
@@ -461,10 +488,24 @@ pub(super) fn run(
     }
     match result {
         Ok(G::Inert) => Ok(Vec::new()),
-        Ok(v) => from_grift(&mut g, &v)
-            .map(|v| vec![v])
-            .map_err(|e| failed(&g, e)),
-        Err(e) if g.is_kind(&e, "fux-exit").unwrap_or(false) => Ok(Vec::new()),
+        Ok(v) => {
+            if !native_data(&g, &v).unwrap_or(false)
+                && let Ok(items) = g.list_items(&v)
+            {
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    values.push(output_value(&mut g, &item).map_err(|e| failed(&g, e))?);
+                }
+                Ok(vec![Value::List(Rc::new(List::new(values)))])
+            } else {
+                output_value(&mut g, &v)
+                    .map(|v| vec![v])
+                    .map_err(|e| failed(&g, e))
+            }
+        }
+        Err(e) if runtime.exiting && g.is_kind(&e, "interrupted").unwrap_or(false) => {
+            Ok(Vec::new())
+        }
         Err(e) => {
             let mut f = failed(&g, e);
             f.actions = runtime.host.actions.clone();
@@ -477,6 +518,8 @@ pub(super) fn run(
 // options and observations; records remain contexts with ordinary grift fields.
 fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
     Ok(match v {
+        Value::Printed(text) => g.string(text)?,
+        Value::Float(n) => G::Float(*n),
         Value::Int(n) => G::Integer(*n),
         Value::Bool(b) => G::Boolean(*b),
         Value::Str(s) => g.string(s)?,
@@ -489,7 +532,7 @@ fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
                 .collect::<Result<Vec<_>, _>>()?;
             g.list(&items)?
         }
-        Value::App(Fux::Null) => G::EmptyList,
+        Value::App(Fux::Null) => G::Symbol(g.symbol("none")?),
         Value::App(Fux::Code(code)) => {
             let forms = g.read(&code.source)?;
             let form = g
@@ -503,7 +546,7 @@ fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
         Value::App(Fux::Record(r)) => {
             let context = g.context(None)?;
             for (k, v) in &r.fields {
-                let key = g.symbol(&super::field_name(k))?;
+                let key = g.symbol(k)?;
                 let value = to_grift(g, v)?;
                 g.bind(&context, &G::Symbol(key), value)?;
             }
@@ -523,12 +566,20 @@ fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
     })
 }
 fn from_grift(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error> {
+    from_grift_at(g, v, fux_wire::callback::DEPTH)
+}
+fn from_grift_at(g: &mut Interpreter<'_, '_>, v: &G, depth: u8) -> Result<Value<Fux>, Error> {
+    let Some(depth) = depth.checked_sub(1) else {
+        return Err(g.error("too-long", &[v.clone()]));
+    };
     Ok(match v {
+        G::Float(n) => Value::Float(*n),
         G::Integer(n) => Value::Int(*n),
         G::Boolean(b) => Value::Bool(*b),
         G::String(_) => Value::str(g.as_string(v)?.unwrap_or_default()),
         G::Bytes(_) => Value::Bytes(Rc::new(g.as_bytes(v)?.unwrap_or_default().to_vec())),
         G::EmptyList => Value::List(Rc::new(List::new(Vec::new()))),
+        G::Symbol(s) if g.symbol_name(s)? == "none" => Value::App(Fux::Null),
         G::Symbol(s) => Value::str(g.symbol_name(s)?.to_owned()),
         G::Pair(_) => {
             let items = g.list_items(v)?;
@@ -550,7 +601,7 @@ fn from_grift(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error> {
                 _ => Value::List(Rc::new(List::new(
                     items
                         .iter()
-                        .map(|v| from_grift(g, v))
+                        .map(|v| from_grift_at(g, v, depth))
                         .collect::<Result<_, _>>()?,
                 ))),
             }
@@ -566,7 +617,7 @@ fn from_grift(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error> {
                 if name == "observation-run" {
                     run = g.as_str(&value)?.and_then(|s| s.parse().ok());
                 } else {
-                    fields.push((name, from_grift(g, &value)?));
+                    fields.push((name, from_grift_at(g, &value, depth)?));
                 }
             }
             record::from_fields(fields, run).map_err(|f| failure(g, f))?
@@ -757,4 +808,113 @@ impl Wire for Opt {
             .copied()
             .ok_or(fux_wire::wire::Error::Bad("option"))
     }
+}
+
+fn native_data(g: &Interpreter<'_, '_>, v: &G) -> Result<bool, Error> {
+    let Some((G::Symbol(tag), _)) = g.as_pair(v)? else {
+        return Ok(false);
+    };
+    Ok(matches!(g.symbol_name(&tag)?, "native-value" | "code"))
+}
+/// Walk data with an explicit stack, including a record's field values.
+fn write_data(
+    g: &Interpreter<'_, '_>,
+    value: &G,
+    out: &mut dyn std::fmt::Write,
+) -> std::fmt::Result {
+    enum Part {
+        Value(G),
+        Text(&'static str),
+        Name(String),
+        LeaveContext,
+    }
+    let mut todo = vec![Part::Value(value.clone())];
+    let mut contexts: Vec<G> = Vec::new();
+    while let Some(part) = todo.pop() {
+        match part {
+            Part::LeaveContext => {
+                contexts.pop();
+            }
+            Part::Text(text) => out.write_str(text)?,
+            Part::Name(name) => out.write_str(&name)?,
+            Part::Value(v) => match &v {
+                G::Context(_) => {
+                    if contexts.contains(&v) {
+                        g.write(&v, out).map_err(|_| std::fmt::Error)?;
+                        continue;
+                    }
+                    contexts.push(v.clone());
+                    todo.push(Part::LeaveContext);
+                    let names = g.names(&v).map_err(|_| std::fmt::Error)?;
+                    out.write_str("(")?;
+                    todo.push(Part::Text(")"));
+                    let mut fields = Vec::new();
+                    for name in names {
+                        let text = g
+                            .symbol_name(&name)
+                            .map_err(|_| std::fmt::Error)?
+                            .to_owned();
+                        if text == "observation-run" {
+                            continue;
+                        }
+                        let value = g
+                            .lookup(&v, &name)
+                            .map_err(|_| std::fmt::Error)?
+                            .ok_or(std::fmt::Error)?;
+                        fields.push((text, value));
+                    }
+                    for (i, (name, value)) in fields.into_iter().enumerate().rev() {
+                        todo.push(Part::Text(")"));
+                        todo.push(Part::Value(value));
+                        todo.push(Part::Text(" "));
+                        todo.push(Part::Name(name));
+                        todo.push(Part::Text(if i == 0 { "(" } else { " (" }));
+                    }
+                }
+                G::Pair(_) => {
+                    let items = match g.list_items(&v) {
+                        Ok(items) => items,
+                        Err(_) => {
+                            g.write(&v, out).map_err(|_| std::fmt::Error)?;
+                            continue;
+                        }
+                    };
+                    if let [G::Symbol(tag), data] = items.as_slice()
+                        && g.symbol_name(tag).map_err(|_| std::fmt::Error)? == "native-value"
+                        && let Some(bytes) = g.as_bytes(data).map_err(|_| std::fmt::Error)?
+                    {
+                        let app = decode_app(bytes).map_err(|_| std::fmt::Error)?;
+                        let text = Value::App(app).text().map_err(|_| std::fmt::Error)?;
+                        out.write_str(&super::quoted(&text))?;
+                    } else {
+                        out.write_str("(")?;
+                        todo.push(Part::Text(")"));
+                        for (i, item) in items.into_iter().enumerate().rev() {
+                            todo.push(Part::Value(item));
+                            if i > 0 {
+                                todo.push(Part::Text(" "));
+                            }
+                        }
+                    }
+                }
+                _ => g.write(&v, out).map_err(|_| std::fmt::Error)?,
+            },
+        }
+    }
+    Ok(())
+}
+
+fn output_value(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error> {
+    if matches!(v, G::Integer(_) | G::Boolean(_) | G::String(_)) || native_data(g, v)? {
+        return from_grift(g, v);
+    }
+    let mut text = String::new();
+    write_data(g, v, &mut text).map_err(|_| g.error("output", &[]))?;
+    Ok(Value::Printed(Rc::new(text)))
+}
+
+fn runtime_exit(g: &mut Interpreter<'_, '_>, state: &mut Runtime<'_, '_>) {
+    state.exiting = true;
+    let mut stop = g.interrupter();
+    let _ = stop.stop();
 }

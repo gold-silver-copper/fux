@@ -7,6 +7,8 @@
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.grift`).
 mod callback;
+mod docs;
+pub use docs::{Doc, docs};
 
 mod record;
 pub(crate) mod settings;
@@ -89,7 +91,7 @@ impl Fux {
 
     fn name(&self) -> &'static str {
         match self {
-            Fux::Null => "null",
+            Fux::Null => "none",
             Fux::Record(_) => "record",
             Fux::Pane(_, _) => "pane",
             Fux::Tab(_, _) => "tab",
@@ -113,7 +115,7 @@ impl Fux {
 
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         match self {
-            Fux::Null => out.write_str("null"),
+            Fux::Null => out.write_str("none"),
             Fux::Record(r) => r.write(out),
             Fux::Pane(p, _) => write!(out, "{p}"),
             Fux::Tab(t, _) => write!(out, "{t}"),
@@ -141,7 +143,9 @@ fn scope(value: &Value<Fux>) -> Option<Run> {
             | Fux::Answer(_, run),
         ) => *run,
         Value::App(Fux::Opts(opts)) => opts.of,
-        Value::Bytes(_)
+        Value::Printed(_)
+        | Value::Float(_)
+        | Value::Bytes(_)
         | Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
@@ -1395,9 +1399,16 @@ pub fn main(
             if matches!(v, Value::App(Fux::Opts(_))) {
                 return Err(Failed::new(Code::Unused, "options need an operation"));
             }
-            v.write_text(&mut IoText(host.out))
-                .map_err(callback_failed)?;
-            writeln!(host.out).map_err(output_failed)?;
+            match v {
+                Value::List(items) => {
+                    for item in items.items() {
+                        writeln!(host.out, "{}", value::Text(item)).map_err(output_failed)?;
+                    }
+                }
+                Value::Str(text) if text.is_empty() => {}
+                Value::App(Fux::Answer(answer, _)) if answer.is_empty() => {}
+                _ => writeln!(host.out, "{}", value::Text(v)).map_err(output_failed)?,
+            }
         }
         Ok(cli.status.unwrap_or(0))
     });
@@ -1421,30 +1432,36 @@ impl std::fmt::Write for IoText<'_> {
 
 /// Public record names follow grift's spelling; native wire names stay private.
 fn field_name(name: &str) -> String {
-    match name {
-        "cols" => "columns".into(),
-        "col" => "column".into(),
-        "len" => "length".into(),
-        "pid" => "process-id".into(),
-        "server_pid" => "server-process-id".into(),
-        "cwd" => "directory".into(),
-        "argv" => "arguments".into(),
-        "tty" => "terminal".into(),
-        _ => name.replace('_', "-"),
-    }
+    name.split('_')
+        .map(|word| match word {
+            "cols" => "columns",
+            "col" => "column",
+            "len" => "length",
+            "pid" => "process-id",
+            "cwd" => "directory",
+            "argv" => "arguments",
+            "tty" => "terminal",
+            "seq" => "sequence",
+            word => word,
+        })
+        .collect::<Vec<_>>()
+        .join("-")
 }
 fn native_field(name: &str) -> String {
-    match name {
-        "columns" => "cols".into(),
-        "column" => "col".into(),
-        "length" => "len".into(),
-        "process-id" => "pid".into(),
-        "server-process-id" => "server_pid".into(),
-        "directory" => "cwd".into(),
-        "arguments" => "argv".into(),
-        "terminal" => "tty".into(),
-        _ => name.replace('-', "_"),
-    }
+    name.replace("process-id", "pid")
+        .split('-')
+        .map(|word| match word {
+            "columns" => "cols",
+            "column" => "col",
+            "length" => "len",
+            "directory" => "cwd",
+            "arguments" => "argv",
+            "terminal" => "tty",
+            "sequence" => "seq",
+            word => word,
+        })
+        .collect::<Vec<_>>()
+        .join("_")
 }
 
 /// A session asked in-process, and programs run against one held reply:

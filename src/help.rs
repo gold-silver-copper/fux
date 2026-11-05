@@ -13,6 +13,12 @@ pub fn overview() -> String {
             text += &format!("  {:<22} {}\n", row.name, row.about);
         }
     }
+    if let Ok(docs) = crate::script::docs() {
+        text.push_str("\nLibrary operations:\n");
+        for doc in docs {
+            text.push_str(&format!("  {} {}\n", doc.name, doc.parameters));
+        }
+    }
     text
 }
 pub fn unknown(name: &str) -> String {
@@ -28,6 +34,14 @@ pub fn explain(name: &str) -> Option<String> {
             row.effect
                 .split_once("--")
                 .map_or(row.effect, |(args, _)| args.trim())
+        ));
+    }
+    if let Ok(docs) = crate::script::docs()
+        && let Some(doc) = docs.iter().find(|doc| doc.name == name)
+    {
+        return Some(format!(
+            "{}\nParameters: {}\n{}\n{}\n",
+            doc.name, doc.parameters, doc.documentation, doc.source
         ));
     }
     match name {

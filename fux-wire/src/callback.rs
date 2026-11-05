@@ -20,6 +20,8 @@ pub enum Data {
     Handle(AnyRef, Option<Run>),
     Client(ClientId, Option<Run>),
     Code(Code),
+    Bytes(Vec<u8>),
+    FloatBits(u64),
 }
 
 impl Data {
@@ -67,6 +69,8 @@ impl Data {
             7 => Self::Client(ClientId::get(r)?, Option::get(r)?),
             8 => Self::All,
             9 => Self::Code(Code::get(r)?),
+            10 => Self::Bytes(Vec::get(r)?),
+            11 => Self::FloatBits(u64::get(r)?),
             tag => return Err(Error::Tag("callback value", tag)),
         })
     }
@@ -84,6 +88,8 @@ crate::wire::shaped!(enum Data {
     Client(v: ClientId, run: Option<Run>),
     All,
     Code(v: Code),
+    Bytes(v: Vec<u8>),
+    FloatBits(v: u64),
 });
 
 impl Wire for Data {
@@ -124,6 +130,14 @@ impl Wire for Data {
             }
             Self::Code(v) => {
                 out.push(9);
+                v.put(out);
+            }
+            Self::Bytes(v) => {
+                out.push(10);
+                v.put(out);
+            }
+            Self::FloatBits(v) => {
+                out.push(11);
                 v.put(out);
             }
         }
