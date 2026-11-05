@@ -3,11 +3,12 @@
 The system calls [fux](https://github.com/gold-silver-copper/fux) makes on
 Linux, Android and macOS, over `libc`, each behind a safe function. It
 holds only what fux's own crates call, and the one clock fux-bench times
-with. On Windows it builds with only the types every OS shares (`Pid`,
-`Signal`'s names, `Status`, `Errno`, `Allocation`); the modules that make
-calls are Unix only for now, and each OS's code sits in its own file
-(`process/unix.rs`, `process/windows.rs`). On any other platform it does
-not build.
+with. On Windows it has the types every OS shares (`Pid`, `Signal`'s
+names, `Status`, `Errno`, `Allocation`) and the event loop (`poll`,
+`signal::Pipe`, `io`'s reads and writes; below), over `windows-sys`; the
+other modules are Unix only for now. Each OS's code sits in its own file
+(`poll/unix.rs`, `poll/windows.rs`, and so on). On any other platform it
+does not build.
 
 ## Rules
 
@@ -50,6 +51,37 @@ the slave has closed it, which a job the program left may never do, and
 which a program whose stdin is elsewhere may do before it exits; on
 macOS, where `Master` holds the slave, it may not close at all. A poll
 loop learns of the end from a `signal::Pipe` of `Chld`.
+
+## The event loop on Windows
+
+The same `Poll`, `List`, `Entry`, `PollFd`, `Events`, `poll`,
+`signal::Pipe` and `io::read`, `write` and `write_what_fits` as on Unix,
+over one I/O completion port for the whole process, which no thread of
+fuxix's own waits on. A Windows handle can't be asked whether it is ready,
+so `PollFd::new` takes a `poll::Source`, a sealed trait only fuxix's
+`io::Stream` and `signal::Pipe` have, and readiness is rebuilt from what
+finished:
+
+- `io::Stream`, one end of a pipe (`io::pipe` for two ends in this
+  process, `io::pipe_for_child` for one whose other end is a plain handle
+  for a child or a pseudo console), keeps one overlapped read in flight
+  into a 64 KiB buffer of its own. `IN`: a read finished, with bytes, the
+  end or an error. `OUT`: no write is in flight; `write` copies into a
+  second buffer and starts one. `HUP`: the read came to the end with
+  nothing left, or a write found no reader; `ERR`: another failure. A
+  read or write that would wait fails with `Errno::AGAIN`
+  (`WSAEWOULDBLOCK`, what std calls `WouldBlock`). Dropped, a stream
+  cancels its read and closes at once, or once a write in flight lands.
+- `signal::Pipe` is a queue any thread may add to (`signal::raise`), the
+  console control handler (`Int` for Ctrl-C, `Quit` for Ctrl-Break, `Hup`
+  for close, `Term` for logoff and shutdown) and a watched child's end
+  (`process::watch`, a `RegisterWaitForSingleObject` wait, raising `Chld`).
+  Each raise posts a packet; a signal waiting is not held twice.
+- A timeout is a high-resolution waitable timer, with a thread-pool wait
+  posting a packet when it fires: the port's own millisecond timeout ends
+  a 1 ms wait 13 to 15 ms late.
+- One thread polls at a time: another thread's poll meanwhile fails with
+  `ERROR_BUSY`, rather than take the packet the first waits for.
 
 ## Functions
 

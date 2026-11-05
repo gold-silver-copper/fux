@@ -4,7 +4,7 @@ version = "0.9.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "The system calls fux makes on Linux, Android and macOS, over libc, each safe to call; on Windows, the types they share"
+description = "The system calls fux makes on Linux, Android and macOS, over libc, each safe to call; on Windows, its event loop over one I/O completion port"
 repository = "https://github.com/gold-silver-copper/fux"
 readme = "README.md"
 keywords = ["pty", "termios", "syscall", "unix", "fux"]
@@ -12,6 +12,18 @@ categories = ["os::unix-apis"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+  "Win32_System_WindowsProgramming",
+] }
 
 [lints.rust]
 unused_must_use = "forbid"

@@ -8,6 +8,8 @@ use std::fmt;
 mod unix;
 #[cfg(unix)]
 pub(crate) use unix::{check, check_size, fit};
+#[cfg(windows)]
+mod windows;
 
 /// The system's code for why a call failed: an `errno` value on Unix, a
 /// system error code on Windows.

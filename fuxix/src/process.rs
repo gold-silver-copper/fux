@@ -9,7 +9,7 @@ pub use unix::*;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::Pid;
+pub use windows::{Pid, Watch, watch};
 
 /// Expands `/// doc, then Variant "NAME" SIGNAL, ...` to the enum `Signal` of those
 /// variants, `Signal::ALL` in that order, `name` (its `NAME`), and on
