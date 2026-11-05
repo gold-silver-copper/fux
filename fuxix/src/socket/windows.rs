@@ -266,11 +266,12 @@ pub fn peer(pipe: impl AsHandle) -> Result<Peer> {
 /// be this process's user ([`peer`]) and the pipe is owned as this
 /// process's own pipes are; otherwise it is refused with [`Errno::ACCES`]
 /// before anything is sent, as is a pipe the server's descriptor keeps
-/// this user out of. A name with a NUL in it is [`Errno::INVAL`]. With every instance taken (a server
-/// that hasn't yet made the next) it waits for one, a second at most, then
-/// fails with [`Errno::AGAIN`], as a full listener's connect does on Unix;
-/// with no such pipe, with `ERROR_FILE_NOT_FOUND`. The server may only
-/// identify the client, never act as it.
+/// this user out of. A name with a NUL in it is [`Errno::INVAL`]. With
+/// every instance taken (a server that hasn't yet made the next) it waits
+/// for one, a second at most, then fails with [`Errno::AGAIN`], as a full
+/// listener's connect does on Unix; with no such pipe, with
+/// `ERROR_FILE_NOT_FOUND`. The server may only identify the client, never
+/// act as it.
 pub fn connect(name: &str) -> Result<Stream> {
     let pipe = open(&wide(name)?)?;
     if !peer(&pipe)?.user.is_current() || !owned_by_us(&pipe)? {
