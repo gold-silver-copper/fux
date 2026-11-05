@@ -484,11 +484,14 @@ impl Failed {
         let mut shown = self.clone();
         shown.message = message;
         shown.place = None;
-        let mut notice = shown.to_string();
-        for step in &self.actions {
-            notice.push_str(&format!("; already took effect: {step}"));
+        if !self.actions.is_empty() {
+            shown.message = format!(
+                "already took effect: {}; {}",
+                self.actions.join(", "),
+                shown.message
+            );
         }
-        notice
+        shown.to_string()
     }
 
     /// Each step that had taken effect, a line each, as stderr says it.

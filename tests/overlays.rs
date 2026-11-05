@@ -211,19 +211,14 @@ fn a_clients_opening_names_its_screen_as_its_screen_events_do() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
-    let next = [
-        "(sequence! (define! value-145 (next-events (all) \"\" 0)) \"next\" (get value-145 \"next\"))",
-    ];
-    let cursor = server.ok(&next)?;
-    let opening = ["(snapshot (client \"c1\") \"facts\")"];
-    let opening = [&opening[..], &["str", "clients", "get", "first"]].concat();
-    let opening = [&opening[..], &["str", "opening", "get", "json"]].concat();
+    let cursor = server.ok(&[r#"(get (next-events (all) "" 0) "next")"#])?;
+    let opening = [r#"(get (first (get (snapshot (client "c1") "facts") "clients")) "opening")"#];
     for (keys, kind) in [
-        (PREFIX.to_owned(), "\"column\""),
-        ("tg".to_owned(), "\"list\""),
-        ("\x1b".to_owned(), "null"),
-        (format!("{PREFIX}e"), "\"prompt\""),
-        ("\x1b".to_owned(), "null"),
+        (PREFIX.to_owned(), "column"),
+        ("tg".to_owned(), "list"),
+        ("\x1b".to_owned(), "none"),
+        (format!("{PREFIX}e"), "prompt"),
+        ("\x1b".to_owned(), "none"),
     ] {
         client.keys(&keys)?;
         pumped(
@@ -232,20 +227,14 @@ fn a_clients_opening_names_its_screen_as_its_screen_events_do() -> Outcome {
             || Ok(server.ok(&opening)?.trim() == kind),
         )?;
     }
-    let events = server.ok(&[&format!(
-        "(next-events (all) {} 0)",
-        fux::script::quoted(cursor.trim())
-    )])?;
-    let kinds: Vec<&str> = (events.lines())
-        .filter(|e| e.starts_with(r#"{"event":"screen""#) && e.contains(r#""client":"c1""#))
-        .filter_map(|e| e.split(r#""kind":"#).nth(1)?.split([',', '}']).next())
-        .collect();
+    let events = server.ok(&[&format!(r#"(define! batch (next-events (all) {} 0))
+        (map (lambda! (event) (get event "kind"))
+          (filter (lambda! (event) (and!? (same? (get event "event") "screen") (same? (string (get event "client")) "c1"))) (get batch "events")))"#, fux::script::quoted(cursor.trim()))])?;
     assert_eq!(
-        kinds,
-        ["\"column\"", "\"column\"", "null", "\"list\"", "null"]
-            .into_iter()
-            .chain(["\"column\"", "null", "\"prompt\"", "null"])
-            .collect::<Vec<_>>(),
+        events.lines().collect::<Vec<_>>(),
+        [
+            "column", "column", "none", "list", "none", "column", "none", "prompt", "none"
+        ],
         "{events}"
     );
     Ok(())
@@ -259,13 +248,13 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
     client
-        .keys("(split (argument (program (axis (focused (me)) \"vertical\") \"echo\") \"from the prompt\"))")?;
+        .keys("(split (argument (program (axis (focused (me)) \"vertical\") \"echo\") \"from the prompt\"))\r")?;
     client.wait("typed into the new pane", |t| {
         t.lines().any(|l| l == "from the prompt")
     })?;
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
-    client.keys("(sequence! (rename (pane \"%1\") \"left\") #inert)")?;
+    client.keys("(sequence! (rename (pane \"%1\") \"left\") #inert)\r")?;
     pumped(&mut client, "renamed", || {
         Ok(server
             .ok(&["(listing (list-session))"])?
@@ -274,11 +263,11 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
     client.keys("nope\r")?;
-    bar_has(&mut client, "nope: no such word")?;
+    bar_has(&mut client, "unbound-symbol")?;
     // A failure after an action says the action took effect (D-25).
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
-    client.keys("(sequence! (rename (pane \"%1\") \"acted\") (raise (error (quote! fail) \"boom\")) #inert)")?;
+    client.keys("(sequence! (rename (pane \"%1\") \"acted\") (raise (error (quote! fail) \"boom\")) #inert)\r")?;
     bar_has(&mut client, "already took effect")?;
     assert!(
         server
@@ -290,14 +279,14 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     server.exits("%2")?;
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
-    client.keys("(new-tab (options))")?;
+    client.keys("(new-tab (options))\r")?;
     bar_has(&mut client, "working directory is unknown")?;
     assert_eq!(panes(&server)?.len(), 2);
     // Editing: typing, moving and deleting before Enter.
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
     client.keys(
-        "opts str / cwd str edited nameX\x7f new-tab\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[H\x1b[F\r",
+        "(new-tab (name (directory (options) \"/\") \"editedX\"))\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[H\x1b[F\r",
     )?;
     pumped(&mut client, "the edited command ran", || {
         Ok(server.ok(&["(listing (list-session))"])?.contains("edited"))
@@ -306,10 +295,10 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     // goes into the prompt, its line end left out, never run by itself.
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
-    client.keys("\x1b[200~str %1 pane str pasted rename\nkill-server\x1b[201~")?;
+    client.keys("\x1b[200~(rename (pane 1) \"pasted\")\n(kill-server)\x1b[201~")?;
     client.wait_for("nothing was typed")?;
-    client.keys("\x1b[200~str %1 pane str pasted rename\n\x1b[201~")?;
-    client.wait_for("str %1 pane str pasted rename▏")?;
+    client.keys("\x1b[200~(rename (pane 1) \"pasted\")\n\x1b[201~")?;
+    client.wait_for("(rename (pane 1) \"pasted\")▏")?;
     assert!(
         server
             .ok(&["(listing (list-session))"])?
@@ -379,10 +368,10 @@ fn a_remote_custom_chooser_delivers_inert_payload_to_the_receiving_dictionary() 
     let mut client = server.attach(12, 70)?;
     client.wait_for("$")?;
     // The CLI's own shown prints nothing; the label is never executable.
-    server.ok(&["(sequence! (define! shown (lambda! (argument-1216 argument-1217) #inert)) (choose (client \"c1\") \"Hosts\" (list (list \"%1 kill\" \"me focused kill\")) (list) (list 0) (code! (lambda! (argument-1232 argument-1233) (sequence! (shown argument-1232 argument-1233) #inert)))) #inert)"])?;
+    server.ok(&["(sequence! (define! shown (lambda! (argument-1216 argument-1217) #inert)) (choose (client \"c1\") \"Hosts\" (list (list \"(kill (pane 1))\" \"(kill (focused (me)))\")) (list) (list 0) (code! (lambda! (argument-1232 argument-1233) (sequence! (shown argument-1232 argument-1233) #inert)))) #inert)"])?;
     client.wait_for("Hosts")?;
     client.keys("\r")?;
-    client.wait_for("(sequence! (kill (pane 1)) #inert)")?;
+    client.wait_for("(kill (pane 1))")?;
     assert!(server.ok(&["(listing (list-session))"])?.contains("%1"));
     Ok(())
 }

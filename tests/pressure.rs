@@ -20,11 +20,18 @@ fn screen(server: &Server, pane: &str) -> Result<String, String> {
 }
 
 /// Sends keys to a pane.
-fn send_now(server: &Server, pane: &str, keys: &[&str]) -> Outcome {
-    let mut words = vec!["str", pane, "pane"];
-    words.extend_from_slice(keys);
-    words.extend(["send-keys"]);
-    server.ok(&words)?;
+fn send_now(server: &Server, pane: &str, text: &str, enter: bool) -> Outcome {
+    let input = format!(
+        "(text {} {})",
+        support::reference(pane),
+        fux::script::quoted(text)
+    );
+    let input = if enter {
+        format!("(key {input} \"Enter\")")
+    } else {
+        input
+    };
+    server.ok(&[&format!("(send-keys {input})")])?;
     Ok(())
 }
 
@@ -178,7 +185,7 @@ fn input_waits_while_its_program_does_not_read() -> Outcome {
     }
     for i in 0..200u32 {
         let key = char::from(b'A'.saturating_add(u8::try_from(i % 26).map_err(e)?));
-        send_now(&server, "%1", &["str", &key.to_string(), "text"])?;
+        send_now(&server, "%1", &key.to_string(), false)?;
         expected.extend(key.to_string().bytes());
     }
     signal(cat, fuxix::process::Signal::Cont);
@@ -233,7 +240,7 @@ fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
     )?;
     // At once: settling would wait out the sleep.
     let line = "exec sleep 1 <&- >&- 2>&-";
-    send_now(&server, "%2", &["str", line, "text", "str", "Enter", "key"])?;
+    send_now(&server, "%2", line, true)?;
     eventually("%2 to close when sleep exits", || {
         Ok(!server.ok(&["(listing (list-session))"])?.contains("%2 "))
     })?;
@@ -339,11 +346,7 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         fill.display(),
         pid_file.display()
     );
-    let words = ["(program (size (in (options) \"agent\") 80 24) \"sh\")"];
-    let words = words
-        .into_iter()
-        .chain(["str", "-c", "arg", "str", &code, "arg", "new-tab"]);
-    server.ok(&words.collect::<Vec<_>>())?;
+    server.ok(&[&format!("(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") {}))", fux::script::quoted(&code))])?;
     let writer = pid_in(&pid_file)?;
     let group = fuxix::process::Pid::from_raw(writer).ok_or("the writer's group")?;
     let _reap = Reap(vec![writer]);
