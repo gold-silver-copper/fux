@@ -314,8 +314,19 @@ fn an_idle_loop_uses_no_cpu_and_wakes_when_a_byte_comes() -> Outcome {
     Ok(())
 }
 
-/// A 1 ms timeout, 200 times: never early, and late by under 3 ms at the
-/// 99th percentile.
+/// A 1 ms timeout, 200 times: never early; late by under 2 ms at the
+/// median, so the high-resolution timer ends it, and by under 10 ms at
+/// the 99th percentile, so the completion port's own timeout, 13 to 15 ms
+/// late, never does.
+///
+/// The band was p99 under 3 ms. windows-11-arm missed it twice, with the
+/// timer waited on by the thread pool (p99 3709 us, PR 433) and by a
+/// time-critical thread of its own (p50 566 us, p99 3867 us, max 4025 us,
+/// master run 42085229345), while other runs measured p99 552 to 659 us:
+/// a few waits in 200 woken about 4 ms late by the runner however the
+/// timer is waited on, not by the poll. The new band still tells the
+/// timer from the port; what it costs is that a tail up to 10 ms late
+/// passes unseen.
 #[test]
 fn a_short_timeout_is_never_early_and_hardly_late() -> Outcome {
     let _turn = turn();
@@ -344,7 +355,8 @@ fn a_short_timeout_is_never_early_and_hardly_late() -> Outcome {
         p99.as_micros(),
         max.as_micros()
     );
-    assert!(p99 < Duration::from_millis(3), "p99 late by {p99:?}");
+    assert!(p50 < Duration::from_millis(2), "p50 late by {p50:?}");
+    assert!(p99 < Duration::from_millis(10), "p99 late by {p99:?}");
     Ok(())
 }
 
