@@ -1885,8 +1885,7 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
         }
         if !reached.is_empty() {
             while let Ok((stream, _)) = listener.accept() {
-                let ours = fuxix::socket::peer(&stream)
-                    .is_ok_and(|peer| peer.uid == fuxix::process::geteuid());
+                let ours = fuxix::socket::peer(&stream).is_ok_and(|peer| peer.user.is_current());
                 if ours
                     && host.closed.is_none()
                     && let Ok(end) = End::new(stream)

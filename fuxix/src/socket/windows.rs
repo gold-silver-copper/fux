@@ -1,0 +1,720 @@
+//! Named pipes on Windows, as a server's clients reach it: one duplex,
+//! overlapped instance per connection, local clients only, under a name
+//! only one server holds, that only its own user may open.
+//!
+//! - **Owner-only.** Every instance is made with an explicit security
+//!   descriptor that lets this process's user in and no one else
+//!   (`D:P(A;;GA;;;<user SID>)`), never the default one, which lets any
+//!   user open a pipe to read.
+//! - **First.** A [`Listener`]'s first instance is made with
+//!   `FILE_FLAG_FIRST_PIPE_INSTANCE`: a name any process holds already
+//!   fails with [`Errno::ADDRINUSE`] rather than join that process's pipe.
+//!   It always keeps one instance of its own, made before the one a
+//!   client took is handed out, so the name is never free while it lives.
+//! - **Checked both ways.** A connection's [`peer`] is read from its
+//!   process (the pipe's client or server pid, then that process's token):
+//!   its [`User`] is a SID and whether the token is elevated, so that an
+//!   elevated and a normal process of one user are two users here and
+//!   refuse each other (D-137). [`connect`] refuses a server that isn't
+//!   this process's user before anything is sent.
+//! - **Handed to a child.** An instance not yet connected (a [`Spare`])
+//!   or connected (a [`Connection`]) becomes a plain handle, given to one
+//!   child as std gives a `Stdio::from` handle: inheritable only in the
+//!   copy made for that child's spawn. Neither is bound to this process's
+//!   completion port until it becomes an [`crate::io::Stream`], so the
+//!   child can bind it to its own.
+//!
+//! A [`Listener`] and a [`Spare`] are [`crate::poll::Source`]s, ready to
+//! read once a client connected: a connect in flight is waited on by a
+//! thread-pool wait on its event, whose callback only wakes the poll.
+use super::Peer;
+use crate::errno::{Errno, Result};
+use crate::io::Stream;
+use crate::poll::{Events, Source, sealed::Sealed};
+use std::cell::UnsafeCell;
+use std::fmt;
+use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use windows_sys::Win32::Foundation::{
+    ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING,
+    ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    INVALID_HANDLE_VALUE, LocalFree,
+};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows_sys::Win32::Security::{
+    GetLengthSid, GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+    SECURITY_MAX_SID_SIZE, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
+    PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+};
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows_sys::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeInfo,
+    GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_SERVER_END,
+    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
+    PROCESS_QUERY_LIMITED_INFORMATION, RegisterWaitForSingleObject, ResetEvent, UnregisterWaitEx,
+    WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
+};
+
+/// Each instance's buffers in the kernel, as `io`'s pipes have.
+const BUFFER: u32 = 64 * 1024;
+
+/// The longest SID, in bytes.
+const SID: usize = SECURITY_MAX_SID_SIZE as usize;
+
+/// A user, as a process's token says it: its SID, and whether the token
+/// is elevated. Two processes of one account, one elevated and one not,
+/// are two users (D-137). Shown as its SID, "S-1-5-21-…-1001", with
+/// " (elevated)" after it when it is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct User {
+    /// The SID's bytes, `len` of them; the rest zero.
+    sid: [u8; SID],
+    len: u8,
+    elevated: bool,
+}
+
+impl User {
+    /// This process's user.
+    pub fn current() -> Result<User> {
+        static CURRENT: OnceLock<Result<User>> = OnceLock::new();
+        // SAFETY: takes nothing; the pseudo-handle needs no closing.
+        let this = unsafe { GetCurrentProcess() };
+        *CURRENT.get_or_init(|| User::of(this))
+    }
+
+    /// Whether it is this process's user: the same SID, elevated or not
+    /// alike. A process whose own user can't be read has none.
+    pub fn is_current(&self) -> bool {
+        User::current().is_ok_and(|own| own == *self)
+    }
+
+    /// The user of the process `process` is a handle to, opened for
+    /// `PROCESS_QUERY_LIMITED_INFORMATION` at least.
+    fn of(process: HANDLE) -> Result<User> {
+        let mut raw: HANDLE = std::ptr::null_mut();
+        // SAFETY: `process` is open, and `raw` is written once on success.
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut raw) } == 0 {
+            return Err(Errno::last());
+        }
+        // SAFETY: `raw` was just opened, and nothing else owns it.
+        let token = unsafe { OwnedHandle::from_raw_handle(raw) };
+        // A `TOKEN_USER` and the SID it points at, after it: aligned as
+        // the pointer in it must be.
+        let mut buffer = [0usize; 16];
+        let room = u32::try_from(size_of_val(&buffer)).unwrap_or(0);
+        let mut size = 0u32;
+        // SAFETY: `buffer` is writable for `room` bytes, `size` for one
+        // count; the token is open for querying.
+        let got = unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                room,
+                &mut size,
+            )
+        };
+        if got == 0 {
+            return Err(Errno::last());
+        }
+        // SAFETY: the call filled the buffer, which starts with a
+        // `TOKEN_USER` and is aligned for it.
+        let user = unsafe { buffer.as_ptr().cast::<TOKEN_USER>().read() };
+        // SAFETY: the SID the call wrote, in `buffer`, which is alive.
+        let len = usize::try_from(unsafe { GetLengthSid(user.User.Sid) }).unwrap_or(0);
+        if len == 0 || len > SID {
+            return Err(Errno::from_code(ERROR_ACCESS_DENIED));
+        }
+        // SAFETY: the SID is `len` bytes of `buffer`, which outlives the
+        // slice.
+        let bytes = unsafe { std::slice::from_raw_parts(user.User.Sid.cast::<u8>(), len) };
+        let mut sid = [0u8; SID];
+        for (to, from) in sid.iter_mut().zip(bytes) {
+            *to = *from;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let room = u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(0);
+        // SAFETY: `elevation` is writable for `room` bytes, `size` for
+        // one count; the token is open for querying.
+        let got = unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenElevation,
+                std::ptr::from_mut(&mut elevation).cast(),
+                room,
+                &mut size,
+            )
+        };
+        if got == 0 {
+            return Err(Errno::last());
+        }
+        Ok(User {
+            sid,
+            len: u8::try_from(len).unwrap_or(0),
+            elevated: elevation.TokenIsElevated != 0,
+        })
+    }
+
+    /// The SID, as Windows writes it: "S-1-5-21-…".
+    fn sid(&self) -> String {
+        let bytes = self.sid.get(..usize::from(self.len)).unwrap_or_default();
+        let revision = bytes.first().copied().unwrap_or(0);
+        let authority = (bytes.iter().skip(2).take(6)).fold(0u64, |n, b| n << 8 | u64::from(*b));
+        let mut text = format!("S-{revision}-{authority}");
+        let (parts, _) = bytes.get(8..).unwrap_or_default().as_chunks::<4>();
+        for part in parts {
+            text.push_str(&format!("-{}", u32::from_le_bytes(*part)));
+        }
+        text
+    }
+}
+
+impl fmt::Display for User {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.sid())?;
+        if self.elevated {
+            f.write_str(" (elevated)")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for User {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "User({self})")
+    }
+}
+
+/// The pipe name `base` has for this process's user, `\\.\pipe\<base>-<SID>`,
+/// with `-elevated` after it when this process is: each user, and an
+/// elevated and a normal process of one, have their own (D-137).
+pub fn name(base: &str) -> Result<String> {
+    let user = User::current()?;
+    let elevated = if user.elevated { "-elevated" } else { "" };
+    Ok(format!(r"\\.\pipe\{base}-{}{elevated}", user.sid()))
+}
+
+/// The process at the other end of `pipe`, a named pipe's end: its
+/// client's, on the server's end; its server's, the process that made the
+/// instance, on a client's. Its user is read from its token; a process
+/// that can't be opened or read is an error, which is a refusal.
+pub fn peer(pipe: impl AsHandle) -> Result<Peer> {
+    let raw = pipe.as_handle().as_raw_handle();
+    let mut flags = 0u32;
+    let none = std::ptr::null_mut();
+    // SAFETY: the handle is open; `flags` is written, the rest not asked.
+    if unsafe { GetNamedPipeInfo(raw, &mut flags, none, none, none) } == 0 {
+        return Err(Errno::last());
+    }
+    let mut pid = 0u32;
+    let got = match flags & PIPE_SERVER_END != 0 {
+        // SAFETY: the handle is open; `pid` is written once.
+        true => unsafe { GetNamedPipeClientProcessId(raw, &mut pid) },
+        // SAFETY: as above.
+        false => unsafe { GetNamedPipeServerProcessId(raw, &mut pid) },
+    };
+    if got == 0 {
+        return Err(Errno::last());
+    }
+    let pid = crate::process::Pid::from_raw(pid).ok_or(Errno::from_code(ERROR_ACCESS_DENIED))?;
+    // SAFETY: opens a process by ID for querying only, not inherited.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.as_raw()) };
+    if process.is_null() {
+        return Err(Errno::last());
+    }
+    // SAFETY: `process` was just opened, and nothing else owns it.
+    let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    Ok(Peer {
+        user: User::of(process.as_raw_handle())?,
+        pid: Some(pid),
+    })
+}
+
+/// Connects to the pipe `name`, as a stream, once its server is found to
+/// be this process's user ([`peer`]); one that isn't is refused with
+/// [`Errno::ACCES`] before anything is sent, as is a pipe the server's
+/// descriptor keeps this user out of. With every instance taken it fails
+/// with [`Errno::AGAIN`], as a full listener's connect does on Unix; with
+/// no such pipe, with `ERROR_FILE_NOT_FOUND`. The server may only identify
+/// the client, never act as it.
+pub fn connect(name: &str) -> Result<Stream> {
+    let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+    let flags = FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+    // SAFETY: `wide` is NUL-ended; opened for reading and writing, not
+    // shared, not inherited.
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            flags,
+            std::ptr::null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(match Errno::last() {
+            errno if errno == Errno::from_code(ERROR_PIPE_BUSY) => Errno::AGAIN,
+            errno => errno,
+        });
+    }
+    // SAFETY: `raw` was just opened, and nothing else owns it.
+    let pipe = unsafe { OwnedHandle::from_raw_handle(raw) };
+    if !peer(&pipe)?.user.is_current() {
+        return Err(Errno::ACCES);
+    }
+    Stream::new(pipe)
+}
+
+/// A security descriptor that lets this process's user in, and no one
+/// else, from `LocalAlloc`.
+struct Security(PSECURITY_DESCRIPTOR);
+
+// SAFETY: memory the process owns, read by the kernel only during calls.
+unsafe impl Send for Security {}
+// SAFETY: as above; nothing writes it after it is made.
+unsafe impl Sync for Security {}
+
+impl Security {
+    fn owner_only() -> Result<Security> {
+        let sddl = format!("D:P(A;;GA;;;{})", User::current()?.sid());
+        let wide: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: `wide` is NUL-ended; `descriptor` is written once, with
+        // memory this `Security` frees.
+        let made = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        match made {
+            0 => Err(Errno::last()),
+            _ => Ok(Security(descriptor)),
+        }
+    }
+}
+
+impl Drop for Security {
+    fn drop(&mut self) {
+        // SAFETY: frees the descriptor the conversion allocated, once.
+        unsafe { LocalFree(self.0) };
+    }
+}
+
+/// A new instance of the pipe `name` (NUL-ended), owner-only, local
+/// clients only, overlapped, not inherited; with `first`, only if no
+/// instance of that name exists anywhere.
+fn instance(name: &[u16], security: &Security, first: bool) -> Result<OwnedHandle> {
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(0),
+        lpSecurityDescriptor: security.0,
+        bInheritHandle: 0,
+    };
+    let first = if first {
+        FILE_FLAG_FIRST_PIPE_INSTANCE
+    } else {
+        0
+    };
+    let open = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | first;
+    let mode = PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS;
+    // SAFETY: `name` is NUL-ended, and `attributes` and the descriptor it
+    // points at are alive for the call.
+    let raw = unsafe {
+        CreateNamedPipeW(
+            name.as_ptr(),
+            open,
+            mode,
+            PIPE_UNLIMITED_INSTANCES,
+            BUFFER,
+            BUFFER,
+            0,
+            &attributes,
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(Errno::last());
+    }
+    // SAFETY: `raw` was just made, and nothing else owns it.
+    Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+}
+
+/// A server's pipe: the name it holds, and one instance waiting for a
+/// client, to [`Listener::accept`] once a poll says it is ready to read,
+/// or to hand to a child as a [`Spare`].
+pub struct Listener {
+    name: Vec<u16>,
+    security: Security,
+    waiting: Spare,
+}
+
+impl Listener {
+    /// Holds the pipe `name` (see [`name`]): its first instance, with
+    /// this process's owner-only descriptor. A name some process holds
+    /// already, another server or a squatter, fails with
+    /// [`Errno::ADDRINUSE`]: this one never joins a pipe it didn't make.
+    pub fn bind(name: &str) -> Result<Listener> {
+        let name: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        let security = Security::owner_only()?;
+        let first = instance(&name, &security, true).map_err(|errno| {
+            let taken = [ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY].map(Errno::from_code);
+            match taken.contains(&errno) {
+                true => Errno::ADDRINUSE,
+                false => errno,
+            }
+        })?;
+        Ok(Listener {
+            name,
+            security,
+            waiting: Spare::try_from(first)?,
+        })
+    }
+
+    /// The instance a client connected to, once one has, with the next
+    /// already made in its place; [`Errno::AGAIN`] while none has. An
+    /// instance that failed is replaced, and its error told.
+    pub fn accept(&mut self) -> Result<Connection> {
+        if let Ok(false) = self.waiting.connected() {
+            return Err(Errno::AGAIN);
+        }
+        let next = self.next()?;
+        std::mem::replace(&mut self.waiting, next).accept()
+    }
+
+    /// The instance waiting for a client, for a child to take its client
+    /// itself, with the next already made in its place. Clients may then
+    /// reach either: each instance takes one.
+    pub fn spare(&mut self) -> Result<Spare> {
+        let next = self.next()?;
+        Ok(std::mem::replace(&mut self.waiting, next))
+    }
+
+    fn next(&self) -> Result<Spare> {
+        Spare::try_from(instance(&self.name, &self.security, false)?)
+    }
+}
+
+impl Sealed for Listener {
+    fn arm(&self, interest: Events) {
+        self.waiting.arm(interest);
+    }
+
+    fn ready(&self, interest: Events) -> Events {
+        self.waiting.ready(interest)
+    }
+}
+
+impl Source for Listener {}
+
+/// One pipe instance a client has not connected to yet: a
+/// [`Listener`]'s, or one a child was handed (`TryFrom<OwnedHandle>`),
+/// which takes one client itself ([`Spare::accept`]). Made a plain handle
+/// (`OwnedHandle::try_from`) to hand on, with no connect in flight.
+pub struct Spare {
+    /// None once its client is taken.
+    handle: Option<OwnedHandle>,
+    connect: Box<Connect>,
+}
+
+/// A connect in flight, and what it ended with.
+///
+/// **The `OVERLAPPED` stays put while the kernel uses it:** it is boxed,
+/// and a connect still in flight when its `Spare` goes is cancelled and
+/// waited for ([`Spare::settle`]) before the box is freed. It is touched
+/// only under `state`'s lock while no connect is in flight.
+struct Connect {
+    overlapped: UnsafeCell<OVERLAPPED>,
+    /// Set by the kernel as the connect ends: manual-reset, reset before
+    /// each.
+    event: OwnedHandle,
+    state: Mutex<State>,
+}
+
+// SAFETY: the kernel uses `overlapped` only while a connect is in flight,
+// and fuxix only under `state`'s lock while none is; a registered wait may
+// be unregistered from any thread.
+unsafe impl Send for Connect {}
+// SAFETY: as above.
+unsafe impl Sync for Connect {}
+
+#[derive(Default)]
+struct State {
+    pending: bool,
+    connected: bool,
+    failed: Option<Errno>,
+    /// The thread-pool wait on `event` while a connect is in flight.
+    wait: Option<Wait>,
+}
+
+/// A registered wait, unregistered when dropped.
+struct Wait(HANDLE);
+
+// SAFETY: a registered wait may be unregistered from any thread.
+unsafe impl Send for Wait {}
+
+impl Drop for Wait {
+    fn drop(&mut self) {
+        // SAFETY: unregisters this wait, once, waiting for a callback
+        // already running to finish, before the event it waits on closes.
+        unsafe { UnregisterWaitEx(self.0, INVALID_HANDLE_VALUE) };
+    }
+}
+
+/// What the thread pool runs when a connect ends: wakes the poll, which
+/// looks at what ended.
+unsafe extern "system" fn came(_: *mut core::ffi::c_void, _: bool) {
+    // A wake that can't be posted has nobody to tell.
+    let _ = crate::poll::wake();
+}
+
+fn lock(connect: &Connect) -> MutexGuard<'_, State> {
+    connect.state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl TryFrom<OwnedHandle> for Spare {
+    type Error = Errno;
+
+    /// `handle`, a pipe instance's server end opened overlapped, as a
+    /// spare: a child's, handed to it.
+    fn try_from(handle: OwnedHandle) -> Result<Spare> {
+        // SAFETY: makes a new unnamed manual-reset event, not set, with no
+        // security attributes.
+        let raw = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if raw.is_null() {
+            return Err(Errno::last());
+        }
+        // SAFETY: `raw` was just made, and nothing else owns it.
+        let event = unsafe { OwnedHandle::from_raw_handle(raw) };
+        Ok(Spare {
+            handle: Some(handle),
+            connect: Box::new(Connect {
+                overlapped: UnsafeCell::new(OVERLAPPED::default()),
+                event,
+                state: Mutex::new(State::default()),
+            }),
+        })
+    }
+}
+
+impl Spare {
+    /// The client's connection, once one has connected; [`Errno::AGAIN`]
+    /// while none has. It has one to give: then `ERROR_INVALID_HANDLE`,
+    /// and a poll says `HUP`.
+    pub fn accept(&mut self) -> Result<Connection> {
+        if self.handle.is_none() {
+            return Err(Errno::from_code(ERROR_INVALID_HANDLE));
+        }
+        if !self.connected()? {
+            return Err(Errno::AGAIN);
+        }
+        self.handle.take().map(Connection).ok_or(Errno::AGAIN)
+    }
+
+    /// Whether a client has connected, starting the connect if none is in
+    /// flight; the error a connect failed with.
+    fn connected(&self) -> Result<bool> {
+        self.arm(Events::IN);
+        let state = self.settle(false);
+        state.failed.map_or(Ok(state.connected), Err)
+    }
+
+    /// Takes in how the connect in flight ended, if it has; with `cancel`,
+    /// cancels it first and waits for it to end. Its state, locked.
+    fn settle(&self, cancel: bool) -> MutexGuard<'_, State> {
+        let mut state = lock(&self.connect);
+        let Some(handle) = &self.handle else {
+            return state;
+        };
+        if !state.pending {
+            return state;
+        }
+        let overlapped = self.connect.overlapped.get();
+        if cancel {
+            // SAFETY: cancels this spare's own connect, on its open handle.
+            unsafe { CancelIoEx(handle.as_raw_handle(), overlapped) };
+        }
+        let mut moved = 0u32;
+        // SAFETY: the handle is open and `overlapped` is the connect's, in
+        // flight or done; with `cancel` it waits for the end, which the
+        // cancel makes soon.
+        let done = unsafe {
+            GetOverlappedResult(
+                handle.as_raw_handle(),
+                overlapped,
+                &mut moved,
+                i32::from(cancel),
+            )
+        };
+        let errno = (done == 0).then(Errno::last);
+        if errno == Some(Errno::from_code(ERROR_IO_INCOMPLETE)) {
+            return state;
+        }
+        state.pending = false;
+        state.wait = None;
+        // A connect cancelled leaves the instance waiting, for the next.
+        match errno {
+            None => state.connected = true,
+            Some(errno) if errno == Errno::from_code(ERROR_PIPE_CONNECTED) => {
+                state.connected = true;
+            }
+            Some(_) if cancel => {}
+            Some(errno) => state.failed = Some(errno),
+        }
+        state
+    }
+}
+
+impl Sealed for Spare {
+    /// Starts a connect, unless one is in flight or it has ended.
+    fn arm(&self, interest: Events) {
+        let Some(handle) = (interest.intersects(Events::IN))
+            .then_some(self.handle.as_ref())
+            .flatten()
+        else {
+            return;
+        };
+        let mut state = lock(&self.connect);
+        if state.pending || state.connected || state.failed.is_some() {
+            return;
+        }
+        let event = self.connect.event.as_raw_handle();
+        // SAFETY: the event is this spare's own and open.
+        unsafe { ResetEvent(event) };
+        let overlapped = self.connect.overlapped.get();
+        let fresh = OVERLAPPED {
+            hEvent: event,
+            ..OVERLAPPED::default()
+        };
+        // SAFETY: no connect is in flight, and `state`'s lock is held:
+        // nothing else reads or writes it now.
+        unsafe { overlapped.write(fresh) };
+        // SAFETY: the handle is open, and `overlapped` stays put, unused
+        // by fuxix, until the connect ends (see `Connect`).
+        let done = unsafe { ConnectNamedPipe(handle.as_raw_handle(), overlapped) };
+        let errno = (done == 0).then(Errno::last);
+        match errno {
+            None => state.connected = true,
+            Some(errno) if errno == Errno::from_code(ERROR_IO_PENDING) => {
+                state.pending = true;
+                match register(event) {
+                    Ok(wait) => state.wait = Some(wait),
+                    // No wake will come: told as the error, and the
+                    // connect cancelled as the spare goes.
+                    Err(errno) => state.failed = Some(errno),
+                }
+            }
+            // A client came before the connect: it is connected; one that
+            // came and went already: connected, to read its end.
+            Some(errno)
+                if [ERROR_PIPE_CONNECTED, ERROR_NO_DATA]
+                    .map(Errno::from_code)
+                    .contains(&errno) =>
+            {
+                state.connected = true;
+            }
+            Some(errno) => state.failed = Some(errno),
+        }
+    }
+
+    fn ready(&self, interest: Events) -> Events {
+        if self.handle.is_none() {
+            return Events::HUP;
+        }
+        let state = self.settle(false);
+        match (state.failed, state.connected) {
+            (Some(_), _) => Events::ERR,
+            (None, true) if interest.intersects(Events::IN) => Events::IN,
+            (None, _) => Events::NONE,
+        }
+    }
+}
+
+impl Source for Spare {}
+
+/// A thread-pool wait on `event` that wakes the poll once it is set.
+fn register(event: HANDLE) -> Result<Wait> {
+    crate::poll::port()?;
+    let mut wait: HANDLE = std::ptr::null_mut();
+    // SAFETY: the event stays open till the wait is unregistered (`Wait`
+    // is dropped first, `Spare::settle` or `Drop`); `came` takes no
+    // context and only posts a packet, short enough for the wait thread.
+    let registered = unsafe {
+        RegisterWaitForSingleObject(
+            &mut wait,
+            event,
+            Some(came),
+            std::ptr::null(),
+            INFINITE,
+            WT_EXECUTEONLYONCE | WT_EXECUTEINWAITTHREAD,
+        )
+    };
+    match registered {
+        0 => Err(Errno::last()),
+        _ => Ok(Wait(wait)),
+    }
+}
+
+impl Drop for Spare {
+    fn drop(&mut self) {
+        drop(self.settle(true));
+    }
+}
+
+impl TryFrom<Spare> for OwnedHandle {
+    type Error = Errno;
+
+    /// Its handle, with no connect in flight, to hand to a child (as std's
+    /// `Stdio::from`), whose own [`Spare`] connects it. One whose client
+    /// came already is connected, and the child's spare says so at once.
+    /// A spare whose client was taken has none (`ERROR_INVALID_HANDLE`).
+    fn try_from(mut spare: Spare) -> Result<OwnedHandle> {
+        drop(spare.settle(true));
+        spare
+            .handle
+            .take()
+            .ok_or(Errno::from_code(ERROR_INVALID_HANDLE))
+    }
+}
+
+/// A pipe instance a client connected to, not yet bound to this process's
+/// completion port: to serve here ([`Connection::stream`]) or to hand to
+/// a child (`OwnedHandle::from`, and `Connection::from` there).
+pub struct Connection(OwnedHandle);
+
+impl Connection {
+    /// It as a stream of this process's, to wait on and read and write.
+    pub fn stream(self) -> Result<Stream> {
+        Stream::new(self.0)
+    }
+}
+
+impl AsHandle for Connection {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.0.as_handle()
+    }
+}
+
+impl From<Connection> for OwnedHandle {
+    fn from(connection: Connection) -> OwnedHandle {
+        connection.0
+    }
+}
+
+impl From<OwnedHandle> for Connection {
+    /// `handle`, a connected pipe instance opened overlapped and bound to
+    /// no completion port: a child's, handed to it.
+    fn from(handle: OwnedHandle) -> Connection {
+        Connection(handle)
+    }
+}

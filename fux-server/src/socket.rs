@@ -374,16 +374,18 @@ fn crashed(path: &Path) -> bool {
         )
 }
 
-/// Why the client on `stream` is refused, if it is: it is not the server's
-/// own user's, or its user can't be told.
-pub fn stranger(stream: &std::os::unix::net::UnixStream) -> Option<String> {
-    let euid = geteuid();
-    match fuxix::socket::peer(stream).map(|peer| peer.uid) {
-        Ok(uid) if uid == euid => None,
-        Ok(uid) => Some(format!(
-            "refused a connection from uid {uid}; only uid {euid} may use this server"
+/// Why a client whose peer is `peer` (`fuxix::socket::peer`) is refused,
+/// if it is: it is not the server's own user's, or its user can't be told.
+pub fn stranger(peer: fuxix::Result<fuxix::socket::Peer>) -> Option<String> {
+    match (peer.map(|peer| peer.user), fuxix::socket::User::current()) {
+        (Ok(user), _) if user.is_current() => None,
+        (Ok(user), Ok(own)) => Some(format!(
+            "refused a connection from {user}; only {own} may use this server"
         )),
-        Err(error) => Some(format!(
+        (Ok(_), Err(error)) => Some(format!(
+            "refused a connection, as this server's own user could not be read: {error}"
+        )),
+        (Err(error), _) => Some(format!(
             "refused a connection whose peer could not be identified: {error}"
         )),
     }
@@ -589,10 +591,7 @@ mod tests {
         // A client connects, and its peer is this user.
         let client = UnixStream::connect(&path).map_err(|e| e.to_string())?;
         let (served, _) = listener.accept().map_err(|e| e.to_string())?;
-        assert_eq!(
-            fuxix::socket::peer(&served).ok().map(|p| p.uid),
-            Some(geteuid())
-        );
+        assert!(fuxix::socket::peer(&served).is_ok_and(|p| p.user.is_current()));
         drop((client, served, listener, endpoint));
         assert!(!exists(&path), "the socket is removed at exit");
         // A stale socket (nothing listening) is replaced, even one whose

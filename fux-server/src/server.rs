@@ -1260,7 +1260,7 @@ impl Server {
                 // listener, readable still, rests.
                 Err(e) => return self.rest(&format!("accept: {e}"), now),
             };
-            if let Some(why) = crate::socket::stranger(&stream) {
+            if let Some(why) = crate::socket::stranger(fuxix::socket::peer(&stream)) {
                 log!("{why}");
                 continue;
             }

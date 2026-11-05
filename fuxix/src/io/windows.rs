@@ -363,6 +363,13 @@ impl Sealed for Stream {
 
 impl Source for Stream {}
 
+/// Its handle, to ask the system about it ([`crate::socket::peer`]).
+impl std::os::windows::io::AsHandle for Stream {
+    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        std::os::windows::io::AsHandle::as_handle(&*self.handle)
+    }
+}
+
 impl Drop for Stream {
     fn drop(&mut self) {
         let read = lock(&self.read);

@@ -359,8 +359,7 @@ impl Listening {
     ) {
         if ready.first().copied().unwrap_or(false) {
             while let Ok((stream, _)) = self.listener.accept() {
-                let ours = fuxix::socket::peer(&stream)
-                    .is_ok_and(|peer| peer.uid == fuxix::process::geteuid());
+                let ours = fuxix::socket::peer(&stream).is_ok_and(|peer| peer.user.is_current());
                 if let (true, Ok(end)) = (ours, End::new(stream)) {
                     self.peers.push((end, false));
                 }
@@ -832,7 +831,7 @@ pub fn wait(listener: std::os::unix::net::UnixListener, server: UnixStream) -> R
             // Out of descriptors, say: its server starts another later.
             Err(e) => return Err(format!("accept: {e}")),
         };
-        if let Some(why) = crate::socket::stranger(&client) {
+        if let Some(why) = crate::socket::stranger(fuxix::socket::peer(&client)) {
             log!("{why}");
             continue;
         }
