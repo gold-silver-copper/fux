@@ -345,7 +345,8 @@ jobs:
 
       # Named pipes (WINDOWS.md, PR 5), with what each found in the log:
       # the same user both ways, a name taken first, a child taking its
-      # client on a spare, and a standard second user refused. That user is
+      # client on a spare, a child given a connected instance, and a
+      # standard second user refused. That user is
       # made here, with a masked password only this step sees.
       - name: fuxix named pipes
         timeout-minutes: 5
