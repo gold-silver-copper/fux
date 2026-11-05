@@ -413,7 +413,7 @@ impl Slave {
         drop(pseudo);
         let leader = Pid::from_raw(process_id(&process)?)
             .ok_or_else(|| std::io::Error::other("a process with no pid"))?;
-        Ok(Job::new(process, job, leader))
+        Ok(Job::new(process, job, leader)?)
     }
 }
 

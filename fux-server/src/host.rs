@@ -1767,6 +1767,7 @@ pub fn serve(
     }
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| format!("the signal pipe: {e}"))?;
+    crate::socket::load_terminals();
     let stream = crate::socket::pane_first(&mut listener)?;
     let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
     // A server gone before its first word started nothing: it ends, and

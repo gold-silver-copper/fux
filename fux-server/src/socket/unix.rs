@@ -508,6 +508,14 @@ pub fn taken_stdio() -> std::io::Result<(Stream, Stream)> {
     Ok((client.into(), server.into()))
 }
 
+/// Unix's terminals need nothing got ready: nothing to say.
+pub fn prepare_terminals() -> Option<String> {
+    None
+}
+
+/// Unix's terminals need nothing chosen.
+pub fn load_terminals() {}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::super::{base_directory, checked};

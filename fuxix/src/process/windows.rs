@@ -139,6 +139,14 @@ pub struct Job {
     process: OwnedHandle,
     job: OwnedHandle,
     leader: Pid,
+    /// Its leader's end, told as `Chld`, as Unix tells a child's.
+    _watch: Watch,
+}
+
+impl fmt::Debug for Watch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Watch")
+    }
 }
 
 /// A new job object for one program: breakaway allowed, no kill-on-close.
@@ -174,12 +182,16 @@ pub(crate) fn job_object() -> std::io::Result<OwnedHandle> {
 }
 
 impl Job {
-    pub(crate) fn new(process: OwnedHandle, job: OwnedHandle, leader: Pid) -> Job {
-        Job {
+    /// The job `job` that `leader`, whose handle is `process`, leads,
+    /// its leader's end told as `Chld` from now on.
+    pub(crate) fn new(process: OwnedHandle, job: OwnedHandle, leader: Pid) -> Result<Job> {
+        let watch = watch(&process)?;
+        Ok(Job {
             process,
             job,
             leader,
-        }
+            _watch: watch,
+        })
     }
 
     /// Its leader's pid.

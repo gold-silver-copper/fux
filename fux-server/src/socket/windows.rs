@@ -412,3 +412,35 @@ pub fn taken_stdio() -> std::io::Result<(Stream, Stream)> {
     let client = fuxix::socket::Connection::from(client).stream()?;
     Ok((client, Stream::try_from(server)?))
 }
+
+/// Where the pinned ConPTY is kept: `conpty` in fux's folder.
+fn conpty() -> Result<PathBuf, String> {
+    Ok(super::directory()
+        .map_err(|e| e.to_string())?
+        .join("conpty"))
+}
+
+/// Gets the pinned ConPTY ready before the server serves (D-130): fetched
+/// on first use (`fuxix::pty::fetch`), then chosen as each pane will
+/// choose it. What the built-in loses, if it is the one, said once, here.
+pub fn prepare_terminals() -> Option<String> {
+    let dir = match conpty() {
+        Ok(dir) => dir,
+        Err(why) => return Some(format!("no folder for the pinned ConPTY: {why}")),
+    };
+    let fetched = fuxix::pty::fetch(&dir).err();
+    let loaded = fuxix::pty::load(&dir).err()?;
+    let why = fetched.map_or_else(|| loaded.to_string(), |e| e.to_string());
+    Some(format!(
+        "Windows' built-in ConPTY is used ({why}): it drops sixel pictures and \
+         synchronized output, and rewrites titles, links and colours"
+    ))
+}
+
+/// Chooses a pane process's ConPTY, as its server did (`prepare_terminals`,
+/// which said what the built-in loses): before its first terminal.
+pub fn load_terminals() {
+    if let Ok(dir) = conpty() {
+        let _ = fuxix::pty::load(&dir);
+    }
+}

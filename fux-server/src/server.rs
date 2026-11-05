@@ -641,6 +641,18 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
         }
         false => {}
     }
+    // The run's own fux, from here on: what it says, it says once.
+    if let Some(notice) = crate::socket::prepare_terminals() {
+        log!("notice: {notice}");
+    }
+    // Said once: a job that keeps its processes in ends this run with it
+    // (D-135). Unix has no jobs.
+    if fuxix::process::job_fate() == fuxix::process::Fate::Bound {
+        log!(
+            "notice: this run ends with the terminal or launcher that started it: \
+             its job ends its processes and lets none leave"
+        );
+    }
     let mut session = Session::new(socket.path().to_owned(), true, run, journal);
     session.exe = Some(exe.clone());
     let read_buffer = read_buffer()?;

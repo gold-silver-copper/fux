@@ -349,11 +349,11 @@ jobs:
           echo "02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee  $package" | sha256sum --check
           echo "FUXIX_CONPTY_PACKAGE=$package" >> "$GITHUB_ENV"
 
-      - name: fux-vt, fuxth, fuxix and fux-wire
+      - name: fux-vt, fuxth, fuxix, fux-wire, fux-server and fux
         run: |
           set -euo pipefail
           packages=(-p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth -p fuxix -p fux-wire)
-          cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
+          cargo clippy "${packages[@]}" -p fux-server -p fux --all-targets --locked -- -D warnings
           cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings
           cargo test "${packages[@]}" --locked -- --skip another_user_is_refused
 
@@ -378,6 +378,17 @@ jobs:
           set -euo pipefail
           cargo test -p fuxix --test conpty --test conpty_fallback --locked -- --nocapture
           tasklist //FO CSV | grep -iE "conpty|openconsole|conhost|cmd.exe" || true
+
+      # fux's server (WINDOWS.md, PR 7), real fux driven over its pipe by
+      # a small wire client, with what each found in the log: a server
+      # killed outright and a new one driving its live panes (S3's
+      # probe), and D-136's signals. The ConPTY is CI's cached package.
+      - name: fux's server
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          cargo test -p fux --test windows --locked -- --nocapture --test-threads 1
+          tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe|ping" || true
 
       # Named pipes (WINDOWS.md, PR 5), with what each found in the log:
       # the same user both ways, a name taken first, a child taking its
