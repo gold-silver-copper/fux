@@ -20,6 +20,13 @@ impl Errno {
     /// a NUL in it.
     pub const INVAL: Self =
         Self::from_code(windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER);
+    /// No such process (`ERROR_NOT_FOUND`): one a [`crate::process::Job`]
+    /// was asked to end had ended already, as Unix's `ESRCH` says.
+    pub const SRCH: Self = Self::from_code(windows_sys::Win32::Foundation::ERROR_NOT_FOUND);
+    /// Not open for this (`ERROR_INVALID_HANDLE`): a read of a source that
+    /// reads nothing, as Unix's `EBADF` says of a write-only descriptor.
+    pub(crate) const BADF: Self =
+        Self::from_code(windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE);
     /// The resource is busy: another thread is polling (one at a time).
     pub(crate) const BUSY: Self = Self(windows_sys::Win32::Foundation::ERROR_BUSY.cast_signed());
 

@@ -1,7 +1,10 @@
 //! Processes: their IDs, signals, and how they end. What a process ID is
 //! differs by OS, and so does what can be done to a process: on Unix, the
-//! signals, sessions, reaping, tree and `Job` in `unix.rs`. The signal names and
-//! how a process ended are fux's on every OS, as the wire carries them.
+//! signals, sessions, reaping, tree and `Job` in `unix.rs`; on Windows, a
+//! `Job` is a job object (`windows.rs`). The signal names and how a process
+//! ended are fux's on every OS, as the wire carries them, and so are a
+//! job's [`Tree`], [`Reach`] and [`Sent`].
+use crate::errno::Errno;
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
@@ -9,7 +12,7 @@ pub use unix::*;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{Pid, Watch, watch};
+pub use windows::*;
 
 /// Expands `/// doc, then Variant "NAME" SIGNAL, ...` to the enum `Signal` of those
 /// variants, `Signal::ALL` in that order, `name` (its `NAME`), and on
@@ -109,4 +112,71 @@ pub enum Status {
     /// whether it dumped core.
     #[cfg(unix)]
     Signalled { signal: i32, core_dumped: bool },
+}
+
+/// What a program started on a terminal (`lead_session` on Unix,
+/// [`crate::pty::Slave::spawn`]) does with each signal as it begins. Either way no signal is blocked.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dispositions {
+    /// As this process inherited them, as from a shell: a signal it ignores
+    /// stays ignored (`nohup`'s SIGHUP), and so does one ignored before a
+    /// [`crate::signal::Pipe`] caught it; one it catches is the default.
+    /// For a wrapper, which runs a command as it was itself run.
+    Inherited,
+    /// Every signal the default, as a new terminal's program begins
+    /// (tmux's and screen's choice): ^C interrupts, whatever this process
+    /// was started ignoring.
+    Default,
+}
+
+/// The most processes a `Tree` holds: a runaway tree is cut short here.
+pub(crate) const TREE_MAX: usize = 4096;
+
+/// What a scan (Unix's `tree`, Windows's `Job::attached`) found, and
+/// whether it looked everywhere.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tree {
+    pub pids: Vec<Pid>,
+    pub scan: Scan,
+}
+
+/// How a scan of the tree ended. `Complete` says it read every process it
+/// found, not that what it found is all there is once used: a process may
+/// start or end meanwhile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scan {
+    #[default]
+    Complete,
+    /// There may be more: past `TREE_MAX`, or a list of a session's
+    /// members that filled its buffer on macOS.
+    Truncated,
+    /// The system refused a list, with this error; it read the others.
+    Failed(Errno),
+}
+
+/// Which of a [`Job`]'s processes a signal or [`Job::kill`] reaches.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Reach {
+    /// Its leader's process group: what it started, but a job a shell put
+    /// in a group of its own, or one that left the group. On Windows,
+    /// which has no process groups, the leader alone.
+    Group,
+    /// Its group and every other process in its session ([`Job::members`]).
+    /// On Windows, every process in its job object.
+    Session,
+    /// Windows: every process on its pseudo console but the leader, that
+    /// is in its job ([`Job::attached`]): what a shell runs, while the
+    /// shell lives on (D-136's KILL of a shell pane).
+    #[cfg(windows)]
+    Attached,
+}
+
+/// What a [`Job::signal`] may have missed: the members it did not find
+/// (the scan for them, [`Scan::Complete`] for [`Reach::Group`]), and each
+/// process or group (its leader's pid) the system did not signal, with
+/// the error as it is: [`Errno::SRCH`] for one gone already.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sent {
+    pub scan: Scan,
+    pub failed: Vec<(Pid, Errno)>,
 }

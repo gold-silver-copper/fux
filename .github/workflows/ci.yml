@@ -326,6 +326,29 @@ jobs:
           key: windows-${{ matrix.os }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
+      # The pinned ConPTY package (WINDOWS.md, PR 6), downloaded once and
+      # cached, hash-checked here: fuxix's ConPTY tests read it from
+      # FUXIX_CONPTY_PACKAGE, so no test touches the network. The tests
+      # (fuxix/tests/conpty.rs and conpty_fallback.rs) run in their own
+      # step below, and log S1's byte-exactness and S4's probes.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/conpty
+          key: conpty-1.25.260930003
+      - name: ConPTY package
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/conpty/conpty.nupkg"
+          mkdir -p "$(dirname "$package")"
+          if [ ! -f "$package" ]; then
+            curl --fail --silent --show-error --location --proto =https \
+              --retry 5 --retry-all-errors --max-time 120 -o "$package" \
+              https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/1.25.260930003/microsoft.windows.console.conpty.1.25.260930003.nupkg
+          fi
+          echo "02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee  $package" | sha256sum --check
+          echo "FUXIX_CONPTY_PACKAGE=$package" >> "$GITHUB_ENV"
+
       - name: fux-vt, fuxth, fuxix and fux-wire
         run: |
           set -euo pipefail
@@ -342,6 +365,19 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p fuxix --test windows --locked -- --nocapture
+
+      # ConPTY and Job (WINDOWS.md, PR 6), with what each found in the log:
+      # S1's bytes exact through the fetched ConPTY, Ctrl-C and Ctrl-Break,
+      # the hang-up, the three kills, and the built-in used only when
+      # `load` said why. Then tasklist logs any console process still
+      # running (only logged: an OpenConsole of the last test may still be
+      # exiting).
+      - name: fuxix ConPTY
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          cargo test -p fuxix --test conpty --test conpty_fallback --locked -- --nocapture
+          tasklist //FO CSV | grep -iE "conpty|openconsole|conhost|cmd.exe" || true
 
       # Named pipes (WINDOWS.md, PR 5), with what each found in the log:
       # the same user both ways, a name taken first, a child taking its

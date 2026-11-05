@@ -80,6 +80,14 @@ impl Sealed for Pipe {
             false => Events::NONE,
         }
     }
+
+    fn reading(&self) -> Option<&crate::io::Stream> {
+        None
+    }
+
+    fn writing(&self) -> Option<&crate::io::Stream> {
+        None
+    }
 }
 
 impl Source for Pipe {}
@@ -141,14 +149,20 @@ fn handle_console(int: bool) -> Result<()> {
         }
     });
     (*set)?;
-    if int {
-        // SAFETY: with no handler, this only clears the process's "ignore
-        // Ctrl-C".
-        if unsafe { SetConsoleCtrlHandler(None, 0) } == 0 {
-            return Err(Errno::last());
-        }
+    match int {
+        true => heed_ctrl_c(),
+        false => Ok(()),
     }
-    Ok(())
+}
+
+/// Clears this process's "ignore Ctrl-C" (which a process started
+/// detached or in a new process group has, and its children inherit).
+pub(crate) fn heed_ctrl_c() -> Result<()> {
+    // SAFETY: with no handler, this only clears the flag.
+    match unsafe { SetConsoleCtrlHandler(None, 0) } {
+        0 => Err(Errno::last()),
+        _ => Ok(()),
+    }
 }
 
 /// What a console control event runs, on a thread Windows starts for it:
