@@ -15,6 +15,9 @@
 //! - With no pinned ConPTY to be had, Windows' built-in one runs a
 //!   program to its end, its exit told, and the server says once what the
 //!   built-in loses (D-130).
+//! - A live server, and a pipe's name held by anything else, are refused,
+//!   and never joined (D-138).
+//! - A shell's directory is read from its process (D-137).
 //!
 //! One thread polls at a time in a process (WINDOWS.md, PR 4): the tests
 //! take turns.
@@ -138,6 +141,14 @@ fn serve(socket: &Path, log: &Path) -> Result<Served, String> {
     })
 }
 
+/// What the test started goes with it, should it fail early.
+impl Drop for Served {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 impl Served {
     fn log(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
@@ -239,7 +250,7 @@ fn program(argv: &[&str]) -> Result<Program, String> {
 fn new_tab(socket: &Path, start: Start) -> Result<PaneId, String> {
     let size = Some(Screen::new(24, 80).map_err(|e| format!("{e:?}"))?);
     let command = Command::NewTab {
-        target: Vec::new(),
+        target: vec![fux_wire::command::WsRef::Name("tests".to_owned())],
         name: None,
         size,
         cwd: Some(std::env::current_dir().map_err(text)?),
@@ -323,10 +334,15 @@ fn signal(socket: &Path, pane: PaneId, signal: Signal) -> Result<Option<(String,
 
 fn stop(socket: &Path) -> Outcome {
     let _ = ask(socket, Request::Do(Command::KillServer), ASK);
+    gone(socket)
+}
+
+/// Waits till no server answers on `socket`.
+fn gone(socket: &Path) -> Outcome {
     let deadline = after(Duration::from_secs(10))?;
     while fux_server::socket::connect(socket).is_ok() {
         if Instant::now() > deadline {
-            return Err("the server still answers 10 s after kill-server".to_owned());
+            return Err("the server still answers after 10 s".to_owned());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -345,7 +361,7 @@ fn a_new_server_takes_the_run_back_and_drives_its_live_panes() -> Outcome {
     let dir = scratch("takeover")?;
     let socket = dir.join("fux").join("s.sock");
     let mut first = serve(&socket, &dir.join("first.log"))?;
-    let shell = new_tab(&socket, Start::Shell(program(&[CMD, "/q"])?))?;
+    let shell = new_tab(&socket, Start::Shell(program(&[CMD, "/d"])?))?;
     let beat = [
         "/q",
         "/c",
@@ -380,12 +396,19 @@ fn a_new_server_takes_the_run_back_and_drives_its_live_panes() -> Outcome {
                 .any(|l| l.contains("Columns:") && l.contains("100"))
         })?;
         say("typed and resized after the takeover");
-        for pane in [beat, shell] {
-            let kill = Command::Kill {
-                target: Some(AnyRef::Pane(pane)),
-            };
-            ask(&socket, Request::Do(kill), ASK)?;
-        }
+        let kill = |pane| Command::Kill {
+            target: Some(AnyRef::Pane(pane)),
+        };
+        ask(&socket, Request::Do(kill(beat)), ASK)?;
+        let of_beat = format!("{beat} ");
+        journaled(&socket, Duration::from_secs(20), |j| {
+            j.lines()
+                .any(|line| line.starts_with(&of_beat) && line.contains("closed"))
+        })?;
+        // The last pane closed, the server ends: it may not answer.
+        let _ = ask(&socket, Request::Do(kill(shell)), ASK);
+        gone(&socket)?;
+        say("closed both panes, and the server ended with the last");
         Ok(())
     })();
     let log = second.log();
@@ -413,7 +436,7 @@ fn signals_reach_what_d136_says() -> Outcome {
     let socket = dir.join("fux").join("s.sock");
     let served = serve(&socket, &dir.join("server.log"))?;
     let checked = (|| -> Outcome {
-        let shell = new_tab(&socket, Start::Shell(program(&[CMD, "/q"])?))?;
+        let shell = new_tab(&socket, Start::Shell(program(&[CMD, "/d"])?))?;
         shows(&socket, shell, Duration::from_secs(20), |s| s.contains('>'))?;
         let long = Duration::from_secs(20);
         // QUIT: Ctrl-Break, which ping answers with its statistics so far,
@@ -435,12 +458,18 @@ fn signals_reach_what_d136_says() -> Outcome {
         typed(&socket, shell, "start /b ping -n 60 127.0.0.1 >nul\r")?;
         std::thread::sleep(Duration::from_secs(1));
         assert_eq!(signal(&socket, shell, Signal::Kill)?, None);
-        let alone = signal(&socket, shell, Signal::Kill)?;
-        assert_eq!(
-            alone.as_ref().map(|(code, _)| code.as_str()),
-            Some("only_shell"),
-            "{alone:?}"
-        );
+        // A process killed leaves the console's list a moment later.
+        let deadline = after(long)?;
+        loop {
+            let alone = signal(&socket, shell, Signal::Kill)?;
+            match alone.as_ref().map(|(code, _)| code.as_str()) {
+                Some("only_shell") => break,
+                None if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                _ => return Err(format!("KILL with the shell alone: {alone:?}")),
+            }
+        }
         typed(&socket, shell, "echo after-kill\r")?;
         shows(&socket, shell, long, |s| {
             s.lines().any(|l| l.trim() == "after-kill")
@@ -480,7 +509,7 @@ fn signals_reach_what_d136_says() -> Outcome {
     stopped
 }
 
-/// The journal's events so far, each as its JSON, a line each.
+/// The journal's events so far, a line each: its pane, then its JSON.
 fn journal(socket: &Path) -> Result<String, String> {
     let request = Request::NextEvents {
         scope: fux_wire::inspect::Scope::All,
@@ -489,7 +518,10 @@ fn journal(socket: &Path) -> Result<String, String> {
     };
     match ask(socket, request, ASK)?.response {
         Response::Returned(Body::Events(batch)) => Ok((batch.events.iter())
-            .map(|item| item.data.render())
+            .map(|item| {
+                let pane = item.pane.map_or("-".to_owned(), |pane| pane.to_string());
+                format!("{pane} {}", item.data.render())
+            })
             .collect::<Vec<_>>()
             .join("\n")),
         other @ (Response::Answered(_) | Response::Returned(_) | Response::Failed { .. }) => {
@@ -600,11 +632,87 @@ fn the_builtin_conpty_runs_a_program_to_its_end() -> Outcome {
                 _ => std::thread::sleep(Duration::from_millis(100)),
             }
         };
-        if !ended.ends_with("exited 3") {
+        if !ended.contains("exited 3") {
             return Err(format!("its end: {ended}"));
         }
         say(&format!("the built-in ran it to its end: {ended}"));
         Ok(())
+    })();
+    let log = served.log();
+    let stopped = stop(&socket);
+    if checked.is_err() {
+        say(&format!("the server's log:\n{log}"));
+    }
+    checked?;
+    stopped
+}
+
+/// A second server on a socket with a live one is refused by the lock;
+/// on a pipe name another process holds, it waits and refuses, never
+/// joining it (D-138).
+#[test]
+fn a_live_server_and_a_held_pipe_are_refused() -> Outcome {
+    let _turn = turn();
+    let dir = scratch("refused")?;
+    let socket = dir.join("fux").join("s.sock");
+    let served = serve(&socket, &dir.join("first.log"))?;
+    let second = serve(&socket, &dir.join("second.log")).err();
+    let stopped = stop(&socket);
+    drop(served);
+    let second = second.ok_or("a second server started")?;
+    if !second.contains("already using") {
+        return Err(format!("the second server: {second}"));
+    }
+    say("a live server's socket was refused by its lock");
+    stopped?;
+    let held = dir.join("fux").join("held.sock");
+    let name = fux_server::socket::pipe_name(&held).map_err(text)?;
+    let squatter = fuxix::socket::Listener::bind(&name).map_err(text)?;
+    let refused = serve(&held, &dir.join("held.log")).err();
+    drop(squatter);
+    let refused = refused.ok_or("a server joined a held pipe")?;
+    if !refused.contains("held by another process") {
+        return Err(format!("the held pipe: {refused}"));
+    }
+    say("a pipe another process holds was refused");
+    Ok(())
+}
+
+/// The directory a shell is in now, read from its process, as `split` and
+/// `dump` read it (D-137): the folder `cd` took it to.
+#[test]
+fn a_shells_directory_is_read_from_its_process() -> Outcome {
+    let _turn = turn();
+    let dir = scratch("cwd")?;
+    let socket = dir.join("fux").join("s.sock");
+    let there = dir.join("cwd-here");
+    std::fs::create_dir_all(&there).map_err(text)?;
+    let served = serve(&socket, &dir.join("server.log"))?;
+    let checked = (|| -> Outcome {
+        let shell = new_tab(&socket, Start::Shell(program(&[CMD, "/d"])?))?;
+        shows(&socket, shell, Duration::from_secs(20), |s| s.contains('>'))?;
+        typed(&socket, shell, &format!("cd /d \"{}\"\r", there.display()))?;
+        let deadline = after(Duration::from_secs(20))?;
+        let inspect = Command::Inspect {
+            scope: fux_wire::inspect::Scope::All,
+            projection: fux_wire::inspect::Projection::Recipe,
+        };
+        loop {
+            let reply = ask(&socket, Request::Do(inspect.clone()), ASK)?;
+            let Response::Returned(Body::Snapshot(snapshot)) = reply.response else {
+                return Err("inspect answered no snapshot".to_owned());
+            };
+            let pane = snapshot.panes.iter().find(|pane| pane.id == shell);
+            let cwd = format!("{:?}", pane.map(|pane| &pane.cwd));
+            if cwd.contains("cwd-here") {
+                say(&format!("its directory: {cwd}"));
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("its directory stayed {cwd}"));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     })();
     let log = served.log();
     let stopped = stop(&socket);
