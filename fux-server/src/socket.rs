@@ -378,7 +378,7 @@ fn crashed(path: &Path) -> bool {
 /// if it is: it is not the server's own user's, or its user can't be told.
 pub fn stranger(peer: fuxix::Result<fuxix::socket::Peer>) -> Option<String> {
     match (peer.map(|peer| peer.user), fuxix::socket::User::current()) {
-        (Ok(user), _) if user.is_current() => None,
+        (Ok(user), Ok(own)) if user == own => None,
         (Ok(user), Ok(own)) => Some(format!(
             "refused a connection from {user}; only {own} may use this server"
         )),

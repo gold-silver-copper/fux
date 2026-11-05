@@ -10,9 +10,9 @@ use fuxix::poll::{Events, PollFd, Source, poll};
 use fuxix::socket::{Listener, Spare, User, connect, name, peer};
 use std::io::{BufRead, Write};
 use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 type Outcome = Result<(), String>;
 
@@ -99,6 +99,20 @@ impl Drop for Child {
     }
 }
 
+/// Waits for `child` to exit by `deadline`; past it, fails saying `what`
+/// it waited for, and the child is killed and reaped as it drops.
+fn exited(child: &mut Child, what: &str, deadline: Instant) -> Result<ExitStatus, String> {
+    loop {
+        if let Some(status) = child.0.try_wait().map_err(text)? {
+            return Ok(status);
+        }
+        if Instant::now() > deadline {
+            return Err(format!("{what} took too long"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// This binary's ignored test `test`, with `variable` set to `value`.
 fn child(test: &str, variable: &str, value: &str) -> Result<Command, String> {
     let mut command = Command::new(std::env::current_exe().map_err(text)?);
@@ -123,13 +137,18 @@ fn the_same_user_connects_and_talks_both_ways() -> Outcome {
     assert_eq!(connect(&cut).err(), Some(Errno::INVAL));
     assert_eq!(Listener::bind(&cut).err(), Some(Errno::INVAL));
     let client = connect(&name).map_err(text)?;
+    let opened = SystemTime::now();
     ready(&listener, deadline)?;
     let served = listener.accept().map_err(text)?;
-    let theirs = peer(&served).map_err(text)?;
+    let theirs = peer(&served, served.connected().map_err(text)?).map_err(text)?;
     assert!(theirs.user.is_current(), "{:?}", theirs.user);
     assert_eq!(theirs.pid, our_pid());
+    // A peer made after the moment its end was connected holds a pid
+    // another process had: this process, made after 1970, is refused.
+    let reused = peer(&served, SystemTime::UNIX_EPOCH).map(|peer| peer.pid);
+    assert_eq!(reused, Err(Errno::ACCES));
     let served = served.stream().map_err(text)?;
-    let ours = peer(&client).map_err(text)?;
+    let ours = peer(&client, opened).map_err(text)?;
     assert_eq!((ours.user, ours.pid), (theirs.user, our_pid()));
     send(&client, b"ping\n", deadline)?;
     assert_eq!(line(&served, deadline)?.as_deref(), Some("ping"));
@@ -211,17 +230,27 @@ fn squatter_holds_a_name() -> Outcome {
 /// `ADDRINUSE`, never joining that process's pipe.
 #[test]
 fn a_name_taken_first_is_told_apart() -> Outcome {
+    let _turn = turn();
+    let deadline = after(Duration::from_secs(20))?;
     let name = unique("squat")?;
     let mut command = child("squatter_holds_a_name", SQUAT, &name)?;
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut squatter = Child(command.spawn().map_err(text)?);
-    // Kept open till it exits: its test harness still writes there.
-    let mut out = std::io::BufReader::new(squatter.0.stdout.take().ok_or("its stdout")?);
-    let mut said = String::new();
-    while said.trim() != "held" {
-        said.clear();
-        if out.read_line(&mut said).map_err(text)? == 0 {
-            return Err("the squatter never held the name".into());
+    // Its lines, read on a thread till it exits, as its test harness
+    // still writes there; one that never says "held" fails at the deadline.
+    let out = std::io::BufReader::new(squatter.0.stdout.take().ok_or("its stdout")?);
+    let (lines, said) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in out.lines().map_while(Result::ok) {
+            let _ = lines.send(line);
+        }
+    });
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match said.recv_timeout(left) {
+            Ok(line) if line.trim() == "held" => break,
+            Ok(_) => {}
+            Err(_) => return Err("the squatter saying it held the name".into()),
         }
     }
     let bound = Listener::bind(&name).map(drop);
@@ -229,8 +258,8 @@ fn a_name_taken_first_is_told_apart() -> Outcome {
     say(&format!("PIPES squat bind={bound:?}"));
     drop(squatter.0.stdin.take());
     // Once it is gone, the name is free again.
-    let status = squatter.0.wait().map_err(text)?;
-    drop(out);
+    let status = exited(&mut squatter, "the squatter's exit", deadline)?;
+    let _ = reader.join();
     assert!(status.success(), "{status:?}");
     Listener::bind(&name).map_err(text)?;
     Ok(())
@@ -253,7 +282,12 @@ fn child_takes_a_client_on_its_spare() -> Outcome {
     let mut spare = Spare::try_from(handle.map_err(text)?).map_err(text)?;
     ready(&spare, deadline)?;
     let connection = spare.accept().map_err(text)?;
-    if !peer(&connection).map_err(text)?.user.is_current() {
+    let connected = connection.connected().map_err(text)?;
+    if !peer(&connection, connected)
+        .map_err(text)?
+        .user
+        .is_current()
+    {
         return Err("a stranger".into());
     }
     let stream = connection.stream().map_err(text)?;
@@ -285,7 +319,7 @@ fn a_child_given_a_spare_takes_its_client() -> Outcome {
     // Only the child's instance is left to connect to.
     drop(listener);
     let client = connect(&name).map_err(text)?;
-    let server = peer(&client).map_err(text)?;
+    let server = peer(&client, SystemTime::now()).map_err(text)?;
     assert_eq!(server.pid, our_pid(), "the server is the parent");
     for i in 0..3 {
         send(&client, format!("ping {i}\n").as_bytes(), deadline)?;
@@ -293,7 +327,7 @@ fn a_child_given_a_spare_takes_its_client() -> Outcome {
         assert_eq!(line(&client, deadline)?, Some(want));
     }
     drop(client);
-    let status = worker.0.wait().map_err(text)?;
+    let status = exited(&mut worker, "the worker's exit", deadline)?;
     assert!(status.success(), "{status:?}");
     say(&format!(
         "PIPES handoff spare worker={} server_pid_seen={:?} ok",
@@ -352,9 +386,11 @@ fn another_users_side() -> Outcome {
     Ok(())
 }
 
-/// A standard second user can't open the pipe, to read and write or to
-/// read alone: the owner-only descriptor refuses it with `ACCES`, and the
-/// server sees no client.
+/// A standard second user can't open the pipe to read alone: the
+/// owner-only descriptor refuses it with `ACCES`. Its `connect` is refused
+/// with `ACCES` too, by the descriptor or, were that to let it in, by its
+/// own check of the server's user; and the server has no client waiting,
+/// which holds as well if one got in and left before it looked.
 #[test]
 fn another_user_is_refused() -> Outcome {
     use windows_sys::Win32::Foundation::{STILL_ACTIVE, WAIT_OBJECT_0};
@@ -449,7 +485,9 @@ fn another_user_is_refused() -> Outcome {
     say(&format!("PIPES other-user exit={code} {}", report.trim()));
     assert_eq!(code, 0, "the other user's side failed: {report}");
     assert!(!report.contains(&User::current().map_err(text)?.to_string()));
+    // Refused: by the descriptor, or by the client's own check.
     assert!(report.contains("connect=Err(Errno(5:"), "{report}");
+    // Refused by the descriptor alone: this is what tests it.
     assert!(report.contains("read_only=Err(Some(5))"), "{report}");
     assert_eq!(listener.accept().err(), Some(Errno::AGAIN));
     Ok(())

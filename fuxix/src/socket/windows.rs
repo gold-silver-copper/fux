@@ -12,8 +12,11 @@
 //!   It always keeps one instance of its own, made before the one a
 //!   client took is handed out, so the name is never free while it lives.
 //! - **Checked both ways.** A connection's [`peer`] is read from its
-//!   process (the pipe's client or server pid, then that process's token):
-//!   its [`User`] is a SID and whether the token is elevated, so that an
+//!   process (the pipe's client or server pid, then that process's token),
+//!   which must have been made before this end was known to be connected,
+//!   as the run record binds a pid to its creation time (D-138), so a pid
+//!   another process took since is refused. Its [`User`] is a SID and
+//!   whether the token is elevated, so that an
 //!   elevated and a normal process of one user are two users here and
 //!   refuse each other (D-137). [`connect`] refuses a server that isn't
 //!   this process's user, or a pipe not owned as this process makes its
@@ -36,10 +39,11 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, SystemTime};
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING,
-    ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SUCCESS, GENERIC_READ,
-    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE, ERROR_IO_INCOMPLETE,
+    ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT,
+    ERROR_SUCCESS, FILETIME, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
@@ -62,7 +66,7 @@ use windows_sys::Win32::System::Pipes::{
     WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
+    CreateEventW, GetCurrentProcess, GetProcessTimes, INFINITE, OpenProcess, OpenProcessToken,
     PROCESS_QUERY_LIMITED_INFORMATION, RegisterWaitForSingleObject, ResetEvent, UnregisterWaitEx,
     WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
 };
@@ -221,9 +225,15 @@ pub fn name(base: &str) -> Result<String> {
 
 /// The process at the other end of `pipe`, a named pipe's end: its
 /// client's, on the server's end; its server's, the process that made the
-/// instance, on a client's. Its user is read from its token; a process
-/// that can't be opened or read is an error, which is a refusal.
-pub fn peer(pipe: impl AsHandle) -> Result<Peer> {
+/// instance, on a client's. `connected` is a moment this end is known to
+/// have been connected at, the earliest known: a [`Connection`]'s
+/// ([`Connection::connected`]), or on a client's end, when [`connect`]
+/// opened it. The peer's process must have been made by then: one made
+/// after holds a pid another took first, and is refused with
+/// [`Errno::ACCES`]. Its user is read from its token; a process that
+/// can't be opened or read, or whose creation time can't be, is an error,
+/// which is a refusal.
+pub fn peer(pipe: impl AsHandle, connected: SystemTime) -> Result<Peer> {
     let raw = pipe.as_handle().as_raw_handle();
     let mut flags = 0u32;
     let none = std::ptr::null_mut();
@@ -249,9 +259,15 @@ pub fn peer(pipe: impl AsHandle) -> Result<Peer> {
     }
     // SAFETY: `process` was just opened, and nothing else owns it.
     let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    // Held open, its pid is its own till we close it: made after the end
+    // was connected, it took the pid of the peer, gone since.
+    if created(process.as_raw_handle())? > connected {
+        return Err(Errno::ACCES);
+    }
     let user = User::of(process.as_raw_handle())?;
-    // Still connected now that its process is held: a peer gone before,
-    // whose pid another process may have taken since, is refused.
+    // A peer gone with nothing left to read is refused too; one that left
+    // bytes queued, or a server whose instance a child holds, is caught by
+    // its time alone.
     // SAFETY: the handle is open; with no buffer nothing is written.
     if unsafe { PeekNamedPipe(raw, std::ptr::null_mut(), 0, none, none, none) } == 0 {
         return Err(Errno::last());
@@ -274,7 +290,8 @@ pub fn peer(pipe: impl AsHandle) -> Result<Peer> {
 /// act as it.
 pub fn connect(name: &str) -> Result<Stream> {
     let pipe = open(&wide(name)?)?;
-    if !peer(&pipe)?.user.is_current() || !owned_by_us(&pipe)? {
+    let opened = SystemTime::now();
+    if !peer(&pipe, opened)?.user.is_current() || !owned_by_us(&pipe)? {
         return Err(Errno::ACCES);
     }
     Stream::new(pipe)
@@ -287,6 +304,23 @@ fn wide(name: &str) -> Result<Vec<u16>> {
         true => Err(Errno::INVAL),
         false => Ok(name.encode_utf16().chain([0]).collect()),
     }
+}
+
+/// When the process `process` is a handle to was made, opened for
+/// `PROCESS_QUERY_LIMITED_INFORMATION` at least.
+fn created(process: HANDLE) -> Result<SystemTime> {
+    /// 100 ns counts from 1601, when Windows' time starts, to 1970.
+    const UNIX: u64 = 116_444_736_000_000_000;
+    let [mut made, mut ended, mut kernel, mut user] = [FILETIME::default(); 4];
+    // SAFETY: the process is open for querying; each time is written once.
+    if unsafe { GetProcessTimes(process, &mut made, &mut ended, &mut kernel, &mut user) } == 0 {
+        return Err(Errno::last());
+    }
+    let counts = u64::from(made.dwHighDateTime) << 32 | u64::from(made.dwLowDateTime);
+    (counts.checked_sub(UNIX))
+        .and_then(|counts| counts.checked_mul(100))
+        .and_then(|nanos| SystemTime::UNIX_EPOCH.checked_add(Duration::from_nanos(nanos)))
+        .ok_or(Errno::from_code(ERROR_ACCESS_DENIED))
 }
 
 /// Whether the pipe's owner, set by the kernel as its maker made it, is
@@ -331,7 +365,9 @@ fn owned_by_us(pipe: &OwnedHandle) -> Result<bool> {
 }
 
 /// Opens the pipe `name` (NUL-ended), waiting up to `BUSY` ms in all for an
-/// instance while every one is taken.
+/// instance while every one is taken. A wait that fails but for its time
+/// running out or the pipe being gone or busy again ends it with that
+/// error, rather than trying again at once till the time is up.
 fn open(name: &[u16]) -> Result<OwnedHandle> {
     const BUSY: u32 = 1000;
     let flags = FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
@@ -363,7 +399,15 @@ fn open(name: &[u16]) -> Result<OwnedHandle> {
         }
         // SAFETY: `name` is NUL-ended; it only waits. An instance free
         // again may be taken by another client first: then busy again.
-        unsafe { WaitNamedPipeW(name.as_ptr(), left) };
+        if unsafe { WaitNamedPipeW(name.as_ptr(), left) } == 0 {
+            let errno = Errno::last();
+            // Timed out, gone between the two calls, or taken again first.
+            let retry = [ERROR_SEM_TIMEOUT, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY];
+            let retry = retry.map(Errno::from_code);
+            if !retry.contains(&errno) {
+                return Err(errno);
+            }
+        }
     }
 }
 
@@ -478,7 +522,7 @@ impl Listener {
     /// instance that failed (a poll says `IN | ERR`) is replaced, and its
     /// error told.
     pub fn accept(&mut self) -> Result<Connection> {
-        if let Ok(false) = self.waiting.connected() {
+        if let Ok(None) = self.waiting.connected() {
             return Err(Errno::AGAIN);
         }
         let next = self.next()?;
@@ -528,10 +572,12 @@ pub struct Spare {
 /// only under `state`'s lock while no connect is in flight.
 struct Connect {
     overlapped: UnsafeCell<OVERLAPPED>,
+    /// Before `event`, so a wait it holds is unregistered before the
+    /// event it waits on closes.
+    state: Mutex<State>,
     /// Set by the kernel as the connect ends: manual-reset, reset before
     /// each.
     event: OwnedHandle,
-    state: Mutex<State>,
 }
 
 // SAFETY: the kernel uses `overlapped` only while a connect is in flight,
@@ -544,7 +590,8 @@ unsafe impl Sync for Connect {}
 #[derive(Default)]
 struct State {
     pending: bool,
-    connected: bool,
+    /// When a client was first seen connected.
+    connected: Option<SystemTime>,
     failed: Option<Errno>,
     /// The thread-pool wait on `event` while a connect is in flight.
     wait: Option<Wait>,
@@ -593,8 +640,8 @@ impl TryFrom<OwnedHandle> for Spare {
             handle: Some(handle),
             connect: Box::new(Connect {
                 overlapped: UnsafeCell::new(OVERLAPPED::default()),
-                event,
                 state: Mutex::new(State::default()),
+                event,
             }),
         })
     }
@@ -608,15 +655,17 @@ impl Spare {
         if self.handle.is_none() {
             return Err(Errno::from_code(ERROR_INVALID_HANDLE));
         }
-        if !self.connected()? {
+        let Some(at) = self.connected()? else {
             return Err(Errno::AGAIN);
-        }
-        self.handle.take().map(Connection).ok_or(Errno::AGAIN)
+        };
+        let connected = Some(at);
+        let handle = self.handle.take().ok_or(Errno::AGAIN)?;
+        Ok(Connection { handle, connected })
     }
 
-    /// Whether a client has connected, starting the connect if none is in
-    /// flight; the error a connect failed with.
-    fn connected(&self) -> Result<bool> {
+    /// When a client was seen connected, if one has, starting the connect
+    /// if none is in flight; the error a connect failed with.
+    fn connected(&self) -> Result<Option<SystemTime>> {
         self.arm(Events::IN);
         let state = self.settle(false);
         state.failed.map_or(Ok(state.connected), Err)
@@ -657,9 +706,9 @@ impl Spare {
         state.wait = None;
         // A connect cancelled leaves the instance waiting, for the next.
         match errno {
-            None => state.connected = true,
+            None => state.connected = Some(SystemTime::now()),
             Some(errno) if errno == Errno::from_code(ERROR_PIPE_CONNECTED) => {
-                state.connected = true;
+                state.connected = Some(SystemTime::now());
             }
             Some(errno) if errno == Errno::from_code(ERROR_NO_DATA) => again(handle),
             Some(_) if cancel => {}
@@ -679,7 +728,7 @@ impl Sealed for Spare {
             return;
         };
         let mut state = lock(&self.connect);
-        if state.pending || state.connected || state.failed.is_some() {
+        if state.pending || state.connected.is_some() || state.failed.is_some() {
             return;
         }
         let event = self.connect.event.as_raw_handle();
@@ -698,7 +747,7 @@ impl Sealed for Spare {
         let done = unsafe { ConnectNamedPipe(handle.as_raw_handle(), overlapped) };
         let errno = (done == 0).then(Errno::last);
         match errno {
-            None => state.connected = true,
+            None => state.connected = Some(SystemTime::now()),
             Some(errno) if errno == Errno::from_code(ERROR_IO_PENDING) => {
                 state.pending = true;
                 match register(event) {
@@ -710,7 +759,7 @@ impl Sealed for Spare {
             }
             // A client came before the connect: it is connected.
             Some(errno) if errno == Errno::from_code(ERROR_PIPE_CONNECTED) => {
-                state.connected = true;
+                state.connected = Some(SystemTime::now());
             }
             Some(errno) if errno == Errno::from_code(ERROR_NO_DATA) => again(handle),
             Some(errno) => state.failed = Some(errno),
@@ -726,7 +775,7 @@ impl Sealed for Spare {
         // the next instance, which a poll for `IN` alone would never do.
         match (state.failed, state.connected) {
             (Some(_), _) => Events::IN | Events::ERR,
-            (None, true) if interest.intersects(Events::IN) => Events::IN,
+            (None, Some(_)) if interest.intersects(Events::IN) => Events::IN,
             (None, _) => Events::NONE,
         }
     }
@@ -793,24 +842,41 @@ impl TryFrom<Spare> for OwnedHandle {
 /// A pipe instance a client connected to, not yet bound to this process's
 /// completion port: to serve here ([`Connection::stream`]) or to hand to
 /// a child (`OwnedHandle::from`, and `Connection::from` there).
-pub struct Connection(OwnedHandle);
+pub struct Connection {
+    handle: OwnedHandle,
+    /// When its client was first seen connected; none in a child it was
+    /// handed to, which keeps no record of it.
+    connected: Option<SystemTime>,
+}
 
 impl Connection {
     /// It as a stream of this process's, to wait on and read and write.
     pub fn stream(self) -> Result<Stream> {
-        Stream::new(self.0)
+        Stream::new(self.handle)
+    }
+
+    /// A moment its client is known to have been connected at, for
+    /// [`peer`]: when it was first seen connected; in a child it was
+    /// handed to, when this process was made, as the client connected
+    /// before the instance was handed on.
+    pub fn connected(&self) -> Result<SystemTime> {
+        match self.connected {
+            Some(at) => Ok(at),
+            // SAFETY: takes nothing; the pseudo-handle needs no closing.
+            None => created(unsafe { GetCurrentProcess() }),
+        }
     }
 }
 
 impl AsHandle for Connection {
     fn as_handle(&self) -> BorrowedHandle<'_> {
-        self.0.as_handle()
+        self.handle.as_handle()
     }
 }
 
 impl From<Connection> for OwnedHandle {
     fn from(connection: Connection) -> OwnedHandle {
-        connection.0
+        connection.handle
     }
 }
 
@@ -818,6 +884,7 @@ impl From<OwnedHandle> for Connection {
     /// `handle`, a connected pipe instance opened overlapped and bound to
     /// no completion port: a child's, handed to it.
     fn from(handle: OwnedHandle) -> Connection {
-        Connection(handle)
+        let connected = None;
+        Connection { handle, connected }
     }
 }

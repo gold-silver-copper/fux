@@ -147,7 +147,8 @@ programs built on the libraries (below) are the acceptance test for the whole po
   a uid on Unix, a SID plus "token elevated" on Windows (D-137: elevation, not the integrity level,
   as that is the fact D-137 names; a low-integrity process of the user should already be kept out by
   the default no-write-up label, not tested). "Is this my user?" is `peer.user.is_current()`, and fux-server's
-  refusal is `socket::stranger(fuxix::socket::peer(&connection))` on both, written once.
+  refusal is `socket::stranger(…)` on both, written once. On Windows `peer` takes a second argument, a
+  moment the end is known to have been connected at: `socket::peer(&connection, connection.connected()?)`.
 - The pipe name is `socket::name(base)`: `\\.\pipe\<base>-<SID>[-elevated]`. PR 7 picks `base`
   (from the socket path's name, say) and keeps the run record and lock beside it; takeover is PR 7's.
 - `socket::Listener::bind` fails with `Errno::ADDRINUSE` when any process holds the name (another
@@ -166,8 +167,12 @@ programs built on the libraries (below) are the acceptance test for the whole po
   another user can't forge even should the server's pid be reused. It fails with `Errno::ACCES` (the
   descriptor refused it, or the server is another user or elevation, or the owner differs),
   `Errno::INVAL` (a NUL in the name) or `Errno::AGAIN` (every instance still busy after a second of
-  `WaitNamedPipeW`). `peer` checks the pipe is still connected after it opened the peer's process,
-  so a pid reused by then is refused.
+  `WaitNamedPipeW`). `peer` refuses a peer process made after that moment, as the run record binds a
+  pid to its creation time: such a process took the pid of a peer that is gone. The moment is when
+  the server first saw the connect settle, when `connect` opened the client's end, and, in a child
+  handed a `Connection`, the child's own creation time (its client connected before the handoff). A
+  pid reused before that moment still passes: the window is the time from the peer's exit to the
+  moment, and the clock's granularity. A peer gone with nothing left to read is refused as well.
 - A failed connect makes the listener ready to read as well as `ERR`, so a server polling for `IN`
   calls `accept`, which tells the error and makes the next instance. A client that came and went
   before the connect saw it is no client: the instance is disconnected and waits again. A connection's server pid is the

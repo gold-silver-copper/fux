@@ -474,8 +474,9 @@ fn a_dropped_streams_last_write_and_end_arrive_with_no_poll() -> Outcome {
         "the bytes differ"
     );
     assert!(
-        written < data.len(),
-        "all {written} bytes went at once: no write was left in flight"
+        written > 0 && written < data.len(),
+        "{written} of {} bytes went at once: the drop is checked only with some but not all sent",
+        data.len()
     );
     Ok(())
 }
