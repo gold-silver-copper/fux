@@ -43,7 +43,8 @@ const EMPTY_READS: usize = 16;
 /// what it reads, to read on to that end. A peer that wrote past it and
 /// more than its pipe holds is read no further until it is read: that end
 /// is told then, as a peer blocked on a full Unix socket has not ended.
-const AHEAD: usize = 4 * BUFFER;
+/// With the read buffer's own bytes, a stream holds 256 KiB at most.
+const AHEAD: usize = 3 * BUFFER;
 
 /// A byte stream on Windows: one end of a pipe fuxix made ([`pipe`],
 /// [`pipe_for_child`]), to wait on with [`crate::poll`] and read and write
@@ -234,11 +235,12 @@ impl Op {
         got == 0 && errno.is_none()
     }
 
-    /// Moves what a finished read left aside, up to [`AHEAD`], so that the
-    /// next read can look for the end behind it: whether it did.
+    /// Moves what a finished read left aside, if it fits in [`AHEAD`], so
+    /// that the next read can look for the end behind it: whether it did.
     fn set_aside(&self, state: &mut State) -> bool {
         let (start, end) = (state.start, state.end);
-        if state.pending || state.failed.is_some() || start >= end || state.ahead.len() >= AHEAD {
+        let held = state.ahead.len().saturating_add(end.saturating_sub(start));
+        if state.pending || state.failed.is_some() || start >= end || held > AHEAD {
             return false;
         }
         let mut ahead = std::mem::take(&mut state.ahead);

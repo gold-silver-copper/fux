@@ -96,7 +96,8 @@ pub struct Host {
     leftover: Option<Child>,
     /// Till when an ended program's last output may still be coming
     /// (`fuxix::pty::SETTLE`): its terminal found empty till then is
-    /// waited on, not done with.
+    /// waited on, not done with, and past then is done with, written to
+    /// or not.
     settling: Option<Instant>,
     dying: Vec<Dying>,
     /// Programs killed and not yet reaped.
@@ -622,7 +623,8 @@ impl Host {
     /// ends, or is respawned over (`Replacement::old`); the rest on its
     /// next turns (`fire`), till its terminal is empty or closed. One that
     /// goes on writing there is read for as long as it does, a turn at a
-    /// time. `empty_ends`: whether a turn that finds it empty ends that;
+    /// time, or till `settling` ends, which bounds it on Windows, where a
+    /// console's close waits on this. `empty_ends`: whether a turn that finds it empty ends that;
     /// the read at an exit's first word does not, as the pane's own read
     /// may have just emptied it.
     fn read_left(&mut self, empty_ends: bool, now: Instant) {
@@ -663,7 +665,8 @@ impl Host {
             self.output(&left, now);
         }
         match drain {
-            Drain::More => return,
+            Drain::More if self.settling.is_none_or(|at| now < at) => return,
+            Drain::More => {}
             Drain::Empty if !empty_ends || self.settling.is_some_and(|at| now < at) => return,
             Drain::Empty | Drain::Closed => {}
             Drain::Failed(error) => {

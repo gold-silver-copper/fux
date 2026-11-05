@@ -199,7 +199,7 @@ programs built on the libraries (below) are the acceptance test for the whole po
 - **Reads stay armed:** the server's held links and `__conn`'s unread clients are polled for
   `Events::WATCH`: on Unix nothing (exactly as before; `HUP` would not do, as macOS's `poll` watches a
   descriptor asked for it and not one asked for nothing), on Windows `HUP | ERR`, which keeps a read
-  in flight and sets what it reads aside (`AHEAD`, 256 KiB at most), so the peer's end is told past
+  in flight and sets what it reads aside (256 KiB at most, the read buffer included), so the peer's end is told past
   bytes not yet taken. `__conn` then reads its client to the end and sends `Shut`. A peer that filled
   the bound and its pipe before it ended is seen only once it is read. On Windows `Events::NONE` tells
   nothing at all, so a loop done with a stream doesn't spin on its end.
@@ -279,7 +279,8 @@ programs built on the libraries (below) are the acceptance test for the whole po
   - End rule: call `ReleasePseudoConsole` right after spawning, read until the pipe breaks (1–5 ms after the
     program exits), then `GetExitCodeProcess`. The built-in ConPTY of older Windows 11 has no
     `ReleasePseudoConsole`, and its pipe breaks only when the console is closed: the pane process (PR 7)
-    also watches the program's process, and on its end drains for a bounded time and closes the console.
+    also watches the program's process, and on its end drains for a bounded time (`pty::SETTLE`, written
+    to or not: a program left writing doesn't hold the close off) and closes the console.
   - The bundled ConPTY sends `ESC[1t ESC[c ESC[?1004h ESC[?9001h` first and `ESC[?1004l ESC[?9001l` last:
     don't report those modes as the program's. fux-vt must answer DA1 and cursor-position queries quickly:
     an unanswered `ESC[6n` after a resize blocks the program for about 500 ms.
