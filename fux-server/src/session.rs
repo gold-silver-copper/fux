@@ -4246,20 +4246,29 @@ mod tests {
         for _ in 0..2 {
             run(
                 &mut s,
-                "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
+                "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
             )?;
         }
         for pane in [2, 3] {
             s.end_program(PaneId::of(pane), Ended::Exited(7));
         }
-        let records = ["%2", "%3"].map(|p| output(&mut s, &format!("{p} str program get json")));
-        let [two, three] = records.map(|r| r.unwrap_or_default());
-        assert!(two.contains(r#""pane":"%2","generation":0"#), "{two}");
+        let two = output(&mut s, "(data-text (get (pane 2) \"program\"))")?;
+        let three = output(&mut s, "(data-text (get (pane 3) \"program\"))")?;
+        assert_eq!(crate::test_data(&two, "(field data (quote! pane))")?, "%2");
+        assert_eq!(
+            crate::test_data(&two, "(field data (quote! generation))")?,
+            "0"
+        );
         assert_eq!(two.replace("%2", "%3"), three);
-        // Each way of reading it names its pane by handle.
-        for read in ["", "capture", "info str panes get first"] {
-            let code = format!("%3 {read} str program get str pane get dup kind swap string");
-            assert_eq!(output(&mut s, &code)?.trim(), "pane\n%3", "{read}");
+        for source in [
+            "(pane 3)",
+            "(capture (pane 3))",
+            "(first (get (information (pane 3)) \"panes\"))",
+        ] {
+            let code = format!(
+                "(let! ((p (get (get {source} \"program\") \"pane\"))) (list (kind p) (string p)))"
+            );
+            assert_eq!(output(&mut s, &code)?.trim(), "pane\n%3", "{source}");
         }
         Ok(())
     }
@@ -4622,7 +4631,7 @@ mod tests {
         let path = |s: &Session, ws| s.parts.path(WsId::of(ws));
         assert_eq!(path(&s, 3), [1, 2, 3].map(WsId::of));
         for (ws, into) in [(1, 1), (1, 2), (1, 3), (2, 3)] {
-            let code = format!("+{ws} +{into} move");
+            let code = format!("(move (workspace {ws}) (workspace {into}))");
             let refused = output(&mut s, &code).err().ok_or(code.clone())?;
             assert!(refused.starts_with("bad-value:"), "{code}: {refused}");
         }
@@ -4639,10 +4648,10 @@ mod tests {
         assert_eq!(
             closed,
             [
-                r#"{"event":"closed","pane":"%3","tab":"@3","workspace":"+5","why":"killed"}"#,
-                r#"{"event":"closed","tab":"@3","workspace":"+5","why":"emptied"}"#,
-                r#"{"event":"closed","workspace":"+5","parent":"+4","why":"emptied"}"#,
-                r#"{"event":"closed","workspace":"+4","parent":"+3","why":"emptied"}"#,
+                "((event \"closed\") (pane %3) (tab @3) (workspace +5) (why \"killed\"))",
+                "((event \"closed\") (tab @3) (workspace +5) (why \"emptied\"))",
+                "((event \"closed\") (workspace +5) (parent +4) (why \"emptied\"))",
+                "((event \"closed\") (workspace +4) (parent +3) (why \"emptied\"))",
                 "",
             ]
             .join("\n")
@@ -4658,13 +4667,15 @@ mod tests {
     #[test]
     fn a_projects_reader_reads_its_clients_leaving_what_moves_or_closes() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
-        for path in ["proj", "proj in str agent1", "proj in str agent2", "other"] {
+        for path in [
+            r#"(in (options) "proj")"#,
+            r#"(in (in (options) "proj") "agent1")"#,
+            r#"(in (in (options) "proj") "agent2")"#,
+            r#"(in (options) "other")"#,
+        ] {
             run(
                 &mut s,
-                &format!(
-                    "(sequence! (new-tab (size (in (options) {}) 80 24)) #inert)",
-                    fux::script::quoted(&format!("{path}"))
-                ),
+                &format!("(sequence! (new-tab (size {} 80 24)) #inert)", path),
             )?;
         }
         let proj = AnyRef::Workspace(WsId::of(2));
@@ -4683,7 +4694,7 @@ mod tests {
             "(sequence! (show (client \"c1\") (workspace \"agent2\")) (kill (workspace \"agent2\")) #inert)",
         )?;
         let shown = |lines: String| -> Vec<String> {
-            (lines.lines().filter(|l| l.contains(r#""event":"shown""#)))
+            (lines.lines().filter(|l| l.contains("(event \"shown\")")))
                 .map(str::to_owned)
                 .collect()
         };
@@ -4696,12 +4707,7 @@ mod tests {
         // agent2, and left agent2 closed for proj. Only leaving +1 is not
         // the project's.
         let at = |lines: &[String]| -> Vec<String> {
-            let ws = |l: &String| {
-                l.split(r#""workspace":""#)
-                    .nth(1)?
-                    .get(..2)
-                    .map(str::to_owned)
-            };
+            let ws = |l: &String| l.split("(workspace ").nth(1)?.get(..2).map(str::to_owned);
             lines.iter().filter_map(ws).collect()
         };
         assert_eq!(at(&project), ["+3", "+3", "+2", "+2", "+4", "+4", "+2"]);
@@ -5095,7 +5101,7 @@ mod tests {
             "(sequence! (move-border (pane 1) \"right\" 3) (move-border (pane 1) \"left\" 3) #inert)",
         )?;
         let stale = format!(
-            "@1 str {revision} list list str horizontal 1 2 1 2 end %1 list str horizontal 1 1 3 4 end %2 %3 end arrange"
+            "(arrange (tab 1) \"{revision}\" (list (list \"horizontal\" 1 2 1 2) (pane 1) (list \"horizontal\" 1 1 3 4) (pane 2) (pane 3)))"
         );
         assert!(run(&mut s, &stale).is_err_and(|s| s.starts_with("stale:")));
         let before_fit = s.tab(tab).and_then(|t| t.revision(s.run));
@@ -5105,7 +5111,9 @@ mod tests {
             "(list \"horizontal\" 0 1 1 2)",
             "(list \"diagonal\" 1 1 1 2)",
         ] {
-            let invalid = format!("@1 dup str layout_revision get list {split} %1 %2 end arrange");
+            let invalid = format!(
+                "(arrange (tab 1) (get (tab 1) \"layout-revision\") (list {split} (pane 1) (pane 2)))"
+            );
             let cursor = s.parts.journal().end(s.run);
             assert!(run(&mut s, &invalid).is_err());
             assert_eq!(s.parts.journal().end(s.run), cursor);
@@ -5116,13 +5124,14 @@ mod tests {
             "(sequence! (define! value-2100 (tab 1)) \"layout_revision\" (get value-2100 \"layout-revision\"))",
         )?;
         let command = format!(
-            "@1 str {latest} list list str horizontal 1 2 1 2 end %3 list str horizontal 1 1 3 4 end %1 %2 end arrange"
+            "(arrange (tab 1) \"{}\" (list (list \"horizontal\" 1 2 1 2) (pane 3) (list \"horizontal\" 1 1 3 4) (pane 1) (pane 2)))",
+            latest.trim()
         );
         let mut result = Ok(());
         let events = told(&mut s, |s| result = run(s, &command));
         result?;
         assert_eq!(
-            events.matches("\"event\":\"laid_out\"").count(),
+            events.matches("(event \"laid-out\")").count(),
             1,
             "{events}"
         );
@@ -5168,7 +5177,7 @@ mod tests {
             &mut s,
             "(sequence! (resize (tab 1) 7 40) (split (axis (pane 1) \"vertical\")) (split (axis (pane 2) \"vertical\")) #inert)",
         )?;
-        let propose = &format!("{LAYOUTS} @1 even-h");
+        let propose = &format!("{LAYOUTS} (even-h (tab 1))");
         let before = s.root(TabId::of(1)).cloned();
         let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
         let cursor = s.parts.journal().end(s.run);
@@ -5238,7 +5247,7 @@ mod tests {
             assert!(matches!(rest, Tree::Split(split) if split.axis() == cross));
             assert_eq!(s.root(tab).map(Tree::panes), Some(order.clone()));
         }
-        run(&mut s, &format!("{LAYOUTS} @1 tiled"))?;
+        run(&mut s, &format!("{LAYOUTS} (tiled (tab 1))"))?;
         let Some(Tree::Split(split)) = s.root(tab) else {
             return Err("tiled layout".into());
         };
@@ -5604,7 +5613,7 @@ mod tests {
         });
         let at = |what: &str| {
             lines
-                .find(&format!(r#""{what}","pane":"%2""#))
+                .find(&format!("(event \"{what}\") (pane %2)"))
                 .ok_or(lines.clone())
         };
         assert!(at("title")? < at("exited")?, "{lines}");
@@ -5808,7 +5817,7 @@ mod tests {
         )?;
         let fields = |s: &mut Session, pane: &str| {
             let get = format!(
-                "{pane} str row get {pane} str col get {pane} str rows get {pane} str cols get"
+                "(list (get (pane \"{pane}\") \"row\") (get (pane \"{pane}\") \"column\") (get (pane \"{pane}\") \"rows\") (get (pane \"{pane}\") \"columns\"))"
             );
             output(s, &get)
         };
@@ -5939,7 +5948,7 @@ mod tests {
         let lines = told(&mut s, |s| {
             let _ = run(s, "(sequence! (zoom (pane 3)) #inert)");
         });
-        let unzoomed = r#"{"event":"zoomed","tab":"@1","workspace":"+1","pane":null}"#;
+        let unzoomed = "((event \"zoomed\") (tab @1) (workspace +1) (pane none))";
         assert!(lines.starts_with(unzoomed), "{lines}");
         assert_eq!(focused(&s), [1, 2].map(|p| Some(PaneId::of(p))));
         run(&mut s, "(sequence! (zoom (pane 3)) (kill (pane 1)) #inert)")?;
@@ -6027,8 +6036,10 @@ mod tests {
             before[1], before[2],
             "both children are sized on the stack's room"
         );
-        let lines = told(&mut s, |s| _ = run(s, &format!("str {c2} client %3 show")));
-        assert!(lines.contains(r#""event":"shown""#), "{lines}");
+        let lines = told(&mut s, |s| {
+            _ = run(s, &format!("(show (client \"{c2}\") (pane 3))"))
+        });
+        assert!(lines.contains("(event \"shown\")"), "{lines}");
         assert!(!lines.contains("resized"), "{lines}");
         assert_eq!(sizes(&s), before);
         let screen = |s: &mut Session, c| {
@@ -6271,7 +6282,7 @@ mod tests {
         let lines = told(&mut s, |s| _ = run(s, "(respawn (kill-first (pane 2)))"));
         let at = |what: &str| {
             lines
-                .find(&format!(r#""{what}","pane":"%2""#))
+                .find(&format!("(event \"{what}\") (pane %2)"))
                 .ok_or(lines.clone())
         };
         assert!(at("title")? < at("respawned")?, "{lines}");
@@ -6412,15 +6423,20 @@ mod tests {
         assert_eq!(pane.options().alternate_scroll_lines.get(), 3);
         assert_eq!(pane.options().picture_bytes.get(), 1024);
         assert!(output(&mut s, "(sequence! (define! value-2602 (pane 2)) \"history_bytes\" (get value-2602 \"history-bytes\"))")?.contains("128"));
-        assert!(output(&mut s, "(dump (all))")?.contains("128 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard"));
+        let dump = output(&mut s, "(dump (all))")?;
+        let options = crate::test_data(
+            &dump,
+            "(define! saved (second (second data))) (define! p (second (field saved (quote! panes)))) (list (field p (quote! history-bytes)) (field p (quote! reflow)) (field p (quote! alternate-scroll-lines)) (field p (quote! picture-bytes)) (field p (quote! program-clipboard)))",
+        )?;
+        assert_eq!(options, "(128 #false 3 1024 #false)");
         let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
         let at = |what: &str| {
             lines
-                .find(&format!(r#""{what}","pane":"%2""#))
+                .find(&format!("(event \"{what}\") (pane %2)"))
                 .ok_or(lines.clone())
         };
         assert!(at("bell")? < at("respawned")?, "{lines}");
-        assert_eq!(lines.matches("history_budget").count(), 1, "{lines}");
+        assert_eq!(lines.matches("history-budget").count(), 1, "{lines}");
         Ok(())
     }
 
@@ -6521,10 +6537,10 @@ mod tests {
         reap(&mut s);
         let at = |what: &str| {
             lines
-                .find(&format!(r#""{what}","pane":"%2""#))
+                .find(&format!("(event \"{what}\") (pane %2)"))
                 .ok_or(lines.clone())
         };
-        assert!(lines.contains(r#""title":"late""#), "{lines}");
+        assert!(lines.contains("(title \"late\")"), "{lines}");
         assert!(at("title")? < at("respawned")?, "{lines}");
         assert!(at("bell")? < at("respawned")?, "{lines}");
         Ok(())
@@ -6569,11 +6585,11 @@ mod tests {
             let signalled = run(&mut s, "(signal (pane 2) \"INT\")");
             assert!(signalled.is_err_and(|e| e.contains("respawning")));
             // Nor has it a program of its own till the new one takes its place.
-            assert_eq!(output(&mut s, "(sequence! (define! value-2666 (pane 2)) \"program\" (get value-2666 \"program\"))")?.trim(), "null");
+            assert_eq!(output(&mut s, "(sequence! (define! value-2666 (pane 2)) \"program\" (get value-2666 \"program\"))")?.trim(), "none");
             turns(&mut s, id, &mut waiting)?;
             let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
-            assert!(lines.contains(r#""respawned","pane":"%2""#), "{lines}");
-            assert!(!lines.contains("input_unread"), "{lines}");
+            assert!(lines.contains("(event \"respawned\") (pane %2)"), "{lines}");
+            assert!(!lines.contains("input-unread"), "{lines}");
             reap(&mut s);
         }
         Ok(())
@@ -6670,12 +6686,12 @@ mod tests {
         let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
         let at = |what: &str| {
             lines
-                .find(&format!(r#""{what}","pane":"%2""#))
+                .find(&format!("(event \"{what}\") (pane %2)"))
                 .ok_or(lines.clone())
         };
         assert!(at("respawned")? < at("exited")?, "{lines}");
         assert!(
-            lines.contains(r#""exited","pane":"%2","tab":"@2","workspace":"+2","exited":0"#),
+            lines.contains("(event \"exited\") (pane %2) (tab @2) (workspace +2) (exited 0)"),
             "{lines}"
         );
         reap(&mut s);
@@ -6789,7 +6805,7 @@ mod tests {
             &mut s,
             "(sequence! (new-tab (in (size (options) 80 24) \"other\")) #inert)",
         )?;
-        let show = |ws: &str| format!("str {c} client str {ws} workspace show");
+        let show = |ws: &str| format!("(show (client \"{c}\") (workspace \"{ws}\"))");
         let unknown = |s: &mut Session| winsize(s).is_some_and(|(_, pixels)| pixels.is_none());
         run(&mut s, &show("other"))?;
         assert!(unknown(&mut s), "hidden");
@@ -6824,8 +6840,8 @@ mod tests {
         s.out(PaneId::of(2), b"x");
         s.detach_client(c);
         run(&mut s, "(respawn (pane 2))")?;
-        let json = output(&mut s, "(capture (pane 2))")?;
-        assert!(json.contains(r#""cell":null"#), "{json}");
+        let json = output(&mut s, "(data-text (capture (pane 2)))")?;
+        assert!(json.contains("(cell none)"), "{json}");
         Ok(())
     }
 
@@ -6852,11 +6868,13 @@ mod tests {
             })
         };
         queue(&mut s, b"abc")?;
-        let json = output(&mut s, "(capture (pane 2))")?;
-        assert!(json.contains(r#""input_queued":3"#), "{json}");
+        let json = output(&mut s, "(data-text (capture (pane 2)))")?;
+        assert!(json.contains("(input-queued 3)"), "{json}");
         let lines = told(&mut s, |s| s.end_program(id, Ended::Exited(0)));
         assert!(
-            lines.contains(r#"{"event":"exited","pane":"%2","tab":"@2","workspace":"+2","exited":0,"input_unread":3}"#),
+            lines.contains(
+                "((event \"exited\") (pane %2) (tab @2) (workspace +2) (exited 0) (input-unread 3))"
+            ),
             "{lines}"
         );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
@@ -6865,9 +6883,9 @@ mod tests {
             "{said}"
         );
         assert!(host(&mut s, id, |h| h.pane().input().is_empty())?);
-        let json = output(&mut s, "(capture (pane 2))")?;
+        let json = output(&mut s, "(data-text (capture (pane 2)))")?;
         assert!(
-            json.contains(r#""input_unread":3,"#) && json.contains(r#""input_queued":0,"#),
+            json.contains("(input-unread 3)") && json.contains("(input-queued 0)"),
             "{json}"
         );
         // Respawned over while it runs, with input it has not read.
@@ -6879,14 +6897,14 @@ mod tests {
         let lines = told(&mut s, |s| _ = run(s, "(respawn (kill-first (pane 2)))"));
         assert!(
             lines.contains(
-                r#"{"event":"respawned","pane":"%2","tab":"@2","workspace":"+2","generation":2,"input_unread":2}"#
+                "((event \"respawned\") (pane %2) (tab @2) (workspace +2) (generation 2) (input-unread 2))"
             ),
             "{lines}"
         );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
         assert!(said.starts_with("%2 respawned; 2 bytes of input"), "{said}");
-        let json = output(&mut s, "(capture (pane 2))")?;
-        assert!(json.contains(r#""input_unread":0"#), "{json}");
+        let json = output(&mut s, "(data-text (capture (pane 2)))")?;
+        assert!(json.contains("(input-unread 0)"), "{json}");
         reap(&mut s);
         Ok(())
     }
@@ -6894,20 +6912,20 @@ mod tests {
     #[test]
     fn the_input_modes_a_program_sets_are_its_facts() -> TestResult {
         let (mut s, _) = attached(24, 80)?;
-        let modes = |s: &mut Session| -> Result<String, String> {
-            let json = output(s, "(capture (pane 1))")?;
-            let from = json.find(r#""mouse_mode""#).ok_or(json.clone())?;
-            let to = json.find(r#","pictures""#).ok_or(json.clone())?;
-            Ok(json.get(from..to).unwrap_or_default().to_owned())
+        let modes = |s: &mut Session| {
+            output(
+                s,
+                "(data-text (let! ((p (capture (pane 1)))) (list (get p \"mouse-mode\") (get p \"mouse-encoding\") (get p \"bracketed-paste\") (get p \"focus-events\") (get p \"application-cursor\") (get p \"application-keypad\") (get p \"keyboard-flags\"))))",
+            )
         };
         assert_eq!(
-            modes(&mut s)?,
-            r#""mouse_mode":null,"mouse_encoding":"default","bracketed_paste":false,"focus_events":false,"app_cursor":false,"app_keypad":false,"keyboard_flags":0"#
+            modes(&mut s)?.trim(),
+            "(none \"default\" #false #false #false #false 0)"
         );
         s.out(PaneId::of(1), b"\x1b[?1002;1006;2004;1004;1h\x1b=\x1b[>5u");
         assert_eq!(
-            modes(&mut s)?,
-            r#""mouse_mode":"button_motion","mouse_encoding":"sgr","bracketed_paste":true,"focus_events":true,"app_cursor":true,"app_keypad":true,"keyboard_flags":5"#
+            modes(&mut s)?.trim(),
+            "(\"button-motion\" \"sgr\" #true #true #true #true 5)"
         );
         Ok(())
     }
@@ -6949,7 +6967,7 @@ mod tests {
             s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
             let _ = run(s, "(respawn (pane 2))");
         });
-        let said: Vec<&str> = lines.lines().filter_map(|l| l.split('"').nth(3)).collect();
+        let said: Vec<&str> = lines.lines().filter_map(|l| l.split('"').nth(1)).collect();
         assert_eq!(said, ["exited", "respawned"], "{lines}");
         Ok(())
     }
@@ -7259,7 +7277,7 @@ mod tests {
         let sent = run(&mut s, "(send-keys (text (tab 1) \"x\"))");
         let sent = sent.err().unwrap_or_default();
         assert!(
-            sent.starts_with("not-running: ") && sent.ends_with("; already sent to %1"),
+            sent.starts_with("not-running: ") && sent.contains("; already sent to %1"),
             "{sent}"
         );
         assert_eq!(
@@ -7403,9 +7421,9 @@ mod tests {
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("%1: copies (OSC 52) not made (2)")));
         // Counted in its JSON too, for a reader no notice reaches.
-        let json = output(&mut s, "(capture (pane 1))")?;
+        let json = output(&mut s, "(data-text (capture (pane 1)))")?;
         assert!(
-            json.contains(r#""copies_cut":1,"copies_not_text":3,"#),
+            json.contains("(copies-cut 1) (copies-not-text 3)"),
             "{json}"
         );
         s.outbox.clear();
@@ -7719,11 +7737,8 @@ mod tests {
         };
         let ws = "+1".parse::<WsId>()?;
         let tab = "@2".parse::<TabId>()?;
-        assert_eq!(
-            ids(AnyRef::Workspace(ws))?,
-            "(list (workspace 1) (tab 1) (pane 1) (tab 2) (pane 2) (pane 3))"
-        );
-        assert_eq!(ids(AnyRef::Tab(tab))?, "@2\n%2\n%3\n");
+        assert_eq!(ids(AnyRef::Workspace(ws))?, "+1 @1 %1 @2 %2 %3");
+        assert_eq!(ids(AnyRef::Tab(tab))?, "@2 %2 %3");
         assert_eq!(ids(AnyRef::Pane(PaneId::of(3)))?, "%3");
         Ok(())
     }
@@ -7740,14 +7755,21 @@ mod tests {
         )?;
         s.out(PaneId::of(1), b"hi\x1b]2;title\x07\x1b[?1h");
         for (name, _) in s.observed(PaneId::of(1))?.fields() {
-            let read =
-                |s: &mut Session, from: &str| output(s, &format!("{from} str {name} get json"));
+            let read = |s: &mut Session, from: &str| {
+                output(
+                    s,
+                    &format!(
+                        "(data-text (get {from} {}))",
+                        fux::script::quoted(&fux::script::field_name(name))
+                    ),
+                )
+            };
             let listed = read(
                 &mut s,
                 "(sequence! (define! value-3296 (information (pane 1))) \"panes\" (first (get value-3296 \"panes\")))",
             )?;
             assert_eq!(read(&mut s, "(capture (pane 1))")?, listed, "{name}");
-            assert_eq!(read(&mut s, "%1")?, listed, "{name}");
+            assert_eq!(read(&mut s, "(pane 1)")?, listed, "{name}");
         }
         let seen = |s: &mut Session| {
             output(
@@ -7787,11 +7809,11 @@ mod tests {
         )?;
         s.out(PaneId::of(2), "a\tb 界\x1b]2;tab\\title\x07".as_bytes());
         let ls = output(&mut s, "(list-session)")?;
-        assert!(ls.contains(r#""name":"say \"hi\" \\ 界""#), "{ls}");
-        assert!(ls.contains(r#""title":"tab\\title""#), "{ls}");
-        assert!(ls.contains(r#""truncated":[]"#), "{ls}");
-        let capture = output(&mut s, "(capture (pane \"%2\"))")?;
-        assert!(capture.contains(r#""lines":["a       b 界"]"#), "{capture}");
+        assert!(ls.contains("(name \"say \\\"hi\\\" \\\\ 界\")"), "{ls}");
+        assert!(ls.contains("(title \"tab\\\\title\")"), "{ls}");
+        assert!(ls.contains("(truncated ())"), "{ls}");
+        let capture = output(&mut s, "(data-text (capture (pane \"%2\")))")?;
+        assert!(capture.contains("(lines (\"a       b 界\"))"), "{capture}");
         Ok(())
     }
 
@@ -7920,8 +7942,8 @@ mod tests {
         let (mut s, client) = attached(24, 80)?;
         let shown = "%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6";
         s.out(PaneId::of(1), shown.as_bytes());
-        let capture = format!("str {client} client capture");
-        let text = output(&mut s, &format!("{capture} string"))?;
+        let capture = format!("(capture (client \"{client}\"))");
+        let text = output(&mut s, &format!("(string {capture})"))?;
         assert_eq!(text.split_whitespace().next(), Some(shown));
         let refused = output(
             &mut s,
@@ -7935,24 +7957,24 @@ mod tests {
         assert!(refused.starts_with("no-field: "), "{refused}");
         let counts = s.pane(PaneId::of(1))?.counts().named();
         let expected: Vec<String> = counts.iter().map(|(_, n)| n.to_string()).collect();
-        let expected = format!("[{}]", expected.join(","));
+        let expected = format!("({})", expected.join(" "));
         let read: Vec<String> = counts
             .iter()
-            .map(|(name, _)| format!("o str {name} get"))
+            .map(|(name, _)| format!("(get o \"{}\")", fux::script::field_name(name)))
             .collect();
-        let read = format!("let o list {} end json", read.join(" "));
+        let read = format!("(data-text (list {}))", read.join(" "));
         let baseline = output(&mut s, "(version (pane 1))")?;
         for source in [
-            "%1",
+            "(pane 1)",
             "(capture (pane 1))",
             "(send-keys (text (pane 1) \"x\"))",
             "(sequence! (define! variables-3451 (context)) (bind variables-3451 (quote! sample) (capture (pane 1))) (kill (pane 1)) (evaluate (quote! sample) variables-3451))",
         ] {
-            let source = format!("{source} {read}");
+            let source = format!("(let! ((o {source})) {read})");
             assert_eq!(output(&mut s, &source)?.trim(), expected, "{source}");
         }
         let closed = format!(
-            "str closed try str {} changed wait catch str value get end str done get",
+            "(get (catch-kind! (wait (changed \"{}\")) closed failure (second (get failure \"values\"))) \"done\")",
             baseline.trim()
         );
         let refused = output(&mut s, &closed)
@@ -7967,10 +7989,10 @@ mod tests {
         let mut s = started()?;
         let json = output(
             &mut s,
-            "(sequence! (define! variables-3459 (context)) (bind variables-3459 (quote! sent) (send-keys (text (expect (capture (pane 1))) \"x\"))) \"timeout\" (quiet (element-at (catch-kind! (list (wait (timeout (evaluate (quote! sent) variables-3459) 0))) timeout failure-3472 (sequence! \"value\" (list (second (get failure-3472 \"values\"))))) 0) 0))",
+            "(data-text (sequence! (define! variables-3459 (context)) (bind variables-3459 (quote! sent) (send-keys (text (expect (capture (pane 1))) \"x\"))) \"timeout\" (quiet (element-at (catch-kind! (list (wait (timeout (evaluate (quote! sent) variables-3459) 0))) timeout failure-3472 (sequence! \"value\" (list (second (get failure-3472 \"values\"))))) 0) 0)))",
         )?;
         assert!(
-            json.contains(r#""pane":"%1""#) && json.contains(r#""version":"%1:"#),
+            json.contains("(id %1)") && json.contains("(version \"%1:"),
             "{json}"
         );
         Ok(())
@@ -7982,7 +8004,7 @@ mod tests {
         let version = output(&mut s, "(split (axis (pane 1) \"vertical\"))")?;
         run(&mut s, "(sequence! (kill (pane 2)) #inert)")?;
         let caught = format!(
-            "str closed try str {} changed wait catch str value get end",
+            "(catch-kind! (wait (changed \"{}\")) closed failure (second (get failure \"values\")))",
             version.trim()
         );
         assert_eq!(
@@ -7994,10 +8016,10 @@ mod tests {
                 )
             )?
             .trim(),
-            r#"{"pane":"%2","status":4}"#
+            "((pane %2) (status 4))"
         );
         assert_eq!(
-            output(&mut s, &format!("{caught} kind"))?.trim(),
+            output(&mut s, &format!("(kind {caught})"))?.trim(),
             "closed-answer"
         );
         let gone = output(
@@ -8032,13 +8054,13 @@ mod tests {
             answer.starts_with("%2:") && answer.ends_with(" screen\n"),
             "{answer}"
         );
-        let answer = failed(&mut s, &format!("str {one} changed 0 timeout wait"));
+        let answer = failed(&mut s, &format!("(wait (timeout (changed \"{one}\") 0))"));
         assert!(answer.contains("timeout"), "{answer}");
         let other = command::Version {
             run: "1-0".parse().map_err(|()| "a run")?,
             ..one
         };
-        let refused = failed(&mut s, &format!("str {other} changed wait"));
+        let refused = failed(&mut s, &format!("(wait (changed \"{other}\"))"));
         assert!(refused.contains("from another server run"), "{refused}");
         let never = command::Version {
             counts: command::Counts {
@@ -8047,16 +8069,16 @@ mod tests {
             },
             ..one
         };
-        let refused = failed(&mut s, &format!("str {never} changed wait"));
+        let refused = failed(&mut s, &format!("(wait (changed \"{never}\"))"));
         assert!(refused.contains("never had these counts"), "{refused}");
         let unmade = command::Version {
             pane: PaneId::of(99),
             ..one
         };
-        let refused = failed(&mut s, &format!("str {unmade} changed wait"));
+        let refused = failed(&mut s, &format!("(wait (changed \"{unmade}\"))"));
         assert!(refused.contains("never a pane of this run"), "{refused}");
         run(&mut s, "(sequence! (kill (pane 2)) #inert)")?;
-        let closed = failed(&mut s, &format!("str {two} changed wait"));
+        let closed = failed(&mut s, &format!("(wait (changed \"{two}\"))"));
         assert!(closed.starts_with("closed: "), "{closed}");
         Ok(())
     }
@@ -8171,9 +8193,9 @@ mod tests {
         s.escape(one);
         clean(&mut s);
         for line in [
-            "ls",
+            "(listing (list-session))",
             "(capture (pane \"%1\"))",
-            "list-keys",
+            "(list-keys)",
             "(send-keys (text (pane \"%1\") \"x\"))",
             "(send-keys (text (client \"c1\") \"x\"))",
         ] {
@@ -8252,13 +8274,17 @@ mod tests {
             &mut s,
             "(sequence! (define! sender-only (lambda! (argument-3650 argument-3651) #inert)) (choose (client \"c1\") \"title\" (list (list 1 \"inert\")) () (list 0) (code! (lambda! (argument-3665 argument-3666) (sequence! (sender-only argument-3665 argument-3666) #inert)))) #inert)",
         )?;
+        s.input(c, b"\r");
         let notice = s
             .views
             .get(&c)
             .and_then(|v| v.notice.as_ref())
             .map(|n| n.text.as_str())
             .unwrap_or_default();
-        assert!(notice.contains("sender-only: no such word"), "{notice}");
+        assert!(
+            notice.contains("unbound-symbol") && notice.contains("sender-only"),
+            "{notice}"
+        );
         assert!(matches!(
             s.views.get(&c).map(|v| &v.mode),
             Some(Mode::Normal)
@@ -8282,7 +8308,7 @@ mod tests {
                 &mut s,
                 "(sequence! (define! value-3680 (pane 1)) \"name\" (define! value-3682 (get value-3680 \"name\")) (define! value-3683 (tab 1)) \"name\" (define! value-3685 (get value-3683 \"name\")) (define! value-3686 (workspace 1)) \"name\" (list value-3682 value-3685 (get value-3686 \"name\")))"
             )?,
-            "null\nnull\nnull\n"
+            "none\nnone\nnone\n"
         );
         for lookup in [
             "(pane \"sh\")",
@@ -8301,7 +8327,7 @@ mod tests {
                 &mut s,
                 "(sequence! (define! value-3720 (pane \"web\")) (define! value-3721 (tab value-3720)) \"name\" (list value-3720 (get value-3721 \"name\")))"
             )?,
-            "%2\nnull\n"
+            "%2\nnone\n"
         );
         run(
             &mut s,
@@ -8312,8 +8338,8 @@ mod tests {
         assert!(output(&mut s, "(pane \"spool\")").is_err());
         assert!(output(&mut s, "(pane \"cat\")").is_err());
         assert_eq!(output(&mut s, "\"%1\"")?, "%1\n");
-        let json = output(&mut s, "(capture (pane 1))")?;
-        assert!(json.starts_with(r#"{"id":"%1""#), "{json}");
+        let json = output(&mut s, "(data-text (capture (pane 1)))")?;
+        assert!(json.starts_with("((id %1)"), "{json}");
         Ok(())
     }
 
@@ -8361,56 +8387,94 @@ mod tests {
         let (mut s, _) = attached(10, 40)?;
         let ids = s.ids.clone();
         for (base, first, second, action) in [
-            ("opts", "str a name", "str b name", "new-tab"),
-            ("opts", "40 10 size", "40 10 size", "new-tab"),
-            ("opts", "str / cwd", "str / cwd", "new-tab"),
-            ("opts", "str cat program", "str sh program", "new-tab"),
+            ("(options)", "(name {} \"a\")", "(name {} \"b\")", "new-tab"),
+            ("(options)", "(size {} 40 10)", "(size {} 40 10)", "new-tab"),
             (
-                "opts",
-                "str cat program",
-                "list str sh end shell-program",
+                "(options)",
+                "(directory {} \"/\")",
+                "(directory {} \"/\")",
                 "new-tab",
             ),
             (
-                "opts",
-                "list str sh end shell-program",
-                "str cat program",
+                "(options)",
+                "(program {} \"cat\")",
+                "(program {} \"sh\")",
                 "new-tab",
             ),
-            ("opts", "0 history-bytes", "1 history-bytes", "new-tab"),
-            ("opts", "false reflow", "true reflow", "new-tab"),
             (
-                "opts",
-                "0 alternate-scroll-lines",
-                "1 alternate-scroll-lines",
+                "(options)",
+                "(program {} \"cat\")",
+                "(shell-program {} (list \"sh\"))",
                 "new-tab",
             ),
-            ("opts", "0 picture-bytes", "1 picture-bytes", "new-tab"),
             (
-                "opts",
-                "false program-clipboard",
-                "true program-clipboard",
+                "(options)",
+                "(shell-program {} (list \"sh\"))",
+                "(program {} \"cat\")",
                 "new-tab",
             ),
-            ("opts", "watch", "watch", "attach"),
-            ("%1", "str horizontal axis", "str vertical axis", "split"),
-            ("%1", "1 2 shares", "2 1 shares", "split"),
-            ("%1", "kill-first", "kill-first", "respawn"),
-            ("%1", "0 timeout", "1 timeout", "wait"),
-            ("%1", "0 history", "all-history", "capture"),
-            ("%1", "all-history", "0 history", "capture"),
-            ("%1", "0 1 rows", "0 2 rows", "capture"),
-            ("%1", "0 1 cols", "0 2 cols", "capture"),
+            (
+                "(options)",
+                "(history-bytes {} 0)",
+                "(history-bytes {} 1)",
+                "new-tab",
+            ),
+            (
+                "(options)",
+                "(reflow {} #false)",
+                "(reflow {} #true)",
+                "new-tab",
+            ),
+            (
+                "(options)",
+                "(alternate-scroll-lines {} 0)",
+                "(alternate-scroll-lines {} 1)",
+                "new-tab",
+            ),
+            (
+                "(options)",
+                "(picture-bytes {} 0)",
+                "(picture-bytes {} 1)",
+                "new-tab",
+            ),
+            (
+                "(options)",
+                "(program-clipboard {} #false)",
+                "(program-clipboard {} #true)",
+                "new-tab",
+            ),
+            ("(options)", "(watch {})", "(watch {})", "attach"),
+            (
+                "(pane 1)",
+                "(axis {} \"horizontal\")",
+                "(axis {} \"vertical\")",
+                "split",
+            ),
+            ("(pane 1)", "(shares {} 1 2)", "(shares {} 2 1)", "split"),
+            ("(pane 1)", "(kill-first {})", "(kill-first {})", "respawn"),
+            ("(pane 1)", "(timeout {} 0)", "(timeout {} 1)", "wait"),
+            ("(pane 1)", "(history {} 0)", "(all-history {})", "capture"),
+            ("(pane 1)", "(all-history {})", "(history {} 0)", "capture"),
+            ("(pane 1)", "(rows {} 0 1)", "(rows {} 0 2)", "capture"),
+            (
+                "(pane 1)",
+                "(columns {} 0 1)",
+                "(columns {} 0 2)",
+                "capture",
+            ),
         ] {
-            let code = format!("{base} {first} {second} {action}");
-            let error = output(&mut s, &code)
+            let code = format!(
+                "({action} {})",
+                second.replacen("{}", &first.replacen("{}", base, 1), 1)
+            );
+            let why = output(&mut s, &code)
                 .err()
                 .ok_or_else(|| format!("ran {code}"))?;
-            assert!(error.starts_with("unused: "), "{code}: {error}");
-            if second == "all-history" {
+            assert!(why.starts_with("unused:"), "{code}: {why}");
+            if second == "(all-history {})" {
                 assert!(
-                    error.contains("inside all-history") && error.contains("is already given"),
-                    "{error}"
+                    why.contains("already given") && why.contains("all-history"),
+                    "{why}"
                 );
             }
             assert_eq!(s.ids, ids);
@@ -8421,21 +8485,22 @@ mod tests {
             "styles",
             "marks",
             "main-screen",
-            "alt-screen",
+            "alternate-screen",
             "last-output",
         ] {
-            let seconds: &[&str] = if matches!(first, "main-screen" | "alt-screen" | "last-output")
-            {
-                &["main-screen", "alt-screen", "last-output"]
-            } else {
-                &[first]
-            };
+            let seconds: &[&str] =
+                if matches!(first, "main-screen" | "alternate-screen" | "last-output") {
+                    &["main-screen", "alternate-screen", "last-output"]
+                } else {
+                    &[first]
+                };
             for second in seconds {
-                let code = format!("%1 {first} {second} capture");
-                let error = output(&mut s, &code)
+                let code = format!("(capture ({second} ({first} (pane 1))))");
+                let why = output(&mut s, &code)
                     .err()
                     .ok_or_else(|| format!("ran {code}"))?;
-                assert!(error.starts_with("unused: "), "{code}: {error}");
+                assert!(why.starts_with("unused:"), "{code}: {why}");
+                assert_eq!(s.ids, ids);
             }
         }
         Ok(())
@@ -8482,15 +8547,12 @@ mod tests {
         ] {
             let caught = output(
                 &mut s,
-                &format!("str usage try {source} drop catch drop str recovered end"),
+                &format!("(catch-kind! (sequence! {source} #inert) usage failure \"recovered\")"),
             )?;
             assert_eq!(caught, "recovered\n", "{source}");
         }
         assert_eq!(
-            output(
-                &mut s,
-                "str not-here try me drop catch drop str recovered end"
-            )?,
+            output(&mut s, "(catch-kind! (me) not-here failure \"recovered\")")?,
             "recovered\n"
         );
         Ok(())
@@ -8575,7 +8637,7 @@ mod tests {
         )?;
         assert_eq!(
             output(&mut s, "(list (pane \"ed\") (tab \"web\"))")?,
-            "(list (pane 6) (tab 6))"
+            "%6\n@6\n"
         );
         Ok(())
     }
@@ -8606,7 +8668,7 @@ mod tests {
             )?,
             "given\ntab-2\n"
         );
-        assert!(s.dump_recipe(None)?.contains("str 'tab-2' name"));
+        assert!(s.dump_recipe(None)?.contains("(name \"tab-2\")"));
         Ok(())
     }
 
@@ -8666,7 +8728,8 @@ mod tests {
                 &mut s,
                 "(sequence! (new-tab (in (size (options) 80 24) (workspace 1))) #inert)",
             )?;
-            let split = format!("str {tab} pane str horizontal axis split drop str {split} pane");
+            let split =
+                format!("(split (axis (pane \"{tab}\") \"horizontal\")) (pane \"{split}\")");
             run(&mut s, &split)?;
         }
         run(
@@ -8788,7 +8851,13 @@ mod tests {
         let cursor = read
             .iter()
             .find(|(key, _)| key == "cursor")
-            .map(|(_, v)| v.render());
+            .and_then(|(_, v)| {
+                if let Json::String(text) = v {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            });
         let cursor = cursor.ok_or("its cursor")?;
         let after = output(
             &mut s,
@@ -8797,7 +8866,7 @@ mod tests {
                 fux::script::quoted(&format!("{cursor}"))
             ),
         )?;
-        assert!(after.contains(r#""event":"bell""#), "{after}");
+        assert!(after.contains("(event \"bell\")"), "{after}");
         Ok(())
     }
 
@@ -8876,58 +8945,61 @@ mod tests {
     fn a_captures_cursor_is_the_screens() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
-            let json = output(
+            let builder = match read {
+                "" => "(pane 1)",
+                "2 7 cols" => "(columns (pane 1) 2 7)",
+                "0 2 cols" => "(columns (pane 1) 0 2)",
+                "wrapped" => "(wrapped (pane 1))",
+                "alt-screen" => "(alternate-screen (pane 1))",
+                "main-screen" => "(main-screen (pane 1))",
+                _ => return Err(format!("unknown capture option: {read}")),
+            };
+            output(
                 s,
-                &format!(
-                    "(list (pane 1) (data-text (capture {})))",
-                    crate::test_reference(&format!("{read}"))
-                ),
-            )?;
-            let after = json.split("\"screen_cursor\":").nth(1).unwrap_or_default();
-            Ok(after
-                .split(",\"lines\"")
-                .next()
-                .unwrap_or_default()
-                .to_owned())
+                &format!("(data-text (get (capture {builder}) \"screen-cursor\"))"),
+            )
+            .map(|s| s.trim().to_owned())
         };
         s.out(PaneId::of(1), b"0123456789\x1b[1;6H");
-        assert_eq!(cursor(&mut s, "")?, "[0,5]");
-        assert_eq!(cursor(&mut s, "2 7 cols")?, "[0,5]");
-        assert_eq!(cursor(&mut s, "0 2 cols")?, "[0,5]");
+        assert_eq!(cursor(&mut s, "")?, "(0 5)");
+        assert_eq!(cursor(&mut s, "2 7 cols")?, "(0 5)");
+        assert_eq!(cursor(&mut s, "0 2 cols")?, "(0 5)");
         s.out(PaneId::of(1), b"\x1b[?25l");
-        assert_eq!(cursor(&mut s, "")?, "null", "hidden");
+        assert_eq!(cursor(&mut s, "")?, "none", "hidden");
         s.out(PaneId::of(1), b"\x1b[?25h\x1b[3;1H");
-        assert_eq!(cursor(&mut s, "")?, "[2,0]", "on a blank row trimmed");
+        assert_eq!(cursor(&mut s, "")?, "(2 0)", "on a blank row trimmed");
         s.out(
             PaneId::of(1),
             &[b"\x1b[2J\x1b[H".as_slice(), &[b'A'; 45], b"\r\nBC"].concat(),
         );
-        assert_eq!(cursor(&mut s, "")?, "[2,2]");
-        assert_eq!(cursor(&mut s, "wrapped")?, "[2,2]");
+        assert_eq!(cursor(&mut s, "")?, "(2 2)");
+        assert_eq!(cursor(&mut s, "wrapped")?, "(2 2)");
         s.out(PaneId::of(1), b"\x1b[?1049h\x1b[HALT");
-        assert_eq!(cursor(&mut s, "alt-screen")?, "[0,3]");
-        assert_eq!(cursor(&mut s, "main-screen")?, "null");
+        assert_eq!(cursor(&mut s, "alt-screen")?, "(0 3)");
+        assert_eq!(cursor(&mut s, "main-screen")?, "none");
         s.out(PaneId::of(1), b"\x1b[?1049l");
-        assert_eq!(cursor(&mut s, "alt-screen")?, "null");
-        assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
+        assert_eq!(cursor(&mut s, "alt-screen")?, "none");
+        assert_eq!(cursor(&mut s, "main-screen")?, "(2 2)");
         // What is highlighted is marked in JSON's lines too.
         s.out(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
-        let json = output(&mut s, "(capture (marks (pane 1)))")?;
+        let json = output(&mut s, "(data-text (capture (marks (pane 1))))")?;
         assert!(json.contains("\"BC⟦SEL⟧\""), "{json}");
-        let inverted = output(&mut s, "(capture (rows (pane 1) 5 2))");
+        let inverted = output(&mut s, "(data-text (capture (rows (pane 1) 5 2)))");
         assert!(
-            inverted.as_ref().is_err_and(|e| e.starts_with("range: ")),
+            inverted
+                .as_ref()
+                .is_err_and(|e| e.starts_with("range-error: ")),
             "{inverted:?}"
         );
         // A glyph in the last column leaves the cursor on it, the wrap
         // pending: said so.
         s.out(PaneId::of(1), &[b"\r\n".as_slice(), &[b'D'; 40]].concat());
-        assert_eq!(cursor(&mut s, "wrapped")?, "[3,39]");
-        let json = output(&mut s, "(capture (pane 1))")?;
-        assert!(json.contains(r#""wrap_pending":true"#), "{json}");
+        assert_eq!(cursor(&mut s, "wrapped")?, "(3 39)");
+        let json = output(&mut s, "(data-text (capture (pane 1)))")?;
+        assert!(json.contains("(wrap-pending #true)"), "{json}");
         s.out(PaneId::of(1), b"\r");
-        let json = output(&mut s, "(capture (pane 1))")?;
-        assert!(json.contains(r#""wrap_pending":false"#), "{json}");
+        let json = output(&mut s, "(data-text (capture (pane 1)))")?;
+        assert!(json.contains("(wrap-pending #false)"), "{json}");
         Ok(())
     }
 
@@ -8964,79 +9036,81 @@ mod tests {
                     crate::test_reference(&format!("{act}"))
                 )
             )?,
-            "(list (tab 1) (workspace 1))"
+            "@1\n+1\n"
         );
         let alone = output(
             &mut s,
             &format!("(data-text {})", crate::test_reference(&format!("{act}"))),
         )?;
-        assert!(
-            alone.starts_with("{\"pane\":\"%1\",\"version\":"),
-            "{alone}"
-        );
-        let listed = output(&mut s, &format!("list {act} end json"))?;
-        assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
+        assert!(alone.starts_with("((pane %1) (version "), "{alone}");
+        let listed = output(&mut s, &format!("(data-text (list {act}))"))?;
+        assert_eq!(listed, format!("({})\n", alone.trim_end()));
         Ok(())
     }
 
     #[test]
     fn failures_say_what_a_word_takes() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
-        let failed = |s: &mut Session, code: &str| match output(s, code) {
-            Ok(out) => format!("ran: {out}"),
-            Err(error) => error,
+        let failed = |s: &mut Session, source: &str| {
+            output(s, source)
+                .err()
+                .unwrap_or_else(|| format!("ran {source}"))
         };
         let timeout = failed(&mut s, "(wait (timeout (pane 1) -1))");
-        assert!(timeout.starts_with("range: "), "{timeout}");
         assert!(
-            timeout.contains("-1 is out of range: from 0 (use: "),
+            timeout.starts_with("range-error:")
+                && timeout.contains("-1 is out of range: from 0")
+                && timeout.contains("(timeout (pane 1) -1)"),
             "{timeout}"
         );
         let mouse = failed(&mut s, "(send-mouse (pane 1) \"click\" -1 0)");
-        assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
-        // The core's words say how they are used too; a library word by
-        // its own name.
-        for code in ["slice", "(add \"a\" 1)"] {
-            let core = failed(&mut s, code);
-            assert!(core.contains(" (use: "), "{core}");
-        }
-        let upper = failed(&mut s, "3 upper");
-        assert!(upper.contains("(use: S upper"), "{upper}");
-        // Caught, it is the failing word's own message (here `each`'s,
-        // inside `upper`): no place, word or usage added.
-        let caught = output(&mut s, "str type try 3 upper catch str message get end");
-        assert_eq!(
-            caught.as_deref(),
-            Ok("each walks a string or a list, not an integer\n")
+        assert!(
+            mouse.starts_with("range-error:") && mouse.contains("out of range: 0 to 65535"),
+            "{mouse}"
         );
-        // A wait's limit is what the wire's 32 bits hold.
+        for source in ["(take)", "(add \"a\" 1)", "(string-split 3 \" \" )"] {
+            let why = failed(&mut s, source);
+            assert!(
+                (why.starts_with("arity-error:") || why.starts_with("type-error:"))
+                    && why.contains(" at key:1"),
+                "{source}: {why}"
+            );
+        }
+        let caught = output(
+            &mut s,
+            "(catch-kind! (string-split 3 \" \") type-error failure (get failure \"kind\"))",
+        )?;
+        assert_eq!(caught, "type-error\n");
         let long = failed(&mut s, "(wait (timeout (pane 1) 9223372036854775807))");
         assert!(
-            long.starts_with("range: ") && long.contains("at most 4294967295 s"),
+            long.starts_with("range-error:") && long.contains("at most 4294967295 s"),
             "{long}"
         );
-        // A capture where text is taken: `string` makes it text.
         let text = failed(&mut s, "(string-split (capture (pane 1)) \"\\n\")");
-        assert!(text.contains("`string` makes it text"), "{text}");
-        // A capture's option given what is no pane says where it goes.
-        for (code, shown) in [
-            (
-                "(last-output (capture (pane 1)))",
-                "fux %3 last-output capture",
-            ),
-            ("(rows (capture (pane 1)) 0 4)", "fux %3 0 4 rows capture"),
-        ] {
-            let option = failed(&mut s, code);
-            assert!(option.contains("(use: a capture option, PANE "), "{option}");
-            assert!(option.contains(&format!("; e.g. {shown})")), "{option}");
-        }
-        let split = failed(
-            &mut s,
-            "(sequence! (raise (error (quote! fail) \"two\\nlines\")) #inert)",
+        assert!(
+            text.starts_with("type-error:") && text.contains("string-split"),
+            "{text}"
         );
-        assert!(split.ends_with(r"two\nlines"), "{split}");
+        for source in [
+            "(last-output (capture (pane 1)))",
+            "(rows (capture (pane 1)) 0 4)",
+        ] {
+            let why = failed(&mut s, source);
+            assert!(
+                why.starts_with("type-error:") && why.contains("capture"),
+                "{why}"
+            );
+        }
+        let split = failed(&mut s, "(raise (error (quote! fail) \"two\\nlines\"))");
+        assert!(
+            split.starts_with("fail:") && split.contains(r"two\nlines"),
+            "{split}"
+        );
         let version = failed(&mut s, "(wait (changed \"1.2.3\"))");
-        assert!(version.contains("\"1.2.3\" is no version"), "{version}");
+        assert!(
+            version.starts_with("bad-value:") && version.contains("is no version"),
+            "{version}"
+        );
         Ok(())
     }
 
@@ -9073,9 +9147,9 @@ mod tests {
         assert_eq!(
             lines,
             concat!(
-                r#"{"event":"renamed","workspace":"+1","parent":null,"name":"x"}"#,
+                "((event \"renamed\") (workspace +1) (parent none) (name \"x\"))",
                 "\n",
-                r#"{"event":"renamed","workspace":"+1","parent":null,"name":"main"}"#,
+                "((event \"renamed\") (workspace +1) (parent none) (name \"main\"))",
                 "\n"
             )
         );
@@ -9088,13 +9162,13 @@ mod tests {
     fn typing_at_a_terminal_journals_no_input() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
         let typed = told(&mut s, |s| s.input(c, b"typed\x1b[200~pasted\x1b[201~"));
-        assert!(!typed.contains(r#""event":"input""#), "{typed}");
+        assert!(!typed.contains("(event \"input\")"), "{typed}");
         let mut ran = Ok(());
         let sent = told(&mut s, |s| {
             ran = run(s, "(send-keys (text (pane 1) \"sent\"))")
         });
         ran?;
-        assert!(sent.contains(r#""event":"input""#), "{sent}");
+        assert!(sent.contains("(event \"input\")"), "{sent}");
         Ok(())
     }
 
@@ -9115,10 +9189,10 @@ mod tests {
             let revision = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
             let revision = revision.ok_or("a revision")?;
             let laid_out = format!(
-                r#"{{"event":"laid_out","tab":"@1","workspace":"+1","layout_revision":"{revision}"}}"#
+                "((event \"laid-out\") (tab @1) (workspace +1) (layout-revision \"{revision}\"))"
             );
             let laid: Vec<&str> = (lines.lines())
-                .filter(|l| l.contains(r#""event":"laid_out","tab":"@1""#))
+                .filter(|l| l.contains("(event \"laid-out\") (tab @1)"))
                 .collect();
             assert_eq!(laid, [laid_out.as_str()], "{what}");
             Ok(())
@@ -9160,7 +9234,7 @@ mod tests {
             Ok(())
         })?;
         laid_out(&mut s, "its host shows another tab", |s| {
-            run(s, &format!("str {second} client str @2 tab show"))
+            run(s, &format!("(show (client \"{second}\") (tab 2))"))
         })?;
         let now = s.tab(TabId::of(1)).and_then(|t| t.revision(s.run));
         assert_eq!(now, revision, "laid out otherwise, not anew");
@@ -9186,11 +9260,11 @@ mod tests {
         });
         ran?;
         let closed: Vec<&str> = (lines.lines())
-            .filter(|l| l.contains(r#""event":"closed""#))
+            .filter(|l| l.contains("(event \"closed\")"))
             .collect();
         assert_eq!(closed.len(), 6, "{lines}");
         assert!(
-            closed.iter().all(|l| l.ends_with(r#""why":"killed"}"#)),
+            closed.iter().all(|l| l.ends_with("(why \"killed\"))")),
             "{lines}"
         );
         run(
@@ -9205,9 +9279,9 @@ mod tests {
         assert_eq!(
             lines,
             [
-                r#"{"event":"closed","pane":"%4","tab":"@4","workspace":"+4","why":"killed"}"#,
-                r#"{"event":"closed","tab":"@4","workspace":"+4","why":"killed"}"#,
-                r#"{"event":"closed","workspace":"+4","parent":null,"why":"emptied"}"#,
+                "((event \"closed\") (pane %4) (tab @4) (workspace +4) (why \"killed\"))",
+                "((event \"closed\") (tab @4) (workspace +4) (why \"killed\"))",
+                "((event \"closed\") (workspace +4) (parent none) (why \"emptied\"))",
                 "",
             ]
             .join("\n")
@@ -9287,9 +9361,9 @@ mod tests {
         assert_eq!(
             lines,
             concat!(
-                r#"{"event":"created","tab":"@2","workspace":"+1","name":"t"}"#,
+                "((event \"created\") (tab @2) (workspace +1) (name \"t\"))",
                 "\n",
-                r#"{"event":"created","pane":"%2","tab":"@2","workspace":"+1","role":"shell"}"#,
+                "((event \"created\") (pane %2) (tab @2) (workspace +1) (role \"shell\"))",
                 "\n"
             )
         );
@@ -9311,11 +9385,11 @@ mod tests {
         });
         ran?;
         let said = concat!(
-            r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
+            "((event \"bell\") (pane %2) (tab @1) (workspace +1))",
             "\n",
-            r#"{"event":"renamed","tab":"@1","workspace":"+1","name":"t"}"#,
+            "((event \"renamed\") (tab @1) (workspace +1) (name \"t\"))",
             "\n",
-            r#"{"event":"title","pane":"%1","tab":"@1","workspace":"+1","title":"title"}"#,
+            "((event \"title\") (pane %1) (tab @1) (workspace +1) (title \"title\"))",
             "\n"
         );
         assert_eq!(lines, said);
@@ -9325,8 +9399,8 @@ mod tests {
     #[test]
     fn final_output_precedes_exit_close_and_sibling_resize() -> TestResult {
         for (ended, status, output) in [
-            (Ended::Signalled(9), "\"signal\":9", false),
-            (Ended::Exited(0), "\"exited\":0", true),
+            (Ended::Signalled(9), "(signal 9)", false),
+            (Ended::Exited(0), "(exited 0)", true),
         ] {
             let mut s = started()?;
             run(
@@ -9341,9 +9415,9 @@ mod tests {
             });
             let prefix = if output {
                 concat!(
-                    r#"{"event":"bell","pane":"%2","tab":"@1","workspace":"+1"}"#,
+                    "((event \"bell\") (pane %2) (tab @1) (workspace +1))",
                     "\n",
-                    r#"{"event":"title","pane":"%2","tab":"@1","workspace":"+1","title":"bye"}"#,
+                    "((event \"title\") (pane %2) (tab @1) (workspace +1) (title \"bye\"))",
                     "\n"
                 )
             } else {
@@ -9352,13 +9426,13 @@ mod tests {
             assert_eq!(
                 lines,
                 format!(
-                    "{prefix}{{\"event\":\"exited\",\"pane\":\"%2\",\"tab\":\"@1\",\"workspace\":\"+1\",{status}}}\n{}\n{}\n{}\n",
-                    r#"{"event":"closed","pane":"%2","tab":"@1","workspace":"+1","why":"exited"}"#,
+                    "{prefix}((event \"exited\") (pane %2) (tab @1) (workspace +1) {status})\n{}\n{}\n{}\n",
+                    "((event \"closed\") (pane %2) (tab @1) (workspace +1) (why \"exited\"))",
                     format_args!(
-                        r#"{{"event":"laid_out","tab":"@1","workspace":"+1","layout_revision":"@1:2:{}"}}"#,
+                        "((event \"laid-out\") (tab @1) (workspace +1) (layout-revision \"@1:2:{}\"))",
                         s.run
                     ),
-                    r#"{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","cols":80,"rows":24}"#
+                    "((event \"resized\") (pane %1) (tab @1) (workspace +1) (columns 80) (rows 24))"
                 )
             );
         }
@@ -9373,9 +9447,9 @@ mod tests {
         run(
             &mut source,
             &format!(
-                "opts str new-workspace in 150 40 size str {} cwd str /bin/cat program str '' arg str {} arg new-tab drop",
-                fux_wire::words::quote(&directory),
-                fux_wire::words::quote(value)
+                "(new-tab (argument (argument (program (directory (size (in (options) \"new-workspace\") 150 40) {}) \"/bin/cat\") \"\") {}))",
+                fux::script::quoted(&directory),
+                fux::script::quoted(value)
             ),
         )?;
         run(
@@ -9571,10 +9645,10 @@ mod tests {
         s.execute(&program, &Origin::Cli(Caller::default()), Instant::now())?;
         let dump = s.dump_recipe(None)?;
         let _ = dir.parent().map(std::fs::remove_dir_all);
-        let told = dump.contains("# %2: directory bytes (hex) ") && dump.contains("636166e9");
+        let told = dump.contains("; %2: directory bytes (hex) ") && dump.contains("636166e9");
         let written = dump
             .lines()
-            .any(|l| !l.starts_with('#') && l.contains("caf"));
+            .any(|l| !l.starts_with(';') && l.contains("caf"));
         assert!(told && !written, "{dump}");
         let mut again = started()?;
         run(&mut again, &dump)?;
@@ -9656,7 +9730,7 @@ mod tests {
         run(
             &mut s,
             &format!(
-                "(sequence! (show (client \"c1\") (tab \"@2\")) {})",
+                "(sequence! {} (show (client \"c1\") (tab \"@2\")))",
                 crate::test_reference(&format!("{tab}"))
             ),
         )?;
@@ -9720,8 +9794,8 @@ mod tests {
                 "(sequence! (split (shares (axis (pane 2) \"horizontal\") 80 18)) #inert)",
             );
         });
-        assert!(lines.contains(r#""created","pane":"%3""#), "{lines}");
-        assert!(!lines.contains(r#""resized","pane":"%3""#), "{lines}");
+        assert!(lines.contains("(event \"created\") (pane %3)"), "{lines}");
+        assert!(!lines.contains("(event \"resized\") (pane %3)"), "{lines}");
         let size = s.parts.panes().get(&PaneId::of(3)).map(Pane::size);
         assert_eq!(size, Some(sized(10, 18)?));
         Ok(())
@@ -9742,8 +9816,8 @@ mod tests {
             );
         });
         assert!(
-            lines.contains(r#""created","pane":"%2""#)
-                && !lines.contains(r#""resized","pane":"%2""#),
+            lines.contains("(event \"created\") (pane %2)")
+                && !lines.contains("(event \"resized\") (pane %2)"),
             "{lines}"
         );
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
@@ -9755,8 +9829,8 @@ mod tests {
             );
         });
         assert!(
-            lines.contains(r#""created","pane":"%3""#)
-                && !lines.contains(r#""resized","pane":"%3""#),
+            lines.contains("(event \"created\") (pane %3)")
+                && !lines.contains("(event \"resized\") (pane %3)"),
             "{lines}"
         );
         assert_eq!(size(&s, 3), Some(sized(5, 30)?));
@@ -9833,12 +9907,12 @@ mod tests {
         )?;
         for (pane, to) in [("%1", "new-tab"), ("%2", "new-workspace")] {
             let lines = told(&mut s, |s| {
-                let moved = output_as(s, Some(tiny), &format!("{pane} str {to} move"));
+                let moved = output_as(s, Some(tiny), &format!("(move (pane \"{pane}\") \"{to}\")"));
                 assert!(moved.is_ok(), "{moved:?}");
             });
             assert!(
                 lines.contains(r#""created""#)
-                    && lines.contains(&format!(r#""moved","pane":"{pane}""#)),
+                    && lines.contains(&format!("(event \"moved\") (pane {pane})")),
                 "{lines}"
             );
         }
@@ -9883,7 +9957,7 @@ mod tests {
         run(
             &mut s,
             &format!(
-                "(sequence! (split (shares (axis (pane 2) \"horizontal\") 4294967294 1)) {})",
+                "(sequence! {} (split (shares (axis (pane 2) \"horizontal\") 4294967294 1)))",
                 crate::test_reference(&format!("{made}"))
             ),
         )?;
@@ -10234,13 +10308,10 @@ mod journal_tests {
         let events: Vec<_> = streamed.lines().collect();
         assert!(
             matches!(&events[..], [renamed, .., closed]
-                if renamed.contains(r#""event":"renamed""#) && closed.contains(r#""event":"closed""#)),
+                if renamed.contains("(event \"renamed\")") && closed.contains("(event \"closed\")")),
             "{streamed}"
         );
-        assert!(
-            events.iter().all(|e| e.contains(r#""next":""#)),
-            "{streamed}"
-        );
+        assert!(events.iter().all(|e| e.contains("(next \"")), "{streamed}");
         // Real records retain the server run in their handles.
         let kind = output(
             &mut s,
@@ -10256,10 +10327,11 @@ mod journal_tests {
         for _ in 0..kept.get().saturating_add(1) {
             s.output(PaneId::of(1), b"\x07", Instant::now());
         }
-        let job = format!("%1 dup kill str {from} events").into();
+        let job =
+            format!("(define! target (pane 1)) (kill target) (events target \"{from}\")").into();
         let (printed, failed) = run_as(&mut s, None, &job);
         assert!(printed.is_empty(), "loss prints nothing");
-        assert!(failed.is_err_and(|e| e.message.contains("journal entries missed; resnapshot")));
+        assert!(failed.is_err_and(|e| e.kind.as_deref() == Some("journal-loss")));
         Ok(())
     }
     #[test]

@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(sent(&mut s, c), [CELL_QUERY.to_vec()]);
         assert!(cell(&mut s)?.contains("((height 20) (width 10))"));
         s.input(c, b"\x1b[6;24;12t");
-        assert!(cell(&mut s)?.contains(r#""cell":{"width":12,"height":24}"#));
+        assert!(cell(&mut s)?.contains("((height 24) (width 12))"));
         Ok(())
     }
 
@@ -773,7 +773,7 @@ mod tests {
         s.detach_client(c);
         assert!(cell(&mut s)?.contains(&told(12, 24)));
         s.detach_client(d);
-        assert!(cell(&mut s)?.contains(r#""cell":null"#));
+        assert!(cell(&mut s)?.contains("none"));
         Ok(())
     }
 

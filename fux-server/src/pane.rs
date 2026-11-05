@@ -2549,14 +2549,14 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let output: &[u8] =
             b"\x1b]133;C\x07\x07x\x1b]133;D;1\x07\x1b]133;C\x07\x1b]2;t\x07\x1b]133;C\x07";
-        let at = r#""pane":"%1","tab":"@1","workspace":"+1""#;
-        let started = format!(r#"{{"event":"command_started",{at}}}"#);
+        let at = "(pane %1) (tab @1) (workspace +1)";
+        let started = format!("((event \"command-started\") {at})");
         let lines = [
             started.clone(),
-            format!(r#"{{"event":"bell",{at}}}"#),
-            format!(r#"{{"event":"done",{at},"status":1}}"#),
+            format!("((event \"bell\") {at})"),
+            format!("((event \"done\") {at} (status 1))"),
             started,
-            format!(r#"{{"event":"title",{at},"title":"t"}}"#),
+            format!("((event \"title\") {at} (title \"t\"))"),
         ];
         let expected = lines.map(|line| line + "\n").concat();
         for split in 0..=output.len() {

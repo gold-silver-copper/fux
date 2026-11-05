@@ -758,7 +758,7 @@ mod tests {
             assert_eq!(mode(&s, c), "normal", "{key}: {}", notice(&s, c));
             if ["r", "x"].contains(&key) {
                 let said = notice(&s, c);
-                assert!(said.contains("not a boolean"), "{key}: {said}");
+                assert!(said.contains("not boolean"), "{key}: {said}");
             }
             assert_eq!(
                 output(
@@ -779,7 +779,8 @@ mod tests {
                     "(sequence! (define! value-158 (pane 1)) \"name\" (get value-158 \"name\"))"
                 )?,
                 "yes\n",
-                "{key:?}"
+                "{key:?}: {}",
+                notice(&s, c)
             );
         }
         Ok(())

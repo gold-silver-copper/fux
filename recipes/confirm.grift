@@ -1,6 +1,4 @@
-; Confirm an explicit code value, with its captured arguments if supplied.
-(define! call-confirm! (vau! (action arguments) caller
-  (apply (evaluate (second (evaluate action caller)) caller) (evaluate arguments caller))))
+; Confirm explicit code, retaining its captured data.
 (define! confirm (lambda! (client title action)
   (define! captured? (same? (kind action) "list"))
   (when! (and!? captured? (not? (same? (length action) 2)))
@@ -10,4 +8,4 @@
   (assert-kind captured "list" "captured arguments")
   (choose client title (list (list #true "Yes")) () (list 0)
     (list (list run captured) (code! (lambda! (run captured #ignore #ignore)
-      (call-confirm! run captured) #inert))))))
+      (apply (evaluate (second run) (current-context)) captured) #inert))))))
