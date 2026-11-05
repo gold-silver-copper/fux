@@ -102,6 +102,9 @@ pub fn write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     options.write(true).create(true).truncate(true);
     let mut file = fuxix::file::private_file(&mut options).open(&new)?;
     file.write_all(bytes)?;
+    // Closed first: on Windows a file open with no delete sharing (as
+    // private files are) can't be renamed.
+    drop(file);
     std::fs::rename(&new, path)
 }
 
