@@ -444,6 +444,8 @@ mod windows {
         shell.read_until(deadline, |out| contains(out, b">"))?;
         let exe = std::env::current_exe().map_err(text)?;
         shell.write(format!("start /b \"\" \"{}\"\r", exe.display()).as_bytes())?;
+        // Its child is started, so no kill lands in the middle of that.
+        shell.read_until(deadline, |out| contains(out, b"ready"))?;
         let on_console = loop {
             let attached = shell.job.attached();
             let members = shell.job.members();

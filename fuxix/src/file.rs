@@ -41,8 +41,8 @@ pub fn private_file(options: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOpt
 
 /// Makes the directory `path`, only its user's: on Unix mode 0700 (the
 /// umask not asked); on Windows with a protected descriptor letting only
-/// this process's user in, which what is made in it inherits. One there
-/// already fails, as `create_dir` does.
+/// this process's default owner in, which what is made in it inherits. One
+/// there already fails, as `create_dir` does.
 pub fn private_dir(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {

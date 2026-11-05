@@ -110,7 +110,7 @@ pub fn socket_path(socket: Option<&Path>) -> Result<SocketPath, Error> {
             let value = value.into_string().map_err(|_| not_utf8("FUX_SOCKET"))?;
             checked(&value, "FUX_SOCKET")
         }
-        None => in_directory(&default_name()?),
+        None => in_directory("server.sock"),
     }
 }
 
@@ -159,7 +159,7 @@ pub(crate) fn base_directory(base: &'static str, value: &str) -> Result<PathBuf,
             "{base} is {value:?}, not an absolute path; fix it or set FUX_SOCKET"
         )));
     }
-    Ok(Path::new(value).join("fux"))
+    Ok(Path::new(value).join(folder()?))
 }
 
 pub fn checked(value: impl AsRef<Path>, from: &'static str) -> Result<SocketPath, Error> {

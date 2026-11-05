@@ -49,7 +49,6 @@ macro_rules! signals {
                 }
             }
 
-            /// Its name without `SIG`: `TERM`.
             /// Its number as Linux has it: what a record says of it on
             /// Windows, which has no signal numbers.
             #[cfg(windows)]
@@ -59,6 +58,7 @@ macro_rules! signals {
                 }
             }
 
+            /// Its name without `SIG`: `TERM`.
             pub fn name(self) -> &'static str {
                 match self {
                     $(Signal::$variant => $name,)*

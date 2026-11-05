@@ -164,8 +164,16 @@ programs built on the libraries (below) are the acceptance test for the whole po
   (`socket::pipe_name`); no file is at the path. Beside it: `.starting` and `.lock` (opened with no
   delete sharing), `.server` (the server's pid and creation time, D-138), and `PATH.panes\`, where
   each pane has an empty marker file `N` naming its pipe. The default socket is
-  `%LOCALAPPDATA%\fux\server.sock`, `server-elevated.sock` for an elevated process (D-137). The
-  pinned ConPTY is `%LOCALAPPDATA%\fux\conpty`.
+  `%LOCALAPPDATA%\fux\server.sock`, and `%LOCALAPPDATA%\fux-elevated\server.sock` for an elevated
+  process (D-137): one shared folder can't work, as each mode needs the folder owned by its own
+  default owner, which for a split-token administrator are the user and the Administrators group. The
+  pinned ConPTY is `conpty` in the same folder.
+- **Private folders:** `fuxix::file::private_dir` grants only the token's default owner, so an
+  elevated folder is closed to the same user's normal processes. `fuxix::file::is_private_dir` is
+  Unix's 0700 check: real (no reparse point), owned by the default owner, and no allowing entry but
+  that owner's, SYSTEM's and Administrators' (who can't be kept out) and an inherit-only
+  `CREATOR OWNER`. The socket's folder and `PATH.panes\` pass it before a record or `exe` there is
+  read or run; fux's own folder passes it before a ConPTY is loaded from it.
 - **A client's checks are PR 8's:** `check_client_socket`, `listened` and `owned` exist only on
   Unix. On Windows `fuxix::socket::connect` already refuses a pipe of another user or owner; a
   client must not read `Errno::AGAIN` (every instance busy) as "a server runs": a squatter with
@@ -188,8 +196,16 @@ programs built on the libraries (below) are the acceptance test for the whole po
   handle leaves that program unreaped by the server (it gets the console's close event).
 - **Signals:** `process::delivery(signal, shell)` is the D-136 table (Unix: always `Group`), used in
   `host.rs`. "Killed" is not on the wire: an end by fux's kill is `Exited(KILLED)`.
-- **Reads stay armed:** a poll for `Events::HUP` alone keeps a read in flight on Windows (a buffer's
-  worth at most) and is asking for nothing on Unix; the server and `__conn` poll held links so.
+- **Reads stay armed:** the server's held links and `__conn`'s unread clients are polled for
+  `Events::WATCH`: on Unix nothing (exactly as before; `HUP` would not do, as macOS's `poll` watches a
+  descriptor asked for it and not one asked for nothing), on Windows `HUP | ERR`, which keeps a read
+  in flight and sets what it reads aside (`AHEAD`, 256 KiB at most), so the peer's end is told past
+  bytes not yet taken. `__conn` then reads its client to the end and sends `Shut`. A peer that filled
+  the bound and its pipe before it ended is seen only once it is read. On Windows `Events::NONE` tells
+  nothing at all, so a loop done with a stream doesn't spin on its end.
+- **The end rule:** after `Chld` a pane keeps polling its master (`fuxix::pty::SETTLE`, 100 ms; none
+  on Unix) until the pipe breaks; with the built-in ConPTY, which doesn't break it, the time running
+  out ends the drain and dropping the master closes the console.
 - **Not done here:** console close/logoff handlers that wait for the loop (a detached server has no
   console; a hand-typed one stops as a crash would, and is taken back); the suspended start above.
 
@@ -238,8 +254,8 @@ programs built on the libraries (below) are the acceptance test for the whole po
   `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of exactly the handed instance (portable-pty's
   `src/win/procthreadattr.rs`), so nothing else made inheritable meanwhile leaks into the child.
 - A source polled with `Events::NONE` never arms a read, so a stream's `HUP` and `ERR` (learned only
-  from a read or write that ends) are never told for it. PR 7's server must poll every connection
-  for `IN` (or keep a write in flight) to learn that its client went.
+  from a read or write that ends) are never told for it. PR 7 polls what it doesn't read for
+  `Events::WATCH`.
 - A stream dropped with its read in flight cancels that read, but the read's 64 KiB buffer is freed
   only when some later poll takes the cancelled read's packet. A server that drops many streams and
   stops polling holds that memory until it polls again.

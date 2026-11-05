@@ -3,14 +3,17 @@
 //! started and linked.
 //!
 //! - The path is `FUX_SOCKET`, else `server.sock` in `%LOCALAPPDATA%\fux`,
-//!   `server-elevated.sock` for an elevated process, so an elevated and a
-//!   normal fux of one user keep apart their locks, records and pipes
-//!   (D-137). No file is at the path: it names the pipe
+//!   `%LOCALAPPDATA%\fux-elevated` for an elevated process, so an elevated
+//!   and a normal fux of one user keep apart their folders, locks, records
+//!   and pipes (D-137): each folder's owner is its own mode's default owner,
+//!   and an elevated one is closed to the user's normal processes. No file
+//!   is at the path: it names the pipe
 //!   (`\\.\pipe\fux-<path>-<SID>[-elevated]`, `fuxix::socket::name`), the
 //!   lock files beside it and the run's folder.
 //! - Its folder is made with a protected owner-only descriptor, which what
-//!   is made in it inherits; one there already must be a real folder owned
-//!   as this user's own objects are.
+//!   is made in it inherits; one there already, and a run's folder left
+//!   there, must be a real folder owned as this user's own objects are and
+//!   closed to everyone else, before anything in them is trusted or run.
 //! - `.starting` then `.lock` make one server its only owner: opened with
 //!   no delete sharing, so neither can be replaced while held, and held by
 //!   a live server alone (no child inherits them: every start hands only
@@ -28,18 +31,18 @@ use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The socket's name in fux's folder: its own for an elevated process.
-pub(super) fn default_name() -> Result<String, Error> {
+/// fux's folder's name: its own for an elevated process, whose default
+/// owner is not its normal processes' (D-137).
+pub fn folder() -> Result<&'static str, Error> {
     let user = fuxix::socket::User::current()
         .map_err(|e| Error::Refused(format!("this process's user can't be read: {e}")))?;
     Ok(match user.elevated() {
-        true => "server-elevated.sock",
-        false => "server.sock",
-    }
-    .to_owned())
+        true => "fux-elevated",
+        false => "fux",
+    })
 }
 
-/// Where fux's folder is: `%LOCALAPPDATA%\fux`.
+/// Where fux's folder is: in `%LOCALAPPDATA%`.
 pub(super) const BASES: [&str; 1] = ["LOCALAPPDATA"];
 
 /// Why there is no default socket when no base is set.
@@ -73,21 +76,39 @@ pub fn pipe_name(path: &Path) -> Result<String, Error> {
     fuxix::socket::name(&base).map_err(|e| failed("naming the pipe for ", path)(e))
 }
 
-/// The folder holding the socket's files must be a real one of ours.
-/// `create` makes it, owner-only, when it is missing.
+/// The folder holding the socket's files must be a real one, ours alone,
+/// and so must a run's folder left beside the socket, which a server takes
+/// a record and a program from. `create` makes the first, owner-only, when
+/// it is missing.
 pub fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
     let directory = socket.directory();
     if create {
-        match fuxix::file::private_dir(directory) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(failed("creating ", directory)(error)),
-        }
+        make_private(directory)?;
     }
-    match fuxix::file::private_dir_owned(directory) {
+    check_private(directory)?;
+    let panes = super::panes(socket.path());
+    match fs::symlink_metadata(&panes) {
+        Ok(_) => check_private(&panes),
+        Err(_) => Ok(()),
+    }
+}
+
+/// Makes the folder `directory`, owner-only, unless one is there.
+fn make_private(directory: &Path) -> Result<(), Error> {
+    match fuxix::file::private_dir(directory) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(failed("creating ", directory)(error)),
+    }
+}
+
+/// Refuses `directory` unless it is a real folder, ours alone.
+fn check_private(directory: &Path) -> Result<(), Error> {
+    match fuxix::file::is_private_dir(directory) {
         Ok(true) => Ok(()),
         Ok(false) => Err(Error::Refused(format!(
-            "{} must be a folder owned by you, not a link; fux does not change it",
+            "{} must be a folder owned by you that no one else can use, not a link; \
+             fux does not change it",
             directory.display()
         ))),
         Err(error) => Err(io(directory)(error)),
@@ -319,10 +340,16 @@ pub fn start_pane(exe: &Path, socket: &Path) -> Result<(Pid, Stream), String> {
     let started = fuxix::process::start(exe, &args, stdio)
         .map_err(|e| format!("starting its process, {}: {e}", exe.display()))?;
     drop(theirs);
-    listens(&said)?;
-    let stream = fuxix::socket::connect(&name)
-        .map_err(|e| format!("reaching its process at {}: {e}", socket.display()))?;
-    Ok((started.pid, stream))
+    let stream = listens(&said).and_then(|()| {
+        fuxix::socket::connect(&name)
+            .map_err(|e| format!("reaching its process at {}: {e}", socket.display()))
+    });
+    // One that can't be reached serves no one, and takes its marker along.
+    if stream.is_err() {
+        let _ = fuxix::process::kill(started.pid, fuxix::process::Signal::Kill);
+        let _ = fs::remove_file(socket);
+    }
+    Ok((started.pid, stream?))
 }
 
 /// Waits for a pane's process to say it listens, on `said`, its stdout.
@@ -434,11 +461,14 @@ pub fn taken_stdio() -> std::io::Result<(Stream, Stream)> {
     Ok((client, Stream::try_from(server)?))
 }
 
-/// Where the pinned ConPTY is kept: `conpty` in fux's folder.
+/// Where the pinned ConPTY is kept: `conpty` in fux's folder, which must
+/// be ours alone, as what is loaded from it runs as us.
 fn conpty() -> Result<PathBuf, String> {
-    Ok(super::directory()
-        .map_err(|e| e.to_string())?
-        .join("conpty"))
+    let folder = super::directory().map_err(|e| e.to_string())?;
+    make_private(&folder)
+        .and_then(|()| check_private(&folder))
+        .map_err(|e| e.to_string())?;
+    Ok(folder.join("conpty"))
 }
 
 /// Gets the pinned ConPTY ready before the server serves (D-130): fetched

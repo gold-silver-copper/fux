@@ -92,6 +92,16 @@ struct Served {
 /// test downloads it.
 const PACKAGE: &str = "microsoft.windows.console.conpty.1.25.260930003.nupkg";
 
+/// fux's own folder in `home`, made private, as a server wants it: what
+/// cargo's temporary folder passes on need not be.
+fn state(home: &Path) -> Result<PathBuf, String> {
+    let dir = home.join(fux_server::socket::folder().map_err(text)?);
+    match fuxix::file::private_dir(&dir) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => Err(text(error)),
+        Ok(()) | Err(_) => Ok(dir),
+    }
+}
+
 /// `fux __serve` on `socket`, its fux folder (`LOCALAPPDATA`) the test's
 /// own `home`, which holds CI's ConPTY package if there is one.
 fn serve(socket: &Path, log: &Path) -> Result<Served, String> {
@@ -99,7 +109,7 @@ fn serve(socket: &Path, log: &Path) -> Result<Served, String> {
         .parent()
         .and_then(Path::parent)
         .ok_or("the socket's folder")?;
-    let conpty = home.join("fux").join("conpty");
+    let conpty = state(home)?.join("conpty");
     if let Some(package) = std::env::var_os("FUXIX_CONPTY_PACKAGE")
         && !conpty.exists()
     {
@@ -375,12 +385,12 @@ fn a_new_server_takes_the_run_back_and_drives_its_live_panes() -> Outcome {
     shows(&socket, beat, Duration::from_secs(20), |s| {
         s.contains("beat 2")
     })?;
+    let seen = beats(&screen(&socket, beat)?);
     first.child.kill().map_err(text)?;
     first.child.wait().map_err(text)?;
     say(&format!("killed server {}", first.child.id()));
     let second = serve(&socket, &dir.join("second.log"))?;
     let taken = (|| -> Outcome {
-        let seen = beats(&screen(&socket, beat)?);
         shows(&socket, beat, Duration::from_secs(20), |s| beats(s) > seen)?;
         say(&format!("the program kept running: beat {seen} and on"));
         typed(&socket, shell, "echo after-takeover\r")?;
@@ -403,7 +413,10 @@ fn a_new_server_takes_the_run_back_and_drives_its_live_panes() -> Outcome {
         closed(&socket, beat)?;
         // The last pane closed, the server may end: it may not answer.
         let _ = ask(&socket, Request::Do(kill(shell)), ASK);
-        closed(&socket, shell)?;
+        closed(&socket, shell).or_else(|why| gone(&socket).map_err(|_| why))?;
+        if second.log().contains("panicked") {
+            return Err("the server panicked as its panes closed".to_owned());
+        }
         say("closed both panes");
         Ok(())
     })();
@@ -452,8 +465,18 @@ fn signals_reach_what_d136_says() -> Outcome {
         // KILL: what the shell started on its console ends; the shell
         // lives. Then nothing is left beside it.
         typed(&socket, shell, "start /b ping -n 60 127.0.0.1 >nul\r")?;
-        std::thread::sleep(Duration::from_secs(1));
-        assert_eq!(signal(&socket, shell, Signal::Kill)?, None);
+        // Sent once it finds the job, which starts a moment later.
+        let deadline = after(long)?;
+        loop {
+            let sent = signal(&socket, shell, Signal::Kill)?;
+            match sent.as_ref().map(|(code, _)| code.as_str()) {
+                None => break,
+                Some("only_shell") if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                _ => return Err(format!("KILL with a job running: {sent:?}")),
+            }
+        }
         // A process killed leaves the console's list a moment later.
         let deadline = after(long)?;
         loop {
@@ -560,17 +583,20 @@ fn journaled(
     }
 }
 
-/// Waits till pane `pane` is gone: a capture of it is refused, or no
-/// server is left to ask.
+/// Waits till pane `pane` is gone: its server refuses a capture of it. Any
+/// other failure, a server gone among them, is told.
 fn closed(socket: &Path, pane: PaneId) -> Outcome {
     let deadline = after(Duration::from_secs(20))?;
-    while screen(socket, pane).is_ok() {
-        if Instant::now() > deadline {
-            return Err(format!("{pane} still shows 20 s after it was closed"));
+    loop {
+        match screen(socket, pane) {
+            Err(why) if why.starts_with("capture answered Failed") => return Ok(()),
+            Err(why) => return Err(format!("{pane} as it closed: {why}")),
+            Ok(_) if Instant::now() > deadline => {
+                return Err(format!("{pane} still shows 20 s after it was closed"));
+            }
+            Ok(_) => std::thread::sleep(Duration::from_millis(100)),
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
 }
 
 /// A pane's own process killed outright (a crash): the server, holding a
@@ -639,33 +665,26 @@ fn the_builtin_conpty_runs_a_program_to_its_end() -> Outcome {
     let _turn = turn();
     let dir = scratch("builtin")?;
     let socket = dir.join("fux").join("s.sock");
-    std::fs::create_dir_all(dir.join("fux")).map_err(text)?;
     // A file where the ConPTY's folder would be: nothing is fetched.
-    std::fs::write(dir.join("fux").join("conpty"), b"").map_err(text)?;
+    std::fs::write(state(&dir)?.join("conpty"), b"").map_err(text)?;
     let served = serve(&socket, &dir.join("server.log"))?;
     let checked = (|| -> Outcome {
-        let said = served.log();
-        let notices = said.matches("built-in ConPTY").count();
-        if notices != 1 {
-            return Err(format!("the built-in said {notices} times:\n{said}"));
-        }
+        let from = cursor(&socket)?;
         let echo = Start::Program(program(&[CMD, "/q", "/c", "echo built-in-ran & exit 3"])?);
         let echo = new_tab(&socket, echo)?;
         shows(&socket, echo, Duration::from_secs(20), |s| {
             s.contains("built-in-ran")
         })?;
-        let deadline = after(Duration::from_secs(20))?;
-        let ended = loop {
-            match signal(&socket, echo, Signal::Int)? {
-                Some((_, message)) if message.contains("exited") => break message,
-                _ if Instant::now() > deadline => return Err("its end was never told".to_owned()),
-                _ => std::thread::sleep(Duration::from_millis(100)),
-            }
-        };
-        if !ended.contains("exited 3") {
-            return Err(format!("its end: {ended}"));
+        journaled(&socket, from, Duration::from_secs(20), |now| {
+            now.contains(r#""exited":3"#)
+        })?;
+        // Counted with a pane made: a pane's process says nothing again.
+        let said = served.log();
+        let notices = said.matches("built-in ConPTY").count();
+        if notices != 1 {
+            return Err(format!("the built-in said {notices} times:\n{said}"));
         }
-        say(&format!("the built-in ran it to its end: {ended}"));
+        say("the built-in ran it to its end: exited 3");
         Ok(())
     })();
     let log = served.log();
@@ -706,6 +725,129 @@ fn a_live_server_and_a_held_pipe_are_refused() -> Outcome {
     }
     say("a pipe another process holds was refused");
     Ok(())
+}
+
+/// A folder others can use is refused before anything in it is trusted:
+/// the socket's, and a run's left in a private one.
+#[test]
+fn a_folder_others_can_use_is_refused() -> Outcome {
+    let _turn = turn();
+    let dir = scratch("open")?;
+    let everyone = |folder: &Path| -> Outcome {
+        let granted = Std::new("icacls")
+            .arg(folder)
+            .args(["/grant", "*S-1-1-0:(OI)(CI)F"])
+            .stdout(Stdio::null())
+            .status()
+            .map_err(text)?;
+        granted.success().then_some(()).ok_or("icacls".to_owned())
+    };
+    let open = dir.join("open");
+    std::fs::create_dir(&open).map_err(text)?;
+    everyone(&open)?;
+    let refused = serve(&open.join("s.sock"), &dir.join("open.log")).err();
+    let refused = refused.ok_or("a server used a folder open to all")?;
+    if !refused.contains("no one else can use") {
+        return Err(format!("the open folder: {refused}"));
+    }
+    let private = dir.join("private");
+    fuxix::file::private_dir(&private).map_err(text)?;
+    let panes = private.join("s.sock.panes");
+    std::fs::create_dir(&panes).map_err(text)?;
+    everyone(&panes)?;
+    let refused = serve(&private.join("s.sock"), &dir.join("panes.log")).err();
+    let refused = refused.ok_or("a server used a run's folder open to all")?;
+    if !refused.contains("no one else can use") {
+        return Err(format!("the open run's folder: {refused}"));
+    }
+    say("folders open to all were refused");
+    Ok(())
+}
+
+/// A client that goes while its question waits ends its connection's
+/// process, which watches it, though it isn't read: told to its server,
+/// which lets it go.
+#[test]
+fn a_client_gone_while_it_waits_ends_its_connection() -> Outcome {
+    let _turn = turn();
+    let dir = scratch("gone")?;
+    let socket = dir.join("fux").join("s.sock");
+    let served = serve(&socket, &dir.join("server.log"))?;
+    let checked = (|| -> Outcome {
+        let from = cursor(&socket)?;
+        let stream = fux_server::socket::connect(&socket).map_err(text)?;
+        let mut out = Hello::ours(Role::Command).encode();
+        let request = Request::NextEvents {
+            scope: fux_wire::inspect::Scope::All,
+            from: Some(from),
+            timeout: fux_wire::command::Limit::from_secs(600),
+        };
+        let context = Context {
+            of: None,
+            cwd: std::env::current_dir().map_err(text)?,
+            pane: None,
+            server: None,
+            client: None,
+        };
+        out.extend(
+            Asked {
+                after: None,
+                request,
+                context,
+            }
+            .encode(),
+        );
+        let deadline = after(Duration::from_secs(20))?;
+        let mut sent = 0;
+        while sent < out.len() {
+            let mut fds = [PollFd::new(&stream, Events::OUT)];
+            let left = deadline.saturating_duration_since(Instant::now());
+            fuxix::poll::poll(&mut fds, Some(left)).map_err(text)?;
+            let rest = out.get(sent..).unwrap_or_default();
+            sent += fuxix::io::write_what_fits(&stream, rest).map_err(text)?;
+        }
+        connections(Duration::from_secs(20), |count| count == 1)?;
+        // Time for its question to reach its server; gone sooner, this
+        // tests less, and still passes.
+        std::thread::sleep(Duration::from_millis(500));
+        drop(stream);
+        connections(Duration::from_secs(20), |count| count == 0)?;
+        say("the connection's process ended with its client");
+        Ok(())
+    })();
+    let log = served.log();
+    let stopped = stop(&socket);
+    if checked.is_err() {
+        say(&format!("the server's log:\n{log}"));
+    }
+    checked?;
+    stopped
+}
+
+/// Waits till the count of connection processes running is one `wanted`
+/// accepts.
+fn connections(wait: Duration, wanted: impl Fn(usize) -> bool) -> Outcome {
+    const COUNT: &str = "@(Get-CimInstance Win32_Process | Where-Object { \
+        $_.Name -ne 'powershell.exe' -and $_.CommandLine -like '*__conn*' }).Count";
+    let deadline = after(wait)?;
+    loop {
+        let counted = Std::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", COUNT])
+            .output()
+            .map_err(text)?;
+        let said = String::from_utf8_lossy(&counted.stdout);
+        let count = said
+            .trim()
+            .parse()
+            .map_err(|_| format!("counted {said:?}"))?;
+        if wanted(count) {
+            return Ok(());
+        }
+        if Instant::now() > deadline {
+            return Err(format!("{count} connection processes after {wait:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// The directory a shell is in now, read from its process, as `split` and

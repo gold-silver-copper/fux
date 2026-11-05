@@ -244,7 +244,7 @@ jobs:
         run: |
           set -euo pipefail
           df -T "${TMPDIR:-$HOME}" 2>/dev/null || df "${TMPDIR:-$HOME}"
-          cargo test -p fux-server --locked --lib socket::tests::cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused -- --exact --nocapture
+          cargo test -p fux-server --locked --lib socket::endpoint::tests::cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused -- --exact --nocapture
 
       - name: Packaging
         # fux depends on the fux-vt beside it, so the two are packaged

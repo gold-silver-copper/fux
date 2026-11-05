@@ -19,9 +19,9 @@ use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt,
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-/// The socket's name in fux's directory.
-pub(super) fn default_name() -> Result<String, Error> {
-    Ok("server.sock".to_owned())
+/// fux's directory's name.
+pub fn folder() -> Result<&'static str, Error> {
+    Ok("fux")
 }
 
 /// Where fux's directory is, the first set: `XDG_RUNTIME_DIR`, else `TMPDIR`.
