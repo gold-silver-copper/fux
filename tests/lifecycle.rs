@@ -304,7 +304,7 @@ fn a_programs_copy_reaches_the_clients_clipboard() -> Outcome {
     client.wait_for("$")?;
     server.type_line("%1", "printf '\\033]52;c;aGk=\\007'; echo sent-copy")?;
     client.wait("the copy", |t| t.lines().any(|l| l == "sent-copy"))?;
-    let painted = String::from_utf8_lossy(&client.painted).into_owned();
-    assert!(painted.contains("\x1b]52;c;aGk=\x07"), "an OSC 52 write");
-    Ok(())
+    // The copy reaches the client on its own path, not with the screen it
+    // was printed beside: it is waited for, not looked for at once.
+    support::wait_painted(&mut client, "\x1b]52;c;aGk=\x07", 1)
 }
