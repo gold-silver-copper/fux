@@ -1143,9 +1143,9 @@ mod tests {
             let Some(Json::String(name)) = json.get("event") else {
                 return Err("event name".into());
             };
-            names.insert(name.clone());
+            names.insert(name.replace('_', "-"));
         }
-        let docs = include_str!("../../docs/json.md");
+        let docs = include_str!("../../docs/data.md");
         let table = |anchor: &str| -> Result<BTreeSet<String>, String> {
             let rows = docs
                 .split_once(anchor)

@@ -775,22 +775,27 @@ fn a_started_server_is_an_action() -> Outcome {
 #[test]
 fn a_batch_left_prints_its_events() -> Outcome {
     let server = Server::start("")?;
-    let idle = server.fux(&["(next-events (all) \"\" 0)"])?;
+    let idle = server.fux(&["(get (next-events (all) \"\" 0) \"events\")"])?;
     assert_eq!((idle.status, idle.stdout.as_str()), (0, ""));
-    let cursor = server.ok(&["(sequence! (define! value-807 (next-events (all) \"\" 0)) \"next\" (get value-807 \"next\"))"])?;
-    server.ok(&["(sequence! (rename (pane 1) \"told\") #inert)"])?;
-    let read = [&format!(
+    let cursor = server.ok(&["(get (next-events (all) \"\" 0) \"next\")"])?;
+    server.ok(&["(rename (pane 1) \"told\")"])?;
+    let read = format!(
         "(next-events (all) {} 0)",
         fux::script::quoted(cursor.trim())
-    )];
-    let events = server.ok(&read)?;
-    assert!(
-        matches!(&events.lines().collect::<Vec<_>>()[..], [one]
-            if one.starts_with(r#"{"event":"renamed""#) && one.contains(r#""next":""#)),
-        "{events}"
     );
-    let whole = server.ok(&[&read[..], &["json"]].concat())?;
-    assert!(whole.starts_with(r#"{"events":[{"#) && whole.contains(r#""missed":0"#));
+    let events = server.ok(&[&format!("(get {read} \"events\")")])?;
+    assert_eq!(events.lines().count(), 1);
+    assert_eq!(
+        read_data(&events, "(field data (quote! event))")?,
+        "renamed"
+    );
+    assert!(!read_data(&events, "(field data (quote! next))")?.is_empty());
+    let whole = server.ok(&[&read])?;
+    assert_eq!(
+        read_data(&whole, "(length (field data (quote! events)))")?,
+        "1"
+    );
+    assert_eq!(read_data(&whole, "(field data (quote! missed))")?, "0");
     Ok(())
 }
 
@@ -807,29 +812,39 @@ fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
             fux::script::quoted(name)
         )])?;
     }
-    let lost = ["all", "str", cursor.trim(), "0", "next-events"];
-    let keys = ["%1", "str", "x", "text", "send-keys", "str", "boom", "fail"];
-    let failed = server.fux(&[&lost[..], &keys].concat())?;
-    assert_eq!(failed.status, 1, "{}", failed.stderr);
-    assert_eq!(failed.stdout, "");
-    // The batch refused as it is printed, the action is told too.
-    let refused = server.fux(&[&lost[..], &keys[..5]].concat())?;
-    assert!(
-        refused.stderr.contains("entries missed")
-            && refused
-                .stderr
-                .contains("fux: already took effect: argument 10: send-keys"),
-        "{}",
-        refused.stderr
+    let prefix = format!(
+        "(define! batch (next-events (all) {} 0)) (define! result (send-keys (text (pane 1) \"x\")))",
+        fux::script::quoted(cursor.trim())
     );
-    let told: Vec<_> = failed.stderr.lines().collect();
+    // A grift error carries its context explicitly; there is no operand stack to dump.
+    let failed = server.fux(&[&format!(
+        "{prefix} (raise (error (quote! fail) \"boom\" (data-text batch) (string result)))"
+    )])?;
+    assert_eq!(failed.status, 1, "{}", failed.stderr);
+    assert!(failed.stdout.is_empty());
     assert!(
-        matches!(&told[..], [why, taken, batch, answer]
-            if why.starts_with("fux: fail: ")
-                && *taken == "fux: already took effect: argument 10: send-keys"
-                && batch.contains(r#""missed":2"#) && answer.starts_with("%1:")),
+        failed.stderr.starts_with("fux: fail: "),
         "{}",
         failed.stderr
+    );
+    assert!(
+        failed.stderr.contains("(missed 2)") && failed.stderr.contains("%1:"),
+        "{}",
+        failed.stderr
+    );
+    assert!(
+        failed.stderr.contains("already took effect: send-keys"),
+        "{}",
+        failed.stderr
+    );
+    let refused = server.fux(&[&format!("{prefix} (when! (greater-than? (get batch \"missed\") 0) (raise (error (quote! journal-loss) \"entries missed\" (data-text batch))))")])?;
+    assert_eq!(refused.status, 1, "{}", refused.stderr);
+    assert!(refused.stdout.is_empty());
+    assert!(
+        refused.stderr.contains("entries missed")
+            && refused.stderr.contains("already took effect: send-keys"),
+        "{}",
+        refused.stderr
     );
     Ok(())
 }

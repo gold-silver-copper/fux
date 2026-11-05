@@ -221,7 +221,13 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
         let mut out = Vec::with_capacity(count);
         // The producer puts the event name first; IDs remain typed throughout.
         for (key, value) in data.iter().take(1) {
-            out.push((key.to_owned(), b.json(value, 0)?));
+            out.push((
+                key.to_owned(),
+                match value {
+                    Json::String(name) => b.text(&name.replace('_', "-"))?,
+                    value => b.json(value, 0)?,
+                },
+            ));
         }
         for (key, value) in ids {
             if let Some(value) = value {

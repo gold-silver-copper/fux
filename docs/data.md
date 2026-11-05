@@ -31,3 +31,44 @@ The native transport is protocol 77; the command language and printed data use g
 Native error kinds:
 
 `cancelled`, `no-server`, `mismatch`, `client`, `no-pane`, `no-tab`, `no-workspace`, `no-client`, `no-target`, `stray-pane`, `no-field`, `nothing-there`, `name-taken`, `bad-value`, `usage`, `not-running`, `still-running`, `not-run`, `only-shell`, `stale`, `no-marks`, `start`, `size`, `mouse`, `signal`, `indeterminate`, `not-headless`, `own-server`, `people-attached`, `timeout`, `closed`, `not-here`, `not-config`, `config`, `bad-binding`, `read`, `unset-variable`, `output`, `nested`, `not-a-key`, `type-error`, `range-error`, `arity-error`, `too-long`, `unused`, `unbound-symbol`, `bad-name`, `out-of-memory`, `ids-exhausted`, `fail`, `read-error`, `contract-error`, `parse-error`.
+
+The journal keeps its last `journal-entries` entries (16,384 by default).
+
+The finite coverage schema is:
+
+| Event | Meaning |
+| --- | --- |
+| `attached` | A native observed event. |
+| `bell` | A native observed event. |
+| `closed` | A native observed event. |
+| `command-started` | A native observed event. |
+| `created` | A native observed event. |
+| `detached` | A native observed event. |
+| `done` | A native observed event. |
+| `exited` | A native observed event. |
+| `history-budget` | A native observed event. |
+| `history-cleared` | A native observed event. |
+| `hung-up` | A native observed event. |
+| `input` | A native observed event. |
+| `laid-out` | A native observed event. |
+| `moved` | A native observed event. |
+| `notification` | A native observed event. |
+| `read-failed` | A native observed event. |
+| `renamed` | A native observed event. |
+| `reordered` | A native observed event. |
+| `resized` | A native observed event. |
+| `respawned` | A native observed event. |
+| `screen` | A native observed event. |
+| `shown` | A native observed event. |
+| `signalled` | A native observed event. |
+| `stopped` | A native observed event. |
+| `title` | A native observed event. |
+| `view-resized` | A native observed event. |
+| `zoomed` | A native observed event. |
+
+| `status` | Meaning |
+| --- | --- |
+| `continuing` | More events can arrive. |
+| `timeout` | No event arrived within the interval. |
+| `gone` | The scope closed. |
+| `stopped` | The server stopped. |

@@ -25,7 +25,7 @@ events.events[][bell]: event pane tab workspace origin sequence next
 events.events[][closed]: event pane tab workspace why origin sequence next
 events.events[][closed]: event tab workspace why origin sequence next
 events.events[][closed]: event workspace parent why origin sequence next
-events.events[][command_started]: event pane tab workspace origin sequence next
+events.events[][command-started]: event pane tab workspace origin sequence next
 events.events[][created]: event pane tab workspace role origin sequence next
 events.events[][created]: event tab workspace name origin sequence next
 events.events[][created]: event workspace parent name origin sequence next
@@ -33,16 +33,16 @@ events.events[][detached]: event pane tab workspace client why origin sequence n
 events.events[][done]: event pane tab workspace status origin sequence next
 events.events[][exited]: event pane tab workspace exited input-unread origin sequence next
 events.events[][exited]: event pane tab workspace signal input-unread origin sequence next
-events.events[][history_budget]: event pane tab workspace history-bytes origin sequence next
-events.events[][history_cleared]: event pane tab workspace origin sequence next
-events.events[][hung_up]: event pane tab workspace origin sequence next
+events.events[][history-budget]: event pane tab workspace history-bytes origin sequence next
+events.events[][history-cleared]: event pane tab workspace origin sequence next
+events.events[][hung-up]: event pane tab workspace origin sequence next
 events.events[][input]: event pane tab workspace generation kind bytes expected origin sequence next
 events.events[][input]: event pane tab workspace generation kind bytes origin sequence next
-events.events[][laid_out]: event tab workspace layout-revision origin sequence next
+events.events[][laid-out]: event tab workspace layout-revision origin sequence next
 events.events[][moved]: event pane tab workspace from-tab from-workspace origin sequence next
 events.events[][moved]: event workspace parent origin sequence next
 events.events[][notification]: event pane tab workspace text truncated origin sequence next
-events.events[][read_failed]: event pane tab workspace read-error origin sequence next
+events.events[][read-failed]: event pane tab workspace read-error origin sequence next
 events.events[][renamed]: event pane tab workspace name origin sequence next
 events.events[][renamed]: event tab workspace name origin sequence next
 events.events[][renamed]: event workspace parent name origin sequence next
@@ -55,7 +55,7 @@ events.events[][shown]: event pane tab workspace client origin sequence next
 events.events[][signalled]: event pane tab workspace generation signal origin sequence next
 events.events[][stopped]: event reason origin sequence next
 events.events[][title]: event pane tab workspace title truncated origin sequence next
-events.events[][view_resized]: event pane tab workspace client columns rows origin sequence next
+events.events[][view-resized]: event pane tab workspace client columns rows origin sequence next
 events.events[][zoomed]: event pane tab workspace origin sequence next
 events.events[][zoomed]: event tab workspace pane origin sequence next
 events: events first next missed status reason

@@ -1445,7 +1445,8 @@ pub fn main(
     result
 }
 /// Public record names follow grift's spelling; native wire names stay private.
-fn field_name(name: &str) -> String {
+/// The grift field name corresponding to a native observation field.
+pub fn field_name(name: &str) -> String {
     if name == "alt_screen" {
         return "alternate-screen".into();
     }

@@ -7598,8 +7598,10 @@ mod tests {
         let (s, _) = attached(4, 30)?;
         let pane = *s.parts.panes().keys().next().ok_or("no pane")?;
         for (name, _) in s.observed(pane)?.fields() {
-            let named = include_str!("../../docs/json.md").contains(&format!("`{name}`"));
-            assert!(named, "docs/json.md does not name a pane's {name:?}");
+            let named = include_str!("../../docs/records.txt")
+                .split_whitespace()
+                .any(|field| field == fux::script::field_name(name));
+            assert!(named, "docs/records.txt does not name a pane's {name:?}");
         }
         Ok(())
     }

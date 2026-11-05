@@ -367,30 +367,16 @@ mod runner {
         #[test]
         fn a_resize_excuses_one_revision_of_an_ended_screen() -> Result<(), String> {
             let events = [
-                format!("{{event:created,workspace:+1,next:1:{R1}}}"),
+                format!(r#"{{"event":"created","workspace":"+1","next":"1:{R1}"}}"#),
+                format!(r#"{{"event":"created","tab":"@1","workspace":"+1","next":"2:{R1}"}}"#),
                 format!(
-                    "{}",
-                    support::reference(&format!(
-                        "{{event:created,tab:@1,workspace:+1,next:2:{R1}}}"
-                    ))
+                    r#"{{"event":"created","pane":"%1","tab":"@1","workspace":"+1","next":"3:{R1}"}}"#
                 ),
                 format!(
-                    "{}",
-                    support::reference(&format!(
-                        "{{event:created,pane:%1,tab:@1,workspace:+1,next:3:{R1}}}"
-                    ))
+                    r#"{{"event":"exited","pane":"%1","tab":"@1","workspace":"+1","exited":0,"next":"4:{R1}"}}"#
                 ),
                 format!(
-                    "{}",
-                    support::reference(&format!(
-                        "{{event:exited,pane:%1,tab:@1,workspace:+1,exited:0,next:4:{R1}}}"
-                    ))
-                ),
-                format!(
-                    "{}",
-                    support::reference(&format!(
-                        "{{event:resized,pane:%1,tab:@1,workspace:+1,next:5:{R1}}}"
-                    ))
+                    r#"{{"event":"resized","pane":"%1","tab":"@1","workspace":"+1","next":"5:{R1}"}}"#
                 ),
             ];
             let events: Vec<&str> = events.iter().map(String::as_str).collect();
