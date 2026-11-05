@@ -138,3 +138,61 @@ of that server's panes. Each script should clean up the targets and processes it
 A failure writes its kind, values and location to stderr and exits nonzero. Its report lists
 native actions that already took effect. `timeout` exits 124; a closed waited-on pane exits 4;
 a closed stdout pipe exits 141. Help is `(help)` or `(explain "split")`.
+
+## recipe-examples: Programs over a pane argument
+
+Save one block to a file and run `fux --file example.grift "$pane"`.
+The pane is a shell argument string, never source pasted into the program.
+
+### Quiet after a request
+
+```grift
+(define! p (pane (first (arguments))))
+(line p "go")
+(string (quiet p 1))
+```
+
+### Wait for a reply
+
+```grift
+(define! p (pane (first (arguments))))
+(line p "question")
+(shows p "the answer is 42" 5)
+(print "answered")
+```
+
+### Read a marked command
+
+```grift
+(define! p (pane (first (arguments))))
+(define! before (capture p))
+(line p "go")
+(define! ended (grows before "done" 1 5))
+(define! output (capture (last-output ended)))
+(print (get output "last-status"))
+(string output)
+```
+
+### Read an unmarked command
+
+```grift
+(define! p (pane (first (arguments))))
+(line p "true; printf '\\nEND-OF-RUN %s\\n' \"$?\"")
+(string (shows p "\nEND-OF-RUN 0\n" 5))
+```
+
+### Read a program exit
+
+```grift
+(define! p (pane (first (arguments))))
+(get (get (until-ended p 5) "program") "exited")
+```
+
+### Fall back after a deadline
+
+```grift
+(define! p (pane (first (arguments))))
+(catch-kind! (shows p "never-arrives" 1) timeout failure
+  (press p "C-c")
+  #inert)
+```
