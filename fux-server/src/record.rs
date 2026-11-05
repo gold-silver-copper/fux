@@ -95,17 +95,12 @@ pub fn read(path: &std::path::Path) -> Result<Option<Record>, String> {
 /// part. No `fsync`: a machine's crash ends the panes anyway.
 pub fn write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     let mut new = path.as_os_str().to_owned();
     new.push(".new");
     let new = std::path::PathBuf::from(new);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .custom_flags(fuxix::file::NOFOLLOW)
-        .open(&new)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    let mut file = fuxix::file::private_file(&mut options).open(&new)?;
     file.write_all(bytes)?;
     std::fs::rename(&new, path)
 }

@@ -101,6 +101,11 @@ pub fn drain(mut pipe: &PipeReader) {
     while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
 }
 
+/// Takes every signal a signal pipe holds.
+pub(crate) fn take_signals(pipe: &fuxix::signal::Pipe) {
+    while pipe.next().is_some() {}
+}
+
 /// How the tests feed a parser and read its screen, as fux-vt's own do.
 #[cfg(test)]
 #[path = "../../fux-vt/tests/corpus/feed.rs"]

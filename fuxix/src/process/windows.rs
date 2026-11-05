@@ -1,6 +1,6 @@
 //! Processes on Windows: their IDs, a child's end told as `Chld`, and a
 //! pseudo console's program in its job object ([`Job`]).
-use super::{Reach, Scan, Sent, Status, TREE_MAX, Tree};
+use super::{Identity, Offer, Reach, Scan, Sent, Status, TREE_MAX, Tree};
 use crate::errno::{Errno, Result};
 use std::fmt;
 use std::num::NonZeroU32;
@@ -28,6 +28,27 @@ impl Pid {
 
     pub fn as_raw(self) -> u32 {
         self.0.get()
+    }
+
+    /// `raw`, a pid as a `u32` holds one, as a process ID if it is one.
+    pub fn from_u32(raw: u32) -> Option<Pid> {
+        Pid::from_raw(raw)
+    }
+
+    /// It as a `u32`, Windows' own type for it.
+    pub fn as_u32(self) -> u32 {
+        self.0.get()
+    }
+
+    /// `raw`, a pid as fux's own messages carry one (an `i32`, the same
+    /// 32 bits).
+    pub fn from_i32(raw: i32) -> Option<Pid> {
+        Pid::from_raw(raw.cast_unsigned())
+    }
+
+    /// It as fux's own messages carry a pid: the same 32 bits as an `i32`.
+    pub fn as_i32(self) -> i32 {
+        self.0.get().cast_signed()
     }
 }
 
@@ -243,12 +264,14 @@ impl Job {
             },
             Reach::Attached => {
                 let attached = self.attached();
+                let found = attached.pids.len();
                 let failed = (attached.pids.into_iter())
                     .filter_map(|pid| Some((pid, self.terminate_member(pid).err()?)))
                     .collect();
                 return Sent {
                     scan: attached.scan,
                     failed,
+                    found,
                 };
             }
         };
@@ -259,6 +282,7 @@ impl Job {
                 .map(|errno| (self.leader, errno))
                 .into_iter()
                 .collect(),
+            found: 0,
         }
     }
 
@@ -421,15 +445,6 @@ unsafe extern "system" fn swallow(_: u32) -> windows_sys::core::BOOL {
     1
 }
 
-/// Who a process is: its pid, and when it was made, in 100 ns counts
-/// since 1601, as Windows tells it. A pid is reused once its process is
-/// gone and every handle to it closed; the two together are never.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Identity {
-    pub pid: Pid,
-    pub created: u64,
-}
-
 /// Who `process`, a handle with `PROCESS_QUERY_LIMITED_INFORMATION`, is.
 pub(crate) fn identity_of(process: &OwnedHandle) -> std::io::Result<Identity> {
     use windows_sys::Win32::Foundation::FILETIME;
@@ -459,12 +474,11 @@ impl Job {
     /// What this process offers another of its leader, to [`adopt`] a
     /// copy of its handle: who it is, and the handle's value here, which
     /// stays its own while this job lives.
-    pub fn offer(&self) -> std::io::Result<Offer> {
-        let handle =
-            u64::try_from(self.process.as_raw_handle().addr()).map_err(std::io::Error::other)?;
-        Ok(Offer {
-            program: identity_of(&self.process)?,
-            handle,
+    /// `None` only if its handle or identity can't be read.
+    pub fn offer(&self) -> Option<Offer> {
+        Some(Offer {
+            program: identity_of(&self.process).ok()?,
+            handle: u64::try_from(self.process.as_raw_handle().addr()).ok()?,
         })
     }
 }

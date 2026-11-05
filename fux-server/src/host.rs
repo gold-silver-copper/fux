@@ -19,7 +19,7 @@ use fux_wire::code::{Error, Raise, fail};
 use fux_wire::command::{self, Input, Mouse, Run, Version};
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId};
-use fuxix::process::Job;
+use fuxix::process::{Delivery, Job, Reach, Scan};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -104,6 +104,9 @@ pub struct Host {
     shown: bool,
     /// Its facts, title, counts and size as last sent its server.
     sent_facts: Option<Facts>,
+    /// The program whose handle its server was last offered a copy of
+    /// (`offer`, Windows, D-134).
+    offered: Option<fuxix::process::Identity>,
     /// Something happened since its server was last sent its facts.
     dirty: bool,
     /// Counts what happened to it, so that a connection watching its
@@ -195,6 +198,7 @@ impl Host {
             closed: None,
             shown: false,
             sent_facts: None,
+            offered: None,
             dirty: true,
             revision: 0,
             whole: 0,
@@ -400,7 +404,7 @@ impl Host {
         if let Some(mut child) = taken.or_else(|| self.leftover.take()) {
             if exiting.is_none() {
                 child.leader.closed();
-                child.leader.hang_up();
+                child.hang_up();
             }
             match exiting.is_none() || draining {
                 true => old = Some(child),
@@ -489,7 +493,7 @@ impl Host {
             if closed {
                 child.leader.closed();
             }
-            child.leader.hang_up();
+            child.hang_up();
             let deadline = crate::after(now, GRACE);
             self.dying.push(Dying { child, deadline });
         }
@@ -615,7 +619,7 @@ impl Host {
     /// the read at an exit's first word does not, as the pane's own read
     /// may have just emptied it.
     fn read_left(&mut self, empty_ends: bool, now: Instant) {
-        self.read_left_with(empty_ends, |fd, bytes| fuxix::io::read(fd, bytes), now);
+        self.read_left_with(empty_ends, read_master, now);
     }
 
     /// `read_left`, reading its terminal with `read`. A read that fails is
@@ -1144,6 +1148,61 @@ impl Host {
         if let Some(status) = pane.process().exit_status() {
             return Err(ended(target, status));
         }
+        let shell = !matches!(pane.runs, Runs::Explicit(_));
+        let version = self.version();
+        match fuxix::process::delivery(signal, shell) {
+            Delivery::Group => self.signal_group(signal)?,
+            // Written as keys after what was typed before them.
+            Delivery::Keys(keys) => {
+                (self.pane_mut()).push_with(|_, out| out.extend_from_slice(keys))
+            }
+            Delivery::Attached => {
+                let child = self.pane.process().child();
+                let sent = child.map(|child| child.leader.kill_as(Reach::Attached));
+                let sent = sent.ok_or_else(|| {
+                    fail(Raise::OnlyShell, format!("nothing is running in {target}"))
+                })?;
+                // A console that could not be read is no proof the shell
+                // is alone there.
+                if let Scan::Failed(errno) = sent.scan {
+                    let why = format!("{target}: its console's processes can't be listed: {errno}");
+                    return Err(fail(Raise::Signal, why));
+                }
+                let refused: Vec<String> = (sent.failed.iter())
+                    .filter(|(_, errno)| *errno != fuxix::Errno::SRCH)
+                    .map(|(pid, errno)| format!("{pid}: {errno}"))
+                    .collect();
+                if !refused.is_empty() {
+                    let why = format!("ending its processes: {}", refused.join(", "));
+                    return Err(fail(Raise::Signal, why));
+                }
+                if sent.scan == Scan::Complete && sent.found == 0 {
+                    let message = format!("nothing is running in {target} but its shell");
+                    return Err(fail(Raise::OnlyShell, message));
+                }
+            }
+            Delivery::Job => {
+                let child = self.pane.process().child();
+                let sent = child.map(|child| child.leader.kill_as(Reach::Session));
+                if let Some((_, errno)) = sent.and_then(|sent| sent.failed.into_iter().next()) {
+                    return Err(fail(Raise::Signal, format!("ending its job: {errno}")));
+                }
+            }
+            Delivery::Unsupported => {
+                let why = format!("SIG{} has no counterpart on this system", signal.name());
+                return Err(fail(Raise::Signal, why));
+            }
+        }
+        self.pane_mut().tell_signalled(signal);
+        Ok(Answered::Acted(version))
+    }
+
+    /// Sends `signal` to the foreground group of its terminal, as Unix does:
+    /// the shell's job, or the program it was started with; never the shell
+    /// of a pane that runs one.
+    fn signal_group(&mut self, signal: fuxix::process::Signal) -> Result<(), Error> {
+        let pane = &self.pane;
+        let target = pane.id();
         let program = match (&pane.runs, pane.process().child()) {
             (Runs::Explicit(_), Some(child)) => Some(child.leader.pid()),
             _ => None,
@@ -1157,11 +1216,8 @@ impl Host {
             let message = format!("nothing is running in {target} but its shell");
             fail(Raise::OnlyShell, message)
         })?;
-        let version = self.version();
         fuxix::process::kill_group(group, signal)
-            .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))?;
-        self.pane_mut().tell_signalled(signal);
-        Ok(Answered::Acted(version))
+            .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))
     }
 
     /// A capture of its screen, `history` rows before it, as `view` asks:
@@ -1248,7 +1304,21 @@ impl Host {
         self.awaiting.clear();
         self.held.clear();
         self.sent_facts = None;
+        self.offered = None;
         self.changed();
+    }
+
+    /// Its program's handle, for its server to copy (D-134), if it has a
+    /// program its server was not offered yet: Windows' alone, as a Unix
+    /// server adopts its panes' orphans instead.
+    pub fn offer(&mut self) -> Option<crate::link::Offered> {
+        let child = self.pane.process().child()?;
+        let offer = child.leader.offer()?;
+        if self.offered == Some(offer.program) {
+            return None;
+        }
+        self.offered = Some(offer.program);
+        Some(crate::link::Offered::from(offer))
     }
 
     /// What it says of itself as a server takes it back.
@@ -1347,7 +1417,7 @@ impl Host {
         if self.sent_facts.as_ref() == Some(&now) {
             return None;
         }
-        let pid = (pane.process().child()).map(|c| c.leader.pid().as_raw());
+        let pid = (pane.process().child()).map(|c| c.leader.pid().as_i32());
         let update = Update {
             counts: now.2,
             title: now.1.clone(),
@@ -1686,7 +1756,10 @@ struct Peer {
 /// what reaches its socket: a connection's process showing its screen, or,
 /// its server gone without closing it (a crash), a server of its run taking
 /// it back (D-124), one at a time.
-pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
+pub fn serve(
+    mut listener: crate::socket::PaneListener,
+    socket: Option<PathBuf>,
+) -> Result<(), String> {
     use crate::link::{End, FromSide, Read, ToSide};
     use fuxix::poll::{Events, PollFd};
     if let Err(errno) = fuxix::process::adopt_orphans() {
@@ -1694,15 +1767,7 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
     }
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| format!("the signal pipe: {e}"))?;
-    let socket = (listener.local_addr().ok())
-        .and_then(|address| address.as_pathname().map(std::path::Path::to_owned));
-    // Listened on again, by it: one that reaches it is told its pid, not
-    // the server's that made the socket (`SO_PEERCRED`).
-    fuxix::socket::listen(&listener, 16).map_err(|e| format!("its socket: {e}"))?;
-    let (stream, _) = listener.accept().map_err(|e| format!("its server: {e}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("its socket: {e}"))?;
+    let stream = crate::socket::pane_first(&mut listener)?;
     let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
     // A server gone before its first word started nothing: it ends, and
     // the next server finds it gone.
@@ -1725,6 +1790,9 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
     // Facts sent and not yet taken: its first, which its server waits for
     // as it starts it.
     let mut waiting = false;
+    if let Some(offer) = host.offer() {
+        end.send(&FromPane::Offer(offer));
+    }
     if let Some(first) = host.update() {
         end.send(&FromPane::Update(Box::new(first)));
         waiting = true;
@@ -1780,6 +1848,9 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             };
             for report in std::mem::take(&mut reports) {
                 end.send(&report);
+            }
+            if let Some(offer) = host.offer() {
+                end.send(&FromPane::Offer(offer));
             }
             if !waiting
                 && due
@@ -1884,11 +1955,11 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             host.reap(now);
         }
         if !reached.is_empty() {
-            while let Ok((stream, _)) = listener.accept() {
-                let ours = fuxix::socket::peer(&stream).is_ok_and(|peer| peer.user.is_current());
+            while let Ok(reached) = crate::socket::accept(&mut listener) {
+                let ours = crate::socket::peer(&reached).is_ok_and(|peer| peer.user.is_current());
                 if ours
                     && host.closed.is_none()
-                    && let Ok(end) = End::new(stream)
+                    && let Ok(end) = crate::socket::serve(reached).and_then(End::new)
                 {
                     peers.push(Peer { end, side: None });
                 }
@@ -1986,6 +2057,11 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             host.look_again();
         }
     }
+}
+
+/// Reads what `master`'s terminal holds into `bytes`.
+fn read_master(master: &fuxix::pty::Master, bytes: &mut [u8]) -> Result<usize, fuxix::Errno> {
+    fuxix::io::read(master, bytes)
 }
 
 /// Reads its program's terminal, `READ` at most, into its screen.

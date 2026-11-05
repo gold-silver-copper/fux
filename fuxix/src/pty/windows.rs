@@ -283,6 +283,18 @@ impl std::io::Write for Master {
     }
 }
 
+/// Hangs up what runs on `master`'s pseudo console: the console is closed
+/// ([`Master::hang_up`]), so each program on it gets the close event, as
+/// Unix's SIGHUP to `job`'s session.
+pub fn hang_up(master: &Master, job: &Job) -> crate::process::Sent {
+    let failed = master.hang_up().err().map(|errno| (job.leader(), errno));
+    crate::process::Sent {
+        scan: crate::process::Scan::Complete,
+        failed: failed.into_iter().collect(),
+        found: 0,
+    }
+}
+
 /// Opens a pseudo console of `size`: its master and its slave. Fails with
 /// an error naming `load` before [`super::load`] chose a ConPTY. Its flags
 /// are none: `PSEUDOCONSOLE_INHERIT_CURSOR` would stall the program

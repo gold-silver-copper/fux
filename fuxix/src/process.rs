@@ -163,7 +163,25 @@ pub enum Scan {
     Failed(Errno),
 }
 
-/// Which of a [`Job`]'s processes a signal or [`Job::kill`] reaches.
+/// Who a process is: its pid, and when it was made, in its own clock's counts
+/// (Windows: 100 ns counts since 1601). A pid is reused once its process is
+/// gone and every handle to it closed; the two together are never.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub pid: Pid,
+    pub created: u64,
+}
+
+/// What a process offers another of the program it started: who the
+/// program is, and the value of its handle to it in the offering process,
+/// which the other copies (`adopt` (Windows only)). Its numbers are what crosses
+/// between the two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Offer {
+    pub program: Identity,
+    pub handle: u64,
+}
+
 /// How a signal reaches a pane's programs ([`delivery`]): on Unix always
 /// as a signal to its foreground group; on Windows (D-136) as one of the
 /// others.
@@ -195,6 +213,7 @@ pub enum Fate {
     Bound,
 }
 
+/// Which of a [`Job`]'s processes a signal or [`Job::kill`] reaches.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reach {
     /// Its leader's process group: what it started, but a job a shell put
@@ -204,10 +223,11 @@ pub enum Reach {
     /// Its group and every other process in its session ([`Job::members`]).
     /// On Windows, every process in its job object.
     Session,
-    /// Windows: every process on its pseudo console but the leader, that
-    /// is in its job ([`Job::attached`]): what a shell runs, while the
-    /// shell lives on (D-136's KILL of a shell pane).
-    #[cfg(windows)]
+    /// Every process but the leader: on Windows each on its pseudo
+    /// console that is in its job (`Job::attached`), what a shell runs,
+    /// while the shell lives on (D-136's KILL of a shell pane); on Unix
+    /// each of [`Job::members`], which fux never asks for (D-136 is
+    /// Windows').
     Attached,
 }
 
@@ -219,4 +239,8 @@ pub enum Reach {
 pub struct Sent {
     pub scan: Scan,
     pub failed: Vec<(Pid, Errno)>,
+    /// How many processes the scan found and each was sent to, one by one
+    /// (beside a group, or a job object ended whole): 0 with a complete
+    /// scan says none was there but what the reach left out.
+    pub found: usize,
 }

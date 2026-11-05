@@ -16,7 +16,7 @@
 //! - [`reap`], [`ended`] and [`kill`] act on either; [`reap_orphans`]
 //!   lets go of each one started that ended and is not kept, and
 //!   [`release`] of one adopted.
-use super::{Identity, Pid, Status, Watch, terminate, watch};
+use super::{Identity, Offer, Pid, Status, Watch, terminate, watch};
 use crate::errno::{Errno, Result};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -223,16 +223,6 @@ fn remember(process: OwnedHandle, started: bool) -> std::io::Result<Pid> {
     Ok(pid)
 }
 
-/// What a process offers another of the program it started: who the
-/// program is, and the value of its handle to it in the offering process,
-/// which the other copies ([`adopt`]). Its numbers are what crosses
-/// between the two.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Offer {
-    pub program: Identity,
-    pub handle: u64,
-}
-
 /// Takes a copy of the program's handle `offer` names in the process
 /// `from` (a child [`start`] started, or one opened by its pid, as a
 /// server taking a run back opens a pane's), if the copy is that program:
@@ -426,4 +416,10 @@ pub fn identity(pid: Pid) -> Result<Identity> {
 pub fn own_identity() -> Result<Identity> {
     let pid = Pid::from_raw(std::process::id()).ok_or(Errno::SRCH)?;
     identity(pid)
+}
+
+/// Windows has no process groups: no signal reaches one (`INVAL`). fux
+/// sends none there ([`crate::process::delivery`]).
+pub fn kill_group(_group: Pid, _signal: crate::process::Signal) -> Result<()> {
+    Err(Errno::INVAL)
 }

@@ -325,8 +325,13 @@ impl Stream {
 }
 
 impl Sealed for Stream {
+    /// Keeps a read in flight for `IN`, and for `HUP` alone too: a poll
+    /// that wants no bytes yet (they wait, a read's buffer at most) still
+    /// learns that the other end went, which only a read that ends tells.
+    /// Unix's poll reports `HUP` whatever is asked, so asking for it is
+    /// the same there as asking for nothing.
     fn arm(&self, interest: Events) {
-        if interest.intersects(Events::IN) {
+        if interest.intersects(Events::IN | Events::HUP) {
             let mut state = lock(&self.read);
             if !state.pending && state.start >= state.end && state.failed.is_none() {
                 self.read.read(&self.handle, &mut state);

@@ -815,12 +815,13 @@ pub(crate) fn launch(pane: &Pane) -> fux_wire::inspect::Launch {
     }
 }
 
-/// Exact OS bytes, never lossily converted to text.
+/// Exact OS bytes, never lossily converted to text: a Unix path's bytes,
+/// and on Windows its WTF-8 bytes (`OsStr::as_encoded_bytes`), which keep
+/// a lone surrogate (docs/json.md).
 pub(crate) fn path(value: &std::ffi::OsStr) -> fux_wire::inspect::Path {
-    use std::os::unix::ffi::OsStrExt;
     match value.to_str() {
         Some(text) => fux_wire::inspect::Path::Utf8(text.to_owned()),
-        None => fux_wire::inspect::Path::Bytes(value.as_bytes().to_vec()),
+        None => fux_wire::inspect::Path::Bytes(value.as_encoded_bytes().to_vec()),
     }
 }
 

@@ -901,6 +901,33 @@ impl Session {
             }
             FromPane::Refused { client, why } => self.notify_to(client, why, true),
             FromPane::Retired(token) => self.retired.push((id, token)),
+            FromPane::Offer(offered) => self.adopt(id, offered),
+        }
+    }
+
+    /// Takes a copy of pane `id`'s program's handle from its process, as
+    /// it `offered` it (Windows, D-134): its program is the server's to end
+    /// and reap should that process crash. The pane's process is the one
+    /// the server started, or the one a takeover's greeting named, checked
+    /// against the pipe's maker (`Link::take`); the copy, against the
+    /// program's pid and creation time. One not taken is logged: the
+    /// program then ends unreaped if its pane's process crashes.
+    fn adopt(&mut self, id: PaneId, offered: crate::link::Offered) {
+        let Some(Link::Remote(remote)) = self.links.get_mut(&id) else {
+            return;
+        };
+        let Some(offer) = offered.offer() else {
+            return;
+        };
+        match fuxix::process::adopt(remote.pid, offer) {
+            Ok(()) => {
+                if let Some(old) = remote.adopted.replace(offer.program.pid)
+                    && old != offer.program.pid
+                {
+                    fuxix::process::release(old);
+                }
+            }
+            Err(error) => log!("{id}: its program's handle could not be copied: {error}"),
         }
     }
 
@@ -1023,6 +1050,7 @@ impl Session {
                 fuxix::process::Status::Exited(code) => {
                     format!("its pane's own process exited with status {code}")
                 }
+                #[cfg(unix)]
                 fuxix::process::Status::Signalled { signal, .. } => {
                     format!("its pane's own process was killed by signal {signal}")
                 }
@@ -1611,7 +1639,14 @@ impl Session {
                 Link::Local(host) => host.finished(),
             });
         self.ending = ending;
-        for (id, _) in done {
+        for (id, link) in done {
+            // Its program ended with it: its handle's copy is let go.
+            if let Link::Remote(Remote {
+                adopted: Some(pid), ..
+            }) = link
+            {
+                fuxix::process::release(pid);
+            }
             let left: Vec<u64> = (self.asks.iter())
                 .filter(|(_, pane)| **pane == id)
                 .map(|(ask, _)| *ask)
@@ -1731,15 +1766,13 @@ impl Session {
         // them may have gone). A headless client shows on no terminal, so on
         // none.
         let client = attach.ancestry.first();
-        let session =
-            client.and_then(|pid| fuxix::process::Pid::from_raw(i32::try_from(*pid).ok()?));
+        let session = client.and_then(|pid| fuxix::process::Pid::from_u32(*pid));
         let session = session.and_then(fuxix::process::session);
         let leads = |pane: &Pane| {
             let Some(leader) = pane.pid() else {
                 return false;
             };
-            let descends =
-                u32::try_from(leader.as_raw()).is_ok_and(|pid| attach.ancestry.contains(&pid));
+            let descends = attach.ancestry.contains(&leader.as_u32());
             !attach.headless && (descends || session == Some(leader))
         };
         let runs_in = self.parts.panes().iter().find(|(_, pane)| leads(pane));

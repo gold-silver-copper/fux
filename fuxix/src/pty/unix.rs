@@ -426,6 +426,13 @@ fn path(buffer: &[libc::c_char]) -> PathBuf {
     PathBuf::from(OsStr::from_bytes(&bytes))
 }
 
+/// Hangs up what runs on `master`'s terminal: SIGHUP to `job`'s group and
+/// every other process in its session. On Windows the pseudo console is
+/// closed instead (there are no signals).
+pub fn hang_up(_master: &Master, job: &crate::process::Job) -> crate::process::Sent {
+    job.signal(crate::process::Signal::Hup, crate::process::Reach::Session)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
