@@ -25,7 +25,8 @@ impl Errno {
     pub const SRCH: Self = Self::from_code(windows_sys::Win32::Foundation::ERROR_NOT_FOUND);
     /// Not open for this (`ERROR_INVALID_HANDLE`): a read of a source that
     /// reads nothing, as Unix's `EBADF` says of a write-only descriptor.
-    pub const BADF: Self = Self::from_code(windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE);
+    pub(crate) const BADF: Self =
+        Self::from_code(windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE);
     /// The resource is busy: another thread is polling (one at a time).
     pub(crate) const BUSY: Self = Self(windows_sys::Win32::Foundation::ERROR_BUSY.cast_signed());
 

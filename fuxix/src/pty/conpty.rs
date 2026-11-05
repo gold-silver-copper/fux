@@ -235,27 +235,30 @@ fn folder(dir: &Path, arch: &Arch) -> PathBuf {
     dir.join(format!("{VERSION}-{}", arch.name))
 }
 
-/// Both files in `folder`, each opened so that nobody may write, rename or
-/// delete it, and hashed through that handle: the handles, if both are the
+/// Both files in `folder`, each [`held`]: the handles, if both are the
 /// pin.
 fn verify(folder: &Path, arch: &Arch) -> Result<Vec<File>, Error> {
     [(DLL, arch.dll.1), (CONSOLE, arch.console.1)]
         .into_iter()
-        .map(|(name, pin)| {
-            let path = folder.join(name);
-            let mut file = std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
-                .open(&path)
-                .map_err(at("opening the pinned ConPTY"))
-                .map_err(|e| named(e, &path))?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)
-                .map_err(at("reading the pinned ConPTY"))?;
-            check(&bytes, pin, &path)?;
-            Ok(file)
-        })
+        .map(|(name, pin)| held(&folder.join(name), pin))
         .collect()
+}
+
+/// The file at `path`, opened so that nobody may write, rename or delete
+/// it while the handle is open, and hashed through that handle: the
+/// handle, if it is the pin `pin`.
+fn held(path: &Path, pin: &str) -> Result<File, Error> {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+        .open(path)
+        .map_err(at("opening a pinned ConPTY file"))
+        .map_err(|e| named(e, path))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(at("reading a pinned ConPTY file"))?;
+    check(&bytes, pin, path)?;
+    Ok(file)
 }
 
 /// `error`, saying which file.
@@ -396,9 +399,8 @@ fn unpack(dir: &Path, stage: &Path, arch: &Arch) -> Result<PathBuf, Error> {
             package
         }
     };
-    let bytes = std::fs::read(&package).map_err(at("reading the ConPTY package"))?;
-    check(&bytes, PACKAGE_SHA256, &package)?;
-    drop(bytes);
+    // Held until tar has read it: the archive tar parses is the one hashed.
+    let held_package = held(&package, PACKAGE_SHA256)?;
     let mut tar = std::process::Command::new(system.join("tar.exe"));
     tar.arg("-xf")
         .arg(&package)
@@ -406,6 +408,7 @@ fn unpack(dir: &Path, stage: &Path, arch: &Arch) -> Result<PathBuf, Error> {
         .arg(stage)
         .args([arch.dll.0, arch.console.0]);
     run(tar, "tar.exe")?;
+    drop(held_package);
     let ready = folder(stage, arch);
     std::fs::create_dir(&ready).map_err(at("making the ConPTY folder"))?;
     for (member, name) in [(arch.dll.0, DLL), (arch.console.0, CONSOLE)] {

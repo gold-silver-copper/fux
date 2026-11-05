@@ -212,7 +212,9 @@ programs built on the libraries (below) are the acceptance test for the whole po
   - Set `STARTF_USESTDHANDLES` with invalid handles, or the program writes into the parent's output.
   - Never set `PSEUDOCONSOLE_INHERIT_CURSOR` (it stalls the program waiting for a cursor answer).
   - End rule: call `ReleasePseudoConsole` right after spawning, read until the pipe breaks (1–5 ms after the
-    program exits), then `GetExitCodeProcess`.
+    program exits), then `GetExitCodeProcess`. The built-in ConPTY of older Windows 11 has no
+    `ReleasePseudoConsole`, and its pipe breaks only when the console is closed: the pane process (PR 7)
+    also watches the program's process, and on its end drains for a bounded time and closes the console.
   - The bundled ConPTY sends `ESC[1t ESC[c ESC[?1004h ESC[?9001h` first and `ESC[?1004l ESC[?9001l` last:
     don't report those modes as the program's. fux-vt must answer DA1 and cursor-position queries quickly:
     an unanswered `ESC[6n` after a resize blocks the program for about 500 ms.
@@ -228,8 +230,8 @@ programs built on the libraries (below) are the acceptance test for the whole po
     `SetConsoleCtrlHandler(NULL, FALSE)` before spawning.
   - Closing the last handle of a kill-on-close job kills everything with exit code 0: never kill that way.
   - Console kills all exit `0xC000013A`; there are no signal numbers, so fux records what it sent.
-  - Listing a console's processes means attaching to it: re-register the Ctrl-Break handler right after
-    attaching (or list from a helper), or a Ctrl-Break kills the pane process.
+  - Listing a console's processes means attaching to it: register the Ctrl-Break handler before attaching
+    and again right after (or list from a helper), or a Ctrl-Break kills the pane process.
 - **Pipes and access**
   - Default pipe security lets another user read: always pass an explicit owner-only descriptor.
   - Always create with `FILE_FLAG_FIRST_PIPE_INSTANCE`, or the server can silently join a squatter's pipe.

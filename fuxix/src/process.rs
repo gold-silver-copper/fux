@@ -114,8 +114,8 @@ pub enum Status {
     Signalled { signal: i32, core_dumped: bool },
 }
 
-/// What a program [`lead_session`] starts does with each signal as it
-/// begins. Either way no signal is blocked.
+/// What a program started on a terminal (`lead_session` on Unix,
+/// [`crate::pty::Slave::spawn`]) does with each signal as it begins. Either way no signal is blocked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Dispositions {
     /// As this process inherited them, as from a shell: a signal it ignores
@@ -129,10 +129,11 @@ pub enum Dispositions {
     Default,
 }
 
-/// The most processes a [`tree`] holds: a runaway tree is cut short here.
+/// The most processes a `Tree` holds: a runaway tree is cut short here.
 pub(crate) const TREE_MAX: usize = 4096;
 
-/// What a [`tree`] found, and whether it looked everywhere.
+/// What a scan (Unix's `tree`, Windows's `Job::attached`) found, and
+/// whether it looked everywhere.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tree {
     pub pids: Vec<Pid>,

@@ -13,7 +13,11 @@
 //! 1 to 5 ms after the program's end if it left none; everything it wrote
 //! has been read by then. A process it left on the console holds the pipe,
 //! as a job left on a Unix PTY holds it. Only after the program's end is
-//! its exit code read ([`Job::ended`]).
+//! its exit code read ([`Job::ended`]). That is with a ConPTY that has
+//! `ReleasePseudoConsole` (the bundled one has); with the built-in one of
+//! older Windows 11, which has not, the pipe breaks only once the console
+//! is closed, so its user watches the program's process too
+//! ([`crate::process::watch`]) and hangs up after it ended.
 //!
 //! **Signals are keys:** Ctrl-C is the byte `0x03` written to the master,
 //! Ctrl-Break is [`BREAK`]; the hang-up is [`Master::hang_up`]. The
@@ -367,14 +371,12 @@ impl Slave {
         let block = environment_block(environment)?;
         let directory = directory.map(|d| wide(d.as_os_str())).transpose()?;
         if dispositions == Dispositions::Default {
-            use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
-            // SAFETY: with no handler, this only clears the process's
-            // "ignore Ctrl-C", which the program inherits.
-            if unsafe { SetConsoleCtrlHandler(None, 0) } == 0 {
-                return Err(std::io::Error::last_os_error());
-            }
+            crate::signal::heed_ctrl_c()?;
         }
-        let console = (*self.console.pseudo()).ok_or_else(|| std::io::Error::other("hung up"))?;
+        // Held through the start and the release, as `resize` holds it: a
+        // hang-up meanwhile waits, and finds a console no process uses.
+        let pseudo = self.console.pseudo();
+        let console = (*pseudo).ok_or_else(|| std::io::Error::other("hung up"))?;
         let job = crate::process::job_object()?;
         let start = Start {
             path: wide(path.as_os_str())?,
@@ -391,10 +393,12 @@ impl Slave {
         };
         drop(thread);
         if let Some(release) = self.console.api.release {
-            // SAFETY: the console is open (the slave holds it); this only
-            // lets its output break once the program's console is empty.
+            // SAFETY: the console is open while its slot holds it, and the
+            // lock held keeps it so; this only lets its output break once
+            // the program's console is empty.
             let _ = unsafe { release(console) };
         }
+        drop(pseudo);
         let leader = Pid::from_raw(process_id(&process)?)
             .ok_or_else(|| std::io::Error::other("a process with no pid"))?;
         Ok(Job::new(process, job, leader))

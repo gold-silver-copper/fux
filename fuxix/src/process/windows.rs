@@ -291,40 +291,69 @@ impl Job {
         }
     }
 
-    /// The processes on its pseudo console but its leader that are in its
-    /// job: what a shell started on it and runs now. The console is asked
-    /// by attaching to it (`AttachConsole`), which a process with a console
-    /// of its own can't (`Scan::Failed` with `ACCES`): a pane process
-    /// starts detached. While attached, every console event is swallowed,
-    /// so a Ctrl-Break meanwhile ends nothing of this process (spike S5).
+    /// The processes on its pseudo console but this one and its leader:
+    /// what a shell started on it and runs now, and anything else still
+    /// on the console, in its job or not ([`Job::kill`] with
+    /// [`Reach::Attached`] ends only those in its job). The console is
+    /// asked by attaching to it (`AttachConsole`), which a process with a
+    /// console of its own can't (`Scan::Failed` with `ACCES`): a pane
+    /// process starts detached. Every console event is swallowed from
+    /// before the attach to after the free, so a Ctrl-Break meanwhile ends
+    /// nothing of this process (spike S5); if the swallowing can't be set,
+    /// nothing is attached to and the scan fails.
     pub fn attached(&self) -> Tree {
         use std::sync::{Mutex, PoisonError};
         use windows_sys::Win32::System::Console::{
             AttachConsole, FreeConsole, GetConsoleProcessList, SetConsoleCtrlHandler,
         };
+        /// Adds (`add` 1) or removes (0) `swallow` as a handler.
+        fn swallowing(add: i32) -> Result<()> {
+            // SAFETY: `swallow` lives as long as the process and is safe
+            // on any thread; each one added is removed in `attached`.
+            match unsafe { SetConsoleCtrlHandler(Some(swallow), add) } {
+                0 => Err(Errno::last()),
+                _ => Ok(()),
+            }
+        }
         static ATTACHING: Mutex<()> = Mutex::new(());
         let mut tree = Tree::default();
         let mut pids = vec![0u32; TREE_MAX.saturating_add(1)];
         let room = u32::try_from(pids.len()).unwrap_or(0);
         let one = ATTACHING.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Err(errno) = swallowing(1) {
+            tree.scan = Scan::Failed(errno);
+            return tree;
+        }
         // SAFETY: it takes a number; this process has no console (else it
         // fails), and frees the one it attaches to below.
         if unsafe { AttachConsole(self.leader.as_raw()) } == 0 {
-            drop(one);
-            tree.scan = Scan::Failed(Errno::last());
+            let error = Errno::last();
+            let _ = swallowing(0);
+            tree.scan = Scan::Failed(error);
             return tree;
         }
-        // SAFETY: `swallow` lives as long as the process and is safe on
-        // any thread; it is removed below.
-        unsafe { SetConsoleCtrlHandler(Some(swallow), 1) };
-        // SAFETY: `pids` is writable for `room` pids.
-        let listed = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), room) };
+        // Again once attached, as WINDOWS.md's rule has it.
+        let again = swallowing(1);
+        let listed = match again {
+            // SAFETY: `pids` is writable for `room` pids.
+            Ok(()) => Ok(unsafe { GetConsoleProcessList(pids.as_mut_ptr(), room) }),
+            Err(errno) => Err(errno),
+        };
         let error = Errno::last();
         // SAFETY: it takes nothing; it frees the console attached above.
         unsafe { FreeConsole() };
-        // SAFETY: removes the handler set above.
-        unsafe { SetConsoleCtrlHandler(Some(swallow), 0) };
+        if again.is_ok() {
+            let _ = swallowing(0);
+        }
+        let _ = swallowing(0);
         drop(one);
+        let listed = match listed {
+            Ok(listed) => listed,
+            Err(errno) => {
+                tree.scan = Scan::Failed(errno);
+                return tree;
+            }
+        };
         let listed = usize::try_from(listed).unwrap_or(usize::MAX);
         if listed == 0 {
             tree.scan = Scan::Failed(error);

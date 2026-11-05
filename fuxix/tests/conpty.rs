@@ -290,10 +290,20 @@ mod windows {
 
     /// S4: Ctrl-C (0x03) and Ctrl-Break written to the master end a
     /// program with no handler, as a console's keys do, though this
-    /// process may have been started ignoring Ctrl-C.
+    /// process ignores Ctrl-C, as a pane process started detached in a
+    /// new process group does: `Dispositions::Default` clears it.
     fn keys_end_it() -> Outcome {
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
         for (key, name) in [(&b"\x03"[..], "Ctrl-C"), (BREAK, "Ctrl-Break")] {
             let deadline = after(Duration::from_secs(10))?;
+            // SAFETY: with no handler, this only sets "ignore Ctrl-C",
+            // which the program would inherit.
+            if unsafe { SetConsoleCtrlHandler(None, 1) } == 0 {
+                return Err(format!(
+                    "ignoring Ctrl-C: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
             let mut pane = Pane::start("sleep")?;
             pane.read_until(deadline, |out| contains(out, b"ready"))?;
             let sent = Instant::now();

@@ -369,7 +369,9 @@ jobs:
       # ConPTY and Job (WINDOWS.md, PR 6), with what each found in the log:
       # S1's bytes exact through the fetched ConPTY, Ctrl-C and Ctrl-Break,
       # the hang-up, the three kills, and the built-in used only when
-      # `load` said why. Then what of theirs is left running: nothing.
+      # `load` said why. Then tasklist logs any console process still
+      # running (only logged: an OpenConsole of the last test may still be
+      # exiting).
       - name: fuxix ConPTY
         timeout-minutes: 4
         run: |
