@@ -1,5 +1,5 @@
 ; Defaults belong to each client.
-(set "shell" (list (catch-kind! (let! ((shell-value (getenv "SHELL"))) (if! (same? shell-value "") "/bin/sh" shell-value)) unset-var failure "/bin/sh")))
+(set "shell" (list (catch-kind! (let! ((shell-value (environment-variable "SHELL"))) (if! (same? shell-value "") "/bin/sh" shell-value)) unset-variable failure "/bin/sh")))
 (set "history-bytes" 8388608)
 (set "journal-entries" 16384)
 (set "reflow" #true)
@@ -13,7 +13,7 @@
 (set "bell" #true)
 (set "titles" #false)
 (set "show-column" #true)
-(attach-defaults (name (opts) "main"))
+(attach-defaults (name (options) "main"))
 (set "styles" (quote! (("bar" 250 236) ("tab" 0 2 "bold") ("keys" 0 11 "bold") ("notice" 11 236) ("error" 9 236) ("panel" 255 238) ("border" 240 "default") ("border-focus" 2 "default"))))
 (set "bar" (quote! ("off" ("workspace" "tabs") ("pane") #false)))
 (set "bar-slots" ())

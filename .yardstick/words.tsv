@@ -9,20 +9,20 @@ shows	shows	cli
 quiet	quiet	cli
 until-ended	until-ended	cli
 grows	grows	cli
-edit-history	-	not ported yet
-ls	ls	cli
+edit-history	edit-history	cli
+ls	list-session	cli
 chooser-row	chooser-row	cli
-listing	-	not ported yet
-dump-text	-	not ported yet
-dump-id	-	not ported yet
-dump-first	-	not ported yet
-dump-cwd	-	not ported yet
-dump-warnings	-	not ported yet
-dump-name	-	not ported yet
-dump-create	-	not ported yet
-dump-recipe	-	not ported yet
-dump	-	not ported yet
-events	-	not ported yet
+listing	listing	cli
+dump-text	dump-text	cli
+dump-id	-	replay now consumes a recipe and maps its old identities to new handles
+dump-first	dump-first	cli
+dump-cwd	dump-cwd	cli
+dump-warnings	dump-warnings	cli
+dump-name	-	replay now consumes a recipe and maps its old identities to new handles
+dump-create	-	replay now consumes a recipe and maps its old identities to new handles
+dump-recipe	dump-recipe	cli
+dump	dump	cli
+events	events	cli
 me-focused	me-focused	cli
 outer	outer	cli
 inner	inner	cli

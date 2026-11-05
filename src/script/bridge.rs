@@ -62,14 +62,16 @@ fn failed(g: &Interpreter<'_, '_>, e: Error) -> Failed {
     let mut message = String::new();
     let _ = g.describe(&e, &mut message);
     let kind = g.symbol_name(&e.kind).unwrap_or("fail");
-    Failed::new(
+    let mut failed = Failed::new(
         kind.parse().unwrap_or(Code::Fail),
         message
             .strip_prefix(kind)
             .unwrap_or(&message)
             .trim_start()
             .to_owned(),
-    )
+    );
+    failed.kind = Some(kind.to_owned());
+    failed
 }
 fn check(g: &mut Interpreter<'_, '_>, state: &mut Runtime<'_, '_>, _: &[G]) -> Result<G, Error> {
     if let Some(stop) = state.stop {
@@ -94,12 +96,12 @@ fn output(
     }
     Ok(G::Inert)
 }
-fn load<'a, 'b>(
-    g: &mut Interpreter<'a, 'b>,
-    state: &mut Runtime<'a, 'b>,
+fn read_source(
+    g: &mut Interpreter<'_, '_>,
+    state: &mut Runtime<'_, '_>,
     args: &[G],
 ) -> Result<G, Error> {
-    let [path, context, once] = args else {
+    let [path, once] = args else {
         return Err(g.error("arity-error", args));
     };
     let path = g
@@ -111,28 +113,49 @@ fn load<'a, 'b>(
         .resolve(&path, state.host.file.as_deref())
         .map_err(|e| failure(g, Failure::new(Code::Require, e)))?;
     let name = file.display().to_string();
-    if *once == G::Boolean(true) && state.host.files.required.contains(&file) {
-        return Ok(G::Inert);
-    }
-    if state.host.files.loading.contains(&file) {
+    if state.host.file.as_ref() == Some(&file) || state.host.files.loading.contains(&file) {
         return Err(failure(
             g,
             Failure::new(Code::Require, format!("{name}: import cycle")),
         ));
+    }
+    if *once == G::Boolean(true) && state.host.files.required.contains(&file) {
+        return Ok(G::EmptyList);
     }
     let source = state
         .host
         .files
         .read(&file)
         .map_err(|e| failure(g, Failure::new(Code::Require, e)))?;
+    let forms = match g.read_named(&name, &source) {
+        Ok(forms) => forms,
+        Err(mut e) => {
+            let location = match e.values.get(1) {
+                Some(G::Integer(line)) => format!("{name}:{line}"),
+                _ => name.clone(),
+            };
+            e.values.push(g.string(&location)?);
+            return Err(e);
+        }
+    };
     state.host.files.required.push(file.clone());
     state.host.files.loading.push(file.clone());
-    let previous = state.host.file.replace(file);
-    let result = g.evaluate_in(state, context, &name, &source);
-    state.host.file = previous;
-    state.host.files.loading.pop();
-    result
+    state.host.files.parents.push(state.host.file.replace(file));
+    g.list(&[forms])
 }
+fn finish_source(
+    g: &mut Interpreter<'_, '_>,
+    state: &mut Runtime<'_, '_>,
+    args: &[G],
+) -> Result<G, Error> {
+    if !args.is_empty() {
+        return Err(g.error("arity-error", args));
+    }
+    state.host.file = state.host.files.parents.pop().flatten();
+    state.host.files.loading.pop();
+    Ok(G::Inert)
+}
+
 fn request(
     g: &mut Interpreter<'_, '_>,
     state: &mut Runtime<'_, '_>,
@@ -344,7 +367,8 @@ pub(super) fn run(
             request as grift::HostFunction<Runtime<'_, '_>>,
         ),
         ("display", output),
-        ("load-source", load),
+        ("read-source", read_source),
+        ("finish-source", finish_source),
         ("native-check-stop", check),
     ] {
         let f = g.host_function(name, function).map_err(|e| failed(&g, e))?;
@@ -372,6 +396,13 @@ pub(super) fn run(
         .map_err(|e| failed(&g, e))?;
     g.evaluate_in(&mut runtime, &top, "library.grift", LIBRARY)
         .map_err(|e| failed(&g, e))?;
+    g.evaluate_in(
+        &mut runtime,
+        &top,
+        "sessions.grift",
+        include_str!("sessions.grift"),
+    )
+    .map_err(|e| failed(&g, e))?;
     g.seal_library();
     if let Some(config) = &machine.config {
         let previous = runtime.host.state.as_deref().cloned();
@@ -413,7 +444,14 @@ pub(super) fn run(
             machine.source
         )
     } else {
-        format!("(native-check-stop) {}", machine.source)
+        format!(
+            "(native-check-stop) {}",
+            if machine.source.starts_with("#!") {
+                machine.source.replacen("#!", ";", 1)
+            } else {
+                machine.source.clone()
+            }
+        )
     };
     let result = g.evaluate_in(&mut runtime, &top, &machine.name, &program);
     if let Some(stop) = stop
@@ -465,7 +503,7 @@ fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
         Value::App(Fux::Record(r)) => {
             let context = g.context(None)?;
             for (k, v) in &r.fields {
-                let key = g.symbol(&k.replace('_', "-"))?;
+                let key = g.symbol(&super::field_name(k))?;
                 let value = to_grift(g, v)?;
                 g.bind(&context, &G::Symbol(key), value)?;
             }

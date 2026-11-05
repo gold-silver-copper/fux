@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn local_settings_keep_the_checked_value_union_and_inner_validators() -> TestResult {
         let list = |words: &[&str]| {
-            let list = fuxth::List::new(words.iter().map(|w| Value::str(*w)).collect());
+            let list = crate::script::List::new(words.iter().map(|w| Value::str(*w)).collect());
             Ok::<_, String>(Value::List(Rc::new(list)))
         };
         let mut draft = PreferenceDraft::default();
@@ -318,14 +318,26 @@ mod tests {
         ] {
             assert!(draft.set(name, &value).is_err(), "{name}: {value:?}");
         }
-        let tokens = fuxth::token::source("test", "false show-column")?;
-        let mut machine = crate::script::compile(&tokens)?;
+        let mut machine = crate::script::Machine::source("test", "(show-column #false)");
         let mut out = Vec::new();
         let mut host = crate::script::Host::new(Default::default(), None, &mut out);
+        struct NoRequests;
+        impl crate::script::Asks for NoRequests {
+            fn ask(
+                &mut self,
+                _: &fux_wire::protocol::Asked,
+            ) -> Result<fux_wire::protocol::Reply, crate::script::Failed> {
+                Err(crate::script::Failed::new(
+                    fux_wire::code::Code::NotConfig,
+                    "unexpected effect",
+                ))
+            }
+        }
         assert!(
-            machine.run(&mut host, u64::MAX).is_err(),
-            "a setting is no word"
+            crate::script::run(&mut machine, &mut host, &mut NoRequests, None).is_err(),
+            "a setting is not an operation"
         );
+
         Ok(())
     }
 }

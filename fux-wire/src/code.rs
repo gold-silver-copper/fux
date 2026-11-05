@@ -62,7 +62,7 @@ codes! {
     Config "config" [asked],
     BadBinding "bad-binding",
     Read "read",
-    UnsetVar "unset-var",
+    UnsetVar "unset-variable",
     Output "output" [asked],
     Nested "nested",
     NotAKey "not-a-key",

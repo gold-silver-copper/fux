@@ -82,7 +82,7 @@ impl Value<Fux> {
         match self {
             Self::Int(n) => write!(out, "{n}"),
             Self::Bool(b) => write!(out, "#{b}"),
-            Self::Str(s) => write!(out, "{s:?}"),
+            Self::Str(s) => write_quoted(s, out),
             Self::List(xs) => {
                 out.write_str("(")?;
                 for (i, v) in xs.items().iter().enumerate() {
@@ -108,4 +108,26 @@ impl Value<Fux> {
             Self::App(v) => v.write_text(out).map_err(|_| std::fmt::Error),
         }
     }
+}
+
+fn write_quoted(text: &str, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+    out.write_char('"')?;
+    for character in text.chars() {
+        match character {
+            '"' => out.write_str("\\\"")?,
+            '\\' => out.write_str("\\\\")?,
+            '\n' => out.write_str("\\n")?,
+            '\r' => out.write_str("\\r")?,
+            '\t' => out.write_str("\\t")?,
+            c if c.is_control() => write!(out, "\\x{:x};", u32::from(c))?,
+            c => out.write_char(c)?,
+        }
+    }
+    out.write_char('"')
+}
+/// One grift string literal, also used by generated config lines.
+pub fn quoted(text: &str) -> String {
+    let mut out = String::new();
+    let _ = write_quoted(text, &mut out);
+    out
 }

@@ -392,7 +392,7 @@ mod tests {
             current: Some(0),
             selected: 0,
             about: None,
-            action: crate::testing::code("2drop").into(),
+            action: crate::testing::code("(lambda! (client payload) #inert)").into(),
             client: Data::Int(0),
         })
     }
@@ -450,7 +450,7 @@ mod tests {
             [
                 Effect::Screen(ScreenAct::Hide),
                 Effect::Run(Job::call(
-                    &crate::testing::code("2drop").into(),
+                    &crate::testing::code("(lambda! (client payload) #inert)").into(),
                     [Data::Int(0), Data::Int(2)]
                 ))
             ]
@@ -462,7 +462,10 @@ mod tests {
             [
                 Effect::Screen(ScreenAct::Hide),
                 Effect::Run(Job::call(
-                    &crate::testing::code("confirm-close").into(),
+                    &crate::testing::code(
+                        "(lambda! (client target) (confirm-close client target))"
+                    )
+                    .into(),
                     [Data::Int(0), Data::Int(1)]
                 ))
             ]
@@ -492,7 +495,9 @@ mod tests {
         let mut screen = Screen::Prompt(Prompt {
             title: "rename".into(),
             line: Line::new(String::new()),
-            action: Some(crate::testing::code("%1 swap rename").into()),
+            action: Some(
+                crate::testing::code("(lambda! (name-value) (rename (pane 1) name-value))").into(),
+            ),
         });
         let modes = crate::script::default_state()
             .map(|state| state.keys)
@@ -501,7 +506,9 @@ mod tests {
         screen.paste(&modes, "it's -x' drop");
         let ran = key(&mut screen, "Enter")?;
         let job = Job {
-            program: Program::Code(crate::testing::code("%1 swap rename")),
+            program: Program::Code(crate::testing::code(
+                "(lambda! (name-value) (rename (pane 1) name-value))",
+            )),
             given: Some(vec![Data::Text("it's -x' drop".into())]),
             screen: None,
         };

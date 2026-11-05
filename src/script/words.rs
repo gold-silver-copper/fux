@@ -321,7 +321,7 @@ words! {
         Finding Tabs "tabs" "scope -- list" raises(Type asks) "the tabs in a tab (itself), a workspace or all, in order; a pane holds none" "fux str agent workspace tabs each str name get print end" [];
         Finding All "all" "-- all" raises() "the whole session, for the words that take a scope: info, panes, tabs, kill, notify, events and dump" "fux all info" [];
         Finding Focused "focused" "client -- pane" raises(Type asks) "the pane a client focuses: its tab's zoomed one while it has one" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" raises() "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program new-tab" [];
+        Starting Opts "options" "-- opts" raises() "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux opts str agent in 80 24 size str ./app program new-tab" [];
         Starting Split "split" "subject -- answer" raises(Type Unused Usage Config asks) "split a pane along its required axis: a shell, or the program given" "fux %3 str vertical axis split" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
         Starting Stack "stack" "subject -- answer" raises(Type Unused Config asks) "an alternative to a pane on its rectangle, in the stack it is a child of, else a new one: a shell, or the program given; each client is shown one child of a stack (step, show)" "fux %3 str /bin/sh program stack" [Pane: Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
         Starting NewTab "new-tab" "opts -- answer" raises(Type Unused Config asks) "a tab with the client's shell or explicit launch, in the workspace in names (made if it is not there; str new-workspace in makes an unnamed one), else the caller's" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
@@ -362,10 +362,10 @@ words! {
         Config AttachDefaults "attach-defaults" "attachable --" raises(Type Unused Config NotConfig) "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "opts str main name attach-defaults" [Either: In Name];
         Config Set "set" "setting new --" raises(Type Config NotConfig) "a preference for this client only: `fux help set` lists their effects" "fux str history-bytes 16777216 set" [];
         Reading Version "version" "pane-or-seen -- string" raises(Type asks) "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux %3 capture version" [];
-        Shell Args "args" "-- list" raises() "the strings after fux --file FILE (none for any other program)" "fux args len" [];
+        Shell Args "arguments" "-- list" raises() "the strings after fux --file FILE (none for any other program)" "fux args len" [];
         Shell Input "input" "-- string" raises(Read NotHere) "the rest of stdin, as UTF-8 text; not when the program came from stdin" "ls | fux input lines len" [];
         Shell ReadFile "read-file" "path -- string" raises(Type Read NotHere) "a file's text, as UTF-8" "fux str notes.txt read-file lines len" [];
-        Shell Getenv "getenv" "name -- string" raises(Type UnsetVar NotHere) "an environment variable's value; one not set fails unset_var" "fux str HOME getenv" [];
+        Shell Getenv "environment-variable" "name -- string" raises(Type UnsetVar NotHere) "an environment variable's value; one not set fails unset_var" "fux str HOME getenv" [];
         Shell Warn "warn" "value --" raises(Output NotHere) "print a value on stderr, a line" "fux str 'no tests found' warn 2 exit" [];
         Shell Exit "exit" "n --" raises(Type Range NotHere) "end the program now, what is left printed, with exit status n, 0 to 255" "fux str 'no tests found' warn 2 exit" [];
         Config ListKeys "list-keys" "--" raises(Config Output) "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux list-keys" [];
@@ -378,7 +378,7 @@ words! {
     Opt {
         Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux opts str agent in str web name 80 24 size str ./app program new-tab";
         Starting Size "size" "x cols rows -- x" raises(Type Unused Size) "what its tab is always laid out on, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts str agent in 80 24 size str ./app program new-tab";
-        Starting Cwd "cwd" "x dir -- x" raises(Type Unused) "where it starts" "fux opts str agent in str /srv cwd 80 24 size str ./app program new-tab";
+        Starting Cwd "directory" "x dir -- x" raises(Type Unused) "where it starts" "fux opts str agent in str /srv cwd 80 24 size str ./app program new-tab";
         Starting Program "program" "x path -- x" raises(Type Unused) "the program to start, in place of a shell; its pane stays once it exits" "fux opts str agent in 80 24 size str ./app program new-tab";
         Starting HistoryBytes "history-bytes" "x integer -- x" raises(Type Unused Range) "history budget for the new pane, in bytes" "fux opts str agent in 0 history-bytes str /bin/cat program new-tab";
         Starting Reflow "reflow" "x boolean -- x" raises(Type Unused) "whether the new pane rewraps primary-screen lines on resize" "fux opts str agent in false reflow str /bin/cat program new-tab";
@@ -386,7 +386,7 @@ words! {
         Starting PictureBytes "picture-bytes" "x integer -- x" raises(Type Unused Range) "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux opts str agent in 0 picture-bytes str /bin/cat program new-tab";
         Starting ProgramClipboard "program-clipboard" "x boolean -- x" raises(Type Unused) "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux opts str agent in false program-clipboard str /bin/cat program new-tab";
         Starting ShellProgram "shell-program" "x list -- x" raises(Type Unused) "the checked argv list to start with shell role; its exit closes the pane" "fux opts 80 24 size list str /bin/sh end shell-program new-tab";
-        Starting Arg "arg" "x text -- x" raises(Type Unused Usage) "an argument for the program" "fux opts str agent in 80 24 size str ./app program str -v arg new-tab";
+        Starting Arg "argument" "x text -- x" raises(Type Unused Usage) "an argument for the program" "fux opts str agent in 80 24 size str ./app program str -v arg new-tab";
         Starting Axis "axis" "x way -- x" raises(Type Unused) "horizontal (side by side) or vertical (stacked); split requires it" "fux %3 str horizontal axis split";
         Starting Shares "shares" "x n n -- x" raises(Type Unused Range) "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 str horizontal axis 2 1 shares split";
         Starting In "in" "x workspace -- x" raises(Type Unused) "the workspace for new-tab, attach or attach-defaults; again, one in the one before, for new-tab: it makes each from the first not there (a missing name, or a fresh unnamed one with str new-workspace in), the first at the top" "fux opts str proj in str agent1 in 80 24 size new-tab";
@@ -408,7 +408,7 @@ words! {
         Reading AltScreen "alt-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: the full screen a program drew last" "fux %3 alt-screen capture";
         Reading LastOutput "last-output" "pane-builder -- pane-builder" raises(Type Unused) "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux %3 last-output capture";
         Reading Rows "rows" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to, clipped to available rows; joined lines touched whole (with wrapped, those rows alone)" "fux %3 0 4 rows capture";
-        Reading Cols "cols" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";
+        Reading Cols "columns" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";
         Reading Since "since" "pane-builder seen -- pane-builder" raises(Type Unused) "capture: only the lines with a row changed since this version of the pane (a capture's, or as changed takes it), each after its row as rows counts it (3:text; json: changed_rows); fails stale where fux can't say which rows changed: rows moved since (a scroll, resize, reset, switch of screens or change to history), the program respawned, or it was read mid-repeat (REP)" "V=$(fux %3 capture str version get); fux %3 str \"$V\" since capture";
     }
     Screen {
@@ -1533,14 +1533,16 @@ impl Host<'_> {
                 if let Some(target) = live {
                     return later(ask(Command::Inspect {
                         scope: fux_wire::inspect::Scope::Target(target),
-                        projection: fux_wire::inspect::Projection::Field(field.replace('-', "_")),
+                        projection: fux_wire::inspect::Projection::Field(super::native_field(
+                            &field,
+                        )),
                     }));
                 }
                 match value {
                     Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
                     Value::App(Fux::Answer(answer, run)) => now(
                         out,
-                        super::record::answer_field(&answer, run, &field.replace('-', "_"))?,
+                        super::record::answer_field(&answer, run, &super::native_field(&field))?,
                     ),
                     other @ (Value::Bytes(_)
                     | Value::Int(_)
@@ -2130,5 +2132,236 @@ impl Host<'_> {
             }
         }
         Ok(Done::Now)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TestResult;
+    use std::rc::Rc;
+    #[test]
+    fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> TestResult {
+        use super::*;
+        use fux_wire::command::AttachTarget;
+        let run = "1-2".parse().map_err(|()| "run")?;
+        let mut draft = crate::script::default_state()?.draft();
+        for (value, target) in [
+            (
+                Fux::Tab(fux_wire::id::TabId::of(2), Some(run)),
+                AttachTarget::Tab(fux_wire::id::TabId::of(2)),
+            ),
+            (
+                Fux::Pane(PaneId::of(3), Some(run)),
+                AttachTarget::Pane(PaneId::of(3)),
+            ),
+        ] {
+            let mut sink = Vec::new();
+            let mut host = Host::new(
+                fux_wire::protocol::Context::default(),
+                Some(&mut draft),
+                &mut sink,
+            );
+            let mut values = vec![Value::App(value.clone())].into_iter();
+            let mut next = || {
+                values
+                    .next()
+                    .ok_or_else(|| fail(Raise::StackUnderflow, "subject"))
+            };
+            assert!(matches!(
+                host.dispatch(Word::Act(Act::AttachDefaults), &mut next, &mut Vec::new())
+                    .map_err(|e| e.message)?,
+                Done::Now
+            ));
+            let (attached, _) =
+                attach_options(Act::Attach, Value::App(value)).map_err(|e| e.message)?;
+            assert_eq!(attached, Some(target.clone()));
+            let defaults = draft.attach.as_ref().ok_or("defaults")?;
+            assert_eq!(defaults.target, Some(target));
+            assert_eq!(defaults.of, Some(run));
+            assert_eq!(defaults.name.as_deref(), Some("main"));
+        }
+        Ok(())
+    }
+    #[test]
+    fn closed_observations_have_no_version() -> TestResult {
+        let version: fux_wire::command::Version =
+            "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
+        let mut capture = fux_wire::answer::Captured::default_styled(version);
+        capture.of = fux_wire::answer::Of::Client {
+            client: fux_wire::id::ClientId::of(1),
+            rows: 40,
+            cols: 120,
+        };
+        for answer in [
+            super::super::Answer::Pane(fux_wire::answer::PaneAnswer::Closed(version.pane)),
+            super::super::Answer::Capture(Box::new(capture)),
+        ] {
+            let value = Value::App(Fux::Answer(Rc::new(answer), Some(version.run)));
+            let refused = super::version(&value).err().map(|f| f.code);
+            assert_eq!(refused, Some(Code::Type), "{}", value.kind());
+        }
+        Ok(())
+    }
+    #[test]
+    fn accumulating_options_preserve_order() -> TestResult {
+        let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
+        for (opt, values) in [
+            (Opt::Program, vec![Value::str("cat")]),
+            (Opt::Arg, vec![Value::str("a")]),
+            (Opt::Arg, vec![Value::str("b")]),
+            (Opt::Text, vec![Value::str("a")]),
+            (Opt::Key, vec![Value::str("Enter")]),
+            (Opt::Paste, vec![Value::str("b")]),
+            (Opt::Bytes, vec![Value::Bytes(Rc::new(vec![99]))]),
+        ] {
+            let mut args = std::iter::once(value).chain(values);
+            value = Value::App(Fux::Opts(
+                modify(opt, &mut || {
+                    args.next()
+                        .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
+                })
+                .map_err(|f| f.message)?,
+            ));
+        }
+        let built = modifying(value).map_err(|f| f.message)?;
+        assert_eq!(built.argv, ["cat", "a", "b"]);
+        assert_eq!(
+            built.inputs,
+            [
+                Input::Text("a".into()),
+                Input::Key("Enter".parse()?),
+                Input::Paste("b".into()),
+                Input::Bytes(vec![b'c'])
+            ]
+        );
+        Ok(())
+    }
+    #[test]
+    fn every_signal_is_told_of() {
+        let about = Word::Act(Act::Signal).row().about;
+        let (named, _) = about.split_once(',').unwrap_or_default();
+        let mut named: Vec<&str> = named.split_whitespace().collect();
+        let mut all = fuxix::process::Signal::ALL
+            .map(fuxix::process::Signal::name)
+            .to_vec();
+        named.sort_unstable();
+        all.sort_unstable();
+        assert_eq!(named, all);
+    }
+    #[test]
+    fn modifiers_keep_the_target_and_baseline() -> TestResult {
+        let version: fux_wire::command::Version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
+            .parse()
+            .map_err(|()| "version")?;
+        let pane = Fux::Pane(version.pane, Some(version.run));
+        let tab = Fux::Tab(fux_wire::id::TabId::of(1), Some(version.run));
+        let workspace = Fux::Workspace(fux_wire::id::WsId::of(1), Some(version.run));
+        let client = Fux::Client(fux_wire::id::ClientId::of(1), Some(version.run));
+        let on = [
+            None,
+            Some(On::Target(AnyRef::Pane(version.pane))),
+            Some(On::Target(AnyRef::Tab(fux_wire::id::TabId::of(1)))),
+            Some(On::Target(AnyRef::Workspace(fux_wire::id::WsId::of(1)))),
+            Some(On::Client(fux_wire::id::ClientId::of(1))),
+            Some(On::Version(version)),
+            Some(On::Changed(version)),
+            Some(On::Seen(version)),
+        ];
+        let mut targets = vec![
+            pane,
+            tab,
+            workspace,
+            client,
+            Fux::Answer(
+                Rc::new(super::super::Answer::Pane(
+                    fux_wire::answer::PaneAnswer::Acted(version),
+                )),
+                Some(version.run),
+            ),
+            Fux::Answer(
+                Rc::new(super::super::Answer::Pane(
+                    fux_wire::answer::PaneAnswer::Closed(version.pane),
+                )),
+                Some(version.run),
+            ),
+        ];
+        targets.extend(on.map(|on| {
+            Fux::Opts(std::rc::Rc::new(Opts {
+                on,
+                ..Opts::default()
+            }))
+        }));
+        for target in targets {
+            let expected = modifying(Value::App(target.clone())).map_err(|f| f.message)?;
+            let kind = match target.name() {
+                "pane" | "answer" | "closed-answer" => "pane-request",
+                "tab" => "tab-request",
+                "workspace" => "workspace-request",
+                "client" => "client-request",
+                request => request,
+            };
+            for &opt in Opt::ALL
+                .iter()
+                .filter(|o| !matches!(o, Opt::Changed | Opt::Expect))
+            {
+                let effect = Word::Opt(opt).row().effect;
+                let pane_only = effect.starts_with("pane-builder");
+                if pane_only && !matches!(kind, "pane-request") {
+                    continue;
+                }
+                let args = match opt {
+                    Opt::HistoryBytes => vec![Value::Int(0)],
+                    Opt::Reflow => vec![Value::Bool(false)],
+                    Opt::AlternateScrollLines | Opt::PictureBytes => vec![Value::Int(0)],
+                    Opt::ProgramClipboard => vec![Value::Bool(false)],
+                    Opt::Name | Opt::Cwd | Opt::Program | Opt::Arg | Opt::Text | Opt::Paste => {
+                        vec![Value::str("x")]
+                    }
+                    Opt::ShellProgram => {
+                        vec![Value::List(std::rc::Rc::new(super::super::List::new(
+                            vec![Value::str("sh")],
+                        )))]
+                    }
+                    Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
+                    Opt::Rows | Opt::Cols => vec![Value::Int(0), Value::Int(1)],
+                    Opt::Since => vec![Value::str("%1:0.0.0.0.0:1-1")],
+                    Opt::In => vec![Value::str("+1")],
+                    Opt::Timeout | Opt::History => vec![Value::Int(0)],
+                    Opt::Key => vec![Value::str("Enter")],
+                    Opt::Bytes => vec![Value::Bytes(Rc::new(vec![97]))],
+                    Opt::Axis => vec![Value::str("horizontal")],
+                    Opt::Watch
+                    | Opt::KillFirst
+                    | Opt::Wrapped
+                    | Opt::Full
+                    | Opt::Styles
+                    | Opt::Marks
+                    | Opt::MainScreen
+                    | Opt::AltScreen
+                    | Opt::LastOutput
+                    | Opt::Changed
+                    | Opt::Expect => vec![],
+                };
+                // `arg` requires a program first, which preserves the same kind.
+                let initial = if opt == Opt::Arg {
+                    let mut built = expected.clone();
+                    std::rc::Rc::make_mut(&mut built).argv.push("sh".into());
+                    Fux::Opts(built)
+                } else {
+                    target.clone()
+                };
+                let mut values = std::iter::once(Value::App(initial)).chain(args.clone());
+                let actual = modify(opt, &mut || {
+                    values
+                        .next()
+                        .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
+                })
+                .map_err(|f| f.message)?;
+                assert_eq!(actual.on, expected.on, "{target:?} {opt}");
+                assert_eq!(Fux::Opts(actual).name(), kind, "{target:?} {opt}");
+            }
+        }
+        Ok(())
     }
 }

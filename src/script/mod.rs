@@ -31,7 +31,7 @@ use std::io::{self, Read, Write};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-pub use value::{Done, Failure, List, Value};
+pub use value::{Done, Failure, List, Value, quoted};
 
 pub use callback::admit;
 pub(crate) use words::NAMES;
@@ -465,6 +465,7 @@ impl<'a> Host<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
     pub code: Code,
+    pub kind: Option<String>,
     pub message: String,
     pub place: Option<String>,
     pub actions: Vec<String>,
@@ -475,6 +476,7 @@ impl Failed {
     pub fn new(code: impl Into<Code>, message: impl Into<String>) -> Failed {
         Failed {
             code: code.into(),
+            kind: None,
             message: message.into(),
             place: None,
             actions: Vec::new(),
@@ -488,7 +490,10 @@ impl Failed {
             Some(place) => format!("{} ({place})", self.message),
             None => self.message.clone(),
         };
-        let mut notice = Failed::new(self.code, message).to_string();
+        let mut shown = self.clone();
+        shown.message = message;
+        shown.place = None;
+        let mut notice = shown.to_string();
         for step in &self.actions {
             notice.push_str(&format!("; already took effect: {step}"));
         }
@@ -527,7 +532,12 @@ impl std::fmt::Display for Failed {
             .filter(|l| !l.is_empty())
             .map(|line| line.chars().map(escaped).collect())
             .collect();
-        write!(f, "{}: {}", self.code, lines.join("\\n"))
+        write!(
+            f,
+            "{}: {}",
+            self.kind.as_deref().unwrap_or(self.code.name()),
+            lines.join("\\n")
+        )
     }
 }
 
@@ -1325,7 +1335,7 @@ pub fn main(
     }
     let (mut machine, from, program) = match args {
         [] => (
-            Machine::source("command line", "(attach (opts))"),
+            Machine::source("command line", "(attach (options))"),
             Given::Words,
             None,
         ),
@@ -1406,5 +1416,167 @@ struct IoText<'a>(&'a mut dyn Write);
 impl std::fmt::Write for IoText<'_> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
         self.0.write_all(s.as_bytes()).map_err(|_| std::fmt::Error)
+    }
+}
+
+/// Public record names follow grift's spelling; native wire names stay private.
+fn field_name(name: &str) -> String {
+    match name {
+        "cols" => "columns".into(),
+        "col" => "column".into(),
+        "len" => "length".into(),
+        "pid" => "process-id".into(),
+        "server_pid" => "server-process-id".into(),
+        "cwd" => "directory".into(),
+        "argv" => "arguments".into(),
+        "tty" => "terminal".into(),
+        _ => name.replace('_', "-"),
+    }
+}
+fn native_field(name: &str) -> String {
+    match name {
+        "columns" => "cols".into(),
+        "column" => "col".into(),
+        "length" => "len".into(),
+        "process-id" => "pid".into(),
+        "server-process-id" => "server_pid".into(),
+        "directory" => "cwd".into(),
+        "arguments" => "argv".into(),
+        "terminal" => "tty".into(),
+        _ => name.replace('-', "_"),
+    }
+}
+
+/// A session asked in-process, and programs run against one held reply:
+/// for the tests (fux-server's among them) and the fuzz targets.
+#[cfg(any(test, feature = "in-process"))]
+pub mod testing {
+    /// A session, as what a program's requests go to (`Session::answer`).
+    pub struct InProcess<'s>(pub &'s mut fux_server::session::Session);
+
+    impl super::Asks for InProcess<'_> {
+        fn published(
+            &mut self,
+            state: &crate::client_state::ClientState,
+            context: &fux_wire::protocol::Context,
+        ) {
+            self.0
+                .present(context.client, state.preferences.presentation());
+        }
+        fn ask(
+            &mut self,
+            asked: &fux_wire::protocol::Asked,
+        ) -> Result<super::Reply, super::Failed> {
+            Ok(self.0.answer(asked))
+        }
+    }
+
+    /// A session with a terminal client of `rows` by `cols` attached, its
+    /// first workspace started as this client's defaults start one.
+    pub fn attached(
+        rows: u16,
+        cols: u16,
+    ) -> Result<(fux_server::session::Session, fux_wire::id::ClientId), String> {
+        use fux_wire::command::{InitialWorkspace, Run, Start};
+        let run = Run::now().ok_or("no clock")?;
+        let preferences = super::default_state()
+            .map_err(|e| e.to_string())?
+            .preferences;
+        let mut session = fux_server::session::Session::new(
+            "/nonexistent/fux.sock".into(),
+            false,
+            run,
+            preferences.journal_entries,
+        );
+        let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
+        let attach = fux_wire::protocol::Attach {
+            initial: Some(InitialWorkspace {
+                name: None,
+                start: Start::Shell(preferences.shell.clone()),
+                options: preferences.pane_options(),
+                cwd: std::env::current_dir().map_err(|e| e.to_string())?,
+            }),
+            ..fux_wire::protocol::Attach::of(size, preferences.presentation())
+        };
+        let client =
+            (session.attach_as(attach, std::time::Instant::now())).map_err(|e| e.to_string())?;
+        Ok((session, client))
+    }
+
+    pub fn evaluate(
+        code: &str,
+        state: Option<&mut super::Draft>,
+        asks: &mut impl super::Asks,
+        out: &mut dyn std::io::Write,
+    ) -> Result<Vec<super::Value<super::Fux>>, super::Failed> {
+        let mut machine = super::Machine::source("test", code);
+        let mut host = super::Host::new(fux_wire::protocol::Context::default(), state, out);
+        super::run(&mut machine, &mut host, asks, None)
+    }
+
+    pub fn held_reply(
+        code: &str,
+        reply: super::Reply,
+        out: &mut Vec<u8>,
+    ) -> Result<Vec<super::Value<super::Fux>>, super::Failed> {
+        struct Once(Option<super::Reply>);
+        impl super::Asks for Once {
+            fn ask(
+                &mut self,
+                asked: &fux_wire::protocol::Asked,
+            ) -> Result<super::Reply, super::Failed> {
+                if let fux_wire::command::Request::Do(fux_wire::command::Command::Resolve {
+                    text,
+                    ..
+                }) = &asked.request
+                {
+                    let id = text.parse().map_err(|()| {
+                        super::Failed::new(fux_wire::code::Code::Usage, "test target")
+                    })?;
+                    return Ok(super::Reply {
+                        run: self.0.as_ref().and_then(|r| r.run),
+                        ..fux_wire::protocol::Body::Found(id).into()
+                    });
+                }
+                self.0.take().ok_or_else(|| {
+                    super::Failed::new(
+                        fux_wire::code::Code::Usage,
+                        "held field made another request",
+                    )
+                })
+            }
+        }
+        evaluate(code, None, &mut Once(Some(reply)), out)
+    }
+
+    /// A batch's events as `next-events` prints them, a line each, but
+    /// for the fields named in `without`.
+    pub fn event_lines(
+        batch: fux_wire::events::Batch,
+        without: &[&str],
+    ) -> Result<String, super::Failure> {
+        use super::Value;
+        let not_a = |what| super::Failure::new(fux_wire::code::Code::Fail, what);
+        let Value::App(super::Fux::Record(record)) = super::record::events(batch)? else {
+            return Err(not_a("a batch's record"));
+        };
+        let Value::List(events) = record.get("events")? else {
+            return Err(not_a("a batch's events"));
+        };
+        let mut lines = String::new();
+        for event in events.items() {
+            let Value::App(super::Fux::Record(event)) = event else {
+                return Err(not_a("an event's record"));
+            };
+            let mut event = (**event).clone();
+            event
+                .fields
+                .retain(|(key, _)| !without.contains(&key.as_str()));
+            event
+                .write(&mut lines)
+                .map_err(|_| not_a("an event's text"))?;
+            lines.push('\n');
+        }
+        Ok(lines)
     }
 }

@@ -27,7 +27,7 @@ impl Record {
     pub(super) fn get(&self, field: &str) -> Result<V, Failure> {
         self.fields
             .iter()
-            .find(|(key, _)| key.replace('_', "-") == field.replace('_', "-"))
+            .find(|(key, _)| super::field_name(key) == field)
             .map(|(_, v)| v.clone())
             .ok_or_else(|| {
                 Failure::new(
@@ -53,7 +53,7 @@ impl Record {
             if i > 0 {
                 out.write_str(" ")?;
             }
-            write!(out, "({} ", key.replace('_', "-"))?;
+            write!(out, "({} ", super::field_name(key))?;
             value.write_data(out)?;
             out.write_str(")")?;
         }
@@ -564,4 +564,155 @@ fn styles(
         col = col.checked_add(cells).ok_or_else(fail)?;
     }
     Ok(Value::List(Rc::new(List::new(values))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_records_keep_typed_identities() -> Result<(), Failure> {
+        use fux_wire::events::{Actor, Batch, Cursor, Item, Status};
+        use fux_wire::id::{ClientId, PaneId, TabId, WsId};
+        let next: Cursor = "1:1-0".parse().map_err(|()| fail())?;
+        for origin in [
+            Actor::Outside,
+            Actor::Server,
+            Actor::Client(ClientId::of(3)),
+            Actor::Pane(PaneId::of(4), 5),
+            Actor::Program(PaneId::of(4), 5),
+        ] {
+            let batch = Batch {
+                first: next,
+                next,
+                missed: 0,
+                status: Status::Continuing,
+                events: vec![Item {
+                    data: Json::object(vec![
+                        ("event", Json::str("moved")),
+                        (
+                            "name",
+                            Json::str(std::iter::repeat_n('𐀀', 64).collect::<String>()),
+                        ),
+                    ]),
+                    pane: Some(PaneId::of(1)),
+                    tab: Some(TabId::of(2)),
+                    workspace: Some(WsId::of(3)),
+                    parent: None,
+                    client: Some(ClientId::of(4)),
+                    moved_from: Some((WsId::of(5), TabId::of(6))),
+                    origin,
+                    next,
+                }],
+            };
+            let root = events(batch)?;
+            let Value::App(Fux::Record(record)) = &root else {
+                return Err(fail());
+            };
+            let Value::List(list) = record.get("events")? else {
+                return Err(fail());
+            };
+            let Value::App(Fux::Record(event)) = list.items().first().ok_or_else(fail)? else {
+                return Err(fail());
+            };
+            assert_eq!(
+                event
+                    .fields
+                    .iter()
+                    .map(|(key, _)| key.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "event",
+                    "pane",
+                    "tab",
+                    "workspace",
+                    "client",
+                    "from_tab",
+                    "from_workspace",
+                    "name",
+                    "origin",
+                    "seq",
+                    "next"
+                ]
+            );
+            assert_eq!(event.get("seq")?, Value::Int(0));
+            assert_eq!(
+                event.get("pane")?,
+                id(AnyRef::Pane(PaneId::of(1)), next.run)
+            );
+            assert_eq!(
+                event.get("from-tab")?,
+                id(AnyRef::Tab(TabId::of(6)), next.run)
+            );
+            assert_eq!(
+                event.get("client")?,
+                Value::App(Fux::Client(ClientId::of(4), Some(next.run)))
+            );
+            let Value::App(Fux::Record(actor)) = event.get("origin")? else {
+                return Err(fail());
+            };
+            assert_eq!(actor.get("kind")?, Value::str(origin.kind()));
+            match origin {
+                Actor::Client(c) => assert_eq!(
+                    actor.get("client")?,
+                    Value::App(Fux::Client(c, Some(next.run)))
+                ),
+                Actor::Pane(p, generation) | Actor::Program(p, generation) => {
+                    assert_eq!(actor.get("pane")?, id(AnyRef::Pane(p), next.run));
+                    assert_eq!(actor.get("generation")?, number(generation)?);
+                }
+                Actor::Outside | Actor::Server => {}
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_fields_preserve_null_lists_and_scalar_types() -> Result<(), Failure> {
+        let value = from_json(&Json::Object(vec![
+            ("empty".into(), Json::Null),
+            (
+                "items".into(),
+                Json::Array(vec![
+                    Json::String("%7".into()),
+                    Json::Bool(false),
+                    Json::Int(-9),
+                ]),
+            ),
+        ]))?;
+        let Value::App(Fux::Record(r)) = value else {
+            return Err(fail());
+        };
+        assert_eq!(r.get("empty")?, null());
+        assert_eq!(
+            r.get("missing").map_err(|e| e.code),
+            Err(Code::from(Raise::NoField).into())
+        );
+        let Value::List(items) = r.get("items")? else {
+            return Err(fail());
+        };
+        assert_eq!(
+            items.items(),
+            &[Value::str("%7"), Value::Bool(false), Value::Int(-9)]
+        );
+        assert_eq!(
+            from_json(&Json::Uint(u64::MAX)).map_err(|e| e.code),
+            Err(Code::Range)
+        );
+        assert_eq!(r.get("items")?, Value::List(items));
+        Ok(())
+    }
+
+    #[test]
+    fn records_refuse_what_nests_too_deep() {
+        let mut deep = Json::Null;
+        for _ in 0..inspect::DEPTH {
+            deep = Json::Array(vec![deep]);
+        }
+        assert!(from_json(&deep).is_err());
+        let Json::Array(within) = deep else {
+            return;
+        };
+        assert!(within.first().is_some_and(|v| from_json(v).is_ok()));
+    }
 }

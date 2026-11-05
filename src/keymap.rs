@@ -977,7 +977,9 @@ mod tests {
             steps,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(crate::testing::code("me focused zoom").into())
+                Effect::Run(
+                    crate::testing::code("(lambda! () (zoom (focused (me))) #inert)").into()
+                )
             ]
         );
         assert_eq!(held, Held::Normal);
@@ -994,7 +996,11 @@ mod tests {
     #[test]
     fn a_map_two_deep_repeats_until_escape() -> Result<(), String> {
         let mut keymap = defaults()?;
-        let zoom = || Binding::new(crate::testing::code("me focused zoom"));
+        let zoom = || {
+            Binding::new(crate::testing::code(
+                "(lambda! () (zoom (focused (me))) #inert)",
+            ))
+        };
         keymap.bind(&keys("C-b y u i")?, zoom())?;
         keymap.set_repeat(&keys("C-b y u")?)?;
         let mut held = Held::default();
@@ -1028,7 +1034,9 @@ mod tests {
         let steps = held.press(&keymap, stroke("d")?, true);
         assert_eq!(
             steps,
-            [Effect::Run(crate::testing::code("me detach").into())]
+            [Effect::Run(
+                crate::testing::code("(lambda! () (detach (me)))").into()
+            )]
         );
         Ok(())
     }
@@ -1039,7 +1047,7 @@ mod tests {
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
         let mut keymap = defaults()?;
-        let new_tab = || crate::testing::code("opts new-tab drop");
+        let new_tab = || crate::testing::code("(lambda! () (new-tab (options)) #inert)");
         keymap.bind(&keys("C-b y")?, Binding::new(new_tab()))?;
         let prefix = keys("C-b")?;
         let entries = keymap
@@ -1095,7 +1103,10 @@ mod tests {
             press("j")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(crate::testing::code("me-focused str down step").into())
+                Effect::Run(
+                    crate::testing::code("(lambda! () (step (me) (focused (me)) \"down\") #inert)")
+                        .into()
+                )
             ]
         );
         Ok(())
@@ -1104,17 +1115,32 @@ mod tests {
     #[test]
     fn list_keys_shows_maps_their_repeats_and_keys_at_the_root() -> Result<(), String> {
         let mut keymap = Keymap::default();
-        let bind = |keymap: &mut Keymap, keys_text: &str, code: &str| {
-            keymap.bind(&keys(keys_text)?, Binding::new(crate::testing::code(code)))
+        let bind = |map: &mut Keymap, chord: &str, source: &str| {
+            map.bind(&keys(chord)?, Binding::new(crate::testing::code(source)))
         };
-        bind(&mut keymap, "C-b g n", "opts new-tab drop")?;
-        bind(&mut keymap, "C-b y l", "me focused str right 1 move-border")?;
+        bind(
+            &mut keymap,
+            "C-b g n",
+            "(lambda! () (new-tab (options)) #inert)",
+        )?;
+        bind(
+            &mut keymap,
+            "C-b y l",
+            "(lambda! () (move-border (focused (me)) \"right\" 1))",
+        )?;
         keymap.set_repeat(&keys("C-b y")?)?;
-        bind(&mut keymap, "M-t", "me focused zoom")?;
-        assert_eq!(
-            keymap.describe(),
-            "unbind-all\nstr 'C-b g n' code opts new-tab drop end bind\nstr 'C-b y l' code me focused str right 1 move-border end bind\nstr M-t code me focused zoom end bind\nstr 'C-b y' repeat\n"
-        );
+        bind(&mut keymap, "M-t", "(lambda! () (zoom (focused (me))))")?;
+        let source = keymap.describe();
+        for chord in ["C-b g n", "C-b y l", "M-t", "C-b y"] {
+            assert!(source.contains(chord));
+        }
+        let path = fuxix::file::scratch()
+            .map_err(|e| e.to_string())?
+            .join(format!("keys-{}.grift", std::process::id()));
+        std::fs::write(&path, &source).map_err(|e| e.to_string())?;
+        let state = crate::script::run_file(&path);
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        assert_eq!(state.map_err(|e| e.to_string())?.keys, keymap);
         Ok(())
     }
 
@@ -1123,7 +1149,11 @@ mod tests {
     #[test]
     fn keys_bind_as_deep_as_their_record_goes_on_the_wire() -> crate::TestResult {
         let mut keymap = Keymap::default();
-        let zoom = || Binding::new(crate::testing::code("me focused zoom"));
+        let zoom = || {
+            Binding::new(crate::testing::code(
+                "(lambda! () (zoom (focused (me))) #inert)",
+            ))
+        };
         keymap.bind(&vec![key("a")?; DEEPEST], zoom())?;
         let record = keymap.record(&[]);
         let bytes = fux_wire::wire::encode(&record);
@@ -1138,7 +1168,11 @@ mod tests {
     #[test]
     fn keys_bind_a_binding_or_a_map_and_move_whole() -> Result<(), String> {
         let mut keymap = defaults()?;
-        let zoom = || Binding::new(crate::testing::code("me focused zoom"));
+        let zoom = || {
+            Binding::new(crate::testing::code(
+                "(lambda! () (zoom (focused (me))) #inert)",
+            ))
+        };
         assert!(
             keymap.bind(&keys("C-b t")?, zoom()).is_err(),
             "t holds a map"
