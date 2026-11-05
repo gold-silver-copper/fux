@@ -1,5 +1,5 @@
 //! Processes on Unix: their IDs, signals, sessions, and how they end.
-use super::{Signal, Status};
+use super::{Dispositions, Reach, Scan, Sent, Signal, Status, TREE_MAX, Tree};
 use crate::errno::{Errno, Result, check, fit};
 use std::ffi::OsString;
 use std::fmt;
@@ -112,21 +112,6 @@ pub fn lead_session(
     unsafe { command.pre_exec(lead) };
 }
 
-/// What a program [`lead_session`] starts does with each signal as it
-/// begins. Either way no signal is blocked.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Dispositions {
-    /// As this process inherited them, as from a shell: a signal it ignores
-    /// stays ignored (`nohup`'s SIGHUP), and so does one ignored before a
-    /// [`crate::signal::Pipe`] caught it; one it catches is the default.
-    /// For a wrapper, which runs a command as it was itself run.
-    Inherited,
-    /// Every signal the default, as a new terminal's program begins
-    /// (tmux's and screen's choice): ^C interrupts, whatever this process
-    /// was started ignoring.
-    Default,
-}
-
 /// The session of `pid`. `None` if there is none to name: the process is
 /// gone, or is a kernel thread, whose session is 0.
 pub fn session(pid: Pid) -> Option<Pid> {
@@ -236,30 +221,6 @@ pub fn reap_orphans(kept: impl Fn(Pid) -> bool) -> Vec<(Pid, Status)> {
         }
         reaped
     }
-}
-
-/// The most processes a [`tree`] holds: a runaway tree is cut short here.
-pub(crate) const TREE_MAX: usize = 4096;
-
-/// What a [`tree`] found, and whether it looked everywhere.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Tree {
-    pub pids: Vec<Pid>,
-    pub scan: Scan,
-}
-
-/// How a scan of the tree ended. `Complete` says it read every process it
-/// found, not that what it found is all there is once used: a process may
-/// start or end meanwhile.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Scan {
-    #[default]
-    Complete,
-    /// There may be more: past `TREE_MAX`, or a list of a session's
-    /// members that filled its buffer on macOS.
-    Truncated,
-    /// The system refused a list, with this error; it read the others.
-    Failed(Errno),
 }
 
 impl Tree {
@@ -466,26 +427,6 @@ fn everyone() -> Tree {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Job(Pid);
 
-/// Which of a [`Job`]'s processes a signal reaches.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Reach {
-    /// Its leader's process group: what it started, but a job a shell put
-    /// in a group of its own, or one that left the group.
-    Group,
-    /// Its group and every other process in its session ([`Job::members`]).
-    Session,
-}
-
-/// What a [`Job::signal`] may have missed: the members it did not find
-/// (the scan for them, [`Scan::Complete`] for [`Reach::Group`]), and each
-/// process or group (its leader's pid) the system did not signal, with
-/// the error as it is: [`Errno::SRCH`] for one gone already.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Sent {
-    pub scan: Scan,
-    pub failed: Vec<(Pid, Errno)>,
-}
-
 impl Job {
     /// Starts `command` contained ([`lead_session`]), with the std handle,
     /// which waits for nothing when dropped.
@@ -538,6 +479,12 @@ impl Job {
             scan: others.scan,
             failed: group.into_iter().chain(each).collect(),
         }
+    }
+
+    /// Kills it as far as `reach` says: [`Job::signal`] with
+    /// [`Signal::Kill`], the one way to end a job that every OS has.
+    pub fn kill(&self, reach: Reach) -> Sent {
+        self.signal(Signal::Kill, reach)
     }
 
     /// Whether its leader has ended, without reaping it ([`ended`]).

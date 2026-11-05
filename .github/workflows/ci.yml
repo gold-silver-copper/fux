@@ -326,6 +326,29 @@ jobs:
           key: windows-${{ matrix.os }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
+      # The pinned ConPTY package (WINDOWS.md, PR 6), downloaded once and
+      # cached, hash-checked here: fuxix's ConPTY tests read it from
+      # FUXIX_CONPTY_PACKAGE, so no test touches the network. The tests
+      # (fuxix/tests/conpty.rs and conpty_fallback.rs) run in the step
+      # below, and log S1's byte-exactness and S4's probes.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/conpty
+          key: conpty-1.25.260930003
+      - name: ConPTY package
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/conpty/conpty.nupkg"
+          mkdir -p "$(dirname "$package")"
+          if [ ! -f "$package" ]; then
+            curl --fail --silent --show-error --location --proto =https \
+              --retry 5 --retry-all-errors --max-time 120 -o "$package" \
+              https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/1.25.260930003/microsoft.windows.console.conpty.1.25.260930003.nupkg
+          fi
+          echo "02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee  $package" | sha256sum --check
+          echo "FUXIX_CONPTY_PACKAGE=$package" >> "$GITHUB_ENV"
+
       - name: fux-vt, fuxth, fuxix and fux-wire
         run: |
           set -euo pipefail

@@ -3,8 +3,9 @@
 //! [`process::Signal`]'s name, a [`process::Status`], an [`Errno`] and
 //! [`Allocation`]), the event loop: [`poll`], [`signal::Pipe`] and
 //! [`io`]'s reads and writes, over one I/O completion port per process,
-//! and [`socket`]'s named pipes, with `windows-sys`; the other modules are
-//! Unix only.
+//! [`socket`]'s named pipes, and [`pty`]'s pseudo consoles with their
+//! [`process::Job`]s and sizes ([`terminal`]), with `windows-sys`; the
+//! other modules are Unix only.
 //!
 //! fux forbids `unsafe` code; this crate is where the `unsafe` it needs
 //! lives, one call per block, each with its reasoning. Every function is
@@ -39,11 +40,9 @@ pub mod file;
 pub mod io;
 pub mod poll;
 pub mod process;
-#[cfg(unix)]
 pub mod pty;
 pub mod signal;
 pub mod socket;
-#[cfg(unix)]
 pub mod terminal;
 
 pub use allocation::Allocation;

@@ -427,8 +427,11 @@ fn linger(op: &Op) {
 }
 
 /// Takes bytes the stream read into `buffer`: how many, 0 at the end, and
-/// `AGAIN` while none have come. Taking the last starts the next read.
-pub fn read(stream: &Stream, buffer: &mut [u8]) -> Result<usize> {
+/// `AGAIN` while none have come. Taking the last starts the next read. A
+/// [`crate::pty::Master`] reads its program's output; a source that reads
+/// nothing fails with `BADF`.
+pub fn read(source: &(impl Source + ?Sized), buffer: &mut [u8]) -> Result<usize> {
+    let stream = source.reading().ok_or(Errno::BADF)?;
     if buffer.is_empty() {
         return Ok(0);
     }
@@ -460,8 +463,11 @@ pub fn read(stream: &Stream, buffer: &mut [u8]) -> Result<usize> {
 
 /// Gives the stream as much of `bytes` as its buffer holds, to be written
 /// from there: how many, or `AGAIN` while a write is in flight. An error
-/// the write ends with is told by the next.
-pub fn write(stream: &Stream, bytes: &[u8]) -> Result<usize> {
+/// the write ends with is told by the next. A [`crate::pty::Master`]
+/// writes its program's input; a source that writes nothing fails with
+/// `BADF`.
+pub fn write(source: &(impl Source + ?Sized), bytes: &[u8]) -> Result<usize> {
+    let stream = source.writing().ok_or(Errno::BADF)?;
     if bytes.is_empty() {
         return Ok(0);
     }
@@ -493,7 +499,7 @@ pub fn write(stream: &Stream, bytes: &[u8]) -> Result<usize> {
 /// or a write would wait (`AGAIN`). How many were written, maybe none; an
 /// error only if none were, as one that came after some comes again with
 /// the next write. [`Errno::is_peer_gone`] tells a reader gone.
-pub fn write_what_fits(stream: &Stream, bytes: &[u8]) -> Result<usize> {
+pub fn write_what_fits(stream: &(impl Source + ?Sized), bytes: &[u8]) -> Result<usize> {
     let mut written = 0usize;
     while let Some(rest) = bytes.get(written..).filter(|rest| !rest.is_empty()) {
         match write(stream, rest) {

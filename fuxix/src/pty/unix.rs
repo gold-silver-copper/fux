@@ -1,0 +1,918 @@
+//! Pseudoterminals on Unix, and starting a program on one.
+//!
+//! [`open`] gives the two ends as handles that keep what their users must
+//! not get wrong: the [`Master`] is close-on-exec and nonblocking, and the
+//! [`Slave`] is given up to [`Slave::spawn`], which starts a program on it
+//! as the leader of a session of its own with the PTY as its controlling
+//! terminal, and leaves the parent without it (but on macOS, where the
+//! master holds it too: [`Master`]).
+//!
+//! **The end of a program and of its output**, the same on both systems:
+//! once [`crate::process::ended`] (or `reap`) says the program has ended,
+//! read the master until it says `AGAIN`, or that it is closed (0, or
+//! `IO`); then everything the program wrote has been read, as each of its
+//! writes is readable on the master by the time it returns. Waiting for the
+//! master to close does not tell the end: on Linux it closes once every
+//! holder of the slave has closed it, which a job the program left running
+//! may never do, and which a program whose stdin is elsewhere may do before
+//! it exits; on macOS, where the master holds the slave, it may not close
+//! at all. A poll loop learns of the end from a [`crate::signal::Pipe`] of
+//! `Chld`.
+use super::{Error, at};
+use crate::errno::{Errno, check};
+use crate::process::Job;
+use crate::terminal::{self, Size};
+use std::ffi::OsStr;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+
+/// A PTY's master: close-on-exec, so no program this process starts holds
+/// the PTY open, and nonblocking, so a read or write that would wait fails
+/// with `AGAIN` instead. Read and write it with [`crate::io`] or as a
+/// `std::io` reader and writer, and wait for it with [`crate::poll`].
+///
+/// On macOS it keeps the slave open too, for as long as it lives. There the
+/// last close of a slave throws away the output not yet read from the
+/// master (xnu's `ttylclose`: at once if the closing descriptor is
+/// nonblocking, else once 60 ticks pass), and the master reads nothing
+/// more once no slave is open (`ptcread`). The last close would otherwise
+/// be anyone's: this process's copies as it starts a program that has
+/// already printed and exited. Held, the slave is closed last with the
+/// master, after its output was read. Its end is told by the program's
+/// exit, not by the master's hangup, which need not come while the slave is
+/// held (the module's doc says how).
+#[derive(Debug)]
+pub struct Master(
+    OwnedFd,
+    #[cfg(target_os = "macos")]
+    #[expect(dead_code, reason = "held open, never read: see above")]
+    OwnedFd,
+);
+
+/// A PTY's slave, not yet given to the program that runs on it
+/// ([`Slave::spawn`]). It is close-on-exec, and not this process's
+/// controlling terminal.
+#[derive(Debug)]
+pub struct Slave(OwnedFd);
+
+impl AsFd for Master {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl AsFd for Slave {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+/// Read as `std::io` reads: with `AGAIN` as `WouldBlock`, until a caller
+/// that wants to wait makes it blocking (`io::set_nonblocking`). There is
+/// no plain descriptor to take out of it: on macOS that would close the
+/// slave it holds, and lose what was not read yet.
+impl std::io::Read for &Master {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        crate::io::read(self, buffer).map_err(Into::into)
+    }
+}
+
+impl std::io::Read for Master {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        (&*self).read(buffer)
+    }
+}
+
+/// Written as `std::io` writes, as it reads.
+impl std::io::Write for &Master {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        crate::io::write(self, bytes).map_err(Into::into)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl std::io::Write for Master {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        (&*self).write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Slave {
+    /// Starts `argv` on this PTY, as the leader of a new session with the
+    /// PTY as its controlling terminal and its stdin, stdout and stderr,
+    /// and no other descriptor; `setup` sets its directory and environment,
+    /// and its signals start as `dispositions` says
+    /// ([`crate::process::lead_session`]). `dispositions` comes last so that
+    /// leaving it out is told as a missing argument, not as a closure whose
+    /// type is unknown. Returns once the program runs, with its std handle
+    /// (which waits for nothing when dropped) and its [`Job`], or once it
+    /// cannot, with the system's error as it is: a `NotFound` may be the
+    /// program, its `#!` interpreter or the directory, which the system
+    /// does not tell apart.
+    ///
+    /// A job it left may hold the PTY open after it ends;
+    /// [`Job::members`] lists what is left.
+    pub fn spawn<S: AsRef<OsStr>>(
+        self,
+        argv: &[S],
+        setup: impl FnOnce(&mut Command),
+        dispositions: crate::process::Dispositions,
+    ) -> std::io::Result<(Child, Job)> {
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| std::io::Error::other("no program to run"))?;
+        let mut command = Command::new(program);
+        command.args(args);
+        setup(&mut command);
+        command
+            .stdin(self.0.try_clone()?)
+            .stdout(self.0.try_clone()?)
+            .stderr(self.0);
+        // Dropping `command` closes this side's copies of the PTY.
+        Job::start(&mut command, true, dispositions)
+    }
+}
+
+/// Opens a PTY of `size`: its master and its slave.
+///
+/// macOS, when PTYs are allocated and freed quickly, by any processes, has
+/// two races this works around (the report for Apple, with the details and
+/// reproducers, is linked from fuxix's README):
+/// - Concurrent opens of `/dev/ptmx` can be handed the same PTY number, and
+///   the kernel retries the loser only ten times, sleeping up to 100 ms
+///   between tries, before it returns its own internal code, `EREDRIVEOPEN`
+///   (errno -6). So the master is opened by one thread of the process at a
+///   time, and retried on that code; if the retries run out, the error is
+///   `AGAIN`.
+/// - An open can fail with `ENXIO` while another process closes a PTY. The
+///   clone picks the number one past the end of the kernel's table when no
+///   slot is free (`ptmx_clone`, whose own comment flags the race). If a
+///   close frees a slot before the open goes on, the table is not grown, and
+///   the number is out of range (`ptmx_get_ioctl`, xnu `bsd/kern/tty_ptmx.c`).
+///   The same `ENXIO` is also what every PTY being in use gives, so it is
+///   retried as `EREDRIVEOPEN` is, within the same bound, and if it lasts it
+///   is returned as it is. Seen once in fux's CI: 1 of 16 processes opening
+///   and closing PTYs at once.
+/// - A master can open with no replica node in `/dev`; `grantpt` on it then
+///   never returns, as the kernel restarts it forever. So the replica is
+///   looked up first, and `grantpt` is watched: a master without a replica,
+///   or whose grant stalls, is closed, and another PTY opened in its place;
+///   after `ALLOCATE_TRIES` of those, the error is `AGAIN` from `grantpt`.
+pub fn open(size: Size) -> Result<(Master, Slave), Error> {
+    let master = granted_master()?;
+    // SAFETY: unlockpt takes a descriptor and touches no memory.
+    check(unsafe { libc::unlockpt(master.as_raw_fd()) }).map_err(at("unlockpt"))?;
+    let name = slave_name(&master).map_err(at("ptsname"))?;
+    // std opens close-on-exec, atomically, on every platform.
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(&name)
+        .map_err(at("opening the PTY slave"))?;
+    terminal::set_window_size(&master, size, None).map_err(at("TIOCSWINSZ"))?;
+    crate::io::set_nonblocking(&master, true).map_err(at("O_NONBLOCK"))?;
+    let slave = OwnedFd::from(slave);
+    #[cfg(target_os = "macos")]
+    let master = Master(
+        master,
+        slave.try_clone().map_err(at("holding the PTY slave"))?,
+    );
+    #[cfg(not(target_os = "macos"))]
+    let master = Master(master);
+    Ok((master, Slave(slave)))
+}
+
+/// A new PTY master, granted.
+#[cfg(not(target_os = "macos"))]
+fn granted_master() -> Result<OwnedFd, Error> {
+    let master = open_master().map_err(at("posix_openpt"))?;
+    // SAFETY: grantpt takes a descriptor and touches no memory.
+    check(unsafe { libc::grantpt(master.as_raw_fd()) }).map_err(at("grantpt"))?;
+    Ok(master)
+}
+
+/// A new PTY master, granted, with a replica in `/dev` (see `open`). A master
+/// that fails either is dropped, which frees its PTY, and another opened.
+#[cfg(target_os = "macos")]
+fn granted_master() -> Result<OwnedFd, Error> {
+    for _ in 0..ALLOCATE_TRIES {
+        let master = open_master().map_err(at("posix_openpt"))?;
+        // The name comes from the PTY's number, whether or not its node exists.
+        let name = slave_name(&master).map_err(at("ptsname"))?;
+        if std::fs::symlink_metadata(&name).is_err() {
+            continue;
+        }
+        // SAFETY: grantpt takes a descriptor and touches no memory.
+        let grant = || check(unsafe { libc::grantpt(master.as_raw_fd()) });
+        let null = || std::fs::File::open("/dev/null");
+        // Stalled, the master is /dev/null now; dropping it closes that.
+        if let Some(granted) =
+            watched(master.as_fd(), GRANT_LIMIT, null, grant).map_err(at("grantpt watchdog"))?
+        {
+            return granted.map(|_| master).map_err(at("grantpt"));
+        }
+    }
+    Err(Error {
+        call: "grantpt",
+        source: Errno::AGAIN.into(),
+    })
+}
+
+/// How many PTYs `granted_master` opens before it gives up on finding one
+/// with a replica whose grant returns.
+#[cfg(target_os = "macos")]
+const ALLOCATE_TRIES: u32 = 4;
+
+/// How long `grantpt` may take before it is taken to be the kernel's endless
+/// restart. It changes a node's owner and mode, which takes microseconds.
+#[cfg(target_os = "macos")]
+const GRANT_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Runs `call`, a call on `fd` that could otherwise never return: if it has not
+/// returned within `limit`, a watchdog thread replaces `fd` with `/dev/null`, so
+/// the call, which the kernel keeps restarting, fails with `/dev/null`'s error
+/// and returns. The descriptor stays open throughout, as the caller holds it;
+/// only the file behind it changes. What it returned within the limit; `None`
+/// if it stalled, whatever it returned being from `/dev/null`.
+///
+/// `/dev/null` is opened, by `null`, before the call: a process out of
+/// descriptors, as one whose PTY allocation stalls may be, could not open it
+/// after. If it cannot be opened, or the watchdog cannot be started, `call`
+/// is not entered, and the preparation error is returned.
+#[cfg(any(target_os = "macos", test))]
+fn watched<T>(
+    fd: BorrowedFd<'_>,
+    limit: std::time::Duration,
+    null: impl FnOnce() -> std::io::Result<std::fs::File>,
+    call: impl FnOnce() -> T,
+) -> std::io::Result<Option<T>> {
+    use std::sync::{Arc, Condvar, Mutex, PoisonError};
+    let raw = fd.as_raw_fd();
+    let null = null()?;
+    // (the call returned, fd was replaced), and the watchdog's wake-up.
+    let shared = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    let watchdog_shared = Arc::clone(&shared);
+    let watchdog = std::thread::Builder::new()
+        .name("fuxix-watchdog".to_owned())
+        .spawn(move || {
+            let (state, wake) = &*watchdog_shared;
+            let mut state = wake
+                .wait_timeout_while(
+                    state.lock().unwrap_or_else(PoisonError::into_inner),
+                    limit,
+                    |(returned, _)| !*returned,
+                )
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+            // The lock is held until the replacement is recorded, so the caller
+            // sees either a call that returned first or a replaced descriptor.
+            if !state.0 {
+                state.1 = replace_with_null(raw, &null);
+            }
+            drop(state);
+        })?;
+    let result = call();
+    let replaced = {
+        let (state, wake) = &*shared;
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.0 = true;
+        wake.notify_one();
+        state.1
+    };
+    watchdog
+        .join()
+        .map_err(|_| std::io::Error::other("grantpt watchdog panicked"))?;
+    Ok((!replaced).then_some(result))
+}
+
+/// Makes the descriptor `raw` refer to `null`, `/dev/null` opened already,
+/// closing what it referred to; whether it did.
+#[cfg(any(target_os = "macos", test))]
+fn replace_with_null(raw: libc::c_int, null: &std::fs::File) -> bool {
+    // SAFETY: dup2 takes two descriptor numbers and touches no memory. `raw`
+    // is open: `watched`'s caller holds it, and closes it only after `watched`
+    // returns, which is after this thread has finished.
+    let replaced = unsafe { libc::dup2(null.as_raw_fd(), raw) };
+    replaced >= 0
+}
+
+/// A new PTY master, close-on-exec: atomically, with `O_CLOEXEC`, so that
+/// no process another thread starts meanwhile inherits it (and holds the
+/// slave's hang-up back for as long as it lives). macOS takes the flag (27
+/// does; older releases may refuse it with `EINVAL`, and then the flag is
+/// set straight after the open).
+fn open_master() -> crate::Result<OwnedFd> {
+    #[cfg(not(target_os = "macos"))]
+    // SAFETY: posix_openpt takes flags and touches no memory.
+    let raw =
+        check(unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) })?;
+    #[cfg(target_os = "macos")]
+    let (raw, atomic) = open_master_serialized()?;
+    // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
+    let master = unsafe { OwnedFd::from_raw_fd(raw) };
+    #[cfg(target_os = "macos")]
+    if !atomic {
+        crate::io::set_cloexec(&master)?;
+    }
+    Ok(master)
+}
+
+/// `posix_openpt` on macOS, by one thread of this process at a time and
+/// retried while the kernel reports the PTY allocation race (`redrive`).
+///
+/// The lock keeps this process's threads from racing each other into the
+/// kernel's retry loop, whose sleeps made single opens take over 400 ms. It is
+/// held through the retries' own sleeps too: while one opener is losing to
+/// another process, this process's other threads would only join the race.
+///
+/// It asks for `O_CLOEXEC`, and, if the system refuses the flag, opens
+/// without it; the second value says whether the flag was taken.
+#[cfg(target_os = "macos")]
+fn open_master_serialized() -> crate::Result<(libc::c_int, bool)> {
+    static OPENING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A poisoned lock only means an opener panicked; there is nothing to repair.
+    let _one = OPENING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let open = |flags: libc::c_int| {
+        redrive(
+            // SAFETY: posix_openpt takes flags and touches no memory.
+            || check(unsafe { libc::posix_openpt(flags) }),
+            std::thread::sleep,
+        )
+    };
+    match open(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) {
+        Err(errno) if errno == Errno::INVAL => {
+            open(libc::O_RDWR | libc::O_NOCTTY).map(|raw| (raw, false))
+        }
+        other => other.map(|raw| (raw, true)),
+    }
+}
+
+/// How many times `redrive` calls `open`: sleeping 1, 2, … 7 ms between
+/// tries, 28 ms in all, on top of the kernel's own retries of each.
+#[cfg(any(target_os = "macos", test))]
+const REDRIVE_TRIES: u32 = 8;
+
+/// `open`, called again while it fails with `EREDRIVEOPEN` or `ENXIO`, after
+/// `sleep`ing a millisecond longer each time. If it still fails after
+/// `REDRIVE_TRIES` calls: `AGAIN` for `EREDRIVEOPEN`, which no caller should
+/// see, and `ENXIO` as it is, which then means every PTY is in use. Every
+/// other result, `INTR` included, is returned at once: this retries only the
+/// races `open` documents.
+#[cfg(any(target_os = "macos", test))]
+fn redrive<T>(
+    mut open: impl FnMut() -> crate::Result<T>,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> crate::Result<T> {
+    let mut tries: u32 = 1;
+    loop {
+        match open() {
+            Err(errno) if errno == Errno::REDRIVEOPEN || errno == Errno::NXIO => {
+                if tries >= REDRIVE_TRIES {
+                    return Err(if errno == Errno::NXIO {
+                        Errno::NXIO
+                    } else {
+                        Errno::AGAIN
+                    });
+                }
+                sleep(std::time::Duration::from_millis(u64::from(tries)));
+                tries = tries.saturating_add(1);
+            }
+            result => return result,
+        }
+    }
+}
+
+/// The path of the slave of the PTY `master`, in a buffer of ours: macOS's
+/// `ptsname` returns a shared one, so it is asked by an ioctl there.
+pub(crate) fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
+    let fd = master.as_fd().as_raw_fd();
+    let mut buffer: [libc::c_char; 128] = [0; 128];
+    #[cfg(not(target_os = "macos"))]
+    // SAFETY: the buffer is writable for its length, which is passed; the
+    // call reports its errors as a number rather than in errno.
+    match unsafe { libc::ptsname_r(fd, buffer.as_mut_ptr(), buffer.len()) } {
+        0 => {}
+        error => return Err(Errno::from_raw(error)),
+    }
+    #[cfg(target_os = "macos")]
+    let get = terminal::Request::from(libc::TIOCPTYGNAME);
+    #[cfg(target_os = "macos")]
+    // SAFETY: TIOCPTYGNAME writes at most 128 bytes, NUL included, and the
+    // buffer is 128 bytes.
+    check(unsafe { libc::ioctl(fd, get, buffer.as_mut_ptr()) })?;
+    Ok(path(&buffer))
+}
+
+/// A NUL-terminated C string as a path; the whole buffer if there is no NUL.
+fn path(buffer: &[libc::c_char]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes: Vec<u8> = buffer
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| u8::from_ne_bytes(c.to_ne_bytes()))
+        .collect();
+    PathBuf::from(OsStr::from_bytes(&bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_cloexec(fd: impl AsFd) -> bool {
+        // SAFETY: F_GETFD on a valid descriptor touches no memory.
+        let flags = unsafe { libc::fcntl(fd.as_fd().as_raw_fd(), libc::F_GETFD) };
+        flags >= 0 && flags & libc::FD_CLOEXEC != 0
+    }
+
+    fn size() -> Size {
+        Size::from((std::num::NonZeroU16::MIN, std::num::NonZeroU16::MAX))
+    }
+
+    /// Bytes written to the master arrive at the slave and back; both ends
+    /// are close-on-exec, and the master does not wait.
+    #[test]
+    fn a_pty_carries_bytes_both_ways() -> std::result::Result<(), String> {
+        let (master, slave) = open(size()).map_err(|e| e.to_string())?;
+        assert!(is_cloexec(&master) && is_cloexec(&slave));
+        let mut buffer = [0u8; 8];
+        assert_eq!(crate::io::read(&master, &mut buffer), Err(Errno::AGAIN));
+        let mut modes = terminal::attributes(&slave).map_err(|e| e.to_string())?;
+        modes.make_raw();
+        terminal::set_attributes(&slave, &modes).map_err(|e| e.to_string())?;
+        assert_eq!(crate::io::write(&master, b"in"), Ok(2));
+        assert_eq!(crate::io::read(&slave, &mut buffer), Ok(2));
+        assert_eq!(buffer.get(..2), Some(&b"in"[..]));
+        assert_eq!(crate::io::write(&slave, b"out"), Ok(3));
+        let mut ready = [crate::poll::PollFd::new(&master, crate::poll::Events::IN)];
+        crate::poll::poll(&mut ready, Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        assert_eq!(crate::io::read(&master, &mut buffer), Ok(3));
+        assert_eq!(buffer.get(..3), Some(&b"out"[..]));
+        Ok(())
+    }
+
+    /// On macOS the master is close-on-exec from its opening, where the
+    /// system takes `O_CLOEXEC`: as `posix_openpt` gave it, before anything
+    /// else could set the flag.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_master_is_close_on_exec_as_opened() -> std::result::Result<(), String> {
+        // The concurrent-open tests beside this one can take every PTY a
+        // small machine has for a moment (ENXIO): try again for a while.
+        let mut tries = 0u32;
+        let (raw, atomic) = loop {
+            match open_master_serialized() {
+                Err(errno) if errno.raw() == libc::ENXIO && tries < 100 => {
+                    tries = tries.saturating_add(1);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => break other.map_err(|e| e.to_string())?,
+            }
+        };
+        // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
+        let master = unsafe { OwnedFd::from_raw_fd(raw) };
+        eprintln!("posix_openpt took O_CLOEXEC: {atomic}");
+        assert!(!atomic || is_cloexec(&master));
+        Ok(())
+    }
+
+    /// `redrive` over a scripted sequence of results: what it returned, how
+    /// many times it called the open, and the sleeps it asked for.
+    fn redrive_script(
+        results: &[crate::Result<u8>],
+    ) -> (crate::Result<u8>, usize, Vec<std::time::Duration>) {
+        let mut next = results.iter().copied();
+        let mut calls = 0usize;
+        let mut sleeps = Vec::new();
+        let result = redrive(
+            || {
+                calls = calls.saturating_add(1);
+                next.next().unwrap_or(Err(Errno::REDRIVEOPEN))
+            },
+            |d| sleeps.push(d),
+        );
+        (result, calls, sleeps)
+    }
+
+    /// The races are retried, with growing sleeps, up to the bound: then
+    /// `AGAIN` for `EREDRIVEOPEN` (never the kernel's -6), and `ENXIO` as it
+    /// is (no PTY is free). Every other result is returned at once.
+    #[test]
+    fn only_the_races_are_tried_again_and_within_the_bound() {
+        let tries = usize::try_from(REDRIVE_TRIES).unwrap_or(0);
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(
+            redrive_script(&[Err(Errno::REDRIVEOPEN), Ok(7)]),
+            (Ok(7), 2, vec![ms(1)])
+        );
+        assert_eq!(redrive_script(&[Err(Errno::NXIO), Ok(5)]).0, Ok(5));
+        let (result, calls, sleeps) = redrive_script(&[]);
+        assert_eq!((result, calls), (Err(Errno::AGAIN), tries));
+        assert_eq!(sleeps.iter().sum::<std::time::Duration>(), ms(28));
+        let (result, calls, _) = redrive_script(&vec![Err(Errno::NXIO); tries]);
+        assert_eq!((result, calls), (Err(Errno::NXIO), tries));
+        for first in [
+            Ok(3),
+            Err(Errno::INTR),
+            Err(Errno::from_raw(libc::EMFILE)),
+            Err(Errno::AGAIN),
+        ] {
+            assert_eq!(redrive_script(&[first]), (first, 1, vec![]), "{first:?}");
+        }
+    }
+
+    /// The file `fd` refers to now: its type and device.
+    fn behind(fd: std::os::fd::BorrowedFd<'_>) -> std::result::Result<(bool, u64), String> {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let file = std::fs::File::from(fd.try_clone_to_owned().map_err(|e| e.to_string())?);
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        Ok((meta.file_type().is_char_device(), meta.rdev()))
+    }
+
+    fn null() -> std::io::Result<std::fs::File> {
+        std::fs::File::open("/dev/null")
+    }
+
+    fn dev_null() -> std::result::Result<(bool, u64), String> {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let meta = std::fs::metadata("/dev/null").map_err(|e| e.to_string())?;
+        Ok((meta.file_type().is_char_device(), meta.rdev()))
+    }
+
+    /// A call that returns in time is left alone: its result comes back, and
+    /// the descriptor still refers to what it did.
+    #[test]
+    fn a_call_that_returns_in_time_keeps_its_descriptor() -> std::result::Result<(), String> {
+        let (reader, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let before = behind(reader.as_fd())?;
+        let seen = watched(
+            reader.as_fd(),
+            std::time::Duration::from_secs(5),
+            null,
+            || 42,
+        );
+        assert_eq!(seen.map_err(|e| e.to_string())?, Some(42));
+        assert_eq!(behind(reader.as_fd())?, before);
+        assert_ne!(before, dev_null()?);
+        Ok(())
+    }
+
+    /// `/dev/null` is open before the watched call starts: replacing a
+    /// stalled descriptor needs no new one, so a process out of descriptors
+    /// can still be rescued.
+    #[test]
+    fn dev_null_is_opened_before_the_call() -> std::result::Result<(), String> {
+        let (reader, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let order = std::cell::RefCell::new(Vec::new());
+        let seen = watched(
+            reader.as_fd(),
+            std::time::Duration::from_millis(20),
+            || {
+                order.borrow_mut().push("open /dev/null");
+                std::fs::File::open("/dev/null")
+            },
+            || {
+                order.borrow_mut().push("call");
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            },
+        );
+        assert_eq!(seen.map_err(|e| e.to_string())?, None);
+        assert_eq!(*order.borrow(), ["open /dev/null", "call"]);
+        // Unable to prepare it, the call must not start.
+        let called = std::cell::Cell::new(false);
+        let seen = watched(
+            reader.as_fd(),
+            std::time::Duration::from_millis(20),
+            || Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
+            || called.set(true),
+        );
+        assert_eq!(
+            seen.err().and_then(|e| e.raw_os_error()),
+            Some(libc::EMFILE)
+        );
+        assert!(!called.get());
+        Ok(())
+    }
+
+    /// A call still running at the limit has its descriptor replaced with
+    /// /dev/null, and is reported as stalled whatever it returns.
+    #[test]
+    fn a_call_that_stalls_has_its_descriptor_replaced_with_dev_null()
+    -> std::result::Result<(), String> {
+        let (reader, _writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let seen = watched(
+            reader.as_fd(),
+            std::time::Duration::from_millis(20),
+            null,
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                42
+            },
+        );
+        assert_eq!(seen.map_err(|e| e.to_string())?, None);
+        assert_eq!(behind(reader.as_fd())?, dev_null()?);
+        Ok(())
+    }
+
+    /// What a stress run saw: failures by message, and the opens slower than
+    /// `SLOW_OPEN`.
+    struct Stress {
+        opens: u64,
+        failures: Vec<String>,
+        slow: u64,
+        slowest: std::time::Duration,
+    }
+
+    /// `threads` threads, released together each round, each opening a PTY
+    /// pair and closing it, `rounds` times.
+    fn stress(threads: usize, rounds: usize) -> Stress {
+        use std::sync::{Arc, Barrier, Mutex};
+        let seen = Arc::new(Mutex::new(Stress {
+            opens: 0,
+            failures: Vec::new(),
+            slow: 0,
+            slowest: std::time::Duration::ZERO,
+        }));
+        let barrier = Arc::new(Barrier::new(threads));
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let (seen, barrier) = (Arc::clone(&seen), Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    for _ in 0..rounds {
+                        barrier.wait();
+                        let started = std::time::Instant::now();
+                        // The pair closes as soon as the open returns, as a
+                        // short-lived process's would.
+                        let failure = open(size()).err();
+                        let took = started.elapsed();
+                        let mut all = seen
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        all.opens = all.opens.saturating_add(1);
+                        all.slowest = all.slowest.max(took);
+                        if took > SLOW_OPEN {
+                            all.slow = all.slow.saturating_add(1);
+                        }
+                        if let Some(error) = failure {
+                            all.failures.push(error.to_string());
+                        }
+                    }
+                })
+            })
+            .collect();
+        let mut panicked = Vec::new();
+        for handle in handles {
+            if handle.join().is_err() {
+                panicked.push("a stress thread panicked".to_owned());
+            }
+        }
+        let mut all = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Stress {
+            opens: all.opens,
+            slow: all.slow,
+            failures: std::mem::take(&mut all.failures)
+                .into_iter()
+                .chain(panicked)
+                .collect(),
+            slowest: all.slowest,
+        }
+    }
+
+    /// An open slower than this has been through the kernel's retry sleeps.
+    /// Without the lock, a third of the in-process test's opens were, some for
+    /// over 400 ms; with it, only the odd one, when another process races us.
+    const SLOW_OPEN: std::time::Duration = std::time::Duration::from_millis(50);
+
+    /// Held by each stress test, so neither runs while the other's opens are
+    /// contending in the kernel. The cross-process test holds it while its
+    /// workers run.
+    static STRESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Many threads of one process opening PTYs at once: none fails, and on
+    /// macOS none is slowed by the kernel's retry loop.
+    #[test]
+    #[ignore = "opens thousands of PTYs on every core: cargo test -p fuxix -- --ignored"]
+    fn concurrent_opens_in_one_process_neither_fail_nor_stall() -> std::result::Result<(), String> {
+        let _alone = STRESS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seen = stress(16, 300);
+        if !seen.failures.is_empty() {
+            return Err(format!(
+                "{} of {} opens failed: {:?}",
+                seen.failures.len(),
+                seen.opens,
+                seen.failures.first()
+            ));
+        }
+        // Fewer than one open in a hundred slowed by the kernel's retries.
+        if cfg!(target_os = "macos") && seen.slow.saturating_mul(100) >= seen.opens {
+            return Err(format!(
+                "{} of {} opens took over {SLOW_OPEN:?}, the slowest {:?}",
+                seen.slow, seen.opens, seen.slowest
+            ));
+        }
+        Ok(())
+    }
+
+    /// Set in a worker process of the cross-process test: its rounds.
+    const STRESS_WORKER: &str = "FUXIX_PTY_STRESS_WORKER";
+
+    /// Many processes opening PTYs at once, one thread each, so no lock of
+    /// ours stands between them: none fails. The test runs its own binary as
+    /// the workers.
+    #[test]
+    #[ignore = "opens thousands of PTYs on every core: cargo test -p fuxix -- --ignored"]
+    fn concurrent_opens_across_processes_never_fail() -> std::result::Result<(), String> {
+        const NAME: &str = "pty::tests::concurrent_opens_across_processes_never_fail";
+        if let Some(rounds) = std::env::var_os(STRESS_WORKER) {
+            let rounds: usize = rounds
+                .to_str()
+                .and_then(|r| r.parse().ok())
+                .ok_or("a worker's rounds")?;
+            let seen = stress(1, rounds);
+            println!(
+                "fuxix-pty-worker opens={} failures={} slowest_ms={}",
+                seen.opens,
+                seen.failures.len(),
+                seen.slowest.as_millis()
+            );
+            return match seen.failures.first() {
+                None => Ok(()),
+                Some(first) => Err(format!("{} failed: {first}", seen.failures.len())),
+            };
+        }
+        let _alone = STRESS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let workers: Vec<_> = (0..STRESS_WORKERS)
+            .map(|_| {
+                std::process::Command::new(&exe)
+                    .args([
+                        NAME,
+                        "--exact",
+                        "--include-ignored",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(STRESS_WORKER, STRESS_WORKER_ROUNDS.to_string())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+            })
+            .collect::<std::io::Result<_>>()
+            .map_err(|e| e.to_string())?;
+        // A worker that stops making progress fails the test instead of hanging it. The
+        // deadline is generous: a worker's opens take about 3 s under full contention.
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(STRESS_DEADLINE_SECS))
+            .ok_or("a deadline")?;
+        let mut failed = Vec::new();
+        for mut worker in workers {
+            let status = loop {
+                match worker.try_wait().map_err(|e| e.to_string())? {
+                    Some(status) => break Some(status),
+                    None if std::time::Instant::now() > deadline => {
+                        let _ = worker.kill();
+                        let _ = worker.wait();
+                        break None;
+                    }
+                    None => std::thread::sleep(std::time::Duration::from_millis(20)),
+                }
+            };
+            // The harness prints the report after `test NAME ... `, on the same line.
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            if let Some(mut out) = worker.stdout.take() {
+                let _ = std::io::Read::read_to_string(&mut out, &mut stdout);
+            }
+            if let Some(mut err) = worker.stderr.take() {
+                let _ = std::io::Read::read_to_string(&mut err, &mut stderr);
+            }
+            let report = stdout
+                .lines()
+                .find_map(|l| l.split_once("fuxix-pty-worker").map(|(_, r)| r))
+                .unwrap_or("no report: the worker did not run the test")
+                .to_owned();
+            match status {
+                None => failed.push(format!("a worker still ran after {STRESS_DEADLINE_SECS} s")),
+                Some(status) if !status.success() || !report.contains("failures=0") => {
+                    failed.push(format!("{report}; {stderr}"));
+                }
+                Some(_) => {}
+            }
+        }
+        match failed.first() {
+            None => Ok(()),
+            Some(first) => Err(format!(
+                "{} of {STRESS_WORKERS} workers failed: {first}",
+                failed.len()
+            )),
+        }
+    }
+
+    const STRESS_WORKERS: usize = 16;
+    const STRESS_WORKER_ROUNDS: usize = 1500;
+    const STRESS_DEADLINE_SECS: u64 = 120;
+
+    /// What the program wrote before the last slave close is read from the
+    /// master, though the slave closes nonblocking, which on macOS throws
+    /// away what is unread unless the master holds it (`Master`).
+    #[test]
+    fn output_written_before_the_last_slave_close_is_read() -> std::result::Result<(), String> {
+        use std::io::Read;
+        let (mut master, slave) = open(size()).map_err(|e| e.to_string())?;
+        crate::io::set_nonblocking(&slave, true).map_err(|e| e.to_string())?;
+        assert_eq!(crate::io::write(&slave, b"X"), Ok(1));
+        drop(slave);
+        let mut ready = [crate::poll::PollFd::new(&master, crate::poll::Events::IN)];
+        crate::poll::poll(&mut ready, Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        let mut buffer = [0u8; 8];
+        assert_eq!(master.read(&mut buffer).map_err(|e| e.to_string())?, 1);
+        assert_eq!(buffer.first(), Some(&b'X'));
+        Ok(())
+    }
+
+    /// Once a program has ended, reading the master until `AGAIN` (or its
+    /// close) reads all it wrote, though a job it left holds the terminal
+    /// open.
+    #[test]
+    fn once_a_program_has_ended_its_output_is_read_until_again() -> std::result::Result<(), String>
+    {
+        let lines = 2000;
+        let (master, slave) = open(size()).map_err(|e| e.to_string())?;
+        let script = format!(
+            "(trap '' HUP; sleep 5) & i=0; while [ $i -lt {lines} ]; do echo line $i; i=$((i+1)); done"
+        );
+        let (mut child, job) = slave
+            .spawn(
+                &["sh", "-c", &script],
+                |_| {},
+                crate::process::Dispositions::Default,
+            )
+            .map_err(|e| e.to_string())?;
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(20))
+            .ok_or("a deadline")?;
+        let (mut seen, mut buffer, mut closed) = (Vec::new(), [0u8; 4096], false);
+        loop {
+            // Asked before the reads that follow: then they read all.
+            let ended = job.ended().map_err(|e| e.to_string())?;
+            loop {
+                match crate::io::read(&master, &mut buffer) {
+                    Ok(n) if n > 0 => seen.extend_from_slice(buffer.get(..n).unwrap_or_default()),
+                    Err(Errno::INTR) => {}
+                    Err(Errno::AGAIN) => break,
+                    // Closed: on macOS as the session's leader exits.
+                    Ok(_) | Err(Errno::IO) => {
+                        closed = true;
+                        break;
+                    }
+                    Err(errno) => return Err(errno.to_string()),
+                }
+            }
+            if ended.is_some() || closed || std::time::Instant::now() > deadline {
+                break;
+            }
+            let mut ready = [crate::poll::PollFd::new(&master, crate::poll::Events::IN)];
+            crate::poll::poll(&mut ready, Some(std::time::Duration::from_millis(50)))
+                .map_err(|e| e.to_string())?;
+        }
+        let _ = job.signal(crate::process::Signal::Kill, crate::process::Reach::Group);
+        let _ = child.wait();
+        let text = String::from_utf8_lossy(&seen);
+        assert_eq!(text.matches("line ").count(), lines);
+        assert!(text.ends_with(&format!("line {}\r\n", lines - 1)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_name_stops_at_its_nul() {
+        let raw: Vec<libc::c_char> = b"/dev/pts/7\0junk"
+            .iter()
+            .map(|b| libc::c_char::from_ne_bytes([*b]))
+            .collect();
+        assert_eq!(path(&raw), PathBuf::from("/dev/pts/7"));
+        let error = Error {
+            call: "grantpt",
+            source: Errno::INVAL.into(),
+        };
+        assert!(error.to_string().starts_with("grantpt: "));
+    }
+}

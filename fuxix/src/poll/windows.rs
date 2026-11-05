@@ -93,11 +93,19 @@ pub(crate) mod sealed {
         /// What it is ready for now: of `interest`, and `ERR` and `HUP`
         /// unasked.
         fn ready(&self, interest: Events) -> Events;
+        /// The stream [`crate::io::read`] reads, if it reads.
+        fn reading(&self) -> Option<&crate::io::Stream> {
+            None
+        }
+        /// The stream [`crate::io::write`] writes, if it writes.
+        fn writing(&self) -> Option<&crate::io::Stream> {
+            None
+        }
     }
 }
 
-/// Something a poll waits on: an [`crate::io::Stream`] or a
-/// [`crate::signal::Pipe`]. Sealed: Windows tells readiness only of what
+/// Something a poll waits on: an [`crate::io::Stream`], a
+/// [`crate::signal::Pipe`] or a [`crate::pty::Master`]. Sealed: Windows tells readiness only of what
 /// fuxix itself keeps a read or a queue for.
 pub trait Source: sealed::Sealed {}
 
