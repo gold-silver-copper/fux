@@ -37,12 +37,18 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     assert!(
         server
             .ok(&["(sequence! (list-keys) #inert)"])?
-            .contains("str 'C-b d' code")
+            .contains("(bind-key \"C-b d\"")
     );
     for args in [
-        &["opts", "watch", "attach"][..],
-        &["opts", "80", "10", "size", "attach"],
-        &["opts", "80", "10", "size", "watch", "attach"],
+        &[
+            "(sequence! (define! variables-1 (context)) (define! value-2 (options)) (define! value-3 (watch value-2)) (define! value-4 (attach value-3)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-5 (context)) (define! value-6 (options)) (define! value-7 (size value-6 80 10)) (define! value-8 (attach value-7)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-9 (context)) (define! value-10 (options)) (define! value-11 (size value-10 80 10)) (define! value-12 (watch value-11)) (define! value-13 (attach value-12)) #inert)",
+        ],
     ] {
         let mut terminal = Terminal::attach(&server, 10, 80, args)?;
         let mut id = String::new();
@@ -164,9 +170,15 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     })?;
     // Bad values are refused; keys are a client's, never the server's.
     for args in [
-        &["str", "buffers", "0", "set"][..],
-        &["str", "terminal-clipboard", "str", "maybe", "set"],
-        &["str", "nonsense", "1", "set"],
+        &[
+            "(sequence! (define! variables-14 (context)) (define! value-15 \"buffers\") (define! value-16 (set value-15 0)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-17 (context)) (define! value-18 \"terminal-clipboard\") (define! value-19 \"maybe\") (define! value-20 (set value-18 value-19)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-21 (context)) (define! value-22 \"nonsense\") (define! value-23 (set value-22 1)) #inert)",
+        ],
     ] {
         let out = server.fux(args)?;
         assert_ne!(out.status, 0, "{args:?}: {}", out.stderr);
@@ -184,9 +196,13 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     a.wait_for("$")?;
     b.wait_for("$")?;
     let before = server.ok(&["(listing (list-session))"])?;
-    std::fs::write(directory.join("config.grift"), "require shared.fux").map_err(e)?;
     std::fs::write(
-        directory.join("shared.fux"),
+        directory.join("config.grift"),
+        "(require! \"shared.grift\")",
+    )
+    .map_err(e)?;
+    std::fs::write(
+        directory.join("shared.grift"),
         "(sequence! (set \"titles\" #true) (set \"history-bytes\" 0) #inert)",
     )
     .map_err(e)?;
@@ -199,7 +215,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     assert!(!String::from_utf8_lossy(&a.painted).contains("\x1b]2;"));
     assert!(!String::from_utf8_lossy(&b.painted).contains("\x1b]2;"));
     std::fs::write(
-        directory.join("shared.fux"),
+        directory.join("shared.grift"),
         "(sequence! (move-keys \"C-b\" \"C-a\") (set \"titles\" #true) (attach-defaults (in (options) \"missing\")) (define! only-in-failed-config (lambda! () 41)) (split (axis (pane 1) \"horizontal\")) #inert)",
     )
     .map_err(e)?;
@@ -208,10 +224,10 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
         .err()
         .ok_or("config acted on the server")?;
     assert_eq!(failed.code, fux_wire::code::Code::NotConfig);
-    assert!(failed.notice().contains("shared.fux"));
+    assert!(failed.notice().contains("shared.grift"));
     assert_eq!(server.ok(&["(listing (list-session))"])?, before);
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
-    terminal.wait_for("a config changes only its own client state")?;
+    terminal.wait_for("a config changes only")?;
     terminal.type_bytes(b"\x02")?;
     terminal.wait_for("split side by side")?;
     terminal.type_bytes(b"d")?;
@@ -232,48 +248,38 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
 #[test]
 fn a_bad_config_is_reported() -> Outcome {
     let server = Server::start("")?;
-    let config = server.dir.join("config").join("fux").join("config.grift");
-    std::fs::write(&config, "(sequence! (move-keys \"Nope\" \"C-a\") #inert)").map_err(e)?;
+    let config = server.dir.join("config/fux/config.grift");
+    std::fs::write(&config, r#"(move-keys "Nope" "C-a")"#).map_err(e)?;
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
-    terminal.wait_for("bad-binding: move-keys:")?;
-    // The defaults: C-b opens the column.
+    terminal.wait_for("bad-binding:")?;
     terminal.type_bytes(b"\x02")?;
     terminal.wait_for("split side by side")?;
     terminal.type_bytes(b"d")?;
     terminal.wait_exit()?;
-    // An unknown word is found before anything runs, naming its line.
-    std::fs::write(&config, "str history-bytes 5 set\nfrobnicate\n").map_err(e)?;
-    let path = config.to_string_lossy().into_owned();
+    std::fs::write(&config, "(set \"history-bytes\" 5)\n(frobnicate)\n").map_err(e)?;
     let failed = fux::script::run_file(&config)
         .err()
         .ok_or("frobnicate ran")?;
     assert!(
-        failed.to_string().contains("config.grift:2: frobnicate"),
+        failed.to_string().contains("config.grift:2") && failed.to_string().contains("frobnicate"),
         "{failed}"
     );
-    std::fs::write(&config, "(sequence! (move-keys \"C-b\" \"C-a\") #inert)").map_err(e)?;
+    let later = r#"(move-keys "C-b" "C-a")
+        (bind-key "C-a v" (code! (lambda! () (sr) #inert)))
+        (define! sr (lambda! () (zoom (focused (me)))))"#;
+    std::fs::write(&config, later).map_err(e)?;
     fux::script::run_file(&config).map_err(e)?;
-    // A binding sees the config's definitions made before it, as code
-    // compiled there does; one not made yet is said at the binding's line,
-    // before the binding is made.
-    let ok = "(sequence! (define! sr (lambda! () (sequence! (split (axis (focused (me)) \"horizontal\")) #inert))) (bind-key \"C-b v\" (code! (lambda! () (sequence! (sr) #inert)))) #inert)";
-    std::fs::write(&config, ok).map_err(e)?;
-    fux::script::run_file(&config).map_err(e)?;
-    let text =
-        "str C-b str C-a move-keys\nstr 'C-a v' code sr end bind\ndefine sr me focused zoom end\n";
-    std::fs::write(&config, text).map_err(e)?;
-    let failed = fux::script::run_file(&config)
-        .err()
-        .ok_or(text)?
-        .to_string();
-    assert!(
-        failed.contains(&path.replace("config.grift", "")),
-        "{failed}"
-    );
-    assert!(
-        failed.contains("config.grift:2: sr: no such word"),
-        "{failed}"
-    );
+    let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
+    terminal.wait_for("$")?;
+    terminal.type_bytes(b"\x01v")?;
+    eventually("the callback resolves its later definition", || {
+        Ok(server
+            .ok(&["(get (first (get (snapshot (tab 1) \"topology\") \"tabs\")) \"zoomed\")"])?
+            .trim()
+            != "none")
+    })?;
+    terminal.type_bytes(b"\x01d")?;
+    terminal.wait_exit()?;
     Ok(())
 }
 
@@ -302,7 +308,7 @@ fn optional_config_reports_read_failures() -> Outcome {
         assert!(
             server
                 .ok(&["(sequence! (list-keys) #inert)"])?
-                .contains("'C-b d'")
+                .contains("\"C-b d\"")
         );
         let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
         terminal.wait_for("read:")?;
@@ -326,18 +332,22 @@ fn optional_config_reports_read_failures() -> Outcome {
 fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
     let server = Server::start("")?;
     let path = server.dir.join("config/fux/config.grift");
-    std::fs::write(&path, "(sequence! (set \"history-bytes\" -1) #inert)").map_err(e)?;
+    std::fs::write(&path, r#"(set "history-bytes" -1)"#).map_err(e)?;
     let failure = fux::script::run_file(&path)
         .err()
-        .ok_or("expected a bad setting")?;
-    assert!(failure.place.is_some());
+        .ok_or("bad setting accepted")?;
     let notice = failure.notice();
+    let cause = notice
+        .find("history-bytes: -1 is out of range")
+        .ok_or(format!("no cause: {notice}"))?;
+    let location = notice
+        .find("config.grift:1")
+        .ok_or(format!("no location: {notice}"))?;
     assert!(
-        notice.starts_with("config: set: history-bytes: -1 is out of range"),
+        notice.starts_with("config:") && cause < location,
         "{notice}"
     );
-    assert_eq!(notice.matches("config:").count(), 1);
-    assert!(notice.ends_with("config.grift:1)"), "{notice}");
+    assert_eq!(notice.matches("is out of range").count(), 1, "{notice}");
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
     terminal.wait_for("history-bytes: -1 is out of range")?;
     terminal.type_bytes(b"\x02d")?;
@@ -351,14 +361,13 @@ fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
 fn the_config_words_examples_run_as_a_config() -> Outcome {
     let server = Server::start("")?;
     let config = server.dir.join("config.grift");
-    for word in ["bind", "move-keys", "repeat"] {
+    for word in ["bind-key", "move-keys", "repeat"] {
         let explained = server.ok(&[&format!(
             "(sequence! (explain {}) #inert)",
             fux::script::quoted(word)
         )])?;
         let example = (explained.lines())
-            .find_map(|line| line.split_once("; e.g. "))
-            .map(|(_, example)| example)
+            .find_map(|line| line.strip_prefix("Example: "))
             .ok_or(format!("no example: {explained}"))?;
         std::fs::write(&config, example).map_err(e)?;
         fux::script::run_file(&config).map_err(|f| {
@@ -426,15 +435,31 @@ fn launch_defaults_do_not_change_the_server() -> Outcome {
 fn key_words_refuse_the_command_line() -> Outcome {
     let server = Server::start("")?;
     for words in [
-        &["str", "C-b", "str", "C-a", "move-keys"][..],
-        &["str", "q", "code", "me", "focused", "zoom", "end", "bind"],
-        &["str", "q", "unbind"],
-        &["unbind-all"],
-        &["str", "copy", "str", "g", "str", "top", "bind-in"],
-        &["str", "copy", "str", "v", "unbind-in"],
-        &["str", "name", "label"],
-        &["str", "name", "group"],
-        &["str", "C-b r", "repeat"],
+        &[
+            "(sequence! (define! variables-24 (context)) (define! value-25 \"C-b\") (define! value-26 \"C-a\") (define! value-27 (move-keys value-25 value-26)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-28 (context)) (define! value-29 \"q\") (define! value-34 (code! (lambda! () (sequence! (define! variables-30 (context)) (define! value-31 (me)) (define! value-32 (focused value-31)) (define! value-33 (zoom value-32)) #inert)))) (define! value-35 (bind-key value-29 value-34)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-36 (context)) (define! value-37 \"q\") (define! value-38 (unbind value-37)) #inert)",
+        ],
+        &["(sequence! (define! variables-39 (context)) (define! value-40 (unbind-all)) #inert)"],
+        &[
+            "(sequence! (define! variables-41 (context)) (define! value-42 \"copy\") (define! value-43 \"g\") (define! value-44 \"top\") (define! value-45 (bind-in value-42 value-43 value-44)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-46 (context)) (define! value-47 \"copy\") (define! value-48 \"v\") (define! value-49 (unbind-in value-47 value-48)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-50 (context)) (define! value-51 \"name\") (define! value-52 (label value-51)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-53 (context)) (define! value-54 \"name\") (define! value-55 (group value-54)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-56 (context)) (define! value-57 \"C-b r\") (define! value-58 (repeat value-57)) #inert)",
+        ],
     ] {
         let result = server.fux(words)?;
         assert_eq!(result.status, 1, "silent CLI key change: {words:?}");
@@ -451,7 +476,14 @@ fn key_words_refuse_the_command_line() -> Outcome {
 fn unrelated_commands_do_not_load_shell_defaults() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
     let server = Server::start("")?;
-    for words in [&["--version"][..], &["ls"], &["status"], &["kill-server"]] {
+    for words in [
+        &["--version"][..],
+        &[
+            "(sequence! (define! variables-59 (context)) (define! value-60 (list-session)) value-60)",
+        ],
+        &["(sequence! (define! variables-61 (context)) (define! value-62 (status)) value-62)"],
+        &["(sequence! (define! variables-63 (context)) (define! value-64 (kill-server)) #inert)"],
+    ] {
         let result = std::process::Command::new(FUX)
             .args(words)
             .env("FUX_SOCKET", &server.socket)
@@ -487,7 +519,7 @@ fn non_text_shell_defaults_report_the_library_fallback() -> Outcome {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert!(String::from_utf8_lossy(&result.stdout).contains("str 'C-b d' code"));
+    assert!(String::from_utf8_lossy(&result.stdout).contains("(bind-key \"C-b d\""));
     let diagnostic = String::from_utf8_lossy(&result.stderr);
     assert!(diagnostic.contains("SHELL"), "{diagnostic}");
     assert_eq!(diagnostic.lines().count(), 1, "{diagnostic}");
@@ -506,7 +538,7 @@ fn explicit_settings_survive_a_failed_attach_config() -> Outcome {
         &server,
         12,
         100,
-        &["str", "titles", "true", "set", "opts", "attach"],
+        &[r#"(set "titles" #true) (attach (options))"#],
     )?;
     terminal.wait_for("bad-binding")?;
     terminal.type_bytes(b"printf '\\033]2;explicit-title\\007'; echo cli''-ready\r")?;
@@ -566,11 +598,34 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
         })?;
     }
     let split = server.ok(&["(information (split (axis (pane 1) \"horizontal\")))"])?;
-    assert!(
-        split.contains(r#""generation":0,"argv":["/bin/sh"]"#),
-        "{split}"
+    assert_eq!(
+        read_data(
+            &split,
+            "(field (field (first (field data (quote! panes))) (quote! program)) (quote! generation))"
+        )?,
+        "0"
     );
-    assert!(split.contains(r#""launch":{"choice":"shell""#), "{split}");
+    assert_eq!(
+        read_data(
+            &split,
+            "(first (field (field (first (field data (quote! panes))) (quote! program)) (quote! arguments)))"
+        )?,
+        "/bin/sh"
+    );
+    assert_eq!(
+        read_data(
+            &split,
+            "(length (field (field (first (field data (quote! panes))) (quote! program)) (quote! arguments)))"
+        )?,
+        "1"
+    );
+    assert_eq!(
+        read_data(
+            &split,
+            "(field (field (first (field data (quote! panes))) (quote! launch)) (quote! choice))"
+        )?,
+        "shell"
+    );
     let before = server.panes()?.len();
     for (conflict, code) in [
         (
@@ -646,7 +701,7 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
                 support::reference(pane)
             )])?
             .trim(),
-        "false"
+        "#false"
     );
     server.words(
         "(sequence! (set \"history-bytes\" 1024) (set \"program-clipboard\" #true) #inert)",
@@ -661,12 +716,25 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
         "0"
     );
     let recipe = server.ok(&[&format!("(dump (tab {}))", support::reference(pane))])?;
-    assert!(
-        recipe.contains("0 history-bytes false reflow 0 alternate-scroll-lines 0 picture-bytes false program-clipboard"),
-        "{recipe}"
-    );
     for (field, value) in [
-        ("reflow", "false"),
+        ("history-bytes", "0"),
+        ("reflow", "#false"),
+        ("alternate-scroll-lines", "0"),
+        ("picture-bytes", "0"),
+        ("program-clipboard", "#false"),
+    ] {
+        assert_eq!(
+            read_data(
+                &recipe,
+                &format!(
+                    "(field (first (field (second (second data)) (quote! panes))) (quote! {field}))"
+                )
+            )?,
+            value
+        );
+    }
+    for (field, value) in [
+        ("reflow", "#false"),
         ("alternate_scroll_lines", "0"),
         ("picture_bytes", "0"),
     ] {
@@ -674,8 +742,8 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
             server
                 .ok(&[&format!(
                     "(get {} {})",
-                    fux::script::quoted(field),
-                    support::reference(pane)
+                    support::reference(pane),
+                    fux::script::quoted(&fux::script::field_name(field))
                 )])?
                 .trim(),
             value
@@ -684,10 +752,7 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
     let replay = server.dir.join("pane-policy.fux");
     std::fs::write(
         &replay,
-        format!(
-            "(sequence! (set \"history-bytes\" 8192) (set \"program-clipboard\" #true) {})",
-            support::reference(&format!("{recipe}"))
-        ),
+        format!("(set \"history-bytes\" 8192) (set \"program-clipboard\" #true)\n{recipe}"),
     )
     .map_err(e)?;
     server.ok(&["--file", &replay.to_string_lossy()])?;
@@ -699,16 +764,19 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
         server
             .ok(&["(sequence! (define! value-979 (pane 3)) \"program_clipboard\" (get value-979 \"program-clipboard\"))"])?
             .trim(),
-        "false"
+        "#false"
     );
     for (field, value) in [
-        ("reflow", "false"),
+        ("reflow", "#false"),
         ("alternate_scroll_lines", "0"),
         ("picture_bytes", "0"),
     ] {
         assert_eq!(
             server
-                .ok(&[&format!("(get (pane 3) {})", fux::script::quoted(field))])?
+                .ok(&[&format!(
+                    "(get (pane 3) {})",
+                    fux::script::quoted(&fux::script::field_name(field))
+                )])?
                 .trim(),
             value
         );
@@ -726,188 +794,136 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
 #[test]
 fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     let server = Server::start(
-        "str 'C-b g u' code me focused zoom end bind  str 'C-b g' repeat\n\
-         define say-ran str ran-in-the-client print end\n\
-         str 'C-b g s' code say-ran end bind\n\
-         define take end  str 'C-b g r' code take end bind\n\
-         str 'C-b g y' code stop-compiling digits-begin start-compiling end bind\n\
-         str 'C-b g n' code me focused swap rename end bind\n\
-         str 'C-b g t' code str ran-by-the-reader print end bind\n\
-         str history-bytes 4096 set\n",
+        r#"
+        (bind-key "C-b g u" (code! (lambda! () (zoom (focused (me))) #inert)))
+        (repeat "C-b g")
+        (define! say-ran (lambda! () (print "ran-in-the-client")))
+        (bind-key "C-b g s" (code! (lambda! () (say-ran))))
+        (bind-key "C-b g r" (code! (lambda! () #inert)))
+        (bind-key "C-b g y" (code! (lambda! () (raise (error (quote! deferred) "not read")))))
+        (bind-key "C-b g n" (code! (lambda! (name) (rename (focused (me)) name))))
+        (bind-key "C-b g t" (code! (lambda! () (print "ran-by-the-reader"))))
+        (set "history-bytes" 4096)
+    "#,
     )?;
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
     terminal.wait_for("$")?;
     let listing = server.ok(&["(listing (list-session))"])?;
-    let id = (listing.lines())
+    let id = listing
+        .lines()
         .find_map(|line| line.strip_prefix("client "))
         .and_then(|line| line.split_whitespace().next())
-        .ok_or(format!("no client: {listing}"))?
+        .ok_or("no client")?
         .to_owned();
+    let prefix = format!(
+        r#"(define! c (client {}))
+        (define! find-key (lambda! (rows key) (first (filter (lambda! (row) (same? (get row "key") key)) rows))))
+        (define! root-rows (lambda! () (get (keys c) "keymap")))
+        (define! child-rows (lambda! (rows key) (get (find-key rows key) "keymap")))
+        (define! prefix-rows (lambda! () (child-rows (root-rows) "C-b")))
+        (define! tool-rows (lambda! () (child-rows (prefix-rows) "g")))
+        (define! binding-code (lambda! (key) (get (find-key (tool-rows) key) "code")))
+    "#,
+        fux::script::quoted(&id)
+    );
+    let query = |body: &str| format!("{prefix} {body}").replace('\n', " ");
     let read = |what: &str| {
         server.ok(&[&format!(
-            "(list (client {}) {})",
-            fux::script::quoted(&id),
-            support::reference(what)
+            "(data-text ({what} (client {})))",
+            fux::script::quoted(&id)
         )])
     };
     let keys = read("keys")?;
-    for said in [
-        r#"{"at":"","keymap":[{"kind":"map","key":"C-b","repeat":false,"keymap":["#,
-        r#"{"kind":"map","key":"g","repeat":true,"keymap":[{"kind":"binding","key":"u","code":"me focused zoom","label":"me focused zoom","group":"Other"},"#,
-        r#"{"kind":"binding","key":"x","code":"me-focused confirm-close","label":"close pane","group":"Panes"}"#,
-        r#"{"key":"Enter","action":"submit","code":null,"label":"accept"}"#,
-    ] {
-        assert!(keys.contains(said), "{said} in {keys}");
-    }
-    // A binding of the map `C-b`, the root's first key, its code then
-    // `then` run on it.
-    let program = |keys: &[&str], then: &[&str]| {
-        let read = ["str", &id, "client", "keys", "str", "keymap", "get"];
-        let mut program = [&read[..], &["first", "str", "keymap", "get"], keys].concat();
-        program.extend([&["str", "code", "get"][..], then].concat());
-        program.into_iter().map(str::to_owned).collect::<Vec<_>>()
-    };
-    let code = |keys: &[&str], then: &[&str]| {
-        let program = program(keys, then);
-        server.ok(&program.iter().map(String::as_str).collect::<Vec<_>>())
-    };
-    let last = ["last", "str", "keymap", "get", "last"];
-    assert_eq!(code(&last, &["execute"])?.trim(), "ran-by-the-reader");
-    // A word compiled before the code is read runs it as `execute` does.
-    let early = [
-        &["define", "run-code", "execute", "end"].map(str::to_owned)[..],
-        &program(&last, &["run-code"]),
-    ]
-    .concat();
-    let early: Vec<&str> = early.iter().map(String::as_str).collect();
-    assert_eq!(server.ok(&early)?.trim(), "ran-by-the-reader");
-    // `C-b x` runs `me-focused confirm-close`, `me-focused` a word of the
-    // bundled keys', which a client's dictionary has and the command
-    // line's lacks: a code value here too, which fails as it is executed.
-    assert_eq!(code(&["2", "at"], &["kind"])?.trim(), "code");
-    let close = program(&["2", "at"], &["execute"]);
-    let failed = server.fux(&close.iter().map(String::as_str).collect::<Vec<_>>())?;
-    assert!(
-        failed.stderr.contains("unbound-symbol") && failed.stderr.contains("me-focused"),
-        "{}",
-        failed.stderr
+    assert_eq!(read_data(&keys, "(field data (quote! at))")?, "");
+    assert_eq!(
+        server
+            .ok(&[&query(r#"(get (find-key (prefix-rows) "g") "repeat")"#)])?
+            .trim(),
+        "#true"
     );
-    // Read in the middle of number text and with a value on the return
-    // stack, beside `take`, immediate here, which `C-b g r` names, and
-    // `C-b g y`, whose words begin number text as they compile.
-    let midway = [
-        "define",
-        "take",
-        "from-return",
-        "drop",
-        "end",
-        "immediate",
-        "digits-begin",
-        "str",
-        "kept",
-        "holds",
-        "7",
-        "to-return",
-        "str",
-        &id,
-        "client",
-        "keys",
-        "drop",
-        "from-return",
-        "print",
-        "0",
-        "digits-end",
-        "print",
-    ];
-    assert_eq!(server.ok(&midway)?, "7\nkept\n");
+    assert_eq!(
+        server
+            .ok(&[&query(
+                r#"(kind (get (find-key (prefix-rows) "x") "code"))"#
+            )])?
+            .trim(),
+        "code"
+    );
+    assert!(keys.contains("confirm-close") && keys.contains("close pane"));
+    assert!(keys.contains("submit") && keys.contains("accept"));
+    assert_eq!(
+        server
+            .ok(&[&query(r#"(execute! (binding-code "t"))"#)])?
+            .trim(),
+        "ran-by-the-reader"
+    );
+    assert_eq!(server.ok(&[&query(r#"(define! execute-read (lambda! (code) (execute! code))) (execute-read (binding-code "t"))"#)])?.trim(), "ran-by-the-reader");
+    let unavailable = server.fux(&[&query(r#"(execute! (binding-code "s"))"#)])?;
+    assert!(
+        unavailable.stderr.contains("unbound-symbol") && unavailable.stderr.contains("say-ran"),
+        "{}",
+        unavailable.stderr
+    );
+    let scoped = server.fux(&[&query(r#"(execute! (binding-code "u"))"#)])?;
+    assert!(scoped.stderr.contains("not-here"), "{}", scoped.stderr);
+    assert_eq!(server.ok(&[&query(r#"(define! kept "kept") (define! n 7) (keys c) (list n kept (kind (binding-code "y")))"#)])?, "7\nkept\ncode\n");
     terminal.type_bytes(b"\x02g")?;
-    eventually("the client in the map C-b g", || {
-        Ok(read("keys")?.starts_with(r#"{"at":"C-b g","#))
+    eventually("the client in C-b g", || {
+        Ok(read_data(&read("keys")?, "(field data (quote! at))")? == "C-b g")
     })?;
     let preferences = read("preferences")?;
-    let history =
-        r#"{"name":"history-bytes","value":4096,"type":"a number, 0 to 9223372036854775807"}"#;
-    assert!(preferences.contains(history), "{preferences}");
+    assert_eq!(
+        read_data(
+            &preferences,
+            "(field (first (filter (lambda! (row) (same? (field row (quote! name)) \"history-bytes\")) data)) (quote! value))"
+        )?,
+        "4096"
+    );
+    let type_name = read_data(
+        &preferences,
+        "(field (first (filter (lambda! (row) (same? (field row (quote! name)) \"history-bytes\")) data)) (quote! type))",
+    )?;
+    assert!(type_name.contains("9223372036854775807"), "{type_name}");
     terminal.type_bytes(b"\x1b")?;
-    eventually("Escape leaving the map", || {
-        Ok(read("keys")?.starts_with(r#"{"at":"","#))
+    eventually("Escape leaves the map", || {
+        Ok(read_data(&read("keys")?, "(field data (quote! at))")?.is_empty())
     })?;
-    // A read code value is a callback too: `C-b g n`'s, the prompt's.
-    let opens = [
-        "str",
-        &id,
-        "client",
-        "str",
-        "Reuse",
-        "str",
-        "named-by-prompt",
-    ];
-    let reuse = program(&["last", "str", "keymap", "get", "4", "at"], &["prompt"]);
-    let reuse = [
-        &opens[..],
-        &reuse.iter().map(String::as_str).collect::<Vec<_>>(),
-    ]
-    .concat();
-    server.ok(&reuse)?;
+    server.ok(&[&query(
+        r#"(prompt c "Reuse" "named-by-prompt" (binding-code "n"))"#,
+    )])?;
     terminal.wait_for("Reuse")?;
     terminal.type_bytes(b"\r")?;
-    let name = [&format!(
-        "(sequence! (define! value-138 (focused (client {}))) \"name\" (get value-138 \"name\"))",
-        fux::script::quoted(&id)
-    )];
-    eventually("the prompt's callback ran", || {
-        Ok(server.ok(&name)?.trim() == "named-by-prompt")
+    eventually("the reused callback ran", || {
+        Ok(server.ok(&[&query(r#"(get (focused c) "name")"#)])?.trim() == "named-by-prompt")
     })?;
-    // In the client, `C-b g s`'s word is its config's, and runs.
+    terminal.type_bytes(b"\x02e")?;
+    terminal.wait_for("Enter accept")?;
+    terminal.type_bytes(format!("{}\r", query(r#"(execute! (binding-code "s"))"#)).as_bytes())?;
+    terminal.wait_for("ran-in-the-client")?;
     terminal.type_bytes(b"\x02e")?;
     terminal.wait_for("Enter accept")?;
     terminal.type_bytes(
-        b"me keys str keymap get first str keymap get last str keymap get 1 at \
-          str code get execute\r",
+        format!("{}\r", query(r#"(bind-key "C-b Q" (binding-code "t"))"#)).as_bytes(),
     )?;
-    eventually("the code run in the client", || {
-        terminal.pump();
-        Ok(String::from_utf8_lossy(&terminal.output).contains("ran-in-the-client"))
-    })?;
-    // And bound again, as it came: `C-b g t`'s code on `C-b Q`.
-    terminal.type_bytes(b"\x02e")?;
-    terminal.wait_for("Enter accept")?;
-    terminal.type_bytes(
-        b"str 'C-b Q' me keys str keymap get first str keymap get last str keymap get last \
-          str code get bind\r",
-    )?;
-    let rebound = r#"{"kind":"binding","key":"Q","code":"str ran-by-the-reader print""#;
-    eventually("C-b Q bound", || Ok(read("keys")?.contains(rebound)))?;
-    // A key bound, then read, in one program at its prompt: the read finds
-    // it, as pending keys are committed before the program asks anything.
-    // What it prints is joined as it runs, so the line typed never shows
-    // either answer.
-    terminal.type_bytes(b"\x02e")?;
-    terminal.wait_for("Enter accept")?;
-    terminal.type_bytes(
-        b"str 'C-b y' code me focused zoom end bind  \
-          me keys json str '\"key\":\"y\"' contains if str fresh else str stale then \
-          str read-back- swap cat print\r",
-    )?;
-    let mut said = String::new();
-    eventually("the program's answer", || {
-        terminal.pump();
-        let shown = format!(
-            "{}{}",
-            terminal.text(),
-            String::from_utf8_lossy(&terminal.output)
-        );
-        said = ["read-back-fresh", "read-back-stale"]
-            .into_iter()
-            .find(|answer| shown.contains(answer))
-            .unwrap_or_default()
-            .to_owned();
-        Ok(!said.is_empty())
+    eventually("the read code was rebound", || {
+        Ok(server.ok(&[&query(r#"(not? (empty-list? (filter (lambda! (row) (same? (get row "key") "Q")) (prefix-rows))))"#)])?.trim() == "#true")
     })?;
     assert_eq!(
-        said, "read-back-fresh",
-        "the read found the keys before the bind"
+        server
+            .ok(&[&query(
+                r#"(kind (get (find-key (prefix-rows) "Q") "code"))"#
+            )])?
+            .trim(),
+        "code"
     );
+    terminal.type_bytes(b"\x02Q")?;
+    terminal.wait_for("ran-by-the-reader")?;
+    terminal.type_bytes(b"\x02e")?;
+    terminal.wait_for("Enter accept")?;
+    let fresh = r#"(bind-key "C-b y" (code! (lambda! () (zoom (focused (me))) #inert)))
+        (if! (same? (kind (get (find-key (prefix-rows) "y") "code")) "code") (print (string-append "read-back-" "fresh")) (print (string-append "read-back-" "stale")))"#;
+    terminal.type_bytes(format!("{}\r", query(fresh)).as_bytes())?;
+    terminal.wait_for("read-back-fresh")?;
     terminal.type_bytes(b"\x02d")?;
     terminal.wait_exit()?;
     let gone = server.fux(&[&format!("(keys (client {}))", fux::script::quoted(&id))])?;

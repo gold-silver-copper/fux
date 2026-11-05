@@ -178,14 +178,26 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     );
     let history = server.ok(&["(capture (history (pane \"%1\") 20))"])?;
     assert!(history.contains("line1\n"), "{history}");
-    let json = server.ok(&["(capture (pane \"%1\"))"])?;
-    assert!(
-        json.starts_with("{\"id\":\"%1\",\"tab\":\"@1\",")
-            && json.contains(",\"rows\":6,\"cols\":30,")
-            && json.contains(",\"screen_cursor\":["),
-        "{json}"
+    let data = server.ok(&["(datum (capture (pane 1)))"])?;
+    for (field, value) in [
+        ("id", "%1"),
+        ("tab", "@1"),
+        ("rows", "6"),
+        ("columns", "30"),
+    ] {
+        assert_eq!(
+            read_data(&data, &format!("(field data (quote! {field}))"))?,
+            value
+        );
+    }
+    assert_eq!(
+        read_data(&data, "(length (field data (quote! screen-cursor)))")?,
+        "2"
     );
-    assert!(json.contains("\"line8\""), "{json}");
+    assert_eq!(
+        read_data(&data, "(member? \"line8\" (field data (quote! lines)))")?,
+        "#true"
+    );
     // From inside the pane, FUX_PANE (of the server FUX_SERVER names) is
     // `here`.
     let version = server.version("%1")?;
@@ -340,7 +352,7 @@ fn edit_history_opens_the_terminals_editor_at_the_end() -> Outcome {
 /// whose parent left before it attached, which is in the pane's session.
 #[test]
 fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
-    let attach = "unset FUX_PANE; exec \"$FUX\" opts str viewer in attach";
+    let attach = "unset FUX_PANE; exec \"$FUX\" \"(attach (in (options) \\\"viewer\\\"))\"";
     // util-linux's script, else BSD's.
     let behind = format!(
         "if script -qfc true /dev/null >/dev/null 2>&1; \
@@ -376,8 +388,7 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
         // loud, not handed back to it.
         for input in ["text", "paste"] {
             server.ok(&[&format!(
-                "(list {} \"x\" (send-keys {}))",
-                support::reference(input),
+                "(send-keys ({input} {} \"x\"))",
                 support::reference(&pane)
             )])?;
             server.shows(&pane, "runs this client")?;
@@ -392,7 +403,7 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
 #[test]
 fn a_headless_client_in_its_own_pane_keeps_its_capture_and_sizing() -> Outcome {
     let server = Server::start("")?;
-    let attach = "unset FUX_PANE; \"$FUX\" opts 50 10 size str viewer in attach; sleep 60";
+    let attach = "unset FUX_PANE; \"$FUX\" \"(attach (in (size (options) 50 10) \\\"viewer\\\"))\"; sleep 60";
     let launch = [&format!(
         "(new-tab (argument (argument (program (size (in (options) \"viewer\") 60 12) \"sh\") \"-c\") {}))",
         fux::script::quoted(attach)
@@ -400,7 +411,7 @@ fn a_headless_client_in_its_own_pane_keeps_its_capture_and_sizing() -> Outcome {
     let pane = server.ok(&launch)?;
     let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
     server.ok(&[&format!(
-        "(sequence! (resize-auto {}) #inert)",
+        "(sequence! (resize-auto (tab {})) #inert)",
         support::reference(&pane)
     )])?;
     server.shows(&pane, "c1")?;
@@ -967,8 +978,9 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
         let out = server.fux(&[&format!("(sequence! (set \"shell\" (list {})) (new-tab (directory (size (in (options) \"new-workspace\") 80 24) {})))", fux::script::quoted(&program), fux::script::quoted(&cwd_text))])?;
         assert_eq!(out.status, 1);
         assert!(
-            out.stderr
-                .ends_with(&format!(": starting {program} in {cwd:?}: {error}\n")),
+            out.stderr.contains(&fux::script::quoted(&format!(
+                "starting {program} in {cwd:?}: {error}"
+            ))),
             "{}",
             out.stderr
         );
@@ -1090,29 +1102,38 @@ fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
 fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
     let server = Server::start("")?;
     let before = server.ok(&["(listing (list-session))"])?;
-    for (i, given) in ["", "str . cwd", "str tmp cwd"].into_iter().enumerate() {
+    for (i, given) in [None, Some("."), Some("tmp")].into_iter().enumerate() {
         let gone = server.dir.join(format!("gone-{i}"));
         std::fs::create_dir_all(&gone).map_err(e)?;
-        let script =
-            format!(r#"cd "$1" && rmdir "$1" && fux opts str main in 80 24 size {given} new-tab"#);
+        let base = r#"(size (in (options) "main") 80 24)"#;
+        let builder = match given {
+            Some(path) => format!("(directory {base} {})", fux::script::quoted(path)),
+            None => base.to_owned(),
+        };
+        let program = format!("(new-tab {builder})");
         let gone = gone.to_string_lossy();
         let out = server.piped(
             std::path::Path::new("/bin/sh"),
-            &["-c", &script, "sh", &gone],
+            &[
+                "-c",
+                r#"cd "$1" && rmdir "$1" && fux "$2""#,
+                "sh",
+                &gone,
+                &program,
+            ],
             "",
         )?;
-        assert_eq!(out.status, 1, "{given}: {}", out.stdout);
+        assert_eq!(out.status, 1, "{given:?}: {}", out.stderr);
         assert!(
-            out.stderr
-                .ends_with("the caller's own directory is unknown\n"),
-            "{given}: {}",
+            out.stderr.contains("the caller's own directory is unknown"),
+            "{given:?}: {}",
             out.stderr
         );
     }
     assert_eq!(server.ok(&["(listing (list-session))"])?, before);
     let whole = server.dir.join("gone-whole");
     std::fs::create_dir_all(&whole).map_err(e)?;
-    let script = r#"cd "$1" && rmdir "$1" && fux opts str main in 80 24 size str "$2" cwd new-tab"#;
+    let script = r#"cd "$1" && rmdir "$1" && fux '(new-tab (directory (size (in (options) "main") 80 24) (first (arguments))))' "$2""#;
     let (gone, here) = (whole.to_string_lossy(), server.dir.to_string_lossy());
     let out = server.piped(
         std::path::Path::new("/bin/sh"),
@@ -1221,9 +1242,7 @@ fn a_stopped_key_program_leaves_the_next_one_asking() -> Outcome {
 /// the next key runs.
 #[test]
 fn a_stopped_compilation_leaves_the_next_key_running() -> Outcome {
-    let keys = "define spin end  str F5 code spin end bind \
-                define spin begin again end immediate \
-                str 'C-b k' code me focused str next-''ok text send-keys end bind";
+    let keys = "(define! spin (lambda! () (spin))) (bind-key \"F5\" (code! (lambda! () (spin)))) (bind-key \"C-b k\" (code! (lambda! () (send-keys (text (focused (me)) \"next-ok\")) #inert)))";
     let server = Server::start(keys)?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
     terminal.wait_for("$")?;
@@ -1451,7 +1470,7 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
 fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
     let existing = Server::start("")?;
     let empty = Server::empty()?;
-    let (launch, why) = (["str", "", "program"], "a program is needed");
+    let why = "a program is needed";
     for (server, size, refused) in [
         (&existing, "(size (options) 40 10)", None),
         (
@@ -1466,10 +1485,8 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
             Some("no room for a pane below its bar"),
         ),
     ] {
-        let args: Vec<&str> = (size.split(' '))
-            .chain(launch.iter().copied())
-            .chain(["attach"])
-            .collect();
+        let program = format!("(attach (program {size} \"\"))");
+        let args = [program.as_str()];
         let panes = server.panes()?.len();
         let mut terminal = Terminal::attach(server, 10, 80, &args)?;
         match refused {
@@ -1567,7 +1584,7 @@ fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
         let diagnostic = String::from_utf8_lossy(&terminal.output);
         assert!(diagnostic.contains("unused:"), "{args:?}: {diagnostic}");
         assert!(
-            diagnostic.contains("attach: takes no program with a target or watch"),
+            diagnostic.contains("takes no program with a target or watch"),
             "{diagnostic}"
         );
     }
