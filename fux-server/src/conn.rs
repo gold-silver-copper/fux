@@ -969,11 +969,12 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             false => wake.map(|at| at.saturating_duration_since(now)),
         };
         let mut fds = poll.list();
-        // Not read, its client is asked for `HUP` alone: on Unix that is
-        // asking for nothing (poll reports it whatever is asked); on Windows
-        // it keeps a read in flight, a buffer's worth at most, so a client
-        // that went is still seen to (WINDOWS.md, PR 5).
-        let mut theirs = Events::HUP;
+        // Not read, its client is watched for its end (`Events::WATCH`), till
+        // that is seen: then nothing more is to be heard of it.
+        let mut theirs = match ended {
+            true => Events::NONE,
+            false => Events::WATCH,
+        };
         if reads {
             theirs |= Events::IN;
         }
@@ -1022,7 +1023,10 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         }
         let ready: Vec<Events> = fds.revents().collect();
         let now = Instant::now();
-        if reads && ready.first().is_some_and(|f| !f.is_empty()) {
+        // A client seen to end is read to that end whatever its stage, so
+        // that its server is told (`Shut`).
+        let client_ready = ready.first().copied().unwrap_or(Events::NONE);
+        if reads && !client_ready.is_empty() || client_ready.intersects(Events::WATCH) {
             let mut read = 0usize;
             while read < READ {
                 match fuxix::io::read(&client, &mut buffer) {

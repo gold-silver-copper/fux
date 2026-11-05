@@ -44,7 +44,8 @@ use windows_sys::Win32::System::Threading::{
 pub struct Events(u8);
 
 impl Events {
-    /// None asked for: what is told unasked (`HUP`, `ERR`) only.
+    /// None asked for, and nothing told: no read is armed for it, and
+    /// what ended is not told over and over to a loop done with it.
     pub const NONE: Self = Self(0);
     /// A read gives bytes, or the end, or its error, at once.
     pub const IN: Self = Self(1);
@@ -53,10 +54,15 @@ impl Events {
     /// A read or write failed, for a reason other than the stream's end.
     pub const ERR: Self = Self(4);
     /// The other end is gone: a read came to the end and nothing read is
-    /// left, or a write found no reader.
+    /// left, or nothing read is asked for ([`Events::WATCH`]), or a write
+    /// found no reader.
     pub const HUP: Self = Self(8);
     /// Never told on Windows: a source borrowed is always open.
     pub const NVAL: Self = Self(16);
+    /// What a source not read yet is waited for, to learn of its end, which
+    /// only a read that ends tells: `ERR` and `HUP` keep a read in flight,
+    /// and what it reads is kept for later, up to a bound (`crate::io`).
+    pub const WATCH: Self = Self(4 | 8);
 
     /// Whether any event of `other` is here.
     pub fn intersects(self, other: Self) -> bool {
@@ -208,7 +214,10 @@ fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> 
         }
         let mut ready = 0usize;
         for fd in fds.iter_mut() {
-            fd.revents = fd.source.ready(fd.events);
+            fd.revents = match fd.events.is_empty() {
+                true => Events::NONE,
+                false => fd.source.ready(fd.events),
+            };
             ready = ready.saturating_add(usize::from(!fd.revents.is_empty()));
         }
         if ready > 0 {

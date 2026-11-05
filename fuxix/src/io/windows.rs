@@ -7,6 +7,7 @@
 use crate::errno::{Errno, Result};
 use crate::poll::{Events, KEY_IO, Source, sealed::Sealed};
 use std::cell::UnsafeCell;
+use std::collections::VecDeque;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -37,6 +38,12 @@ const BUFFER: usize = 64 * 1024;
 /// call gives up: a writer writing nothing over and over can't hold a
 /// poll from its timeout.
 const EMPTY_READS: usize = 16;
+
+/// How much a stream only watched for its end ([`Events::WATCH`]) keeps of
+/// what it reads, to read on to that end. A peer that wrote past it and
+/// more than its pipe holds is read no further until it is read: that end
+/// is told then, as a peer blocked on a full Unix socket has not ended.
+const AHEAD: usize = 4 * BUFFER;
 
 /// A byte stream on Windows: one end of a pipe fuxix made ([`pipe`],
 /// [`pipe_for_child`]), to wait on with [`crate::poll`] and read and write
@@ -97,6 +104,9 @@ struct State {
     /// written: `start..end` of the buffer.
     start: usize,
     end: usize,
+    /// A read's bytes before those, set aside while the stream was only
+    /// watched for its end ([`Op::set_aside`]).
+    ahead: VecDeque<u8>,
     /// Why it stopped: the error a call ended with, a read's end among
     /// them. Told by every later call.
     failed: Option<Errno>,
@@ -224,6 +234,20 @@ impl Op {
         got == 0 && errno.is_none()
     }
 
+    /// Moves what a finished read left aside, up to [`AHEAD`], so that the
+    /// next read can look for the end behind it: whether it did.
+    fn set_aside(&self, state: &mut State) -> bool {
+        let (start, end) = (state.start, state.end);
+        if state.pending || state.failed.is_some() || start >= end || state.ahead.len() >= AHEAD {
+            return false;
+        }
+        let mut ahead = std::mem::take(&mut state.ahead);
+        ahead.extend(self.bytes(state).get(start..end).unwrap_or_default());
+        state.ahead = ahead;
+        (state.start, state.end) = (0, 0);
+        true
+    }
+
     /// Writes `start..end` of the buffer: at once as far as the pipe takes
     /// it, then one call left in flight, holding `handle`.
     fn write(self: &Arc<Self>, handle: &Arc<OwnedHandle>, state: &mut State) {
@@ -325,30 +349,40 @@ impl Stream {
 }
 
 impl Sealed for Stream {
-    /// Keeps a read in flight for `IN`, and for `HUP` alone too: a poll
-    /// that wants no bytes yet (they wait, a read's buffer at most) still
-    /// learns that the other end went, which only a read that ends tells.
-    /// Unix's poll reports `HUP` whatever is asked, so asking for it is
-    /// the same there as asking for nothing.
+    /// Keeps a read in flight for `IN`, and for [`Events::WATCH`] too: a
+    /// poll that wants no bytes yet still learns that the other end went,
+    /// which only a read that ends tells. What such a poll's reads bring
+    /// is set aside, [`AHEAD`] at most, for the read that follows; a read
+    /// that finishes at once queues no packet, so it goes on here.
     fn arm(&self, interest: Events) {
-        if interest.intersects(Events::IN | Events::HUP) {
-            let mut state = lock(&self.read);
+        if !interest.intersects(Events::IN | Events::HUP) {
+            return;
+        }
+        let mut state = lock(&self.read);
+        loop {
             if !state.pending && state.start >= state.end && state.failed.is_none() {
                 self.read.read(&self.handle, &mut state);
             }
+            if interest.intersects(Events::IN) || !self.read.set_aside(&mut state) {
+                break;
+            }
         }
+        drop(state);
     }
 
     fn ready(&self, interest: Events) -> Events {
         let mut ready = Events::NONE;
         let read = lock(&self.read);
-        let buffered = read.start < read.end;
-        if interest.intersects(Events::IN) && (buffered || read.failed.is_some()) {
+        let buffered = read.start < read.end || !read.ahead.is_empty();
+        let reads = interest.intersects(Events::IN);
+        if reads && (buffered || read.failed.is_some()) {
             ready |= Events::IN;
         }
+        // Asked for no bytes, its end is told past those it holds, as
+        // Unix's `poll` tells it past those a socket holds.
         match read.failed {
-            Some(errno) if !buffered && errno.is_end() => ready |= Events::HUP,
-            Some(_) if !buffered => ready |= Events::ERR,
+            Some(errno) if !(reads && buffered) && errno.is_end() => ready |= Events::HUP,
+            Some(_) if !(reads && buffered) => ready |= Events::ERR,
             Some(_) | None => {}
         }
         drop(read);
@@ -452,6 +486,17 @@ pub fn read(source: &(impl Source + ?Sized), buffer: &mut [u8]) -> Result<usize>
     let mut state = lock(op);
     if !state.pending && state.start >= state.end && state.failed.is_none() {
         op.read(&stream.handle, &mut state);
+    }
+    if !state.ahead.is_empty() {
+        let mut taken = 0usize;
+        for to in buffer.iter_mut() {
+            let Some(from) = state.ahead.pop_front() else {
+                break;
+            };
+            *to = from;
+            taken = taken.saturating_add(1);
+        }
+        return Ok(taken);
     }
     if state.start < state.end {
         let (start, end) = (state.start, state.end);
