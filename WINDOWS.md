@@ -144,6 +144,50 @@ programs built on the libraries (below) are the acceptance test for the whole po
   4 MiB + 1 MiB both ways through one pipe with 500 signals, exact; 2000 raises from 4 threads, each
   seen; a child's 1 MiB and its `Chld`.
 
+## What PR 8 builds on (found in PR 7)
+- **fux-server's OS seam is one module switch**, `socket.rs` with `socket/unix.rs` (today's code,
+  moved) and `socket/windows.rs`: where a server is found and kept private, and how fux's own
+  processes are started and linked (`connect`, `accept`, `peer`, `launch_conn`, `start_pane`,
+  `pane_listener`, `pane_first`, `reach_named`, `taken_stdio`, `run_pinned`, `keep_executable`,
+  `prepare_terminals`). The rest of fux-server is shared; its unit tests are `cfg(all(test, unix))`
+  because they drive sessions through fux's fuxth (`fux::script`), which is Unix-only until PR 8.
+- **The client is not built on Windows**: `src/client.rs`, `script`, `screens`, `keymap`,
+  `client_state` and `help` are `cfg(unix)`; the binary runs `__serve`, `__pane PATH` and
+  `__conn taken`, and refuses anything else once. PR 8 removes those gates. The root `tests/*.rs`
+  (they drive the client) are `#![cfg(unix)]` but `tests/windows.rs`, a small wire client.
+- **Names on Windows:** the socket path names a pipe, `\\.\pipe\fux-<path, \ as />-<SID>[-elevated]`
+  (`socket::pipe_name`); no file is at the path. Beside it: `.starting` and `.lock` (opened with no
+  delete sharing), `.server` (the server's pid and creation time, D-138), and `PATH.panes\`, where
+  each pane has an empty marker file `N` naming its pipe. The default socket is
+  `%LOCALAPPDATA%\fux\server.sock`, `server-elevated.sock` for an elevated process (D-137). The
+  pinned ConPTY is `%LOCALAPPDATA%\fux\conpty`.
+- **A client's checks are PR 8's:** `check_client_socket`, `listened` and `owned` exist only on
+  Unix. On Windows `fuxix::socket::connect` already refuses a pipe of another user or owner; a
+  client must not read `Errno::AGAIN` (every instance busy) as "a server runs": a squatter with
+  busy instances gives it too. The server's `.lock` and `.server` record are what says one runs.
+- **Starting a server:** a client starts `fux __serve SOCKET ENTRIES` and reads `READY` on its
+  stdout. A server whose run is recorded starts the run's pinned copy (`run_pinned`: started with
+  the same three handles, then this process exits 0, before taking any lock) and the copy writes
+  `READY`. Notices before `READY` go to the server's log (`notice: ...`): the built-in ConPTY's
+  losses, and a launcher job that binds the run (`process::job_fate`, D-135). PR 8's client should
+  print them.
+- **No spare connection process on Windows** (`keep_spare` is Linux's): the server takes every
+  client and starts `fux __conn taken` with the client's instance on stdout and its link on stdin
+  (`io::pipe_for_fuxix_child`, both overlapped), handed through a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
+  of exactly those handles (`process::start`).
+- **D-134:** a pane process sends `FromPane::Offer` (its program's pid, creation time and handle
+  value) before each new program's facts and again to a server taking it back; the server copies
+  the handle from the pane process (the pid it started, or the greeting's, checked against the
+  pipe's maker) and checks pid and creation time (`process::adopt`). The program is not held
+  suspended until then: a pane process that dies in the milliseconds before its server copies the
+  handle leaves that program unreaped by the server (it gets the console's close event).
+- **Signals:** `process::delivery(signal, shell)` is the D-136 table (Unix: always `Group`), used in
+  `host.rs`. "Killed" is not on the wire: an end by fux's kill is `Exited(KILLED)`.
+- **Reads stay armed:** a poll for `Events::HUP` alone keeps a read in flight on Windows (a buffer's
+  worth at most) and is asking for nothing on Unix; the server and `__conn` poll held links so.
+- **Not done here:** console close/logoff handlers that wait for the loop (a detached server has no
+  console; a hand-typed one stops as a crash would, and is taken back); the suspended start above.
+
 ## What PR 7 builds on (found in PR 5)
 - `fuxix::socket` is one module on both OSes. Its `Peer { user, pid }` and `User` are shared names:
   a uid on Unix, a SID plus "token elevated" on Windows (D-137: elevation, not the integrity level,

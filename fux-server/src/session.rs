@@ -780,6 +780,12 @@ impl Session {
     /// its copy, and the views showing it are painted again. A pane closed
     /// tells nothing more but its answers.
     fn told(&mut self, id: PaneId, report: FromPane, now: Instant) {
+        // Its program's handle is copied whatever its copy's state: a pane
+        // begun before its copy is made, or closing, still runs it.
+        if let FromPane::Offer(offered) = report {
+            self.adopt(id, offered);
+            return;
+        }
         if let FromPane::Answer { ask, mut answer } = report {
             // A capture is the pane's own facts as it answered, after all it
             // told before: its counts are the copy's, unless it is behind;
@@ -901,7 +907,7 @@ impl Session {
             }
             FromPane::Refused { client, why } => self.notify_to(client, why, true),
             FromPane::Retired(token) => self.retired.push((id, token)),
-            FromPane::Offer(offered) => self.adopt(id, offered),
+            FromPane::Offer(_) => {}
         }
     }
 
