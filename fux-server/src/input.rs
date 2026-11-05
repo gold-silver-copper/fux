@@ -682,7 +682,7 @@ mod tests {
             ),
             (
                 "(sequence! (bind-in \"list\" \"g\" \"nowhere\") #inert)",
-                "\"nowhere\" is not ",
+                "is not up, down",
             ),
         ] {
             let refused = output_as(&mut s, Some(c), bad).err().unwrap_or_default();
@@ -708,9 +708,9 @@ mod tests {
 
     /// The confirmation's recipe file, loaded.
     const CONFIRM: &str = concat!(
-        "require ",
+        "(require! \"",
         env!("CARGO_MANIFEST_DIR"),
-        "/../recipes/confirm.fux"
+        "/../recipes/confirm.grift\")"
     );
 
     /// A question's or a prompt's action is checked as it opens: one with
@@ -719,14 +719,13 @@ mod tests {
     fn an_action_is_checked_as_its_screen_opens() -> Outcome {
         let (mut s, c) = session()?;
         for (action, said) in [
-            ("\"drop\"".to_owned(), "code … end"),
-            ("code nosuch end".to_owned(), "no such word"),
+            ("\"drop\"".to_owned(), "callback code"),
             (
-                "list empty code drop end code drop end end".to_owned(),
+                "(list () (code! (lambda! () #inert)) (code! (lambda! () #inert)))".to_owned(),
                 "a callback is",
             ),
         ] {
-            let open = format!("{CONFIRM} me str sure? {action} confirm");
+            let open = format!("{CONFIRM} (confirm (me) \"sure?\" {action})");
             let refused = output_as(&mut s, Some(c), &open).err().unwrap_or_default();
             assert!(refused.contains(said), "{refused}");
             assert_eq!(mode(&s, c), "normal");
@@ -746,8 +745,9 @@ mod tests {
     #[test]
     fn a_confirmation_runs_its_callback_by_y_or_enter_alone() -> Outcome {
         let (mut s, c) = session()?;
-        let ask =
-            &format!("{CONFIRM} me str sure? list list %1 end code str yes rename end end confirm");
+        let ask = &format!(
+            "{CONFIRM} (confirm (me) \"sure?\" (list (list (pane 1)) (code! (lambda! (p) (rename p \"yes\")))))"
+        );
         for key in ["n", "Escape", "r", "x"] {
             output_as(&mut s, Some(c), ask)?;
             assert_eq!(mode(&s, c), "list sure? 0");
@@ -765,7 +765,7 @@ mod tests {
                     &mut s,
                     "(sequence! (define! value-148 (pane 1)) \"name\" (get value-148 \"name\"))"
                 )?,
-                "null\n",
+                "none\n",
                 "{key}"
             );
         }
@@ -1246,7 +1246,11 @@ mod tests {
                 typed.input(c, b"\r");
             }
             let (mut ran, d) = busy()?;
-            if let Err(error) = output_as(&mut ran, Some(d), &binding.code.text()) {
+            if let Err(error) = crate::session::testing::output_job(
+                &mut ran,
+                Some(d),
+                &fux::screens::Job::from(binding.code.clone()),
+            ) {
                 refused.push(keys.clone());
                 // Leaving a repeat mode clears what its keys said.
                 if !repeat {
@@ -1288,19 +1292,19 @@ mod tests {
             }
         }
         // A workspace that closed, or a pane to move to, opens none.
-        let gone = "(sequence! (define! variables-458 (context)) (bind variables-458 (quote! w) (workspace (new-tab (size (directory (in (options) \"gone\") \"/\") 80 24)))) (kill (evaluate (quote! w) variables-458)) #inert)";
+        let gone = r#"(define! w (workspace (new-tab (size (directory (in (options) "gone") "/") 80 24)))) (kill w)"#;
         for (code, refused) in [
             (
-                format!("{gone} me w choose-among"),
+                format!("{gone} (choose-among (me) w)"),
                 "chooser target is absent",
             ),
             (
-                format!("{gone} me %2 w choose-move"),
+                format!("{gone} (choose-move (me) (pane 2) w)"),
                 "chooser target is absent",
             ),
             (
                 "(sequence! (choose-move (me) (pane 2) (pane 2)) #inert)".to_owned(),
-                "takes a tab or workspace",
+                "a tab or workspace",
             ),
         ] {
             let code = code.as_str();
@@ -1429,7 +1433,7 @@ mod tests {
                 "(sequence! (choose-pane (me) (pane 2)) #inert)",
                 "\r",
                 "(sequence! (fold (lambda! (accumulator-580 item-576) (let! ((() accumulator-580)) (sequence! (print (string item-576)) (list)))) (list) (panes (tab 1))) #inert)",
-                "(list (pane 2) (pane 1) (pane 3))",
+                "%2\n%1\n%3\n",
             ),
         ] {
             let (mut s, c) = busy()?;
@@ -1496,7 +1500,7 @@ mod tests {
                     &mut s,
                     "(sequence! (define! value-622 (pane 2)) \"name\" (get value-622 \"name\"))"
                 )?,
-                "null\n",
+                "none\n",
                 "{open}"
             );
             output_as(&mut s, Some(c), open)?;

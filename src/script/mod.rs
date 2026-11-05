@@ -1628,7 +1628,7 @@ pub mod testing {
             let mut event = (**event).clone();
             event
                 .fields
-                .retain(|(key, _)| !without.contains(&key.as_str()));
+                .retain(|(key, _)| !without.iter().any(|name| super::field_name(name) == *key));
             event
                 .write(&mut lines)
                 .map_err(|_| not_a("an event's text"))?;

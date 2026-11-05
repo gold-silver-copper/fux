@@ -3836,7 +3836,7 @@ pub(crate) mod testing {
     }
 
     /// The same of a job: its code, given the line typed for it.
-    fn output_job(
+    pub(crate) fn output_job(
         session: &mut Session,
         client: Option<ClientId>,
         job: &fux::screens::Job,
@@ -3848,8 +3848,14 @@ pub(crate) mod testing {
         })?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended {
-            text.push_str(&value.text().map_err(|f| f.message)?);
-            text.push('\n');
+            let values = match value {
+                fux::script::Value::List(items) => items.items(),
+                value => std::slice::from_ref(value),
+            };
+            for value in values {
+                text.push_str(&value.text().map_err(|f| f.message)?);
+                text.push('\n');
+            }
         }
         Ok(text)
     }
@@ -4343,7 +4349,7 @@ mod tests {
                 &mut s,
                 "(sequence! (define! variables-1755 (context)) (bind variables-1755 (quote! held) (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))) (define! value-1763 (evaluate (quote! held) variables-1755)) \"version\" (bind variables-1755 (quote! before) (get value-1763 \"version\")) (kill (pane (evaluate (quote! held) variables-1755))) (define! value-1769 (evaluate (quote! held) variables-1755)) \"version\" (equal? (get value-1769 \"version\") (evaluate (quote! before) variables-1755)))"
             )?,
-            "true\n"
+            "#true\n"
         );
         run(
             &mut s,
@@ -4354,7 +4360,7 @@ mod tests {
                 &mut s,
                 "(sequence! (define! variables-1784 (context)) (bind variables-1784 (quote! held) (capture (pane 3))) (kill (pane 3)) (define! value-1789 (evaluate (quote! held) variables-1784)) \"last_status\" (kind (get value-1789 \"last-status\")))"
             )?,
-            "null\n"
+            "none\n"
         );
         Ok(())
     }
@@ -4455,16 +4461,20 @@ mod tests {
             &mut Vec::new(),
         )?;
         assert!(once.0.is_none());
+        let [fux::script::Value::List(items)] = values.as_slice() else {
+            return Err("snapshot result list".into());
+        };
+        let values = items.items();
         assert!(
             matches!(values.first(), Some(fux::script::Value::App(fux::script::Fux::Pane(p, Some(run)))) if *p == PaneId::of(1) && *run == s.run)
         );
-        assert_eq!(values.last(), Some(&fux::script::Value::str("null")));
+        assert_eq!(values.last(), Some(&fux::script::Value::str("none")));
         assert_eq!(
             output(
                 &mut s,
                 "(sequence! (define! variables-1847 (context)) (bind variables-1847 (quote! held) (snapshot (all) \"facts\")) (rename (pane 1) \"changed\") (define! value-1854 (evaluate (quote! held) variables-1847)) \"panes\" (define! value-1857 (first (get value-1854 \"panes\"))) \"name\" (kind (get value-1857 \"name\")))"
             )?,
-            "null\n"
+            "none\n"
         );
         Ok(())
     }
@@ -4958,7 +4968,7 @@ mod tests {
                 &mut s,
                 "(sequence! (define! value-2063 (tab 1)) \"host\" (get value-2063 \"host\"))"
             )?,
-            "null\n"
+            "none\n"
         );
         assert_eq!(s.graphics(PaneId::of(1)), fux_vt::Graphics::Text);
         Ok(())
@@ -5143,9 +5153,9 @@ mod tests {
 
     /// The layout presets' recipe file, loaded.
     const LAYOUTS: &str = concat!(
-        "require ",
+        "(require! \"",
         env!("CARGO_MANIFEST_DIR"),
-        "/../recipes/layouts.fux"
+        "/../recipes/layouts.grift\")"
     );
 
     /// `arrange` is checked on the tab's effective size: its own while no
@@ -5201,7 +5211,7 @@ mod tests {
         )?;
         let order = vec![PaneId::of(4), PaneId::of(2), PaneId::of(1), PaneId::of(3)];
         for (recipe, axis) in [("even-h", Axis::Horizontal), ("even-v", Axis::Vertical)] {
-            run(&mut s, &format!("{LAYOUTS} @1 {recipe}"))?;
+            run(&mut s, &format!("{LAYOUTS} ({recipe} (tab 1))"))?;
             assert_eq!(s.root(tab).map(Tree::panes), Some(order.clone()));
             let area = s.tab(tab).ok_or("tab")?.fit().area();
             let placed = layout::place(s.root(tab).ok_or("tree")?, area);
@@ -5214,7 +5224,7 @@ mod tests {
             ("main-h", Axis::Vertical, Axis::Horizontal),
             ("main-v", Axis::Horizontal, Axis::Vertical),
         ] {
-            run(&mut s, &format!("{LAYOUTS} @1 {recipe}"))?;
+            run(&mut s, &format!("{LAYOUTS} ({recipe} (tab 1))"))?;
             let Some(Tree::Split(split)) = s.root(tab) else {
                 return Err("main layout".into());
             };
@@ -5242,7 +5252,7 @@ mod tests {
             "(sequence! (kill (pane 2)) (kill (pane 3)) (kill (pane 4)) #inert)",
         )?;
         for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
-            run(&mut s, &format!("{LAYOUTS} @1 {recipe}"))?;
+            run(&mut s, &format!("{LAYOUTS} ({recipe} (tab 1))"))?;
             assert_eq!(s.root(tab), Some(&Tree::Pane(PaneId::of(1))));
         }
         Ok(())
@@ -5302,7 +5312,7 @@ mod tests {
                 )?;
                 let before = s.root(TabId::of(1)).cloned();
                 let tokens = Ok::<String, fux::script::Failed>(
-                    (&format!("{LAYOUTS} @1 {recipe}")).to_owned(),
+                    (&format!("{LAYOUTS} ({recipe} (tab 1))")).to_owned(),
                 )?;
                 let mut machine = fux::script::compile(&tokens)?;
                 let mut out = Vec::new();
@@ -6971,22 +6981,41 @@ mod tests {
             if split {
                 run(&mut s, "(split (axis (pane 1) \"horizontal\"))")?;
             }
-            let alone = output(&mut s, "(send-keys (text (tab 1) \"x\"))")?;
-            let mut expected = Vec::new();
-            for id in s.root(TabId::of(1)).ok_or("layout")?.panes() {
-                let version = s.pane(id)?.version(s.run);
-                let counts = version
-                    .counts
-                    .named()
-                    .map(|(name, n)| format!(r#","{name}":{n}"#));
-                expected.push(format!(
-                    r#"{{"pane":"{id}","version":"{version}"{},"status":0}}"#,
-                    counts.concat()
-                ));
+            let alone = output(&mut s, "(data-text (send-keys (text (tab 1) \"x\")))")?;
+            let panes = s.root(TabId::of(1)).ok_or("layout")?.panes();
+            assert_eq!(
+                crate::test_data(&alone, "(length data)")?,
+                panes.len().to_string()
+            );
+            for (index, id) in panes.iter().enumerate() {
+                let version = s.pane(*id)?.version(s.run);
+                assert_eq!(
+                    crate::test_data(
+                        &alone,
+                        &format!("(field (element-at data {index}) (quote! pane))")
+                    )?,
+                    id.to_string()
+                );
+                assert_eq!(
+                    crate::test_data(
+                        &alone,
+                        &format!("(field (element-at data {index}) (quote! version))")
+                    )?,
+                    version.to_string()
+                );
+                assert_eq!(
+                    crate::test_data(
+                        &alone,
+                        &format!("(field (element-at data {index}) (quote! status))")
+                    )?,
+                    "0"
+                );
             }
-            assert_eq!(alone, format!("[{}]\n", expected.join(",")));
-            let listed = output(&mut s, "(list (send-keys (text (tab 1) \"x\")))")?;
-            assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
+            let listed = output(
+                &mut s,
+                "(data-text (list (send-keys (text (tab 1) \"x\"))))",
+            )?;
+            assert_eq!(crate::test_data(&listed, "(first data)")?, alone.trim());
         }
         Ok(())
     }
@@ -7863,9 +7892,11 @@ mod tests {
                 crate::test_reference(&format!("{caught}"))
             ),
         )?;
-        assert!(
-            json.starts_with(r#"{"pane":"%1","version":"%1:"#) && json.contains(r#""status":124"#),
-            "{json}"
+        assert_eq!(crate::test_data(&json, "(field data (quote! pane))")?, "%1");
+        assert!(crate::test_data(&json, "(field data (quote! version))")?.starts_with("%1:"));
+        assert_eq!(
+            crate::test_data(&json, "(field data (quote! status))")?,
+            "124"
         );
         let again = output(
             &mut s,
@@ -8562,7 +8593,7 @@ mod tests {
                 &mut s,
                 "(sequence! (define! value-4044 (tab 2)) \"name\" (get value-4044 \"name\"))"
             )?,
-            "null\n"
+            "none\n"
         );
         run(
             &mut s,
@@ -8922,7 +8953,7 @@ mod tests {
                     crate::test_reference(&format!("{act}"))
                 )
             )?,
-            "null\n"
+            "none\n"
         );
         assert_eq!(
             output(

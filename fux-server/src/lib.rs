@@ -169,3 +169,28 @@ fn test_reference(value: &str) -> String {
     };
     format!("({constructor} {})", fux::script::quoted(value))
 }
+
+#[cfg(test)]
+fn test_data(text: &str, query: &str) -> Result<String, String> {
+    let mut g: grift::Grift = grift::Grift::new().map_err(|_| "initializing data reader")?;
+    let forms = g
+        .read_named("observed data", text)
+        .map_err(|_| format!("invalid data: {text}"))?;
+    let forms = g.list_items(&forms).map_err(|_| "data forms")?;
+    let [data] = forms.as_slice() else {
+        return Err(format!("expected one datum: {text}"));
+    };
+    g.define("data", data.clone()).map_err(|_| "binding data")?;
+    let program = format!(
+        "(define! field (lambda! (record name) (second (find-association name record)))) {query}"
+    );
+    let value = g
+        .evaluate(&mut (), &program)
+        .map_err(|_| format!("query {query}: {text}"))?;
+    if let Some(text) = g.as_str(&value).map_err(|_| "data string")? {
+        return Ok(text.to_owned());
+    }
+    let mut out = String::new();
+    g.write(&value, &mut out).map_err(|_| "data output")?;
+    Ok(out)
+}

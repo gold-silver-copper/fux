@@ -277,7 +277,10 @@ mod runner {
                     && !exercised.contains(&Promise::WaitAcrossChange)
             );
             let timed_out = call(
-                &[&format!("(wait (timeout (changed {}) 1))", fux::script::quoted(&v))],
+                &[&format!(
+                    "(wait (timeout (changed {}) 1))",
+                    fux::script::quoted(&v)
+                )],
                 124,
                 "fux: timeout: wait",
             );
