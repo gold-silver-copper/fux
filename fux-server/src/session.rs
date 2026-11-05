@@ -4651,7 +4651,10 @@ mod tests {
         for path in ["proj", "proj in str agent1", "proj in str agent2", "other"] {
             run(
                 &mut s,
-                &format!("opts str {path} in 80 24 size new-tab drop"),
+                &format!(
+                    "(sequence! (new-tab (size (in (options) {}) 80 24)) #inert)",
+                    fux::script::quoted(&format!("{path}"))
+                ),
             )?;
         }
         let proj = AnyRef::Workspace(WsId::of(2));
@@ -4703,7 +4706,13 @@ mod tests {
         use crate::workspace::Shown;
         let (mut s, _) = attached(10, 40)?;
         for ws in ["two", "two", "two", "three"] {
-            run(&mut s, &format!("opts str {ws} in 80 24 size new-tab drop"))?;
+            run(
+                &mut s,
+                &format!(
+                    "(sequence! (new-tab (size (in (options) {}) 80 24)) #inert)",
+                    fux::script::quoted(&format!("{ws}"))
+                ),
+            )?;
         }
         let state = fux::script::default_state().map_err(|e| e.to_string())?;
         let size = Size::new(10, 40).map_err(|e| e.to_string())?;
@@ -4724,7 +4733,15 @@ mod tests {
             ("@3", "no previously shown tab"),
             ("+2", "no previously shown workspace"),
         ] {
-            let error = output_as(&mut s, Some(e), &format!("me {from} str last step")).err();
+            let error = output_as(
+                &mut s,
+                Some(e),
+                &format!(
+                    "(sequence! (step (me) {} \"last\") #inert)",
+                    crate::test_reference(&format!("{from}"))
+                ),
+            )
+            .err();
             assert!(error.is_some_and(|e| e.contains(refused)), "{from}");
         }
         run(&mut s, "(sequence! (kill (tab 3)) #inert)")?;
@@ -5533,7 +5550,13 @@ mod tests {
             &mut s,
             "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
-        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (workspace \"+2\")) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         let id = PaneId::of(2);
         // A test's session starts no program: one is put in the pane.
         let argv = ["/bin/cat".to_owned()];
@@ -5708,7 +5731,13 @@ mod tests {
             &mut s,
             "(sequence! (new-tab (in (size (options) 40 12) (workspace \"+1\"))) #inert)",
         )?;
-        run(&mut s, &format!("str {c} client str @2 tab show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (tab \"@2\")) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         let size = |s: &Session| {
             s.pane(PaneId::of(2))
                 .map(|p| (p.size().cols(), p.size().rows()))
@@ -5822,7 +5851,10 @@ mod tests {
         )?;
         run(
             &mut s,
-            &format!("str {big} client str other workspace show"),
+            &format!(
+                "(sequence! (show (client {}) (workspace \"other\")) #inert)",
+                fux::script::quoted(&format!("{big}"))
+            ),
         )?;
         let caller = Caller {
             gave: Some((PaneId::of(2), 0)),
@@ -5851,7 +5883,13 @@ mod tests {
             &mut s,
             "(sequence! (split (directory (axis (pane 1) \"horizontal\") \"/\")) #inert)",
         )?;
-        run(&mut s, &format!("str {c} client focused zoom"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (zoom (focused (client {}))) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         run(
             &mut s,
             "(sequence! (new-tab (in (size (options) 80 24) \"other\")) #inert)",
@@ -5876,7 +5914,11 @@ mod tests {
         )?;
         run(
             &mut s,
-            &format!("str {c1} client %1 show str {c2} client %2 show %3 zoom"),
+            &format!(
+                "(sequence! (show (client {}) (pane 1)) (show (client {}) (pane 2)) (zoom (pane 3)) #inert)",
+                fux::script::quoted(&format!("{c1}")),
+                fux::script::quoted(&format!("{c2}"))
+            ),
         )?;
         let zoomed = |s: &Session| s.tab(TabId::of(1)).and_then(Tab::zoomed);
         let focused = |s: &Session| [c1, c2].map(|c| s.focused(c));
@@ -5905,7 +5947,13 @@ mod tests {
             &mut s,
             "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
         )?;
-        run(&mut s, &format!("str {c1} client %1 show %2 zoom"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (pane 1)) (zoom (pane 2)) #inert)",
+                fux::script::quoted(&format!("{c1}"))
+            ),
+        )?;
         let presentation = fux::script::default_state()?.preferences.presentation();
         let size = sized(24, 80)?;
         let mut clients = vec![c1];
@@ -5938,7 +5986,13 @@ mod tests {
             &mut s,
             "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
         )?;
-        run(&mut s, &format!("str {c} client focused zoom"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (zoom (focused (client {}))) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         let zoomed = sizes(&s);
         s.detach_client(c);
         assert_eq!(sizes(&s), zoomed);
@@ -5967,7 +6021,15 @@ mod tests {
         assert!(lines.contains(r#""event":"shown""#), "{lines}");
         assert!(!lines.contains("resized"), "{lines}");
         assert_eq!(sizes(&s), before);
-        let screen = |s: &mut Session, c| output(s, &format!("str {c} client capture string"));
+        let screen = |s: &mut Session, c| {
+            output(
+                s,
+                &format!(
+                    "(string (capture (client {})))",
+                    fux::script::quoted(&format!("{c}"))
+                ),
+            )
+        };
         let (one, two) = (screen(&mut s, c1)?, screen(&mut s, c2)?);
         assert!(one.contains("second") && !one.contains("third"), "{one}");
         assert!(two.contains("third") && !two.contains("second"), "{two}");
@@ -5975,8 +6037,16 @@ mod tests {
         let bar = one.lines().last().unwrap_or_default();
         assert!(bar.contains("%2") && bar.contains("%3"), "{one}");
         // A pane's next steps among its stack's children, going round.
-        let step =
-            |s: &mut Session, way| run(s, &format!("str {c1} client dup focused str {way} step"));
+        let step = |s: &mut Session, way| {
+            run(
+                s,
+                &format!(
+                    "(sequence! (define! value-120 (client {})) (step value-120 (focused value-120) {}) #inert)",
+                    fux::script::quoted(&format!("{c1}")),
+                    fux::script::quoted(&format!("{way}"))
+                ),
+            )
+        };
         for (way, shown) in [("next", 3), ("next", 2), ("last", 3)] {
             step(&mut s, way)?;
             assert_eq!(s.focused(c1), Some(PaneId::of(shown)), "{way}");
@@ -6018,7 +6088,11 @@ mod tests {
         )?;
         run(
             &mut s,
-            &format!("str {c} client %2 show str {c} client %4 show"),
+            &format!(
+                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 4)) #inert)",
+                fux::script::quoted(&format!("{c}")),
+                fux::script::quoted(&format!("{c}"))
+            ),
         )?;
         run(&mut s, "(sequence! (kill (pane 2)) (kill (pane 4)) #inert)")?;
         assert_eq!(s.focused(c), Some(PaneId::of(1)));
@@ -6035,7 +6109,14 @@ mod tests {
             "(sequence! (stack (pane 1)) (stack (pane 3)) (split (axis (pane 1) \"horizontal\")) #inert)",
         )?;
         for pane in [4, 1, 5] {
-            run(&mut s, &format!("str {c} client %{pane} show"))?;
+            run(
+                &mut s,
+                &format!(
+                    "(sequence! (show (client {}) {}) #inert)",
+                    fux::script::quoted(&format!("{c}")),
+                    crate::test_reference(&format!("%{pane}"))
+                ),
+            )?;
         }
         run(&mut s, "(sequence! (move (pane 5) (tab \"@2\")) #inert)")?;
         assert_eq!(s.focused(c), Some(PaneId::of(1)));
@@ -6055,11 +6136,18 @@ mod tests {
         )?;
         run(
             &mut s,
-            &format!("str {c1} client %2 show str {c2} client %3 show %2 zoom"),
+            &format!(
+                "(sequence! (show (client {}) (pane 2)) (show (client {}) (pane 3)) (zoom (pane 2)) #inert)",
+                fux::script::quoted(&format!("{c1}")),
+                fux::script::quoted(&format!("{c2}"))
+            ),
         )?;
         run(
             &mut s,
-            &format!("str {c2} client dup focused str left step"),
+            &format!(
+                "(sequence! (define! value-162 (client {})) (step value-162 (focused value-162) \"left\") #inert)",
+                fux::script::quoted(&format!("{c2}"))
+            ),
         )?;
         assert_eq!(s.tab(TabId::of(1)).and_then(Tab::zoomed), None);
         assert_eq!(s.focused(c2), Some(PaneId::of(1)));
@@ -6120,7 +6208,13 @@ mod tests {
             &mut s,
             "(sequence! (new-tab (in (size (options) 20 9) (workspace \"+1\"))) #inert)",
         )?;
-        run(&mut s, &format!("str {c} client %2 show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (pane 2)) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         // `[%2, %3 / %4 / %5]`, shown %2: the hidden child needs 8 rows.
         let made = "(sequence! (stack (pane 2)) (split (axis (pane 3) \"vertical\")) (split (axis (pane 4) \"vertical\")) #inert)";
         run(&mut s, made)?;
@@ -6327,7 +6421,13 @@ mod tests {
             &mut s,
             "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
-        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (workspace \"+2\")) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(23, 80));
         // Programs are started, as a server starts them.
@@ -6579,7 +6679,13 @@ mod tests {
             &mut s,
             "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
-        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (workspace \"+2\")) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         s.input(c, b"\x1b[6;20;10t");
         let id = PaneId::of(2);
         host(&mut s, id, |h| {
@@ -6697,7 +6803,13 @@ mod tests {
             &mut s,
             "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
-        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (workspace \"+2\")) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         s.input(c, b"\x1b[6;20;10t");
         s.out(PaneId::of(2), b"x");
         s.detach_client(c);
@@ -6714,7 +6826,13 @@ mod tests {
             &mut s,
             "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
-        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (workspace \"+2\")) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let queue = |s: &mut Session, bytes: &[u8]| {
@@ -6791,7 +6909,13 @@ mod tests {
             &mut s,
             "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
-        run(&mut s, &format!("str {c} client str +2 workspace show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (workspace \"+2\")) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         let id = PaneId::of(2);
         let queued = |s: &mut Session| host(s, id, |h| h.pane().input().len());
         s.out(id, b"\x1b[?2048h\x1b[?2031h");
@@ -7128,7 +7252,13 @@ mod tests {
         assert_eq!(queued(&mut s), Some(b"x".to_vec()));
         let seen = s.pane(PaneId::of(1))?.version(s.run);
         s.out(PaneId::of(1), b"E");
-        let stale = output(&mut s, &format!("str {seen} expect str x text send-keys"));
+        let stale = output(
+            &mut s,
+            &format!(
+                "(send-keys (text (expect {}) \"x\"))",
+                fux::script::quoted(&format!("{seen}"))
+            ),
+        );
         let stale = stale.err().unwrap_or_default();
         assert!(
             stale.starts_with("stale: ") && stale.contains("%1 changed since"),
@@ -7142,7 +7272,13 @@ mod tests {
         )?;
         let seen = s.pane(PaneId::of(2))?.version(s.run);
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
-        let ended = output(&mut s, &format!("str {seen} expect str x text send-keys"));
+        let ended = output(
+            &mut s,
+            &format!(
+                "(send-keys (text (expect {}) \"x\"))",
+                fux::script::quoted(&format!("{seen}"))
+            ),
+        );
         let ended = ended.err().unwrap_or_default();
         assert!(ended.starts_with("stale: "), "{ended}");
         Ok(())
@@ -7542,7 +7678,13 @@ mod tests {
         )?;
         run(&mut s, "(split (axis (pane \"%2\") \"vertical\"))")?;
         let mut ids = |only: AnyRef| -> Result<String, String> {
-            let text = output(&mut s, &format!("{only} info listing"))?;
+            let text = output(
+                &mut s,
+                &format!(
+                    "(listing (information {}))",
+                    crate::test_reference(&format!("{only}"))
+                ),
+            )?;
             let words = text.lines().filter_map(|l| l.split_whitespace().next());
             Ok(words.map(str::to_owned).collect::<Vec<_>>().join(" "))
         };
@@ -7714,12 +7856,25 @@ mod tests {
     fn a_failed_wait_keeps_its_answer() -> TestResult {
         let mut s = started()?;
         let caught = "(sequence! \"timeout\" (element-at (catch-kind! (list (wait (timeout (pane 1) 1))) timeout failure-3428 (sequence! \"value\" (list (second (get failure-3428 \"values\"))))) 0))";
-        let json = output(&mut s, &format!("{caught} json"))?;
+        let json = output(
+            &mut s,
+            &format!(
+                "(data-text {})",
+                crate::test_reference(&format!("{caught}"))
+            ),
+        )?;
         assert!(
             json.starts_with(r#"{"pane":"%1","version":"%1:"#) && json.contains(r#""status":124"#),
             "{json}"
         );
-        let again = output(&mut s, &format!("{caught} 1 timeout wait")).err();
+        let again = output(
+            &mut s,
+            &format!(
+                "(wait (timeout {} 1))",
+                crate::test_reference(&format!("{caught}"))
+            ),
+        )
+        .err();
         assert!(
             again.as_ref().is_some_and(
                 |e| e.starts_with("timeout: ") && e.contains("still at version %1:0.0.0.0.0:")
@@ -7737,9 +7892,15 @@ mod tests {
         let capture = format!("str {client} client capture");
         let text = output(&mut s, &format!("{capture} string"))?;
         assert_eq!(text.split_whitespace().next(), Some(shown));
-        let refused = output(&mut s, &format!("{capture} str done get"))
-            .err()
-            .ok_or("client capture supplied invented counts")?;
+        let refused = output(
+            &mut s,
+            &format!(
+                "(sequence! \"done\" (get {} \"done\"))",
+                crate::test_reference(&format!("{capture}"))
+            ),
+        )
+        .err()
+        .ok_or("client capture supplied invented counts")?;
         assert!(refused.starts_with("no-field: "), "{refused}");
         let counts = s.pane(PaneId::of(1))?.counts().named();
         let expected: Vec<String> = counts.iter().map(|(_, n)| n.to_string()).collect();
@@ -7794,14 +7955,25 @@ mod tests {
             version.trim()
         );
         assert_eq!(
-            output(&mut s, &format!("{caught} json"))?.trim(),
+            output(
+                &mut s,
+                &format!(
+                    "(data-text {})",
+                    crate::test_reference(&format!("{caught}"))
+                )
+            )?
+            .trim(),
             r#"{"pane":"%2","status":4}"#
         );
         assert_eq!(
             output(&mut s, &format!("{caught} kind"))?.trim(),
             "closed-answer"
         );
-        let gone = output(&mut s, &format!("{caught} capture")).err();
+        let gone = output(
+            &mut s,
+            &format!("(capture {})", crate::test_reference(&format!("{caught}"))),
+        )
+        .err();
         assert!(
             gone.as_ref().is_some_and(|e| e.starts_with("no-pane: ")),
             "{gone:?}"
@@ -7818,7 +7990,13 @@ mod tests {
         let (one, two) = (of(&s, 1)?, of(&s, 2)?);
         s.out(PaneId::of(2), b"E");
         // From %2's version, though asked nowhere else: %2's change.
-        let answer = output(&mut s, &format!("str {two} changed 0 timeout wait"))?;
+        let answer = output(
+            &mut s,
+            &format!(
+                "(wait (timeout (changed {}) 0))",
+                fux::script::quoted(&format!("{two}"))
+            ),
+        )?;
         assert!(
             answer.starts_with("%2:") && answer.ends_with(" screen\n"),
             "{answer}"
@@ -8241,7 +8419,10 @@ mod tests {
             format!("{initial}\n")
         );
         assert_eq!(
-            output(&mut s, &format!("str {initial} version"))?,
+            output(
+                &mut s,
+                &format!("(version {})", fux::script::quoted(&format!("{initial}")))
+            )?,
             format!("{initial}\n")
         );
         assert!(output(&mut s, "(version \"1.2.3\")").is_err());
@@ -8578,7 +8759,13 @@ mod tests {
             .find(|(key, _)| key == "cursor")
             .map(|(_, v)| v.render());
         let cursor = cursor.ok_or("its cursor")?;
-        let after = output(&mut s, &format!("all str {cursor} 0 next-events"))?;
+        let after = output(
+            &mut s,
+            &format!(
+                "(next-events (all) {} 0)",
+                fux::script::quoted(&format!("{cursor}"))
+            ),
+        )?;
         assert!(after.contains(r#""event":"bell""#), "{after}");
         Ok(())
     }
@@ -8658,7 +8845,13 @@ mod tests {
     fn a_captures_cursor_is_the_screens() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
-            let json = output(s, &format!("%1 {read} capture json"))?;
+            let json = output(
+                s,
+                &format!(
+                    "(list (pane 1) (data-text (capture {})))",
+                    crate::test_reference(&format!("{read}"))
+                ),
+            )?;
             let after = json.split("\"screen_cursor\":").nth(1).unwrap_or_default();
             Ok(after
                 .split(",\"lines\"")
@@ -8712,18 +8905,40 @@ mod tests {
         let (mut s, _) = attached(10, 40)?;
         let act = "(send-keys (text (pane 1) \"x\"))";
         assert!(
-            output(&mut s, &format!("{act} str name get"))
-                .is_err_and(|e| e.starts_with("no-field:"))
+            output(
+                &mut s,
+                &format!(
+                    "(sequence! \"name\" (get {} \"name\"))",
+                    crate::test_reference(&format!("{act}"))
+                )
+            )
+            .is_err_and(|e| e.starts_with("no-field:"))
         );
         assert_eq!(
-            output(&mut s, &format!("{act} pane str name get"))?,
+            output(
+                &mut s,
+                &format!(
+                    "(sequence! (define! value-326 (pane {})) \"name\" (get value-326 \"name\"))",
+                    crate::test_reference(&format!("{act}"))
+                )
+            )?,
             "null\n"
         );
         assert_eq!(
-            output(&mut s, &format!("{act} dup tab swap workspace"))?,
+            output(
+                &mut s,
+                &format!(
+                    "(list (tab {}) (workspace {}))",
+                    crate::test_reference(&format!("{act}")),
+                    crate::test_reference(&format!("{act}"))
+                )
+            )?,
             "(list (tab 1) (workspace 1))"
         );
-        let alone = output(&mut s, &format!("{act} json"))?;
+        let alone = output(
+            &mut s,
+            &format!("(data-text {})", crate::test_reference(&format!("{act}"))),
+        )?;
         assert!(
             alone.starts_with("{\"pane\":\"%1\",\"version\":"),
             "{alone}"
@@ -8994,7 +9209,13 @@ mod tests {
             "(sequence! (new-tab (size (in (in (options) (workspace 1)) \"desktop-simple\") 80 24)) #inert)",
         )?;
         for client in [watcher, killer] {
-            run(&mut s, &format!("str {client} client str @2 tab show"))?;
+            run(
+                &mut s,
+                &format!(
+                    "(sequence! (show (client {}) (tab \"@2\")) #inert)",
+                    fux::script::quoted(&format!("{client}"))
+                ),
+            )?;
         }
         output_as(
             &mut s,
@@ -9401,7 +9622,13 @@ mod tests {
     fn a_tab_given_a_size_splits_only_while_it_shows_every_pane() -> TestResult {
         let (mut s, _) = attached(50, 200)?;
         let tab = "(sequence! (new-tab (in (size (options) 40 12) (workspace \"+1\"))) #inert)";
-        run(&mut s, &format!("{tab} str c1 client str @2 tab show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client \"c1\") (tab \"@2\")) {})",
+                crate::test_reference(&format!("{tab}"))
+            ),
+        )?;
         // Four panes stacked take their 2 rows each and 3 separators.
         run(
             &mut s,
@@ -9612,7 +9839,11 @@ mod tests {
             let mut s = started()?;
             run(
                 &mut s,
-                &format!("opts {cols} 10 size +1 in new-tab drop {split}"),
+                &format!(
+                    "(sequence! (new-tab (in (size (options) {} 10) (workspace 1))) {})",
+                    crate::test_reference(&format!("{cols}")),
+                    crate::test_reference(&format!("{split}"))
+                ),
             )?;
             assert_eq!(widths(&s), expected, "{split}");
             assert_eq!(replayed(&s, tab)?, rects(&s, tab));
@@ -9620,7 +9851,10 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            &format!("{made} %2 str horizontal axis 4294967294 1 shares split drop"),
+            &format!(
+                "(sequence! (split (shares (axis (pane 2) \"horizontal\") 4294967294 1)) {})",
+                crate::test_reference(&format!("{made}"))
+            ),
         )?;
         for split in [
             "(sequence! (split (axis (pane 3) \"horizontal\")) #inert)",
@@ -9793,10 +10027,22 @@ mod journal_tests {
         };
         // Its own focus moves to the zoomed pane it already shows.
         let from = s.parts.journal().end(s.run);
-        run(&mut s, &format!("str {c} client %1 show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (pane 1)) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         assert_eq!(shown(&s, from)?, [Some(TabId::of(1))]);
         // Its focus in @1 is repaired while it is shown @2.
-        run(&mut s, &format!("str {c} client @2 show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (tab 2)) #inert)",
+                fux::script::quoted(&format!("{c}"))
+            ),
+        )?;
         let from = s.parts.journal().end(s.run);
         run(&mut s, "(sequence! (kill (pane 1)) #inert)")?;
         assert_eq!(shown(&s, from)?, [Some(TabId::of(2))]);
@@ -9827,7 +10073,13 @@ mod journal_tests {
             &mut s,
             "(sequence! (swap-with (pane 1) (pane 2)) (reorder (tab 2) \"previous\") #inert)",
         )?;
-        run(&mut s, &format!("str {client} client %1 show %1 zoom"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (pane 1)) (zoom (pane 1)) #inert)",
+                fux::script::quoted(&format!("{client}"))
+            ),
+        )?;
         run(
             &mut s,
             "(sequence! (move-border (pane 2) \"right\" 3) (history-budget (pane 1) 128) (clear-history (pane 1)) (notify (all) \"note\") #inert)",
@@ -9941,7 +10193,13 @@ mod journal_tests {
         let mut s = started()?;
         let from = s.parts.journal().end(s.run);
         run(&mut s, "(sequence! (rename (pane 1) \"hello\") #inert)")?;
-        let streamed = output(&mut s, &format!("%1 dup kill str {from} events"))?;
+        let streamed = output(
+            &mut s,
+            &format!(
+                "(sequence! (define! value-423 (pane 1)) (kill value-423) (events value-423 {}) #inert)",
+                fux::script::quoted(&format!("{from}"))
+            ),
+        )?;
         let events: Vec<_> = streamed.lines().collect();
         assert!(
             matches!(&events[..], [renamed, .., closed]
@@ -9955,7 +10213,10 @@ mod journal_tests {
         // Real records retain the server run in their handles.
         let kind = output(
             &mut s,
-            &format!("all str {from} 0 next-events str events get first str pane get kind"),
+            &format!(
+                "(sequence! (define! value-431 (next-events (all) {} 0)) \"events\" (define! value-434 (first (get value-431 \"events\"))) \"pane\" (kind (get value-434 \"pane\")))",
+                fux::script::quoted(&format!("{from}"))
+            ),
         )?;
         assert_eq!(kind, "pane\n");
         let mut s = started()?;
@@ -9979,7 +10240,14 @@ mod journal_tests {
                 "(sequence! (new-tab (in (size (options) 80 24) (workspace \"+1\"))) (new-tab (size (in (options) \"new-workspace\") 80 24)) (resize (tab 1) 80 24) (resize (tab 2) 80 24) (resize (tab 3) 80 24) #inert)",
             )?;
             let from = s.parts.journal().end(s.run);
-            run(&mut s, &format!("str {client} client {target} show"))?;
+            run(
+                &mut s,
+                &format!(
+                    "(sequence! (show (client {}) {}) #inert)",
+                    fux::script::quoted(&format!("{client}")),
+                    crate::test_reference(&format!("{target}"))
+                ),
+            )?;
             for scope in [
                 Scope::Target(AnyRef::Tab(TabId::of(1))),
                 Scope::Target(AnyRef::Workspace(WsId::of(1))),

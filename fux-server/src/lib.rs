@@ -143,7 +143,15 @@ fn test_reference(value: &str) -> String {
     if value.starts_with('(') {
         return value.to_owned();
     }
-    if let Ok(number) = value.parse::<i64>() {
+    if matches!(value, "true" | "false") {
+        return format!("#{value}");
+    }
+    if value == "all" {
+        return "(all)".into();
+    }
+    if let Ok(number) = value.parse::<i64>()
+        && !value.starts_with('+')
+    {
         return number.to_string();
     }
     let constructor = match value.chars().next() {
