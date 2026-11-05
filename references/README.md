@@ -3,7 +3,7 @@
 The specifications fux-vt is checked against, and the source of the crates
 read for the Windows port. Only this index, `fetch.sh` and `.gitignore` are
 committed: the documents are free to download but not
-obviously free to redistribute, so fetch them (about 170 MB):
+obviously free to redistribute, so fetch them (about 225 MB):
 
 ```sh
 references/fetch.sh            # fetches what is missing
