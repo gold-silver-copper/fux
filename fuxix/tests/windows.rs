@@ -430,3 +430,42 @@ fn a_watched_childs_exit_comes_as_chld_after_its_output() -> Outcome {
     );
     Ok(())
 }
+
+/// A stream dropped with a write in flight closes once that write lands,
+/// though nothing polls again: its reader gets every byte, then the end.
+#[test]
+fn a_dropped_streams_last_write_and_end_arrive_with_no_poll() -> Outcome {
+    let _turn = turn();
+    let (ours, theirs) = pipe_for_child().map_err(text)?;
+    let data = bytes(7, 256 * 1024);
+    // Until a write is left in flight: the pipe holds 64 KiB.
+    let mut written = 0usize;
+    while let Some(rest) = data.get(written..).filter(|rest| !rest.is_empty()) {
+        match write_what_fits(&ours, rest).map_err(text)? {
+            0 => break,
+            n => written = written.saturating_add(n),
+        }
+    }
+    drop(ours);
+    let (sender, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut got = Vec::new();
+        let read = std::io::Read::read_to_end(&mut std::fs::File::from(theirs), &mut got);
+        let _ = sender.send(read.map(|_| got).map_err(text));
+    });
+    let got = received
+        .recv_timeout(Duration::from_secs(20))
+        .map_err(|_| {
+            format!("no end within 20 s of dropping a stream with {written} bytes written")
+        })??;
+    assert_eq!(got.len(), written);
+    assert!(
+        got.as_slice() == data.get(..written).unwrap_or_default(),
+        "the bytes differ"
+    );
+    assert!(
+        written > 64 * 1024,
+        "only {written} bytes went: no write was left in flight"
+    );
+    Ok(())
+}

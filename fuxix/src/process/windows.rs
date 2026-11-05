@@ -44,13 +44,15 @@ pub struct Watch {
 // SAFETY: a registered wait may be unregistered from any thread.
 unsafe impl Send for Watch {}
 
-/// Watches `child`: once it ends (or at once, if it has), `Chld` is
-/// raised, once, by a thread-pool wait whose callback only raises it.
-pub fn watch(child: &std::process::Child) -> Result<Watch> {
+/// Watches `process`, a child's handle (a std `Child`, or the handle a
+/// pseudo console's `CreateProcessW` gives): once it ends (or at once, if
+/// it has), `Chld` is raised, once, by a thread-pool wait whose callback
+/// only raises it.
+pub fn watch(process: impl AsHandle) -> Result<Watch> {
     use windows_sys::Win32::System::Threading::{
         INFINITE, RegisterWaitForSingleObject, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
     };
-    let process = (child.as_handle().try_clone_to_owned())
+    let process = (process.as_handle().try_clone_to_owned())
         .map_err(|error| Errno::from_io_error(&error).unwrap_or_else(Errno::last))?;
     // Made now, so that the callback always has a port to wake.
     crate::poll::port()?;

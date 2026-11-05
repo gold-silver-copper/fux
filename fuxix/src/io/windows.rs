@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
-    RtlNtStatusToDosError,
+    RtlNtStatusToDosError, STATUS_PENDING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
@@ -23,6 +23,9 @@ use windows_sys::Win32::System::IO::{
 };
 use windows_sys::Win32::System::Pipes::{
     CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, INFINITE, ResetEvent, WaitForSingleObject,
 };
 use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
 
@@ -35,9 +38,9 @@ const BUFFER: usize = 64 * 1024;
 /// with [`read`], [`write`] and [`write_what_fits`].
 ///
 /// Dropped, it cancels its read and closes its handle at once, or, with a
-/// write in flight, once that write has landed (a later poll takes its
-/// packet): what was written reaches the reader, as a closed descriptor's
-/// bytes do on Unix.
+/// write in flight, once that write has landed, polled or not ([`linger`]):
+/// what was written reaches the reader, and then its end, as a closed
+/// descriptor's bytes do on Unix.
 pub struct Stream {
     /// Shared with a write in flight, which closes it if it lands last.
     handle: Arc<OwnedHandle>,
@@ -62,6 +65,9 @@ struct Op {
     overlapped: UnsafeCell<OVERLAPPED>,
     bytes: UnsafeCell<Box<[u8]>>,
     kind: Kind,
+    /// A write's: set by the kernel as its call ends, for [`linger`] to
+    /// wait on; a manual-reset event, reset before each call.
+    event: Option<OwnedHandle>,
     state: Mutex<State>,
 }
 
@@ -99,13 +105,27 @@ fn lock(op: &Op) -> MutexGuard<'_, State> {
 }
 
 impl Op {
-    fn new(kind: Kind) -> Arc<Op> {
-        Arc::new(Op {
+    fn new(kind: Kind) -> Result<Arc<Op>> {
+        let event = match kind {
+            Kind::Read => None,
+            Kind::Write => {
+                // SAFETY: makes a new unnamed manual-reset event, not set,
+                // with no security attributes.
+                let raw = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+                if raw.is_null() {
+                    return Err(Errno::last());
+                }
+                // SAFETY: `raw` was just made, and nothing else owns it.
+                Some(unsafe { OwnedHandle::from_raw_handle(raw) })
+            }
+        };
+        Ok(Arc::new(Op {
             overlapped: UnsafeCell::new(OVERLAPPED::default()),
             bytes: UnsafeCell::new(vec![0; BUFFER].into_boxed_slice()),
             kind,
+            event,
             state: Mutex::new(State::default()),
-        })
+        }))
     }
 
     /// The buffer, while no call is in flight; `state` is this op's,
@@ -124,9 +144,20 @@ impl Op {
     fn fresh(&self, state: &State) -> *mut OVERLAPPED {
         let overlapped = self.overlapped.get();
         if !state.pending {
+            // A write's event, which the kernel sets as the call ends; its
+            // low bit is clear, so the port still gets the packet.
+            let event = self.event.as_ref().map_or(std::ptr::null_mut(), |event| {
+                // SAFETY: the event is this op's own and open.
+                unsafe { ResetEvent(event.as_raw_handle()) };
+                event.as_raw_handle()
+            });
+            let fresh = OVERLAPPED {
+                hEvent: event,
+                ..OVERLAPPED::default()
+            };
             // SAFETY: no call is in flight, and the lock `state` is under
             // is held: nothing else reads or writes it now.
-            unsafe { overlapped.write(OVERLAPPED::default()) };
+            unsafe { overlapped.write(fresh) };
         }
         overlapped
     }
@@ -263,8 +294,8 @@ impl Stream {
         }
         Ok(Stream {
             handle: Arc::new(handle),
-            read: Op::new(Kind::Read),
-            write: Op::new(Kind::Write),
+            read: Op::new(Kind::Read)?,
+            write: Op::new(Kind::Write)?,
         })
     }
 }
@@ -316,8 +347,51 @@ impl Drop for Stream {
             // its packet still comes, and hands the op back.
             unsafe { CancelIoEx(self.handle.as_raw_handle(), self.read.overlapped.get()) };
         }
+        drop(read);
         // The handle closes as the fields drop, unless a write in flight
-        // holds it (`finished`).
+        // holds it: then once it lands, as a poll takes its packet
+        // (`finished`) or, if none polls again, as `linger` sees it end.
+        if lock(&self.write).pending {
+            let write = Arc::clone(&self.write);
+            // A thread that can't be started leaves it to the next poll.
+            let _ = std::thread::Builder::new()
+                .name("fuxix-linger".into())
+                .spawn(move || linger(&write));
+        }
+    }
+}
+
+/// Waits for the write in flight of a dropped stream to land, then closes
+/// the handle it holds, so the reader sees the end with no poll to take
+/// the packet. The packet still comes, and hands back its count, later.
+/// A poll that takes it first goes on with the rest of the write; that is
+/// waited for too.
+fn linger(op: &Op) {
+    let Some(event) = &op.event else {
+        return;
+    };
+    loop {
+        // SAFETY: the event is the op's own, open while `op` lives.
+        unsafe { WaitForSingleObject(event.as_raw_handle(), INFINITE) };
+        let mut state = lock(op);
+        if state.handle.is_none() {
+            return;
+        }
+        // `Internal`, the status word, is an `OVERLAPPED`'s first field.
+        let status = op.overlapped.get().cast::<usize>().cast_const();
+        // SAFETY: reads the status word the kernel sets as the call ends;
+        // a volatile read of one aligned word of the op's own `OVERLAPPED`,
+        // as `HasOverlappedIoCompleted` does.
+        let internal = unsafe { status.read_volatile() };
+        if usize::try_from(STATUS_PENDING.cast_unsigned()) == Ok(internal) {
+            // A later call, which `fresh` reset the event for.
+            drop(state);
+            continue;
+        }
+        let handle = state.handle.take();
+        drop(state);
+        drop(handle);
+        return;
     }
 }
 

@@ -192,7 +192,14 @@ fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> 
             fd.source.arm(fd.events);
         }
         // What finished already, taken in without waiting.
-        while take(port, 0)? == PACKETS {}
+        let mut taken = 0usize;
+        loop {
+            let got = take(port, 0)?;
+            taken = taken.saturating_add(got);
+            if got < PACKETS {
+                break;
+            }
+        }
         let mut ready = 0usize;
         for fd in fds.iter_mut() {
             fd.revents = fd.source.ready(fd.events);
@@ -200,6 +207,13 @@ fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> 
         }
         if ready > 0 {
             return Ok(ready);
+        }
+        // A packet taken may have left a source with nothing in flight
+        // and nothing to tell (a read of no bytes): it is armed again,
+        // and looked at again, before any wait, which nothing else would
+        // end.
+        if taken > 0 {
+            continue;
         }
         if let Some(deadline) = deadline {
             let left = deadline.saturating_duration_since(Instant::now());
