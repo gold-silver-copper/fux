@@ -216,6 +216,20 @@ fn request(
         .iter()
         .map(|v| from_grift(g, v))
         .collect::<Result<Vec<_>, _>>()?;
+    if matches!(word, Word::Act(Act::Pane | Act::Tab | Act::Workspace))
+        && let [Value::Int(number)] = values.as_slice()
+    {
+        let prefix = match word {
+            Word::Act(Act::Pane) => "%",
+            Word::Act(Act::Tab) => "@",
+            _ => "+",
+        };
+        let id = format!("{prefix}{number}")
+            .parse::<AnyRef>()
+            .map_err(|()| g.error("range-error", args))?;
+        return to_grift(g, &Value::App(handle(id, None)));
+    }
+
     if matches!(
         word,
         Word::Act(Act::Pane | Act::Tab | Act::Workspace | Act::Client)
@@ -232,7 +246,9 @@ fn request(
         if let Some(Value::Str(s)) = values.first() {
             // FUX_PANE includes its program generation, which remains in Context.
             if matches!(word, Word::Act(Act::Pane))
-                && let Some((id, _)) = s.split_once(':')
+                && s.matches(':').count() == 1
+                && let Some((id, generation)) = s.split_once(':')
+                && generation.parse::<u64>().is_ok()
             {
                 values = vec![Value::str(id)];
             }

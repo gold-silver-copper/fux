@@ -799,7 +799,7 @@ mod tests {
         )?;
         s.input(c, b"\x1b[H");
         let shown = screen_text(&s, c)?;
-        assert!(shown.contains("(list (tab 1) (pane 1))"), "{shown}");
+        assert!(shown.contains("@1 %1"), "{shown}");
         Ok(())
     }
 
@@ -1529,11 +1529,7 @@ mod tests {
             "(sequence! (choose (client \"c1\") \"hosts\" (list (list \"%1 kill\" \"%1 kill\")) () (list 0) (code! (lambda! (argument-677 argument-678) (sequence! (print argument-678) #inert)))) #inert)",
         )?;
         s.input(c, b"R");
-        assert!(
-            notice(&s, c).contains("(sequence! (kill (pane 1)) #inert)"),
-            "{}",
-            notice(&s, c)
-        );
+        assert!(notice(&s, c).contains("%1 kill"), "{}", notice(&s, c));
         assert!(s.parts.panes().contains_key(&PaneId::of(1)));
         Ok(())
     }

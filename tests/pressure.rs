@@ -339,9 +339,7 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         fill.display(),
         pid_file.display()
     );
-    let words = [
-        "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program",
-    ];
+    let words = ["(program (size (in (options) \"agent\") 80 24) \"sh\")"];
     let words = words
         .into_iter()
         .chain(["str", "-c", "arg", "str", &code, "arg", "new-tab"]);

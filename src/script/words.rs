@@ -260,9 +260,9 @@ pub const KINDS: [(&str, &str, Option<&str>); 21] = [
     ("closed-answer", "a closed pane's answer", None),
     ("client-capture", "a client's capture", None),
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
-    ("record", "a record", None), ("null", "null", None),
+    ("record", "a record", None), ("none", "none", None),
     ("code", "a code value another client sent, as its words, which execute compiles here", None),
-    ("opts", "options (from opts, for new-tab, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("options", "options (from opts, for new-tab, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("pane-request", "a pane request", Some("nothing acts on this request")),
     ("tab-request", "a tab request", Some("nothing acts on this request")),
     ("workspace-request", "a workspace request", Some("nothing acts on this request")),
@@ -404,7 +404,7 @@ words! {
         Reading Styles "styles" "pane-builder -- pane-builder" raises(Type Unused) "capture: colours and attributes" "fux %3 styles capture";
         Reading Marks "marks" "pane-builder -- pane-builder" raises(Type Unused) "capture: what only styling tells, as text: highlighted (reverse video, or a background colour) as ⟦this⟧, and rendered faint (SGR 2) as ⟨this⟩" "fux %3 marks capture";
         Reading MainScreen "main-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: what was printed before a program took the screen" "fux %3 main-screen capture";
-        Reading AltScreen "alt-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: the full screen a program drew last" "fux %3 alt-screen capture";
+        Reading AltScreen "alternate-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: the full screen a program drew last" "fux %3 alt-screen capture";
         Reading LastOutput "last-output" "pane-builder -- pane-builder" raises(Type Unused) "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux %3 last-output capture";
         Reading Rows "rows" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to, clipped to available rows; joined lines touched whole (with wrapped, those rows alone)" "fux %3 0 4 rows capture";
         Reading Cols "columns" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to columns, clipped to available cells" "fux %3 0 40 cols capture";

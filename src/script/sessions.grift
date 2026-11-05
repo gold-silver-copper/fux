@@ -28,7 +28,7 @@
   (let! ((node (element-at nodes index)))
     (if! (string? node) node
       (dump-first nodes (if! (same? (first node) "stack") (first (second node)) (element-at node 3)))))))
-(define! dump-cwd (lambda! (pane-record)
+(define! dump-directory (lambda! (pane-record)
   (let! ((launch (get pane-record "launch")) (current (get pane-record "directory")))
     (if! (and!? (same? (get launch "choice") "shell") (not? (same? current none)) (same? (get current "status") "known"))
       (get current "path") (get launch "directory")))))
@@ -38,8 +38,8 @@
     (or!? (same? current none) (not? (same? (get current "status") "known")))))
   (string-append
     (if! unknown (string-append "; " (string (get pane-record "id")) ": its current directory is unknown, so it starts in its launch directory\n") "")
-    (if! (same? (get (dump-cwd pane-record) "encoding") "utf8") ""
-      (string-append "; " (string (get pane-record "id")) ": directory bytes (hex) " (get (dump-cwd pane-record) "text") " are not UTF-8 text; it starts where this runs\n")))))
+    (if! (same? (get (dump-directory pane-record) "encoding") "utf8") ""
+      (string-append "; " (string (get pane-record "id")) ": directory bytes (hex) " (get (dump-directory pane-record) "text") " are not UTF-8 text; it starts where this runs\n")))))
 (define! session-find (lambda! (records id)
   (let! ((found (filter (lambda! (record-value) (same? (get record-value "id") id)) records)))
     (if! (same? (length found) 1) (first found) (raise (error (quote! no-target) id))))))
@@ -48,7 +48,7 @@
   (define! process (get pane-record "program"))
   (when! (same? process none) (raise (error (quote! not-running) (get pane-record "id"))))
   (define! program-arguments (get process "arguments"))
-  (define! place (dump-cwd pane-record))
+  (define! place (dump-directory pane-record))
   (define! builder (history-bytes builder (get pane-record "history-bytes")))
   (define! builder (reflow builder (get pane-record "reflow")))
   (define! builder (alternate-scroll-lines builder (get pane-record "alternate-scroll-lines")))

@@ -45,7 +45,7 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
         &["(sequence! (define! value-505 (here)) (list (tab value-505) (workspace value-505)))"],
         &env,
     )?;
-    assert_eq!(out.stdout, "(list (tab 1) (workspace 1))");
+    assert_eq!(out.stdout, "@1\n+1\n");
     // Missing targets, each named.
     let gone = server.fux(&["(sequence! (kill (tab \"@9\")) #inert)"])?;
     assert_eq!(
@@ -96,10 +96,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     // Swap toward a neighbour uses the same atomic backend as a counterpart.
     server.ok(&["(split (axis (pane \"%2\") \"horizontal\"))"])?;
     server.ok(&["(sequence! (swap-with (pane 2) \"right\") #inert)"])?;
-    assert_eq!(
-        server.ok(&["(panes (tab (pane 2)))"])?,
-        "(list (pane 3) (pane 2))"
-    );
+    assert_eq!(server.ok(&["(panes (tab (pane 2)))"])?, "%3\n%2\n");
     server.ok(&["(sequence! (swap-with (pane 2) (pane 3)) #inert)"])?;
     let refused = server.fux(&["(sequence! (move (pane 2) \"new-tabb\") #inert)"])?;
     assert_eq!(refused.status, 1, "{}", refused.stderr);
@@ -117,7 +114,7 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.ok(&["(sequence! (move (pane \"%3\") (workspace \"+2\")) #inert)"])?;
     server.ok(&["(sequence! (move (pane \"%3\") \"new-tab\") #inert)"])?;
     let ls = server.ok(&["(listing (list-session))"])?;
-    assert!(ls.contains("(list (tab 3) (pane 3))"), "{ls}");
+    assert!(ls.contains("@3 %3"), "{ls}");
     // Reorder tabs and workspaces.
     server.ok(&["(sequence! (reorder (tab \"@3\") \"previous\") #inert)"])?;
     let ls = server.ok(&["(listing (list-session))"])?;
@@ -239,7 +236,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     assert_eq!(caught.stdout, "timeout\nafter\n");
     let left = server.ok(&["(sequence! (define! value-704 (add 1 2)) (define! value-705 \"a b\") (define! value-707 (pane \"%1\")) (list value-704 value-705 value-707 (tab value-707)))"])?;
     assert_eq!(left, "3\na b\n%1\n@1\n");
-    let record = server.ok(&["(info (pane \"%1\"))"])?;
+    let record = server.ok(&["(information (pane \"%1\"))"])?;
     assert!(
         record.contains(r#""panes":[{"id":"%1","tab":"@1","version":"%1:"#),
         "{record}"
@@ -301,9 +298,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         nowhere.stderr
     );
-    let placed = [
-        "opts", "80", "24", "size", "str", "logs", "name", "str", "agent", "in", "new-tab",
-    ];
+    let placed = ["(new-tab (in (name (size (options) 80 24) \"logs\") \"agent\"))"];
     assert_eq!(server.fux(&placed)?.status, 0);
     Ok(())
 }
@@ -397,7 +392,10 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         ),
     ] {
         let wrong = said(words)?;
-        assert!(wrong.ends_with(&format!("{usage}\n")), "{wrong}");
+        assert!(
+            wrong.ends_with(&format!("{}", support::reference(&format!("{usage}")))),
+            "{wrong}"
+        );
     }
     // `help WORD` of no word says so, as help, and where, as any error.
     assert_eq!(
@@ -432,7 +430,7 @@ fn programs_come_from_stdin_and_files() -> Outcome {
     let server = Server::start("")?;
     let program = "(sequence! (define! twice (lambda! (argument-185) (add argument-185 argument-185))) (list (twice 21) (pane \"%1\")))";
     let out = server.piped(fux().as_ref(), &["-"], program)?;
-    assert_eq!(out.stdout, "(list 42 (pane 1))");
+    assert_eq!(out.stdout, "42\n%1\n");
     // What it reads is its program: `input` has nothing left to read.
     let input = server.piped(fux().as_ref(), &["-"], "input")?;
     assert!(input.stderr.starts_with("fux: read: "), "{}", input.stderr);
@@ -440,11 +438,7 @@ fn programs_come_from_stdin_and_files() -> Outcome {
         let file = server.dir.join(name);
         std::fs::write(&file, program).map_err(e)?;
         let path = file.to_string_lossy().into_owned();
-        assert_eq!(
-            server.ok(&["--file", &path])?,
-            "(list 42 (pane 1))",
-            "{path}"
-        );
+        assert_eq!(server.ok(&["--file", &path])?, "42\n%1\n", "{path}");
     }
     let missing = server.fux(&["--file", "missing.fux"])?;
     assert_eq!(missing.status, 1);
@@ -533,7 +527,10 @@ fn ls_json_list_keys_and_help() -> Outcome {
         revision.trim().parse().map_err(|()| "layout revision")?;
     assert_eq!(parsed.tab.to_string(), "@1");
     assert!(
-        json.contains(&format!("\"layout_revision\":\"{parsed}\"")),
+        json.contains(&format!(
+            "{}",
+            support::reference(&format!("layout_revision:{parsed}"))
+        )),
         "{json}"
     );
     assert_eq!(
@@ -569,7 +566,7 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     let dir = server.dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
     std::fs::create_dir(&dir).map_err(e)?;
     let out = std::process::Command::new(fux())
-        .args(["(sequence! (define! variables-6 (context)) (define! value-7 (options)) (define! value-8 \"agent\") (define! value-9 (in value-7 value-8)) (define! value-10 (size value-9 80 24)) (define! value-11 \"touch\") (define! value-12 (program value-10 value-11)) (define! value-13 \"here\") (define! value-14 (argument value-12 value-13)) (define! value-15 (new-tab value-14)) value-15)"])
+        .args(["(new-tab (argument (program (size (in (options) \"agent\") 80 24) \"touch\") \"here\"))"])
         .current_dir(&dir)
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
@@ -651,7 +648,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
         Ok(command)
     };
     let ran = full()?
-        .args(["(sequence! (define! variables-16 (context)) (define! value-17 (help)) (define! value-18 (options)) (define! value-19 \"agent\") (define! value-20 (in value-18 value-19)) (define! value-21 (size value-20 80 24)) (define! value-22 \"sleep\") (define! value-23 (program value-21 value-22)) (define! value-24 \"9\") (define! value-25 (argument value-23 value-24)) (define! value-26 (new-tab value-25)) value-26)"])
+        .args(["(sequence! (help) (new-tab (argument (program (size (in (options) \"agent\") 80 24) \"sleep\") \"9\")))"])
         .output()
         .map_err(e)?;
     let said = String::from_utf8_lossy(&ran.stderr);
@@ -788,7 +785,10 @@ fn a_batch_left_prints_its_events() -> Outcome {
     assert_eq!((idle.status, idle.stdout.as_str()), (0, ""));
     let cursor = server.ok(&["(sequence! (define! value-807 (next-events (all) \"\" 0)) \"next\" (get value-807 \"next\"))"])?;
     server.ok(&["(sequence! (rename (pane 1) \"told\") #inert)"])?;
-    let read = ["all", "str", cursor.trim(), "0", "next-events"];
+    let read = [&format!(
+        "(next-events (all) {} 0)",
+        fux::script::quoted(cursor.trim())
+    )];
     let events = server.ok(&read)?;
     assert!(
         matches!(&events.lines().collect::<Vec<_>>()[..], [one]

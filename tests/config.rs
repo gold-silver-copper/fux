@@ -14,9 +14,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     .map_err(e)?;
     // With the bundled shell, this starts a shell and waits for its
     // prompt. A leaked shell instead fails to start.
-    let waiting = [
-        "opts", "str", "main", "in", "80", "24", "size", "new-tab", "wait",
-    ];
+    let waiting = ["(wait (new-tab (size (in (options) \"main\") 80 24)))"];
     // Exercise start on a fresh socket: an already running server would
     // bypass the old startup config path. Clean up even on a refusal.
     let socket = server.dir.join("started/fux.sock");
@@ -363,7 +361,13 @@ fn the_config_words_examples_run_as_a_config() -> Outcome {
             .map(|(_, example)| example)
             .ok_or(format!("no example: {explained}"))?;
         std::fs::write(&config, example).map_err(e)?;
-        fux::script::run_file(&config).map_err(|f| format!("{example}: {f}"))?;
+        fux::script::run_file(&config).map_err(|f| {
+            format!(
+                "(list {} {})",
+                support::reference(&format!("{example}:")),
+                support::reference(&format!("{f}"))
+            )
+        })?;
     }
     Ok(())
 }
@@ -525,8 +529,9 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     let server = Server::start("")?;
     for marker in ["alpha", "beta"] {
         let code = format!(
-            "str shell list str /bin/sh str -c str 'printf {marker}; exec /bin/cat' end set \
-             opts str main in 80 24 size str {marker} name new-tab"
+            "(sequence! (set \"shell\" (list \"/bin/sh\" \"-c\" {})) (new-tab (name (size (in (options) \"main\") 80 24) {})))",
+            fux::script::quoted(&format!("printf {marker}; exec /bin/cat")),
+            fux::script::quoted(marker)
         );
         let answer = server.ok(&[&code])?;
         let pane = answer.trim().split(':').next().ok_or("shell pane")?;
@@ -535,7 +540,7 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
                 .ok(&[&format!("(capture {})", support::reference(pane))])?
                 .contains(marker))
         })?;
-        let saved = server.ok(&[&format!("(info {})", support::reference(pane))])?;
+        let saved = server.ok(&[&format!("(information {})", support::reference(pane))])?;
         assert!(
             saved.contains(&format!("printf {marker}; exec /bin/cat")),
             "{saved}"
@@ -560,7 +565,7 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
             Ok(!server.panes()?.iter().any(|(p, _)| p == pane))
         })?;
     }
-    let split = server.ok(&["(info (split (axis (pane 1) \"horizontal\")))"])?;
+    let split = server.ok(&["(information (split (axis (pane 1) \"horizontal\")))"])?;
     assert!(
         split.contains(r#""generation":0,"argv":["/bin/sh"]"#),
         "{split}"
@@ -603,7 +608,10 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
     // theirs in the order their connections' processes reach the server.
     let id = a.id.clone().ok_or("a's id")?;
     // Answered once its client took the keys, so it is pumped meanwhile.
-    let mut sending = server.spawn(&[&format!("str {id} client str F5 key send-keys drop")])?;
+    let mut sending = server.spawn(&[&format!(
+        "(sequence! (send-keys (key (client {}) \"F5\")) #inert)",
+        fux::script::quoted(&format!("{id}"))
+    )])?;
     eventually("committed title before the wait finishes", || {
         a.pump()?;
         b.pump()?;
@@ -676,7 +684,10 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
     let replay = server.dir.join("pane-policy.fux");
     std::fs::write(
         &replay,
-        format!("str history-bytes 8192 set str program-clipboard true set\n{recipe}"),
+        format!(
+            "(sequence! (set \"history-bytes\" 8192) (set \"program-clipboard\" #true) {})",
+            support::reference(&format!("{recipe}"))
+        ),
     )
     .map_err(e)?;
     server.ok(&["--file", &replay.to_string_lossy()])?;
@@ -840,7 +851,10 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     server.ok(&reuse)?;
     terminal.wait_for("Reuse")?;
     terminal.type_bytes(b"\r")?;
-    let name = ["str", &id, "client", "focused", "str", "name", "get"];
+    let name = [&format!(
+        "(sequence! (define! value-138 (focused (client {}))) \"name\" (get value-138 \"name\"))",
+        fux::script::quoted(&id)
+    )];
     eventually("the prompt's callback ran", || {
         Ok(server.ok(&name)?.trim() == "named-by-prompt")
     })?;

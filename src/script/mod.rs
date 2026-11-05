@@ -13,6 +13,8 @@ pub use docs::{Doc, docs};
 mod record;
 pub(crate) mod settings;
 mod source;
+#[cfg(test)]
+mod tests;
 mod words;
 
 use crate::client;
@@ -98,7 +100,7 @@ impl Fux {
             Fux::Client(_, _) => "client",
             Fux::All => "all",
             Fux::Opts(opts) => match opts.on {
-                None => "opts",
+                None => "options",
                 Some(On::Target(AnyRef::Pane(_)) | On::Version(_)) => "pane-request",
                 Some(On::Target(AnyRef::Tab(_))) => "tab-request",
                 Some(On::Target(AnyRef::Workspace(_))) => "workspace-request",
@@ -1422,6 +1424,9 @@ pub fn main(
 }
 /// Public record names follow grift's spelling; native wire names stay private.
 fn field_name(name: &str) -> String {
+    if name == "alt_screen" {
+        return "alternate-screen".into();
+    }
     name.split('_')
         .map(|word| match word {
             "cols" => "columns",
@@ -1432,12 +1437,16 @@ fn field_name(name: &str) -> String {
             "argv" => "arguments",
             "tty" => "terminal",
             "seq" => "sequence",
+            "app" => "application",
             word => word,
         })
         .collect::<Vec<_>>()
         .join("-")
 }
 fn native_field(name: &str) -> String {
+    if name == "alternate-screen" {
+        return "alt_screen".into();
+    }
     name.replace("process-id", "pid")
         .split('-')
         .map(|word| match word {
@@ -1448,6 +1457,7 @@ fn native_field(name: &str) -> String {
             "arguments" => "argv",
             "terminal" => "tty",
             "sequence" => "seq",
+            "application" => "app",
             word => word,
         })
         .collect::<Vec<_>>()

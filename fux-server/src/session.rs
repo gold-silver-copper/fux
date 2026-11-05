@@ -4181,7 +4181,10 @@ mod tests {
             "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
         )?;
         s.end_program(PaneId::of(2), Ended::Lost);
-        for code in ["(listing (list-session))", "(listing (info (pane 2)))"] {
+        for code in [
+            "(listing (list-session))",
+            "(listing (information (pane 2)))",
+        ] {
             let text = output(&mut s, code)?;
             assert!(text.contains("ended, its status lost"), "{text}");
         }
@@ -4198,7 +4201,7 @@ mod tests {
                 ),
                 (
                     Scope::Target(AnyRef::Pane(PaneId::of(2))),
-                    "(sequence! (print (listing (info (pane 2)))) #inert)",
+                    "(sequence! (print (listing (information (pane 2)))) #inert)",
                 ),
             ] {
                 let Body::Snapshot(mut snapshot) = s.inspect(scope, Projection::Facts)? else {
@@ -5779,7 +5782,7 @@ mod tests {
             assert_eq!(fields(&mut s, &id.to_string())?, want, "{id}");
         }
         run(&mut s, "(sequence! (zoom (pane 3)) #inert)")?;
-        assert_eq!(fields(&mut s, "%3")?, "(list 0 0 24 80)");
+        assert_eq!(fields(&mut s, "%3")?, "0\n0\n24\n80\n");
         Ok(())
     }
 
@@ -7549,7 +7552,7 @@ mod tests {
             ids(AnyRef::Workspace(ws))?,
             "(list (workspace 1) (tab 1) (pane 1) (tab 2) (pane 2) (pane 3))"
         );
-        assert_eq!(ids(AnyRef::Tab(tab))?, "(list (tab 2) (pane 2) (pane 3))");
+        assert_eq!(ids(AnyRef::Tab(tab))?, "@2\n%2\n%3\n");
         assert_eq!(ids(AnyRef::Pane(PaneId::of(3)))?, "%3");
         Ok(())
     }
@@ -7570,7 +7573,7 @@ mod tests {
                 |s: &mut Session, from: &str| output(s, &format!("{from} str {name} get json"));
             let listed = read(
                 &mut s,
-                "(sequence! (define! value-3296 (info (pane 1))) \"panes\" (first (get value-3296 \"panes\")))",
+                "(sequence! (define! value-3296 (information (pane 1))) \"panes\" (first (get value-3296 \"panes\")))",
             )?;
             assert_eq!(read(&mut s, "(capture (pane 1))")?, listed, "{name}");
             assert_eq!(read(&mut s, "%1")?, listed, "{name}");

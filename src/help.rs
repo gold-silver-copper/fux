@@ -43,9 +43,54 @@ pub fn explain(name: &str) -> Option<String> {
             doc.name, doc.parameters, doc.documentation, doc.source
         ));
     }
+    guide(name)
+}
+fn guide(name: &str) -> Option<String> {
     match name {
-        "agents" | "guide" => Some(AGENTS.to_owned()),
-        "cookbook" => Some(COOKBOOK.to_owned()),
-        _ => None,
+        "agents" => {
+            return Some(
+                AGENTS
+                    .split_once("\n## ")
+                    .map_or(AGENTS, |(page, _)| page)
+                    .to_owned(),
+            );
+        }
+        "guide" => return Some(AGENTS.to_owned()),
+        "cookbook" => return Some(COOKBOOK.to_owned()),
+        _ => {}
+    }
+    let heading = format!("\n## {name}:");
+    let (_, section) = AGENTS.split_once(&heading)?;
+    let section = section
+        .split_once("\n## ")
+        .map_or(section, |(section, _)| section);
+    Some(format!("## {name}:{section}"))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn every_word_has_its_help() -> Result<(), String> {
+        for word in Word::ALL {
+            let name = word.row().name;
+            assert!(explain(name).is_some(), "{name}");
+        }
+        for doc in crate::script::docs().map_err(|e| e.to_string())? {
+            assert!(explain(&doc.name).is_some(), "{}", doc.name);
+        }
+        Ok(())
+    }
+    #[test]
+    fn the_agent_page_fits_in_100_lines() {
+        let page = explain("agents").unwrap_or_default();
+        assert!(!page.is_empty());
+        assert!(page.lines().count() <= 100);
+    }
+    #[test]
+    fn the_guide_lists_its_topics_as_its_headings_are() {
+        for section in AGENTS.split("\n## ").skip(1) {
+            let topic = section.split(':').next().unwrap_or_default();
+            assert!(explain(topic).is_some(), "{topic}");
+        }
     }
 }

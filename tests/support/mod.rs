@@ -257,18 +257,25 @@ impl Server {
 
     /// Starts `fux ARGS…` against this server, not waiting for it: for one
     /// that waits on a client of the test's, pumped the while.
-    pub fn spawn(&self, args: &[&str]) -> Result<std::process::Child, String> {
-        self.command(fux()).args(args).spawn().map_err(e)
+    pub fn spawn(&self, args: &[impl AsRef<str>]) -> Result<std::process::Child, String> {
+        self.command(fux())
+            .args(args.iter().map(AsRef::as_ref))
+            .spawn()
+            .map_err(e)
     }
 
     /// Runs `fux ARGS…` against this server.
-    pub fn fux(&self, args: &[&str]) -> Result<Output, String> {
+    pub fn fux(&self, args: &[impl AsRef<str>]) -> Result<Output, String> {
         self.fux_env(args, &[])
     }
 
-    pub fn fux_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Output, String> {
+    pub fn fux_env(
+        &self,
+        args: &[impl AsRef<str>],
+        env: &[(&str, &str)],
+    ) -> Result<Output, String> {
         let mut command = self.command(fux());
-        command.args(args);
+        command.args(args.iter().map(AsRef::as_ref));
         for (k, v) in env {
             command.env(k, v);
         }
@@ -319,12 +326,14 @@ impl Server {
     }
 
     /// Runs a command that must succeed; its stdout.
-    pub fn ok(&self, args: &[&str]) -> Result<String, String> {
+    pub fn ok(&self, args: &[impl AsRef<str>]) -> Result<String, String> {
         let out = self.fux(args)?;
         if out.status != 0 {
             return Err(format!(
-                "fux {args:?} failed ({}): {}",
-                out.status, out.stderr
+                "fux {:?} failed ({}): {}",
+                args.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+                out.status,
+                out.stderr
             ));
         }
         Ok(out.stdout)
@@ -378,7 +387,11 @@ impl Server {
                 return Err(format!("{pane} unchanged at {since}"));
             }
             let left = left.to_string();
-            let waited = ["str", since, "changed", &left, "timeout", "wait"];
+            let waited = [&format!(
+                "(wait (timeout (changed {}) {}))",
+                fux::script::quoted(since),
+                reference(&left)
+            )];
             let out = self.fux(&waited)?;
             match out.status {
                 0 => {
@@ -798,7 +811,9 @@ pub fn resident_mib(pid: u32) -> Result<f64, String> {
 
 /// The CPU time a process has used, in seconds.
 pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
-    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+    if let Ok(stat) =
+        std::fs::read_to_string(format!("{}", reference(&format!("/proc/{pid}/stat"))))
+    {
         // After the command name, which is in parentheses and may hold
         // spaces, the fields start at the state, field 3: user and system
         // time, fields 14 and 15, are the 12th and 13th here, in ticks.
@@ -1207,6 +1222,17 @@ pub fn ended(version: &str) -> bool {
 
 /// Explicit grift constructors for the typed identities a fixture holds.
 pub fn reference(value: &str) -> String {
+    if let Ok(number) = value.parse::<i64>()
+        && !value.starts_with('+')
+    {
+        return number.to_string();
+    }
+    if matches!(value, "true" | "false") {
+        return format!("#{value}");
+    }
+    if value == "all" {
+        return "(all)".into();
+    }
     let constructor = match value.chars().next() {
         Some('%') => "pane",
         Some('@') => "tab",
@@ -1221,4 +1247,36 @@ pub fn reference(value: &str) -> String {
         _ => return fux::script::quoted(value),
     };
     format!("({constructor} {})", fux::script::quoted(value))
+}
+
+/// Read one emitted datum and query it without evaluating the emitted form.
+pub fn read_data(text: &str, query: &str) -> Result<String, String> {
+    let mut reader: grift::Grift = grift::Grift::new().map_err(|_| "grift reader")?;
+    let forms = reader
+        .read_named("result", text)
+        .map_err(|_| "result does not read")?;
+    let forms = reader.list_items(&forms).map_err(|_| "result forms")?;
+    let [data] = forms.as_slice() else {
+        return Err(format!("expected one datum: {text}"));
+    };
+    reader
+        .define("data", data.clone())
+        .map_err(|_| "bind data")?;
+    reader
+        .evaluate(
+            &mut (),
+            "(define! field (lambda! (record name) (second (find-association name record))))",
+        )
+        .map_err(|_| "field helper")?;
+    let result = reader
+        .evaluate(&mut (), query)
+        .map_err(|_| format!("query {query} failed for {text}"))?;
+    if let Some(text) = reader.as_string(&result).map_err(|_| "string result")? {
+        return Ok(text);
+    }
+    let mut text = String::new();
+    reader
+        .write(&result, &mut text)
+        .map_err(|_| "printing result")?;
+    Ok(text)
 }

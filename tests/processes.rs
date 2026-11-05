@@ -52,8 +52,8 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
         eprintln!("skipped: dash is not installed");
         return Ok(());
     };
-    let dash = fux_wire::words::quote(&dash.to_string_lossy());
-    let server = Server::start(&format!("str shell list str {dash} end set"))?;
+    let dash = fux::script::quoted(&dash.to_string_lossy());
+    let server = Server::start(&format!("(sequence! (set \"shell\" (list {dash})) #inert)",))?;
     let mut reap = Reap::default();
     for how in ["pane kill", "exit", "workspace kill"] {
         let launch = if how == "workspace kill" {
@@ -61,7 +61,10 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
         } else {
             "(split (axis (pane 1) \"horizontal\"))"
         };
-        server.ok(&[&format!("str shell list str {dash} end set {launch}")])?;
+        server.ok(&[&format!(
+            "(sequence! (set \"shell\" (list {dash})) {})",
+            launch
+        )])?;
         let (pane, _) = server.newest_pane()?;
         let job = server.dir.join(format!("job-{how}"));
         let kept = server.dir.join(format!("nohup-{how}"));
@@ -96,8 +99,8 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
             }
             // The shell exits and its pane closes: answered with status 4.
             "exit" => {
-                let keys = ["str", "exit", "text", "str", "Enter", "key", "send-keys"];
-                let out = server.fux(&[&["str", &pane, "pane"][..], &keys].concat())?;
+                let out =
+                    server.fux(&[&format!("(line {} \"exit\")", support::reference(&pane))])?;
                 assert!(matches!(out.status, 0 | 4), "{}", out.stderr);
             }
             _ => {
@@ -138,7 +141,10 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
         "(signal (pane {}) \"TERM\")",
         fux::script::quoted(&pane)
     )])?;
-    assert!(answer.starts_with(&format!("{pane}:")), "{answer}");
+    assert!(
+        answer.starts_with(&format!("{}", support::reference(&format!("{pane}:")))),
+        "{answer}"
+    );
     gone(front, "the foreground program, after signal TERM")?;
     assert!(alive(job), "signal ended a background job");
     assert!(alive(shell), "signal ended the shell");
@@ -269,7 +275,11 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     // End of input: cat exits, and its pane's process, its parent, reaps it.
     let gone = fuxix::process::Pid::from_raw(orphan).ok_or("a pid")?;
     let parent = |pid: &str| -> Result<Option<String>, String> {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(e)?;
+        let stat = std::fs::read_to_string(format!(
+            "{}",
+            support::reference(&format!("/proc/{pid}/stat"))
+        ))
+        .map_err(e)?;
         let parent = stat
             .rsplit(')')
             .next()

@@ -16,7 +16,7 @@ op_send_arg_line() { printf '(line (pane "%s") (first (arguments)))\n' "$1"; }
 op_capture() { printf '(capture (pane "%s"))\n' "$1"; }
 op_wait_text() { printf '(sequence! (shows (pane "%s") "%s" %s) #inert)\n' "$1" "$2" "$3"; }
 op_pane_columns() { printf '(get (pane "%s") "columns")\n' "$1"; }
-op_pane_record() { printf '(info (pane "%s"))\n' "$1"; }
+op_pane_record() { printf '(information (pane "%s"))\n' "$1"; }
 op_pane_name() { printf '(get (pane "%s") "name")\n' "$1"; }
 op_rename_pane() { printf '(rename (pane "%s") "%s")\n' "$1" "$2"; }
 op_zoom() { printf '(zoom (pane "%s"))\n' "$1"; }

@@ -2886,16 +2886,9 @@ mod tests {
         assert_eq!((view.pane_area().y(), view.pane_area().h()), (1, 7));
         let grid = compose(&session, client).ok_or("screen")?;
         let bar = grid.row_text(0);
-        assert!(
-            bar.contains("(sequence! (detach (me)) #inert)") && bar.contains("1 "),
-            "{bar}"
-        );
+        assert!(bar.contains("me detach") && bar.contains("1 "), "{bar}");
         let fields = bar_fields(&session, view, view.presentation.bar.left(), view.cols);
-        assert!(
-            fields
-                .first()
-                .is_some_and(|(s, _)| s.contains("(sequence! (detach (me)) #inert)"))
-        );
+        assert!(fields.first().is_some_and(|(s, _)| s.contains("me detach")));
         assert!(fields.get(1).is_some_and(|(s, _)| s.contains("1 ")));
         assert!(session.views.contains_key(&client));
         Ok(())

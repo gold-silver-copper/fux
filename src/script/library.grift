@@ -15,10 +15,15 @@
 (define! assert-kind (lambda! (value kinds about)
   (if! (member? (kind value) (string-split kinds " ")) value
        (raise (error (quote! type-error) about value)))))
-(define! info (lambda! (scope) (snapshot scope "facts")))
-(define! all-history (lambda! (target) (history target 9223372036854775807)))
+(define! information (lambda! (scope)
+  (snapshot (assert-kind scope "pane tab workspace answer closed-answer all" "a pane, tab, workspace or all") "facts")))
+(define! all-history (lambda! (target)
+  (history (assert-kind target "pane answer closed-answer pane-request" "a pane or a request on one") 9223372036854775807)))
 (define! observed (lambda! (value)
-  (if! (same? (kind value) "capture") value (capture value))))
+  (conditional!
+    ((same? (kind value) "capture") value)
+    ((member? (kind value) (quote! ("pane" "answer"))) (capture value))
+    (#true (raise (error (quote! type-error) "observed needs a pane, answer or pane capture" value))))))
 (define! shows (lambda! (value needle seconds)
   (let! ((seen (observed value)))
     (if! (not? (empty-list? (string-search (string seen) needle 0))) seen
@@ -34,6 +39,7 @@
     (if! (same? (get seen "ended") 1) seen
       (until-ended (capture (wait (timeout (changed seen) seconds))) seconds)))))
 (define! grows (lambda! (value count amount seconds)
+  (when! (not? (member? count (quote! ("screen" "bells" "done" "ended")))) (raise (error (quote! type-error) count)))
   (let! ((seen (if! (same? (kind value) "pane") (observed value) value))
          (generation (get seen "respawns")) (goal (add (get seen count) amount))
          (loop (lambda! (sample)
@@ -42,7 +48,7 @@
              (if! (less-than? (get sample count) goal)
                (loop (wait (timeout (changed sample) seconds))) sample)))))
     (if! (less-than? amount 0) (raise (error (quote! range-error) amount)) (loop seen)))))
-(define! list-session (lambda! () (info (all))))
+(define! list-session (lambda! () (information (all))))
 (define! me-focused (lambda! () (list (me) (focused (me)))))
 (define! outer (lambda! (client target)
   (let! ((workspace-value (workspace target)))
@@ -58,7 +64,11 @@
       (if! (same? name-value none) "" name-value)
       (list (list target) (code! (lambda! (target new-name) (rename target new-name))))))))
 (define! confirm-close (lambda! (client target)
-  (choose client (string-append "close " (kind target) " " (string target) "?")
+  (define! target (if! (same? (kind target) "answer") (pane target) target))
+  (define! caption (get target "label"))
+  (define! id-text (string target))
+  (choose client (string-append "close " (kind target) " " id-text
+    (if! (same? caption id-text) "" (string-append " " caption)) "?")
     (list (list #true "Yes")) () (list 0)
     (list (list target) (code! (lambda! (target client payload) (kill target)))))))
 (define! chooser-row (lambda! (item)

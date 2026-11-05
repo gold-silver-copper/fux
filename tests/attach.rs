@@ -277,12 +277,8 @@ fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
     let server = Server::start("")?;
     for words in [
         &[][..],
-        &[
-            "(sequence! (define! variables-1 (context)) (define! value-2 (options)) (define! value-3 (attach value-2)) #inert)",
-        ],
-        &[
-            "(sequence! (define! variables-4 (context)) (define! value-5 (options)) (define! value-6 \"main\") (define! value-7 (in value-5 value-6)) (define! value-8 (attach value-7)) #inert)",
-        ],
+        &["(sequence! (attach (options)) #inert)"],
+        &["(sequence! (attach (in (options) \"main\")) #inert)"],
     ] {
         let out = server.fux_env(words, &[("FUX_PANE", "%1:0")])?;
         assert_eq!(out.status, 1);
@@ -358,10 +354,10 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
     let orphaned = format!("( ( sleep 1; {attach} </dev/tty ) & ); sleep 120");
     for program in [attach.to_owned(), behind, orphaned] {
         let server = Server::start("")?;
-        let launch = [
-            "opts", "str", "viewer", "in", "60", "12", "size", "str", "sh", "program", "str", "-c",
-            "arg", "str", &program, "arg", "new-tab",
-        ];
+        let launch = [&format!(
+            "(new-tab (argument (argument (program (size (in (options) \"viewer\") 60 12) \"sh\") \"-c\") {}))",
+            fux::script::quoted(&program)
+        )];
         let pane = server.ok(&launch)?;
         let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
         if cfg!(target_os = "macos") && program.contains("/dev/tty") {
@@ -397,10 +393,10 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
 fn a_headless_client_in_its_own_pane_keeps_its_capture_and_sizing() -> Outcome {
     let server = Server::start("")?;
     let attach = "unset FUX_PANE; \"$FUX\" opts 50 10 size str viewer in attach; sleep 60";
-    let launch = [
-        "opts", "str", "viewer", "in", "60", "12", "size", "str", "sh", "program", "str", "-c",
-        "arg", "str", attach, "arg", "new-tab",
-    ];
+    let launch = [&format!(
+        "(new-tab (argument (argument (program (size (in (options) \"viewer\") 60 12) \"sh\") \"-c\") {}))",
+        fux::script::quoted(attach)
+    )];
     let pane = server.ok(&launch)?;
     let pane = pane.split(':').next().unwrap_or_default().trim().to_owned();
     server.ok(&[&format!(
@@ -439,7 +435,7 @@ fn attach_needs_stdin_and_stdout_on_one_terminal() -> Outcome {
             .map_err(e)
     };
     let out = std::process::Command::new(FUX)
-        .args(["(sequence! (define! variables-9 (context)) (define! value-10 (options)) (define! value-11 (attach value-10)) #inert)"])
+        .args(["(sequence! (attach (options)) #inert)"])
         .env("FUX_SOCKET", &server.socket)
         .env_remove("FUX_PANE")
         .stdin(stdio(&keys)?)
@@ -734,10 +730,7 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
     let mut terminal = Terminal::start(
         10,
         40,
-        &[
-            FUX,
-            "(sequence! (define! variables-12 (context)) (define! value-13 (options)) (define! value-14 (attach value-13)) #inert)",
-        ],
+        &[FUX, "(sequence! (attach (options)) #inert)"],
         |command| {
             command
                 .env("FUX_SOCKET", &socket)
@@ -812,10 +805,7 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
     let mut terminal = Terminal::start(
         10,
         40,
-        &[
-            FUX,
-            "(sequence! (define! variables-15 (context)) (define! value-16 (options)) (define! value-17 (attach value-16)) #inert)",
-        ],
+        &[FUX, "(sequence! (attach (options)) #inert)"],
         |command| {
             command
                 .env("FUX_SOCKET", &socket)
@@ -974,7 +964,7 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     ] {
         let program = program.to_string_lossy();
         let cwd_text = cwd.to_string_lossy();
-        let out = server.fux(&[&format!("(sequence! (set \"shell\" (list \"RUSTVALUE0\")) (new-tab (directory (size (in (options) \"new-workspace\") 80 24) {})))", fux::script::quoted(&cwd_text))])?;
+        let out = server.fux(&[&format!("(sequence! (set \"shell\" (list {})) (new-tab (directory (size (in (options) \"new-workspace\") 80 24) {})))", fux::script::quoted(&program), fux::script::quoted(&cwd_text))])?;
         assert_eq!(out.status, 1);
         assert!(
             out.stderr
@@ -1065,8 +1055,10 @@ fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
     .into_iter()
     .enumerate()
     {
-        let socket = dir.join(format!("s{i}")).join("fux.sock");
-        let marker = dir.join(format!("cwd{i}"));
+        let socket = dir
+            .join(format!("{}", support::reference(&format!("s{i}"))))
+            .join("fux.sock");
+        let marker = dir.join(format!("{}", support::reference(&format!("cwd{i}"))));
         let mut terminal = Terminal::start(10, 40, &[FUX], |command| {
             command
                 .current_dir(&dir)
@@ -1101,7 +1093,9 @@ fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
     let server = Server::start("")?;
     let before = server.ok(&["(listing (list-session))"])?;
     for (i, given) in ["", "str . cwd", "str tmp cwd"].into_iter().enumerate() {
-        let gone = server.dir.join(format!("gone-{i}"));
+        let gone = server
+            .dir
+            .join(format!("{}", support::reference(&format!("gone-{i}"))));
         std::fs::create_dir_all(&gone).map_err(e)?;
         let script =
             format!(r#"cd "$1" && rmdir "$1" && fux opts str main in 80 24 size {given} new-tab"#);
@@ -1155,7 +1149,7 @@ fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
     let rounds = 400;
     let mut expected = String::new();
     for i in 0..rounds {
-        let line = format!("line-{i}");
+        let line = format!("{}", support::reference(&format!("line-{i}")));
         // A line in two writes, with a resize, and so a SIGWINCH, between
         // them and after them.
         let (head, tail) = line.split_at_checked(3).ok_or("a line")?;
@@ -1436,7 +1430,7 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
         40,
         &[
             fux(),
-            "(sequence! (define! variables-18 (context)) (define! value-19 (options)) (define! value-20 \"\") (define! value-21 (program value-19 value-20)) (define! value-22 \"/no/such/directory\") (define! value-23 (directory value-21 value-22)) (define! value-24 (attach value-23)) #inert)",
+            "(sequence! (attach (directory (program (options) \"\") \"/no/such/directory\")) #inert)",
         ],
         |command| {
             command
@@ -1514,15 +1508,11 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
     let server = Server::empty()?;
     for (args, said) in [
         (
-            &[
-                "(sequence! (define! variables-25 (context)) (define! value-26 (options)) (define! value-27 \"\") (define! value-28 (program value-26 value-27)) (define! value-29 (attach value-28)) #inert)",
-            ][..],
+            &["(sequence! (attach (program (options) \"\")) #inert)"][..],
             true,
         ),
         (
-            &[
-                "(sequence! (define! variables-30 (context)) (define! value-31 (options)) (define! value-32 \"\") (define! value-33 (program value-31 value-32)) (define! value-34 \"work\") (define! value-35 (in value-33 value-34)) (define! value-36 (attach value-35)) #inert)",
-            ],
+            &["(sequence! (attach (in (program (options) \"\") \"work\")) #inert)"],
             false,
         ),
     ] {
@@ -1548,12 +1538,7 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
     server.words("(sequence! (new-tab (size (in (options) \"second\") 80 24)) #inert)")?;
     for (args, expected) in [
         (&[][..], "%2"),
-        (
-            &[
-                "(sequence! (define! variables-37 (context)) (define! value-38 (pane 1)) (define! value-39 (attach value-38)) #inert)",
-            ][..],
-            "%1",
-        ),
+        (&["(sequence! (attach (pane 1)) #inert)"][..], "%1"),
     ] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
         eventually(&format!("the client on {expected}"), || {
@@ -1578,12 +1563,8 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
 fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
     let server = Server::start("(sequence! (attach-defaults (in (options) \"main\")) #inert)")?;
     for args in [
-        &[
-            "(sequence! (define! variables-40 (context)) (define! value-41 (options)) (define! value-42 \"/bin/sh\") (define! value-43 (program value-41 value-42)) (define! value-44 (attach value-43)) #inert)",
-        ][..],
-        &[
-            "(sequence! (define! variables-45 (context)) (define! value-46 (options)) (define! value-47 \"main\") (define! value-48 (in value-46 value-47)) (define! value-49 \"/bin/sh\") (define! value-50 (program value-48 value-49)) (define! value-51 (attach value-50)) #inert)",
-        ][..],
+        &["(sequence! (attach (program (options) \"/bin/sh\")) #inert)"][..],
+        &["(sequence! (attach (program (in (options) \"main\") \"/bin/sh\")) #inert)"][..],
     ] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
         assert!(!terminal.wait_exit()?.success());
@@ -1634,14 +1615,8 @@ fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
     let held = server.dir.join("held.sock");
     std::fs::rename(&server.socket, &held).map_err(e)?;
     let listener = UnixListener::bind(&server.socket).map_err(e)?;
-    let mut terminal = Terminal::attach(
-        &server,
-        10,
-        40,
-        &[
-            "(sequence! (define! variables-52 (context)) (define! value-53 (options)) (define! value-54 (attach value-53)) #inert)",
-        ],
-    )?;
+    let mut terminal =
+        Terminal::attach(&server, 10, 40, &["(sequence! (attach (options)) #inert)"])?;
     let (mut client, hello) = loop {
         let (mut stream, _) = listener.accept().map_err(e)?;
         // macOS refuses a timeout on the already-closed readiness probe;

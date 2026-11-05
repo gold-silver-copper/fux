@@ -62,7 +62,7 @@ fn probe(server: &Server, terminal: &mut Terminal, flags: &str, keys: &[u8]) -> 
         "%1",
         &format!("clear; python3 {} {tag} {flags}", path.display()),
     )?;
-    terminal.wait_for(&format!("ready{tag}"))?;
+    terminal.wait_for(&format!("{}", support::reference(&format!("ready{tag}"))))?;
     terminal.type_bytes(keys)
 }
 

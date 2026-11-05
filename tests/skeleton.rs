@@ -8,11 +8,17 @@ fn a_server_answers_ls_and_stops_on_kill_server() -> Outcome {
     let mut server = Server::start("")?;
     let ls = server.ok(&["(listing (list-session))"])?;
     assert!(ls.contains("+1 main"), "{ls}");
-    assert!(ls.contains("(list (tab 1) (pane 1))"), "{ls}");
+    assert!(ls.contains("@1 %1"), "{ls}");
     assert!(ls.contains("%1"), "{ls}");
-    let json = server.ok(&["(list-session)"])?;
-    assert!(json.contains("\"workspaces\":[{\"id\":\"+1\""), "{json}");
-    assert!(json.contains("\"clients\":[]"), "{json}");
+    let data = server.ok(&["(list-session)"])?;
+    assert_eq!(
+        read_data(
+            &data,
+            "(field (first (field data (quote! workspaces))) (quote! id))"
+        )?,
+        "+1"
+    );
+    assert_eq!(read_data(&data, "(field data (quote! clients))")?, "()");
     let killed = server.fux(&["(sequence! (kill-server) #inert)"])?;
     assert_eq!(killed.status, 0, "{}", killed.stderr);
     // The socket goes as the server starts stopping, before its panes'

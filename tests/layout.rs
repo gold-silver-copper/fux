@@ -10,7 +10,10 @@ fn size(server: &Server, pane: &str) -> Result<(u16, u16), String> {
     let ls = server.ok(&["(listing (list-session))"])?;
     let line = ls
         .lines()
-        .find(|l| l.trim_start().starts_with(&format!("{pane} ")))
+        .find(|l| {
+            l.trim_start()
+                .starts_with(&format!("{}", support::reference(&format!("{pane}"))))
+        })
         .ok_or_else(|| format!("{pane} is not listed: {ls}"))?;
     let dims = line
         .split_whitespace()
@@ -25,14 +28,14 @@ fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane(
     let server = Server::start("")?;
     let mut client = server.attach(20, 81)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}v"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}v"))))?;
     client.wait("a vertical separator", |t| {
         t.lines().all(|l| l.chars().nth(40) == Some('│'))
     })?;
     assert_eq!(focused(&server)?, "%2");
     assert_eq!(size(&server, "%1")?, (20, 40));
     assert_eq!(size(&server, "%2")?, (20, 40));
-    client.keys(&format!("{PREFIX}s"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}s"))))?;
     client.wait("a horizontal separator", |t| {
         t.lines().any(|l| l.contains("├─") || l.contains("─────"))
     })?;
@@ -57,28 +60,28 @@ fn focus_moves_next_previous_last_and_by_direction() -> Outcome {
     let mut client = server.attach(20, 81)?;
     client.wait_for("$")?;
     // 1 | (2 / 3)
-    client.keys(&format!("{PREFIX}v"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}v"))))?;
     eventually("%2", || Ok(focused(&server)? == "%2"))?;
-    client.keys(&format!("{PREFIX}s"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}s"))))?;
     eventually("%3", || Ok(focused(&server)? == "%3"))?;
-    client.keys(&format!("{PREFIX}o"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}o"))))?;
     eventually("next wraps to %1", || Ok(focused(&server)? == "%1"))?;
     // The previous pane has no key of its own: the command.
     server.ok(&["(sequence! (define! value-1013 (client \"c1\")) (step value-1013 (focused value-1013) \"previous\") #inert)"])?;
     eventually("previous: %3", || Ok(focused(&server)? == "%3"))?;
-    client.keys(&format!("{PREFIX}q"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}q"))))?;
     eventually("last: %1", || Ok(focused(&server)? == "%1"))?;
-    client.keys(&format!("{PREFIX}l"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}l"))))?;
     eventually(
         "right of %1: the upper right, closest to its centre",
         || Ok(focused(&server)? == "%2"),
     )?;
-    client.keys(&format!("{PREFIX}j"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}j"))))?;
     eventually("down: %3", || Ok(focused(&server)? == "%3"))?;
-    client.keys(&format!("{PREFIX}h"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}h"))))?;
     eventually("left: %1", || Ok(focused(&server)? == "%1"))?;
     // Nothing further left: a notice, and focus stays.
-    client.keys(&format!("{PREFIX}h"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}h"))))?;
     client.wait("the notice", |t| {
         t.lines()
             .last()
@@ -96,12 +99,15 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 81)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}v"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}v"))))?;
     eventually("two panes", || Ok(size(&server, "%2").is_ok()))?;
     // Resizing right on the right pane grows it rightward? It has no right
     // neighbour, so its left border moves right: it shrinks. Resize mode
     // repeats the key without the prefix, until Enter.
-    client.keys(&format!("{PREFIX}rlllll\r"))?;
+    client.keys(&format!(
+        "{}",
+        support::reference(&format!("{PREFIX}rlllll"))
+    ))?;
     // The keys after `r l` wait for its binding to run: the client sends
     // them as it goes on.
     eventually("the border moved", || {
@@ -135,19 +141,19 @@ fn zoom_fills_the_screen_and_restores() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 81)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}v"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}v"))))?;
     eventually("two panes", || Ok(size(&server, "%2").is_ok()))?;
-    client.keys(&format!("{PREFIX}z"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}z"))))?;
     eventually("zoomed", || Ok(size(&server, "%2")? == (20, 81)))?;
     client.wait("no separator while zoomed", |t| !t.contains('│'))?;
     // The unfocused pane keeps its last size while no one shows it.
     assert_eq!(size(&server, "%1")?, (20, 40));
-    client.keys(&format!("{PREFIX}z"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}z"))))?;
     eventually("restored", || Ok(size(&server, "%2")? == (20, 40)))?;
     // Changing focus ends a zoom.
-    client.keys(&format!("{PREFIX}z"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}z"))))?;
     eventually("zoomed again", || Ok(size(&server, "%2")? == (20, 81)))?;
-    client.keys(&format!("{PREFIX}o"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}o"))))?;
     eventually("focus moved and zoom ended", || {
         Ok(focused(&server)? == "%1" && size(&server, "%2")? == (20, 40))
     })?;
@@ -234,9 +240,9 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     let mut client = server.attach(21, 81)?;
     client.wait_for("$")?;
     // 1 | 2, then moving 2 down moves it... nowhere below: refused.
-    client.keys(&format!("{PREFIX}v"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}v"))))?;
     eventually("two panes", || Ok(size(&server, "%2").is_ok()))?;
-    client.keys(&format!("{PREFIX}mj"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}mj"))))?;
     client.wait("the refusal", |t| {
         t.lines()
             .last()
@@ -357,9 +363,15 @@ fn a_layout_as_deep_as_its_panes_is_laid_out_on_a_small_stack() -> Outcome {
     assert_eq!(out.status, 0, "{}", out.stderr);
     let mut client = server.attach(24, 80)?;
     client.ready()?;
-    server.words(&format!("str c1 client %{PANES} show"))?;
+    server.words(&format!(
+        "(sequence! (show (client \"c1\") {}) #inert)",
+        support::reference(&format!("%{PANES}"))
+    ))?;
     let shown = server.words("(focused (client \"c1\"))")?;
-    assert_eq!(shown.trim(), format!("%{PANES}"));
+    assert_eq!(
+        shown.trim(),
+        format!("{}", support::reference(&format!("%{PANES}")))
+    );
     let pid = server.pid().ok_or("the server's pid")?;
     assert!(alive(i32::try_from(pid).map_err(e)?), "{}", server.log());
     let nodes = server.words("(sequence! (define! value-458 (snapshot (tab 1) \"topology\")) \"tabs\" (define! value-461 (first (get value-458 \"tabs\"))) \"nodes\" (length (get value-461 \"nodes\")))")?;

@@ -6,30 +6,23 @@ use fuxix::process::Signal;
 use std::path::PathBuf;
 use support::*;
 
-/// `argv` as a pane's program: its words for `program` and `arg`.
-fn program<'a>(argv: &[&'a str]) -> Vec<&'a str> {
-    let mut words = Vec::new();
-    let mut rest = argv.iter();
-    if let Some(first) = rest.next() {
-        words.extend(["str", first, "program"]);
+/// A new pane, through one grift program with each executable argument quoted.
+fn program(builder: &str, argv: &[&str]) -> String {
+    let Some((first, rest)) = argv.split_first() else {
+        return builder.to_owned();
+    };
+    let mut expression = format!("(program {builder} {})", fux::script::quoted(first));
+    for argument in rest {
+        expression = format!("(argument {expression} {})", fux::script::quoted(argument));
     }
-    for word in rest {
-        words.extend(["str", word, "arg"]);
-    }
-    words
+    expression
 }
-
-/// A pane running `argv` in a tab of its own, in workspace `ws`: its id.
 fn pane(server: &Server, ws: &str, argv: &[&str]) -> Result<String, String> {
-    let words = [
-        &["opts", "str", ws, "in", "80", "24", "size"][..],
-        &program(argv),
-        &["new-tab"],
-    ]
-    .concat();
-    Ok(id(&server.ok(&words)?))
+    let builder = format!("(size (in (options) {}) 80 24)", fux::script::quoted(ws));
+    Ok(id(
+        &server.ok(&[format!("(new-tab {})", program(&builder, argv))])?
+    ))
 }
-
 /// The pane an action's answer names.
 fn id(answer: &str) -> String {
     let first = answer.split_whitespace().next().unwrap_or_default();
@@ -38,7 +31,7 @@ fn id(answer: &str) -> String {
 
 /// The journal's end now: a cursor.
 fn cursor(server: &Server) -> Result<String, String> {
-    let next = ["all", "str", "", "0", "next-events", "str", "next", "get"];
+    let next = ["(get (next-events (all) \"\" 0) \"next\")"];
     Ok(server.ok(&next)?.trim().to_owned())
 }
 
@@ -105,8 +98,11 @@ fn connections(pid: i32) -> Vec<i32> {
     (children(pid, "__conn").into_iter())
         .filter(|conn| {
             taken.contains(conn)
-                || std::fs::read_link(format!("/proc/{conn}/fd/1"))
-                    .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
+                || std::fs::read_link(format!(
+                    "{}",
+                    support::reference(&format!("/proc/{conn}/fd/1"))
+                ))
+                .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
         })
         .collect()
 }
@@ -119,7 +115,11 @@ fn server_pid(server: &Server) -> Result<i32, String> {
 /// The most memory a process held at once, in KiB (Linux's `VmHWM`).
 #[cfg(target_os = "linux")]
 fn peak_kib(pid: i32) -> Result<u64, String> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(e)?;
+    let status = std::fs::read_to_string(format!(
+        "{}",
+        support::reference(&format!("/proc/{pid}/status"))
+    ))
+    .map_err(e)?;
     (status.lines())
         .find_map(|line| line.strip_prefix("VmHWM:"))
         .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
@@ -143,14 +143,22 @@ fn kept(server: &Server) -> PathBuf {
 /// (`prlimit`, util-linux): an allocation past it fails.
 #[cfg(target_os = "linux")]
 fn cap(pid: i32, more: u64) -> Outcome {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(e)?;
+    let status = std::fs::read_to_string(format!(
+        "{}",
+        support::reference(&format!("/proc/{pid}/status"))
+    ))
+    .map_err(e)?;
     let kib: u64 = (status.lines())
         .find_map(|line| line.strip_prefix("VmSize:"))
         .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
         .ok_or("its size")?;
     let limit = kib.saturating_mul(1024).saturating_add(more).to_string();
     let out = std::process::Command::new("prlimit")
-        .args(["--pid", &pid.to_string(), &format!("--as={limit}:{limit}")])
+        .args([
+            "--pid",
+            &pid.to_string(),
+            &format!("{}", support::reference(&format!("--as={limit}:{limit}"))),
+        ])
         .output()
         .map_err(e)?;
     match out.status.success() {
@@ -210,12 +218,13 @@ fn a_flood_under_a_cap_ends_its_pane_process_alone() -> Outcome {
     cap(own, 64 << 20)?;
     // It asks its terminal what it is, and never reads the answers.
     let asks = r#"q=$(printf '\033[c%.0s' $(seq 200)); yes "$q""#;
-    let respawn = [
-        &["str", &flood, "pane"][..],
-        &program(&["sh", "-c", asks]),
-        &["kill-first", "respawn"],
-    ]
-    .concat();
+    let respawn = vec![format!(
+        "(respawn (kill-first {}))",
+        program(
+            &format!("(pane {})", fux::script::quoted(&flood)),
+            &["sh", "-c", asks]
+        )
+    )];
     server.ok(&respawn)?;
     eventually("its process to end", || Ok(!alive(own)))?;
     assert!(
@@ -292,12 +301,16 @@ fn keys_for_a_tab_go_to_each_pane_that_takes_them() -> Outcome {
     let server = Server::start("")?;
     let shell = pane(&server, "a", &["sh"])?;
     server.shows(&shell, "$")?;
-    let ended = id(&server.ok(&[
-        &["str", &shell, "pane", "str", "horizontal", "axis"][..],
-        &program(&["sh", "-c", "exit 3"]),
-        &["split"],
-    ]
-    .concat())?);
+    let ended = id(&server.ok(&[format!(
+        "(split {})",
+        program(
+            &format!(
+                "(axis (pane {}) \"horizontal\")",
+                fux::script::quoted(&shell)
+            ),
+            &["sh", "-c", "exit 3"]
+        )
+    )])?);
     assert_eq!(server.exits(&ended)?, "3");
     let tab = server.ok(&[&format!(
         "(sequence! (define! value-1273 (pane {})) \"tab\" (get value-1273 \"tab\"))",
@@ -332,12 +345,13 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
         "(sequence! (rename (pane {}) \"editor\") #inert)",
         fux::script::quoted(&shell)
     )])?;
-    let sleeper = id(&server.ok(&[
-        &["str", &shell, "pane", "str", "vertical", "axis"][..],
-        &program(&["sleep", "1000"]),
-        &["split"],
-    ]
-    .concat())?);
+    let sleeper = id(&server.ok(&[format!(
+        "(split {})",
+        program(
+            &format!("(axis (pane {}) \"vertical\")", fux::script::quoted(&shell)),
+            &["sleep", "1000"]
+        )
+    )])?);
     server.type_line(&shell, "echo MARK-BEFORE")?;
     server.shows(&shell, "MARK-BEFORE")?;
     let was = run(server, &shell)?;
@@ -442,7 +456,11 @@ fn taken_back_with_its_spare_stopped(full: bool) -> Outcome {
         }
     });
     let still = processes().into_iter().any(|(p, ..)| p == spare)
-        && std::fs::read_to_string(format!("/proc/{spare}/stat")).is_ok_and(|stat| {
+        && std::fs::read_to_string(format!(
+            "{}",
+            support::reference(&format!("/proc/{spare}/stat"))
+        ))
+        .is_ok_and(|stat| {
             stat.rsplit_once(") ")
                 .is_some_and(|(_, r)| r.starts_with('T'))
         });
@@ -629,22 +647,13 @@ fn a_paste_body_never_passes_through_the_server() -> Outcome {
 #[test]
 fn a_capture_never_passes_through_the_server() -> Outcome {
     let server = Server::start("")?;
-    let words = [
-        &[
-            "opts",
-            "str",
-            "a",
-            "in",
-            "80",
-            "24",
-            "size",
-            "67108864",
-            "history-bytes",
-        ][..],
-        &program(&["sh", "-c", "seq 600000; echo all-out; sleep 1000"]),
-        &["new-tab"],
-    ]
-    .concat();
+    let words = vec![format!(
+        "(new-tab {})",
+        program(
+            "(history-bytes (size (in (options) \"a\") 80 24) 67108864)",
+            &["sh", "-c", "seq 600000; echo all-out; sleep 1000"]
+        )
+    )];
     let lines = id(&server.ok(&words)?);
     // Its screen shows the end once all is read: waited for by its version,
     // as long as a slow machine takes to read 600,000 lines, with no whole
@@ -792,7 +801,7 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
     assert!(
         server
             .ok(&["(listing (list-session))"])?
-            .contains(&format!("    {shell} "))
+            .contains(&format!("{}", support::reference(&format!("{shell}"))))
     );
     std::fs::remove_dir(&blocked).map_err(e)?;
     server.type_line(&shell, "echo still-here")?;
@@ -814,14 +823,10 @@ fn a_pane_is_recorded_before_its_program_starts() -> Outcome {
     let panes = children(pid, "__pane").len();
     let blocked = kept(&server).join("run.new");
     std::fs::create_dir(&blocked).map_err(e)?;
-    let refused = server.fux(
-        &[
-            &["opts", "str", "a", "in", "80", "24", "size"][..],
-            &program(&["sleep", "1001"]),
-            &["new-tab"],
-        ]
-        .concat(),
-    )?;
+    let refused = server.fux(&[format!(
+        "(new-tab {})",
+        program("(size (in (options) \"a\") 80 24)", &["sleep", "1001"])
+    )])?;
     assert_ne!(refused.status, 0, "{}", refused.stdout);
     assert_eq!(
         children(pid, "__pane").len(),
@@ -832,14 +837,10 @@ fn a_pane_is_recorded_before_its_program_starts() -> Outcome {
     // The next pane's socket, a process listening at it.
     let next = kept(&server).join("2");
     let listener = std::os::unix::net::UnixListener::bind(&next).map_err(e)?;
-    let refused = server.fux(
-        &[
-            &["opts", "str", "a", "in", "80", "24", "size"][..],
-            &program(&["sleep", "1002"]),
-            &["new-tab"],
-        ]
-        .concat(),
-    )?;
+    let refused = server.fux(&[format!(
+        "(new-tab {})",
+        program("(size (in (options) \"a\") 80 24)", &["sleep", "1002"])
+    )])?;
     assert!(refused.stderr.contains("listens at"), "{}", refused.stderr);
     assert!(next.exists(), "a live socket let go");
     drop(listener);
@@ -931,13 +932,16 @@ fn a_takeover_keeps_ended_program_panes_by_their_role() -> Outcome {
     let listing = server.ok(&["(listing (list-session))"])?;
     for kept in [&ended, &lost] {
         assert!(
-            listing.contains(&format!("    {kept} ")),
+            listing.contains(&format!("{}", support::reference(&format!("{kept}")))),
             "{kept}: {listing}"
         );
         let state = server.ok(&[&format!("(sequence! (define! value-1369 (pane {})) \"program\" (define! value-1371 (get value-1369 \"program\")) \"state\" (get value-1371 \"state\"))", fux::script::quoted(kept))])?;
         assert_eq!(state.trim(), "ended", "{kept}");
     }
-    assert!(!listing.contains(&format!("    {shell} ")), "{listing}");
+    assert!(
+        !listing.contains(&format!("{}", support::reference(&format!("{shell}")))),
+        "{listing}"
+    );
     Ok(())
 }
 

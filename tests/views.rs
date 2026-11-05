@@ -18,22 +18,22 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}tn"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}tn"))))?;
     eventually("on @2", || Ok(client_line(&server, "c1")?.contains(" @2 ")))?;
     client.keys("echo on-two\r")?;
     client.wait_for("on-two")?;
-    client.keys(&format!("{PREFIX}b"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}b"))))?;
     eventually("back on @1", || {
         Ok(client_line(&server, "c1")?.contains(" @1 "))
     })?;
     client.wait("tab 1's screen", |t| !t.contains("on-two"))?;
-    client.keys(&format!("{PREFIX}n"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}n"))))?;
     eventually("on @2 again", || {
         Ok(client_line(&server, "c1")?.contains(" @2 "))
     })?;
     client.wait_for("on-two")?;
     // Next wraps around; the tab layer's `l` is next too.
-    client.keys(&format!("{PREFIX}tl"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}tl"))))?;
     eventually("wrapped to @1", || {
         Ok(client_line(&server, "c1")?.contains(" @1 "))
     })?;
@@ -50,13 +50,13 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}wn"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}wn"))))?;
     eventually("on +2", || Ok(client_line(&server, "c1")?.contains(" +2 ")))?;
-    client.keys(&format!("{PREFIX}wh"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}wh"))))?;
     eventually("back on +1", || {
         Ok(client_line(&server, "c1")?.contains(" +1 "))
     })?;
-    client.keys(&format!("{PREFIX}wl"))?;
+    client.keys(&format!("{}", support::reference(&format!("{PREFIX}wl"))))?;
     eventually("+2 again", || {
         Ok(client_line(&server, "c1")?.contains(" +2 "))
     })?;
@@ -81,7 +81,7 @@ fn two_clients_have_independent_views() -> Outcome {
     one.wait_for("$")?;
     let mut two = server.attach(20, 80)?;
     two.wait_for("$")?;
-    one.keys(&format!("{PREFIX}v"))?;
+    one.keys(&format!("{}", support::reference(&format!("{PREFIX}v"))))?;
     eventually("one focuses the new pane", || {
         Ok(client_line(&server, "c1")?.ends_with("%2"))
     })?;
@@ -105,21 +105,21 @@ fn two_clients_have_independent_views() -> Outcome {
         "{right}"
     );
     // Switching tabs in one leaves the other where it was.
-    one.keys(&format!("{PREFIX}tn"))?;
+    one.keys(&format!("{}", support::reference(&format!("{PREFIX}tn"))))?;
     eventually("one is on @2", || {
         Ok(client_line(&server, "c1")?.contains(" @2 "))
     })?;
     assert!(client_line(&server, "c2")?.contains(" @1 "));
     // Zoom is the tab's: every client showing it sees the zoomed pane
     // alone and focuses it, and gets its own focus back after.
-    two.keys(&format!("{PREFIX}z"))?;
+    two.keys(&format!("{}", support::reference(&format!("{PREFIX}z"))))?;
     two.wait("two is zoomed", |t| !t.contains('│'))?;
-    one.keys(&format!("{PREFIX}b"))?;
+    one.keys(&format!("{}", support::reference(&format!("{PREFIX}b"))))?;
     one.wait("one sees the zoom", |t| {
         t.contains("typed-by-two") && !t.contains('│')
     })?;
     assert!(client_line(&server, "c1")?.ends_with("%1"));
-    one.keys(&format!("{PREFIX}z"))?;
+    one.keys(&format!("{}", support::reference(&format!("{PREFIX}z"))))?;
     two.wait("two sees it end", |t| t.contains('│'))?;
     eventually("one's own focus is back", || {
         Ok(client_line(&server, "c1")?.ends_with("%2"))
@@ -145,14 +145,14 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     let lines = big.lines();
     assert!(lines.iter().all(|l| l.chars().count() <= 40), "{lines:?}");
     // When the small client looks elsewhere, the pane grows.
-    small.keys(&format!("{PREFIX}tn"))?;
+    small.keys(&format!("{}", support::reference(&format!("{PREFIX}tn"))))?;
     eventually("grown to the big client", || {
         Ok(server
             .ok(&["(listing (list-session))"])?
             .contains("%1 100x30"))
     })?;
     // And when it detaches, only the big client counts.
-    small.keys(&format!("{PREFIX}b"))?;
+    small.keys(&format!("{}", support::reference(&format!("{PREFIX}b"))))?;
     eventually("small again", || {
         Ok(server
             .ok(&["(listing (list-session))"])?
@@ -235,8 +235,7 @@ fn a_fixed_tab_keeps_its_size_and_a_fitting_one_its_last_screen() -> Outcome {
     let mut client = server.attach(25, 84)?;
     client.wait_for("$")?;
     let run = [
-        "opts", "str", "agent", "in", "100", "40", "size", "str", "cat", "program", "new-tab",
-        "dup", "str", "hid", "rename",
+        "(sequence! (define! value-190 (new-tab (program (size (in (options) \"agent\") 100 40) \"cat\"))) (rename value-190 \"hid\") value-190)",
     ];
     let pane = server.ok(&run)?;
     let pane = pane.split(':').next().unwrap_or_default();

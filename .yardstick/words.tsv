@@ -2,7 +2,7 @@ type	type	cli
 press	press	cli
 line	line	cli
 assert-kind	assert-kind	cli
-info	info	cli
+info	information	cli
 all-history	all-history	cli
 observed	observed	cli
 shows	shows	cli
@@ -16,7 +16,7 @@ listing	listing	cli
 dump-text	dump-text	cli
 dump-id	-	replay now consumes a recipe and maps its old identities to new handles
 dump-first	dump-first	cli
-dump-cwd	dump-cwd	cli
+dump-cwd	dump-directory	cli
 dump-warnings	dump-warnings	cli
 dump-name	-	replay now consumes a recipe and maps its old identities to new handles
 dump-create	-	replay now consumes a recipe and maps its old identities to new handles

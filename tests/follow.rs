@@ -227,7 +227,12 @@ fn a_program_read_from_stdin_follows() -> Outcome {
 /// perhaps, is the server's binary's to compile.
 fn a_program_this_fux_cannot_compile_follows() -> Outcome {
     let word = "(a-word-only-the-server-knows)";
-    follows("compile", &[word], "", &format!("[\"{word}\"]\n"))
+    follows(
+        "compile",
+        &[word],
+        "",
+        &format!("{}", support::reference(&format!("[{word}]"))),
+    )
 }
 
 /// A program that did something outside fux's process before it met the

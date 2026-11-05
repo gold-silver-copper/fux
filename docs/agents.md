@@ -58,12 +58,12 @@ fux '(kill (workspace "typing"))'
 
 ## read: Retained facts
 
-`info` is a facts snapshot. `snapshot` also accepts `"topology"` and `"recipe"` projections.
+`information` is a facts snapshot. `snapshot` also accepts `"topology"` and `"recipe"` projections.
 A record and its child records retain the facts of that observation. Reading a field of a
 held record does not refresh it. Reading a field of a handle asks the server.
 
 `capture` returns the visible text. Its options include `history`, `all-history`, `wrapped`,
-`full`, `styles`, `marks`, `main-screen`, `alt-screen`, `last-output`, `rows`, `columns`, and `since`.
+`full`, `styles`, `marks`, `main-screen`, `alternate-screen`, `last-output`, `rows`, `columns`, and `since`.
 A version contains respawns, screen changes, bells, completed shell commands, ended, and the run.
 `changed` waits from that version. `expect` checks it before queuing input.
 
@@ -94,6 +94,29 @@ an active program, including a blocked wait. Rust keeps drawing while that worke
 Shells can report prompt and command boundaries with OSC 133. fux reports those marks as
 facts. `last-output` refuses with `no-marks` when the shell sent none. Readiness remains the
 caller's decision.
+
+```bash
+# bash 4.4 or later (macOS's /bin/bash 3.2 has no PS0), ~/.bashrc
+PS0='\e]133;C\a'
+mark_end() { local s=$?; printf '\e]133;D;%s\a\e]133;A\a' "$s"; return "$s"; }
+PROMPT_COMMAND=mark_end${PROMPT_COMMAND:+;$PROMPT_COMMAND}  # first: the hooks after it see $?
+```
+
+```zsh
+# zsh, ~/.zshrc
+autoload -Uz add-zsh-hook
+mark_start() { print -n '\e]133;C\a' }
+mark_end() { print -n "\e]133;D;$?\a\e]133;A\a" }
+add-zsh-hook preexec mark_start
+precmd_functions=(mark_end $precmd_functions)  # first, so $? is the command's
+```
+
+```fish
+# fish, ~/.config/fish/config.fish
+function mark_start --on-event fish_preexec; printf '\e]133;C\a'; end
+function mark_end --on-event fish_postexec; printf '\e]133;D;%s\a' $status; end
+function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
+```
 
 ## servers: Saving and stopping
 

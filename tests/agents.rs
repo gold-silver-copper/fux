@@ -15,59 +15,43 @@ fn id(out: &str) -> String {
     first.split(':').next().unwrap_or_default().to_owned()
 }
 
-/// `argv` as options words: its program, then each argument.
-fn program<'a>(argv: &[&'a str]) -> Vec<&'a str> {
-    let mut words = Vec::new();
-    let mut rest = argv.iter();
-    if let Some(first) = rest.next() {
-        words.extend(["str", first, "program"]);
-    }
-    for word in rest {
-        words.extend(["str", word, "arg"]);
-    }
-    words
-}
-
-/// A program's tab: `opts str agent in`, then `before` (size, waits…), then
-/// the program, then `new-tab`; at 80 by 24 unless `before` gives a size,
-/// as no client is attached to lay it out on.
-fn launch<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
-    let size: &[&str] = if before.contains(&"size") {
-        &[]
-    } else {
-        &["80", "24", "size"]
+/// Construct a program request in grift; every executable argument stays data.
+fn program(builder: &str, argv: &[&str]) -> String {
+    let Some((first, rest)) = argv.split_first() else {
+        return builder.to_owned();
     };
-    [
-        &["opts", "str", "agent", "in"][..],
-        size,
-        before,
-        &program(argv),
-        &["new-tab"],
-    ]
-    .concat()
+    let mut expression = format!("(program {builder} {})", fux::script::quoted(first));
+    for argument in rest {
+        expression = format!("(argument {expression} {})", fux::script::quoted(argument));
+    }
+    expression
 }
-
-/// `launch`, its pane then named `name`, leaving its answer.
-fn named<'a>(name: &'a str, before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
-    [launch(before, argv), vec!["dup", "str", name, "rename"]].concat()
+/// Each explicit option transform includes a size; the empty fixture uses 80 by 24.
+fn launch(before: &[&str], argv: &[&str]) -> Vec<String> {
+    assert!(
+        before.len() <= 1,
+        "fixture options must be one grift transform"
+    );
+    let builder = before.first().map_or_else(
+        || "(size (in (options) \"agent\") 80 24)".to_owned(),
+        |transform| format!("({transform} (in (options) \"agent\"))"),
+    );
+    vec![format!("(new-tab {})", program(&builder, argv))]
 }
-
-/// `send-keys` to `pane` typing `line`, then Enter.
-fn typed<'a>(pane: &'a str, line: &'a str) -> Vec<&'a str> {
-    vec![
-        "str",
-        pane,
-        "pane",
-        "str",
-        line,
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ]
+fn named(name: &str, before: &[&str], argv: &[&str]) -> Vec<String> {
+    let creation = launch(before, argv).into_iter().next().unwrap_or_default();
+    vec![format!(
+        "(define! result {creation}) (rename result {}) result",
+        fux::script::quoted(name)
+    )]
 }
-
+fn typed(pane: &str, line: &str) -> Vec<String> {
+    vec![format!(
+        "(line (pane {}) {})",
+        fux::script::quoted(pane),
+        fux::script::quoted(line)
+    )]
+}
 /// The version an action's answer gives, from before it acted: its
 /// first word.
 fn version(answer: &str) -> String {
@@ -86,11 +70,13 @@ fn shows_after(server: &Server, answer: &str, text: &str) -> Result<String, Stri
 fn block(after: &str, lang: &str) -> Result<String, String> {
     let docs = include_str!("../docs/agents.md");
     let (_, from) = docs.split_once(after).ok_or(format!("no {after:?}"))?;
-    let fence = format!("```{lang}\n");
+    let fence = format!("{}", support::reference(&format!("```{lang}")));
     let (_, block) = from.split_once(&fence).ok_or(format!("no {lang} block"))?;
     let (block, _) = block.split_once("```").ok_or("no end")?;
     let lines = block.lines().map(|l| l.strip_prefix("  ").unwrap_or(l));
-    Ok(lines.map(|l| format!("{l}\n")).collect())
+    Ok(lines
+        .map(|l| format!("{}", support::reference(&format!("{l}"))))
+        .collect())
 }
 
 /// The marks `docs/agents.md` shows for `shell`, in its startup file.
@@ -127,7 +113,9 @@ fn bash_has_ps0() -> Result<bool, String> {
 /// A bash pane named `name` that marks its commands as the docs say, after
 /// a prompt hook of its own.
 fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
-    let rc = server.dir.join(format!("{name}.bashrc"));
+    let rc = server
+        .dir
+        .join(format!("{}", support::reference(&format!("{name}.bashrc"))));
     let (hook, marks) = (later_hook("bash"), marks("bash")?);
     std::fs::write(&rc, format!("PS1='$ '\n{hook}{marks}")).map_err(e)?;
     let rc = rc.to_string_lossy().into_owned();
@@ -159,13 +147,16 @@ fn line_done(server: &Server, pane: &str, line: &str) -> Outcome {
 fn a_program_keeps_its_pane_screen_and_status() -> Outcome {
     let server = Server::start("")?;
     let script = "stty size; echo started; exit 3";
-    let started = server.ok(&launch(&["40", "10", "size"], &["sh", "-c", script]))?;
+    let started = server.ok(&launch(
+        &["(lambda! (argument-2) (size argument-2 40 10))"],
+        &["sh", "-c", script],
+    ))?;
     let pane = id(&started);
     assert_eq!(server.exits(&pane)?, "3");
     // Waited on from its start, it has exited: answered at once; from now,
     // nothing changes.
     let since = version(&started);
-    let from_start = ["str", &since, "changed", "wait", "json"];
+    let from_start = [&format!("(wait (changed {}))", fux::script::quoted(&since))];
     let json = server.ok(&from_start)?;
     assert!(
         json.contains(r#""exited":3,"signal":null,"status":0"#),
@@ -210,14 +201,13 @@ fn a_program_keeps_its_pane_screen_and_status() -> Outcome {
     )])?;
     server.exits(&pane)?;
     let since = version(&started);
-    let waited = ["str", &since, "changed", "wait"];
+    let waited = [&format!("(wait (changed {}))", fux::script::quoted(&since))];
     let text = server.ok(&waited)?;
     assert!(text.ends_with(" killed by SIGKILL\n"), "{text}");
-    let json = server.ok(&[&waited[..], &["json"]].concat())?;
-    assert!(
-        json.contains(r#""exited":null,"signal":9,"status":0"#),
-        "{json}"
-    );
+    let data=server.ok(&[format!("(define! observed (wait (changed {}))) (display (list (list (quote! exited) (get observed \"exited\")) (list (quote! signal) (get observed \"signal\")) (list (quote! status) (get observed \"status\"))))",fux::script::quoted(&since))])?;
+    assert_eq!(read_data(&data, "(field data (quote! exited))")?, "none");
+    assert_eq!(read_data(&data, "(field data (quote! signal))")?, "9");
+    assert_eq!(read_data(&data, "(field data (quote! status))")?, "0");
     Ok(())
 }
 
@@ -242,13 +232,17 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
         began.elapsed()
     );
     let since = version(&sent);
-    assert_eq!(sent, format!("{since}\n"));
-    assert!(since.starts_with(&format!("{pane}:")), "{since}");
+    assert_eq!(sent, format!("{}", support::reference(&format!("{since}"))));
+    assert!(
+        since.starts_with(&format!("{}", support::reference(&format!("{pane}:")))),
+        "{since}"
+    );
     // Asked once the program answered: met at once, from the version held.
     server.until(&pane, &since, |c| c.contains("got"))?;
     let changed = server.ok(&[&format!("(wait (changed {}))", fux::script::quoted(&since))])?;
     assert!(
-        changed.starts_with(&format!("{pane}:")) && changed.ends_with(" screen\n"),
+        changed.starts_with(&format!("{}", support::reference(&format!("{pane}:"))))
+            && changed.ends_with(" screen\n"),
         "{changed}"
     );
     let json = server.ok(&[&format!("(wait (changed {}))", fux::script::quoted(&since))])?;
@@ -268,9 +262,15 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     // output read), or another server run's, are refused.
     let server_run = since.rsplit(':').next().unwrap_or_default();
     for other in [
-        format!("{pane}:3.0.0.0.0:{server_run}"),
-        format!("{pane}:0.99999.0.0.0:{server_run}"),
-        format!("{pane}:0.1.0.0.0:1-0"),
+        format!(
+            "{}",
+            support::reference(&format!("{pane}:3.0.0.0.0:{server_run}"))
+        ),
+        format!(
+            "{}",
+            support::reference(&format!("{pane}:0.99999.0.0.0:{server_run}"))
+        ),
+        format!("{}", support::reference(&format!("{pane}:0.1.0.0.0:1-0"))),
     ] {
         let other = server.fux(&[&format!("(wait (changed {}))", fux::script::quoted(&other))])?;
         let refused = other.stderr.starts_with("fux: bad_value: ");
@@ -281,10 +281,10 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     // change surely came, it answers at once, where one from now would
     // time out.
     let echoes = id(&server.ok(&launch(&[], &["sh", "-c", "read x; sleep 30"]))?);
-    let twice = [
-        "dup", "5", "timeout", "wait", "drop", "1", "timeout", "wait",
-    ];
-    let answer = server.ok(&[&typed(&echoes, "x")[..], &twice].concat())?;
+    let action = typed(&echoes, "x").into_iter().next().unwrap_or_default();
+    let answer = server.ok(&[format!(
+        "(define! initial {action}) (wait (timeout initial 5)) (wait (timeout initial 1))"
+    )])?;
     assert!(answer.ends_with(" screen\n"), "{answer}");
     Ok(())
 }
@@ -298,7 +298,10 @@ fn bells_and_respawns_change_the_version() -> Outcome {
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", script]))?);
     let mut at = version(&server.ok(&typed(&pane, ""))?);
     loop {
-        let waited = ["str", &at, "changed", "10", "timeout", "wait"];
+        let waited = [&format!(
+            "(wait (timeout (changed {}) 10))",
+            fux::script::quoted(&at)
+        )];
         let out = server.ok(&waited)?;
         if out.contains(" bell") {
             break;
@@ -407,14 +410,7 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         std::fs::create_dir_all(rc.parent().ok_or("a directory")?).map_err(e)?;
         std::fs::write(&rc, format!("{}{}", later_hook(shell), marks(shell)?)).map_err(e)?;
         let home = format!("{home}={}", dir.to_string_lossy());
-        let new = ["new-tab", "str", shell, "rename"];
-        let program = program(&["env", &home, shell, "-i"]);
-        server.ok(&[
-            &["opts", "str", "agent", "in", "80", "24", "size"][..],
-            &program,
-            &new,
-        ]
-        .concat())?;
+        server.ok(&named(shell, &[], &["env", &home, shell, "-i"]))?;
         check(shell)?;
     }
     let plain = server.ok(&launch(&[], &["sh"]))?;
@@ -503,7 +499,7 @@ fn sizes_are_set_as_asked() -> Outcome {
     let size = |pane: &str| -> Result<String, String> {
         let fields = server.ok(&[&format!("(sequence! (define! value-87 (pane {})) \"cols\" (define! value-89 (get value-87 \"columns\")) \"rows\" (list value-89 (get value-87 \"rows\")))", fux::script::quoted(pane))])?;
         let (cols, rows) = fields.trim().split_once('\n').ok_or("pane dimensions")?;
-        Ok(format!("{cols}x{rows}"))
+        Ok(format!("{}", support::reference(&format!("{cols}x{rows}"))))
     };
     assert_eq!(size(left)?, "100x20");
     server.ok(&[&format!(
@@ -554,7 +550,7 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     use std::io::BufRead;
     let server = Server::start("")?;
     let mut client = std::process::Command::new(FUX)
-        .args(["(sequence! (define! variables-1 (context)) (define! value-2 (options)) (define! value-3 (size value-2 50 10)) (define! value-4 (attach value-3)) #inert)"])
+        .args(["(sequence! (attach (size (options) 50 10)) #inert)"])
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
         .env_remove("FUX_PANE")
@@ -576,7 +572,7 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
             .ok(&["(listing (list-session))"])?
             .contains("client c1 60x12")
     );
-    let capture = ["str", "c1", "client", "capture"];
+    let capture = ["(capture (client \"c1\"))"];
     assert_eq!(
         server.ok(&[&capture[..], &["kind"]].concat())?.trim(),
         "client-capture"
@@ -638,7 +634,7 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
         &server.ok(&typed("%1", asked))?,
         "62;4;6;21;22;28c",
     )?;
-    let enter = ["str", "%1", "pane", "str", "Enter", "key", "send-keys"];
+    let enter = ["(send-keys (key (pane \"%1\") \"Enter\"))"];
     shows_after(&server, &server.ok(&enter)?, "drawn")?;
     eventually("the picture sent", || {
         client.pump()?;
@@ -672,19 +668,14 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
 fn programs_are_restarted_and_read_whole() -> Outcome {
     let server = Server::start("")?;
     let script = "echo before; seq 500; printf '\\033[?1049h'; echo \"full $V\"; read go";
-    let before = ["40", "10", "size"];
+    let before = ["(lambda! (builder) (size builder 40 10))"];
     let started = server.ok(&named("job", &before, &["env", "V=a", "sh", "-c", script]))?;
     let pane = id(&started);
     shows_after(&server, &started, "full a")?;
-    let main = [
-        "str",
-        &pane,
-        "pane",
-        "main-screen",
-        "all-history",
-        "capture",
-    ];
-    let main = server.ok(&main)?;
+    let main = server.ok(&[format!(
+        "(capture (all-history (main-screen (pane {}))))",
+        fux::script::quoted(&pane)
+    )])?;
     assert!(main.starts_with("before\n1\n"), "{main}");
     assert!(main.contains("\n500\n"), "{main}");
     let refused = server.fux(&[&format!(
@@ -695,13 +686,14 @@ fn programs_are_restarted_and_read_whole() -> Outcome {
     assert!(refused.stderr.contains("Entr"), "{}", refused.stderr);
     let busy = server.fux(&[&format!("(respawn (pane {}))", fux::script::quoted(&pane))])?;
     assert_eq!(busy.status, 1, "it runs: {}", busy.stderr);
-    let again = [
-        &["str", "job", "pane", "kill-first"][..],
-        &program(&["env", "V=b", "sh", "-c", script]),
-        &["respawn"],
-    ];
-    let again = server.ok(&again.concat())?;
-    assert!(again.starts_with(&format!("{pane}:1.")), "{again}");
+    let again = server.ok(&[format!(
+        "(respawn (kill-first {}))",
+        program("(pane \"job\")", &["env", "V=b", "sh", "-c", script])
+    )])?;
+    assert!(
+        again.starts_with(&format!("{}", support::reference(&format!("{pane}:1.")))),
+        "{again}"
+    );
     shows_after(&server, &again, "full b")?;
     // A full-screen program's last screen, after it left it and exited.
     let menu = r"printf '\033[?1049hpicked beta'; printf '\033[?1049l'";
@@ -714,7 +706,7 @@ fn programs_are_restarted_and_read_whole() -> Outcome {
     );
     assert_eq!(
         server.ok(&[&format!(
-            "(capture (alt-screen (pane {})))",
+            "(capture (alternate-screen (pane {})))",
             fux::script::quoted(&menu)
         )])?,
         "picked beta\n"
@@ -730,14 +722,15 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
     server.ok(&named("ed", &[], &["cat"]))?;
     assert_eq!(
         server
-            .fux(&launch(&["str", "@1", "name"], &["cat"]))?
+            .fux(&launch(
+                &["(lambda! (argument-5) (name (size argument-5 80 24) \"@1\"))"],
+                &["cat"]
+            ))?
             .status,
         1
     );
     // A name is one thing's: the pane has it, so no tab may.
-    let tab = [
-        "opts", "80", "24", "size", "str", "+1", "in", "str", "ed", "name", "new-tab",
-    ];
+    let tab = ["(new-tab (name (in (size (options) 80 24) \"+1\") \"ed\"))"];
     let taken = server.fux(&tab)?;
     assert!(
         taken.stderr.starts_with("fux: name_taken: "),
@@ -762,10 +755,14 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
     let clicks = "printf '\\033[?1000h\\033[?1006hready'; exec cat";
     shows_after(
         &server,
-        &server.ok(&named("m", &["20", "5", "size"], &["sh", "-c", clicks]))?,
+        &server.ok(&named(
+            "m",
+            &["(lambda! (argument-10) (size argument-10 20 5))"],
+            &["sh", "-c", clicks],
+        ))?,
         "ready",
     )?;
-    let outside = ["str", "m", "pane", "str", "click", "5", "0", "send-mouse"];
+    let outside = ["(send-mouse (pane \"m\") \"click\" 5 0)"];
     let outside = server.fux(&outside)?;
     assert!(
         outside.stderr.starts_with("fux: mouse: "),
@@ -787,7 +784,10 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
 fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let server = Server::start("")?;
     let long = "echo aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc; echo next; exec cat";
-    let started = server.ok(&launch(&["20", "6", "size"], &["sh", "-c", long]))?;
+    let started = server.ok(&launch(
+        &["(lambda! (argument-13) (size argument-13 20 6))"],
+        &["sh", "-c", long],
+    ))?;
     let pane = id(&started);
     shows_after(&server, &started, "next")?;
     let line = server.ok(&[&format!(
@@ -810,7 +810,10 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     );
     // A column range cuts a wide glyph to a blank, a column a cell.
     let wide = "printf 'A界BC              Z'; exec cat";
-    let wide = server.ok(&launch(&["20", "6", "size"], &["sh", "-c", wide]))?;
+    let wide = server.ok(&launch(
+        &["(lambda! (argument-16) (size argument-16 20 6))"],
+        &["sh", "-c", wide],
+    ))?;
     shows_after(&server, &wide, "Z")?;
     let wide = id(&wide);
     let cut = |first: &str, last: &str| {
@@ -851,7 +854,7 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
         let line = timed
             .stderr
             .lines()
-            .find(|l| l.starts_with(&format!("{pane}:")));
+            .find(|l| l.starts_with(&format!("{}", support::reference(&format!("{pane}:")))));
         assert!(
             line.is_some_and(|l| l.ends_with(" timeout")),
             "{}",
@@ -865,7 +868,10 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     assert!(again.stderr.starts_with("fux: type: "), "{}", again.stderr);
     let json = server.ok(&[&keys[..], &["json"]].concat())?;
     assert!(
-        json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
+        json.starts_with(&format!(
+            "{}",
+            support::reference(&format!("[{{pane:{one}"))
+        )),
         "{json}"
     );
     Ok(())
@@ -879,12 +885,18 @@ fn an_answer_selects_its_pane_explicitly_for_live_fields() -> Outcome {
     let script = "read x; echo '%13 fake'; exec cat";
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", script]))?);
     let since = server.version(&pane)?;
-    let sent = [&typed(&pane, "go")[..], &["pane", "str", "name", "get"]];
-    assert_eq!(server.ok(&sent.concat())?.trim(), "null");
+    let action = typed(&pane, "go").into_iter().next().unwrap_or_default();
+    assert_eq!(
+        server
+            .ok(&[format!("(get (pane {action}) \"name\")")])?
+            .trim(),
+        "none"
+    );
     server.shows(&pane, "%13 fake")?;
-    let waited = [
-        "str", &since, "changed", "wait", "pane", "str", "name", "get",
-    ];
+    let waited = [&format!(
+        "(sequence! (define! value-66 (pane (wait (changed {})))) \"name\" (get value-66 \"name\"))",
+        fux::script::quoted(&since)
+    )];
     assert_eq!(server.ok(&waited)?.trim(), "null");
     Ok(())
 }
@@ -949,11 +961,15 @@ fn an_answer_in_a_list_is_its_object() -> Outcome {
         &["capture", "ls", "end", "json"],
     ]
     .concat())?;
-    let pane_object = format!("{{\"id\":\"{pane}\",");
+    let pane_object = format!("{}", support::reference(&format!("{{id:{pane},")));
     assert!(
-        json.starts_with(&format!("[{pane_object}"))
-            && json.contains(&format!("}},{pane_object}"))
-            && json.contains(",{\"run\":")
+        json.starts_with(&format!(
+            "{}",
+            support::reference(&format!("[{pane_object}"))
+        )) && json.contains(&format!(
+            "{}",
+            support::reference(&format!("}},{pane_object}"))
+        )) && json.contains(",{\"run\":")
             && json.contains("\"projection\":\"facts\""),
         "{json}"
     );
@@ -1041,7 +1057,7 @@ fn a_failed_wait_answers_as_text_on_stderr() -> Outcome {
         out.status == 124
             && out.stdout.is_empty()
             && matches!(&lines[..], [why, answer] if why.starts_with("fux: timeout: ")
-                && answer.starts_with(&format!("{pane}:")) && answer.ends_with(" timeout"))
+                && answer.starts_with(&format!("{}", support::reference(&format!("{pane}:")))) && answer.ends_with(" timeout"))
     };
     let out = server.fux(&[&p[..], &["1", "timeout", "wait", "json"]].concat())?;
     assert!(told(&out), "{}: {}{}", out.status, out.stdout, out.stderr);
@@ -1159,7 +1175,10 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     .into_iter()
     .enumerate()
     {
-        let file = server.dir.join(format!("recipe-{i}.fux"));
+        let file = server.dir.join(format!(
+            "{}",
+            support::reference(&format!("recipe-{i}.fux"))
+        ));
         std::fs::write(&file, &recipe).map_err(e)?;
         let out = server.fux(&["--file", &file.to_string_lossy()])?;
         assert_eq!(out.status, 0, "{recipe}\n{}{}", out.stdout, out.stderr);
@@ -1173,7 +1192,10 @@ fn the_docs_recipes_run_as_written() -> Outcome {
         let program = program.split("```").next().unwrap_or_default();
         let mut language: grift::Grift = grift::Grift::new().map_err(|_| "grift initialization")?;
         language
-            .read_named(&format!("shown-{i}"), program)
+            .read_named(
+                &format!("{}", support::reference(&format!("shown-{i}"))),
+                program,
+            )
             .map_err(|_| "guide program does not read")?;
     }
     Ok(())
@@ -1224,7 +1246,11 @@ fn requests_journal_their_input_and_signals_never_the_text() -> Outcome {
     let server = Server::start("")?;
     let cursor = server.ok(&["(sequence! (define! value-285 (next-events (all) \"\" 0)) \"next\" (get value-285 \"next\"))"])?;
     let clicks = "printf '\\033[?1000h\\033[?1006hready'; exec cat";
-    let started = server.ok(&named("m", &["20", "5", "size"], &["sh", "-c", clicks]))?;
+    let started = server.ok(&named(
+        "m",
+        &["(lambda! (argument-19) (size argument-19 20 5))"],
+        &["sh", "-c", clicks],
+    ))?;
     shows_after(&server, &started, "ready")?;
     let seen = server.ok(&["(version (capture (pane \"m\")))"])?;
     let seen = seen.trim();
@@ -1249,15 +1275,32 @@ fn requests_journal_their_input_and_signals_never_the_text() -> Outcome {
         })
         .collect();
     let pane = id(&started);
-    let at = format!(r#""pane":"{pane}","tab":"@2","workspace":"+2","generation":0"#);
+    let at = format!(
+        "{}",
+        support::reference(&format!("pane:{pane},tab:@2,workspace:+2,generation:0"))
+    );
     assert_eq!(
         told,
         [
-            format!(r#"{{"event":"input",{at},"kind":"keys","bytes":6,"expected":"{seen}""#),
-            format!(r#"{{"event":"input",{at},"kind":"paste","bytes":6"#),
+            format!(
+                "{}",
+                support::reference(&format!(
+                    "{{event:input,{at},kind:keys,bytes:6,expected:{seen}"
+                ))
+            ),
+            format!(
+                "{}",
+                support::reference(&format!("{{event:input,{at},kind:paste,bytes:6"))
+            ),
             // An SGR press and release at row 1, column 1.
-            format!(r#"{{"event":"input",{at},"kind":"mouse","bytes":18"#),
-            format!(r#"{{"event":"signalled",{at},"signal":2"#),
+            format!(
+                "{}",
+                support::reference(&format!("{{event:input,{at},kind:mouse,bytes:18"))
+            ),
+            format!(
+                "{}",
+                support::reference(&format!("{{event:signalled,{at},signal:2"))
+            ),
         ],
         "{events}"
     );
@@ -1277,15 +1320,22 @@ fn conditions_accept_panes_answers_and_pane_captures() -> Outcome {
     let pane = id(&started);
     for source in [
         pane.clone(),
-        format!("{pane} str '' text send-keys"),
-        format!("{pane} capture"),
+        format!(
+            "(send-keys (text {} \"\"))",
+            support::reference(&format!("{pane}"))
+        ),
+        format!("(capture {})", support::reference(&format!("{pane}"))),
     ] {
         for condition in ["str READY 3 shows", "1 quiet"] {
-            let code =
-                format!("{source} {condition} let seen seen string print seen version print");
+            let code = format!(
+                "(sequence! (define! variables-48 (context)) (bind variables-48 (quote! seen) {}) (print (string (evaluate (quote! seen) variables-48))) (print (version (evaluate (quote! seen) variables-48))) {})",
+                support::reference(&format!("{condition}")),
+                support::reference(&format!("{source}"))
+            );
             let out = server.ok(&[&code])?;
             assert!(
-                out.contains("READY\n") && out.contains(&format!("{pane}:")),
+                out.contains("READY\n")
+                    && out.contains(&format!("{}", support::reference(&format!("{pane}:")))),
                 "{code}: {out}"
             );
         }
@@ -1299,7 +1349,9 @@ fn observed_retains_a_capture_without_refreshing_it() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", "echo READY; read x"]))?);
     let code = format!(
-        "{pane} str READY 3 shows let seen {pane} kill seen observed str READY 1 shows string"
+        "(sequence! (define! variables-56 (context)) (bind variables-56 (quote! seen) (shows {} \"READY\" 3)) (kill {}) (string (shows (observed (evaluate (quote! seen) variables-56)) \"READY\" 1)))",
+        support::reference(&format!("{pane}")),
+        support::reference(&format!("{pane}"))
     );
     assert_eq!(server.ok(&[&code])?, "READY\n");
     Ok(())
@@ -1312,8 +1364,14 @@ fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", "exit 7"]))?);
     server.exits(&pane)?;
-    for source in [pane.clone(), format!("{pane} capture")] {
-        let code = format!("{source} 1 until-ended 1 until-ended str program get str exited get");
+    for source in [
+        pane.clone(),
+        format!("(capture {})", support::reference(&format!("{pane}"))),
+    ] {
+        let code = format!(
+            "(sequence! (define! value-69 (until-ended (until-ended {} 1) 1)) \"program\" (define! value-71 (get value-69 \"program\")) \"exited\" (get value-71 \"exited\"))",
+            support::reference(&format!("{source}"))
+        );
         assert_eq!(server.ok(&[&code])?, "7\n");
     }
     let code = "(sequence! (define! value-42 (until-ended (wait (timeout (new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") \"sleep 0.1; exit 7\")) 1)) 1)) \"program\" (define! value-44 (get value-42 \"program\")) \"exited\" (get value-44 \"exited\"))";
@@ -1332,17 +1390,30 @@ fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
     ))?);
     for source in [
         pane.clone(),
-        format!("{pane} capture"),
-        format!("{pane} str '' text send-keys"),
+        format!("(capture {})", support::reference(&format!("{pane}"))),
+        format!(
+            "(send-keys (text {} \"\"))",
+            support::reference(&format!("{pane}"))
+        ),
     ] {
-        server.ok(&[&format!("{source} str bells 0 1 grows drop")])?;
+        server.ok(&[&format!(
+            "(sequence! (grows {} \"bells\" 0 1) #inert)",
+            support::reference(&format!("{source}"))
+        )])?;
     }
     for (count, amount) in [("respawns", 0), ("nosuch", 0), ("bells", -1)] {
-        let refused =
-            server.fux(&[&format!("{pane} capture str {count} {amount} 1 grows drop")])?;
+        let refused = server.fux(&[&format!(
+            "(sequence! (grows (capture {}) {} {} 1) #inert)",
+            support::reference(&format!("{pane}")),
+            fux::script::quoted(&format!("{count}")),
+            support::reference(&format!("{amount}"))
+        )])?;
         assert_eq!(refused.status, 1, "{}", refused.stdout);
     }
-    let bell = format!("{pane} str go line str bells 1 3 grows str bells get");
+    let bell = format!(
+        "(sequence! (define! value-91 (grows (line {} \"go\") \"bells\" 1 3)) \"bells\" (get value-91 \"bells\"))",
+        support::reference(&format!("{pane}"))
+    );
     assert_eq!(server.ok(&[&bell])?, "1\n");
     let overflow = server.fux(&[&format!(
         "{pane} capture str bells {} 1 grows drop",
@@ -1350,7 +1421,9 @@ fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
     )])?;
     assert_eq!(overflow.status, 1);
     let generation = format!(
-        "{pane} capture let seen {pane} kill-first respawn drop seen str screen 1 1 grows drop"
+        "(sequence! (define! variables-94 (context)) (bind variables-94 (quote! seen) (capture {})) (respawn (kill-first {})) (grows (evaluate (quote! seen) variables-94) \"screen\" 1 1) #inert)",
+        support::reference(&format!("{pane}")),
+        support::reference(&format!("{pane}"))
     );
     let refused = server.fux(&[&generation])?;
     assert!(
@@ -1366,7 +1439,11 @@ fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
 fn quiet_propagates_closure_instead_of_reporting_stability() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", "echo READY; read x"]))?);
-    let code = format!("{pane} str READY 3 shows let seen {pane} kill seen 1 quiet drop");
+    let code = format!(
+        "(sequence! (define! variables-101 (context)) (bind variables-101 (quote! seen) (shows {} \"READY\" 3)) (kill {}) (quiet (evaluate (quote! seen) variables-101) 1) #inert)",
+        support::reference(&format!("{pane}")),
+        support::reference(&format!("{pane}"))
+    );
     let closed = server.fux(&[&code])?;
     assert_eq!(closed.status, 4, "{}", closed.stderr);
     Ok(())
