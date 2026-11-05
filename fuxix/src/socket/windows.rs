@@ -233,6 +233,11 @@ pub fn name(base: &str) -> Result<String> {
 /// [`Errno::ACCES`]. Its user is read from its token; a process that
 /// can't be opened or read, or whose creation time can't be, is an error,
 /// which is a refusal.
+///
+/// On a server's end the moment is when a poll first saw the client, not
+/// when it connected: a client that connected and ended, and a process
+/// made after it that took its pid, both before that poll, isn't told
+/// apart. The gap is as long as the server takes to look.
 pub fn peer(pipe: impl AsHandle, connected: SystemTime) -> Result<Peer> {
     let raw = pipe.as_handle().as_raw_handle();
     let mut flags = 0u32;
@@ -882,7 +887,10 @@ impl From<Connection> for OwnedHandle {
 
 impl From<OwnedHandle> for Connection {
     /// `handle`, a connected pipe instance opened overlapped and bound to
-    /// no completion port: a child's, handed to it.
+    /// no completion port: a child's, handed to it. Its client must have
+    /// connected before this process was made, as
+    /// [`Connection::connected`] here is this process's creation time;
+    /// an instance not yet connected is handed on as a [`Spare`].
     fn from(handle: OwnedHandle) -> Connection {
         let connected = None;
         Connection { handle, connected }

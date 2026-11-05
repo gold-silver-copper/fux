@@ -7,7 +7,7 @@
 use fuxix::Errno;
 use fuxix::io::{Stream, read, write_what_fits};
 use fuxix::poll::{Events, PollFd, Source, poll};
-use fuxix::socket::{Listener, Spare, User, connect, name, peer};
+use fuxix::socket::{Connection, Listener, Spare, User, connect, name, peer};
 use std::io::{BufRead, Write};
 use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
 use std::process::{Command, ExitStatus, Stdio};
@@ -333,6 +333,70 @@ fn a_child_given_a_spare_takes_its_client() -> Outcome {
         "PIPES handoff spare worker={} server_pid_seen={:?} ok",
         worker.0.id(),
         server.pid
+    ));
+    Ok(())
+}
+
+const HANDED: &str = "FUXIX_TEST_HANDED";
+
+#[test]
+#[ignore = "the child of a_child_given_a_connection_reads_its_client"]
+fn child_serves_a_handed_connection() -> Outcome {
+    let Some(client) = std::env::var_os(HANDED) else {
+        return Ok(());
+    };
+    let _turn = turn();
+    let deadline = after(Duration::from_secs(20))?;
+    let handle = std::io::stdin().as_handle().try_clone_to_owned();
+    let connection = Connection::from(handle.map_err(text)?);
+    // Its own record of the connect is gone: the moment is this process's
+    // creation, after the client connected.
+    let connected = connection.connected().map_err(text)?;
+    let theirs = peer(&connection, connected).map_err(text)?;
+    if !theirs.user.is_current() {
+        return Err("a stranger".into());
+    }
+    let want = client.to_str().and_then(|pid| pid.parse::<u32>().ok());
+    if theirs.pid.map(|pid| pid.as_raw()) != want {
+        return Err(format!("the client read as {:?}", theirs.pid));
+    }
+    let stream = connection.stream().map_err(text)?;
+    while let Some(line) = line(&stream, deadline)? {
+        let answer = format!(
+            "{} from {}\n",
+            line.replace("ping", "pong"),
+            std::process::id()
+        );
+        send(&stream, answer.as_bytes(), deadline)?;
+    }
+    Ok(())
+}
+
+/// A connection handed to a child once its client connected: the child
+/// reads the client as this user and this process, and talks to it.
+#[test]
+fn a_child_given_a_connection_reads_its_client() -> Outcome {
+    let _turn = turn();
+    let deadline = after(Duration::from_secs(25))?;
+    let name = unique("handed")?;
+    let mut listener = Listener::bind(&name).map_err(text)?;
+    let client = connect(&name).map_err(text)?;
+    ready(&listener, deadline)?;
+    let served = OwnedHandle::from(listener.accept().map_err(text)?);
+    let pid = std::process::id().to_string();
+    let mut command = child("child_serves_a_handed_connection", HANDED, &pid)?;
+    command.stdin(Stdio::from(served)).stdout(Stdio::null());
+    let mut worker = Child(command.spawn().map_err(text)?);
+    drop(command);
+    send(&client, b"ping\n", deadline)?;
+    let want = format!("pong from {}", worker.0.id());
+    assert_eq!(line(&client, deadline)?, Some(want));
+    drop(client);
+    let status = exited(&mut worker, "the worker's exit", deadline)?;
+    assert!(status.success(), "{status:?}");
+    say(&format!(
+        "PIPES handoff connection worker={} ok",
+        worker.0.id()
     ));
     Ok(())
 }
