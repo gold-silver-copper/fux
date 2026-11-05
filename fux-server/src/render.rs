@@ -788,7 +788,7 @@ impl Grid {
         self.put(y, x, cell);
     }
     /// The text of a composed row for tests, trailing blanks trimmed.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn row_text(&self, y: u16) -> String {
         let row = self.row(y).filter(|c| !c.is_wide_continuation());
         row.map(|c| c.shown())
@@ -799,7 +799,7 @@ impl Grid {
 
     /// Writes `text` from (y, x), a cluster a cell (`clusters`), clipped at
     /// `limit`, wide glyphs whole; the column after it is returned.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         self.text_cells(y, x, clusters(text), style, limit)
     }
@@ -2034,7 +2034,7 @@ fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
 
 /// The bytes that turn `old` (what the client shows, or nothing) into
 /// `new`, as a test reads them.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
     let mut out = Vec::new();
     let blank = Grid::default();
@@ -2148,7 +2148,7 @@ fn differing_rows(old: Option<&Grid>, new: &Grid) -> Vec<u16> {
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use crate::vt_feed::{Feed, Look};
     use std::time::Instant;

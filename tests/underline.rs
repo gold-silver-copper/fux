@@ -2,6 +2,8 @@
 //! client's terminal whether it draws them, and paints a pane's curly
 //! underline to it as `4:3` if it does, as a plain underline if it does not.
 //! A pane's program learns that fux keeps them as neovim asks (DECRQSS).
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use support::*;
 

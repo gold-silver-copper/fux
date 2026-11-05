@@ -135,7 +135,7 @@ impl InputQueue {
         queued
     }
     /// Everything queued, for tests and the harnesses.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
@@ -869,18 +869,18 @@ impl<'a> PaneMut<'a> {
     }
     /// `n` bytes of its input were written to its terminal, as
     /// `write_input` writes them: for fux-diff's queue.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn wrote_input(&mut self, n: usize) {
         self.pane.input.advance(n);
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         self.pane.set_process(process)
     }
     /// Everything queued for its program, as if written: for tests and the
     /// harnesses.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn drain_input(&mut self) -> Vec<u8> {
         self.pane.input.drain_all()
     }
@@ -1707,7 +1707,7 @@ impl Pane {
     }
 
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         std::mem::replace(&mut self.process, process)
     }
@@ -1736,7 +1736,7 @@ impl Pane {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) mod tests {
     use crate::vt_feed::{Feed, Look};
     pub(crate) fn options(bytes: usize) -> Result<fux_wire::command::PaneOptions, String> {

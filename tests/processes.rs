@@ -1,5 +1,7 @@
 //! What becomes of a pane's processes: background jobs when the pane
 //! closes, and a leader that is stopped rather than exited.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use fuxix::process::Signal;
 use std::time::Duration;

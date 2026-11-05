@@ -203,7 +203,7 @@ pub fn reaped(job: Job) -> Option<Job> {
     job.reap().err()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

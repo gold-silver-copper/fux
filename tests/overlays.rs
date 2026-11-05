@@ -1,5 +1,7 @@
 //! Milestone 7: the command column, the choosers, the pane actions layer,
 //! the `:` prompt, rename and confirmations.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use support::*;
 

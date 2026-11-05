@@ -618,7 +618,7 @@ impl Event {
 /// `the_event_and_status_tables_match_the_finite_schema` does not compile
 /// while a kind is missing; fux's list of records (`docs/records.txt`)
 /// reads them all.
-#[cfg(any(test, feature = "in-process"))]
+#[cfg(any(all(test, unix), feature = "in-process"))]
 pub fn every_kind(
     at: PaneAt,
     name: &str,
@@ -917,7 +917,7 @@ impl Reader {
             status,
         })
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn lines(
         &mut self,
         journal: &Journal,
@@ -996,7 +996,7 @@ impl Read {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::session::testing::TestResult;

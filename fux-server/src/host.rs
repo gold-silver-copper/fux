@@ -1493,7 +1493,7 @@ impl Host {
 
 /// What the tests and the tools look at, and do, in a host held in their
 /// process (`Session::host_mut`).
-#[cfg(any(test, feature = "in-process"))]
+#[cfg(any(all(test, unix), feature = "in-process"))]
 impl Host {
     /// Whether a respawn is under way.
     pub fn respawning(&self) -> bool {
@@ -1514,24 +1514,24 @@ impl Host {
         }
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         self.pane_mut().set_process(process)
     }
     /// Starts real programs from now on, told `socket`, or none.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn starts(&mut self, socket: Option<PathBuf>) {
         self.socket = socket;
     }
     /// The program a respawn under way started, and its fresh pane's
     /// history budget.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn replacement(&self) -> Option<(Option<&Child>, usize)> {
         let r = self.respawning.as_ref()?;
         Some((r.process.child(), r.fresh.history_bytes()))
     }
     /// The program a respawn under way respawns over is `old`.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn respawned_over(&mut self, old: Child) {
         if let Some(r) = &mut self.respawning {
             r.old = Some(old);
@@ -1539,7 +1539,7 @@ impl Host {
     }
     /// A respawn under way over `old`, into `fresh`, its grace over: as
     /// one over a program that ignores the hangup.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn respawning_over(&mut self, fresh: Pane, old: Child, now: Instant) {
         if let Process::Reading(child) = self.set_process(Process::Respawning) {
             self.dying.push(Dying {
@@ -1559,7 +1559,7 @@ impl Host {
         });
     }
     /// The programs it started and has not reaped.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn children(&self) -> Vec<Pid> {
         (self.pane.process().child().into_iter())
             .chain(
@@ -2097,7 +2097,7 @@ fn read_program(host: &mut Host, buffer: &mut [u8], clock: &mut Clock, now: Inst
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     type TestResult = Result<(), Box<dyn std::error::Error>>;

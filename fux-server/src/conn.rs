@@ -1185,7 +1185,7 @@ fn write(client: &Stream, out: &mut ByteQueue) -> bool {
     true
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::{Composer, Screen};
     use fux_vt::bytes::ByteQueue;

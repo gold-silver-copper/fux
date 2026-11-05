@@ -868,7 +868,7 @@ fn painted(a: &Attributes) -> bool {
     highlighted(a) || a.underline() || a.strikeout()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use crate::pane::tests::pane;
     use fux_wire::command::CaptureView;

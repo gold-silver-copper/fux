@@ -5,6 +5,8 @@
 //! The peer check (README, "Security": only the server's own user may
 //! connect) needs a second user, so it is verified by hand: `sudo -u
 //! nobody fux ls` against a running server is refused.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use fuxix::process::Signal;
 use std::path::{Path, PathBuf};

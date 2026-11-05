@@ -211,7 +211,7 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Pane
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use fux_wire::command::{Counts, Version};
     use fux_wire::id::PaneId;

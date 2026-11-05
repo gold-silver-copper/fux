@@ -22,14 +22,16 @@ pub mod screens;
 pub mod script;
 
 use fux_server::{server, socket};
-use fux_wire::{code, command, json::Json, protocol};
+use fux_wire::{code, command};
+#[cfg(unix)]
+use fux_wire::{json::Json, protocol};
 use std::io::Write;
 use std::process::ExitCode;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod testing {
     /// A code value of `words`, split at spaces, as `code … end` around
     /// them reads them: for tests, as no word turns text into code.

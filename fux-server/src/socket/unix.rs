@@ -508,7 +508,7 @@ pub fn taken_stdio() -> std::io::Result<(Stream, Stream)> {
     Ok((client.into(), server.into()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::super::{base_directory, checked};
     use super::*;

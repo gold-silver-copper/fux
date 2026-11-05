@@ -1,5 +1,7 @@
 //! The mouse: passed through to a program that asked for it, and to no
 //! other; fux has no mouse actions of its own.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use fux_server::render::MOUSE_OFF;
 use support::*;

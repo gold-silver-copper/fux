@@ -294,9 +294,9 @@ pub struct Session {
     changes: u64,
     /// In tests, each client's keys as its own client would read them
     /// (`Session::input`), and the keymap every client and run shares.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) test_keys: BTreeMap<ClientId, testing::Keys>,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) test_keymap: fux::client_state::Draft,
 }
 
@@ -400,9 +400,9 @@ impl Session {
             ids: Ids::default(),
             asked: 0,
             changes: 0,
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             test_keys: BTreeMap::new(),
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             test_keymap: fux::client_state::Draft::default(),
         }
     }
@@ -1661,7 +1661,7 @@ impl Session {
 
     /// A client attaches, viewing `workspace` or the first one (the tests'
     /// terminal client).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn attach(
         &mut self,
         rows: u16,
@@ -2425,7 +2425,7 @@ impl Session {
 
     /// Output from pane `id`'s program, as a pane held here reads it: for
     /// the tests and the tools.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn output(&mut self, id: PaneId, bytes: &[u8], now: Instant) {
         if let Some(Link::Local(host)) = self.links.get_mut(&id) {
             host.output(bytes, now);
@@ -2436,7 +2436,7 @@ impl Session {
 
     /// Pane `id`, held here, to change as the tests and the tools do; what
     /// it then tells is taken in.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn host_mut<T>(
         &mut self,
         id: PaneId,
@@ -2454,7 +2454,7 @@ impl Session {
 
     /// Each pane held here, changed with `change`, as the tools change them;
     /// what each then tells is taken in.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn each_host_mut(&mut self, mut change: impl FnMut(&mut crate::host::Host), now: Instant) {
         let ids: Vec<PaneId> = self.links.keys().copied().collect();
         for id in ids {
@@ -2463,7 +2463,7 @@ impl Session {
     }
 
     /// Pane `id`'s program, held here, ended so: as the tools end one.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
         self.host_mut(id, |host| host.exited(ended, now), now);
     }
@@ -3589,7 +3589,7 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
 
 /// A session itself, as what a program's requests go to, for the tests
 /// and the fuzz targets (`fux::script::testing::InProcess`).
-#[cfg(any(test, feature = "in-process"))]
+#[cfg(any(all(test, unix), feature = "in-process"))]
 impl Session {
     /// A program's request, answered in-process: begun at once, and a wait
     /// answered at its limit, there being no programs to wait on, once what
@@ -3656,7 +3656,7 @@ impl Session {
 
 /// What the other modules' tests share: a session, a client attached,
 /// and a command line run in it.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) mod testing {
     pub(crate) type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -4153,7 +4153,7 @@ pub(crate) mod testing {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use crate::session::testing::TestResult;
     /// `rows` by `cols`.
@@ -9369,7 +9369,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod journal_tests {
     use super::*;
     use crate::journal::Reader;

@@ -5,6 +5,8 @@
 //! program's end too) or the pane closes; `send-keys` and `send-mouse` send what a
 //! person would, sizes are set, and a headless client stands in for a
 //! terminal.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use std::time::{Duration, Instant};
 use support::*;

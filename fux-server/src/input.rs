@@ -262,7 +262,7 @@ impl Session {
 /// The client and the server together: bytes typed at a client's terminal
 /// go through its screens and keymap (`Session::input`), as its client
 /// takes them, and what it sends is what the server applies.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use crate::session::Session;
     use crate::session::testing::{output, output_as, run};

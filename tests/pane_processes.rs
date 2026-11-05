@@ -1,6 +1,8 @@
 //! Each pane in a process of its own, and each client connection (D-120,
 //! D-123), and a run that outlives a crashed server (D-124): what one
 //! process's end does to the rest.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use fuxix::process::Signal;
 use std::path::PathBuf;
