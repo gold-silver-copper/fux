@@ -372,6 +372,7 @@ jobs:
       # in the log: a flood both ways with signals, no lost wake-up, an idle
       # loop's CPU, a 1 ms timeout's lateness, a child's exit as Chld.
       - name: fuxix event loop probes
+        if: ${{ !cancelled() }}
         timeout-minutes: 5
         run: |
           set -euo pipefail
@@ -384,6 +385,7 @@ jobs:
       # running (only logged: an OpenConsole of the last test may still be
       # exiting).
       - name: fuxix ConPTY
+        if: ${{ !cancelled() }}
         timeout-minutes: 4
         run: |
           set -euo pipefail
@@ -396,6 +398,7 @@ jobs:
       # standard second user refused. That user is
       # made here, with a masked password only this step sees.
       - name: fuxix named pipes
+        if: ${{ !cancelled() }}
         timeout-minutes: 5
         shell: pwsh
         run: |

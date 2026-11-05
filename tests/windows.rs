@@ -400,15 +400,11 @@ fn a_new_server_takes_the_run_back_and_drives_its_live_panes() -> Outcome {
             target: Some(AnyRef::Pane(pane)),
         };
         ask(&socket, Request::Do(kill(beat)), ASK)?;
-        let of_beat = format!("{beat} ");
-        journaled(&socket, Duration::from_secs(20), |j| {
-            j.lines()
-                .any(|line| line.starts_with(&of_beat) && line.contains("closed"))
-        })?;
-        // The last pane closed, the server ends: it may not answer.
+        closed(&socket, beat)?;
+        // The last pane closed, the server may end: it may not answer.
         let _ = ask(&socket, Request::Do(kill(shell)), ASK);
-        gone(&socket)?;
-        say("closed both panes, and the server ended with the last");
+        closed(&socket, shell)?;
+        say("closed both panes");
         Ok(())
     })();
     let log = second.log();
@@ -509,11 +505,25 @@ fn signals_reach_what_d136_says() -> Outcome {
     stopped
 }
 
-/// The journal's events so far, a line each: its pane, then its JSON.
-fn journal(socket: &Path) -> Result<String, String> {
+/// Where the journal is now, as a snapshot says.
+fn cursor(socket: &Path) -> Result<fux_wire::events::Cursor, String> {
+    let inspect = Command::Inspect {
+        scope: fux_wire::inspect::Scope::All,
+        projection: fux_wire::inspect::Projection::Recipe,
+    };
+    match ask(socket, Request::Do(inspect), ASK)?.response {
+        Response::Returned(Body::Snapshot(snapshot)) => Ok(snapshot.cursor),
+        other @ (Response::Answered(_) | Response::Returned(_) | Response::Failed { .. }) => {
+            Err(format!("inspect answered {other:?}"))
+        }
+    }
+}
+
+/// The journal's events since `from`, a line each: its pane, then its JSON.
+fn journal(socket: &Path, from: fux_wire::events::Cursor) -> Result<String, String> {
     let request = Request::NextEvents {
         scope: fux_wire::inspect::Scope::All,
-        from: None,
+        from: Some(from),
         timeout: fux_wire::command::Limit::from_secs(0),
     };
     match ask(socket, request, ASK)?.response {
@@ -530,15 +540,16 @@ fn journal(socket: &Path) -> Result<String, String> {
     }
 }
 
-/// Waits till the journal holds what `holds` accepts.
+/// Waits till the journal since `from` holds what `holds` accepts.
 fn journaled(
     socket: &Path,
+    from: fux_wire::events::Cursor,
     wait: Duration,
     holds: impl Fn(&str) -> bool,
 ) -> Result<String, String> {
     let deadline = after(wait)?;
     loop {
-        let now = journal(socket)?;
+        let now = journal(socket, from)?;
         if holds(&now) {
             return Ok(now);
         }
@@ -547,6 +558,19 @@ fn journaled(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Waits till pane `pane` is gone: a capture of it is refused, or no
+/// server is left to ask.
+fn closed(socket: &Path, pane: PaneId) -> Outcome {
+    let deadline = after(Duration::from_secs(20))?;
+    while screen(socket, pane).is_ok() {
+        if Instant::now() > deadline {
+            return Err(format!("{pane} still shows 20 s after it was closed"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
 }
 
 /// A pane's own process killed outright (a crash): the server, holding a
@@ -573,6 +597,7 @@ fn a_crashed_panes_program_is_ended_and_its_end_told() -> Outcome {
         if pid.as_raw() == served.child.id() {
             return Err("the pipe names the server, not the pane's process".to_owned());
         }
+        let from = cursor(&socket)?;
         let killed = Std::new("taskkill.exe")
             .args(["/F", "/PID", &pid.to_string()])
             .stdout(Stdio::null())
@@ -590,7 +615,9 @@ fn a_crashed_panes_program_is_ended_and_its_end_told() -> Outcome {
         let exited = |line: &str| {
             line.contains("exited") && codes.iter().any(|code| line.contains(&code.to_string()))
         };
-        let told = journaled(&socket, Duration::from_secs(20), |j| j.lines().any(exited))?;
+        let told = journaled(&socket, from, Duration::from_secs(20), |j| {
+            j.lines().any(exited)
+        })?;
         let line = told.lines().find(|line| exited(line)).unwrap_or_default();
         say(&format!("its program's real end was told: {line}"));
         Ok(())

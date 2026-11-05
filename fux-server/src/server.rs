@@ -907,6 +907,9 @@ impl Server {
                     let _ = fuxix::process::kill(orphan.pid, fuxix::process::Signal::Kill);
                     orphan.deadline = after(now, STOP_WAIT);
                 }
+                // One that ended already told it before it was an orphan: no
+                // more news comes of it, so it is looked for here.
+                self.reap(now);
             }
             Wake::Listen => {
                 if let Phase::Serving { resting, .. } = &mut self.phase {
