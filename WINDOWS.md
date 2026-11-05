@@ -142,6 +142,45 @@ programs built on the libraries (below) are the acceptance test for the whole po
   ticks in 2 s (`GetProcessTimes` counts in ~15.6 ms ticks); 4 MiB + 1 MiB both ways through one
   pipe with 500 signals, exact; 2000 raises from 4 threads, each seen; a child's 1 MiB and its `Chld`.
 
+## What PR 7 builds on (found in PR 5)
+- `fuxix::socket` is one module on both OSes. Its `Peer { user, pid }` and `User` are shared names:
+  a uid on Unix, a SID plus "token elevated" on Windows (D-137: elevation, not the integrity level,
+  as that is the fact D-137 names; a low-integrity process of the user should already be kept out by
+  the default no-write-up label, not tested). "Is this my user?" is `peer.user.is_current()`, and fux-server's
+  refusal is `socket::stranger(fuxix::socket::peer(&connection))` on both, written once.
+- The pipe name is `socket::name(base)`: `\\.\pipe\<base>-<SID>[-elevated]`. PR 7 picks `base`
+  (from the socket path's name, say) and keeps the run record and lock beside it; takeover is PR 7's.
+- `socket::Listener::bind` fails with `Errno::ADDRINUSE` when any process holds the name (another
+  server or a squatter): the server then reads the run record, as Unix reads its socket.
+- `Listener::accept` gives a `Connection` (to serve: `Connection::stream`; for `fux __conn taken`:
+  `OwnedHandle::from` then `Stdio::from`); `Listener::spare` gives the waiting `Spare` for
+  `fux __conn` (`OwnedHandle::try_from`). In the child, `Spare::try_from(handle)` or
+  `Connection::from(handle)`; both bind to the child's own port only when made a stream. Pass the
+  handle as a stdio the child's runtime doesn't write (Rust's test harness prints to stdout; fux's
+  `__conn` already moves its stdout aside, `conn::wait`).
+- Every instance takes a client: while a spare waits, the listener's own next instance can take one
+  too. On Unix the server stops accepting while a spare waits (`FromConn::Waiting`); on Windows it
+  must keep polling its listener and hand such a client to a `__conn taken`.
+- `socket::connect` checks the server's user before returning, and fails with `Errno::ACCES` (the
+  descriptor refused it, or the server is another user or elevation) or `Errno::AGAIN` (every
+  instance busy). A connection's server pid is the instance's maker, so a client still reads the
+  server's pid after a handoff, as on Unix.
+- Not tested on CI: an elevated and a normal process of the same user (the runner's account has no
+  split token); the check is the same comparison the second-user test exercises.
+- A handed instance goes through std's `Stdio::from`: std (1.95, `sys/process/windows.rs`) makes the
+  inheritable copy only under its spawn lock, so no other std spawn inherits it. It does not pass a
+  handle list (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`), so the child also inherits any other handle
+  made inheritable; fuxix makes none. PR 6's own spawn should add that list (below).
+- For PR 6, from portable-pty 0.9 (`win/psuedocon.rs`, `win/procthreadattr.rs`): spawn with
+  `CreateProcessW(…, bInheritHandles = FALSE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT)`,
+  an attribute list holding `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` (the `HPCON` value itself as
+  `lpValue`), and `STARTF_USESTDHANDLES` with all three stdio `INVALID_HANDLE_VALUE`, so the program
+  never inherits the server's own redirected stdio; close `hThread` at once. Not to copy: its
+  `Vec::with_capacity` + `set_len` for the list (uninitialised bytes; use `vec![0; n]`), and its
+  first `InitializeProcThreadAttributeList` call's result going unchecked (it must fail with
+  `ERROR_INSUFFICIENT_BUFFER`). If a ConPTY child must also inherit a handle (a `__conn` instance),
+  use `bInheritHandles = TRUE` with a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of exactly that handle.
+
 ## Rules the spikes found (each cost a failed run)
 - **ConPTY**
   - Load `conpty.dll` only from fux's own data folder, never through the search path.

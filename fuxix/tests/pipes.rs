@@ -40,7 +40,8 @@ fn unique(what: &str) -> Result<String, String> {
     name(&format!("fuxix-test-{what}-{}", std::process::id())).map_err(text)
 }
 
-/// Waits until `source` is ready to read, or fails at `deadline`.
+/// Waits until `source` has something to say (to read, its end, or an
+/// error the next call gives), or fails at `deadline`.
 fn ready(source: &impl Source, deadline: Instant) -> Outcome {
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -49,10 +50,6 @@ fn ready(source: &impl Source, deadline: Instant) -> Outcome {
         }
         let mut fds = [PollFd::new(source, Events::IN)];
         if poll(&mut fds, Some(left)).map_err(text)? > 0 {
-            let [fd] = fds;
-            if fd.revents().intersects(Events::ERR | Events::HUP) {
-                return Err(format!("told {:?}", fd.revents()));
-            }
             return Ok(());
         }
     }
@@ -193,18 +190,22 @@ fn a_name_taken_first_is_told_apart() -> Outcome {
     let mut command = child("squatter_holds_a_name", SQUAT, &name)?;
     command.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut squatter = Child(command.spawn().map_err(text)?);
-    let out = squatter.0.stdout.take().ok_or("its stdout")?;
-    let held = std::io::BufReader::new(out)
-        .lines()
-        .map_while(Result::ok)
-        .any(|line| line == "held");
-    assert!(held, "the squatter never held the name");
+    // Kept open till it exits: its test harness still writes there.
+    let mut out = std::io::BufReader::new(squatter.0.stdout.take().ok_or("its stdout")?);
+    let mut said = String::new();
+    while said.trim() != "held" {
+        said.clear();
+        if out.read_line(&mut said).map_err(text)? == 0 {
+            return Err("the squatter never held the name".into());
+        }
+    }
     let bound = Listener::bind(&name).map(drop);
     assert_eq!(bound, Err(Errno::ADDRINUSE));
     say(&format!("PIPES squat bind={bound:?}"));
     drop(squatter.0.stdin.take());
     // Once it is gone, the name is free again.
     let status = squatter.0.wait().map_err(text)?;
+    drop(out);
     assert!(status.success(), "{status:?}");
     Listener::bind(&name).map_err(text)?;
     Ok(())
