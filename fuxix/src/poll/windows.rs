@@ -9,11 +9,14 @@
 //! signal raised and every timer that fires queues a packet on the port,
 //! and [`poll()`] waits for packets until one of its sources is ready.
 //!
-//! Waits Windows can't put on a port themselves (a child's end, the
-//! timer) are thread-pool waits (`RegisterWaitForSingleObject`) whose
-//! callback only posts a packet. A timeout is a high-resolution waitable
-//! timer: the port's own millisecond timeout ends a 1 ms wait 13 to 15 ms
-//! late.
+//! A child's end, which Windows can't put on a port itself, is a
+//! thread-pool wait (`RegisterWaitForSingleObject`) whose callback only
+//! posts a packet. A timeout is a high-resolution waitable timer, waited on
+//! by a thread of its own at time-critical priority that posts a packet as
+//! it fires: the port's own millisecond timeout ends a 1 ms wait 13 to 15
+//! ms late, and a thread-pool wait on the timer was up to 3.7 ms late on
+//! CI (windows-11-arm). The port's own timeout stays behind the timer, so
+//! a timed wait ends, late, should the timer's thread ever stop.
 //!
 //! **One thread polls at a time.** A packet one poller takes may be what
 //! another waits for, so a second thread's poll while one waits fails
@@ -25,14 +28,15 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::IO::{
     CreateIoCompletionPort, GetQueuedCompletionStatusEx, OVERLAPPED_ENTRY,
     PostQueuedCompletionStatus,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CancelWaitableTimer, CreateWaitableTimerExW, INFINITE,
-    RegisterWaitForSingleObject, SetWaitableTimer, TIMER_ALL_ACCESS, WT_EXECUTEINWAITTHREAD,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CancelWaitableTimer, CreateWaitableTimerExW,
+    GetCurrentThread, INFINITE, SetThreadPriority, SetWaitableTimer, THREAD_PRIORITY_TIME_CRITICAL,
+    TIMER_ALL_ACCESS, WaitForSingleObject,
 };
 
 /// What a source is waited for, or was found ready for.
@@ -188,12 +192,15 @@ pub fn poll(fds: &mut [PollFd<'_>], timeout: Option<Duration>) -> Result<usize> 
 fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> Result<usize> {
     let port = port()?;
     loop {
+        // What finished already, taken in without waiting: one batch, so
+        // that packets that keep coming can't keep a poll from looking.
+        take(port, 0)?;
+        // Armed after the take: a packet taken may have left a source with
+        // nothing in flight (a read of no bytes), which is started again
+        // here rather than told ready with nothing to read.
         for fd in fds.iter() {
             fd.source.arm(fd.events);
         }
-        // What finished already, taken in without waiting: one batch, so
-        // that packets that keep coming can't keep a poll from looking.
-        let taken = take(port, 0)?;
         let mut ready = 0usize;
         for fd in fds.iter_mut() {
             fd.revents = fd.source.ready(fd.events);
@@ -208,18 +215,16 @@ fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> 
         if left.is_some_and(|left| left.is_zero()) {
             return Ok(0);
         }
-        // A packet taken may have left a source with nothing in flight
-        // and nothing to tell (a read of no bytes): it is armed again,
-        // and looked at again, before any wait, which nothing else would
-        // end.
-        if taken > 0 {
-            continue;
-        }
+        let mut backstop = INFINITE;
         if let Some(left) = left {
             timer()?.set(left)?;
             *timed = true;
+            // Whole milliseconds, rounded up, and one more: the timer ends
+            // the wait first; this only if its thread has stopped.
+            let millis = left.as_millis().saturating_add(1);
+            backstop = u32::try_from(millis).unwrap_or(INFINITE).min(INFINITE - 1);
         }
-        take(port, INFINITE)?;
+        take(port, backstop)?;
     }
 }
 
@@ -287,8 +292,8 @@ pub(crate) fn wake() -> Result<()> {
 }
 
 /// Takes the packets queued, up to [`PACKETS`], waiting at most `millis`
-/// for the first: how many.
-fn take(port: HANDLE, millis: u32) -> Result<usize> {
+/// for the first.
+fn take(port: HANDLE, millis: u32) -> Result<()> {
     let mut entries = [OVERLAPPED_ENTRY::default(); PACKETS];
     let mut taken = 0u32;
     let room = u32::try_from(entries.len()).unwrap_or(0);
@@ -300,7 +305,7 @@ fn take(port: HANDLE, millis: u32) -> Result<usize> {
     if done == 0 {
         let errno = Errno::last();
         return match errno == Errno::from_code(WAIT_TIMEOUT) {
-            true => Ok(0),
+            true => Ok(()),
             false => Err(errno),
         };
     }
@@ -310,7 +315,7 @@ fn take(port: HANDLE, millis: u32) -> Result<usize> {
             crate::io::finished(entry);
         }
     }
-    Ok(taken)
+    Ok(())
 }
 
 /// The timer a poll's timeout is waited out with: high-resolution, and
@@ -338,35 +343,37 @@ fn timer() -> Result<&'static Timer> {
             // SAFETY: `raw` was just made, and nothing else owns it.
             let timer = unsafe { OwnedHandle::from_raw_handle(raw) };
             port()?;
-            let mut wait: HANDLE = std::ptr::null_mut();
-            // SAFETY: the timer is kept open for the process's life, as
-            // this wait is, so it is never unregistered; `fired` takes no
-            // context and only posts a packet, short enough to run in the
-            // wait thread itself.
-            let registered = unsafe {
-                RegisterWaitForSingleObject(
-                    &mut wait,
-                    timer.as_raw_handle(),
-                    Some(fired),
-                    std::ptr::null(),
-                    INFINITE,
-                    WT_EXECUTEINWAITTHREAD,
-                )
-            };
-            match registered {
-                0 => Err(Errno::last()),
-                _ => Ok(Timer(timer)),
-            }
+            let io =
+                |error: std::io::Error| Errno::from_io_error(&error).unwrap_or_else(Errno::last);
+            let ours = timer.try_clone().map_err(io)?;
+            std::thread::Builder::new()
+                .name("fuxix-timer".into())
+                .spawn(move || ring(&ours))
+                .map_err(io)?;
+            Ok(Timer(timer))
         })
         .as_ref()
         .map_err(|errno| *errno)
 }
 
-/// What the thread pool runs when the timer fires.
-unsafe extern "system" fn fired(_: *mut core::ffi::c_void, _: bool) {
-    // The port was made before the wait was registered; a post that
-    // fails has nobody to tell, and the poll then waits on.
-    let _ = wake();
+/// The timer's thread: a wake each time `timer` fires, at a priority the
+/// scheduler runs at once. Should a wait on it fail, it ends, and a timed
+/// wait ends on the port's own timeout, late but never early.
+fn ring(timer: &OwnedHandle) {
+    // SAFETY: GetCurrentThread takes nothing and gives a pseudo handle.
+    let this = unsafe { GetCurrentThread() };
+    // SAFETY: the pseudo handle is this thread's; it touches no memory.
+    // Should it refuse, the thread runs at normal priority.
+    unsafe { SetThreadPriority(this, THREAD_PRIORITY_TIME_CRITICAL) };
+    loop {
+        // SAFETY: the timer is open, this thread's own copy.
+        if unsafe { WaitForSingleObject(timer.as_raw_handle(), INFINITE) } != WAIT_OBJECT_0 {
+            return;
+        }
+        // A post that fails has nobody to tell: the poll's own timeout
+        // ends its wait.
+        let _ = wake();
+    }
 }
 
 impl Timer {

@@ -185,14 +185,17 @@ impl Op {
     /// leaves its bytes there; one that fails at once, its error. One that
     /// finishes at once with nothing (a writer wrote nothing) queues no
     /// packet, so it is started again, up to [`EMPTY_READS`] times: past
-    /// that, nothing is in flight, and the stream is told readable
-    /// (`Sealed::ready`) so that its poll looks again rather than sleeps.
+    /// that, nothing is in flight, and the poll is woken so that it checks
+    /// its timeout and arms it again rather than sleeps; it is not told
+    /// readable, as it has nothing to read (D-6).
     fn read(self: &Arc<Self>, handle: &OwnedHandle, state: &mut State) {
         for _ in 0..EMPTY_READS {
             if !self.read_once(handle, state) {
                 return;
             }
         }
+        // A wake that can't be posted has a broken port: the poll fails.
+        let _ = crate::poll::wake();
     }
 
     /// One read call: whether it finished at once with nothing and no
@@ -302,9 +305,10 @@ impl Stream {
     /// Binds `handle`, opened overlapped, to the process's port.
     pub(crate) fn new(handle: OwnedHandle) -> Result<Stream> {
         let raw = handle.as_raw_handle();
+        let port = crate::poll::port()?;
         // SAFETY: binds an open handle to the open port, for good; the key
         // tells its packets.
-        if unsafe { CreateIoCompletionPort(raw, crate::poll::port()?, KEY_IO, 0) }.is_null() {
+        if unsafe { CreateIoCompletionPort(raw, port, KEY_IO, 0) }.is_null() {
             return Err(Errno::last());
         }
         let skip = u8::try_from(FILE_SKIP_COMPLETION_PORT_ON_SUCCESS).unwrap_or(0);
@@ -334,11 +338,7 @@ impl Sealed for Stream {
         let mut ready = Events::NONE;
         let read = lock(&self.read);
         let buffered = read.start < read.end;
-        // Armed, nothing in flight, nothing read and nothing wrong: only
-        // reads of nothing, given up on (`Op::read`); a read takes it
-        // from there, `AGAIN` if it is nothing still.
-        let empty = !read.pending && !buffered && read.failed.is_none();
-        if interest.intersects(Events::IN) && (buffered || read.failed.is_some() || empty) {
+        if interest.intersects(Events::IN) && (buffered || read.failed.is_some()) {
             ready |= Events::IN;
         }
         match read.failed {
@@ -362,6 +362,13 @@ impl Sealed for Stream {
 }
 
 impl Source for Stream {}
+
+/// Its handle, to ask the system about it ([`crate::socket::peer`]).
+impl std::os::windows::io::AsHandle for Stream {
+    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        std::os::windows::io::AsHandle::as_handle(&*self.handle)
+    }
+}
 
 impl Drop for Stream {
     fn drop(&mut self) {

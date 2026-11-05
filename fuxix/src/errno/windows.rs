@@ -10,6 +10,16 @@ impl Errno {
     /// Nothing to read yet, or no room to write: try again once a poll
     /// says it is ready.
     pub const AGAIN: Self = Self(WOULD_BLOCK);
+    /// A pipe name some process holds already (`WSAEADDRINUSE`, the code
+    /// std reads as `AddrInUse`): `socket::Listener::bind` never joins it.
+    pub const ADDRINUSE: Self = Self(10048);
+    /// Access refused (`ERROR_ACCESS_DENIED`): a pipe whose server is not
+    /// this process's user, or whose descriptor keeps this user out.
+    pub const ACCES: Self = Self::from_code(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED);
+    /// An argument refused (`ERROR_INVALID_PARAMETER`): a pipe name with
+    /// a NUL in it.
+    pub const INVAL: Self =
+        Self::from_code(windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER);
     /// The resource is busy: another thread is polling (one at a time).
     pub(crate) const BUSY: Self = Self(windows_sys::Win32::Foundation::ERROR_BUSY.cast_signed());
 

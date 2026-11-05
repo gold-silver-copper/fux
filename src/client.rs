@@ -195,10 +195,10 @@ fn open(socket: &SocketPath) -> Result<(UnixStream, Option<fuxix::process::Pid>)
     // Its server is this user's, whoever made the path's directories.
     let euid = fuxix::process::geteuid();
     match fuxix::socket::peer(&stream) {
-        Ok(peer) if peer.uid == euid => Ok((stream, peer.pid)),
+        Ok(peer) if peer.user.is_current() => Ok((stream, peer.pid)),
         Ok(peer) => Err(io::Error::other(format!(
-            "its server runs as uid {}, not this user's ({euid})",
-            peer.uid
+            "its server runs as {}, not this user's ({euid})",
+            peer.user
         ))),
         Err(errno) => Err(errno.into()),
     }

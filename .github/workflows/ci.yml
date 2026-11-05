@@ -332,7 +332,7 @@ jobs:
           packages=(-p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth -p fuxix -p fux-wire)
           cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
           cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings
-          cargo test "${packages[@]}" --locked
+          cargo test "${packages[@]}" --locked -- --skip another_user_is_refused
 
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured
       # in the log: a flood both ways with signals, no lost wake-up, an idle
@@ -342,6 +342,30 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p fuxix --test windows --locked -- --nocapture
+
+      # Named pipes (WINDOWS.md, PR 5), with what each found in the log:
+      # the same user both ways, a name taken first, a child taking its
+      # client on a spare, and a standard second user refused. That user is
+      # made here, with a masked password only this step sees.
+      - name: fuxix named pipes
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $pw = 'Fx!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
+          "::add-mask::$pw"
+          # 13 characters: from 15 on, net user asks a question no one answers.
+          net user fuxixother $pw /add | Out-Null
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Set-Service seclogon -StartupType Manual
+          Start-Service seclogon
+          $dir = 'C:\fuxix-other'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          icacls $dir /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null
+          $env:FUXIX_OTHER_USER = 'fuxixother'
+          $env:FUXIX_OTHER_PASSWORD = $pw
+          $env:FUXIX_OTHER_DIR = $dir
+          cargo test -p fuxix --test pipes --locked -- --nocapture --test-threads 1
+          exit $LASTEXITCODE
 
   # The agent benchmark's scripted tier for fux: every task, once, with fux
   # and python3 alone (no tmux, zellij, herdr or claude). A task fux used to

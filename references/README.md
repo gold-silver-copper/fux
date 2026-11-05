@@ -1,8 +1,9 @@
 # References
 
-The specifications fux-vt is checked against. Only this index, `fetch.sh`
-and `.gitignore` are committed: the documents are free to download but not
-obviously free to redistribute, so fetch them (about 170 MB):
+The specifications fux-vt is checked against, and the source of the crates
+read for the Windows port. Only this index, `fetch.sh` and `.gitignore` are
+committed: the documents are free to download but not
+obviously free to redistribute, so fetch them (about 225 MB):
 
 ```sh
 references/fetch.sh            # fetches what is missing
@@ -88,6 +89,23 @@ A fux-vt test cites the section that sets its expected value.
 | `osc8_hyperlinks.md` | hyperlinks, OSC 8 |
 | `osc133_iterm2_escape_codes.html` | iTerm2's escape codes; "Shell Integration/FinalTerm" has OSC 133 `A`–`D` |
 | `osc133_semantic_prompts.md` | Per Bothner's semantic prompts proposal, extending OSC 133 (`L`, `N`, `P`, `I`, options) |
+
+### `windows/`: source read for the Windows port (WINDOWS.md)
+
+Each crate as crates.io published it, pinned by its SHA-256 there: references to read and compare
+against, never dependencies.
+
+| Crate | Read for | Files |
+| --- | --- | --- |
+| `portable-pty-0.9.0` (wezterm) | ConPTY: the pseudo console, the attribute list, spawning, command-line quoting, loading `conpty.dll`; handing handles to a child | `src/win/{procthreadattr,psuedocon,conpty,mod}.rs`, `src/cmdbuilder.rs` |
+| `filedescriptor-0.8.3` (wezterm) | handle ownership, pipes | `src/windows.rs` |
+| `tokio-1.54.1` | named pipes: server and client options, first instance, remote clients, busy pipes | `src/net/windows/named_pipe.rs` |
+| `interprocess-2.4.7` | named pipes with security descriptors, pipe ownership | `src/os/windows/` |
+| `mio-1.2.4` | the event loop: a completion port, overlapped named pipes, buffers the kernel owns | `src/sys/windows/{named_pipe,iocp,selector}.rs` |
+| `miow-0.6.1` | completion ports, overlapped calls, named pipes | `src/{iocp,overlapped,pipe}.rs` |
+| `alacritty_terminal-0.26.0` | ConPTY: closing and draining, the child's exit | `src/tty/windows/` |
+| `crossterm-0.29.0` | the console: VT input, resize events, restoring modes | `src/terminal/sys/windows.rs`, `src/event/sys/windows/` |
+| `uds_windows-1.2.1` | AF_UNIX on Windows, for contrast (fux uses named pipes, D-138) | `src/` |
 
 ## Which source settles what
 

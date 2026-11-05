@@ -4,8 +4,9 @@ The system calls [fux](https://github.com/gold-silver-copper/fux) makes on
 Linux, Android and macOS, over `libc`, each behind a safe function. It
 holds only what fux's own crates call, and the one clock fux-bench times
 with. On Windows it has the types every OS shares (`Pid`, `Signal`'s
-names, `Status`, `Errno`, `Allocation`) and the event loop (`poll`,
-`signal::Pipe`, `io`'s reads and writes; below), over `windows-sys`; the
+names, `Status`, `Errno`, `Allocation`), the event loop (`poll`,
+`signal::Pipe`, `io`'s reads and writes) and `socket`'s named pipes (both
+below), over `windows-sys`; the
 other modules are Unix only for now. Each OS's code sits in its own file
 (`poll/unix.rs`, `poll/windows.rs`, and so on). On any other platform it
 does not build.
@@ -82,6 +83,48 @@ finished:
   a 1 ms wait 13 to 15 ms late.
 - One thread polls at a time: another thread's poll meanwhile fails with
   `ERROR_BUSY`, rather than take the packet the first waits for.
+
+## Named pipes on Windows
+
+`socket` is where a server's clients connect, and who is at the other end.
+On both OSes a connection's `socket::peer` is a `Peer`: its `User`, which
+says whether it is this process's own (`User::is_current`), and its
+process ID where the system says it. On Unix a `User` is an effective
+user ID ("uid 1000"); on Windows it is a SID and whether the process's
+token is elevated ("S-1-5-21-…-1001 (elevated)"), so an elevated and a
+normal process of one account are two users, and refuse each other.
+
+On Windows the transport is one named pipe instance per connection:
+
+- `socket::name(base)` is `\\.\pipe\<base>-<SID>`, with `-elevated` after
+  it for an elevated process: each user, elevated or not, has its own.
+- `Listener::bind` makes the pipe's first instance with
+  `FILE_FLAG_FIRST_PIPE_INSTANCE`, `PIPE_REJECT_REMOTE_CLIENTS` and an
+  explicit owner-only descriptor, `D:P(A;;GA;;;<user SID>)` (the default
+  one lets any user open a pipe to read). A name any process holds
+  already fails with `Errno::ADDRINUSE`, never joining it.
+- A `Listener` keeps one instance waiting, a `Spare`, a `poll::Source`
+  ready to read once a client connected: an overlapped
+  `ConnectNamedPipe` signals an event that a thread-pool wait turns into a
+  packet. `accept` gives a `Connection` and `spare` gives the waiting
+  `Spare`, each only once the next instance is made, so the name is never
+  free while the listener lives.
+- A `Spare` or a `Connection` is bound to no completion port until it is
+  made a `Stream` (`Connection::stream`), so it can be handed to a child
+  as a plain handle (`OwnedHandle::try_from`, `OwnedHandle::from`, then
+  std's `Stdio::from`, which makes it inheritable only in the copy for
+  that child's spawn). The child makes it a `Spare` or `Connection` again
+  and binds it to its own port.
+- `socket::peer` reads the pipe's client pid on a server's end and its
+  server pid on a client's (`GetNamedPipeClientProcessId`,
+  `GetNamedPipeServerProcessId`), then that process's token (`TokenUser`,
+  `TokenElevation`). A process that can't be read is an error, a refusal.
+  The server pid is the process that made the instance: a client of a
+  child given a spare still reads the server's.
+- `socket::connect` opens the pipe (identification only: the server can't
+  act as the client), and refuses with `Errno::ACCES` a server that is not
+  this process's user, before anything is sent. Every instance taken is
+  `Errno::AGAIN`.
 
 ## Functions
 

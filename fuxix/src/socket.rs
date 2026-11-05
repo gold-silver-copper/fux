@@ -1,200 +1,22 @@
-//! Unix stream sockets: made one step at a time, because fux sets a
-//! socket's mode between binding it and listening on it, which std's
-//! `UnixListener::bind` does in one.
-use crate::errno::{Errno, Result, check, fit};
-use std::mem::zeroed;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+//! Where a server's clients connect, and who is at the other end. On Unix,
+//! stream sockets, made one step at a time (`unix.rs`); on Windows, named
+//! pipes that only their user's processes may open, one instance per
+//! connection, waited on with [`crate::poll`] (`windows.rs`). On both, a
+//! connection's [`peer`] is a [`Peer`]: its [`User`], which says whether
+//! it is this process's own ([`User::is_current`]), and its process.
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+pub use unix::*;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::*;
 
-/// A new Unix stream socket, close-on-exec: atomically where the system
-/// allows, and on macOS, which has no flag for it, straight after.
-pub fn stream() -> Result<OwnedFd> {
-    #[cfg(not(target_os = "macos"))]
-    let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
-    #[cfg(target_os = "macos")]
-    let kind = libc::SOCK_STREAM;
-    // SAFETY: socket takes three numbers and touches no memory.
-    let raw = check(unsafe { libc::socket(libc::AF_UNIX, kind, 0) })?;
-    // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
-    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
-    #[cfg(target_os = "macos")]
-    crate::io::set_cloexec(&socket)?;
-    Ok(socket)
-}
-
-/// The longest path a socket address holds, in bytes: its `sun_path`, less
-/// the path's NUL (107 on Linux and Android, 103 on macOS).
-pub fn max_path_len() -> usize {
-    // SAFETY: an all-zero sockaddr_un is a valid, empty one.
-    let address: libc::sockaddr_un = unsafe { zeroed() };
-    address.sun_path.len().saturating_sub(1)
-}
-
-/// `path` as a socket address, and the address's length. A path with a
-/// NUL, or longer than [`max_path_len`], is refused.
-fn address(path: &Path) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.contains(&0) {
-        return Err(Errno::INVAL);
-    }
-    // SAFETY: an all-zero sockaddr_un is a valid, empty one.
-    let mut address: libc::sockaddr_un = unsafe { zeroed() };
-    if bytes.len() > max_path_len() {
-        return Err(Errno::NAMETOOLONG);
-    }
-    address.sun_family = fit(libc::AF_UNIX)?;
-    for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
-        *slot = libc::c_char::from_ne_bytes([*byte]);
-    }
-    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path)
-        .checked_add(bytes.len())
-        .and_then(|n| n.checked_add(1))
-        .ok_or(Errno::NAMETOOLONG)?;
-    #[cfg(target_os = "macos")]
-    {
-        address.sun_len = u8::try_from(length).map_err(|_| Errno::NAMETOOLONG)?;
-    }
-    let length = libc::socklen_t::try_from(length).map_err(|_| Errno::NAMETOOLONG)?;
-    Ok((address, length))
-}
-
-/// Binds `socket` to `path`, which must not exist.
-pub fn bind(socket: impl AsFd, path: &Path) -> Result<()> {
-    addressed(socket, path, libc::bind)
-}
-
-/// Starts listening on `socket`, with room for `backlog` connections
-/// waiting to be accepted.
-pub fn listen(socket: impl AsFd, backlog: i32) -> Result<()> {
-    // SAFETY: listen takes two numbers and touches no memory.
-    check(unsafe { libc::listen(socket.as_fd().as_raw_fd(), backlog) }).map(drop)
-}
-
-/// Connects `socket` to `path`. On a nonblocking socket a connection that
-/// cannot finish at once fails with `AGAIN` or `INPROGRESS`.
-pub fn connect(socket: impl AsFd, path: &Path) -> Result<()> {
-    addressed(socket, path, libc::connect)
-}
-
-/// Calls `call`, `bind` or `connect`, on `socket` with `path`'s address.
-fn addressed(
-    socket: impl AsFd,
-    path: &Path,
-    call: unsafe extern "C" fn(libc::c_int, *const libc::sockaddr, libc::socklen_t) -> libc::c_int,
-) -> Result<()> {
-    let (address, length) = address(path)?;
-    let address = std::ptr::from_ref(&address).cast();
-    // SAFETY: `call` is bind or connect, which reads `length` bytes at the
-    // pointer: a whole sockaddr_un, of which `length` bytes are the address.
-    check(unsafe { call(socket.as_fd().as_raw_fd(), address, length) }).map(drop)
-}
-
-/// The process at the other end of a connected Unix socket, as the kernel
-/// recorded it when it connected or listened: its effective user ID, and
-/// its ID where the system says it.
+/// The process at the other end of a connection, as the system recorded
+/// it: its user, and its ID where the system says it (macOS doesn't).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer {
-    pub uid: u32,
+    pub user: User,
     pub pid: Option<crate::process::Pid>,
-}
-
-/// The process at the other end of the connected Unix socket `socket`.
-#[cfg(not(target_os = "macos"))]
-pub fn peer(socket: impl AsFd) -> Result<Peer> {
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut length: libc::socklen_t = fit(size_of::<libc::ucred>())?;
-    // SAFETY: the pointers are to a whole ucred and its length, which the
-    // call fills and updates.
-    let got = unsafe {
-        libc::getsockopt(
-            socket.as_fd().as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::from_mut(&mut credentials).cast(),
-            &mut length,
-        )
-    };
-    check(got)?;
-    Ok(Peer {
-        uid: credentials.uid,
-        pid: crate::process::Pid::from_raw(credentials.pid),
-    })
-}
-
-/// The process at the other end of the connected Unix socket `socket`:
-/// its user alone, which is all `getpeereid` says.
-#[cfg(target_os = "macos")]
-pub fn peer(socket: impl AsFd) -> Result<Peer> {
-    let mut uid: libc::uid_t = 0;
-    let mut gid: libc::gid_t = 0;
-    // SAFETY: the descriptor is valid for the call's duration and both
-    // out-pointers point at initialised locals.
-    check(unsafe { libc::getpeereid(socket.as_fd().as_raw_fd(), &mut uid, &mut gid) })?;
-    Ok(Peer { uid, pid: None })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::net::{UnixListener, UnixStream};
-
-    fn scratch(name: &str) -> std::result::Result<std::path::PathBuf, String> {
-        let dir = crate::file::scratch().map_err(|e| e.to_string())?;
-        Ok(dir.join(format!("fuxix-{name}-{}", std::process::id())))
-    }
-
-    #[test]
-    fn a_socket_binds_listens_and_is_connected_to() -> std::result::Result<(), String> {
-        let dir = scratch("bind")?;
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join("s.sock");
-        let socket = stream().map_err(|e| e.to_string())?;
-        bind(&socket, &path).map_err(|e| e.to_string())?;
-        listen(&socket, 8).map_err(|e| e.to_string())?;
-        let listener = UnixListener::from(socket);
-        let client = stream().map_err(|e| e.to_string())?;
-        connect(&client, &path).map_err(|e| e.to_string())?;
-        let (served, _) = listener.accept().map_err(|e| e.to_string())?;
-        assert_eq!(peer(&served).map(|p| p.uid), Ok(crate::process::geteuid()));
-        let client = UnixStream::from(client);
-        // The listener is this process: where the system says a peer's
-        // process, it is this one.
-        let ours = crate::process::Pid::from_raw(std::process::id().cast_signed());
-        let expected = if cfg!(target_os = "macos") {
-            None
-        } else {
-            ours
-        };
-        assert_eq!(
-            peer(&client),
-            Ok(Peer {
-                uid: crate::process::geteuid(),
-                pid: expected
-            })
-        );
-        // Nowhere to connect: an error. (Not "the listener is dropped": on
-        // macOS the socket is made close-on-exec a step after it is made,
-        // and a child another test spawns in between keeps it listening.)
-        drop((listener, served));
-        let nowhere = stream().map_err(|e| e.to_string())?;
-        assert!(connect(&nowhere, &dir.join("none.sock")).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
-    }
-
-    #[test]
-    fn a_path_that_does_not_fit_is_refused() {
-        let long = Path::new("/tmp").join(std::iter::repeat_n('x', 200).collect::<String>());
-        assert_eq!(address(&long).map(|(_, n)| n), Err(Errno::NAMETOOLONG));
-        assert_eq!(
-            address(Path::new("/tmp/a\0b")).map(|(_, n)| n),
-            Err(Errno::INVAL)
-        );
-    }
 }
