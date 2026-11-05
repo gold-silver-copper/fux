@@ -183,6 +183,45 @@ for repo in zevv/zForth twolodzko/forth-rs howerj/libforth nornagon/jonesforth; 
   fi
 done
 
+# --- Windows: source of crates read for the Windows port ----------------------
+# Read-only references (WINDOWS.md; windows/README.md says what each is for),
+# never dependencies: each crate as crates.io published it, pinned by its
+# SHA-256 there.
+crate() {
+  local name=$1 version=$2 sum=$3 dir=$here/windows/$1-$2
+  if [[ -d $dir && $force != --force ]]; then
+    return
+  fi
+  get "windows/.crates/$name-$version.crate" "https://static.crates.io/crates/$name/$name-$version.crate" curl/8
+  local file=$here/windows/.crates/$name-$version.crate
+  if [[ ! -s $file ]]; then
+    return
+  fi
+  if [[ $(sha256 "$file") != "$sum" ]]; then
+    failed+=("windows/$name-$version: not the crate crates.io published (SHA-256)")
+    return
+  fi
+  rm -rf "$dir" && tar -xzf "$file" -C "$here/windows" && echo "unpacked windows/$name-$version"
+}
+crate portable-pty 0.9.0 \
+  b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e
+crate filedescriptor 0.8.3 \
+  e40758ed24c9b2eeb76c35fb0aebc66c626084edd827e07e1552279814c6682d
+crate tokio 1.54.1 \
+  b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3
+crate interprocess 2.4.7 \
+  a4a4fff6c51dece332bdbf3af5fe376c49cfc8dced782725e95be0bb489e35d7
+crate mio 1.2.4 \
+  1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee
+crate miow 0.6.1 \
+  536bfad37a309d62069485248eeaba1e8d9853aaf951caaeaed0585a95346f08
+crate alacritty_terminal 0.26.0 \
+  bda177466b9524d59f1b12f0dd30b68696788e9992a7e959021c4a0ed96fcf59
+crate crossterm 0.29.0 \
+  d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b
+crate uds_windows 1.2.1 \
+  f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e
+
 if (( ${#failed[@]} )); then
   printf 'could not fetch:\n' >&2
   printf '  %s\n' "${failed[@]}" >&2
