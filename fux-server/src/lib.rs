@@ -174,7 +174,7 @@ fn test_reference(value: &str) -> String {
 fn test_data(text: &str, query: &str) -> Result<String, String> {
     let mut g: grift::Grift = grift::Grift::new().map_err(|_| "initializing data reader")?;
     let forms = g
-        .read_named("observed data", text)
+        .read_in("observed data", text)
         .map_err(|_| format!("invalid data: {text}"))?;
     let forms = g.list_items(&forms).map_err(|_| "data forms")?;
     let [data] = forms.as_slice() else {

@@ -9594,7 +9594,7 @@ mod tests {
         let cwd = cwd.to_str().ok_or("cwd text")?;
         let mut reader: grift::Grift = grift::Grift::new().map_err(|_| "reader")?;
         let forms = reader
-            .read_named("session.grift", &dump)
+            .read_in("session.grift", &dump)
             .map_err(|_| "saved data")?;
         let form = reader
             .list_items(&forms)

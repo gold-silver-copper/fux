@@ -169,7 +169,7 @@ fn read_source(
         .files
         .read(&file)
         .map_err(|e| failure(g, Failure::new(Code::Require, e)))?;
-    let forms = match g.read_named(&name, &source) {
+    let forms = match g.read_in(&name, &source) {
         Ok(forms) => forms,
         Err(mut e) => {
             let location = match e.values.get(1) {

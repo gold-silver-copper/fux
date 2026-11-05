@@ -25,7 +25,7 @@ fn read() -> Result<Vec<Doc>, Failed> {
         ("sessions.grift", include_str!("sessions.grift")),
     ] {
         let forms = g
-            .read_named(file, text)
+            .read_in(file, text)
             .map_err(|_| Failed::new(Code::Parse, "reading bundled help definitions"))?;
         for form in g
             .list_items(&forms)
