@@ -1,11 +1,11 @@
 //! The keys, frozen definitions and checked preferences owned by one client.
 use crate::keymap::Keymap;
+use crate::script::Value;
 use crate::script::settings::{Reads, Unread};
 use crate::script::{Config, Fux};
 use fux_wire::command::{
     DecodeMillis, HistoryBytes, JournalEntries, PictureBytes, Program, ScrollLines,
 };
-use fuxth::Value;
 
 /// A complete client state. A program changes a draft and commits it whole.
 #[derive(Clone, Debug, PartialEq, Eq)]

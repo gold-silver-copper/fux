@@ -11,7 +11,7 @@ dependencies = [
  "fux-vt-peak",
  "fux-wire",
  "fuxix",
- "fuxth",
+ "grift",
 ]
 
 [[package]]
@@ -23,7 +23,6 @@ dependencies = [
  "fux-vt-peak",
  "fux-wire",
  "fuxix",
- "fuxth",
 ]
 
 [[package]]
@@ -45,7 +44,6 @@ version = "0.37.0"
 dependencies = [
  "fux-vt",
  "fuxix",
- "fuxth-core",
 ]
 
 [[package]]
@@ -56,25 +54,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuxth"
-version = "0.8.0"
-dependencies = [
- "fuxth-core",
-]
-
-[[package]]
-name = "fuxth-core"
-version = "0.8.0"
-
-[[package]]
-name = "fuxth-run"
-version = "0.1.0"
-dependencies = [
- "fux-vt",
- "fuxix",
- "fuxth",
- "libc",
-]
+name = "grift"
+version = "2.0.0"
 
 [[package]]
 name = "libc"

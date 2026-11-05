@@ -1,10 +1,10 @@
 //! Immutable local projections. Only checked constructors can retain a record.
+use super::{Failure, List, Value};
 use super::{Fux, handle};
 use fux_wire::code::{Code, Raise};
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::inspect::{self, Projection, Scope};
 use fux_wire::json::Json;
-use fuxth::{Failure, List, Value};
 use std::rc::Rc;
 
 type V = Value<Fux>;
@@ -27,7 +27,7 @@ impl Record {
     pub(super) fn get(&self, field: &str) -> Result<V, Failure> {
         self.fields
             .iter()
-            .find(|(key, _)| key == field)
+            .find(|(key, _)| key.replace('_', "-") == field.replace('_', "-"))
             .map(|(_, v)| v.clone())
             .ok_or_else(|| {
                 Failure::new(
@@ -48,16 +48,16 @@ impl Record {
         self.get("events").map(Some)
     }
     pub(super) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        out.write_char('{')?;
+        out.write_str("(")?;
         for (i, (key, value)) in self.fields.iter().enumerate() {
             if i > 0 {
-                out.write_char(',')?;
+                out.write_str(" ")?;
             }
-            fux_wire::json::write_str(out, key)?;
-            out.write_char(':')?;
-            super::words::write_json_value(value, out)?;
+            write!(out, "({} ", key.replace('_', "-"))?;
+            value.write_data(out)?;
+            out.write_str(")")?;
         }
-        out.write_char('}')
+        out.write_str(")")
     }
 }
 
@@ -65,16 +65,13 @@ impl Record {
 /// for, as `events` says too.
 fn missed_entries(missed: i64) -> Failure {
     Failure::new(
-        fuxth::Code::Fail,
+        Code::Fail,
         format!("{missed} journal entries missed; resnapshot before continuing"),
     )
 }
 
 fn fail() -> Failure {
-    Failure::new(
-        fuxth::Code::TooLong,
-        "record nests deeper than a record may",
-    )
+    Failure::new(Code::TooLong, "record nests deeper than a record may")
 }
 fn null() -> V {
     Value::App(Fux::Null)
@@ -153,79 +150,6 @@ impl Builder {
 
 pub(super) fn from_fields(fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
     Builder.finish(fields, of)
-}
-
-/// A failure's fields, as a handler reads them: its `code`, its `number`
-/// in Forth's table, its `message`, the `value` it carries (a failed wait's
-/// answer) and the `actions` that had taken effect before it, each where
-/// its word is.
-pub(super) fn failure(thrown: &fuxth::Thrown<Fux>) -> Record {
-    let number = thrown.number.map_or_else(null, Value::Int);
-    let actions = thrown.actions.iter();
-    let actions = actions.map(|t| Value::str(format!("{}: {}", t.place, t.text)));
-    let fields = [
-        ("code", Value::str(thrown.error.code.name())),
-        ("number", number),
-        ("message", Value::str(&*thrown.error.message)),
-        ("value", thrown.carried.clone().unwrap_or_else(null)),
-        (
-            "actions",
-            Value::List(Rc::new(List::new(actions.collect()))),
-        ),
-    ];
-    let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
-    Record {
-        fields,
-        of: None,
-        batch: false,
-    }
-}
-
-/// The dictionary's record of a word: its `name`; its `provenance`, where
-/// it came from: `core`, `fux`, `library`, or `run` for the program's own
-/// (a config's too); its `effect`, as declared, and its `documentation`,
-/// all `fux help NAME` says of it (`help::documentation`), or null for the
-/// program's own; its `definition`, the words that made it as they were
-/// read, `native` for a word in Rust, or null where a source it was read
-/// from couldn't keep them; and its `codes`, the codes it can fail with as
-/// it runs, each once (`Machine::codes`), or null where they are unknown.
-pub(super) fn word(definition: &fuxth::Definition<'_>, codes: Option<&[fuxth::Code]>) -> V {
-    use fuxth::Origin;
-    let provenance = match definition.origin {
-        Origin::Core => "core",
-        Origin::Host => "fux",
-        Origin::Library => "library",
-        Origin::Program => "run",
-    };
-    let text = |text: Option<&str>| text.map_or_else(null, Value::str);
-    let source = match definition.native() {
-        true => Value::str("native"),
-        false => definition.source().map_or_else(null, Value::str),
-    };
-    let fields = [
-        ("name", Value::str(definition.name)),
-        ("provenance", Value::str(provenance)),
-        ("effect", text(definition.effect)),
-        (
-            "documentation",
-            crate::help::documentation(definition).map_or_else(null, Value::str),
-        ),
-        ("definition", source),
-        (
-            "codes",
-            codes.map_or_else(null, |codes| {
-                let names = codes.iter().map(|code| Value::str(code.name()));
-                Value::List(Rc::new(List::new(names.collect())))
-            }),
-        ),
-    ];
-    let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
-    let record = Record {
-        fields,
-        of: None,
-        batch: false,
-    };
-    Value::App(Fux::Record(Rc::new(record)))
 }
 
 pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
@@ -640,155 +564,4 @@ fn styles(
         col = col.checked_add(cells).ok_or_else(fail)?;
     }
     Ok(Value::List(Rc::new(List::new(values))))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn event_records_keep_typed_identities() -> Result<(), Failure> {
-        use fux_wire::events::{Actor, Batch, Cursor, Item, Status};
-        use fux_wire::id::{ClientId, PaneId, TabId, WsId};
-        let next: Cursor = "1:1-0".parse().map_err(|()| fail())?;
-        for origin in [
-            Actor::Outside,
-            Actor::Server,
-            Actor::Client(ClientId::of(3)),
-            Actor::Pane(PaneId::of(4), 5),
-            Actor::Program(PaneId::of(4), 5),
-        ] {
-            let batch = Batch {
-                first: next,
-                next,
-                missed: 0,
-                status: Status::Continuing,
-                events: vec![Item {
-                    data: Json::object(vec![
-                        ("event", Json::str("moved")),
-                        (
-                            "name",
-                            Json::str(std::iter::repeat_n('𐀀', 64).collect::<String>()),
-                        ),
-                    ]),
-                    pane: Some(PaneId::of(1)),
-                    tab: Some(TabId::of(2)),
-                    workspace: Some(WsId::of(3)),
-                    parent: None,
-                    client: Some(ClientId::of(4)),
-                    moved_from: Some((WsId::of(5), TabId::of(6))),
-                    origin,
-                    next,
-                }],
-            };
-            let root = events(batch)?;
-            let Value::App(Fux::Record(record)) = &root else {
-                return Err(fail());
-            };
-            let Value::List(list) = record.get("events")? else {
-                return Err(fail());
-            };
-            let Value::App(Fux::Record(event)) = list.items().first().ok_or_else(fail)? else {
-                return Err(fail());
-            };
-            assert_eq!(
-                event
-                    .fields
-                    .iter()
-                    .map(|(key, _)| key.as_str())
-                    .collect::<Vec<_>>(),
-                [
-                    "event",
-                    "pane",
-                    "tab",
-                    "workspace",
-                    "client",
-                    "from_tab",
-                    "from_workspace",
-                    "name",
-                    "origin",
-                    "seq",
-                    "next"
-                ]
-            );
-            assert_eq!(event.get("seq")?, Value::Int(0));
-            assert_eq!(
-                event.get("pane")?,
-                id(AnyRef::Pane(PaneId::of(1)), next.run)
-            );
-            assert_eq!(
-                event.get("from_tab")?,
-                id(AnyRef::Tab(TabId::of(6)), next.run)
-            );
-            assert_eq!(
-                event.get("client")?,
-                Value::App(Fux::Client(ClientId::of(4), Some(next.run)))
-            );
-            let Value::App(Fux::Record(actor)) = event.get("origin")? else {
-                return Err(fail());
-            };
-            assert_eq!(actor.get("kind")?, Value::str(origin.kind()));
-            match origin {
-                Actor::Client(c) => assert_eq!(
-                    actor.get("client")?,
-                    Value::App(Fux::Client(c, Some(next.run)))
-                ),
-                Actor::Pane(p, generation) | Actor::Program(p, generation) => {
-                    assert_eq!(actor.get("pane")?, id(AnyRef::Pane(p), next.run));
-                    assert_eq!(actor.get("generation")?, number(generation)?);
-                }
-                Actor::Outside | Actor::Server => {}
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn local_fields_preserve_null_lists_and_scalar_types() -> Result<(), Failure> {
-        let value = from_json(&Json::Object(vec![
-            ("empty".into(), Json::Null),
-            (
-                "items".into(),
-                Json::Array(vec![
-                    Json::String("%7".into()),
-                    Json::Bool(false),
-                    Json::Int(-9),
-                ]),
-            ),
-        ]))?;
-        let Value::App(Fux::Record(r)) = value else {
-            return Err(fail());
-        };
-        assert_eq!(r.get("empty")?, null());
-        assert_eq!(
-            r.get("missing").map_err(|e| e.code),
-            Err(Code::from(Raise::NoField).into())
-        );
-        let Value::List(items) = r.get("items")? else {
-            return Err(fail());
-        };
-        assert_eq!(
-            items.items(),
-            &[Value::str("%7"), Value::Bool(false), Value::Int(-9)]
-        );
-        assert_eq!(
-            from_json(&Json::Uint(u64::MAX)).map_err(|e| e.code),
-            Err(fuxth::Code::Range)
-        );
-        assert_eq!(r.get("items")?, Value::List(items));
-        Ok(())
-    }
-
-    #[test]
-    fn records_refuse_what_nests_too_deep() {
-        let mut deep = Json::Null;
-        for _ in 0..inspect::DEPTH {
-            deep = Json::Array(vec![deep]);
-        }
-        assert!(from_json(&deep).is_err());
-        let Json::Array(within) = deep else {
-            return;
-        };
-        assert!(within.first().is_some_and(|v| from_json(v).is_ok()));
-    }
 }

@@ -198,7 +198,7 @@ impl Job {
         &self,
         config: Option<&script::Config>,
         stop: Option<&script::Stop>,
-    ) -> Result<fuxth::Machine<script::Fux>, script::Failed> {
+    ) -> Result<script::Machine, script::Failed> {
         script::callback_machine(config, &self.program, self.given.as_deref(), stop)
     }
 }

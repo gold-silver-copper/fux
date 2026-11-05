@@ -1,0 +1,111 @@
+//! Owned arguments at the native request boundary, never a language stack.
+use super::Fux;
+use fux_wire::code::Code;
+use std::rc::Rc;
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value<A = Fux> {
+    Int(i64),
+    Bool(bool),
+    Str(Rc<String>),
+    List(Rc<List<A>>),
+    App(A),
+    Bytes(Rc<Vec<u8>>),
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct List<A> {
+    values: Vec<Value<A>>,
+}
+impl<A> List<A> {
+    pub fn new(values: Vec<Value<A>>) -> Self {
+        Self { values }
+    }
+    pub fn items(&self) -> &[Value<A>] {
+        &self.values
+    }
+}
+#[derive(Clone, Debug)]
+pub struct Failure {
+    pub code: Code,
+    pub message: String,
+}
+impl Failure {
+    pub fn new(code: Code, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+impl From<fux_wire::code::Error> for Failure {
+    fn from(e: fux_wire::code::Error) -> Self {
+        Self::new(e.code(), e.to_string())
+    }
+}
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+impl std::error::Error for Failure {}
+pub enum Done<A> {
+    Now,
+    Later(A),
+}
+impl Value<Fux> {
+    pub fn str(text: impl Into<String>) -> Self {
+        Self::Str(Rc::new(text.into()))
+    }
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Int(_) => "integer",
+            Self::Bool(_) => "boolean",
+            Self::Str(_) => "string",
+            Self::List(_) => "list",
+            Self::App(v) => v.kind(),
+            Self::Bytes(_) => "bytes",
+        }
+    }
+    pub fn text(&self) -> Result<String, Failure> {
+        let mut out = String::new();
+        self.write_text(&mut out)?;
+        Ok(out)
+    }
+    pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
+        let result = match self {
+            Self::Str(s) => out.write_str(s),
+            Self::App(v) => return v.write_text(out),
+            _ => self.write_data(out),
+        };
+        result.map_err(|_| Failure::new(Code::Output, "writing value"))
+    }
+    pub fn write_data(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        match self {
+            Self::Int(n) => write!(out, "{n}"),
+            Self::Bool(b) => write!(out, "#{b}"),
+            Self::Str(s) => write!(out, "{s:?}"),
+            Self::List(xs) => {
+                out.write_str("(")?;
+                for (i, v) in xs.items().iter().enumerate() {
+                    if i > 0 {
+                        out.write_str(" ")?;
+                    }
+                    v.write_data(out)?;
+                }
+                out.write_str(")")
+            }
+            Self::Bytes(b) => {
+                out.write_str("#bytes(")?;
+                for (i, v) in b.iter().enumerate() {
+                    if i > 0 {
+                        out.write_str(" ")?;
+                    }
+                    write!(out, "{v}")?;
+                }
+                out.write_str(")")
+            }
+            Self::App(Fux::Record(r)) => r.write(out),
+            Self::App(Fux::Null) => out.write_str("()"),
+            Self::App(v) => v.write_text(out).map_err(|_| std::fmt::Error),
+        }
+    }
+}

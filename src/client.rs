@@ -1135,7 +1135,7 @@ fn run_job(
 
 /// The notice a program that ended makes: what it printed, then what it
 /// left, each line that is not blank.
-fn said(mut said: String, stack: &[fuxth::Value<script::Fux>]) -> Option<(String, bool)> {
+fn said(mut said: String, stack: &[script::Value<script::Fux>]) -> Option<(String, bool)> {
     for value in stack {
         if let Err(failure) = value.write_text(&mut said) {
             return Some((failure.message, true));

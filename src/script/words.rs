@@ -4,6 +4,7 @@
 //! takes; and what each does, run by the program's [`Host`].
 use super::settings::Reads;
 use super::{Ask, Bound, Fux, Host, Local, On, Opts, Shell};
+use super::{Done, Failure, Value};
 use crate::help;
 use fux_vt::keys::Direction;
 use fux_wire::callback::Open;
@@ -15,7 +16,6 @@ use fux_wire::command::{
 };
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Axis;
-use fuxth::{Done, Failure, Value};
 use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
 
@@ -168,7 +168,7 @@ pub struct Raises {
 
 impl Word {
     /// The codes it fails with, as `Raises` says, each once.
-    pub fn codes(self) -> Vec<fuxth::Code> {
+    pub fn codes(self) -> Vec<Code> {
         let row = self.row();
         let takes = row
             .effect
@@ -182,7 +182,7 @@ impl Word {
             .map(Code::from);
         let asked = Code::all().filter(|code| row.raises.asks && code.asked());
         let mut codes = Vec::new();
-        for code in own.chain(asked).map(fuxth::Code::from) {
+        for code in own.chain(asked).map(Code::from) {
             if !codes.contains(&code) {
                 codes.push(code);
             }
@@ -417,7 +417,7 @@ words! {
         Clients CommandPrompt "command-prompt" "client --" raises(Type NotHere asks) "a prompt for fuxth" "fux str c1 client command-prompt";
     }
     Keys {
-        Config Bind "bind" "keys code --" raises(Type NotConfig BadBinding) "keys run code: each key but the last holds a map of more keys, made as needed, the first in the map a client is in while it holds none (config)" "str 'C-b g v' code me focused str horizontal axis split drop end bind";
+        Config Bind "bind-key" "keys code --" raises(Type NotConfig BadBinding) "keys run code: each key but the last holds a map of more keys, made as needed, the first in the map a client is in while it holds none (config)" "str 'C-b g v' code me focused str horizontal axis split drop end bind";
         Config MoveKeys "move-keys" "from to --" raises(Type NotConfig BadBinding) "what keys run or hold, others do instead, and they nothing (config)" "str C-b str C-a move-keys";
         Config Label "label" "text --" raises(Type NotConfig BadBinding) "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'C-b g v' code me focused str horizontal axis split drop end bind str 'split right' label";
         Config Group "group" "name --" raises(Type NotConfig BadBinding) "the column's heading for the last binding" "str 'C-b g v' code me focused str horizontal axis split drop end bind str panes group";
@@ -438,60 +438,11 @@ fn fail(code: Raise, message: impl Into<String>) -> Failure {
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
-    let docs = super::docs();
-    let library = || Some(&*docs.iter().find(|doc| doc.name == word)?.effect);
-    let core = || fuxth::Builtin::named(word).map(fuxth::Builtin::effect);
-    // Fux's, the prelude's or library's, or the core's.
-    let fuxs = Word::named(word);
-    // A word that shapes a program, said as it is written.
-    let shape = fuxth::Builtin::named(word).filter(|b| b.immediate() && !b.hosted());
-    let shape = shape
-        .and_then(|b| b.about().split_once(": "))
-        .map(|(shape, _)| shape);
-    let effect = match (fuxs, shape) {
-        (Some(w), _) => w.row().effect,
-        (None, Some(shape)) if library().is_none() => return Some(format!("use: {shape}")),
-        (None, _) => library().or_else(core)?,
-    };
-    let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
-    // What an option's word goes on: the pane, opts, or either, as the
-    // words that take it do. Any other word's `x` is any value.
-    let takes = takes.trim().to_uppercase();
-    let (option, takers) = match fuxs {
-        Some(Word::Opt(opt)) => (true, opt.takers()),
-        Some(Word::Act(_) | Word::Screen(_) | Word::Keys(_)) | None => (false, Vec::new()),
-    };
-    let request = (takes.strip_prefix("PANE-BUILDER"))
-        .or_else(|| takes.strip_prefix('X'))
-        .filter(|_| option);
-    // A word whose options go on either counts for both.
-    let has = |after| {
-        let on = |t: &Takes| t.after == after || t.after == After::Either;
-        (takers.iter()).any(|act| act.takes().is_some_and(on))
-    };
-    let (on, left) = match (has(After::Pane), has(After::Opts)) {
-        (true, false) => ("PANE", "a request"),
-        (false, true) => ("OPTS", "opts"),
-        (true, true) | (false, false) => ("PANE-OR-OPTS", "a request (or opts)"),
-    };
-    let takes = match request.filter(|r| r.is_empty() || r.starts_with(' ')) {
-        Some(rest) => format!("{on}{rest}"),
-        None => takes,
-    };
-    let leaves = match leaves.trim() {
-        "" => String::new(),
-        "x" | "pane-builder" if option => {
-            format!(", which leaves {left} for the word that acts")
-        }
-        leaves => format!(", which leaves {leaves}"),
-    };
-    let example = fuxs.map_or_else(String::new, |w| format!("; e.g. {}", w.row().example));
-    // A capture's option says so: it goes between its pane and capture.
-    let kind = match takers == [Act::Capture] {
-        true => "a capture option, ",
-        false => "",
-    };
-    Some(format!("use: {kind}{takes} {word}{leaves}{example}"))
+    let row = Word::named(word)?.row();
+    Some(format!(
+        "({word} {})",
+        row.effect.split_once("--")?.0.trim()
+    ))
 }
 
 /// `failure`, a value of a kind the word doesn't take, told as the word's
@@ -519,7 +470,7 @@ fn described(word: Word, taken: Option<(usize, &'static str)>, mut failure: Fail
             .find(|(n, _)| *n == name)
             .map(|(_, said)| said),
     };
-    let refused = failure.code == fuxth::Code::Type
+    let refused = failure.code == Code::Type
         && failure.message.starts_with("takes ")
         && failure.message.ends_with(&format!(", not {kind}"));
     if let Some(said) = said.filter(|_| refused) {
@@ -559,74 +510,9 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
         Value::Str(_) => string(value),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
-        other @ (Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_)) => Err(wrong("a string, a number or a boolean", other)),
-    }
-}
-
-/// A value's JSON, as a string.
-pub(super) fn json_text(value: &Value<Fux>) -> Value<Fux> {
-    let mut text = String::new();
-    // Writing to a `String` can't fail.
-    _ = write_json_value(value, &mut text);
-    Value::str(text)
-}
-
-/// `value` as JSON: a list's items walked with a stack of the lists under
-/// way, not as a recursion, so lists nested however deep are written.
-pub(super) fn write_json_value(
-    value: &Value<Fux>,
-    out: &mut dyn std::fmt::Write,
-) -> std::fmt::Result {
-    let mut lists: Vec<(std::slice::Iter<'_, Value<Fux>>, bool)> = Vec::new();
-    let mut value = value;
-    loop {
-        match value {
-            Value::Int(n) => write!(out, "{n}")?,
-            Value::Bool(b) => write!(out, "{b}")?,
-            Value::Str(s) => fux_wire::json::write_str(out, s)?,
-            Value::List(list) => {
-                out.write_char('[')?;
-                lists.push((list.items().iter(), false));
-            }
-            Value::App(app) => match app {
-                Fux::Null => out.write_str("null"),
-                Fux::All => out.write_str("\"all\""),
-                Fux::Record(r) => r.write(out),
-                Fux::Answer(answer, _) => answer.write_json(out),
-                Fux::Pane(pane, _) => write!(out, "\"{pane}\""),
-                Fux::Tab(tab, _) => write!(out, "\"{tab}\""),
-                Fux::Workspace(workspace, _) => write!(out, "\"{workspace}\""),
-                Fux::Client(client, _) => write!(out, "\"{client}\""),
-                Fux::Extent(Extent::Cells(n)) => write!(out, "\"{n}\""),
-                Fux::Extent(Extent::Percent(n)) => write!(out, "\"{}%\"", n.get()),
-                Fux::Opts(_) => write!(out, "\"({})\"", fuxth::AppValue::kind(app)),
-                Fux::Code(code) => fux_wire::json::write_str(out, &code.text()),
-            }?,
-            Value::Failure(thrown) => super::record::failure(thrown).write(out)?,
-            Value::Xt(_) | Value::Mark(_) | Value::Addr(_) => {
-                let text = value.text().map_err(|_| std::fmt::Error)?;
-                fux_wire::json::write_str(out, &text)?
-            }
+        other @ (Value::Bytes(_) | Value::List(_) | Value::App(_)) => {
+            Err(wrong("a string, a number or a boolean", other))
         }
-        // The next item of the innermost list under way.
-        value = loop {
-            let Some((items, started)) = lists.last_mut() else {
-                return Ok(());
-            };
-            if let Some(item) = items.next() {
-                if std::mem::replace(started, true) {
-                    out.write_char(',')?;
-                }
-                break item;
-            }
-            lists.pop();
-            out.write_char(']')?;
-        };
     }
 }
 
@@ -735,15 +621,12 @@ fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
 fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
     match value {
         Value::App(Fux::All) => Ok(None),
-        value @ (Value::Int(_)
+        value @ (Value::Bytes(_)
+        | Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_)) => target(value).map(Some),
+        | Value::App(_)) => target(value).map(Some),
     }
 }
 
@@ -809,15 +692,12 @@ fn held(value: &Value<Fux>) -> Option<fux_wire::command::Version> {
             // A capture's is for `expect` and `changed` alone (`version`).
             super::Answer::Panes(_) | super::Answer::Capture(_) => None,
         },
-        Value::Int(_)
+        Value::Bytes(_)
+        | Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_) => None,
+        | Value::App(_) => None,
     }
 }
 
@@ -834,14 +714,11 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
             return answer.version().ok_or_else(|| wrong(wanted, value));
         }
         Value::Str(text) => text,
-        other @ (Value::Int(_)
+        other @ (Value::Bytes(_)
+        | Value::Int(_)
         | Value::Bool(_)
         | Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_)) => {
+        | Value::App(_)) => {
             return Err(wrong(wanted, other));
         }
     };
@@ -860,15 +737,12 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
 fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
     let built = match value {
         Value::App(Fux::Opts(built)) => built,
-        other @ (Value::Int(_)
+        other @ (Value::Bytes(_)
+        | Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_)) => {
+        | Value::App(_)) => {
             let on = on(&other)
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
             std::rc::Rc::new(Opts {
@@ -969,7 +843,13 @@ fn modify(
         }
         Opt::Text => built.inputs.push(Input::Text(text(&next()?)?)),
         Opt::Paste => built.inputs.push(Input::Paste(text(&next()?)?)),
-        Opt::Bytes => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
+        Opt::Bytes => {
+            let v = next()?;
+            let Value::Bytes(bytes) = v else {
+                return Err(wrong("bytes", &v));
+            };
+            built.inputs.push(Input::Bytes((*bytes).clone()));
+        }
         Opt::Program | Opt::ShellProgram => {
             let shell = opt == Opt::ShellProgram;
             built.shell = Some(shell);
@@ -1033,15 +913,12 @@ fn span(
 fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
     let mut built = match value {
         Value::App(Fux::Opts(built)) => owned(built),
-        other @ (Value::Int(_)
+        other @ (Value::Bytes(_)
+        | Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_)) => Opts {
+        | Value::App(_)) => Opts {
             on: Some(on(&other)?),
             ..Opts::default()
         },
@@ -1081,15 +958,12 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
             unused(word, &built)?;
             Ok(owned(built))
         }
-        other @ (Value::Int(_)
+        other @ (Value::Bytes(_)
+        | Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_)) => Err(wrong(
+        | Value::App(_)) => Err(wrong(
             &format!("options (from opts), as {word} takes"),
             &other,
         )),
@@ -1203,14 +1077,11 @@ fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Do
     let extent = match next()? {
         Value::App(Fux::Extent(e)) => e,
         v @ Value::Int(_) => Extent::Cells(within(&v, CELL)?),
-        other @ (Value::Bool(_)
+        other @ (Value::Bytes(_)
+        | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_)) => {
+        | Value::App(_)) => {
             return Err(wrong("cells or a percent", &other));
         }
     };
@@ -1249,14 +1120,11 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
             }
             resolve(text.to_owned(), kind)
         }
-        other @ (Value::Int(_)
+        other @ (Value::Bytes(_)
+        | Value::Int(_)
         | Value::Bool(_)
         | Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_)) => Err(wrong("a name, or a pane, tab or workspace", &other)),
+        | Value::App(_)) => Err(wrong("a name, or a pane, tab or workspace", &other)),
     }
 }
 
@@ -1314,49 +1182,18 @@ fn order(client: ClientId, action: ClientAction) -> Result<Done<Ask>, Failure> {
     Ok(Done::Later(on_client(client, action)))
 }
 
-impl fuxth::Host for Host<'_> {
-    type Value = Fux;
-    type Request = Ask;
-
-    fn code(&mut self, value: &Fux) -> Option<Ask> {
-        let Fux::Code(code) = value else { return None };
-        Some(Ask::Code(std::rc::Rc::clone(code)))
-    }
-
-    /// Written and flushed: `write` and `emit` deliver without a line end.
-    fn write(&mut self, text: &str) -> Result<(), Failure> {
-        (self.out.write_all(text.as_bytes()))
-            .and_then(|()| self.out.flush())
-            .map_err(|e| fail(Raise::Output, e.to_string()))
-    }
-
-    fn resolve(
-        &mut self,
-        path: &str,
-        from: Option<&std::path::Path>,
-    ) -> Result<std::path::PathBuf, String> {
-        self.files.resolve(path, from)
-    }
-
-    fn read(&mut self, path: &std::path::Path) -> Result<String, Failure> {
-        let unread = |why| Failure::new(fuxth::Code::Require, why);
-        self.files.read(path).map_err(unread)
-    }
-
-    fn call(
+impl Host<'_> {
+    pub(super) fn call(
         &mut self,
         id: usize,
-        args: fuxth::Args<'_, Fux>,
+        args: Vec<Value<Fux>>,
         out: &mut Vec<Value<Fux>>,
     ) -> Result<Done<Ask>, Failure> {
         let Some(&word) = Word::ALL.get(id) else {
-            return Err(Failure::new(
-                fuxth::Code::Contract,
-                "no word of fux's has this id",
-            ));
+            return Err(Failure::new(Code::Contract, "no word of fux's has this id"));
         };
         let mut of = self.context.of;
-        let mut args = args;
+        let mut args = args.into_iter();
         // The place in the effect and the kind of the value taken last.
         let mut taken: Option<(usize, &'static str)> = None;
         let mut next = || {
@@ -1394,15 +1231,12 @@ impl fuxth::Host for Host<'_> {
                 ) => {
                     *run = super::same_run(*run, of)?;
                 }
-                Value::Int(_)
+                Value::Bytes(_)
+                | Value::Int(_)
                 | Value::Bool(_)
                 | Value::Str(_)
                 | Value::List(_)
-                | Value::App(_)
-                | Value::Xt(_)
-                | Value::Mark(_)
-                | Value::Failure(_)
-                | Value::Addr(_) => {}
+                | Value::App(_) => {}
             }
         }
         match result {
@@ -1687,58 +1521,39 @@ impl Host<'_> {
                 let value = next()?;
                 // A live field's handle, checked before the field is taken.
                 let live = match &value {
-                    Value::App(Fux::Record(_) | Fux::Answer(..)) | Value::Failure(_) => None,
-                    value @ (Value::Int(_)
+                    Value::App(Fux::Record(_) | Fux::Answer(..)) => None,
+                    value @ (Value::Bytes(_)
+                    | Value::Int(_)
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)
-                    | Value::Xt(_)
-                    | Value::Mark(_)
-                    | Value::Addr(_)) => Some(target(value)?),
+                    | Value::App(_)) => Some(target(value)?),
                 };
                 let field = string(&next()?)?;
                 if let Some(target) = live {
                     return later(ask(Command::Inspect {
                         scope: fux_wire::inspect::Scope::Target(target),
-                        projection: fux_wire::inspect::Projection::Field(field),
+                        projection: fux_wire::inspect::Projection::Field(field.replace('-', "_")),
                     }));
                 }
                 match value {
                     Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
-                    Value::App(Fux::Answer(answer, run)) => {
-                        now(out, super::record::answer_field(&answer, run, &field)?)
-                    }
-                    Value::Failure(thrown) => {
-                        now(out, super::record::failure(&thrown).get(&field)?)
-                    }
-                    other @ (Value::Int(_)
+                    Value::App(Fux::Answer(answer, run)) => now(
+                        out,
+                        super::record::answer_field(&answer, run, &field.replace('-', "_"))?,
+                    ),
+                    other @ (Value::Bytes(_)
+                    | Value::Int(_)
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)
-                    | Value::Xt(_)
-                    | Value::Mark(_)
-                    | Value::Addr(_)) => Err(wrong("a handle or held observation", &other)),
+                    | Value::App(_)) => Err(wrong("a handle or held observation", &other)),
                 }
             }
-            Act::Json => match next()? {
-                // Options and requests are no value to convert: what acts
-                // on them gives one.
-                Value::App(Fux::Opts(_)) => Err(fail(
-                    Raise::Unused,
-                    "converts a value: it goes after what acts on the pane (%2 capture json)",
-                )),
-                other @ (Value::Int(_)
-                | Value::Bool(_)
-                | Value::Str(_)
-                | Value::List(_)
-                | Value::App(_)
-                | Value::Xt(_)
-                | Value::Mark(_)
-                | Value::Failure(_)
-                | Value::Addr(_)) => now(out, json_text(&other)),
-            },
+            Act::Json => Err(fail(
+                Raise::BadValue,
+                "records are grift data; JSON was removed",
+            )),
             Act::NextEvents => {
                 let scope = observation_scope(&next()?)?;
                 let text = string(&next()?)?;
@@ -1773,15 +1588,12 @@ impl Host<'_> {
                 // Checked before the size is taken.
                 let sized = match next()? {
                     Value::App(Fux::Client(c, _)) => Err(c),
-                    value @ (Value::Int(_)
+                    value @ (Value::Bytes(_)
+                    | Value::Int(_)
                     | Value::Bool(_)
                     | Value::Str(_)
                     | Value::List(_)
-                    | Value::App(_)
-                    | Value::Xt(_)
-                    | Value::Mark(_)
-                    | Value::Failure(_)
-                    | Value::Addr(_)) => Ok(target(&value)?),
+                    | Value::App(_)) => Ok(target(&value)?),
                 };
                 let size = laid_out(&next()?, &next()?)?;
                 let resized = match sized {
@@ -1910,14 +1722,11 @@ impl Host<'_> {
                             fail(Raise::BadValue, why)
                         })?)
                     }
-                    value @ (Value::Int(_)
+                    value @ (Value::Bytes(_)
+                    | Value::Int(_)
                     | Value::Bool(_)
                     | Value::List(_)
-                    | Value::App(_)
-                    | Value::Xt(_)
-                    | Value::Mark(_)
-                    | Value::Failure(_)
-                    | Value::Addr(_)) => {
+                    | Value::App(_)) => {
                         return Err(wrong(
                             "a tab, workspace, all, new-tab, new-workspace or direction",
                             &value,
@@ -1931,14 +1740,11 @@ impl Host<'_> {
                 let value = next()?;
                 let with = match value {
                     Value::Str(_) => SwapWith::Toward(direction(&value)?),
-                    value @ (Value::Int(_)
+                    value @ (Value::Bytes(_)
+                    | Value::Int(_)
                     | Value::Bool(_)
                     | Value::List(_)
-                    | Value::App(_)
-                    | Value::Xt(_)
-                    | Value::Mark(_)
-                    | Value::Failure(_)
-                    | Value::Addr(_)) => SwapWith::Pane(pane(&value)?),
+                    | Value::App(_)) => SwapWith::Pane(pane(&value)?),
                 };
                 tell(Command::SwapPane { target, with })
             }
@@ -2133,13 +1939,7 @@ impl Host<'_> {
                             "title is text or [text,subject handle]",
                         )),
                     })?,
-                    Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::App(_)
-                    | Value::Xt(_)
-                    | Value::Mark(_)
-                    | Value::Failure(_)
-                    | Value::Addr(_) => {
+                    Value::Bytes(_) | Value::Int(_) | Value::Bool(_) | Value::App(_) => {
                         return Err(wrong("a title or [text,subject handle]", &heading));
                     }
                 };
@@ -2232,7 +2032,7 @@ impl Host<'_> {
     /// (`[captured arguments, code … end]`), never a string.
     fn action(&mut self, value: &Value<Fux>) -> Result<fux_wire::callback::Callback, Failure> {
         let (code, args) = match value {
-            Value::Xt(_) | Value::App(Fux::Code(_)) => (super::callback::code(value)?, Vec::new()),
+            Value::App(Fux::Code(_)) => (super::callback::code(value)?, Vec::new()),
             // What the pair holds, checked as such: its code's own
             // requirement is told.
             Value::List(v) => self.held(match v.items() {
@@ -2248,13 +2048,7 @@ impl Host<'_> {
                     "a callback is code … end or [captured arguments,code … end]",
                 )),
             })?,
-            Value::Int(_)
-            | Value::Bool(_)
-            | Value::Str(_)
-            | Value::App(_)
-            | Value::Mark(_)
-            | Value::Failure(_)
-            | Value::Addr(_) => {
+            Value::Bytes(_) | Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::App(_) => {
                 return Err(wrong(
                     "code … end or [captured arguments,code … end]",
                     value,
@@ -2336,672 +2130,5 @@ impl Host<'_> {
             }
         }
         Ok(Done::Now)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::TestResult;
-    use crate::script::{Asks, Failed, Host, Local};
-    use std::rc::Rc;
-
-    /// Finds what an id names, and counts anything else a program asks of
-    /// the server, or locally, answering each with a failure.
-    struct Recorder(usize);
-
-    impl Asks for Recorder {
-        fn ask(
-            &mut self,
-            asked: &fux_wire::protocol::Asked,
-        ) -> Result<fux_wire::protocol::Reply, Failed> {
-            if let fux_wire::command::Request::Do(Command::Resolve { text, .. }) = &asked.request
-                && let Ok(id) = text.parse::<AnyRef>()
-            {
-                return Ok(fux_wire::protocol::Body::Found(id).into());
-            }
-            self.0 = self.0.saturating_add(1);
-            Err(Failed::new(
-                fux_wire::code::Code::Client,
-                "unexpected request",
-            ))
-        }
-        fn local(
-            &mut self,
-            _: &Local,
-            _: Option<&mut crate::client_state::Draft>,
-            _: &mut dyn std::io::Write,
-        ) -> Result<Vec<fuxth::Value<crate::script::Fux>>, Failed> {
-            self.0 = self.0.saturating_add(1);
-            Err(Failed::new(
-                fux_wire::code::Code::Client,
-                "unexpected local operation",
-            ))
-        }
-    }
-
-    /// Runs `code` with no server: its failure, how many requests it made,
-    /// and what it printed.
-    fn offline(code: &str) -> Result<(Option<Failed>, usize, String), Failed> {
-        let tokens = fuxth::token::source("offline", code)?;
-        let mut machine = crate::script::compile(&tokens)?;
-        let mut state = crate::script::default_state()?.draft();
-        let mut out = Vec::new();
-        let mut host = Host::new(
-            fux_wire::protocol::Context::default(),
-            Some(&mut state),
-            &mut out,
-        );
-        let mut recorder = Recorder(0);
-        let ran = crate::script::run(&mut machine, &mut host, &mut recorder, None);
-        drop(host);
-        let printed = String::from_utf8_lossy(&out).into_owned();
-        Ok((ran.err(), recorder.0, printed))
-    }
-
-    #[test]
-    fn targeted_and_watch_attach_refuse_explicit_creation_before_any_request() -> TestResult {
-        for selector in ["opts str main in", "opts watch"] {
-            for option in [
-                "str x name",
-                "str / cwd",
-                "0 history-bytes",
-                "false program-clipboard",
-                "str '' program",
-                "list str /bin/sh end shell-program",
-                "str /bin/sh program str -l arg",
-            ] {
-                let code = format!("str bell false set {selector} {option} 80 24 size attach");
-                let tokens = fuxth::token::source("attach", &code)?;
-                let mut machine = crate::script::compile(&tokens).map_err(|f| f.to_string())?;
-                let mut state = crate::script::default_state()
-                    .map_err(|f| f.to_string())?
-                    .draft();
-                let mut sink = Vec::new();
-                let mut host = Host::new(
-                    fux_wire::protocol::Context::default(),
-                    Some(&mut state),
-                    &mut sink,
-                );
-                let mut recorder = Recorder(0);
-                let result = crate::script::run(&mut machine, &mut host, &mut recorder, None);
-                assert!(
-                    result.is_err_and(
-                        |f| f.code == fux_wire::code::Code::from(fux_wire::code::Raise::Unused)
-                    ),
-                    "{code}"
-                );
-                assert_eq!(recorder.0, 0, "{code}");
-            }
-        }
-        Ok(())
-    }
-
-    use super::*;
-    use fuxth::AppValue;
-
-    #[test]
-    fn attach_subjects_and_defaults_retain_their_typed_target_and_run() -> TestResult {
-        use super::*;
-        use fux_wire::command::AttachTarget;
-        let run = "1-2".parse().map_err(|()| "run")?;
-        let mut draft = crate::script::default_state()?.draft();
-        for (value, target) in [
-            (
-                Fux::Tab(fux_wire::id::TabId::of(2), Some(run)),
-                AttachTarget::Tab(fux_wire::id::TabId::of(2)),
-            ),
-            (
-                Fux::Pane(PaneId::of(3), Some(run)),
-                AttachTarget::Pane(PaneId::of(3)),
-            ),
-        ] {
-            let mut sink = Vec::new();
-            let mut host = Host::new(
-                fux_wire::protocol::Context::default(),
-                Some(&mut draft),
-                &mut sink,
-            );
-            let mut values = vec![Value::App(value.clone())].into_iter();
-            let mut next = || {
-                values
-                    .next()
-                    .ok_or_else(|| fail(Raise::StackUnderflow, "subject"))
-            };
-            assert!(matches!(
-                host.dispatch(Word::Act(Act::AttachDefaults), &mut next, &mut Vec::new())
-                    .map_err(|e| e.message)?,
-                Done::Now
-            ));
-            let (attached, _) =
-                attach_options(Act::Attach, Value::App(value)).map_err(|e| e.message)?;
-            assert_eq!(attached, Some(target.clone()));
-            let defaults = draft.attach.as_ref().ok_or("defaults")?;
-            assert_eq!(defaults.target, Some(target));
-            assert_eq!(defaults.of, Some(run));
-            assert_eq!(defaults.name.as_deref(), Some("main"));
-        }
-        Ok(())
-    }
-
-    /// Each word checks its operands as it runs: given one of a kind it
-    /// doesn't take, it fails there, after what came before it took effect
-    /// (a line printed), and before it asks the server anything. The
-    /// acting word refuses an option it takes none of (`unused`); a library
-    /// word's guard says what it takes (`fail`).
-    #[test]
-    fn a_wrong_operand_fails_its_word_as_it_runs_before_it_asks() -> TestResult {
-        let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6";
-        let mut cases = vec![
-            ("type", "@1 version".to_owned()),
-            (
-                "type",
-                "%1 str horizontal axis 30 str horizontal resize-pane".to_owned(),
-            ),
-            (
-                "type",
-                "%1 str horizontal axis str click 0 0 send-mouse".to_owned(),
-            ),
-            ("type", "str c1 client 0 timeout wait".to_owned()),
-            ("type", "str x kill".to_owned()),
-            ("type", "str nope str horizontal axis split".to_owned()),
-            ("unused", format!("str {version} expect 0 timeout wait")),
-            (
-                "unused",
-                format!("str {version} changed str x text send-keys"),
-            ),
-            ("fail", format!("str {version} changed all-history capture")),
-            (
-                "type",
-                format!("str {version} changed str '' 0 next-events"),
-            ),
-            ("fail", "str nope info".to_owned()),
-            ("fail", "str c1 client info".to_owned()),
-            ("fail", "1 dump".to_owned()),
-            ("fail", "str c1 client dump".to_owned()),
-            // An element of a list of the wrong kind is a list it refuses.
-            ("bad_value", "opts list 1 end shell-program".to_owned()),
-        ];
-        // all-history's guard, whatever comes after it.
-        for target in ["opts", "@1", "+1", "str c1 client", "1"] {
-            cases.push(("fail", format!("{target} all-history drop")));
-        }
-        for suffix in [
-            "capture",
-            "wait",
-            "str x text send-keys",
-            "80 24 resize",
-            "attach",
-            "str x rename",
-        ] {
-            cases.push(("type", format!("all {suffix}")));
-        }
-        for suffix in [
-            "full capture drop",
-            "0 1 rows capture drop",
-            "main-screen capture drop",
-        ] {
-            cases.push(("type", format!("str c1 client {suffix}")));
-        }
-        let layouts = concat!(
-            "require ",
-            env!("CARGO_MANIFEST_DIR"),
-            "/recipes/layouts.fux"
-        );
-        for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
-            for target in ["1", "%1", "+1", "all", "str tab", "str c1 client"] {
-                cases.push(("fail", format!("{layouts} {target} {recipe}")));
-            }
-        }
-        let mut wrong = Vec::new();
-        for (code, program) in cases {
-            let source = format!("str SIDE-EFFECT print {program} str AFTER print");
-            let (failed, asked, printed) = offline(&source)?;
-            let failed = failed.map(|f| f.to_string()).unwrap_or_default();
-            if !failed.starts_with(&format!("{code}:")) || asked != 0 || printed != "SIDE-EFFECT\n"
-            {
-                wrong.push(format!(
-                    "{source}: {failed}, {asked} asked, printed {printed:?}"
-                ));
-            }
-        }
-        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-        Ok(())
-    }
-
-    /// A value of a kind a word doesn't take is refused with what the word's
-    /// effect, as help says it, names in that place: all of what it takes.
-    /// A code value that `code` WORDS `end` wouldn't make again, as one a
-    /// word of the program's own opened or closed, runs, but is never sent
-    /// as its words.
-    #[test]
-    fn a_code_value_its_words_would_not_make_again_is_refused() -> TestResult {
-        let words = "define seal 7 postpone literal postpone print postpone end end immediate
-            define prefixed-code next-word drop
-              postpone code 7 postpone literal postpone print end immediate ";
-        for code in ["code seal", "prefixed-code code end"] {
-            let (failed, _, printed) = offline(&format!("{words}{code} execute"))?;
-            let ran = (failed.map(|f| f.to_string()), printed);
-            assert_eq!(ran, (None, "7\n".to_owned()), "{code}");
-            for program in [
-                format!("str F5 {code} bind"),
-                format!("str c1 client str T str s {code} prompt"),
-            ] {
-                let failed = offline(&format!("{words}{program}"))?.0;
-                let said = failed.map(|f| f.to_string()).unwrap_or_default();
-                let refused =
-                    said.starts_with("bad_value:") && said.contains("can't go as its words");
-                assert!(refused, "{program}: {said}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn a_refusal_names_all_the_word_takes() -> TestResult {
-        let mut wrong = Vec::new();
-        for (program, word, place, named) in [
-            ("5 str done notify", "notify", 0, "all"),
-            ("str x send-keys", "send-keys", 0, "client"),
-            ("%1 5 swap-with", "swap-with", 1, "direction"),
-            ("str x 80 24 resize", "resize", 0, "headless client"),
-            ("5 str name get", "get", 0, "held observation"),
-            ("5 str facts snapshot", "snapshot", 0, "snapshot scope"),
-            (
-                "str c1 client str T str s 5 prompt",
-                "prompt",
-                3,
-                "captured arguments",
-            ),
-        ] {
-            let effect = Word::named(word)
-                .map(|w| w.row().effect)
-                .unwrap_or_default();
-            let name = effect.split_whitespace().nth(place).unwrap_or_default();
-            let said = NAMES
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, said)| *said);
-            let failed = offline(program)?
-                .0
-                .map(|f| f.to_string())
-                .unwrap_or_default();
-            let takes = format!("takes {}, not ", said.unwrap_or("?"));
-            if !failed.starts_with("type:") || !failed.contains(&takes) || !failed.contains(named) {
-                wrong.push(format!("{program}: {failed} (help: {takes})"));
-            }
-        }
-        // What a value holds keeps its own requirement: a row's label, a
-        // split's axis.
-        for program in [
-            "str c1 client str Title list list str payload list end end end list end list 0 end code 2drop end choose",
-            "@1 str @1:0:1-2 list list list end 1 1 1 2 end end arrange",
-        ] {
-            let failed = offline(program)?
-                .0
-                .map(|f| f.to_string())
-                .unwrap_or_default();
-            if !failed.starts_with("type:") || !failed.contains("takes a string, not a list") {
-                wrong.push(format!("{program}: {failed}"));
-            }
-        }
-        // A callback's code in its [captured arguments,code] pair, and a
-        // callback or binding given a string, which is never code.
-        for program in [
-            "str c1 client str T list end list end list end list list end list end end choose",
-            "str c1 client str T str s list list end list end end prompt",
-            "str c1 client str T str s str 'str x print' prompt",
-            "str c1 client str T list end list end list end str 2drop choose",
-            "str v str 'me focused zoom' bind",
-            "str F5 str ls bind",
-            "str r str rename-prompt bind-action",
-        ] {
-            let failed = offline(program)?
-                .0
-                .map(|f| f.to_string())
-                .unwrap_or_default();
-            if !failed.starts_with("type:") || !failed.contains("code … end") {
-                wrong.push(format!("{program}: {failed}"));
-            }
-        }
-        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-        Ok(())
-    }
-
-    /// A value read as a number, a boolean or a list, given one of another
-    /// kind, fails `type`, which a `type` handler catches, as the core's
-    /// words' do; one of its kind out of range keeps its own code.
-    #[test]
-    fn a_reader_given_another_kind_fails_type() -> TestResult {
-        let mut wrong = Vec::new();
-        for program in [
-            "opts str nope history-bytes",
-            "opts true alternate-scroll-lines",
-            "opts str nope picture-bytes",
-            "opts str nope reflow",
-            "opts 1 program-clipboard",
-            "opts str sh shell-program",
-            "%1 str nope history-budget",
-        ] {
-            let source = format!("str type try {program} drop catch drop str caught print end");
-            let (failed, asked, printed) = offline(&source)?;
-            if failed.is_some() || asked != 0 || printed != "caught\n" {
-                let failed = failed.map(|f| f.to_string()).unwrap_or_default();
-                wrong.push(format!(
-                    "{source}: {failed}, {asked} asked, printed {printed:?}"
-                ));
-            }
-        }
-        // A setting given a value of another kind fails type; one of its
-        // kind holding what it refuses, config.
-        for (code, program) in [
-            ("type", "str bell str off set"),
-            ("config", "str styles list 1 end set"),
-            ("config", "str styles list list 5 1 2 end end set"),
-            ("config", "str bar list 1 end set"),
-            ("config", "str bar-slots list 1 end set"),
-            ("config", "str shell list 1 end set"),
-        ] {
-            let source = format!("str {code} try {program} catch drop str caught print end");
-            let (failed, _, printed) = offline(&source)?;
-            if failed.is_some() || printed != "caught\n" {
-                let failed = failed.map(|f| f.to_string()).unwrap_or_default();
-                wrong.push(format!("{source}: {failed}, printed {printed:?}"));
-            }
-        }
-        for (code, program) in [
-            ("range", "opts -1 history-bytes drop"),
-            ("bad_value", "opts list end shell-program drop"),
-        ] {
-            let failed = offline(program)?
-                .0
-                .map(|f| f.to_string())
-                .unwrap_or_default();
-            if !failed.starts_with(&format!("{code}:")) {
-                wrong.push(format!("{program}: {failed}"));
-            }
-        }
-        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-        Ok(())
-    }
-
-    /// A closed pane's answer and a client's capture have no version:
-    /// `changed`, `expect` and `version` refuse them as they run.
-    #[test]
-    fn closed_observations_have_no_version() -> TestResult {
-        let version: fux_wire::command::Version =
-            "%1:0.0.0.0.0:1-1".parse().map_err(|()| "version")?;
-        let mut capture = fux_wire::answer::Captured::default_styled(version);
-        capture.of = fux_wire::answer::Of::Client {
-            client: fux_wire::id::ClientId::of(1),
-            rows: 40,
-            cols: 120,
-        };
-        for answer in [
-            super::super::Answer::Pane(fux_wire::answer::PaneAnswer::Closed(version.pane)),
-            super::super::Answer::Capture(Box::new(capture)),
-        ] {
-            let value = Value::App(Fux::Answer(Rc::new(answer), Some(version.run)));
-            let refused = super::version(&value).err().map(|f| f.code);
-            assert_eq!(refused, Some(fuxth::Code::Type), "{}", value.kind());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn accumulating_options_preserve_order() -> TestResult {
-        let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
-        for (opt, values) in [
-            (Opt::Program, vec![Value::str("cat")]),
-            (Opt::Arg, vec![Value::str("a")]),
-            (Opt::Arg, vec![Value::str("b")]),
-            (Opt::Text, vec![Value::str("a")]),
-            (Opt::Key, vec![Value::str("Enter")]),
-            (Opt::Paste, vec![Value::str("b")]),
-            (Opt::Bytes, vec![Value::str("63")]),
-        ] {
-            let mut args = std::iter::once(value).chain(values);
-            value = Value::App(Fux::Opts(
-                modify(opt, &mut || {
-                    args.next()
-                        .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
-                })
-                .map_err(|f| f.message)?,
-            ));
-        }
-        let built = modifying(value).map_err(|f| f.message)?;
-        assert_eq!(built.argv, ["cat", "a", "b"]);
-        assert_eq!(
-            built.inputs,
-            [
-                Input::Text("a".into()),
-                Input::Key("Enter".parse()?),
-                Input::Paste("b".into()),
-                Input::Bytes(vec![b'c'])
-            ]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn every_name_is_a_shell_word() {
-        for name in Word::ALL.iter().map(|w| w.row().name) {
-            assert!(
-                !name.chars().any(|c| ";|&<>()$`*?[{!~#'\"\\".contains(c)),
-                "{name}: a character a shell treats specially"
-            );
-        }
-    }
-
-    #[test]
-    fn every_signal_is_told_of() {
-        let about = Word::Act(Act::Signal).row().about;
-        let (named, _) = about.split_once(',').unwrap_or_default();
-        let mut named: Vec<&str> = named.split_whitespace().collect();
-        let mut all = fuxix::process::Signal::ALL
-            .map(fuxix::process::Signal::name)
-            .to_vec();
-        named.sort_unstable();
-        all.sort_unstable();
-        assert_eq!(named, all);
-    }
-
-    #[test]
-    fn only_an_option_word_goes_on_a_request() {
-        let pad = usage("pad");
-        assert_eq!(
-            pad.as_deref(),
-            Some("use: X WIDTH FILL pad, which leaves s")
-        );
-        let name = usage("name").unwrap_or_default();
-        assert!(name.starts_with("use: PANE-OR-OPTS NAME name"), "{name}");
-    }
-
-    #[test]
-    fn modifiers_keep_the_target_and_baseline() -> TestResult {
-        let version: fux_wire::command::Version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
-            .parse()
-            .map_err(|()| "version")?;
-        let pane = Fux::Pane(version.pane, Some(version.run));
-        let tab = Fux::Tab(fux_wire::id::TabId::of(1), Some(version.run));
-        let workspace = Fux::Workspace(fux_wire::id::WsId::of(1), Some(version.run));
-        let client = Fux::Client(fux_wire::id::ClientId::of(1), Some(version.run));
-        let on = [
-            None,
-            Some(On::Target(AnyRef::Pane(version.pane))),
-            Some(On::Target(AnyRef::Tab(fux_wire::id::TabId::of(1)))),
-            Some(On::Target(AnyRef::Workspace(fux_wire::id::WsId::of(1)))),
-            Some(On::Client(fux_wire::id::ClientId::of(1))),
-            Some(On::Version(version)),
-            Some(On::Changed(version)),
-            Some(On::Seen(version)),
-        ];
-        let mut targets = vec![
-            pane,
-            tab,
-            workspace,
-            client,
-            Fux::Answer(
-                Rc::new(super::super::Answer::Pane(
-                    fux_wire::answer::PaneAnswer::Acted(version),
-                )),
-                Some(version.run),
-            ),
-            Fux::Answer(
-                Rc::new(super::super::Answer::Pane(
-                    fux_wire::answer::PaneAnswer::Closed(version.pane),
-                )),
-                Some(version.run),
-            ),
-        ];
-        targets.extend(on.map(|on| {
-            Fux::Opts(std::rc::Rc::new(Opts {
-                on,
-                ..Opts::default()
-            }))
-        }));
-        for target in targets {
-            let expected = modifying(Value::App(target.clone())).map_err(|f| f.message)?;
-            let kind = match target.name() {
-                "pane" | "answer" | "closed-answer" => "pane-request",
-                "tab" => "tab-request",
-                "workspace" => "workspace-request",
-                "client" => "client-request",
-                request => request,
-            };
-            for &opt in Opt::ALL
-                .iter()
-                .filter(|o| !matches!(o, Opt::Changed | Opt::Expect))
-            {
-                let effect = Word::Opt(opt).row().effect;
-                let pane_only = effect.starts_with("pane-builder");
-                if pane_only && !matches!(kind, "pane-request") {
-                    continue;
-                }
-                let args = match opt {
-                    Opt::HistoryBytes => vec![Value::Int(0)],
-                    Opt::Reflow => vec![Value::Bool(false)],
-                    Opt::AlternateScrollLines | Opt::PictureBytes => vec![Value::Int(0)],
-                    Opt::ProgramClipboard => vec![Value::Bool(false)],
-                    Opt::Name | Opt::Cwd | Opt::Program | Opt::Arg | Opt::Text | Opt::Paste => {
-                        vec![Value::str("x")]
-                    }
-                    Opt::ShellProgram => {
-                        vec![Value::List(std::rc::Rc::new(fuxth::List::new(vec![
-                            Value::str("sh"),
-                        ])))]
-                    }
-                    Opt::Size | Opt::Shares => vec![Value::Int(1), Value::Int(1)],
-                    Opt::Rows | Opt::Cols => vec![Value::Int(0), Value::Int(1)],
-                    Opt::Since => vec![Value::str("%1:0.0.0.0.0:1-1")],
-                    Opt::In => vec![Value::str("+1")],
-                    Opt::Timeout | Opt::History => vec![Value::Int(0)],
-                    Opt::Key => vec![Value::str("Enter")],
-                    Opt::Bytes => vec![Value::str("61")],
-                    Opt::Axis => vec![Value::str("horizontal")],
-                    Opt::Watch
-                    | Opt::KillFirst
-                    | Opt::Wrapped
-                    | Opt::Full
-                    | Opt::Styles
-                    | Opt::Marks
-                    | Opt::MainScreen
-                    | Opt::AltScreen
-                    | Opt::LastOutput
-                    | Opt::Changed
-                    | Opt::Expect => vec![],
-                };
-                // `arg` requires a program first, which preserves the same kind.
-                let initial = if opt == Opt::Arg {
-                    let mut built = expected.clone();
-                    std::rc::Rc::make_mut(&mut built).argv.push("sh".into());
-                    Fux::Opts(built)
-                } else {
-                    target.clone()
-                };
-                let mut values = std::iter::once(Value::App(initial)).chain(args.clone());
-                let actual = modify(opt, &mut || {
-                    values
-                        .next()
-                        .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
-                })
-                .map_err(|f| f.message)?;
-                assert_eq!(actual.on, expected.on, "{target:?} {opt}");
-                assert_eq!(Fux::Opts(actual).name(), kind, "{target:?} {opt}");
-            }
-        }
-        Ok(())
-    }
-
-    /// Each word, given stacks of every kind of value (a sample, the same
-    /// each run), fails only with a code its row declares.
-    #[test]
-    fn every_word_fails_only_with_the_codes_it_declares() -> TestResult {
-        use fux_wire::id::{ClientId, TabId, WsId};
-        let opts = std::rc::Rc::new(Opts::default());
-        let on_pane = Opts {
-            on: Some(On::Target(AnyRef::Pane(PaneId::of(1)))),
-            ..Opts::default()
-        };
-        let values = [
-            Value::Int(0),
-            Value::Int(-1),
-            Value::Int(80),
-            Value::str(""),
-            Value::str("x"),
-            Value::str("next"),
-            Value::Bool(true),
-            Value::List(Rc::new(fuxth::List::new(Vec::new()))),
-            Value::List(Rc::new(fuxth::List::new(vec![Value::str("a")]))),
-            Value::App(Fux::Pane(PaneId::of(1), None)),
-            Value::App(Fux::Tab(TabId::of(1), None)),
-            Value::App(Fux::Workspace(WsId::of(1), None)),
-            Value::App(Fux::Client(ClientId::of(1), None)),
-            Value::App(Fux::All),
-            Value::App(Fux::Null),
-            Value::App(Fux::Opts(opts)),
-            Value::App(Fux::Opts(Rc::new(on_pane))),
-            Value::App(Fux::Extent(Extent::Cells(3))),
-        ];
-        let mut draft = crate::script::default_state()?.draft();
-        let mut seed = 1u64;
-        let mut wrong = Vec::new();
-        for &word in Word::ALL {
-            let codes = word.codes();
-            let takes = word
-                .row()
-                .effect
-                .split_once("--")
-                .map_or(0, |(t, _)| t.split_whitespace().count());
-            for _ in 0..500 {
-                let mut stack = Vec::new();
-                for _ in 0..takes {
-                    seed = seed
-                        .wrapping_mul(6364136223846793005)
-                        .wrapping_add(1442695040888963407);
-                    let at = usize::try_from(seed >> 33).unwrap_or(0) % values.len();
-                    stack.extend(values.get(at).cloned());
-                }
-                let mut sink = Vec::new();
-                let mut host = Host::new(
-                    fux_wire::protocol::Context::default(),
-                    Some(&mut draft),
-                    &mut sink,
-                );
-                let mut stack = stack.into_iter();
-                let mut next = || (stack.next()).ok_or_else(|| fail(Raise::StackUnderflow, "test"));
-                if let Err(failure) = host.dispatch(word, &mut next, &mut Vec::new())
-                    && !codes.contains(&failure.code)
-                {
-                    wrong.push(format!(
-                        "{word:?}: {}: {}",
-                        failure.code.name(),
-                        failure.message
-                    ));
-                }
-            }
-        }
-        wrong.dedup();
-        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-        Ok(())
     }
 }

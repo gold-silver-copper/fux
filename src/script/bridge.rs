@@ -1,0 +1,722 @@
+//! Grift evaluates policy; native calls marshal into the existing request vocabulary.
+use super::*;
+use fux_wire::wire::{Reader, Sink, Wire};
+use grift::{Error, Grift, Value as G};
+
+#[derive(Clone, Debug)]
+pub struct Machine {
+    pub source: String,
+    pub name: String,
+    pub path: Option<std::path::PathBuf>,
+    config: Option<Config>,
+    args: Option<Vec<fux_wire::callback::Data>>,
+    callback: bool,
+}
+impl Machine {
+    pub fn source(name: &str, source: &str) -> Self {
+        Self {
+            source: source.to_owned(),
+            name: name.to_owned(),
+            path: None,
+            config: None,
+            args: None,
+            callback: false,
+        }
+    }
+}
+pub fn compile(source: &str) -> Result<Machine, Failed> {
+    Ok(Machine::source("program", source))
+}
+pub fn callback_machine(
+    config: Option<&Config>,
+    program: &crate::screens::Program,
+    args: Option<&[fux_wire::callback::Data]>,
+    stop: Option<&Stop>,
+) -> Result<Machine, Failed> {
+    if let Some(stop) = stop {
+        stop.check()?;
+    }
+    let (source, callback) = match program {
+        crate::screens::Program::Line(s) => (s.clone(), false),
+        crate::screens::Program::Code(c) => (c.source.clone(), true),
+    };
+    Ok(Machine {
+        config: config.cloned(),
+        args: args.map(<[_]>::to_vec),
+        callback,
+        ..Machine::source("key", &source)
+    })
+}
+struct Runtime<'a, 'b> {
+    host: &'a mut Host<'b>,
+    asks: &'a mut dyn Asks,
+    stop: Option<&'a Stop>,
+    configuring: bool,
+}
+type Interpreter<'a, 'b> = Grift<Runtime<'a, 'b>>;
+fn failure(g: &mut Interpreter<'_, '_>, f: Failure) -> Error {
+    let value = g.string(&f.message).unwrap_or(G::Inert);
+    g.error(f.code.name(), &[value])
+}
+fn failed(g: &Interpreter<'_, '_>, e: Error) -> Failed {
+    let mut message = String::new();
+    let _ = g.describe(&e, &mut message);
+    let kind = g.symbol_name(&e.kind).unwrap_or("fail");
+    Failed::new(
+        kind.parse().unwrap_or(Code::Fail),
+        message
+            .strip_prefix(kind)
+            .unwrap_or(&message)
+            .trim_start()
+            .to_owned(),
+    )
+}
+fn check(g: &mut Interpreter<'_, '_>, state: &mut Runtime<'_, '_>, _: &[G]) -> Result<G, Error> {
+    if let Some(stop) = state.stop {
+        stop.check()
+            .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+    }
+    Ok(G::Inert)
+}
+fn output(
+    g: &mut Interpreter<'_, '_>,
+    state: &mut Runtime<'_, '_>,
+    args: &[G],
+) -> Result<G, Error> {
+    for arg in args {
+        let v = from_grift(g, arg)?;
+        let text = v.text().map_err(|f| failure(g, f))?;
+        state
+            .host
+            .out
+            .write_all(text.as_bytes())
+            .map_err(|e| failure(g, Failure::new(Code::Output, e.to_string())))?;
+    }
+    Ok(G::Inert)
+}
+fn load<'a, 'b>(
+    g: &mut Interpreter<'a, 'b>,
+    state: &mut Runtime<'a, 'b>,
+    args: &[G],
+) -> Result<G, Error> {
+    let [path, context, once] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let path = g
+        .as_string(path)?
+        .ok_or_else(|| g.error("type-error", args))?;
+    let file = state
+        .host
+        .files
+        .resolve(&path, state.host.file.as_deref())
+        .map_err(|e| failure(g, Failure::new(Code::Require, e)))?;
+    let name = file.display().to_string();
+    if *once == G::Boolean(true) && state.host.files.required.contains(&file) {
+        return Ok(G::Inert);
+    }
+    if state.host.files.loading.contains(&file) {
+        return Err(failure(
+            g,
+            Failure::new(Code::Require, format!("{name}: import cycle")),
+        ));
+    }
+    let source = state
+        .host
+        .files
+        .read(&file)
+        .map_err(|e| failure(g, Failure::new(Code::Require, e)))?;
+    state.host.files.required.push(file.clone());
+    state.host.files.loading.push(file.clone());
+    let previous = state.host.file.replace(file);
+    let result = g.evaluate_in(state, context, &name, &source);
+    state.host.file = previous;
+    state.host.files.loading.pop();
+    result
+}
+fn request(
+    g: &mut Interpreter<'_, '_>,
+    state: &mut Runtime<'_, '_>,
+    args: &[G],
+) -> Result<G, Error> {
+    check(g, state, &[])?;
+    let Some((G::Symbol(name), args)) = args.split_first() else {
+        return Err(g.error("type-error", args));
+    };
+    let name = g.symbol_name(name)?.to_owned();
+    if name == "kind" {
+        let [v] = args else {
+            return Err(g.error("arity-error", args));
+        };
+        let v = from_grift(g, v)?;
+        let name = match &v {
+            Value::App(a) => a.name(),
+            _ => v.kind(),
+        };
+        return g.string(name);
+    }
+    if name == "string" {
+        let [v] = args else {
+            return Err(g.error("arity-error", args));
+        };
+        let v = from_grift(g, v)?;
+        let text = v.text().map_err(|f| failure(g, f))?;
+        return g.string(&text);
+    }
+    let Some(word) = Word::named(&name) else {
+        return Err(g.error("unbound-symbol", args));
+    };
+    let takes = word
+        .row()
+        .effect
+        .split_once("--")
+        .map_or(0, |(s, _)| s.split_whitespace().count());
+    if args.len() != takes {
+        return Err(g.error("arity-error", args));
+    }
+    if matches!(word, Word::Act(Act::Word | Act::Dictionary)) {
+        return dictionary(g, args);
+    }
+    let mut values = args
+        .iter()
+        .map(|v| from_grift(g, v))
+        .collect::<Result<Vec<_>, _>>()?;
+    if matches!(
+        word,
+        Word::Act(Act::Pane | Act::Tab | Act::Workspace | Act::Client)
+    ) {
+        if let Some(Value::Int(n)) = values.first() {
+            let prefix = match word {
+                Word::Act(Act::Pane) => "%",
+                Word::Act(Act::Tab) => "@",
+                Word::Act(Act::Workspace) => "+",
+                _ => "c",
+            };
+            values = vec![Value::str(format!("{prefix}{n}"))];
+        }
+        if let Some(Value::Str(s)) = values.first() {
+            // FUX_PANE includes its program generation, which remains in Context.
+            if matches!(word, Word::Act(Act::Pane))
+                && let Some((id, _)) = s.split_once(':')
+            {
+                values = vec![Value::str(id)];
+            }
+        }
+    }
+    let id = Word::ALL
+        .iter()
+        .position(|w| *w == word)
+        .ok_or_else(|| g.error("unbound-symbol", args))?;
+    let mut out = Vec::new();
+    let done = state
+        .host
+        .call(id, values, &mut out)
+        .map_err(|f| failure(g, f))?;
+    match done {
+        Done::Now => {}
+        Done::Later(Ask::Server {
+            request,
+            client,
+            of,
+        }) => {
+            if state.configuring {
+                return Err(failure(
+                    g,
+                    Failure::new(Code::NotConfig, "a config changes only its client state"),
+                ));
+            }
+            if let Some(draft) = state.host.state.as_deref_mut() {
+                state
+                    .asks
+                    .checkpoint(draft, state.host.context.clone())
+                    .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+            }
+            let mut context = state.host.context.clone();
+            context.client = client.or(context.client);
+            context.of = of;
+            let asked = Asked {
+                after: None,
+                context,
+                request: *request,
+            };
+            let reply = state
+                .asks
+                .ask(&asked)
+                .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+            if let End::Failed { code, message } = reply.end() {
+                let answer =
+                    answered(reply).map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+                let mut values = vec![g.string(&message)?];
+                for v in answer {
+                    values.push(to_grift(g, &v)?);
+                }
+                return Err(g.error(code.name(), &values));
+            }
+            if acts(&asked.request) {
+                state.host.actions.push(name.clone());
+            }
+            out = answered(reply).map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+        }
+        Done::Later(Ask::Local(what)) => {
+            if matches!(what, Local::Attach { .. }) {
+                state
+                    .host
+                    .prepare()
+                    .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+            }
+            if state.configuring
+                && !matches!(
+                    what,
+                    Local::Shell(Shell::Getenv(_) | Shell::Warn(_) | Shell::Args)
+                )
+            {
+                return Err(failure(
+                    g,
+                    Failure::new(Code::NotConfig, "a config changes only its client state"),
+                ));
+            }
+            out = state
+                .asks
+                .local(&what, state.host.state.as_deref_mut(), state.host.out)
+                .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+            if matches!(what, Local::Shell(Shell::Exit(_))) {
+                return Err(g.error("fux-exit", &[]));
+            }
+        }
+        Done::Later(Ask::Dictionary(_) | Ask::Code(_)) => {
+            return Err(g.error("unbound-symbol", args));
+        }
+    }
+    match out.as_slice() {
+        [] => Ok(G::Inert),
+        [v] => to_grift(g, v),
+        xs => {
+            let xs = xs
+                .iter()
+                .map(|v| to_grift(g, v))
+                .collect::<Result<Vec<_>, _>>()?;
+            g.list(&xs)
+        }
+    }
+}
+fn dictionary(g: &mut Interpreter<'_, '_>, args: &[G]) -> Result<G, Error> {
+    let top = g.top_level();
+    let mut entries = Vec::new();
+    let wanted = match args {
+        [] => None,
+        [v] => g.as_string(v)?,
+        _ => return Err(g.error("arity-error", args)),
+    };
+    for name in g.names(&top)? {
+        let text = g.symbol_name(&name)?.to_owned();
+        if wanted.as_ref().is_some_and(|n| n != &text) {
+            continue;
+        }
+        let Some(v) = g.lookup(&top, &name)? else {
+            continue;
+        };
+        let record = g.context(None)?;
+        let key = g.symbol("name")?;
+        let val = g.string(&text)?;
+        g.bind(&record, &G::Symbol(key), val)?;
+        let key = g.symbol("definition")?;
+        let mut source = String::new();
+        let _ = g.write(&v, &mut source);
+        let val = g.string(&source)?;
+        g.bind(&record, &G::Symbol(key), val)?;
+        entries.push(record);
+    }
+    if wanted.is_some() {
+        entries.pop().ok_or_else(|| g.error("unbound-symbol", args))
+    } else {
+        g.list(&entries)
+    }
+}
+pub(super) fn run(
+    machine: &mut Machine,
+    host: &mut Host<'_>,
+    asks: &mut dyn Asks,
+    stop: Option<&Stop>,
+) -> Result<Vec<Value<Fux>>, Failed> {
+    let mut g = Grift::new().map_err(|_| Failed::new(Code::Memory, "initializing grift"))?;
+    for (name, function) in [
+        (
+            "native-request",
+            request as grift::HostFunction<Runtime<'_, '_>>,
+        ),
+        ("display", output),
+        ("load-source", load),
+        ("native-check-stop", check),
+    ] {
+        let f = g.host_function(name, function).map_err(|e| failed(&g, e))?;
+        g.define(name, f).map_err(|e| failed(&g, e))?;
+    }
+    let mut runtime = Runtime {
+        host,
+        asks,
+        stop,
+        configuring: false,
+    };
+    let mut definitions = String::new();
+    for word in Word::ALL {
+        let name = word.row().name;
+        if name == "json" {
+            continue;
+        }
+        definitions.push_str(&format!(
+            "(define! {name} (lambda! args (apply native-request (pair (quote! {name}) args))))\n"
+        ));
+    }
+    definitions.push_str("(define! kind (lambda! (v) (native-request (quote! kind) v)))\n(define! string (lambda! (v) (native-request (quote! string) v)))\n");
+    let top = g.top_level();
+    g.evaluate_in(&mut runtime, &top, "native operations", &definitions)
+        .map_err(|e| failed(&g, e))?;
+    g.evaluate_in(&mut runtime, &top, "library.grift", LIBRARY)
+        .map_err(|e| failed(&g, e))?;
+    g.seal_library();
+    if let Some(config) = &machine.config {
+        let previous = runtime.host.state.as_deref().cloned();
+        if let Some(draft) = runtime.host.state.as_deref_mut() {
+            *draft = default_state()?.draft();
+        }
+        let context = std::mem::take(&mut runtime.host.context);
+        runtime.configuring = true;
+        runtime.host.files = source::Files::frozen(Arc::clone(config));
+        runtime.host.file = config.path.clone();
+        let loaded = g.evaluate_in(&mut runtime, &top, &config.name, &config.text);
+        runtime.host.context = context;
+        runtime.configuring = false;
+        runtime.host.files = source::Files::sealed();
+        runtime.host.file = None;
+        if let (Some(draft), Some(previous)) = (runtime.host.state.as_deref_mut(), previous) {
+            *draft = previous;
+        }
+        loaded.map_err(|e| failed(&g, e))?;
+    }
+    if let Some(stop) = stop {
+        stop.check()?;
+        if let Ok(mut held) = stop.interrupt.lock() {
+            *held = Some(g.interrupter());
+        }
+    }
+    runtime.host.file = machine.path.clone();
+    let program = if machine.callback {
+        let mut args = Vec::new();
+        for arg in machine.args.as_deref().unwrap_or_default() {
+            let v = callback::value(arg)?;
+            args.push(to_grift(&mut g, &v).map_err(|e| failed(&g, e))?);
+        }
+        let args = g.list(&args).map_err(|e| failed(&g, e))?;
+        g.define("callback-arguments", args)
+            .map_err(|e| failed(&g, e))?;
+        format!(
+            "(native-check-stop) (apply {} callback-arguments)",
+            machine.source
+        )
+    } else {
+        format!("(native-check-stop) {}", machine.source)
+    };
+    let result = g.evaluate_in(&mut runtime, &top, &machine.name, &program);
+    if let Some(stop) = stop
+        && let Ok(mut held) = stop.interrupt.lock()
+    {
+        *held = None;
+    }
+    match result {
+        Ok(G::Inert) => Ok(Vec::new()),
+        Ok(v) => from_grift(&mut g, &v)
+            .map(|v| vec![v])
+            .map_err(|e| failed(&g, e)),
+        Err(e) if g.is_kind(&e, "fux-exit").unwrap_or(false) => Ok(Vec::new()),
+        Err(e) => {
+            let mut f = failed(&g, e);
+            f.actions = runtime.host.actions.clone();
+            Err(f)
+        }
+    }
+}
+
+// Typed native values are inert data. Bytes carry checked wire encodings for
+// options and observations; records remain contexts with ordinary grift fields.
+fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
+    Ok(match v {
+        Value::Int(n) => G::Integer(*n),
+        Value::Bool(b) => G::Boolean(*b),
+        Value::Str(s) => g.string(s)?,
+        Value::Bytes(b) => g.bytes(b)?,
+        Value::List(xs) => {
+            let items = xs
+                .items()
+                .iter()
+                .map(|v| to_grift(g, v))
+                .collect::<Result<Vec<_>, _>>()?;
+            g.list(&items)?
+        }
+        Value::App(Fux::Null) => G::EmptyList,
+        Value::App(Fux::Code(code)) => {
+            let forms = g.read(&code.source)?;
+            let form = g
+                .list_items(&forms)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| g.error("parse-error", &[]))?;
+            let tag = g.symbol("code")?;
+            g.list(&[G::Symbol(tag), form])?
+        }
+        Value::App(Fux::Record(r)) => {
+            let context = g.context(None)?;
+            for (k, v) in &r.fields {
+                let key = g.symbol(&k.replace('_', "-"))?;
+                let value = to_grift(g, v)?;
+                g.bind(&context, &G::Symbol(key), value)?;
+            }
+            if let Some(run) = r.of {
+                let key = g.symbol("observation-run")?;
+                let value = g.string(&run.to_string())?;
+                g.bind(&context, &G::Symbol(key), value)?;
+            }
+            context
+        }
+        Value::App(app) => {
+            let bytes = encode_app(app);
+            let data = g.bytes(&bytes)?;
+            let tag = g.symbol("native-value")?;
+            g.list(&[G::Symbol(tag), data])?
+        }
+    })
+}
+fn from_grift(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error> {
+    Ok(match v {
+        G::Integer(n) => Value::Int(*n),
+        G::Boolean(b) => Value::Bool(*b),
+        G::String(_) => Value::str(g.as_string(v)?.unwrap_or_default()),
+        G::Bytes(_) => Value::Bytes(Rc::new(g.as_bytes(v)?.unwrap_or_default().to_vec())),
+        G::EmptyList => Value::List(Rc::new(List::new(Vec::new()))),
+        G::Symbol(s) => Value::str(g.symbol_name(s)?.to_owned()),
+        G::Pair(_) => {
+            let items = g.list_items(v)?;
+            match items.as_slice() {
+                [G::Symbol(tag), data] if g.symbol_name(tag)? == "native-value" => {
+                    let Some(bytes) = g.as_bytes(data)? else {
+                        return Err(g.error("type-error", &[data.clone()]));
+                    };
+                    let app = decode_app(bytes)
+                        .map_err(|e| failure(g, Failure::new(Code::BadValue, e.to_string())))?;
+                    Value::App(app)
+                }
+                [G::Symbol(tag), form] if g.symbol_name(tag)? == "code" => {
+                    let mut source = String::new();
+                    g.write(form, &mut source)
+                        .map_err(|_| g.error("bad-value", &[form.clone()]))?;
+                    Value::App(Fux::Code(Rc::new(fux_wire::callback::Code { source })))
+                }
+                _ => Value::List(Rc::new(List::new(
+                    items
+                        .iter()
+                        .map(|v| from_grift(g, v))
+                        .collect::<Result<_, _>>()?,
+                ))),
+            }
+        }
+        G::Context(_) => {
+            let mut fields = Vec::new();
+            let mut run = None;
+            for key in g.names(v)? {
+                let name = g.symbol_name(&key)?.to_owned();
+                let Some(value) = g.lookup(v, &key)? else {
+                    continue;
+                };
+                if name == "observation-run" {
+                    run = g.as_str(&value)?.and_then(|s| s.parse().ok());
+                } else {
+                    fields.push((name, from_grift(g, &value)?));
+                }
+            }
+            record::from_fields(fields, run).map_err(|f| failure(g, f))?
+        }
+        _ => return Err(g.error("type-error", &[v.clone()])),
+    })
+}
+fn encode_app(v: &Fux) -> Vec<u8> {
+    let mut out = Vec::new();
+    match v {
+        Fux::Null => 0u8.put(&mut out),
+        Fux::All => 1u8.put(&mut out),
+        Fux::Pane(p, r) => {
+            2u8.put(&mut out);
+            p.put(&mut out);
+            r.put(&mut out)
+        }
+        Fux::Tab(p, r) => {
+            3u8.put(&mut out);
+            p.put(&mut out);
+            r.put(&mut out)
+        }
+        Fux::Workspace(p, r) => {
+            4u8.put(&mut out);
+            p.put(&mut out);
+            r.put(&mut out)
+        }
+        Fux::Client(p, r) => {
+            5u8.put(&mut out);
+            p.put(&mut out);
+            r.put(&mut out)
+        }
+        Fux::Opts(opts) => {
+            6u8.put(&mut out);
+            opts.put(&mut out)
+        }
+        Fux::Extent(e) => {
+            7u8.put(&mut out);
+            e.put(&mut out)
+        }
+        Fux::Answer(a, run) => match &**a {
+            Answer::Pane(p) => {
+                8u8.put(&mut out);
+                run.put(&mut out);
+                p.put(&mut out)
+            }
+            Answer::Panes(ps) => {
+                9u8.put(&mut out);
+                run.put(&mut out);
+                ps.put(&mut out)
+            }
+            Answer::Capture(c) => {
+                10u8.put(&mut out);
+                run.put(&mut out);
+                c.put(&mut out)
+            }
+        },
+        Fux::Record(_) | Fux::Code(_) => {}
+    };
+    out
+}
+fn decode_app(bytes: &[u8]) -> Result<Fux, fux_wire::wire::Error> {
+    let mut r = Reader::new(bytes);
+    let tag = u8::get(&mut r)?;
+    Ok(match tag {
+        0 => Fux::Null,
+        1 => Fux::All,
+        2 => Fux::Pane(Wire::get(&mut r)?, Wire::get(&mut r)?),
+        3 => Fux::Tab(Wire::get(&mut r)?, Wire::get(&mut r)?),
+        4 => Fux::Workspace(Wire::get(&mut r)?, Wire::get(&mut r)?),
+        5 => Fux::Client(Wire::get(&mut r)?, Wire::get(&mut r)?),
+        6 => Fux::Opts(Rc::new(Wire::get(&mut r)?)),
+        7 => Fux::Extent(Wire::get(&mut r)?),
+        8..=10 => {
+            let run = Wire::get(&mut r)?;
+            let a = match tag {
+                8 => Answer::Pane(Wire::get(&mut r)?),
+                9 => Answer::Panes(Wire::get(&mut r)?),
+                _ => Answer::Capture(Wire::get(&mut r)?),
+            };
+            Fux::Answer(Rc::new(a), run)
+        }
+        _ => return Err(fux_wire::wire::Error::Bad("native value")),
+    })
+}
+
+impl Wire for Opts {
+    fn put(&self, out: &mut impl Sink) {
+        self.on.put(out);
+        self.of.put(out);
+        self.name.put(out);
+        self.size.put(out);
+        self.cwd.put(out);
+        self.argv.put(out);
+        self.shell.put(out);
+        self.history_bytes.put(out);
+        self.reflow.put(out);
+        self.alternate_scroll_lines.put(out);
+        self.picture_bytes.put(out);
+        self.program_clipboard.put(out);
+        self.axis.put(out);
+        self.shares.put(out);
+        self.place.put(out);
+        self.kill.put(out);
+        self.watch.put(out);
+        self.timeout.put(out);
+        self.view.put(out);
+        self.history.put(out);
+        self.inputs.put(out);
+        self.given.put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, fux_wire::wire::Error> {
+        Ok(Self {
+            on: Wire::get(r)?,
+            of: Wire::get(r)?,
+            name: Wire::get(r)?,
+            size: Wire::get(r)?,
+            cwd: Wire::get(r)?,
+            argv: Wire::get(r)?,
+            shell: Wire::get(r)?,
+            history_bytes: Wire::get(r)?,
+            reflow: Wire::get(r)?,
+            alternate_scroll_lines: Wire::get(r)?,
+            picture_bytes: Wire::get(r)?,
+            program_clipboard: Wire::get(r)?,
+            axis: Wire::get(r)?,
+            shares: Wire::get(r)?,
+            place: Wire::get(r)?,
+            kill: Wire::get(r)?,
+            watch: Wire::get(r)?,
+            timeout: Wire::get(r)?,
+            view: Wire::get(r)?,
+            history: Wire::get(r)?,
+            inputs: Wire::get(r)?,
+            given: Wire::get(r)?,
+        })
+    }
+}
+impl Wire for On {
+    fn put(&self, out: &mut impl Sink) {
+        match self {
+            Self::Target(v) => {
+                0u8.put(out);
+                v.put(out)
+            }
+            Self::Client(v) => {
+                1u8.put(out);
+                v.put(out)
+            }
+            Self::Version(v) => {
+                2u8.put(out);
+                v.put(out)
+            }
+            Self::Changed(v) => {
+                3u8.put(out);
+                v.put(out)
+            }
+            Self::Seen(v) => {
+                4u8.put(out);
+                v.put(out)
+            }
+        }
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, fux_wire::wire::Error> {
+        Ok(match u8::get(r)? {
+            0 => Self::Target(Wire::get(r)?),
+            1 => Self::Client(Wire::get(r)?),
+            2 => Self::Version(Wire::get(r)?),
+            3 => Self::Changed(Wire::get(r)?),
+            4 => Self::Seen(Wire::get(r)?),
+            _ => return Err(fux_wire::wire::Error::Bad("request subject")),
+        })
+    }
+}
+impl Wire for Opt {
+    fn put(&self, out: &mut impl Sink) {
+        let n = Self::ALL
+            .iter()
+            .position(|v| v == self)
+            .and_then(|n| u8::try_from(n).ok())
+            .unwrap_or(u8::MAX);
+        n.put(out)
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, fux_wire::wire::Error> {
+        let n = u8::get(r)?;
+        Self::ALL
+            .get(usize::from(n))
+            .copied()
+            .ok_or(fux_wire::wire::Error::Bad("option"))
+    }
+}

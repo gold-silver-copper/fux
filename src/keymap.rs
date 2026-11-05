@@ -17,7 +17,6 @@ use fux_vt::keys::{Key, KeyPress, Keystroke, Modifiers};
 use fux_wire::act::ScreenAct;
 use fux_wire::act::{Act, Column, ColumnEntry, Edit, Hint, LineAct, ListAct, Move, Panel};
 use fux_wire::callback::{Code, Data};
-use fux_wire::words::quote;
 
 /// What a key runs: a code value, what the column says it does, and the
 /// group the column lists it under.
@@ -42,13 +41,14 @@ impl Binding {
     /// The config line that binds `keys` to it: its label and group too,
     /// unless they are what `bind` gives.
     fn line(&self, keys: &str) -> String {
-        let mut line = format!("str {} code {} end bind", quote(keys), self.code.text());
+        let mut line = format!("(bind-key {keys:?} (code! {}))", self.code.text());
         if self.label != self.code.text() {
-            line += &format!("  str {} label", quote(&self.label));
+            line += &format!(" (label {:?})", self.label);
         }
         if self.group != OTHER_GROUP {
-            line += &format!("  str {} group", quote(&self.group));
+            line += &format!(" (group {:?})", self.group);
         }
+
         line
     }
 }
@@ -402,12 +402,10 @@ impl Keymap {
             Entry::Map(_) => None,
         });
         let repeats = all.iter().filter_map(|(keys, entry)| match entry {
-            Entry::Map(map) if map.repeat => {
-                Some(format!("str {} repeat\n", quote(&keys_text(keys))))
-            }
+            Entry::Map(map) if map.repeat => Some(format!("(repeat {:?})\n", keys_text(keys))),
             Entry::Run(_) | Entry::Map(_) => None,
         });
-        std::iter::once("unbind-all\n".to_owned())
+        std::iter::once("(unbind-all)\n".to_owned())
             .chain(bound)
             .chain(repeats)
             .chain([self.modes.lines()])
@@ -599,8 +597,8 @@ impl Held {
     fn watching(&mut self, keymap: &Keymap, press: KeyPress) -> Vec<Effect> {
         let prefixed = matches!(std::mem::take(self), Held::Prefixed(_));
         if prefixed && press == KeyPress::char('d') {
-            let detach = ["me", "detach"].map(String::from).into();
-            return vec![Effect::Run(Code { words: detach }.into())];
+            let source = "(lambda! () (detach (me)))".to_owned();
+            return vec![Effect::Run(Code { source }.into())];
         }
         if !prefixed && keymap.leads(press) {
             *self = Held::Prefixed(press);
@@ -805,12 +803,14 @@ impl<A: Named> Bindable for Table<A> {
 
     fn lines(&self, modal: &str) -> String {
         let line = |(key, act, label): &(KeyPress, A, Option<String>)| {
-            let key = quote(&key.to_string());
-            let label = label.as_ref().map(|l| format!("  str {} label", quote(l)));
-            let label = label.unwrap_or_default();
+            let key = key.to_string();
+            let label = label
+                .as_ref()
+                .map(|l| format!(" (label {l:?})"))
+                .unwrap_or_default();
             match act.source() {
-                Some(code) => format!("str {key} code {} end bind-action{label}\n", code.text()),
-                None => format!("str {modal} str {key} str {} bind-in{label}\n", act.name()),
+                Some(code) => format!("(bind-action {key:?} (code! {})){label}\n", code.text()),
+                None => format!("(bind-in {modal:?} {key:?} {:?}){label}\n", act.name()),
             }
         };
         self.0.iter().map(line).collect()

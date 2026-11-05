@@ -31,7 +31,6 @@ fuxix = { path = "../fuxix", version = "0.9.0" }
 fux = { path = "..", features = ["in-process"] }
 fux-wire = { path = "../fux-wire", features = ["testing"] }
 fux-vt-peak = { path = "../fux-vt/peak" }
-fuxth = { path = "../fuxth" }
 
 [lints]
 workspace = true

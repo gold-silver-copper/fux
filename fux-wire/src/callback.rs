@@ -139,15 +139,14 @@ wire! {
     /// dictionary. Only a program's own source makes one, never a string.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Code {
-        pub words: Vec<String>,
+        pub source: String,
     }
 }
 
 impl Code {
-    /// Its words as written: each quoted as fuxth reads it back.
+    /// Its grift form, written when a program explicitly made code.
     pub fn text(&self) -> String {
-        let words: Vec<String> = self.words.iter().map(|w| crate::words::quote(w)).collect();
-        words.join(" ")
+        self.source.clone()
     }
 }
 
