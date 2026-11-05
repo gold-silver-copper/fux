@@ -333,7 +333,6 @@ words! {
         Reading Capture "capture" "capture-source -- capture-source" raises(Type Unused asks) "a pane's observation (its facts, as info gives them) with its screen, read with its options; or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols Since];
         Reading Snapshot "snapshot" "snapshot-scope projection -- record" raises(Type asks) "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
         Reading Get "get" "readable field -- value" raises(Type NoField Range TooLong asks) "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux %3 str program get str exited get" [];
-        Reading Json "json" "value -- string" raises(Unused) "value as JSON (an answer as its JSON); a failure as its fields, a failed wait's answer its value" "fux ls json" [];
         Reading NextEvents "next-events" "event-scope cursor secs -- record" raises(Type Range asks) "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux all str '' 0 next-events json" [];
         Changing Kill "kill" "scope --" raises(Type asks) "close a pane, tab or workspace, or all of them, without asking" "fux %3 kill" [];
         Changing Rename "rename" "handle text --" raises(Type asks) "rename a pane, tab or workspace, to a name no other one has" "fux %3 str editor rename" [];
@@ -498,7 +497,7 @@ fn wrong(wanted: &str, got: &Value<Fux>) -> Failure {
 }
 
 fn string(value: &Value<Fux>) -> Result<String, Failure> {
-    let Value::Str(s) = value else {
+    let (Value::Str(s) | Value::Symbol(s)) = value else {
         return Err(wrong("a string", value));
     };
     Ok(s.to_string())
@@ -507,7 +506,7 @@ fn string(value: &Value<Fux>) -> Result<String, Failure> {
 /// A value as words that take text read it: a string, or a number.
 fn text(value: &Value<Fux>) -> Result<String, Failure> {
     match value {
-        Value::Str(_) => string(value),
+        Value::Str(_) | Value::Symbol(_) => string(value),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
         other @ (Value::Printed(_)
@@ -625,6 +624,7 @@ fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
         Value::App(Fux::All) => Ok(None),
         value @ (Value::Printed(_)
         | Value::Float(_)
+        | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
         | Value::Bool(_)
@@ -698,6 +698,7 @@ fn held(value: &Value<Fux>) -> Option<fux_wire::command::Version> {
         },
         Value::Printed(_)
         | Value::Float(_)
+        | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
         | Value::Bool(_)
@@ -722,6 +723,7 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
         Value::Str(text) => text,
         other @ (Value::Printed(_)
         | Value::Float(_)
+        | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
         | Value::Bool(_)
@@ -747,6 +749,7 @@ fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
         Value::App(Fux::Opts(built)) => built,
         other @ (Value::Printed(_)
         | Value::Float(_)
+        | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
         | Value::Bool(_)
@@ -925,6 +928,7 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
         Value::App(Fux::Opts(built)) => owned(built),
         other @ (Value::Printed(_)
         | Value::Float(_)
+        | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
         | Value::Bool(_)
@@ -972,6 +976,7 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
         }
         other @ (Value::Printed(_)
         | Value::Float(_)
+        | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
         | Value::Bool(_)
@@ -1062,29 +1067,6 @@ pub(super) fn takers(word: Option<Word>) -> String {
     fux_wire::words::listed(&names, "or")
 }
 
-/// The bytes `hex` spells, two digits each (`1b5b41`, `c3 a9`; blanks
-/// between bytes ignored).
-fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
-    let bad = || {
-        fail(
-            Raise::BadValue,
-            format!("{hex:?}: bytes in hex, two digits each: 1b5b41"),
-        )
-    };
-    let mut digits = hex
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .map(|c| c.to_digit(16));
-    let mut bytes = Vec::new();
-    while let Some(high) = digits.next() {
-        let (Some(high), Some(Some(low))) = (high, digits.next()) else {
-            return Err(bad());
-        };
-        bytes.extend(u8::try_from(high.saturating_mul(16).saturating_add(low)).ok());
-    }
-    (!bytes.is_empty()).then_some(bytes).ok_or_else(bad)
-}
-
 /// `resize-pane`: an explicit axis and extent, cells or a percent.
 fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Done<Ask>, Failure> {
     let target = pane(&next()?)?;
@@ -1093,6 +1075,7 @@ fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Do
         v @ Value::Int(_) => Extent::Cells(within(&v, CELL)?),
         other @ (Value::Printed(_)
         | Value::Float(_)
+        | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Bool(_)
         | Value::Str(_)
@@ -1122,7 +1105,7 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
         return Ok(Done::Now);
     }
     match found {
-        Value::Str(s) => {
+        Value::Str(s) | Value::Symbol(s) => {
             let text: &str = &s;
             // An empty name never names the caller's pane, which `here` is.
             if text.trim().is_empty() {
@@ -1251,6 +1234,7 @@ impl Host<'_> {
                 }
                 Value::Printed(_)
                 | Value::Float(_)
+                | Value::Symbol(_)
                 | Value::Bytes(_)
                 | Value::Int(_)
                 | Value::Bool(_)
@@ -1544,6 +1528,7 @@ impl Host<'_> {
                     Value::App(Fux::Record(_) | Fux::Answer(..)) => None,
                     value @ (Value::Printed(_)
                     | Value::Float(_)
+                    | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
                     | Value::Bool(_)
@@ -1568,6 +1553,7 @@ impl Host<'_> {
                     ),
                     other @ (Value::Printed(_)
                     | Value::Float(_)
+                    | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
                     | Value::Bool(_)
@@ -1576,10 +1562,6 @@ impl Host<'_> {
                     | Value::App(_)) => Err(wrong("a handle or held observation", &other)),
                 }
             }
-            Act::Json => Err(fail(
-                Raise::BadValue,
-                "records are grift data; JSON was removed",
-            )),
             Act::NextEvents => {
                 let scope = observation_scope(&next()?)?;
                 let text = string(&next()?)?;
@@ -1616,6 +1598,7 @@ impl Host<'_> {
                     Value::App(Fux::Client(c, _)) => Err(c),
                     value @ (Value::Printed(_)
                     | Value::Float(_)
+                    | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
                     | Value::Bool(_)
@@ -1752,6 +1735,7 @@ impl Host<'_> {
                     }
                     value @ (Value::Printed(_)
                     | Value::Float(_)
+                    | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
                     | Value::Bool(_)
@@ -1772,6 +1756,7 @@ impl Host<'_> {
                     Value::Str(_) => SwapWith::Toward(direction(&value)?),
                     value @ (Value::Printed(_)
                     | Value::Float(_)
+                    | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
                     | Value::Bool(_)
@@ -1973,6 +1958,7 @@ impl Host<'_> {
                     })?,
                     Value::Printed(_)
                     | Value::Float(_)
+                    | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
                     | Value::Bool(_)
@@ -2087,6 +2073,7 @@ impl Host<'_> {
             })?,
             Value::Printed(_)
             | Value::Float(_)
+            | Value::Symbol(_)
             | Value::Bytes(_)
             | Value::Int(_)
             | Value::Bool(_)

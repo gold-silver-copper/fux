@@ -8,7 +8,7 @@ use support::*;
 fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     let server = Server::start("")?;
     std::fs::write(
-        server.dir.join("config/fux/config.fux"),
+        server.dir.join("config/fux/config.grift"),
         "(sequence! (set \"shell\" (list \"/no/such/leaked-shell\")) (move-keys \"C-b\" \"C-a\") #inert)",
     )
     .map_err(e)?;
@@ -186,13 +186,13 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     a.wait_for("$")?;
     b.wait_for("$")?;
     let before = server.ok(&["(listing (list-session))"])?;
-    std::fs::write(directory.join("config.fux"), "require shared.fux").map_err(e)?;
+    std::fs::write(directory.join("config.grift"), "require shared.fux").map_err(e)?;
     std::fs::write(
         directory.join("shared.fux"),
         "(sequence! (set \"titles\" #true) (set \"history-bytes\" 0) #inert)",
     )
     .map_err(e)?;
-    let configured = fux::script::run_file(&directory.join("config.fux")).map_err(e)?;
+    let configured = fux::script::run_file(&directory.join("config.grift")).map_err(e)?;
     assert_eq!(configured.preferences.history_bytes.get(), 0);
     assert!(configured.preferences.titles);
     assert_eq!(server.ok(&["(listing (list-session))"])?, before);
@@ -206,7 +206,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     )
     .map_err(e)?;
     let before = server.ok(&["(listing (list-session))"])?;
-    let failed = fux::script::run_file(&directory.join("config.fux"))
+    let failed = fux::script::run_file(&directory.join("config.grift"))
         .err()
         .ok_or("config acted on the server")?;
     assert_eq!(failed.code, fux_wire::code::Code::NotConfig);
@@ -234,7 +234,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
 #[test]
 fn a_bad_config_is_reported() -> Outcome {
     let server = Server::start("")?;
-    let config = server.dir.join("config").join("fux").join("config.fux");
+    let config = server.dir.join("config").join("fux").join("config.grift");
     std::fs::write(&config, "(sequence! (move-keys \"Nope\" \"C-a\") #inert)").map_err(e)?;
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
     terminal.wait_for("bad_binding: move-keys:")?;
@@ -250,7 +250,7 @@ fn a_bad_config_is_reported() -> Outcome {
         .err()
         .ok_or("frobnicate ran")?;
     assert!(
-        failed.to_string().contains("config.fux:2: frobnicate"),
+        failed.to_string().contains("config.grift:2: frobnicate"),
         "{failed}"
     );
     std::fs::write(&config, "(sequence! (move-keys \"C-b\" \"C-a\") #inert)").map_err(e)?;
@@ -268,9 +268,12 @@ fn a_bad_config_is_reported() -> Outcome {
         .err()
         .ok_or(text)?
         .to_string();
-    assert!(failed.contains(&path.replace("config.fux", "")), "{failed}");
     assert!(
-        failed.contains("config.fux:2: sr: no such word"),
+        failed.contains(&path.replace("config.grift", "")),
+        "{failed}"
+    );
+    assert!(
+        failed.contains("config.grift:2: sr: no such word"),
         "{failed}"
     );
     Ok(())
@@ -280,7 +283,7 @@ fn a_bad_config_is_reported() -> Outcome {
 #[test]
 fn optional_config_reports_read_failures() -> Outcome {
     let server = Server::start("")?;
-    let path = server.dir.join("config/fux/config.fux");
+    let path = server.dir.join("config/fux/config.grift");
     std::fs::remove_file(&path).map_err(e)?;
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
     terminal.wait_for("$")?;
@@ -294,7 +297,7 @@ fn optional_config_reports_read_failures() -> Outcome {
     for kind in ["broken", "loop", "directory", "non-text"] {
         match kind {
             "broken" => std::os::unix::fs::symlink("gone", &path).map_err(e)?,
-            "loop" => std::os::unix::fs::symlink("config.fux", &path).map_err(e)?,
+            "loop" => std::os::unix::fs::symlink("config.grift", &path).map_err(e)?,
             "directory" => std::fs::create_dir(&path).map_err(e)?,
             _ => std::fs::write(&path, [0xff]).map_err(e)?,
         }
@@ -324,7 +327,7 @@ fn optional_config_reports_read_failures() -> Outcome {
 #[test]
 fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
     let server = Server::start("")?;
-    let path = server.dir.join("config/fux/config.fux");
+    let path = server.dir.join("config/fux/config.grift");
     std::fs::write(&path, "(sequence! (set \"history-bytes\" -1) #inert)").map_err(e)?;
     let failure = fux::script::run_file(&path)
         .err()
@@ -336,7 +339,7 @@ fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
         "{notice}"
     );
     assert_eq!(notice.matches("config:").count(), 1);
-    assert!(notice.ends_with("config.fux:1)"), "{notice}");
+    assert!(notice.ends_with("config.grift:1)"), "{notice}");
     let mut terminal = Terminal::attach(&server, 10, 80, &[])?;
     terminal.wait_for("history-bytes: -1 is out of range")?;
     terminal.type_bytes(b"\x02d")?;
@@ -349,7 +352,7 @@ fn config_notices_show_the_cause_once_before_the_path() -> Outcome {
 #[test]
 fn the_config_words_examples_run_as_a_config() -> Outcome {
     let server = Server::start("")?;
-    let config = server.dir.join("config.fux");
+    let config = server.dir.join("config.grift");
     for word in ["bind", "move-keys", "repeat"] {
         let explained = server.ok(&[&format!(
             "(sequence! (explain {}) #inert)",
@@ -468,7 +471,7 @@ fn non_text_shell_defaults_report_the_library_fallback() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
     let server = Server::start("")?;
     let result = std::process::Command::new(FUX)
-        .arg("list-keys")
+        .arg("(list-keys)")
         .env("FUX_SOCKET", &server.socket)
         .env("SHELL", std::ffi::OsStr::from_bytes(b"/bin/\xffsh"))
         .env_remove("FUX_PANE")
@@ -491,7 +494,7 @@ fn non_text_shell_defaults_report_the_library_fallback() -> Outcome {
 fn explicit_settings_survive_a_failed_attach_config() -> Outcome {
     let server = Server::start("")?;
     std::fs::write(
-        server.dir.join("config/fux/config.fux"),
+        server.dir.join("config/fux/config.grift"),
         "(sequence! (unbind \"Nope\") #inert)",
     )
     .map_err(e)?;

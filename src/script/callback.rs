@@ -28,6 +28,7 @@ fn within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
         Value::Int(n) => Data::Int(*n),
         Value::Bool(b) => Data::Bool(*b),
         Value::Str(s) => Data::Text(s.to_string()),
+        Value::Symbol(s) => Data::Symbol(s.to_string()),
         Value::List(xs) => Data::List(
             xs.items()
                 .iter()
@@ -66,6 +67,7 @@ pub(super) fn value(v: &Data) -> Result<Value<Fux>, Failed> {
         Data::Int(n) => Value::Int(*n),
         Data::Bool(b) => Value::Bool(*b),
         Data::Text(s) => Value::str(s),
+        Data::Symbol(s) => Value::Symbol(Rc::new(s.clone())),
         Data::List(xs) => Value::List(Rc::new(List::new(
             xs.iter().map(value).collect::<Result<_, _>>()?,
         ))),
@@ -235,6 +237,7 @@ mod tests {
         let payload = Data::List(vec![
             Data::Null,
             Data::List(Vec::new()),
+            Data::Symbol("east".into()),
             Data::Bytes(vec![0, 255]),
             Data::FloatBits((-0.0f64).to_bits()),
         ]);

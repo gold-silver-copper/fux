@@ -523,6 +523,7 @@ fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
         Value::Int(n) => G::Integer(*n),
         Value::Bool(b) => G::Boolean(*b),
         Value::Str(s) => g.string(s)?,
+        Value::Symbol(s) => G::Symbol(g.symbol(s)?),
         Value::Bytes(b) => g.bytes(b)?,
         Value::List(xs) => {
             let items = xs
@@ -580,7 +581,7 @@ fn from_grift_at(g: &mut Interpreter<'_, '_>, v: &G, depth: u8) -> Result<Value<
         G::Bytes(_) => Value::Bytes(Rc::new(g.as_bytes(v)?.unwrap_or_default().to_vec())),
         G::EmptyList => Value::List(Rc::new(List::new(Vec::new()))),
         G::Symbol(s) if g.symbol_name(s)? == "none" => Value::App(Fux::Null),
-        G::Symbol(s) => Value::str(g.symbol_name(s)?.to_owned()),
+        G::Symbol(s) => Value::Symbol(Rc::new(g.symbol_name(s)?.to_owned())),
         G::Pair(_) => {
             let items = g.list_items(v)?;
             match items.as_slice() {

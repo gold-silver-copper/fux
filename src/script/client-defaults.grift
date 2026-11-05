@@ -1,5 +1,8 @@
 ; Defaults belong to each client.
-(set "shell" (list (catch-kind! (let! ((shell-value (environment-variable "SHELL"))) (if! (same? shell-value "") "/bin/sh" shell-value)) unset-variable failure "/bin/sh")))
+(set "shell" (list (catch-kind!
+  (catch-kind! (let! ((shell-value (environment-variable "SHELL"))) (if! (same? shell-value "") "/bin/sh" shell-value))
+    bad-value failure (warn (first (get failure "values"))) "/bin/sh")
+  unset-variable failure "/bin/sh")))
 (set "history-bytes" 8388608)
 (set "journal-entries" 16384)
 (set "reflow" #true)

@@ -2370,20 +2370,26 @@ mod tests {
             session.out(PaneId::of(1), output.as_bytes());
             check(&mut session)?;
         }
-        run(&mut session, "str %1 pane str horizontal axis split")?;
+        run(&mut session, "(split (axis (pane \"%1\") \"horizontal\"))")?;
         check(&mut session)?;
         session.out(PaneId::of(2), b"second pane");
         check(&mut session)?;
-        run(&mut session, "str %2 pane str vertical axis split")?;
+        run(&mut session, "(split (axis (pane \"%2\") \"vertical\"))")?;
         check(&mut session)?;
-        run(&mut session, "str c1 client dup focused str next step")?;
+        run(
+            &mut session,
+            "(sequence! (define! value-1360 (client \"c1\")) (step value-1360 (focused value-1360) \"next\") #inert)",
+        )?;
         check(&mut session)?;
         let focused = session.focused(client).ok_or("focused pane")?;
         assert!(compose(&session, client).ok_or("client")?.cursor.is_some());
         session.out(focused, b"\x1b[?25l");
         check(&mut session)?;
         assert!(compose(&session, client).ok_or("client")?.cursor.is_none());
-        run(&mut session, "str c1 client command-prompt")?;
+        run(
+            &mut session,
+            "(sequence! (command-prompt (client \"c1\")) #inert)",
+        )?;
         check(&mut session)?;
         session.input(client, b"\x1b");
         session.escape(client);
@@ -2397,7 +2403,10 @@ mod tests {
         check(&mut session)?;
         session.views.get_mut(&client).ok_or("client")?.notice = None;
         check(&mut session)?;
-        for command in ["%1 zoom", "str @1 tab str renamed rename"] {
+        for command in [
+            "(sequence! (zoom (pane 1)) #inert)",
+            "(sequence! (rename (tab \"@1\") \"renamed\") #inert)",
+        ] {
             run(&mut session, command)?;
             check(&mut session)?;
         }
@@ -2407,7 +2416,7 @@ mod tests {
         check(&mut session)?;
         session.out(PaneId::of(1), b"\r\na\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh");
         check(&mut session)?;
-        run(&mut session, "str %2 pane kill")?;
+        run(&mut session, "(sequence! (kill (pane \"%2\")) #inert)")?;
         check(&mut session)?;
         Ok(())
     }
@@ -2476,7 +2485,7 @@ mod tests {
     #[test]
     fn recomposing_clears_stale_cells_and_cursor() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(12, 50)?;
-        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
+        crate::session::testing::run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
         s.out(PaneId::of(2), "界 second\r\n\x1b[?25l".as_bytes());
         s.attach(8, 30, None)?;
         for (rows, cols) in [(12, 50), (3, 7), (12, 49), (40, 200)] {
@@ -2562,12 +2571,18 @@ mod tests {
         session.out(PaneId::of(1), b"\x1b]12;#00ff00\x07");
         assert!(paint(&session, &mut shown)?.contains("\x1b]12;#00ff00\x1b\\"));
         assert!(paint(&session, &mut shown)?.is_empty(), "unchanged colour");
-        crate::session::testing::run(&mut session, "str %1 pane str horizontal axis split")?;
-        crate::session::testing::run(&mut session, "str c1 client str %2 pane show")?;
+        crate::session::testing::run(&mut session, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        crate::session::testing::run(
+            &mut session,
+            "(sequence! (show (client \"c1\") (pane \"%2\")) #inert)",
+        )?;
         assert!(paint(&session, &mut shown)?.contains("\x1b]112\x1b\\"));
         session.out(PaneId::of(1), b"\x1b]12;#ff0000\x07");
         assert!(!paint(&session, &mut shown)?.contains("\x1b]12"));
-        crate::session::testing::run(&mut session, "str c1 client str %1 pane show")?;
+        crate::session::testing::run(
+            &mut session,
+            "(sequence! (show (client \"c1\") (pane \"%1\")) #inert)",
+        )?;
         assert!(paint(&session, &mut shown)?.contains("\x1b]12;#ff0000\x1b\\"));
         if let Some(view) = session.views.get_mut(&client) {
             view.mode = Mode::Panel(Panel::Repeat("repeat".into()));
@@ -2593,7 +2608,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "opts str agent in str / cwd str x program new-tab drop",
+            "(sequence! (new-tab (program (directory (in (options) \"agent\") \"/\") \"x\")) #inert)",
         )?;
         let id = s.focused(c).ok_or("the pane")?;
         let respawn = format!("{id} kill-first respawn");
@@ -2798,14 +2813,17 @@ mod tests {
         use crate::session::testing::{attached, output_as, run};
         let (mut session, client) = attached(8, 80)?;
         let other = session.attach(8, 80, None).map_err(|e| e.to_string())?;
-        run(&mut session, "%1 str horizontal axis split drop")?;
+        run(
+            &mut session,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+        )?;
         let (mut grid, mut placement) = (Grid::default(), Placement::default());
         assert!(compose_into(&session, client, &mut grid, &mut placement));
         assert!(grid.memo.is_some());
         output_as(
             &mut session,
             Some(client),
-            "str styles list list str border-focus str '#123456' str default str bold end end set",
+            "(sequence! (set \"styles\" (list (list \"border-focus\" \"#123456\" \"default\" \"bold\"))) #inert)",
         )?;
         assert!(compose_into(&session, client, &mut grid, &mut placement));
         let separator = placement.separators.first().ok_or("separator")?.rect;
@@ -2834,7 +2852,7 @@ mod tests {
         output_as(
             &mut session,
             Some(client),
-            "str styles list list str keys 101 102 end list str panel 103 104 end list str error 105 106 end end set",
+            "(sequence! (set \"styles\" (list (list \"keys\" 101 102) (list \"panel\" 103 104) (list \"error\" 105 106))) #inert)",
         )?;
         session.input(client, b"\x02");
         let grid = compose(&session, client).ok_or("column")?;
@@ -2862,15 +2880,22 @@ mod tests {
         output_as(
             &mut session,
             Some(client),
-            "str bar-slots list list 0 str 'me detach' end end set str bar list str top list list str slot 0 end str tabs str workspace end list str pane end true end set",
+            "(sequence! (set \"bar-slots\" (list (list 0 \"me detach\"))) (set \"bar\" (list \"top\" (list (list \"slot\" 0) \"tabs\" \"workspace\") (list \"pane\") #true)) #inert)",
         )?;
         let view = session.views.get(&client).ok_or("view")?;
         assert_eq!((view.pane_area().y(), view.pane_area().h()), (1, 7));
         let grid = compose(&session, client).ok_or("screen")?;
         let bar = grid.row_text(0);
-        assert!(bar.contains("me detach") && bar.contains("1 "), "{bar}");
+        assert!(
+            bar.contains("(sequence! (detach (me)) #inert)") && bar.contains("1 "),
+            "{bar}"
+        );
         let fields = bar_fields(&session, view, view.presentation.bar.left(), view.cols);
-        assert!(fields.first().is_some_and(|(s, _)| s.contains("me detach")));
+        assert!(
+            fields
+                .first()
+                .is_some_and(|(s, _)| s.contains("(sequence! (detach (me)) #inert)"))
+        );
         assert!(fields.get(1).is_some_and(|(s, _)| s.contains("1 ")));
         assert!(session.views.contains_key(&client));
         Ok(())
@@ -2883,7 +2908,7 @@ mod tests {
         output_as(
             &mut session,
             Some(client),
-            "str bar list str top list list str slot 0 end end list str pane end false end set",
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"slot\" 0)) (list \"pane\") #false)) #inert)",
         )?;
         let mut shown = Grid::default();
         assert!(compose_into(
@@ -2902,7 +2927,7 @@ mod tests {
                     output_as(
                         &mut session,
                         Some(client),
-                        "str bar-slots list list 0 str updated end end set",
+                        "(sequence! (set \"bar-slots\" (list (list 0 \"updated\"))) #inert)",
                     )?;
                 }
                 _ => session.out(PaneId::of(1), b"\x1b]2;new title\x07"),
@@ -2933,7 +2958,11 @@ mod tests {
         let (mut session, client) = attached(4, 40)?;
         session.out(PaneId::of(1), b"\x1b[4;1Hbottom prompt");
         let before = compose(&session, client).ok_or("before")?;
-        output_as(&mut session, Some(client), "me focused zoom")?;
+        output_as(
+            &mut session,
+            Some(client),
+            "(sequence! (zoom (focused (me))) #inert)",
+        )?;
         let zoomed = compose(&session, client).ok_or("zoomed")?;
         assert!(zoomed.row_text(3).contains("bottom prompt"));
         assert_eq!(zoomed.cursor, before.cursor);
@@ -3030,7 +3059,7 @@ mod tests {
         output_as(
             &mut session,
             Some(client),
-            "str show-column false set str 'C-b g u' code me focused str renamed rename end bind str 'C-b g' repeat",
+            "(sequence! (set \"show-column\" #false) (bind-key \"C-b g u\" (code! (lambda! () (sequence! (rename (focused (me)) \"renamed\") #inert)))) (repeat \"C-b g\") #inert)",
         )?;
         session.input(client, b"\x02");
         let grid = compose(&session, client).ok_or("screen")?;
@@ -3252,7 +3281,7 @@ mod tests {
     #[test]
     fn a_panes_palette_is_painted_and_stays_the_panes() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
+        crate::session::testing::run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
         let set = b"\x1b]4;1;#ff0000\x1b\\\x1b]10;rgb:11/22/33;#000080\x07";
         s.out(PaneId::of(1), &[&set[..], b"\x1b[31mR\x1b[39mD"].concat());
         s.out(PaneId::of(2), b"\x1b[31mR\x1b[39mD");
@@ -3336,7 +3365,7 @@ mod tests {
     #[test]
     fn a_pane_in_reverse_video_is_painted_reversed() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
+        crate::session::testing::run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
         s.out(PaneId::of(1), b"\x1b[?5ha\x1b[7mb\x1b[27m");
         s.out(PaneId::of(2), b"a");
         let mut client = fux_vt::Parser::new(fux_vt::Size::new(6, 41)?, 0)?;
@@ -3387,7 +3416,7 @@ mod tests {
     #[test]
     fn hyperlinks_are_painted_with_their_panes_ids() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(6, 41)?;
-        crate::session::testing::run(&mut s, "str %1 pane str horizontal axis split")?;
+        crate::session::testing::run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
         let linked = b"a\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\b";
         s.out(PaneId::of(1), linked);
         s.out(PaneId::of(2), linked);

@@ -36,7 +36,6 @@ use std::sync::{Arc, Mutex};
 pub use value::{Done, Failure, List, Value, quoted};
 
 pub use callback::admit;
-pub(crate) use words::NAMES;
 pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
 /// The sources a client's config was read from, whose definitions its
@@ -145,6 +144,7 @@ fn scope(value: &Value<Fux>) -> Option<Run> {
         Value::App(Fux::Opts(opts)) => opts.of,
         Value::Printed(_)
         | Value::Float(_)
+        | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
         | Value::Bool(_)
@@ -286,23 +286,6 @@ impl Answer {
                 Ok(())
             }
             Answer::Capture(captured) => captured.write_text(out),
-        }
-    }
-
-    pub(crate) fn write_json(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        match self {
-            Answer::Pane(answer) => answer.write_json(out),
-            Answer::Panes(answers) => {
-                out.write_char('[')?;
-                for (i, answer) in answers.iter().enumerate() {
-                    if i > 0 {
-                        out.write_char(',')?;
-                    }
-                    answer.write_json(out)?;
-                }
-                out.write_char(']')
-            }
-            Answer::Capture(captured) => captured.write_json(out),
         }
     }
 
@@ -1355,13 +1338,8 @@ pub fn main(
             m.path = Some(path);
             (m, Given::File(rest.to_vec()), None)
         }
-        [flag] if flag == "--help" || flag == "-h" || flag == "help" => (
+        [flag] if flag == "--help" || flag == "-h" => (
             Machine::source("command line", "(help)"),
-            Given::Words,
-            None,
-        ),
-        [flag, topic] if flag == "help" => (
-            Machine::source("command line", &format!("(explain {topic:?})")),
             Given::Words,
             None,
         ),
@@ -1371,7 +1349,18 @@ pub fn main(
             None,
         ),
     };
+    let again = argv.clone().map(|argv| client::Rerun {
+        argv,
+        program: program.clone(),
+    });
     let acted = Acted::default();
+    if machine
+        .path
+        .as_ref()
+        .is_some_and(|path| !path.metadata().is_ok_and(|metadata| metadata.is_file()))
+    {
+        acted.mark();
+    }
     let closed = Rc::new(std::cell::Cell::new(false));
     let mut watched = Watched {
         out,
@@ -1394,24 +1383,32 @@ pub fn main(
     let mut state = Draft::default();
     let mut host = Host::cli(client::context(), &mut state, &mut watched);
     host.files.acted = Some(acted);
-    let result = run(&mut machine, &mut host, &mut cli, None).and_then(|values| {
-        for v in &values {
-            if matches!(v, Value::App(Fux::Opts(_))) {
-                return Err(Failed::new(Code::Unused, "options need an operation"));
+    let result = run(&mut machine, &mut host, &mut cli, None)
+        .map_err(|failed| {
+            if failed.code == Code::UnknownWord && !cli.acted.marked() {
+                uncompiled(failed, again.as_ref())
+            } else {
+                failed
             }
-            match v {
-                Value::List(items) => {
-                    for item in items.items() {
-                        writeln!(host.out, "{}", value::Text(item)).map_err(output_failed)?;
-                    }
+        })
+        .and_then(|values| {
+            for v in &values {
+                if matches!(v, Value::App(Fux::Opts(_))) {
+                    return Err(Failed::new(Code::Unused, "options need an operation"));
                 }
-                Value::Str(text) if text.is_empty() => {}
-                Value::App(Fux::Answer(answer, _)) if answer.is_empty() => {}
-                _ => writeln!(host.out, "{}", value::Text(v)).map_err(output_failed)?,
+                match v {
+                    Value::List(items) => {
+                        for item in items.items() {
+                            writeln!(host.out, "{}", value::Text(item)).map_err(output_failed)?;
+                        }
+                    }
+                    Value::Str(text) if text.is_empty() => {}
+                    Value::App(Fux::Answer(answer, _)) if answer.is_empty() => {}
+                    _ => writeln!(host.out, "{}", value::Text(v)).map_err(output_failed)?,
+                }
             }
-        }
-        Ok(cli.status.unwrap_or(0))
-    });
+            Ok(cli.status.unwrap_or(0))
+        });
     if closed.get() {
         return Ok(141);
     }
@@ -1423,13 +1420,6 @@ pub fn main(
     }
     result
 }
-struct IoText<'a>(&'a mut dyn Write);
-impl std::fmt::Write for IoText<'_> {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        self.0.write_all(s.as_bytes()).map_err(|_| std::fmt::Error)
-    }
-}
-
 /// Public record names follow grift's spelling; native wire names stay private.
 fn field_name(name: &str) -> String {
     name.split('_')
@@ -1595,5 +1585,22 @@ pub mod testing {
             lines.push('\n');
         }
         Ok(lines)
+    }
+}
+
+fn uncompiled(failed: Failed, rerun: Option<&client::Rerun>) -> Failed {
+    let Some(rerun) = rerun else {
+        return failed;
+    };
+    let greeted = Server::default()
+        .socket()
+        .map(|socket| client::greet(&socket));
+    let Ok(Err(client::Error::Mismatch { said, server })) = greeted else {
+        return failed;
+    };
+    let unfollowed = client_failed(client::follow(said, server, rerun));
+    Failed {
+        message: format!("{}; this fux cannot read it: {failed}", unfollowed.message),
+        ..unfollowed
     }
 }

@@ -2,7 +2,7 @@
 //! config): any readable file, a FIFO or `<(…)` among them, relative to the
 //! file naming it, else to where fux started. A config's are kept as they
 //! were read, so its definitions are read again from the same text.
-use super::{Config, Failed};
+use super::Config;
 
 use std::io;
 use std::path::{Path, PathBuf};

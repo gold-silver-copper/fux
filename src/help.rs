@@ -2,7 +2,6 @@
 use crate::script::Word;
 pub const AGENTS: &str = include_str!("../docs/agents.md");
 pub const COOKBOOK: &str = include_str!("../docs/cookbook.md");
-pub const JSON: &str = include_str!("../docs/json.md");
 pub fn overview() -> String {
     let mut text = String::from(
         "fux: a terminal multiplexer configured and driven in grift\n\nusage: fux '(operation arguments...)' STRING...\n       fux --file FILE STRING...\n       fux -\n       fux                 attach this terminal\n\nA command line is one quoted grift program. Following shell arguments are strings\nfrom (arguments). Records print as grift data; ask for fields with (get record \"field\").\nExample: fux '(split (axis (pane 3) \"horizontal\"))'\nExample: fux '(line (pane 3) \"ls -l\")'\n\nOperations:\n",

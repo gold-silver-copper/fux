@@ -113,3 +113,10 @@
          (builder (argument (argument builder "sh") "-c")))
     (split (argument builder "printf '\\033]2;history\\007'; file=$(mktemp) && \"${FUX:-fux}\" '(capture (all-history (pane (first (arguments)))))' \"$FUX_TARGET\" >\"$file\" && $EDITOR \"+$(wc -l <\"$file\")\" \"$file\" || read -r answer; rm -f \"$file\"; \"${FUX:-fux}\" '(kill (here))'"))
     #inert)))
+; Execute an explicit code form in the receiving caller's dictionary.
+(define! execute! (vau! (code-value . arguments) caller
+  (let! ((code-value (evaluate code-value caller))
+         (values (map (lambda! (argument) (evaluate argument caller)) arguments)))
+    (if! (and!? (pair? code-value) (same? (first code-value) (quote! code)))
+      (apply (evaluate (second code-value) caller) values)
+      (raise (error (quote! type-error) code-value))))))

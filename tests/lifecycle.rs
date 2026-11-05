@@ -194,7 +194,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
         let mut child = command.spawn().map_err(e)?;
         let capture = || {
             Command::new(FUX)
-                .args(["%1", "capture"])
+                .args(["(sequence! (define! variables-27 (context)) (define! value-28 (pane 1)) (define! value-29 (capture value-28)) value-29)"])
                 .env("FUX_SOCKET", &socket)
                 .output()
                 .map_err(e)
@@ -204,16 +204,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
         eventually("the first shell made", || {
             let mut creating = Command::new(FUX);
             creating
-                .args([
-                    "opts",
-                    "str",
-                    "new-workspace",
-                    "in",
-                    "80",
-                    "24",
-                    "size",
-                    "new-tab",
-                ])
+                .args(["(sequence! (define! variables-30 (context)) (define! value-31 (options)) (define! value-32 \"new-workspace\") (define! value-33 (in value-31 value-32)) (define! value-34 (size value-33 80 24)) (define! value-35 (new-tab value-34)) value-35)"])
                 .current_dir(&dir)
                 .env("FUX_SOCKET", &socket)
                 .env_remove("FUX_PANE")
@@ -233,16 +224,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
                     && String::from_utf8_lossy(&observed.stdout).contains('$'))
             })?;
             let typed = Command::new(FUX)
-                .args([
-                    "%1",
-                    "str",
-                    r#"printf '\nFUX-SHELL:%s\n' "$0""#,
-                    "text",
-                    "str",
-                    "Enter",
-                    "key",
-                    "send-keys",
-                ])
+                .args(["(sequence! (define! variables-36 (context)) (define! value-37 (pane 1)) (define! value-38 \"printf '\\\\nFUX-SHELL:%s\\\\n' \\\"$0\\\"\") (define! value-39 (text value-37 value-38)) (define! value-40 \"Enter\") (define! value-41 (key value-39 value-40)) (define! value-42 (send-keys value-41)) value-42)"])
                 .env("FUX_SOCKET", &socket)
                 .output()
                 .map_err(e)?;

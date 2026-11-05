@@ -569,10 +569,7 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     let dir = server.dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
     std::fs::create_dir(&dir).map_err(e)?;
     let out = std::process::Command::new(fux())
-        .args([
-            "opts", "str", "agent", "in", "80", "24", "size", "str", "touch", "program", "str",
-            "here", "arg", "new-tab",
-        ])
+        .args(["(sequence! (define! variables-6 (context)) (define! value-7 (options)) (define! value-8 \"agent\") (define! value-9 (in value-7 value-8)) (define! value-10 (size value-9 80 24)) (define! value-11 \"touch\") (define! value-12 (program value-10 value-11)) (define! value-13 \"here\") (define! value-14 (argument value-12 value-13)) (define! value-15 (new-tab value-14)) value-15)"])
         .current_dir(&dir)
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
@@ -654,10 +651,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
         Ok(command)
     };
     let ran = full()?
-        .args([
-            "help", "opts", "str", "agent", "in", "80", "24", "size", "str", "sleep", "program",
-            "str", "9", "arg", "new-tab",
-        ])
+        .args(["(sequence! (define! variables-16 (context)) (define! value-17 (help)) (define! value-18 (options)) (define! value-19 \"agent\") (define! value-20 (in value-18 value-19)) (define! value-21 (size value-20 80 24)) (define! value-22 \"sleep\") (define! value-23 (program value-21 value-22)) (define! value-24 \"9\") (define! value-25 (argument value-23 value-24)) (define! value-26 (new-tab value-25)) value-26)"])
         .output()
         .map_err(e)?;
     let said = String::from_utf8_lossy(&ran.stderr);

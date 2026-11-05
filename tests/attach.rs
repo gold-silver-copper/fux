@@ -277,8 +277,12 @@ fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
     let server = Server::start("")?;
     for words in [
         &[][..],
-        &["opts", "attach"],
-        &["opts", "str", "main", "in", "attach"],
+        &[
+            "(sequence! (define! variables-1 (context)) (define! value-2 (options)) (define! value-3 (attach value-2)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-4 (context)) (define! value-5 (options)) (define! value-6 \"main\") (define! value-7 (in value-5 value-6)) (define! value-8 (attach value-7)) #inert)",
+        ],
     ] {
         let out = server.fux_env(words, &[("FUX_PANE", "%1:0")])?;
         assert_eq!(out.status, 1);
@@ -435,7 +439,7 @@ fn attach_needs_stdin_and_stdout_on_one_terminal() -> Outcome {
             .map_err(e)
     };
     let out = std::process::Command::new(FUX)
-        .args(["opts", "attach"])
+        .args(["(sequence! (define! variables-9 (context)) (define! value-10 (options)) (define! value-11 (attach value-10)) #inert)"])
         .env("FUX_SOCKET", &server.socket)
         .env_remove("FUX_PANE")
         .stdin(stdio(&keys)?)
@@ -496,8 +500,7 @@ fn attach_starts_a_server_when_none_answers() -> Outcome {
     });
     let result = eventually("the auto-started server", || {
         let out = std::process::Command::new(FUX)
-            .arg("ls")
-            .arg("listing")
+            .arg("(listing (list-session))")
             .env("FUX_SOCKET", &socket)
             .output()
             .map_err(e)?;
@@ -728,11 +731,19 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
         Ok(stream)
     });
     let socket = dir.join("fux.sock");
-    let mut terminal = Terminal::start(10, 40, &[FUX, "opts", "attach"], |command| {
-        command
-            .env("FUX_SOCKET", &socket)
-            .env("XDG_CONFIG_HOME", &dir);
-    })?;
+    let mut terminal = Terminal::start(
+        10,
+        40,
+        &[
+            FUX,
+            "(sequence! (define! variables-12 (context)) (define! value-13 (options)) (define! value-14 (attach value-13)) #inert)",
+        ],
+        |command| {
+            command
+                .env("FUX_SOCKET", &socket)
+                .env("XDG_CONFIG_HOME", &dir);
+        },
+    )?;
     terminal.wait_for("\x1b[?1049h")?;
     // Held open, saying no more.
     let _stalled = server.join().map_err(|_| "the fake server panicked")??;
@@ -798,11 +809,19 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
         Ok(())
     });
     let socket = dir.join("fux.sock");
-    let mut terminal = Terminal::start(10, 40, &[FUX, "opts", "attach"], |command| {
-        command
-            .env("FUX_SOCKET", &socket)
-            .env("XDG_CONFIG_HOME", &dir);
-    })?;
+    let mut terminal = Terminal::start(
+        10,
+        40,
+        &[
+            FUX,
+            "(sequence! (define! variables-15 (context)) (define! value-16 (options)) (define! value-17 (attach value-16)) #inert)",
+        ],
+        |command| {
+            command
+                .env("FUX_SOCKET", &socket)
+                .env("XDG_CONFIG_HOME", &dir);
+        },
+    )?;
     terminal.wait_for("READY")?;
     signal(
         i32::try_from(terminal.child.id()).map_err(e)?,
@@ -984,8 +1003,7 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
     let socket = dir.join("s").join("fux.sock");
     let ls = || {
         std::process::Command::new(FUX)
-            .arg("ls")
-            .arg("listing")
+            .arg("(listing (list-session))")
             .env("FUX_SOCKET", &socket)
             .output()
             .map_err(e)
@@ -1234,7 +1252,7 @@ fn a_signal_does_not_end_a_command_waiting_for_the_server() -> Outcome {
     let server = Server::start("")?;
     for _ in 0..100 {
         let child = std::process::Command::new(FUX)
-            .arg("ls")
+            .arg("(list-session)")
             .env("FUX_SOCKET", &server.socket)
             .env_remove("FUX_PANE")
             .stdout(std::process::Stdio::piped())
@@ -1418,14 +1436,7 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
         40,
         &[
             fux(),
-            "opts",
-            "str",
-            "",
-            "program",
-            "str",
-            "/no/such/directory",
-            "cwd",
-            "attach",
+            "(sequence! (define! variables-18 (context)) (define! value-19 (options)) (define! value-20 \"\") (define! value-21 (program value-19 value-20)) (define! value-22 \"/no/such/directory\") (define! value-23 (directory value-21 value-22)) (define! value-24 (attach value-23)) #inert)",
         ],
         |command| {
             command
@@ -1502,9 +1513,16 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
 fn a_targeted_attach_resolves_no_launch() -> Outcome {
     let server = Server::empty()?;
     for (args, said) in [
-        (&["opts", "str", "", "program", "attach"][..], true),
         (
-            &["opts", "str", "", "program", "str", "work", "in", "attach"],
+            &[
+                "(sequence! (define! variables-25 (context)) (define! value-26 (options)) (define! value-27 \"\") (define! value-28 (program value-26 value-27)) (define! value-29 (attach value-28)) #inert)",
+            ][..],
+            true,
+        ),
+        (
+            &[
+                "(sequence! (define! variables-30 (context)) (define! value-31 (options)) (define! value-32 \"\") (define! value-33 (program value-31 value-32)) (define! value-34 \"work\") (define! value-35 (in value-33 value-34)) (define! value-36 (attach value-35)) #inert)",
+            ],
             false,
         ),
     ] {
@@ -1528,7 +1546,15 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
 fn attach_preferences_apply_before_explicit_operands() -> Outcome {
     let server = Server::start("(sequence! (attach-defaults (in (options) \"second\")) #inert)")?;
     server.words("(sequence! (new-tab (size (in (options) \"second\") 80 24)) #inert)")?;
-    for (args, expected) in [(&[][..], "%2"), (&["%1", "attach"][..], "%1")] {
+    for (args, expected) in [
+        (&[][..], "%2"),
+        (
+            &[
+                "(sequence! (define! variables-37 (context)) (define! value-38 (pane 1)) (define! value-39 (attach value-38)) #inert)",
+            ][..],
+            "%1",
+        ),
+    ] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
         eventually(&format!("the client on {expected}"), || {
             let listed = server.ok(&["(listing (list-session))"])?;
@@ -1552,9 +1578,11 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
 fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
     let server = Server::start("(sequence! (attach-defaults (in (options) \"main\")) #inert)")?;
     for args in [
-        &["opts", "str", "/bin/sh", "program", "attach"][..],
         &[
-            "opts", "str", "main", "in", "str", "/bin/sh", "program", "attach",
+            "(sequence! (define! variables-40 (context)) (define! value-41 (options)) (define! value-42 \"/bin/sh\") (define! value-43 (program value-41 value-42)) (define! value-44 (attach value-43)) #inert)",
+        ][..],
+        &[
+            "(sequence! (define! variables-45 (context)) (define! value-46 (options)) (define! value-47 \"main\") (define! value-48 (in value-46 value-47)) (define! value-49 \"/bin/sh\") (define! value-50 (program value-48 value-49)) (define! value-51 (attach value-50)) #inert)",
         ][..],
     ] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
@@ -1597,7 +1625,7 @@ fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
 
     let server = Server::empty()?;
     std::fs::write(
-        server.dir.join("config/fux/config.fux"),
+        server.dir.join("config/fux/config.grift"),
         "(sequence! (set \"shell\" (list \"/bin/cat\")) (bind-key \"F5\" (code! (lambda! () (sequence! (list-session) \"fence-complete\")))) #inert)",
     )
     .map_err(e)?;
@@ -1606,7 +1634,14 @@ fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
     let held = server.dir.join("held.sock");
     std::fs::rename(&server.socket, &held).map_err(e)?;
     let listener = UnixListener::bind(&server.socket).map_err(e)?;
-    let mut terminal = Terminal::attach(&server, 10, 40, &["opts", "attach"])?;
+    let mut terminal = Terminal::attach(
+        &server,
+        10,
+        40,
+        &[
+            "(sequence! (define! variables-52 (context)) (define! value-53 (options)) (define! value-54 (attach value-53)) #inert)",
+        ],
+    )?;
     let (mut client, hello) = loop {
         let (mut stream, _) = listener.accept().map_err(e)?;
         // macOS refuses a timeout on the already-closed readiness probe;

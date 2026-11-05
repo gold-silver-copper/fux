@@ -201,21 +201,32 @@ fn follows(name: &str, args: &[&str], stdin: &str, stdout: &str) -> Outcome {
 /// one line. Reading a regular file first is no reason not to: it reads
 /// the same again.
 fn a_command_follows_the_server() -> Outcome {
-    follows("command", &["ls"], "typed\n", "[\"ls\"]\ntyped\n")?;
+    follows(
+        "command",
+        &["(list-session)"],
+        "typed\n",
+        "[\"(list-session)\"]\ntyped\n",
+    )?;
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-    let args = ["str", file, "read-file", "drop", "ls"];
+    let program = format!("(read-file {}) (list-session)", fux::script::quoted(file));
+    let args = [program.as_str()];
     follows("file", &args, "", &format!("{args:?}\n"))
 }
 
 /// A program fux read from stdin is that binary's stdin.
 fn a_program_read_from_stdin_follows() -> Outcome {
-    follows("stdin", &["-"], "ls\n", "[\"-\"]\nls\n")
+    follows(
+        "stdin",
+        &["-"],
+        "(list-session)\n",
+        "[\"-\"]\n(list-session)\n",
+    )
 }
 
 /// A program this fux cannot compile, a word of the server's vocabulary
 /// perhaps, is the server's binary's to compile.
 fn a_program_this_fux_cannot_compile_follows() -> Outcome {
-    let word = "a-word-only-the-server-knows";
+    let word = "(a-word-only-the-server-knows)";
     follows("compile", &[word], "", &format!("[\"{word}\"]\n"))
 }
 
@@ -225,14 +236,19 @@ fn a_program_this_fux_cannot_compile_follows() -> Outcome {
 fn a_program_that_acted_is_not_followed() -> Outcome {
     for (args, stdin, stdout, stderr) in [
         (
-            &["str", "hi", "warn", "ls"][..],
+            &["(warn \"hi\") (list-session)"][..],
             "",
             "",
             "hi\nfux: mismatch: ",
         ),
-        (&["str", "hi", "print", "ls"], "", "hi\n", "fux: mismatch: "),
         (
-            &["str", "/dev/stdin", "read-file", "drop", "ls"],
+            &["(print \"hi\") (list-session)"],
+            "",
+            "hi\n",
+            "fux: mismatch: ",
+        ),
+        (
+            &["(read-file \"/dev/stdin\") (list-session)"],
             "payload",
             "",
             "fux: mismatch: ",
@@ -260,7 +276,7 @@ fn a_command_follows_once() -> Outcome {
     if cfg!(target_os = "macos") {
         return Ok(());
     }
-    for args in ["ls", "a-word-only-the-server-knows"] {
+    for args in ["(list-session)", "(a-word-only-the-server-knows)"] {
         let ran = against_another_protocol("once", &[args], "", &[(AGAIN, "1")], 2)?;
         check(ran.status == Some(1), &ran)?;
         let rest = ran.stderr.strip_prefix(&following()?).unwrap_or_default();
@@ -276,7 +292,13 @@ fn a_command_follows_once() -> Outcome {
 /// any source is, and never followed: the server's binary would run it
 /// again from a pipe already read.
 fn a_program_file_that_is_a_pipe_is_not_followed() -> Outcome {
-    let ran = against_another_protocol("pipe", &["--file", "/dev/stdin"], "ls\n", &[], 0)?;
+    let ran = against_another_protocol(
+        "pipe",
+        &["--file", "/dev/stdin"],
+        "(list-session)\n",
+        &[],
+        0,
+    )?;
     check(
         ran.status == Some(1)
             && ran.stdout.is_empty()
@@ -287,7 +309,8 @@ fn a_program_file_that_is_a_pipe_is_not_followed() -> Outcome {
     // Nor one that reads a pipe with `require` or `include`: the server
     // that answers in another protocol is told of, not followed.
     for word in ["require", "include"] {
-        let ran = against_another_protocol("pipe-read", &[word, "/dev/stdin"], "ls\n", &[], 1)?;
+        let program = format!("({word}! \"/dev/stdin\")");
+        let ran = against_another_protocol("pipe-read", &[&program], "(list-session)\n", &[], 1)?;
         check(
             ran.status == Some(1)
                 && ran.stdout.is_empty()

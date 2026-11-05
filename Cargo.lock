@@ -23,6 +23,7 @@ dependencies = [
  "fux-vt-peak",
  "fux-wire",
  "fuxix",
+ "grift",
 ]
 
 [[package]]

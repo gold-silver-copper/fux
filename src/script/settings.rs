@@ -86,6 +86,7 @@ fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), Un
             Value::Str(s) => Some(&***s),
             Value::Printed(_)
             | Value::Float(_)
+            | Value::Symbol(_)
             | Value::Bytes(_)
             | Value::Int(_)
             | Value::Bool(_)
@@ -200,6 +201,7 @@ fn colour(value: &Value<Fux>) -> Result<fux_vt::Color, Unread> {
         }
         Value::Printed(_)
         | Value::Float(_)
+        | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Bool(_)
         | Value::List(_)
@@ -346,6 +348,7 @@ impl Reads for fux_wire::presentation::Bar {
                         }
                         Value::Printed(_)
                         | Value::Float(_)
+                        | Value::Symbol(_)
                         | Value::Bytes(_)
                         | Value::Int(_)
                         | Value::Bool(_)

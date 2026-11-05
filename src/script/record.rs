@@ -13,8 +13,6 @@ type V = Value<Fux>;
 pub struct Record {
     pub(super) fields: Vec<(String, V)>,
     pub(super) of: Option<Run>,
-    /// A `next-events` batch, which the command line prints as its events.
-    batch: bool,
 }
 
 impl PartialEq for Record {
@@ -36,17 +34,6 @@ impl Record {
                 )
             })
     }
-    /// What the command line prints of it, if not itself: a batch's
-    /// events alone; a batch that missed entries, refused.
-    pub(super) fn printed_events(&self) -> Result<Option<V>, Failure> {
-        if !self.batch {
-            return Ok(None);
-        }
-        if let Value::Int(missed @ 1..) = self.get("missed")? {
-            return Err(missed_entries(missed));
-        }
-        self.get("events").map(Some)
-    }
     pub(super) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         out.write_str("(")?;
         for (i, (key, value)) in self.fields.iter().enumerate() {
@@ -59,15 +46,6 @@ impl Record {
         }
         out.write_str(")")
     }
-}
-
-/// Journal entries lost before a cursor, which the reader must resnapshot
-/// for, as `events` says too.
-fn missed_entries(missed: i64) -> Failure {
-    Failure::new(
-        Code::Fail,
-        format!("{missed} journal entries missed; resnapshot before continuing"),
-    )
 }
 
 fn fail() -> Failure {
@@ -121,12 +99,7 @@ impl Builder {
             .into_iter()
             .map(|(name, value)| (super::field_name(&name), value))
             .collect();
-        let batch = false;
-        Ok(Value::App(Fux::Record(Rc::new(Record {
-            fields,
-            of,
-            batch,
-        }))))
+        Ok(Value::App(Fux::Record(Rc::new(Record { fields, of }))))
     }
     fn json(&mut self, value: &Json, depth: u8) -> Result<V, Failure> {
         if depth >= inspect::DEPTH {
@@ -153,11 +126,7 @@ impl Builder {
 }
 
 pub(super) fn from_fields(fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
-    Ok(Value::App(Fux::Record(Rc::new(Record {
-        fields,
-        of,
-        batch: false,
-    }))))
+    Ok(Value::App(Fux::Record(Rc::new(Record { fields, of }))))
 }
 
 pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
@@ -280,11 +249,7 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
         ("reason", reason),
     ];
     let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
-    let record = Record {
-        fields,
-        of: None,
-        batch: true,
-    };
+    let record = Record { fields, of: None };
     Ok(Value::App(Fux::Record(Rc::new(record))))
 }
 

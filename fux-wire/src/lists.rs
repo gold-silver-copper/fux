@@ -65,9 +65,7 @@ mod tests {
     fn codes_list_is_current() -> Result<(), String> {
         let lines = crate::code::Code::all().map(|code| {
             let caught = if code.raised() { "try" } else { "uncaught" };
-            let number = fuxth_core::Code::from(code).number();
-            let number = number.map_or(String::new(), |n| format!(" {n}"));
-            format!("{code} {} {caught}{number}", code.status())
+            format!("{code} {} {caught}", code.status())
         });
         let head = format!(
             "Every error code, its exit status, whether `try` catches it, and its \

@@ -3684,8 +3684,8 @@ pub(crate) mod testing {
             let body = self
                 .inspect(scope, fux_wire::inspect::Projection::Recipe)
                 .map_err(|e| fux::script::Failed::new(e.code(), e.to_string()))?;
-            let tokens =
-                fuxth::token::source("dump", "all dump").map_err(fux::script::Failed::from)?;
+            let tokens = Ok::<String, fux::script::Failed>(("(dump (all))").to_owned())
+                .map_err(fux::script::Failed::from)?;
             let mut machine = fux::script::compile(&tokens)?;
             let mut out = Vec::new();
             let mut host =
@@ -3701,7 +3701,7 @@ pub(crate) mod testing {
             );
             let stack = stack?;
             match stack.as_slice() {
-                [fuxth::Value::Str(text)] => Ok(text.to_string()),
+                [fux::script::Value::Str(text)] => Ok(text.to_string()),
                 _ => Err(fux::script::Failed::new(
                     fux_wire::code::Code::Usage,
                     "dump did not return one string",
@@ -3777,8 +3777,7 @@ pub(crate) mod testing {
     }
 
     /// A client's bar on a row of its own, the panes below it.
-    pub(crate) const BAR_ROW: &str =
-        "str bar list str bottom list str workspace str tabs end list str pane end false end set";
+    pub(crate) const BAR_ROW: &str = "(sequence! (set \"bar\" (list \"bottom\" (list \"workspace\" \"tabs\") (list \"pane\") #false)) #inert)";
 
     /// A session with `/bin/sh`, started at 80 by 24.
     pub(crate) fn started() -> Result<Session, String> {
@@ -3861,7 +3860,7 @@ pub(crate) mod testing {
         job: &fux::screens::Job,
     ) -> (
         Vec<u8>,
-        Result<Vec<fuxth::Value<fux::script::Fux>>, fux::script::Failed>,
+        Result<Vec<fux::script::Value<fux::script::Fux>>, fux::script::Failed>,
     ) {
         let mut out = Vec::new();
         let mut machine = match job.machine(None, None) {
@@ -3966,7 +3965,7 @@ pub(crate) mod testing {
         match values {
             Ok(values) => values
                 .iter()
-                .map(fuxth::Value::text)
+                .map(fux::script::Value::text)
                 .collect::<Result<Vec<_>, _>>()
                 .map(|lines| lines.join("\n"))
                 .unwrap_or_else(|f| f.message),
@@ -4014,7 +4013,8 @@ pub(crate) mod testing {
                 Ok(Reply::default())
             }
         }
-        let tokens = fuxth::token::source("test", code).map_err(|e| e.to_string())?;
+        let tokens =
+            Ok::<String, fux::script::Failed>((code).to_owned()).map_err(|e| e.to_string())?;
         let mut machine = fux::script::compile(&tokens).map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         let context = fux_wire::protocol::Context {
@@ -4178,10 +4178,10 @@ mod tests {
         let (mut s, _) = attached(12, 50)?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab drop",
+            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
         )?;
         s.end_program(PaneId::of(2), Ended::Lost);
-        for code in ["ls listing", "%2 info listing"] {
+        for code in ["(listing (list-session))", "(listing (info (pane 2)))"] {
             let text = output(&mut s, code)?;
             assert!(text.contains("ended, its status lost"), "{text}");
         }
@@ -4192,10 +4192,13 @@ mod tests {
             (None, Json::Null, Json::Null, "ended, its status lost"),
         ] {
             for (scope, code) in [
-                (Scope::All, "ls listing print"),
+                (
+                    Scope::All,
+                    "(sequence! (print (listing (list-session))) #inert)",
+                ),
                 (
                     Scope::Target(AnyRef::Pane(PaneId::of(2))),
-                    "%2 info listing print",
+                    "(sequence! (print (listing (info (pane 2)))) #inert)",
                 ),
             ] {
                 let Body::Snapshot(mut snapshot) = s.inspect(scope, Projection::Facts)? else {
@@ -4234,7 +4237,7 @@ mod tests {
         for _ in 0..2 {
             run(
                 &mut s,
-                "opts str agent in 80 24 size str /bin/cat program new-tab drop",
+                "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
             )?;
         }
         for pane in [2, 3] {
@@ -4312,9 +4315,8 @@ mod tests {
                 run: Some(s.run),
                 ..Body::Snapshot(Box::new(snapshot)).into()
             };
-            let mut machine = fux::script::compile(&fuxth::token::source(
-                "many-tab-listing",
-                "all str topology snapshot listing print",
+            let mut machine = fux::script::compile(&Ok::<String, fux::script::Failed>(
+                ("(sequence! (print (listing (snapshot (all) \"topology\"))) #inert)").to_owned(),
             )?)?;
             let mut out = Vec::new();
             let mut host =
@@ -4336,18 +4338,18 @@ mod tests {
         assert_eq!(
             output(
                 &mut s,
-                "opts str agent in 80 24 size str /bin/cat program new-tab let held held str version get let before held pane kill held str version get before eq"
+                "(sequence! (define! variables-1755 (context)) (bind variables-1755 (quote! held) (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))) (define! value-1763 (evaluate (quote! held) variables-1755)) \"version\" (bind variables-1755 (quote! before) (get value-1763 \"version\")) (kill (pane (evaluate (quote! held) variables-1755))) (define! value-1769 (evaluate (quote! held) variables-1755)) \"version\" (equal? (get value-1769 \"version\") (evaluate (quote! before) variables-1755)))"
             )?,
             "true\n"
         );
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab drop",
+            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
         )?;
         assert_eq!(
             output(
                 &mut s,
-                "%3 capture let held %3 kill held str last_status get kind"
+                "(sequence! (define! variables-1784 (context)) (bind variables-1784 (quote! held) (capture (pane 3))) (kill (pane 3)) (define! value-1789 (evaluate (quote! held) variables-1784)) \"last_status\" (kind (get value-1789 \"last-status\")))"
             )?,
             "null\n"
         );
@@ -4361,7 +4363,7 @@ mod tests {
         let (mut s, _) = attached(12, 80)?;
         run(
             &mut s,
-            "opts +1 in 80 24 size new-tab drop %2 str horizontal axis split drop opts +1 in 80 24 size new-tab drop",
+            "(sequence! (new-tab (size (in (options) (workspace 1)) 80 24)) (split (axis (pane 2) \"horizontal\")) (new-tab (size (in (options) (workspace 1)) 80 24)) #inert)",
         )?;
         // A tab's whole layout; a pane's tab as far as it is in it, the
         // pane alone.
@@ -4407,7 +4409,7 @@ mod tests {
         );
         run(
             &mut s,
-            "@2 str topology snapshot str tabs get first let observed_tab observed_tab str id get observed_tab str layout_revision get observed_tab str nodes get arrange",
+            "(sequence! (define! variables-1810 (context)) (define! value-1813 (snapshot (tab 2) \"topology\")) \"tabs\" (bind variables-1810 (quote! observed_tab) (first (get value-1813 \"tabs\"))) (define! value-1817 (evaluate (quote! observed_tab) variables-1810)) \"id\" (define! value-1819 (get value-1817 \"id\")) (define! value-1820 (evaluate (quote! observed_tab) variables-1810)) \"layout_revision\" (define! value-1822 (get value-1820 \"layout-revision\")) (define! value-1823 (evaluate (quote! observed_tab) variables-1810)) \"nodes\" (arrange value-1819 value-1822 (get value-1823 \"nodes\")) #inert)",
         )?;
         assert_ne!(
             before,
@@ -4444,20 +4446,20 @@ mod tests {
             ..body.into()
         }));
         let values = fux::script::testing::evaluate(
-            "all str topology snapshot let held held str panes get first str id get held str panes get first str name get kind",
+            "(sequence! (define! variables-1829 (context)) (bind variables-1829 (quote! held) (snapshot (all) \"topology\")) (define! value-1833 (evaluate (quote! held) variables-1829)) \"panes\" (define! value-1836 (first (get value-1833 \"panes\"))) \"id\" (define! value-1838 (get value-1836 \"id\")) (define! value-1839 (evaluate (quote! held) variables-1829)) \"panes\" (define! value-1842 (first (get value-1839 \"panes\"))) \"name\" (list value-1838 (kind (get value-1842 \"name\"))))",
             None,
             &mut once,
             &mut Vec::new(),
         )?;
         assert!(once.0.is_none());
         assert!(
-            matches!(values.first(), Some(fuxth::Value::App(fux::script::Fux::Pane(p, Some(run)))) if *p == PaneId::of(1) && *run == s.run)
+            matches!(values.first(), Some(fux::script::Value::App(fux::script::Fux::Pane(p, Some(run)))) if *p == PaneId::of(1) && *run == s.run)
         );
-        assert_eq!(values.last(), Some(&fuxth::Value::str("null")));
+        assert_eq!(values.last(), Some(&fux::script::Value::str("null")));
         assert_eq!(
             output(
                 &mut s,
-                "all str facts snapshot let held %1 str changed rename held str panes get first str name get kind"
+                "(sequence! (define! variables-1847 (context)) (bind variables-1847 (quote! held) (snapshot (all) \"facts\")) (rename (pane 1) \"changed\") (define! value-1854 (evaluate (quote! held) variables-1847)) \"panes\" (define! value-1857 (first (get value-1854 \"panes\"))) \"name\" (kind (get value-1857 \"name\")))"
             )?,
             "null\n"
         );
@@ -4507,39 +4509,69 @@ mod tests {
         let d = s.attach(10, 40, None)?;
         run(
             &mut s,
-            "opts +1 in 80 24 size new-tab drop opts +1 in 80 24 size new-tab drop",
+            "(sequence! (new-tab (size (in (options) (workspace 1)) 80 24)) (new-tab (size (in (options) (workspace 1)) 80 24)) #inert)",
         )?;
         invariants(&s)?;
-        output_as(&mut s, Some(c), "me @1 str next step me @2 str next step")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "(sequence! (step (me) (tab 1) \"next\") (step (me) (tab 2) \"next\") #inert)",
+        )?;
         assert_eq!((shown(&s, c), shown(&s, d)), (at(3, Some(2)), at(1, None)));
-        output_as(&mut s, Some(c), "me @3 str last step")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "(sequence! (step (me) (tab 3) \"last\") #inert)",
+        )?;
         assert_eq!(shown(&s, c), at(2, Some(3)));
         // Showing it again or reordering it changes neither.
-        output_as(&mut s, Some(c), "me @2 show @2 str previous reorder")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "(sequence! (show (me) (tab 2)) (reorder (tab 2) \"previous\") #inert)",
+        )?;
         assert_eq!(shown(&s, c), at(2, Some(3)));
         // Its current tab closed, a client goes to its last; with none, to
         // the next one, else the one before.
-        run(&mut s, "@2 kill")?;
+        run(&mut s, "(sequence! (kill (tab 2)) #inert)")?;
         assert_eq!((shown(&s, c), shown(&s, d)), (at(3, None), at(1, None)));
-        run(&mut s, "@1 kill")?;
+        run(&mut s, "(sequence! (kill (tab 1)) #inert)")?;
         assert_eq!((shown(&s, c), shown(&s, d)), (at(3, None), at(3, None)));
         invariants(&s)?;
-        let error = output_as(&mut s, Some(c), "me @3 str last step")
-            .err()
-            .ok_or("a last")?;
+        let error = output_as(
+            &mut s,
+            Some(c),
+            "(sequence! (step (me) (tab 3) \"last\") #inert)",
+        )
+        .err()
+        .ok_or("a last")?;
         assert!(error.contains("no previously shown tab"), "{error}");
         // So do workspaces and panes.
-        run(&mut s, "opts str other in 80 24 size new-tab drop")?;
-        output_as(&mut s, Some(c), "me +1 str next step")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (size (in (options) \"other\") 80 24)) #inert)",
+        )?;
+        output_as(
+            &mut s,
+            Some(c),
+            "(sequence! (step (me) (workspace 1) \"next\") #inert)",
+        )?;
         assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(2)));
-        run(&mut s, "+2 kill %3 str horizontal axis split drop")?;
+        run(
+            &mut s,
+            "(sequence! (kill (workspace 2)) (split (axis (pane 3) \"horizontal\")) #inert)",
+        )?;
         assert_eq!(
             s.place(c).map(|p| (p.ws, p.pane)),
             Some((WsId::of(1), PaneId::of(5)))
         );
         invariants(&s)?;
-        output_as(&mut s, Some(d), "me %5 str left step")?;
-        run(&mut s, "%5 kill")?;
+        output_as(
+            &mut s,
+            Some(d),
+            "(sequence! (step (me) (pane 5) \"left\") #inert)",
+        )?;
+        run(&mut s, "(sequence! (kill (pane 5)) #inert)")?;
         assert_eq!(
             [c, d].map(|v| s.place(v).map(|p| p.pane)),
             [Some(PaneId::of(3)); 2]
@@ -4547,9 +4579,13 @@ mod tests {
         // A move that closes its tab leaves a last the client was shown.
         run(
             &mut s,
-            "opts +1 in 80 24 size new-tab drop opts +1 in 80 24 size new-tab drop",
+            "(sequence! (new-tab (size (in (options) (workspace 1)) 80 24)) (new-tab (size (in (options) (workspace 1)) 80 24)) #inert)",
         )?;
-        output_as(&mut s, Some(c), "me @5 show me @6 show %7 @3 move")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "(sequence! (show (me) (tab 5)) (show (me) (tab 6)) (move (pane 7) (tab 3)) #inert)",
+        )?;
         assert_eq!(shown(&s, c), at(3, Some(5)));
         invariants(&s)?;
         // A client attached anew has no last.
@@ -4568,7 +4604,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts +1 in str a in str b in 80 24 size new-tab drop",
+            "(sequence! (new-tab (size (in (in (in (options) (workspace 1)) \"a\") \"b\") 80 24)) #inert)",
         )?;
         let path = |s: &Session, ws| s.parts.path(WsId::of(ws));
         assert_eq!(path(&s, 3), [1, 2, 3].map(WsId::of));
@@ -4578,14 +4614,14 @@ mod tests {
             assert!(refused.starts_with("bad_value:"), "{code}: {refused}");
         }
         // Out of a, b leaves it empty: a closes.
-        run(&mut s, "+3 all move")?;
+        run(&mut s, "(sequence! (move (workspace 3) (all)) #inert)")?;
         assert_eq!((path(&s, 3), path(&s, 2)), (vec![WsId::of(3)], Vec::new()));
         run(
             &mut s,
-            "opts +3 in str c in str d in 80 24 size new-tab drop",
+            "(sequence! (new-tab (size (in (in (in (options) (workspace 3)) \"c\") \"d\") 80 24)) #inert)",
         )?;
         let closed = told(&mut s, |s| {
-            let _ = run(s, "%3 kill");
+            let _ = run(s, "(sequence! (kill (pane 3)) #inert)");
         });
         assert_eq!(
             closed,
@@ -4624,11 +4660,11 @@ mod tests {
         );
         run(
             &mut s,
-            "str c1 client str agent1 workspace show str agent1 workspace str other workspace move",
+            "(sequence! (show (client \"c1\") (workspace \"agent1\")) (move (workspace \"agent1\") (workspace \"other\")) #inert)",
         )?;
         run(
             &mut s,
-            "str c1 client str agent2 workspace show str agent2 workspace kill",
+            "(sequence! (show (client \"c1\") (workspace \"agent2\")) (kill (workspace \"agent2\")) #inert)",
         )?;
         let shown = |lines: String| -> Vec<String> {
             (lines.lines().filter(|l| l.contains(r#""event":"shown""#)))
@@ -4688,9 +4724,9 @@ mod tests {
             let error = output_as(&mut s, Some(e), &format!("me {from} str last step")).err();
             assert!(error.is_some_and(|e| e.contains(refused)), "{from}");
         }
-        run(&mut s, "@3 kill")?;
+        run(&mut s, "(sequence! (kill (tab 3)) #inert)")?;
         assert_eq!(tabs(&s, 2), on_tab(4));
-        run(&mut s, "+2 kill")?;
+        run(&mut s, "(sequence! (kill (workspace 2)) #inert)")?;
         assert_eq!(s.parts.stack().shown(e), on(WsId::of(3), None));
         Ok(())
     }
@@ -4700,7 +4736,10 @@ mod tests {
         use fux_wire::inspect::{Projection, Scope};
         use fux_wire::layout::Node;
         let (mut s, c) = attached(12, 50)?;
-        run(&mut s, "%1 str horizontal axis 2 3 shares split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (shares (axis (pane 1) \"horizontal\") 2 3)) #inert)",
+        )?;
         for projection in [Projection::Facts, Projection::Topology, Projection::Recipe] {
             let Body::Snapshot(mut snapshot) = s.inspect(Scope::Client(c), projection.clone())?
             else {
@@ -4852,9 +4891,21 @@ mod tests {
             effective.get("kitty_flags_requested"),
             Some(&Json::int(requested))
         );
-        assert_eq!(output(&mut s, "@1 str host get")?, "c1\n");
+        assert_eq!(
+            output(
+                &mut s,
+                "(sequence! (define! value-2048 (tab 1)) \"host\" (get value-2048 \"host\"))"
+            )?,
+            "c1\n"
+        );
         s.input(d, b"x");
-        assert_eq!(output(&mut s, "@1 str host get")?, "c2\n");
+        assert_eq!(
+            output(
+                &mut s,
+                "(sequence! (define! value-2053 (tab 1)) \"host\" (get value-2053 \"host\"))"
+            )?,
+            "c2\n"
+        );
         assert_eq!(s.graphics(PaneId::of(1)), fux_vt::Graphics::Text);
         assert_eq!(facts(&s, d)?.get("terminal"), initial.get("terminal"));
         s.terminal_reply(
@@ -4874,9 +4925,21 @@ mod tests {
         assert_eq!(effective.get("graphics"), Some(&Json::str("cell")));
         assert_eq!(effective.get("clipboard"), Some(&Json::Null));
         s.detach_client(d);
-        assert_eq!(output(&mut s, "@1 str host get")?, "c1\n");
+        assert_eq!(
+            output(
+                &mut s,
+                "(sequence! (define! value-2058 (tab 1)) \"host\" (get value-2058 \"host\"))"
+            )?,
+            "c1\n"
+        );
         s.detach_client(c);
-        assert_eq!(output(&mut s, "@1 str host get")?, "null\n");
+        assert_eq!(
+            output(
+                &mut s,
+                "(sequence! (define! value-2063 (tab 1)) \"host\" (get value-2063 \"host\"))"
+            )?,
+            "null\n"
+        );
         assert_eq!(s.graphics(PaneId::of(1)), fux_vt::Graphics::Text);
         Ok(())
     }
@@ -4901,7 +4964,7 @@ mod tests {
         let (mut s, client) = attached(24, 80)?;
         run(
             &mut s,
-            "%1 str horizontal axis split drop %2 str vertical axis split drop",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (split (axis (pane 2) \"vertical\")) #inert)",
         )?;
         let tab = TabId::of(1);
         let revision = s
@@ -4999,18 +5062,18 @@ mod tests {
         // Same membership after moving a border and moving it back is still stale.
         run(
             &mut s,
-            "%1 str right 3 move-border %1 str left 3 move-border",
+            "(sequence! (move-border (pane 1) \"right\" 3) (move-border (pane 1) \"left\" 3) #inert)",
         )?;
         let stale = format!(
             "@1 str {revision} list list str horizontal 1 2 1 2 end %1 list str horizontal 1 1 3 4 end %2 %3 end arrange"
         );
         assert!(run(&mut s, &stale).is_err_and(|s| s.starts_with("stale:")));
         let before_fit = s.tab(tab).and_then(|t| t.revision(s.run));
-        run(&mut s, "@1 90 30 resize")?;
+        run(&mut s, "(sequence! (resize (tab 1) 90 30) #inert)")?;
         assert_ne!(s.tab(tab).and_then(|t| t.revision(s.run)), before_fit);
         for split in [
-            "list str horizontal 0 1 1 2 end",
-            "list str diagonal 1 1 1 2 end",
+            "(list \"horizontal\" 0 1 1 2)",
+            "(list \"diagonal\" 1 1 1 2)",
         ] {
             let invalid = format!("@1 dup str layout_revision get list {split} %1 %2 end arrange");
             let cursor = s.parts.journal().end(s.run);
@@ -5018,7 +5081,10 @@ mod tests {
             assert_eq!(s.parts.journal().end(s.run), cursor);
         }
         // The valid commit preserves each client's focus and journals once.
-        let latest = output(&mut s, "@1 str layout_revision get")?;
+        let latest = output(
+            &mut s,
+            "(sequence! (define! value-2100 (tab 1)) \"layout_revision\" (get value-2100 \"layout-revision\"))",
+        )?;
         let command = format!(
             "@1 str {latest} list list str horizontal 1 2 1 2 end %3 list str horizontal 1 1 3 4 end %1 %2 end arrange"
         );
@@ -5046,7 +5112,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "%1 str horizontal axis split let b @1 dup str layout_revision get list list str vertical 1 1 1 2 end %1 b end arrange",
+            "(sequence! (define! variables-2104 (context)) (bind variables-2104 (quote! b) (split (axis (pane 1) \"horizontal\"))) (define! value-2109 (tab 1)) \"layout_revision\" (arrange value-2109 (get value-2109 \"layout-revision\") (list (list \"vertical\" 1 1 1 2) (pane 1) (evaluate (quote! b) variables-2104))) #inert)",
         )?;
         assert_eq!(
             s.root(TabId::of(1)).map(Tree::panes),
@@ -5070,7 +5136,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "@1 7 40 resize %1 str vertical axis split drop %2 str vertical axis split drop",
+            "(sequence! (resize (tab 1) 7 40) (split (axis (pane 1) \"vertical\")) (split (axis (pane 2) \"vertical\")) #inert)",
         )?;
         let propose = &format!("{LAYOUTS} @1 even-h");
         let before = s.root(TabId::of(1)).cloned();
@@ -5086,7 +5152,10 @@ mod tests {
             revision
         );
         assert_eq!(s.parts.journal().end(s.run), cursor);
-        run(&mut s, "@1 80 40 resize @1 resize-auto")?;
+        run(
+            &mut s,
+            "(sequence! (resize (tab 1) 80 40) (resize-auto (tab 1)) #inert)",
+        )?;
         let client = s.attach(40, 7, None)?;
         watch(&mut s, 3, 3)?;
         let refused = run(&mut s, propose)
@@ -5103,12 +5172,12 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "@1 120 40 resize %1 str horizontal axis split drop %2 str horizontal axis split drop %3 str horizontal axis split drop",
+            "(sequence! (resize (tab 1) 120 40) (split (axis (pane 1) \"horizontal\")) (split (axis (pane 2) \"horizontal\")) (split (axis (pane 3) \"horizontal\")) #inert)",
         )?;
         let tab = TabId::of(1);
         run(
             &mut s,
-            "@1 dup str layout_revision get list list str horizontal 2 2 1 4 end list str horizontal 1 1 2 3 end %4 %2 list str horizontal 1 1 5 6 end %1 %3 end arrange",
+            "(sequence! (define! value-2160 (tab 1)) \"layout_revision\" (arrange value-2160 (get value-2160 \"layout-revision\") (list (list \"horizontal\" 2 2 1 4) (list \"horizontal\" 1 1 2 3) (pane 4) (pane 2) (list \"horizontal\" 1 1 5 6) (pane 1) (pane 3))) #inert)",
         )?;
         let order = vec![PaneId::of(4), PaneId::of(2), PaneId::of(1), PaneId::of(3)];
         for (recipe, axis) in [("even-h", Axis::Horizontal), ("even-v", Axis::Vertical)] {
@@ -5148,7 +5217,10 @@ mod tests {
             assert!(matches!(child, Tree::Split(split) if split.axis() == Axis::Vertical));
         }
         assert_eq!(s.root(tab).map(Tree::panes), Some(order));
-        run(&mut s, "%2 kill %3 kill %4 kill")?;
+        run(
+            &mut s,
+            "(sequence! (kill (pane 2)) (kill (pane 3)) (kill (pane 4)) #inert)",
+        )?;
         for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
             run(&mut s, &format!("{LAYOUTS} @1 {recipe}"))?;
             assert_eq!(s.root(tab), Some(&Tree::Pane(PaneId::of(1))));
@@ -5195,7 +5267,7 @@ mod tests {
                 }
                 let reply = fux::script::Asks::ask(&mut InProcess(self.session), asked)?;
                 if self.resize && matches!(asked.request, Request::Do(Command::Inspect { .. })) {
-                    run(self.session, "@1 121 40 resize")
+                    run(self.session, "(sequence! (resize (tab 1) 121 40) #inert)")
                         .map_err(|e| fux::script::Failed::new(Code::Usage, e))?;
                 }
                 Ok(reply)
@@ -5204,9 +5276,14 @@ mod tests {
         for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
             for resize in [false, true] {
                 let mut s = started()?;
-                run(&mut s, "%1 str horizontal axis split drop")?;
+                run(
+                    &mut s,
+                    "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+                )?;
                 let before = s.root(TabId::of(1)).cloned();
-                let tokens = fuxth::token::source("preset", &format!("{LAYOUTS} @1 {recipe}"))?;
+                let tokens = Ok::<String, fux::script::Failed>(
+                    (&format!("{LAYOUTS} @1 {recipe}")).to_owned(),
+                )?;
                 let mut machine = fux::script::compile(&tokens)?;
                 let mut out = Vec::new();
                 let mut host =
@@ -5236,9 +5313,9 @@ mod tests {
         let (mut s, incumbent) = attached(24, 80)?;
         run(
             &mut s,
-            "%1 str horizontal axis split drop opts str second in 80 24 size new-tab drop",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (new-tab (size (in (options) \"second\") 80 24)) #inert)",
         )?;
-        run(&mut s, "str c1 client %2 show")?;
+        run(&mut s, "(sequence! (show (client \"c1\") (pane 2)) #inert)")?;
         let presentation = fux::script::default_state()?.preferences.presentation();
         for (target, pane) in [
             (T::Tab(TabId::of(1)), PaneId::of(1)),
@@ -5332,9 +5409,13 @@ mod tests {
     fn an_unknown_nearby_directory_refuses_creation() -> TestResult {
         let (mut s, client) = attached(24, 80)?;
         let before = s.parts.panes().len();
-        let failure = output_as(&mut s, Some(client), "%1 str horizontal axis split")
-            .err()
-            .ok_or("unknown cwd accepted")?;
+        let failure = output_as(
+            &mut s,
+            Some(client),
+            "(split (axis (pane 1) \"horizontal\"))",
+        )
+        .err()
+        .ok_or("unknown cwd accepted")?;
         assert!(
             failure.contains("working directory is unknown"),
             "{failure}"
@@ -5343,7 +5424,7 @@ mod tests {
         output_as(
             &mut s,
             Some(client),
-            "%1 str horizontal axis str / cwd split drop",
+            "(sequence! (split (directory (axis (pane 1) \"horizontal\") \"/\")) #inert)",
         )?;
         assert_eq!(s.parts.panes().len(), before + 1);
         Ok(())
@@ -5359,7 +5440,7 @@ mod tests {
             }
             run(
                 &mut s,
-                "%1 str horizontal axis split drop %1 20 str horizontal resize-pane",
+                "(sequence! (split (axis (pane 1) \"horizontal\")) (resize-pane (pane 1) 20 \"horizontal\") #inert)",
             )?;
             assert_eq!(
                 s.parts.panes().get(&PaneId::of(1)).map(Pane::size),
@@ -5390,10 +5471,13 @@ mod tests {
             watch(&mut s, rows, cols)?;
             assert_eq!(s.pane(PaneId::of(1))?.size(), sized(24, 80)?);
             if resize {
-                run(&mut s, "@1 100 10 resize")?;
+                run(&mut s, "(sequence! (resize (tab 1) 100 10) #inert)")?;
                 assert_eq!(s.pane(PaneId::of(1))?.size(), sized(10, 100)?);
             }
-            run(&mut s, "%1 str horizontal axis split drop")?;
+            run(
+                &mut s,
+                "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+            )?;
             assert_eq!(
                 s.pane(PaneId::of(1))?.size(),
                 if resize {
@@ -5431,10 +5515,10 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
-        let pasted = run(&mut s, "%2 str x paste send-keys");
+        let pasted = run(&mut s, "(send-keys (paste (pane 2) \"x\"))");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
         Ok(())
     }
@@ -5444,7 +5528,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "opts str agent in 80 23 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
@@ -5474,13 +5558,13 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
         host(&mut s, id, |h| h.pane_mut().exiting(Ended::Exited(3)))?;
         let lines = told(&mut s, |s| {
-            let _ = run(s, "%2 kill-first respawn");
+            let _ = run(s, "(respawn (kill-first (pane 2)))");
         });
         let at = |what: &str| {
             lines
@@ -5520,7 +5604,7 @@ mod tests {
             let (mut session, client) = attached(10, 40)?;
             let id = PaneId::of(1);
             if !last {
-                run(&mut session, "%1 str horizontal axis split")?;
+                run(&mut session, "(split (axis (pane 1) \"horizontal\"))")?;
             }
             if explicit {
                 let runs = Runs::Explicit(pane::Launch {
@@ -5617,7 +5701,10 @@ mod tests {
     #[test]
     fn a_fixed_tab_ignores_the_clients_showing_it() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts 40 12 size str +1 workspace in new-tab drop")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (in (size (options) 40 12) (workspace \"+1\"))) #inert)",
+        )?;
         run(&mut s, &format!("str {c} client str @2 tab show"))?;
         let size = |s: &Session| {
             s.pane(PaneId::of(2))
@@ -5635,7 +5722,10 @@ mod tests {
     #[test]
     fn a_fitting_tab_takes_the_smallest_screen_that_shows_every_pane() -> TestResult {
         let (mut s, _) = attached(24, 80)?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+        )?;
         let tab = TabId::of(1);
         let laid = |s: &Session| -> Result<_, String> {
             let root = s.root(tab).ok_or("a layout")?;
@@ -5672,7 +5762,7 @@ mod tests {
         let (mut s, _) = attached(24, 80)?;
         run(
             &mut s,
-            "%1 str horizontal axis split drop %2 str vertical axis split drop",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (split (axis (pane 2) \"vertical\")) #inert)",
         )?;
         let fields = |s: &mut Session, pane: &str| {
             let get = format!(
@@ -5688,15 +5778,18 @@ mod tests {
             let want = format!("{}\n{}\n{}\n{}\n", rect.y(), rect.x(), rect.h(), rect.w());
             assert_eq!(fields(&mut s, &id.to_string())?, want, "{id}");
         }
-        run(&mut s, "%3 zoom")?;
-        assert_eq!(fields(&mut s, "%3")?, "0\n0\n24\n80\n");
+        run(&mut s, "(sequence! (zoom (pane 3)) #inert)")?;
+        assert_eq!(fields(&mut s, "%3")?, "(list 0 0 24 80)");
         Ok(())
     }
 
     #[test]
     fn a_small_screen_names_the_panes_it_cuts_and_hides() -> TestResult {
         let (mut s, _) = attached(25, 80)?;
-        run(&mut s, "str %1 pane str vertical axis split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane \"%1\") \"vertical\")) #inert)",
+        )?;
         let bar = |s: &mut Session, rows, cols| {
             let grid = watch(s, rows, cols).map(|c| crate::render::compose(s, c));
             Ok::<_, String>(grid?.map(|g| g.row_text(g.rows.saturating_sub(1))))
@@ -5722,7 +5815,7 @@ mod tests {
         let big = s.attach(50, 200, None)?;
         run(
             &mut s,
-            "opts 100 30 size str other in new-tab drop @2 resize-auto",
+            "(sequence! (new-tab (in (size (options) 100 30) \"other\")) (resize-auto (tab 2)) #inert)",
         )?;
         run(
             &mut s,
@@ -5751,13 +5844,19 @@ mod tests {
     #[test]
     fn a_split_elsewhere_leaves_the_splitters_zoom() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "%1 str horizontal axis str / cwd split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (directory (axis (pane 1) \"horizontal\") \"/\")) #inert)",
+        )?;
         run(&mut s, &format!("str {c} client focused zoom"))?;
-        run(&mut s, "opts 80 24 size str other in new-tab drop")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (in (size (options) 80 24) \"other\")) #inert)",
+        )?;
         output_as(
             &mut s,
             Some(c),
-            "%3 str horizontal axis str / cwd split drop",
+            "(sequence! (split (directory (axis (pane 3) \"horizontal\") \"/\")) #inert)",
         )?;
         let zoomed = s.tab(TabId::of(1)).and_then(Tab::zoomed);
         assert_eq!(zoomed, Some(PaneId::of(2)), "still zoomed");
@@ -5770,7 +5869,7 @@ mod tests {
         let c2 = s.attach(24, 80, None)?;
         run(
             &mut s,
-            "%1 str horizontal axis split drop %2 str vertical axis split drop",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (split (axis (pane 2) \"vertical\")) #inert)",
         )?;
         run(
             &mut s,
@@ -5783,14 +5882,14 @@ mod tests {
         // own focus comes back after.
         assert_eq!(focused(&s), both(3));
         let lines = told(&mut s, |s| {
-            let _ = run(s, "%3 zoom");
+            let _ = run(s, "(sequence! (zoom (pane 3)) #inert)");
         });
         let unzoomed = r#"{"event":"zoomed","tab":"@1","workspace":"+1","pane":null}"#;
         assert!(lines.starts_with(unzoomed), "{lines}");
         assert_eq!(focused(&s), [1, 2].map(|p| Some(PaneId::of(p))));
-        run(&mut s, "%3 zoom %1 kill")?;
+        run(&mut s, "(sequence! (zoom (pane 3)) (kill (pane 1)) #inert)")?;
         assert_eq!(zoomed(&s), Some(PaneId::of(3)), "another pane's close");
-        run(&mut s, "%3 kill")?;
+        run(&mut s, "(sequence! (kill (pane 3)) #inert)")?;
         assert_eq!(zoomed(&s), None);
         assert_eq!(focused(&s), both(2));
         Ok(())
@@ -5799,7 +5898,10 @@ mod tests {
     #[test]
     fn attaching_to_a_zoomed_tab_keeps_its_zoom() -> TestResult {
         let (mut s, c1) = attached(24, 80)?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+        )?;
         run(&mut s, &format!("str {c1} client %1 show %2 zoom"))?;
         let presentation = fux::script::default_state()?.preferences.presentation();
         let size = sized(24, 80)?;
@@ -5829,7 +5931,10 @@ mod tests {
         let sizes =
             |s: &Session| [1, 2].map(|p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size));
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+        )?;
         run(&mut s, &format!("str {c} client focused zoom"))?;
         let zoomed = sizes(&s);
         s.detach_client(c);
@@ -5843,7 +5948,10 @@ mod tests {
         let c2 = s.attach(24, 81, None)?;
         output_as(&mut s, Some(c1), BAR_ROW)?;
         // An editor on the left, two alternatives on the right.
-        run(&mut s, "%1 str horizontal axis split drop %2 stack drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (stack (pane 2)) #inert)",
+        )?;
         s.out(PaneId::of(2), b"second");
         s.out(PaneId::of(3), b"third");
         let sizes = |s: &Session| [1, 2, 3].map(|p| s.pane(PaneId::of(p)).map(Pane::size).ok());
@@ -5889,7 +5997,7 @@ mod tests {
         assert_eq!(choices(c1), Some(vec![(2, 4, Some(3))]));
         assert_eq!(choices(c2), Some(vec![(2, 4, Some(3))]));
         // A child closed shows each client shown it the one it was before.
-        run(&mut s, "%3 kill")?;
+        run(&mut s, "(sequence! (kill (pane 3)) #inert)")?;
         assert_eq!([c1, c2].map(|c| s.focused(c)), [Some(PaneId::of(2)); 2]);
         assert_eq!(sizes(&s)[1], before[1]);
         Ok(())
@@ -5903,29 +6011,32 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "%1 stack drop %2 stack drop %2 str horizontal axis split drop",
+            "(sequence! (stack (pane 1)) (stack (pane 2)) (split (axis (pane 2) \"horizontal\")) #inert)",
         )?;
         run(
             &mut s,
             &format!("str {c} client %2 show str {c} client %4 show"),
         )?;
-        run(&mut s, "%2 kill %4 kill")?;
+        run(&mut s, "(sequence! (kill (pane 2)) (kill (pane 4)) #inert)")?;
         assert_eq!(s.focused(c), Some(PaneId::of(1)));
         assert_eq!(shown(&s, c), Some(vec![PaneId::of(1)]));
         // Moved out, as closed: `[%1 | %5, %3, %4]`, shown %4, then %1 and
         // %5; %5 leaves for its last pane, then %1 for the stack's last.
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts 80 24 size str other in new-tab drop")?;
         run(
             &mut s,
-            "%1 stack drop %3 stack drop %1 str horizontal axis split drop",
+            "(sequence! (new-tab (in (size (options) 80 24) \"other\")) #inert)",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (stack (pane 1)) (stack (pane 3)) (split (axis (pane 1) \"horizontal\")) #inert)",
         )?;
         for pane in [4, 1, 5] {
             run(&mut s, &format!("str {c} client %{pane} show"))?;
         }
-        run(&mut s, "%5 str @2 tab move")?;
+        run(&mut s, "(sequence! (move (pane 5) (tab \"@2\")) #inert)")?;
         assert_eq!(s.focused(c), Some(PaneId::of(1)));
-        run(&mut s, "%1 str @2 tab move")?;
+        run(&mut s, "(sequence! (move (pane 1) (tab \"@2\")) #inert)")?;
         assert_eq!(s.focused(c), Some(PaneId::of(4)));
         assert_eq!(shown(&s, c), Some(vec![PaneId::of(4)]));
         Ok(())
@@ -5935,7 +6046,10 @@ mod tests {
     fn a_step_from_a_zoom_finds_the_zoomed_panes_neighbour() -> TestResult {
         let (mut s, c1) = attached(24, 80)?;
         let c2 = s.attach(24, 80, None)?;
-        run(&mut s, "%1 str horizontal axis split drop %2 stack drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (stack (pane 2)) #inert)",
+        )?;
         run(
             &mut s,
             &format!("str {c1} client %2 show str {c2} client %3 show %2 zoom"),
@@ -5958,11 +6072,14 @@ mod tests {
     #[test]
     fn a_layout_deeper_than_64_dumps_and_replays_as_it_is() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "opts 240 24 size str deep in new-tab drop")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (in (size (options) 240 24) \"deep\")) #inert)",
+        )?;
         for _ in 0..65 {
             run(
                 &mut s,
-                "opts 10 10 size str other in new-tab str @2 tab move",
+                "(sequence! (move (new-tab (in (size (options) 10 10) \"other\")) (tab \"@2\")) #inert)",
             )?;
         }
         let tab = TabId::of(2);
@@ -5996,13 +6113,19 @@ mod tests {
     #[test]
     fn a_stack_child_no_client_is_shown_needs_its_room_too() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts 20 9 size str +1 workspace in new-tab drop")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (in (size (options) 20 9) (workspace \"+1\"))) #inert)",
+        )?;
         run(&mut s, &format!("str {c} client %2 show"))?;
         // `[%2, %3 / %4 / %5]`, shown %2: the hidden child needs 8 rows.
-        let made = "%2 stack drop %3 str vertical axis split drop %4 str vertical axis split drop";
+        let made = "(sequence! (stack (pane 2)) (split (axis (pane 3) \"vertical\")) (split (axis (pane 4) \"vertical\")) #inert)";
         run(&mut s, made)?;
         assert_eq!(s.focused(c), Some(PaneId::of(2)));
-        for refused in ["%5 str vertical axis split", "@2 20 7 resize"] {
+        for refused in [
+            "(split (axis (pane 5) \"vertical\"))",
+            "(sequence! (resize (tab 2) 20 7) #inert)",
+        ] {
             let why = run(&mut s, refused).err().unwrap_or_default();
             assert!(why.starts_with("size: "), "{refused}: {why}");
         }
@@ -6015,7 +6138,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07");
@@ -6025,7 +6148,10 @@ mod tests {
         })?;
         let mut refused = String::new();
         let lines = told(&mut s, |s| {
-            let respawn = run(s, "%2 str /no/such/bin program kill-first respawn");
+            let respawn = run(
+                s,
+                "(respawn (kill-first (program (pane 2) \"/no/such/bin\")))",
+            );
             refused = respawn.err().unwrap_or_default();
         });
         assert!(refused.contains("/no/such/bin"), "{refused}");
@@ -6035,7 +6161,7 @@ mod tests {
         })?;
         assert!(held, "the frame still held, nothing left");
         host(&mut s, id, |h| h.starts(None))?;
-        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        let lines = told(&mut s, |s| _ = run(s, "(respawn (kill-first (pane 2)))"));
         let at = |what: &str| {
             lines
                 .find(&format!(r#""{what}","pane":"%2""#))
@@ -6080,7 +6206,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
         let left: Vec<_> = std::iter::repeat_n(crate::pane::tests::spends_the_budget(24, 80), 4)
@@ -6125,7 +6251,7 @@ mod tests {
             s.command_now(&here, &caller(0)).end().code(),
             Some(Code::StrayPane)
         );
-        run(&mut s, "%2 kill")?;
+        run(&mut s, "(sequence! (kill (pane 2)) #inert)")?;
         assert_eq!(
             s.command_now(&here, &caller(1)).end().code(),
             Some(Code::NoPane)
@@ -6138,7 +6264,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size 4096 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard str /bin/cat program new-tab",
+            "(new-tab (program (program-clipboard (picture-bytes (alternate-scroll-lines (reflow (history-bytes (size (in (options) \"agent\") 80 24) 4096) #false) 3) 1024) #false) \"/bin/cat\"))",
         )?;
         let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
         let mut stream = crate::journal::Reader::new(
@@ -6166,7 +6292,7 @@ mod tests {
         );
         let fresh = host(&mut s, id, |h| h.replacement().map(|(_, bytes)| bytes))?;
         assert_eq!(fresh, Some(4096));
-        run(&mut s, "%2 128 history-budget")?;
+        run(&mut s, "(sequence! (history-budget (pane 2) 128) #inert)")?;
         let (answer, turns) = turns(&mut s, id, &mut waiting)?;
         assert!(turns > 1, "read in {turns} turns");
         assert_eq!(answer.end(), fux_wire::protocol::End::Done);
@@ -6178,8 +6304,8 @@ mod tests {
         assert!(!pane.options().reflow);
         assert_eq!(pane.options().alternate_scroll_lines.get(), 3);
         assert_eq!(pane.options().picture_bytes.get(), 1024);
-        assert!(output(&mut s, "%2 str history_bytes get")?.contains("128"));
-        assert!(output(&mut s, "all dump")?.contains("128 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard"));
+        assert!(output(&mut s, "(sequence! (define! value-2602 (pane 2)) \"history_bytes\" (get value-2602 \"history-bytes\"))")?.contains("128"));
+        assert!(output(&mut s, "(dump (all))")?.contains("128 history-bytes false reflow 3 alternate-scroll-lines 1024 picture-bytes false program-clipboard"));
         let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
         let at = |what: &str| {
             lines
@@ -6196,7 +6322,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "opts str agent in 80 23 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
@@ -6218,7 +6344,7 @@ mod tests {
         let old = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         let old_pid = old.leader.pid();
         host(&mut s, id, |h| h.respawned_over(old))?;
-        run(&mut s, "%2 kill")?;
+        run(&mut s, "(sequence! (kill (pane 2)) #inert)")?;
         let answer = waiting.answer(&mut s, Instant::now()).ok_or("no answer")?;
         let said = format!("{:?}", answer.end());
         assert_eq!(answer.end().code(), Some(Code::Closed), "{said}");
@@ -6250,7 +6376,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
         // One that ignores the hangup, with a title and a bell left unread
@@ -6297,7 +6423,7 @@ mod tests {
             let mut s = started()?;
             run(
                 &mut s,
-                "opts str agent in 80 24 size str /bin/cat program new-tab",
+                "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
             )?;
             let id = PaneId::of(2);
             let argv = ["/bin/cat".to_owned()];
@@ -6325,12 +6451,12 @@ mod tests {
             else {
                 return Err("answered before what was left was read".into());
             };
-            let sent = run(&mut s, "%2 str abc text send-keys");
+            let sent = run(&mut s, "(send-keys (text (pane 2) \"abc\"))");
             assert!(sent.is_err_and(|e| e.contains("respawning")));
-            let signalled = run(&mut s, "%2 str INT signal");
+            let signalled = run(&mut s, "(signal (pane 2) \"INT\")");
             assert!(signalled.is_err_and(|e| e.contains("respawning")));
             // Nor has it a program of its own till the new one takes its place.
-            assert_eq!(output(&mut s, "%2 str program get json")?.trim(), "null");
+            assert_eq!(output(&mut s, "(sequence! (define! value-2666 (pane 2)) \"program\" (get value-2666 \"program\"))")?.trim(), "null");
             turns(&mut s, id, &mut waiting)?;
             let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
             assert!(lines.contains(r#""respawned","pane":"%2""#), "{lines}");
@@ -6345,7 +6471,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026hheld");
@@ -6365,7 +6491,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
@@ -6373,7 +6499,7 @@ mod tests {
         let Begun::Waiting(mut waiting) = begun else {
             return Err("answered before what was left was read".into());
         };
-        run(&mut s, "%2 tab 100 30 resize")?;
+        run(&mut s, "(sequence! (resize (tab (pane 2)) 100 30) #inert)")?;
         turns(&mut s, id, &mut waiting)?;
         let pane = s.pane(id)?;
         assert_eq!((pane.respawns, pane.size()), (1, sized(30, 100)?));
@@ -6385,7 +6511,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
@@ -6448,7 +6574,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "opts str agent in 80 23 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         s.input(c, b"\x1b[6;20;10t");
@@ -6456,7 +6582,7 @@ mod tests {
         host(&mut s, id, |h| {
             h.starts(Some("/nonexistent/fux.sock".into()))
         })?;
-        run(&mut s, "%2 respawn")?;
+        run(&mut s, "(respawn (pane 2))")?;
         let size = s.pane(id)?.size();
         let child = host(&mut s, id, |h| h.set_process(Process::Absent))?;
         let Process::Reading(child) = child else {
@@ -6540,7 +6666,10 @@ mod tests {
         s.input(c, b"\x1b[6;20;10t");
         let told = winsize(&mut s);
         assert!(told.is_some_and(|(_, pixels)| pixels.is_some()), "{told:?}");
-        run(&mut s, "opts 80 24 size str other in new-tab drop")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (in (size (options) 80 24) \"other\")) #inert)",
+        )?;
         let show = |ws: &str| format!("str {c} client str {ws} workspace show");
         let unknown = |s: &mut Session| winsize(s).is_some_and(|(_, pixels)| pixels.is_none());
         run(&mut s, &show("other"))?;
@@ -6563,14 +6692,14 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "opts str agent in 80 23 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         s.input(c, b"\x1b[6;20;10t");
         s.out(PaneId::of(2), b"x");
         s.detach_client(c);
-        run(&mut s, "%2 respawn")?;
-        let json = output(&mut s, "%2 capture json")?;
+        run(&mut s, "(respawn (pane 2))")?;
+        let json = output(&mut s, "(capture (pane 2))")?;
         assert!(json.contains(r#""cell":null"#), "{json}");
         Ok(())
     }
@@ -6580,7 +6709,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "opts str agent in 80 23 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
@@ -6592,7 +6721,7 @@ mod tests {
             })
         };
         queue(&mut s, b"abc")?;
-        let json = output(&mut s, "%2 capture json")?;
+        let json = output(&mut s, "(capture (pane 2))")?;
         assert!(json.contains(r#""input_queued":3"#), "{json}");
         let lines = told(&mut s, |s| s.end_program(id, Ended::Exited(0)));
         assert!(
@@ -6605,7 +6734,7 @@ mod tests {
             "{said}"
         );
         assert!(host(&mut s, id, |h| h.pane().input().is_empty())?);
-        let json = output(&mut s, "%2 capture json")?;
+        let json = output(&mut s, "(capture (pane 2))")?;
         assert!(
             json.contains(r#""input_unread":3,"#) && json.contains(r#""input_queued":0,"#),
             "{json}"
@@ -6613,10 +6742,10 @@ mod tests {
         // Respawned over while it runs, with input it has not read.
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
-        run(&mut s, "%2 respawn")?;
+        run(&mut s, "(respawn (pane 2))")?;
         give(&mut s, id, Process::Reading(child))?;
         queue(&mut s, b"de")?;
-        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        let lines = told(&mut s, |s| _ = run(s, "(respawn (kill-first (pane 2)))"));
         assert!(
             lines.contains(
                 r#"{"event":"respawned","pane":"%2","tab":"@2","workspace":"+2","generation":2,"input_unread":2}"#
@@ -6625,7 +6754,7 @@ mod tests {
         );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
         assert!(said.starts_with("%2 respawned; 2 bytes of input"), "{said}");
-        let json = output(&mut s, "%2 capture json")?;
+        let json = output(&mut s, "(capture (pane 2))")?;
         assert!(json.contains(r#""input_unread":0"#), "{json}");
         reap(&mut s);
         Ok(())
@@ -6635,7 +6764,7 @@ mod tests {
     fn the_input_modes_a_program_sets_are_its_facts() -> TestResult {
         let (mut s, _) = attached(24, 80)?;
         let modes = |s: &mut Session| -> Result<String, String> {
-            let json = output(s, "%1 capture json")?;
+            let json = output(s, "(capture (pane 1))")?;
             let from = json.find(r#""mouse_mode""#).ok_or(json.clone())?;
             let to = json.find(r#","pictures""#).ok_or(json.clone())?;
             Ok(json.get(from..to).unwrap_or_default().to_owned())
@@ -6657,7 +6786,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "opts str agent in 80 23 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
         )?;
         run(&mut s, &format!("str {c} client str +2 workspace show"))?;
         let id = PaneId::of(2);
@@ -6667,7 +6796,7 @@ mod tests {
         s.resize_screen(id, sized(10, 40)?);
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(queued(&mut s)?, 0);
-        run(&mut s, "%2 respawn")?;
+        run(&mut s, "(respawn (pane 2))")?;
         assert_eq!(queued(&mut s)?, 0);
         Ok(())
     }
@@ -6677,11 +6806,11 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let lines = told(&mut s, |s| {
             s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
-            let _ = run(s, "%2 respawn");
+            let _ = run(s, "(respawn (pane 2))");
         });
         let said: Vec<&str> = lines.lines().filter_map(|l| l.split('"').nth(3)).collect();
         assert_eq!(said, ["exited", "respawned"], "{lines}");
@@ -6693,14 +6822,14 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         // A test's session starts no program: each is put in the pane.
         let argv = ["/bin/cat".to_owned()];
         for _ in 0..2 {
             let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
             give(&mut s, PaneId::of(2), Process::Reading(child))?;
-            run(&mut s, "%2 kill-first respawn")?;
+            run(&mut s, "(respawn (kill-first (pane 2)))")?;
         }
         let ended = host(&mut s, PaneId::of(2), |h| h.dying())?;
         reap(&mut s);
@@ -6713,9 +6842,9 @@ mod tests {
         let mut s = started()?;
         for split in [false, true] {
             if split {
-                run(&mut s, "%1 str horizontal axis split")?;
+                run(&mut s, "(split (axis (pane 1) \"horizontal\"))")?;
             }
-            let alone = output(&mut s, "@1 str x text send-keys json")?;
+            let alone = output(&mut s, "(send-keys (text (tab 1) \"x\"))")?;
             let mut expected = Vec::new();
             for id in s.root(TabId::of(1)).ok_or("layout")?.panes() {
                 let version = s.pane(id)?.version(s.run);
@@ -6729,7 +6858,7 @@ mod tests {
                 ));
             }
             assert_eq!(alone, format!("[{}]\n", expected.join(",")));
-            let listed = output(&mut s, "list @1 str x text send-keys end json")?;
+            let listed = output(&mut s, "(list (send-keys (text (tab 1) \"x\")))")?;
             assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
         }
         Ok(())
@@ -6741,7 +6870,7 @@ mod tests {
             let mut s = started()?;
             run(
                 &mut s,
-                "opts str agent in 80 24 size str /bin/true program new-tab",
+                "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
             )?;
             let id = PaneId::of(2);
             if !held {
@@ -6815,7 +6944,7 @@ mod tests {
         let (mut s, _) = super::testing::attached(201, 200)?;
         run(
             &mut s,
-            "opts str agent in 200 200 size str /bin/true program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 200 200) \"/bin/true\"))",
         )?;
         let id = PaneId::of(2);
         let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
@@ -6844,14 +6973,17 @@ mod tests {
         }
         let told = exited(&s);
         let writing = matches!(fuxix::process::ended(writer), Ok(None));
-        let status = output(&mut s, "%2 1 until-ended str program get str exited get");
+        let status = output(
+            &mut s,
+            "(sequence! (define! value-2874 (until-ended (pane 2) 1)) \"program\" (define! value-2876 (get value-2874 \"program\")) \"exited\" (get value-2876 \"exited\"))",
+        );
         let screen = |s: &Session| s.pane(id).map(|p| p.version(s.run).counts.screen);
         let at_exit = screen(&s)?;
         // Its terminal is read on, a turn at a time, others served between:
         // its screen's revision grows.
         for _ in 0..20 {
             s.fire_now(Timer::Pane(id, crate::host::Timer::Unread));
-            run(&mut s, "%1 str x text send-keys")?;
+            run(&mut s, "(send-keys (text (pane 1) \"x\"))")?;
         }
         let read_on = host(&mut s, id, |h| h.leftover())? && screen(&s)? > at_exit;
         // Once the writing stops, its terminal drained, the pane is frozen.
@@ -6889,10 +7021,10 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/true program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
         )?;
         let id = PaneId::of(2);
-        run(&mut s, "%2 respawn")?;
+        run(&mut s, "(respawn (pane 2))")?;
         let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         let pid = child.leader.pid();
@@ -6935,7 +7067,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/true program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
         )?;
         let id = PaneId::of(2);
         // Its terminal empty as the exit is told: the server's own read
@@ -6964,11 +7096,11 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "%1 str horizontal axis str /bin/cat program split drop",
+            "(sequence! (split (program (axis (pane 1) \"horizontal\") \"/bin/cat\")) #inert)",
         )?;
         // Its program has ended, and the pane stays: nothing takes input there.
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
-        let sent = run(&mut s, "@1 str x text send-keys");
+        let sent = run(&mut s, "(send-keys (text (tab 1) \"x\"))");
         let sent = sent.err().unwrap_or_default();
         assert!(
             sent.starts_with("not_running: ") && sent.ends_with("; already sent to %1"),
@@ -6986,7 +7118,10 @@ mod tests {
     fn keys_at_a_version_go_only_while_the_pane_is_at_it() -> TestResult {
         let mut s = started()?;
         let queued = |s: &mut Session| queued(s, PaneId::of(1)).ok();
-        run(&mut s, "%1 capture expect str x text send-keys")?;
+        run(
+            &mut s,
+            "(send-keys (text (expect (capture (pane 1))) \"x\"))",
+        )?;
         assert_eq!(queued(&mut s), Some(b"x".to_vec()));
         let seen = s.pane(PaneId::of(1))?.version(s.run);
         s.out(PaneId::of(1), b"E");
@@ -7000,7 +7135,7 @@ mod tests {
         // A program's end is a change too: stale, not `not_running`.
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let seen = s.pane(PaneId::of(2))?.version(s.run);
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
@@ -7023,11 +7158,14 @@ mod tests {
             |s: &mut Session| host(s, PaneId::of(1), |h| h.pane().screen().history_len()).ok();
         assert!(history(&mut s) > Some(2));
         // Two rows of four cells: 24 bytes a row and 8 a cell.
-        run(&mut s, "%1 str horizontal axis 4096 history-bytes split")?;
+        run(
+            &mut s,
+            "(split (history-bytes (axis (pane 1) \"horizontal\") 4096))",
+        )?;
         let other = host(&mut s, PaneId::of(2), |h| h.pane().history_bytes())?;
-        run(&mut s, "str history-bytes 0 set")?;
+        run(&mut s, "(sequence! (set \"history-bytes\" 0) #inert)")?;
         assert!(history(&mut s) > Some(2));
-        run(&mut s, "%1 112 history-budget")?;
+        run(&mut s, "(sequence! (history-budget (pane 1) 112) #inert)")?;
         assert_eq!(
             host(&mut s, PaneId::of(2), |h| h.pane().history_bytes())?,
             other
@@ -7080,18 +7218,24 @@ mod tests {
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
         // One in a tab no client shows is told once one does.
-        run(&mut s, "opts 20 4 size str other in new-tab")?;
-        run(&mut s, "str c1 client str other workspace show")?;
+        run(&mut s, "(new-tab (in (size (options) 20 4) \"other\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (workspace \"other\")) #inert)",
+        )?;
         if let Some(view) = s.views.get_mut(&client) {
             view.notice = None;
         }
         s.out(PaneId::of(1), b"\x1b]52;c;***\x07\x1b]52;c;***\x07");
         assert!(s.views.get(&client).is_some_and(|v| v.notice.is_none()));
-        run(&mut s, "str c1 client str +1 workspace show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (workspace \"+1\")) #inert)",
+        )?;
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("%1: copies (OSC 52) not made (2)")));
         // Counted in its JSON too, for a reader no notice reaches.
-        let json = output(&mut s, "%1 capture json")?;
+        let json = output(&mut s, "(capture (pane 1))")?;
         assert!(
             json.contains(r#""copies_cut":1,"copies_not_text":3,"#),
             "{json}"
@@ -7099,7 +7243,7 @@ mod tests {
         s.outbox.clear();
         run(
             &mut s,
-            "%1 str horizontal axis false program-clipboard split",
+            "(split (program-clipboard (axis (pane 1) \"horizontal\") #false))",
         )?;
         s.outbox.clear();
         s.out(PaneId::of(3), b"\x1b]52;c;YmFy\x07");
@@ -7116,19 +7260,19 @@ mod tests {
             .ok_or("view")?
             .presentation
             .clone();
-        let too_many = std::iter::repeat_n("str workspace ", 17).collect::<String>();
+        let too_many = std::iter::repeat_n("\"workspace\"", 17).collect::<String>();
         let cases = [
-            "str styles list list str typo 0 1 end end set".to_owned(),
-            "str styles list list str bar 0 1 end list str bar 2 3 end end set".to_owned(),
-            "str styles list list str bar str '#12345g' 1 end end set".to_owned(),
-            "str styles list list str bar 256 1 end end set".to_owned(),
-            "str styles list list str bar 0 1 str bold str bold end end set".to_owned(),
-            "str bar list str bottom list str unknown end list end false end set".to_owned(),
-            "str bar list str bottom list str pane end list str pane end false end set".to_owned(),
+            "(sequence! (set \"styles\" (list (list \"typo\" 0 1))) #inert)".to_owned(),
+            "(sequence! (set \"styles\" (list (list \"bar\" 0 1) (list \"bar\" 2 3))) #inert)".to_owned(),
+            "(sequence! (set \"styles\" (list (list \"bar\" \"#12345g\" 1))) #inert)".to_owned(),
+            "(sequence! (set \"styles\" (list (list \"bar\" 256 1))) #inert)".to_owned(),
+            "(sequence! (set \"styles\" (list (list \"bar\" 0 1 \"bold\" \"bold\"))) #inert)".to_owned(),
+            "(sequence! (set \"bar\" (list \"bottom\" (list \"unknown\") () #false)) #inert)".to_owned(),
+            "(sequence! (set \"bar\" (list \"bottom\" (list \"pane\") (list \"pane\") #false)) #inert)".to_owned(),
             format!("str bar list str bottom list {too_many} end list end false end set"),
-            "str bar list str top list list str slot 16 end end list end false end set".to_owned(),
-            "str bar-slots list list 0 str one end list 0 str two end end set".to_owned(),
-            "str bar-slots list list 0 10 char end end set".to_owned(),
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"slot\" 16)) () #false)) #inert)".to_owned(),
+            "(sequence! (set \"bar-slots\" (list (list 0 \"one\") (list 0 \"two\"))) #inert)".to_owned(),
+            "(sequence! (set \"bar-slots\" (list (list 0 (code-point-to-string 10)))) #inert)".to_owned(),
         ];
         for invalid in cases {
             // A valid preceding change is discarded with the refused draft.
@@ -7180,10 +7324,10 @@ mod tests {
         output_as(
             &mut s,
             Some(a),
-            "str titles true set str bell false set str terminal-clipboard false set",
+            "(sequence! (set \"titles\" #true) (set \"bell\" #false) (set \"terminal-clipboard\" #false) #inert)",
         )?;
-        output_as(&mut s, Some(b), "me focused zoom")?;
-        output_as(&mut s, Some(a), "me focused zoom")?;
+        output_as(&mut s, Some(b), "(sequence! (zoom (focused (me))) #inert)")?;
+        output_as(&mut s, Some(a), "(sequence! (zoom (focused (me))) #inert)")?;
         for (client, titles, bell, terminal_clipboard) in
             [(a, true, false, false), (b, false, true, true)]
         {
@@ -7207,8 +7351,14 @@ mod tests {
         let (mut s, client) = attached(8, 40)?;
         let mut state = fux::script::default_state()?;
         for (code, committed) in [
-            ("str titles true set %999 capture", true),
-            ("str titles false set str Nope unbind", false),
+            (
+                "(sequence! (set \"titles\" #true) (capture (pane 999)))",
+                true,
+            ),
+            (
+                "(sequence! (set \"titles\" #false) (unbind \"Nope\") #inert)",
+                false,
+            ),
         ] {
             let mut draft = state.draft();
             let mut published = false;
@@ -7228,7 +7378,7 @@ mod tests {
                 on_commit: Some(&mut publish),
                 stop: None,
             };
-            let tokens = fuxth::token::source("commit", code)?;
+            let tokens = Ok::<String, fux::script::Failed>((code).to_owned())?;
             let mut machine = fux::script::compile(&tokens)?;
             let mut output = Vec::new();
             let mut host = Host::new(context.clone(), Some(&mut draft), &mut output);
@@ -7258,9 +7408,9 @@ mod tests {
         );
         run(
             &mut s,
-            "%1 str horizontal axis false program-clipboard split",
+            "(split (program-clipboard (axis (pane 1) \"horizontal\") #false))",
         )?;
-        run(&mut s, "%2 zoom")?;
+        run(&mut s, "(sequence! (zoom (pane 2)) #inert)")?;
         if let Some(view) = s.views.get_mut(&b) {
             view.read_only = true;
         }
@@ -7296,12 +7446,18 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "opts str +1 workspace in str / cwd new-tab drop",
+            "(sequence! (new-tab (directory (in (options) (workspace \"+1\")) \"/\")) #inert)",
         )?;
-        run(&mut s, "str c1 client str @1 tab show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@1\")) #inert)",
+        )?;
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size);
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
-        run(&mut s, "str %2 pane str vertical axis str / cwd split")?;
+        run(
+            &mut s,
+            "(split (directory (axis (pane \"%2\") \"vertical\") \"/\"))",
+        )?;
         let (top, bottom) = (size(&s, 2), size(&s, 3));
         let rows = top
             .zip(bottom)
@@ -7309,14 +7465,20 @@ mod tests {
         assert_eq!(rows, Some((5, 4, 40, 40)), "stacked, a separator between");
         // Leaving a tab whose layout is unchanged resizes nothing: a zoomed
         // pane keeps the whole screen.
-        run(&mut s, "str c1 client str @2 tab show")?;
-        run(&mut s, "%2 zoom")?;
-        run(&mut s, "str c1 client str @1 tab show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@2\")) #inert)",
+        )?;
+        run(&mut s, "(sequence! (zoom (pane 2)) #inert)")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@1\")) #inert)",
+        )?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         // Nor does a swap or a move in another tab.
         run(
             &mut s,
-            "%1 str horizontal axis str / cwd split drop %1 %4 swap-with %4 str new-tab move",
+            "(sequence! (split (directory (axis (pane 1) \"horizontal\") \"/\")) (swap-with (pane 1) (pane 4)) (move (pane 4) \"new-tab\") #inert)",
         )?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         Ok(())
@@ -7328,7 +7490,7 @@ mod tests {
         let journal = fux::script::default_state()?.preferences.journal_entries;
         let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id, journal);
         s.test_keymap = fux::script::default_state()?.draft();
-        let refused = run(&mut s, "opts str new-workspace in new-tab")
+        let refused = run(&mut s, "(new-tab (in (options) \"new-workspace\"))")
             .err()
             .unwrap_or_default();
         assert!(
@@ -7346,21 +7508,24 @@ mod tests {
         assert_eq!(size(&s, 1), Some((10, 40)));
         // Nor from a caller with no screen or tab of its own, whatever
         // client is attached.
-        let refused = run(&mut s, "opts str +1 workspace in new-tab").err();
+        let refused = run(&mut s, "(new-tab (in (options) (workspace \"+1\")))").err();
         assert!(refused.is_some_and(|r| r.starts_with("size: ")));
-        run(&mut s, "str %1 pane str vertical axis split")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"vertical\"))")?;
         s.detach_client(c);
-        run(&mut s, "%2 kill")?;
+        run(&mut s, "(sequence! (kill (pane 2)) #inert)")?;
         assert_eq!(
             size(&s, 1),
             Some((10, 40)),
             "laid out again on the last screen"
         );
-        let refused = run(&mut s, "opts str +1 workspace in new-tab")
+        let refused = run(&mut s, "(new-tab (in (options) (workspace \"+1\")))")
             .err()
             .unwrap_or_default();
         assert!(refused.starts_with("size: "), "{refused}");
-        run(&mut s, "opts str +1 workspace in 30 8 size new-tab")?;
+        run(
+            &mut s,
+            "(new-tab (size (in (options) (workspace \"+1\")) 30 8))",
+        )?;
         assert_eq!(size(&s, 3), Some((8, 30)));
         Ok(())
     }
@@ -7368,8 +7533,11 @@ mod tests {
     #[test]
     fn ls_of_a_target_lists_what_is_in_it() -> TestResult {
         let (mut s, _) = attached(11, 40)?;
-        run(&mut s, "opts 40 10 size str +1 workspace in new-tab")?;
-        run(&mut s, "str %2 pane str vertical axis split")?;
+        run(
+            &mut s,
+            "(new-tab (in (size (options) 40 10) (workspace \"+1\")))",
+        )?;
+        run(&mut s, "(split (axis (pane \"%2\") \"vertical\"))")?;
         let mut ids = |only: AnyRef| -> Result<String, String> {
             let text = output(&mut s, &format!("{only} info listing"))?;
             let words = text.lines().filter_map(|l| l.split_whitespace().next());
@@ -7377,8 +7545,11 @@ mod tests {
         };
         let ws = "+1".parse::<WsId>()?;
         let tab = "@2".parse::<TabId>()?;
-        assert_eq!(ids(AnyRef::Workspace(ws))?, "+1 @1 %1 @2 %2 %3");
-        assert_eq!(ids(AnyRef::Tab(tab))?, "@2 %2 %3");
+        assert_eq!(
+            ids(AnyRef::Workspace(ws))?,
+            "(list (workspace 1) (tab 1) (pane 1) (tab 2) (pane 2) (pane 3))"
+        );
+        assert_eq!(ids(AnyRef::Tab(tab))?, "(list (tab 2) (pane 2) (pane 3))");
         assert_eq!(ids(AnyRef::Pane(PaneId::of(3)))?, "%3");
         Ok(())
     }
@@ -7389,20 +7560,30 @@ mod tests {
     #[test]
     fn a_pane_reads_as_one_observation_wherever_it_is_read() -> TestResult {
         let (mut s, _) = attached(6, 30)?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+        )?;
         s.out(PaneId::of(1), b"hi\x1b]2;title\x07\x1b[?1h");
         for (name, _) in s.observed(PaneId::of(1))?.fields() {
             let read =
                 |s: &mut Session, from: &str| output(s, &format!("{from} str {name} get json"));
-            let listed = read(&mut s, "%1 info str panes get first")?;
-            assert_eq!(read(&mut s, "%1 capture")?, listed, "{name}");
+            let listed = read(
+                &mut s,
+                "(sequence! (define! value-3296 (info (pane 1))) \"panes\" (first (get value-3296 \"panes\")))",
+            )?;
+            assert_eq!(read(&mut s, "(capture (pane 1))")?, listed, "{name}");
             assert_eq!(read(&mut s, "%1")?, listed, "{name}");
         }
-        let seen =
-            |s: &mut Session| output(s, "%1 capture dup str version get swap str cursor get");
+        let seen = |s: &mut Session| {
+            output(
+                s,
+                "(sequence! (define! value-3307 (capture (pane 1))) \"version\" (define! value-3309 (get value-3307 \"version\")) \"cursor\" (list value-3309 (get value-3307 \"cursor\")))",
+            )
+        };
         let before = seen(&mut s)?;
         s.out(PaneId::of(1), b"more");
-        run(&mut s, "%1 str written rename")?;
+        run(&mut s, "(sequence! (rename (pane 1) \"written\") #inert)")?;
         let after = seen(&mut s)?;
         let moved = before.lines().zip(after.lines()).filter(|(a, b)| a != b);
         assert_eq!(moved.count(), 2, "{before} {after}");
@@ -7423,14 +7604,17 @@ mod tests {
     #[test]
     fn json_escapes_what_it_says() -> TestResult {
         let (mut s, _) = attached(4, 30)?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, r#"str %1 pane str 'say "hi" \ 界' rename"#)?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (rename (pane \"%1\") \"say \\\"hi\\\" \\\\ 界\") #inert)",
+        )?;
         s.out(PaneId::of(2), "a\tb 界\x1b]2;tab\\title\x07".as_bytes());
-        let ls = output(&mut s, "ls json")?;
+        let ls = output(&mut s, "(list-session)")?;
         assert!(ls.contains(r#""name":"say \"hi\" \\ 界""#), "{ls}");
         assert!(ls.contains(r#""title":"tab\\title""#), "{ls}");
         assert!(ls.contains(r#""truncated":[]"#), "{ls}");
-        let capture = output(&mut s, "str %2 pane capture json")?;
+        let capture = output(&mut s, "(capture (pane \"%2\"))")?;
         assert!(capture.contains(r#""lines":["a       b 界"]"#), "{capture}");
         Ok(())
     }
@@ -7445,12 +7629,18 @@ mod tests {
                 .map(|n| n.text.clone())
         };
         // Two panes: the tab stays.
-        run(&mut s, "str %1 pane str horizontal axis split")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
         assert_eq!(notice(&s).as_deref(), Some("%2 exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
-        run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
-        run(&mut s, "str c1 client str @2 tab show")?;
+        run(
+            &mut s,
+            "(new-tab (in (size (options) 40 9) (workspace \"+1\")))",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@2\")) #inert)",
+        )?;
         s.end_program(PaneId::of(3), fux_wire::answer::Ended::Exited(7));
         assert_eq!(notice(&s).as_deref(), Some("%3 exited with status 7"));
         Ok(())
@@ -7459,16 +7649,22 @@ mod tests {
     #[test]
     fn a_pane_moved_beside_another_stays_out_of_empty_tabs() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
-        run(&mut s, "str %3 pane str @1 tab move")?;
-        run(&mut s, "str %1 pane str right move")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(new-tab (in (size (options) 40 9) (workspace \"+1\")))",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (move (pane \"%3\") (tab \"@1\")) #inert)",
+        )?;
+        run(&mut s, "(sequence! (move (pane \"%1\") \"right\") #inert)")?;
         let holding = |s: &Session, pane| {
             let tabs = s.parts.workspaces().iter().flat_map(|w| w.tabs());
             tabs.filter(|t| t.holds(pane)).count()
         };
         assert_eq!(holding(&s, PaneId::of(1)), 1);
-        run(&mut s, "str %1 pane kill")?;
+        run(&mut s, "(sequence! (kill (pane \"%1\")) #inert)")?;
         assert_eq!(holding(&s, PaneId::of(1)), 0);
         Ok(())
     }
@@ -7476,7 +7672,7 @@ mod tests {
     #[test]
     fn a_wait_begun_answers_the_change_and_the_close_after_it() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
         let origin = Origin::Cli(Caller::default());
         let timeout = Some(command::Limit::read(30)?);
         let wait = |target| {
@@ -7503,7 +7699,7 @@ mod tests {
         else {
             return Err("the pane's wait answered at once".into());
         };
-        run(&mut s, "str %1 pane kill")?;
+        run(&mut s, "(sequence! (kill (pane \"%1\")) #inert)")?;
         let answer = waiting.answer(&mut s, Instant::now()).ok_or("no answer")?;
         assert_eq!(answer.end().code(), Some(Code::Closed), "{answer:?}");
         Ok(())
@@ -7512,7 +7708,7 @@ mod tests {
     #[test]
     fn a_failed_wait_keeps_its_answer() -> TestResult {
         let mut s = started()?;
-        let caught = "str timeout try %1 1 timeout wait catch str value get end";
+        let caught = "(sequence! \"timeout\" (element-at (catch-kind! (list (wait (timeout (pane 1) 1))) timeout failure-3428 (sequence! \"value\" (list (second (get failure-3428 \"values\"))))) 0))";
         let json = output(&mut s, &format!("{caught} json"))?;
         assert!(
             json.starts_with(r#"{"pane":"%1","version":"%1:"#) && json.contains(r#""status":124"#),
@@ -7548,12 +7744,12 @@ mod tests {
             .map(|(name, _)| format!("o str {name} get"))
             .collect();
         let read = format!("let o list {} end json", read.join(" "));
-        let baseline = output(&mut s, "%1 version")?;
+        let baseline = output(&mut s, "(version (pane 1))")?;
         for source in [
             "%1",
-            "%1 capture",
-            "%1 str x text send-keys",
-            "%1 capture let sample %1 kill sample",
+            "(capture (pane 1))",
+            "(send-keys (text (pane 1) \"x\"))",
+            "(sequence! (define! variables-3451 (context)) (bind variables-3451 (quote! sample) (capture (pane 1))) (kill (pane 1)) (evaluate (quote! sample) variables-3451))",
         ] {
             let source = format!("{source} {read}");
             assert_eq!(output(&mut s, &source)?.trim(), expected, "{source}");
@@ -7574,9 +7770,7 @@ mod tests {
         let mut s = started()?;
         let json = output(
             &mut s,
-            "%1 capture expect str x text send-keys let sent \
-             str timeout try sent 0 timeout wait catch str value get end \
-             0 quiet json",
+            "(sequence! (define! variables-3459 (context)) (bind variables-3459 (quote! sent) (send-keys (text (expect (capture (pane 1))) \"x\"))) \"timeout\" (quiet (element-at (catch-kind! (list (wait (timeout (evaluate (quote! sent) variables-3459) 0))) timeout failure-3472 (sequence! \"value\" (list (second (get failure-3472 \"values\"))))) 0) 0))",
         )?;
         assert!(
             json.contains(r#""pane":"%1""#) && json.contains(r#""version":"%1:"#),
@@ -7588,8 +7782,8 @@ mod tests {
     #[test]
     fn a_closed_panes_answer_names_its_pane() -> TestResult {
         let mut s = started()?;
-        let version = output(&mut s, "%1 str vertical axis split")?;
-        run(&mut s, "%2 kill")?;
+        let version = output(&mut s, "(split (axis (pane 1) \"vertical\"))")?;
+        run(&mut s, "(sequence! (kill (pane 2)) #inert)")?;
         let caught = format!(
             "str closed try str {} changed wait catch str value get end",
             version.trim()
@@ -7613,7 +7807,7 @@ mod tests {
     #[test]
     fn a_version_names_its_pane_and_its_server_run() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
         let failed = |s: &mut Session, code: &str| output(s, code).err().unwrap_or_default();
         let of = |s: &Session, pane| s.pane(PaneId::of(pane)).map(|p| p.version(s.run));
         let (one, two) = (of(&s, 1)?, of(&s, 2)?);
@@ -7647,7 +7841,7 @@ mod tests {
         };
         let refused = failed(&mut s, &format!("str {unmade} changed wait"));
         assert!(refused.contains("never a pane of this run"), "{refused}");
-        run(&mut s, "%2 kill")?;
+        run(&mut s, "(sequence! (kill (pane 2)) #inert)")?;
         let closed = failed(&mut s, &format!("str {two} changed wait"));
         assert!(closed.starts_with("closed: "), "{closed}");
         Ok(())
@@ -7656,16 +7850,22 @@ mod tests {
     #[test]
     fn workspace_names_stay_unique_and_failures_use_no_ids() -> TestResult {
         let mut s = started()?;
-        assert!(run(&mut s, "opts 80 24 size str +9 in new-tab").is_err());
+        assert!(run(&mut s, "(new-tab (in (size (options) 80 24) \"+9\"))").is_err());
         assert_eq!(
-            output(&mut s, "opts 80 24 size str workspace-3 in new-tab")?,
+            output(
+                &mut s,
+                "(new-tab (in (size (options) 80 24) \"workspace-3\"))"
+            )?,
             format!("%2:0.0.0.0.0:{}\n", s.run)
         );
-        let taken = "opts 80 24 size str workspace-3 in str workspace-3 name new-tab";
+        let taken = "(new-tab (name (in (size (options) 80 24) \"workspace-3\") \"workspace-3\"))";
         assert!(run(&mut s, taken).is_err());
         let third = format!("%3:0.0.0.0.0:{}\n", s.run);
         assert_eq!(
-            output(&mut s, "opts str new-workspace in 80 24 size new-tab")?,
+            output(
+                &mut s,
+                "(new-tab (size (in (options) \"new-workspace\") 80 24))"
+            )?,
             third
         );
         let names: Vec<Option<&str>> = s.parts.workspaces().iter().map(|w| w.name()).collect();
@@ -7674,7 +7874,13 @@ mod tests {
         // ID either.
         s.ids.exhaust_tabs();
         let ids = s.ids.clone();
-        assert!(run(&mut s, "str %1 pane str new-workspace move").is_err());
+        assert!(
+            run(
+                &mut s,
+                "(sequence! (move (pane \"%1\") \"new-workspace\") #inert)"
+            )
+            .is_err()
+        );
         assert_eq!(s.ids, ids);
         Ok(())
     }
@@ -7682,7 +7888,10 @@ mod tests {
     #[test]
     fn a_hidden_tabs_label_change_repaints_its_workspace() -> TestResult {
         let (mut s, client) = attached(10, 80)?;
-        run(&mut s, "opts +1 in 80 24 size new-tab drop")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (size (in (options) (workspace 1)) 80 24)) #inert)",
+        )?;
         let pane = PaneId::of(2);
         let clean = |s: &mut Session| {
             for view in s.views.values_mut() {
@@ -7698,13 +7907,13 @@ mod tests {
         clean(&mut s);
         s.out(pane, b"\x1b]2;finished\x07");
         assert!(!dirty(&s), "the label stayed the same");
-        run(&mut s, "@2 str given rename")?;
+        run(&mut s, "(sequence! (rename (tab 2) \"given\") #inert)")?;
         clean(&mut s);
         s.out(pane, b"\x1b]2;another title\x07");
         assert!(!dirty(&s), "a given tab name masks its pane's title");
         run(
             &mut s,
-            "opts +1 in 80 24 size new-tab drop %3 str given-pane rename",
+            "(sequence! (new-tab (size (in (options) (workspace 1)) 80 24)) (rename (pane 3) \"given-pane\") #inert)",
         )?;
         clean(&mut s);
         s.out(PaneId::of(3), b"\x1b]2;another title\x07");
@@ -7749,10 +7958,10 @@ mod tests {
         clean(&mut s);
         for line in [
             "ls",
-            "str %1 pane capture",
+            "(capture (pane \"%1\"))",
             "list-keys",
-            "str %1 pane str x text send-keys",
-            "str c1 client str x text send-keys",
+            "(send-keys (text (pane \"%1\") \"x\"))",
+            "(send-keys (text (client \"c1\") \"x\"))",
         ] {
             run(&mut s, line)?;
         }
@@ -7760,12 +7969,12 @@ mod tests {
             !dirty(&s, one) && !dirty(&s, two),
             "reading repaints no one"
         );
-        assert!(run(&mut s, "str %9 pane kill").is_err());
+        assert!(run(&mut s, "(sequence! (kill (pane \"%9\")) #inert)").is_err());
         assert!(
             !dirty(&s, one) && !dirty(&s, two),
             "a failure repaints no one"
         );
-        run(&mut s, "str %1 pane str horizontal axis split")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
         assert!(
             dirty(&s, one) && dirty(&s, two),
             "a split repaints every client"
@@ -7809,13 +8018,13 @@ mod tests {
     fn what_cannot_be_done_is_refused() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         for code in [
-            "opts str %3 in new-tab",
-            "str +1 workspace str +2 rename",
-            "str +1 workspace str @2 rename",
-            "str %1 pane str '' rename",
-            "str %1 pane str up 1 move-border",
-            "str c1 client dup focused str last step",
-            "str @1 tab str next reorder",
+            "(new-tab (in (options) \"%3\"))",
+            "(sequence! (rename (workspace \"+1\") \"+2\") #inert)",
+            "(sequence! (rename (workspace \"+1\") \"@2\") #inert)",
+            "(sequence! (rename (pane \"%1\") \"\") #inert)",
+            "(sequence! (move-border (pane \"%1\") \"up\" 1) #inert)",
+            "(sequence! (define! value-3637 (client \"c1\")) (step value-3637 (focused value-3637) \"last\") #inert)",
+            "(sequence! (reorder (tab \"@1\") \"next\") #inert)",
         ] {
             assert!(run(&mut s, code).is_err(), "{code}");
         }
@@ -7827,7 +8036,7 @@ mod tests {
         let (mut s, c) = attached(10, 40)?;
         run(
             &mut s,
-            "define sender-only 2drop end str c1 client str title list list 1 str inert end end list end list 0 end code sender-only end choose",
+            "(sequence! (define! sender-only (lambda! (argument-3650 argument-3651) #inert)) (choose (client \"c1\") \"title\" (list (list 1 \"inert\")) () (list 0) (code! (lambda! (argument-3665 argument-3666) (sequence! (sender-only argument-3665 argument-3666) #inert)))) #inert)",
         )?;
         let notice = s
             .views
@@ -7840,7 +8049,10 @@ mod tests {
             s.views.get(&c).map(|v| &v.mode),
             Some(Mode::Normal)
         ));
-        run(&mut s, "str c1 client dup focused tab choose-among")?;
+        run(
+            &mut s,
+            "(sequence! (define! value-3674 (client \"c1\")) (choose-among value-3674 (tab (focused value-3674))) #inert)",
+        )?;
         assert!(matches!(
             s.views.get(&c).map(|v| &v.mode),
             Some(Mode::Panel(fux_wire::act::Panel::List(_)))
@@ -7852,32 +8064,41 @@ mod tests {
     fn only_given_names_are_resolved() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         assert_eq!(
-            output(&mut s, "%1 str name get @1 str name get +1 str name get")?,
+            output(
+                &mut s,
+                "(sequence! (define! value-3680 (pane 1)) \"name\" (define! value-3682 (get value-3680 \"name\")) (define! value-3683 (tab 1)) \"name\" (define! value-3685 (get value-3683 \"name\")) (define! value-3686 (workspace 1)) \"name\" (list value-3682 value-3685 (get value-3686 \"name\")))"
+            )?,
             "null\nnull\nnull\n"
         );
         for lookup in [
-            "str sh pane",
-            "str main tab",
-            "str main workspace",
-            "str workspace-1 workspace",
+            "(pane \"sh\")",
+            "(tab \"main\")",
+            "(workspace \"main\")",
+            "(workspace \"workspace-1\")",
         ] {
             assert!(output(&mut s, lookup).is_err(), "{lookup}");
         }
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab str web rename",
+            "(sequence! (rename (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) \"web\") #inert)",
         )?;
         assert_eq!(
-            output(&mut s, "str web pane dup tab str name get")?,
+            output(
+                &mut s,
+                "(sequence! (define! value-3720 (pane \"web\")) (define! value-3721 (tab value-3720)) \"name\" (list value-3720 (get value-3721 \"name\")))"
+            )?,
             "%2\nnull\n"
         );
-        run(&mut s, "%2 str horizontal axis split drop")?;
-        assert_eq!(output(&mut s, "str web pane")?, "%2\n");
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 2) \"horizontal\")) #inert)",
+        )?;
+        assert_eq!(output(&mut s, "(pane \"web\")")?, "%2\n");
         s.out(PaneId::of(2), b"\x1b]2;spool\x07");
-        assert!(output(&mut s, "str spool pane").is_err());
-        assert!(output(&mut s, "str cat pane").is_err());
-        assert_eq!(output(&mut s, "str %1")?, "%1\n");
-        let json = output(&mut s, "%1 capture json")?;
+        assert!(output(&mut s, "(pane \"spool\")").is_err());
+        assert!(output(&mut s, "(pane \"cat\")").is_err());
+        assert_eq!(output(&mut s, "\"%1\"")?, "%1\n");
+        let json = output(&mut s, "(capture (pane 1))")?;
         assert!(json.starts_with(r#"{"id":"%1""#), "{json}");
         Ok(())
     }
@@ -7887,12 +8108,20 @@ mod tests {
         let mut s = started()?;
         for split in [false, true] {
             if split {
-                run(&mut s, "%1 str horizontal axis split drop")?;
+                run(
+                    &mut s,
+                    "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+                )?;
             }
-            for lookup in ["@1 pane", "+1 pane", "+1 tab", "@1 str rows get"] {
+            for lookup in [
+                "(pane (tab 1))",
+                "(pane (workspace 1))",
+                "(tab (workspace 1))",
+                "(sequence! (define! value-3772 (tab 1)) \"rows\" (get value-3772 \"rows\"))",
+            ] {
                 assert!(output(&mut s, lookup).is_err(), "{lookup}");
             }
-            assert_eq!(output(&mut s, "%1 tab workspace")?, "+1\n");
+            assert_eq!(output(&mut s, "(workspace (tab (pane 1)))")?, "+1\n");
         }
         Ok(())
     }
@@ -7901,11 +8130,14 @@ mod tests {
     fn split_requires_an_explicit_axis() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let ids = s.ids.clone();
-        for code in ["%1 split", "%1 str diagonal axis split"] {
+        for code in ["(split (pane 1))", "(split (axis (pane 1) \"diagonal\"))"] {
             assert!(output(&mut s, code).is_err(), "{code}");
             assert_eq!(s.ids, ids);
         }
-        run(&mut s, "%1 str vertical axis split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"vertical\")) #inert)",
+        )?;
         assert_eq!(s.parts.panes().len(), 2);
         Ok(())
     }
@@ -7999,17 +8231,26 @@ mod tests {
     fn versions_keep_the_observation_they_name() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
         let initial = s.pane(PaneId::of(1))?.version(s.run).to_string();
-        assert_eq!(output(&mut s, "%1 version")?, format!("{initial}\n"));
+        assert_eq!(
+            output(&mut s, "(version (pane 1))")?,
+            format!("{initial}\n")
+        );
         assert_eq!(
             output(&mut s, &format!("str {initial} version"))?,
             format!("{initial}\n")
         );
-        assert!(output(&mut s, "str 1.2.3 version").is_err());
-        assert!(output(&mut s, "%1 str idle_ms get").is_err());
-        assert!(!output(&mut s, "%1 capture json")?.contains("idle_ms"));
+        assert!(output(&mut s, "(version \"1.2.3\")").is_err());
+        assert!(
+            output(
+                &mut s,
+                "(sequence! (define! value-3888 (pane 1)) \"idle_ms\" (get value-3888 \"idle-ms\"))"
+            )
+            .is_err()
+        );
+        assert!(!output(&mut s, "(capture (pane 1))")?.contains("idle_ms"));
         let held = output(
             &mut s,
-            "%1 str x text send-keys let action %1 capture let sample %1 kill action version sample version",
+            "(sequence! (define! variables-3896 (context)) (bind variables-3896 (quote! action) (send-keys (text (pane 1) \"x\"))) (bind variables-3896 (quote! sample) (capture (pane 1))) (kill (pane 1)) (list (version (evaluate (quote! action) variables-3896)) (version (evaluate (quote! sample) variables-3896))))",
         )?;
         assert_eq!(held, format!("{initial}\n{initial}\n"));
         Ok(())
@@ -8018,7 +8259,10 @@ mod tests {
     #[test]
     fn structural_and_context_recovery_codes_are_shared() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
-        for source in ["opts str x arg new-tab", "%1 send-keys"] {
+        for source in [
+            "(new-tab (argument (options) \"x\"))",
+            "(send-keys (pane 1))",
+        ] {
             let caught = output(
                 &mut s,
                 &format!("str usage try {source} drop catch drop str recovered end"),
@@ -8044,24 +8288,30 @@ mod tests {
         // given a size; from the command line no client moves, and it is
         // laid out on its size.
         for (from, source, follows, size, program) in [
-            (Some(c), "opts str / cwd new-tab", true, viewport, false),
             (
                 Some(c),
-                "opts 100 30 size str / cwd str cat program new-tab",
+                "(new-tab (directory (options) \"/\"))",
+                true,
+                viewport,
+                false,
+            ),
+            (
+                Some(c),
+                "(new-tab (program (directory (size (options) 100 30) \"/\") \"cat\"))",
                 true,
                 (100, 30),
                 true,
             ),
             (
                 None,
-                "opts str agent in 100 30 size str / cwd new-tab",
+                "(new-tab (directory (size (in (options) \"agent\") 100 30) \"/\"))",
                 false,
                 (100, 30),
                 false,
             ),
             (
                 None,
-                "opts str agent in 100 30 size str / cwd str cat program new-tab",
+                "(new-tab (program (directory (size (in (options) \"agent\") 100 30) \"/\") \"cat\"))",
                 false,
                 (100, 30),
                 true,
@@ -8080,17 +8330,17 @@ mod tests {
         // command line, and a name another tab or a workspace has.
         output(
             &mut s,
-            "opts str agent in 80 24 size str web name str cat program new-tab drop",
+            "(sequence! (new-tab (program (name (size (in (options) \"agent\") 80 24) \"web\") \"cat\")) #inert)",
         )?;
         for (source, code) in [
-            ("opts 80 24 size new-tab", "no_target:"),
-            ("opts str agent in new-tab", "size:"),
+            ("(new-tab (size (options) 80 24))", "no_target:"),
+            ("(new-tab (in (options) \"agent\"))", "size:"),
             (
-                "opts str agent in 80 24 size str web name new-tab",
+                "(new-tab (name (size (in (options) \"agent\") 80 24) \"web\"))",
                 "name_taken:",
             ),
             (
-                "opts str agent in 80 24 size str agent name new-tab",
+                "(new-tab (name (size (in (options) \"agent\") 80 24) \"agent\"))",
                 "name_taken:",
             ),
         ] {
@@ -8100,22 +8350,43 @@ mod tests {
             assert_eq!(s.ids, ids, "{source}");
         }
         // The name is the tab's; its pane's is given by a rename of its own.
-        assert_eq!(output(&mut s, "str web tab panes")?, "%6\n");
-        assert!(output(&mut s, "str web pane").is_err());
-        run(&mut s, "str web tab panes 0 at str ed rename")?;
-        assert_eq!(output(&mut s, "str ed pane str web tab")?, "%6\n@6\n");
+        assert_eq!(output(&mut s, "(panes (tab \"web\"))")?, "%6\n");
+        assert!(output(&mut s, "(pane \"web\")").is_err());
+        run(
+            &mut s,
+            "(sequence! (rename (element-at (panes (tab \"web\")) 0) \"ed\") #inert)",
+        )?;
+        assert_eq!(
+            output(&mut s, "(list (pane \"ed\") (tab \"web\"))")?,
+            "(list (pane 6) (tab 6))"
+        );
         Ok(())
     }
 
     #[test]
     fn names_are_not_reassigned_to_other_tabs() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "opts 80 24 size +1 in new-tab drop")?;
-        run(&mut s, "@1 str tab-2 rename")?;
-        assert_eq!(output(&mut s, "@2 str name get")?, "null\n");
-        run(&mut s, "@1 str given rename @2 str tab-2 rename")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (in (size (options) 80 24) (workspace 1))) #inert)",
+        )?;
+        run(&mut s, "(sequence! (rename (tab 1) \"tab-2\") #inert)")?;
         assert_eq!(
-            output(&mut s, "@1 str name get @2 str name get")?,
+            output(
+                &mut s,
+                "(sequence! (define! value-4044 (tab 2)) \"name\" (get value-4044 \"name\"))"
+            )?,
+            "null\n"
+        );
+        run(
+            &mut s,
+            "(sequence! (rename (tab 1) \"given\") (rename (tab 2) \"tab-2\") #inert)",
+        )?;
+        assert_eq!(
+            output(
+                &mut s,
+                "(sequence! (define! value-4057 (tab 1)) \"name\" (define! value-4059 (get value-4057 \"name\")) (define! value-4060 (tab 2)) \"name\" (list value-4059 (get value-4060 \"name\")))"
+            )?,
             "given\ntab-2\n"
         );
         assert!(s.dump_recipe(None)?.contains("str 'tab-2' name"));
@@ -8139,19 +8410,25 @@ mod tests {
     #[test]
     fn a_name_names_one_pane_tab_or_workspace() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "str %1 pane str horizontal axis split drop")?;
-        run(&mut s, "str %1 pane str shared-name rename")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane \"%1\") \"horizontal\")) #inert)",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (rename (pane \"%1\") \"shared-name\") #inert)",
+        )?;
         for source in [
-            "str %2 pane str shared-name rename",
-            "str @1 tab str shared-name rename",
-            "str +1 workspace str shared-name rename",
+            "(sequence! (rename (pane \"%2\") \"shared-name\") #inert)",
+            "(sequence! (rename (tab \"@1\") \"shared-name\") #inert)",
+            "(sequence! (rename (workspace \"+1\") \"shared-name\") #inert)",
         ] {
             let refused = output(&mut s, source).err().ok_or(source)?;
             let taken = refused.starts_with("name_taken:") && refused.contains("%1, a pane,");
             assert!(taken, "{refused}");
         }
-        assert_eq!(output(&mut s, "str shared-name pane")?, "%1\n");
-        assert!(output(&mut s, "str shared-name tab").is_err());
+        assert_eq!(output(&mut s, "(pane \"shared-name\")")?, "%1\n");
+        assert!(output(&mut s, "(tab \"shared-name\")").is_err());
         Ok(())
     }
 
@@ -8164,17 +8441,20 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "str +1 workspace str ws rename str @1 tab str tab rename str %1 pane str pane rename",
+            "(sequence! (rename (workspace \"+1\") \"ws\") (rename (tab \"@1\") \"tab\") (rename (pane \"%1\") \"pane\") #inert)",
         )?;
         // @2: an unnamed tab, its first pane named; @3: only a split pane named.
         for (tab, split) in [("%2", "%3"), ("%4", "%5")] {
-            run(&mut s, "opts 80 24 size +1 in new-tab drop")?;
+            run(
+                &mut s,
+                "(sequence! (new-tab (in (size (options) 80 24) (workspace 1))) #inert)",
+            )?;
             let split = format!("str {tab} pane str horizontal axis split drop str {split} pane");
             run(&mut s, &split)?;
         }
         run(
             &mut s,
-            "str %2 pane str runner rename str %5 pane str split rename",
+            "(sequence! (rename (pane \"%2\") \"runner\") (rename (pane \"%5\") \"split\") #inert)",
         )?;
         let dumps = [TabId::of(1), TabId::of(2), TabId::of(3)]
             .map(|tab| s.dump_recipe(Some(AnyRef::Tab(tab))));
@@ -8182,20 +8462,35 @@ mod tests {
         let (named, first, split) = (named?, first?, split?);
         let before = named_state(&s)?;
         for (source, holder) in [
-            ("opts 80 24 size str pane in new-tab", "%1, a pane,"),
             (
-                "opts 80 24 size str ws in str pane name new-tab",
+                "(new-tab (in (size (options) 80 24) \"pane\"))",
+                "%1, a pane,",
+            ),
+            (
+                "(new-tab (name (in (size (options) 80 24) \"ws\") \"pane\"))",
                 "%1, a pane,",
             ),
             // A workspace `in` names that is not there is made by its name.
-            ("opts 80 24 size str tab in new-tab", "@1, a tab,"),
             (
-                "opts 80 24 size str fresh in str fresh name new-tab",
+                "(new-tab (in (size (options) 80 24) \"tab\"))",
+                "@1, a tab,",
+            ),
+            (
+                "(new-tab (name (in (size (options) 80 24) \"fresh\") \"fresh\"))",
                 "\"fresh\"",
             ),
-            ("str %1 pane str ws rename", "+1, a workspace,"),
-            ("str @1 tab str pane rename", "%1, a pane,"),
-            ("str +1 workspace str tab rename", "@1, a tab,"),
+            (
+                "(sequence! (rename (pane \"%1\") \"ws\") #inert)",
+                "+1, a workspace,",
+            ),
+            (
+                "(sequence! (rename (tab \"@1\") \"pane\") #inert)",
+                "%1, a pane,",
+            ),
+            (
+                "(sequence! (rename (workspace \"+1\") \"tab\") #inert)",
+                "@1, a tab,",
+            ),
             (&named, "@1, a tab,"),
             (&first, "%2, a pane,"),
             (&split, "%5, a pane,"),
@@ -8208,7 +8503,7 @@ mod tests {
         // Its own name is still its own.
         run(
             &mut s,
-            "str %1 pane str pane rename str @1 tab str tab rename",
+            "(sequence! (rename (pane \"%1\") \"pane\") (rename (tab \"@1\") \"tab\") #inert)",
         )?;
         Ok(())
     }
@@ -8230,7 +8525,7 @@ mod tests {
             cwd: std::env::current_dir()?,
         };
         s.start_now(sized(24, 80)?, &initial)?;
-        let refused = output(&mut s, "str %1 pane str main rename").err();
+        let refused = output(&mut s, "(sequence! (rename (pane \"%1\") \"main\") #inert)").err();
         let taken =
             |why: &String| why.starts_with("name_taken:") && why.contains("+1, a workspace,");
         assert!(refused.is_some_and(|why| taken(&why)));
@@ -8388,9 +8683,9 @@ mod tests {
         assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
         // What is highlighted is marked in JSON's lines too.
         s.out(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
-        let json = output(&mut s, "%1 marks capture json")?;
+        let json = output(&mut s, "(capture (marks (pane 1)))")?;
         assert!(json.contains("\"BC⟦SEL⟧\""), "{json}");
-        let inverted = output(&mut s, "%1 5 2 rows capture");
+        let inverted = output(&mut s, "(capture (rows (pane 1) 5 2))");
         assert!(
             inverted.as_ref().is_err_and(|e| e.starts_with("range: ")),
             "{inverted:?}"
@@ -8399,10 +8694,10 @@ mod tests {
         // pending: said so.
         s.out(PaneId::of(1), &[b"\r\n".as_slice(), &[b'D'; 40]].concat());
         assert_eq!(cursor(&mut s, "wrapped")?, "[3,39]");
-        let json = output(&mut s, "%1 capture json")?;
+        let json = output(&mut s, "(capture (pane 1))")?;
         assert!(json.contains(r#""wrap_pending":true"#), "{json}");
         s.out(PaneId::of(1), b"\r");
-        let json = output(&mut s, "%1 capture json")?;
+        let json = output(&mut s, "(capture (pane 1))")?;
         assert!(json.contains(r#""wrap_pending":false"#), "{json}");
         Ok(())
     }
@@ -8410,7 +8705,7 @@ mod tests {
     #[test]
     fn an_actions_answer_keeps_held_fields_and_targets_its_pane() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
-        let act = "%1 str x text send-keys";
+        let act = "(send-keys (text (pane 1) \"x\"))";
         assert!(
             output(&mut s, &format!("{act} str name get"))
                 .is_err_and(|e| e.starts_with("no_field:"))
@@ -8421,7 +8716,7 @@ mod tests {
         );
         assert_eq!(
             output(&mut s, &format!("{act} dup tab swap workspace"))?,
-            "@1\n+1\n"
+            "(list (tab 1) (workspace 1))"
         );
         let alone = output(&mut s, &format!("{act} json"))?;
         assert!(
@@ -8440,17 +8735,17 @@ mod tests {
             Ok(out) => format!("ran: {out}"),
             Err(error) => error,
         };
-        let timeout = failed(&mut s, "%1 -1 timeout wait");
+        let timeout = failed(&mut s, "(wait (timeout (pane 1) -1))");
         assert!(timeout.starts_with("range: "), "{timeout}");
         assert!(
             timeout.contains("-1 is out of range: from 0 (use: "),
             "{timeout}"
         );
-        let mouse = failed(&mut s, "%1 str click -1 0 send-mouse");
+        let mouse = failed(&mut s, "(send-mouse (pane 1) \"click\" -1 0)");
         assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
         // The core's words say how they are used too; a library word by
         // its own name.
-        for code in ["slice", "str a 1 add"] {
+        for code in ["slice", "(add \"a\" 1)"] {
             let core = failed(&mut s, code);
             assert!(core.contains(" (use: "), "{core}");
         }
@@ -8464,26 +8759,32 @@ mod tests {
             Ok("each walks a string or a list, not an integer\n")
         );
         // A wait's limit is what the wire's 32 bits hold.
-        let long = failed(&mut s, "%1 9223372036854775807 timeout wait");
+        let long = failed(&mut s, "(wait (timeout (pane 1) 9223372036854775807))");
         assert!(
             long.starts_with("range: ") && long.contains("at most 4294967295 s"),
             "{long}"
         );
         // A capture where text is taken: `string` makes it text.
-        let text = failed(&mut s, "%1 capture lines");
+        let text = failed(&mut s, "(string-split (capture (pane 1)) \"\\n\")");
         assert!(text.contains("`string` makes it text"), "{text}");
         // A capture's option given what is no pane says where it goes.
         for (code, shown) in [
-            ("%1 capture last-output", "fux %3 last-output capture"),
-            ("%1 capture 0 4 rows", "fux %3 0 4 rows capture"),
+            (
+                "(last-output (capture (pane 1)))",
+                "fux %3 last-output capture",
+            ),
+            ("(rows (capture (pane 1)) 0 4)", "fux %3 0 4 rows capture"),
         ] {
             let option = failed(&mut s, code);
             assert!(option.contains("(use: a capture option, PANE "), "{option}");
             assert!(option.contains(&format!("; e.g. {shown})")), "{option}");
         }
-        let split = failed(&mut s, "str 'two\nlines' fail");
+        let split = failed(
+            &mut s,
+            "(sequence! (raise (error (quote! fail) \"two\\nlines\")) #inert)",
+        );
         assert!(split.ends_with(r"two\nlines"), "{split}");
-        let version = failed(&mut s, "str 1.2.3 changed wait");
+        let version = failed(&mut s, "(wait (changed \"1.2.3\"))");
         assert!(version.contains("\"1.2.3\" is no version"), "{version}");
         Ok(())
     }
@@ -8514,7 +8815,7 @@ mod tests {
         let lines = told(&mut s, |s| {
             ran = run(
                 s,
-                "str +1 workspace str x rename str +1 workspace str main rename",
+                "(sequence! (rename (workspace \"+1\") \"x\") (rename (workspace \"+1\") \"main\") #inert)",
             );
         });
         ran?;
@@ -8538,7 +8839,9 @@ mod tests {
         let typed = told(&mut s, |s| s.input(c, b"typed\x1b[200~pasted\x1b[201~"));
         assert!(!typed.contains(r#""event":"input""#), "{typed}");
         let mut ran = Ok(());
-        let sent = told(&mut s, |s| ran = run(s, "%1 str sent text send-keys"));
+        let sent = told(&mut s, |s| {
+            ran = run(s, "(send-keys (text (pane 1) \"sent\"))")
+        });
         ran?;
         assert!(sent.contains(r#""event":"input""#), "{sent}");
         Ok(())
@@ -8570,18 +8873,17 @@ mod tests {
             Ok(())
         }
         let mut s = started()?;
-        let arrange = "@1 str topology snapshot str tabs get first let t \
-            t str id get t str layout_revision get t str nodes get arrange";
+        let arrange = "(sequence! (define! variables-4337 (context)) (define! value-4340 (snapshot (tab 1) \"topology\")) \"tabs\" (bind variables-4337 (quote! t) (first (get value-4340 \"tabs\"))) (define! value-4344 (evaluate (quote! t) variables-4337)) \"id\" (define! value-4346 (get value-4344 \"id\")) (define! value-4347 (evaluate (quote! t) variables-4337)) \"layout_revision\" (define! value-4349 (get value-4347 \"layout-revision\")) (define! value-4350 (evaluate (quote! t) variables-4337)) \"nodes\" (arrange value-4346 value-4349 (get value-4350 \"nodes\")) #inert)";
         for code in [
-            "%1 str horizontal axis split drop",
-            "%1 %2 swap-with",
-            "%1 str right 3 move-border",
-            "@1 90 30 resize",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+            "(sequence! (swap-with (pane 1) (pane 2)) #inert)",
+            "(sequence! (move-border (pane 1) \"right\" 3) #inert)",
+            "(sequence! (resize (tab 1) 90 30) #inert)",
             arrange,
-            "%1 str vertical axis split drop",
-            "%3 kill",
-            "%2 str new-tab move",
-            "@1 resize-auto",
+            "(sequence! (split (axis (pane 1) \"vertical\")) #inert)",
+            "(sequence! (kill (pane 3)) #inert)",
+            "(sequence! (move (pane 2) \"new-tab\") #inert)",
+            "(sequence! (resize-auto (tab 1)) #inert)",
         ] {
             laid_out(&mut s, code, |s| run(s, code))?;
         }
@@ -8619,10 +8921,18 @@ mod tests {
     #[test]
     fn a_kill_closes_what_it_kills_and_empties_the_rest() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "opts str a in str b in 80 24 size new-tab drop")?;
-        run(&mut s, "opts +2 in 80 24 size new-tab drop")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (size (in (in (options) \"a\") \"b\") 80 24)) #inert)",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (size (in (options) (workspace 2)) 80 24)) #inert)",
+        )?;
         let mut ran = Ok(());
-        let lines = told(&mut s, |s| ran = run(s, "+2 kill"));
+        let lines = told(&mut s, |s| {
+            ran = run(s, "(sequence! (kill (workspace 2)) #inert)")
+        });
         ran?;
         let closed: Vec<&str> = (lines.lines())
             .filter(|l| l.contains(r#""event":"closed""#))
@@ -8632,9 +8942,14 @@ mod tests {
             closed.iter().all(|l| l.ends_with(r#""why":"killed"}"#)),
             "{lines}"
         );
-        run(&mut s, "opts str c in 80 24 size new-tab drop")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (size (in (options) \"c\") 80 24)) #inert)",
+        )?;
         let mut ran = Ok(());
-        let lines = told(&mut s, |s| ran = run(s, "@4 kill"));
+        let lines = told(&mut s, |s| {
+            ran = run(s, "(sequence! (kill (tab 4)) #inert)")
+        });
         ran?;
         assert_eq!(
             lines,
@@ -8657,21 +8972,35 @@ mod tests {
     fn a_client_moved_by_anothers_kill_is_told_and_the_killer_is_not() -> TestResult {
         let (mut s, watcher) = attached(24, 80)?;
         let killer = s.attach(24, 80, None)?;
-        run(&mut s, "+1 str harmony rename")?;
         run(
             &mut s,
-            "opts +1 in str meta-design in 80 24 size new-tab drop",
+            "(sequence! (rename (workspace 1) \"harmony\") #inert)",
         )?;
-        run(&mut s, "opts +2 in 80 24 size new-tab drop")?;
         run(
             &mut s,
-            "opts +1 in str desktop-simple in 80 24 size new-tab drop",
+            "(sequence! (new-tab (size (in (in (options) (workspace 1)) \"meta-design\") 80 24)) #inert)",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (size (in (options) (workspace 2)) 80 24)) #inert)",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (size (in (in (options) (workspace 1)) \"desktop-simple\") 80 24)) #inert)",
         )?;
         for client in [watcher, killer] {
             run(&mut s, &format!("str {client} client str @2 tab show"))?;
         }
-        output_as(&mut s, Some(watcher), "me %2 %2 tab choose-move")?;
-        output_as(&mut s, Some(killer), "+2 kill")?;
+        output_as(
+            &mut s,
+            Some(watcher),
+            "(sequence! (choose-move (me) (pane 2) (tab (pane 2))) #inert)",
+        )?;
+        output_as(
+            &mut s,
+            Some(killer),
+            "(sequence! (kill (workspace 2)) #inert)",
+        )?;
         super::testing::deliver(&mut s);
         let notice = |s: &Session, c| s.views.get(&c).and_then(|v| v.notice.clone());
         assert!(notice(&s, killer).is_none());
@@ -8694,7 +9023,7 @@ mod tests {
         let mut s = started()?;
         let mut ran = Ok(());
         let lines = told(&mut s, |s| {
-            let tab = "opts 80 24 size str t name str +1 workspace in new-tab drop";
+            let tab = "(sequence! (new-tab (in (name (size (options) 80 24) \"t\") (workspace \"+1\"))) #inert)";
             ran = run(s, tab);
         });
         ran?;
@@ -8713,11 +9042,14 @@ mod tests {
     #[test]
     fn events_are_told_in_the_order_they_happened() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+        )?;
         let mut ran = Ok(());
         let lines = told(&mut s, |s| {
             s.out(PaneId::of(2), b"\x07");
-            ran = run(s, "str @1 tab str t rename");
+            ran = run(s, "(sequence! (rename (tab \"@1\") \"t\") #inert)");
             s.out(PaneId::of(1), b"\x1b]2;title\x07");
         });
         ran?;
@@ -8740,7 +9072,10 @@ mod tests {
             (Ended::Exited(0), "\"exited\":0", true),
         ] {
             let mut s = started()?;
-            run(&mut s, "%1 str horizontal axis split drop")?;
+            run(
+                &mut s,
+                "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+            )?;
             let lines = told(&mut s, |s| {
                 if output {
                     s.out(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
@@ -8788,9 +9123,9 @@ mod tests {
         )?;
         run(
             &mut source,
-            "%2 str vertical axis 5 3 shares list str /bin/sh str -l str '' end shell-program split drop %2 str horizontal axis 7 2 shares str /bin/cat program split drop @2 str given rename %2 str sh rename",
+            "(sequence! (split (shell-program (shares (axis (pane 2) \"vertical\") 5 3) (list \"/bin/sh\" \"-l\" \"\"))) (split (program (shares (axis (pane 2) \"horizontal\") 7 2) \"/bin/cat\")) (rename (tab 2) \"given\") (rename (pane 2) \"sh\") #inert)",
         )?;
-        let dump = output(&mut source, "@2 dump")?;
+        let dump = output(&mut source, "(dump (tab 2))")?;
         let mut again = started()?;
         run(&mut again, &dump)?;
         let recipe = |s: &Session, id| {
@@ -8865,18 +9200,24 @@ mod tests {
         let mut source = started()?;
         run(
             &mut source,
-            "+1 str workspace-2 rename @1 str main rename %1 str sh rename",
-        )?;
-        run(&mut source, "%1 str horizontal axis split drop")?;
-        run(
-            &mut source,
-            "opts +1 in 80 24 size str /bin/cat program new-tab dup str cat rename str new-workspace move",
+            "(sequence! (rename (workspace 1) \"workspace-2\") (rename (tab 1) \"main\") (rename (pane 1) \"sh\") #inert)",
         )?;
         run(
             &mut source,
-            "opts +2 in 80 24 size new-tab drop opts +2 in 80 24 size new-tab drop @3 kill opts +2 in 80 24 size new-tab str given rename",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
         )?;
-        run(&mut source, "str shell list str /bin/other end set")?;
+        run(
+            &mut source,
+            "(sequence! (define! value-4559 (new-tab (program (size (in (options) (workspace 1)) 80 24) \"/bin/cat\"))) (rename value-4559 \"cat\") (move value-4559 \"new-workspace\") #inert)",
+        )?;
+        run(
+            &mut source,
+            "(sequence! (new-tab (size (in (options) (workspace 2)) 80 24)) (new-tab (size (in (options) (workspace 2)) 80 24)) (kill (tab 3)) (rename (new-tab (size (in (options) (workspace 2)) 80 24)) \"given\") #inert)",
+        )?;
+        run(
+            &mut source,
+            "(sequence! (set \"shell\" (list \"/bin/other\")) #inert)",
+        )?;
         let dump = source.dump_recipe(None)?;
         assert!(!dump.contains("str other rename"), "{dump}");
         assert!(dump.contains("given"), "{dump}");
@@ -8920,18 +9261,33 @@ mod tests {
         let dump = s.dump_recipe(None)?;
         let cwd = std::env::current_dir()?;
         let cwd = cwd.to_str().ok_or("cwd text")?;
-        let tokens = fuxth::token::source("dump", &dump)?;
-        assert!(
-            tokens
-                .iter()
-                .zip(tokens.iter().skip(1))
-                .zip(tokens.iter().skip(2))
-                .any(|((a, b), c)| a.text.as_ref() == "str"
-                    && b.text.as_ref() == cwd
-                    && c.text.as_ref() == "cwd"),
-            "{dump}"
-        );
-        assert!(dump.contains("shell-program"), "{dump}");
+        let mut reader: grift::Grift = grift::Grift::new().map_err(|_| "reader")?;
+        let forms = reader
+            .read_named("session.grift", &dump)
+            .map_err(|_| "saved data")?;
+        let form = reader
+            .list_items(&forms)
+            .map_err(|_| "forms")?
+            .into_iter()
+            .next()
+            .ok_or("one form")?;
+        reader.define("saved-form", form).map_err(|_| "bind")?;
+        let saved = reader
+            .evaluate(&mut (), "(second (second saved-form))")
+            .map_err(|_| "recipe data")?;
+        reader.define("saved", saved).map_err(|_| "bind recipe")?;
+        let expression = "(define! field (lambda! (record key) (second (find-association key record)))) (define! first-record (first (field saved (quote! panes)))) (field (field (field first-record (quote! launch)) (quote! directory)) (quote! text))";
+        let path = reader
+            .evaluate(&mut (), expression)
+            .map_err(|_| "saved launch directory")?;
+        assert_eq!(reader.as_str(&path).map_err(|_| "path")?, Some(cwd));
+        let role = reader
+            .evaluate(
+                &mut (),
+                "(field (field first-record (quote! launch)) (quote! choice))",
+            )
+            .map_err(|_| "saved role")?;
+        assert_eq!(reader.as_str(&role).map_err(|_| "role")?, Some("shell"));
         assert!(
             dump.contains("its current directory is unknown, so it starts in its launch directory"),
             "{dump}"
@@ -8972,15 +9328,21 @@ mod tests {
     #[test]
     fn dumps_preserve_tab_sizing_independently_of_client_views() -> TestResult {
         let (mut s, c) = attached(11, 40)?;
-        run(&mut s, "opts 600 40 size +1 in new-tab drop")?;
         run(
             &mut s,
-            "%1 str horizontal axis split drop %1 str vertical axis split drop",
+            "(sequence! (new-tab (in (size (options) 600 40) (workspace 1))) #inert)",
         )?;
-        run(&mut s, "str c1 client %1 show %1 zoom")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (split (axis (pane 1) \"vertical\")) #inert)",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane 1)) (zoom (pane 1)) #inert)",
+        )?;
         for tiny in [false, true] {
             if tiny {
-                run(&mut s, "%1 zoom")?;
+                run(&mut s, "(sequence! (zoom (pane 1)) #inert)")?;
                 s.size_client(c, 2, 2)?;
             }
             let dump = s.dump_recipe(None)?;
@@ -9033,16 +9395,19 @@ mod tests {
     #[test]
     fn a_tab_given_a_size_splits_only_while_it_shows_every_pane() -> TestResult {
         let (mut s, _) = attached(50, 200)?;
-        let tab = "opts 40 12 size str +1 workspace in new-tab drop";
+        let tab = "(sequence! (new-tab (in (size (options) 40 12) (workspace \"+1\"))) #inert)";
         run(&mut s, &format!("{tab} str c1 client str @2 tab show"))?;
         // Four panes stacked take their 2 rows each and 3 separators.
         run(
             &mut s,
-            "%2 str vertical axis split drop %2 str vertical axis split drop %2 str vertical axis split drop",
+            "(sequence! (split (axis (pane 2) \"vertical\")) (split (axis (pane 2) \"vertical\")) (split (axis (pane 2) \"vertical\")) #inert)",
         )?;
-        let refused = run(&mut s, "%2 str vertical axis split drop")
-            .err()
-            .unwrap_or_default();
+        let refused = run(
+            &mut s,
+            "(sequence! (split (axis (pane 2) \"vertical\")) #inert)",
+        )
+        .err()
+        .unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("40x12"),
             "{refused}"
@@ -9059,11 +9424,17 @@ mod tests {
         watch(&mut s, 50, 8)?;
         // Ten panes side by side take their 2 columns each and 9 separators.
         for _ in 1..10 {
-            run(&mut s, "%1 str horizontal axis split drop")?;
+            run(
+                &mut s,
+                "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+            )?;
         }
-        let refused = run(&mut s, "%1 str horizontal axis split drop")
-            .err()
-            .unwrap_or_default();
+        let refused = run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+        )
+        .err()
+        .unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("30x"),
             "{refused}"
@@ -9076,9 +9447,15 @@ mod tests {
     #[test]
     fn a_split_with_shares_starts_at_its_share() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "opts 100 10 size str +1 workspace in new-tab drop")?;
+        run(
+            &mut s,
+            "(sequence! (new-tab (in (size (options) 100 10) (workspace \"+1\"))) #inert)",
+        )?;
         let lines = told(&mut s, |s| {
-            let _ = run(s, "%2 str horizontal axis 80 18 shares split drop");
+            let _ = run(
+                s,
+                "(sequence! (split (shares (axis (pane 2) \"horizontal\") 80 18)) #inert)",
+            );
         });
         assert!(lines.contains(r#""created","pane":"%3""#), "{lines}");
         assert!(!lines.contains(r#""resized","pane":"%3""#), "{lines}");
@@ -9094,9 +9471,12 @@ mod tests {
         s.attach(10, 81, None)?;
         let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
         // Zoomed, the tab is unzoomed by the clients following the split.
-        run(&mut s, "%1 zoom")?;
+        run(&mut s, "(sequence! (zoom (pane 1)) #inert)")?;
         let lines = told(&mut s, |s| {
-            let _ = run(s, "%1 str horizontal axis str / cwd split drop");
+            let _ = run(
+                s,
+                "(sequence! (split (directory (axis (pane 1) \"horizontal\") \"/\")) #inert)",
+            );
         });
         assert!(
             lines.contains(r#""created","pane":"%2""#)
@@ -9105,7 +9485,11 @@ mod tests {
         );
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         let lines = told(&mut s, |s| {
-            let _ = output_as(s, Some(wide), "opts 30 5 size str / cwd new-tab drop");
+            let _ = output_as(
+                s,
+                Some(wide),
+                "(sequence! (new-tab (directory (size (options) 30 5) \"/\")) #inert)",
+            );
         });
         assert!(
             lines.contains(r#""created","pane":"%3""#)
@@ -9129,17 +9513,20 @@ mod tests {
         output_as(
             &mut s,
             Some(one),
-            "opts str +1 workspace in str / cwd new-tab drop",
+            "(sequence! (new-tab (directory (in (options) (workspace \"+1\")) \"/\")) #inert)",
         )?;
         let size = s.parts.panes().get(&PaneId::of(2)).map(Pane::size);
         assert_eq!(size, Some(sized(10, 40)?));
         let small = s.attach(5, 6, None)?;
-        let made = "opts 100 10 size str +1 workspace in str / cwd new-tab \
-                    dup str horizontal axis str / cwd split drop dup str horizontal axis str / cwd split drop str horizontal axis str / cwd split drop";
+        let made = "(sequence! (define! value-4720 (new-tab (directory (in (size (options) 100 10) (workspace \"+1\")) \"/\"))) (split (directory (axis value-4720 \"horizontal\") \"/\")) (split (directory (axis value-4720 \"horizontal\") \"/\")) (split (directory (axis value-4720 \"horizontal\") \"/\")) #inert)";
         run(&mut s, made)?;
         // A tab too big for the screen of a client that follows a pane
         // into it keeps its own size.
-        output_as(&mut s, Some(small), "%2 str @3 tab move")?;
+        output_as(
+            &mut s,
+            Some(small),
+            "(sequence! (move (pane 2) (tab \"@3\")) #inert)",
+        )?;
         assert_eq!(s.area_of(TabId::of(3)), Some(Rect::screen(10, 100)));
         Ok(())
     }
@@ -9152,12 +9539,17 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "opts 4 24 size str +1 workspace in new-tab drop @2 resize-auto",
+            "(sequence! (new-tab (in (size (options) 4 24) (workspace \"+1\"))) (resize-auto (tab 2)) #inert)",
         )?;
         s.views.get_mut(&c).ok_or("its view")?.runs_in = Some(PaneId::of(1));
         let roots = |s: &Session| [1, 2].map(|t| s.root(TabId::of(t)).cloned());
         let before = roots(&s);
-        let refused = output_as(&mut s, Some(c), "%1 str @2 tab move").err();
+        let refused = output_as(
+            &mut s,
+            Some(c),
+            "(sequence! (move (pane 1) (tab \"@2\")) #inert)",
+        )
+        .err();
         let refused = refused.unwrap_or_default();
         assert!(
             refused.contains("no room") && refused.contains("4x24"),
@@ -9174,7 +9566,7 @@ mod tests {
         output_as(&mut s, Some(tiny), BAR_ROW)?;
         run(
             &mut s,
-            "%1 str horizontal axis split drop %1 str horizontal axis split drop",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (split (axis (pane 1) \"horizontal\")) #inert)",
         )?;
         for (pane, to) in [("%1", "new-tab"), ("%2", "new-workspace")] {
             let lines = told(&mut s, |s| {
@@ -9194,21 +9586,21 @@ mod tests {
     fn shares_divide_the_split_panes_room() -> TestResult {
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
         let widths = |s: &Session| rects(s, tab).iter().map(Rect::w).collect::<Vec<u16>>();
-        let made = "opts 101 10 size +1 in new-tab drop";
+        let made = "(sequence! (new-tab (in (size (options) 101 10) (workspace 1))) #inert)";
         for (cols, split, expected) in [
             (
                 100,
-                "%2 str horizontal axis 80 18 shares split drop %3 str horizontal axis 10 8 shares split drop",
+                "(sequence! (split (shares (axis (pane 2) \"horizontal\") 80 18)) (split (shares (axis (pane 3) \"horizontal\") 10 8)) #inert)",
                 [81, 9, 8],
             ),
             (
                 101,
-                "%2 str horizontal axis split drop %3 str horizontal axis 2 1 shares split drop",
+                "(sequence! (split (axis (pane 2) \"horizontal\")) (split (shares (axis (pane 3) \"horizontal\") 2 1)) #inert)",
                 [50, 33, 16],
             ),
             (
                 101,
-                "%2 str horizontal axis 1 1 shares split drop %3 str horizontal axis 2 1 shares split drop",
+                "(sequence! (split (shares (axis (pane 2) \"horizontal\") 1 1)) (split (shares (axis (pane 3) \"horizontal\") 2 1)) #inert)",
                 [50, 33, 16],
             ),
         ] {
@@ -9226,8 +9618,8 @@ mod tests {
             &format!("{made} %2 str horizontal axis 4294967294 1 shares split drop"),
         )?;
         for split in [
-            "%3 str horizontal axis split drop",
-            "%3 str vertical axis 4294967295 1 shares split drop",
+            "(sequence! (split (axis (pane 3) \"horizontal\")) #inert)",
+            "(sequence! (split (shares (axis (pane 3) \"vertical\") 4294967295 1)) #inert)",
         ] {
             run(&mut s, split)?;
             assert_eq!(replayed(&s, tab)?, rects(&s, tab), "{split}");
@@ -9238,8 +9630,7 @@ mod tests {
     #[test]
     fn every_layout_change_dumps_as_it_is() -> TestResult {
         let mut s = started()?;
-        let made = "opts 100 30 size str +1 workspace in new-tab drop \
-                    opts 100 30 size str +1 workspace in new-tab drop";
+        let made = "(sequence! (new-tab (in (size (options) 100 30) (workspace \"+1\"))) (new-tab (in (size (options) 100 30) (workspace \"+1\"))) #inert)";
         run(&mut s, made)?;
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
         let areas = [
@@ -9248,23 +9639,23 @@ mod tests {
             Rect::screen(70, 250),
         ];
         for change in [
-            "%2 str horizontal axis 3 2 shares split drop",
-            "%4 str vertical axis 1 2 shares split drop",
-            "%5 str horizontal axis split drop",
-            "%5 str vertical axis split drop",
-            "%2 37 str horizontal resize-pane",
-            "%5 7 str vertical resize-pane",
-            "%6 str left 3 move-border",
-            "%2 30 percent str horizontal resize-pane",
-            "%2 %6 swap-with",
-            "%4 str left move",
-            "%5 kill",
-            "%3 str @2 tab move",
-            "%6 kill",
-            "%2 stack drop",
-            "%8 str vertical axis split drop",
-            "%2 stack drop",
-            "%10 kill",
+            "(sequence! (split (shares (axis (pane 2) \"horizontal\") 3 2)) #inert)",
+            "(sequence! (split (shares (axis (pane 4) \"vertical\") 1 2)) #inert)",
+            "(sequence! (split (axis (pane 5) \"horizontal\")) #inert)",
+            "(sequence! (split (axis (pane 5) \"vertical\")) #inert)",
+            "(sequence! (resize-pane (pane 2) 37 \"horizontal\") #inert)",
+            "(sequence! (resize-pane (pane 5) 7 \"vertical\") #inert)",
+            "(sequence! (move-border (pane 6) \"left\" 3) #inert)",
+            "(sequence! (resize-pane (pane 2) (percent 30) \"horizontal\") #inert)",
+            "(sequence! (swap-with (pane 2) (pane 6)) #inert)",
+            "(sequence! (move (pane 4) \"left\") #inert)",
+            "(sequence! (kill (pane 5)) #inert)",
+            "(sequence! (move (pane 3) (tab \"@2\")) #inert)",
+            "(sequence! (kill (pane 6)) #inert)",
+            "(sequence! (stack (pane 2)) #inert)",
+            "(sequence! (split (axis (pane 8) \"vertical\")) #inert)",
+            "(sequence! (stack (pane 2)) #inert)",
+            "(sequence! (kill (pane 10)) #inert)",
         ] {
             run(&mut s, change)?;
             let dump = s.dump_recipe(Some(AnyRef::Tab(tab)))?;
@@ -9293,10 +9684,9 @@ mod tests {
     #[test]
     fn a_pane_is_not_moved_where_it_would_be_hidden() -> TestResult {
         let mut s = started()?;
-        let split =
-            "opts 5 4 size str +1 workspace in new-tab drop %2 str horizontal axis split drop";
+        let split = "(sequence! (new-tab (in (size (options) 5 4) (workspace \"+1\"))) (split (axis (pane 2) \"horizontal\")) #inert)";
         run(&mut s, split)?;
-        let refused = run(&mut s, "%1 str @2 tab move").err();
+        let refused = run(&mut s, "(sequence! (move (pane 1) (tab \"@2\")) #inert)").err();
         let refused = refused.unwrap_or_default();
         assert!(
             refused.starts_with("size: ") && refused.contains("no room"),
@@ -9320,7 +9710,7 @@ mod tests {
                     .collect())
             };
         assert!(matches!(
-            run("me me focused str next step")?.as_slice(),
+            run("(sequence! (step (me) (focused (me)) \"next\") #inert)")?.as_slice(),
             [Err(Error::OnlyOne(Kind::Pane))]
         ));
         let kill = Command::Kill {
@@ -9367,11 +9757,14 @@ mod journal_tests {
     #[test]
     fn events_from_a_captures_cursor_follow_its_read() -> TestResult {
         let mut s = started()?;
-        run(&mut s, "%1 str before text send-keys")?;
-        let cursor = output(&mut s, "%1 capture str cursor get")?;
+        run(&mut s, "(send-keys (text (pane 1) \"before\"))")?;
+        let cursor = output(
+            &mut s,
+            "(sequence! (define! value-4963 (capture (pane 1))) \"cursor\" (get value-4963 \"cursor\"))",
+        )?;
         let cursor = cursor.trim().parse().map_err(|()| cursor.clone())?;
         assert_eq!(cursor, s.parts.journal().end(s.run));
-        run(&mut s, "%1 str after text send-keys")?;
+        run(&mut s, "(send-keys (text (pane 1) \"after\"))")?;
         let after = batch(&s, cursor)?;
         assert_eq!(after.events.len(), 1, "{after:?}");
         assert_eq!(named(&after, "input").len(), 1, "{after:?}");
@@ -9385,9 +9778,9 @@ mod journal_tests {
         let (mut s, c) = testing::attached(24, 80)?;
         run(
             &mut s,
-            "%1 str horizontal axis split drop opts +1 in 80 24 size new-tab drop",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (new-tab (size (in (options) (workspace 1)) 80 24)) #inert)",
         )?;
-        run(&mut s, "%1 zoom")?;
+        run(&mut s, "(sequence! (zoom (pane 1)) #inert)")?;
         let shown = |s: &Session, from| -> Result<Vec<Option<TabId>>, String> {
             let b = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
                 .batch(s.parts.journal(), true)?;
@@ -9400,16 +9793,19 @@ mod journal_tests {
         // Its focus in @1 is repaired while it is shown @2.
         run(&mut s, &format!("str {c} client @2 show"))?;
         let from = s.parts.journal().end(s.run);
-        run(&mut s, "%1 kill")?;
+        run(&mut s, "(sequence! (kill (pane 1)) #inert)")?;
         assert_eq!(shown(&s, from)?, [Some(TabId::of(2))]);
         // A tab and a workspace it is not shown close: its seats there go,
         // and nothing it is shown changes.
         run(
             &mut s,
-            "opts +1 in 80 24 size new-tab drop opts str other in 80 24 size new-tab drop",
+            "(sequence! (new-tab (size (in (options) (workspace 1)) 80 24)) (new-tab (size (in (options) \"other\") 80 24)) #inert)",
         )?;
         let from = s.parts.journal().end(s.run);
-        run(&mut s, "@3 kill +2 kill")?;
+        run(
+            &mut s,
+            "(sequence! (kill (tab 3)) (kill (workspace 2)) #inert)",
+        )?;
         assert_eq!(shown(&s, from)?, []);
         Ok(())
     }
@@ -9419,14 +9815,17 @@ mod journal_tests {
         let (mut s, client) = testing::attached(24, 80)?;
         run(
             &mut s,
-            "%1 str horizontal axis split drop opts 80 24 size str +1 workspace in new-tab drop",
+            "(sequence! (split (axis (pane 1) \"horizontal\")) (new-tab (in (size (options) 80 24) (workspace \"+1\"))) #inert)",
         )?;
         let from = s.parts.journal().end(s.run);
-        run(&mut s, "%1 %2 swap-with @2 str previous reorder")?;
+        run(
+            &mut s,
+            "(sequence! (swap-with (pane 1) (pane 2)) (reorder (tab 2) \"previous\") #inert)",
+        )?;
         run(&mut s, &format!("str {client} client %1 show %1 zoom"))?;
         run(
             &mut s,
-            "%2 str right 3 move-border %1 128 history-budget %1 clear-history all str note notify",
+            "(sequence! (move-border (pane 2) \"right\" 3) (history-budget (pane 1) 128) (clear-history (pane 1)) (notify (all) \"note\") #inert)",
         )?;
         let b = batch(&s, from)?;
         for name in [
@@ -9450,7 +9849,7 @@ mod journal_tests {
         let (mut s, client) = testing::attached(24, 80)?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab drop",
+            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
         )?;
         let id = PaneId::of(2);
         let from = s.parts.journal().end(s.run);
@@ -9470,7 +9869,11 @@ mod journal_tests {
             &Origin::Cli(Caller::default()),
             Instant::now(),
         );
-        testing::output_as(&mut s, Some(client), "@2 90 24 resize")?;
+        testing::output_as(
+            &mut s,
+            Some(client),
+            "(sequence! (resize (tab 2) 90 24) #inert)",
+        )?;
         s.output(id, b"\x07", Instant::now());
         // Force the replacement to finish on a later parser turn.
         let spends = crate::pane::tests::spends_the_budget(24, 80);
@@ -9532,7 +9935,7 @@ mod journal_tests {
     fn the_events_word_prints_events_till_its_scope_is_gone_and_fails_on_loss() -> TestResult {
         let mut s = started()?;
         let from = s.parts.journal().end(s.run);
-        run(&mut s, "%1 str hello rename")?;
+        run(&mut s, "(sequence! (rename (pane 1) \"hello\") #inert)")?;
         let streamed = output(&mut s, &format!("%1 dup kill str {from} events"))?;
         let events: Vec<_> = streamed.lines().collect();
         assert!(
@@ -9564,11 +9967,11 @@ mod journal_tests {
     }
     #[test]
     fn client_departures_invalidate_former_tabs_and_workspaces() -> TestResult {
-        for target in ["@2", "str +2 workspace"] {
+        for target in ["@2", "(workspace \"+2\")"] {
             let (mut s, client) = testing::attached(24, 80)?;
             run(
                 &mut s,
-                "opts 80 24 size str +1 workspace in new-tab drop opts str new-workspace in 80 24 size new-tab drop @1 80 24 resize @2 80 24 resize @3 80 24 resize",
+                "(sequence! (new-tab (in (size (options) 80 24) (workspace \"+1\"))) (new-tab (size (in (options) \"new-workspace\") 80 24)) (resize (tab 1) 80 24) (resize (tab 2) 80 24) (resize (tab 3) 80 24) #inert)",
             )?;
             let from = s.parts.journal().end(s.run);
             run(&mut s, &format!("str {client} client {target} show"))?;

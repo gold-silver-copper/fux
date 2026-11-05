@@ -22,6 +22,7 @@ pub enum Data {
     Code(Code),
     Bytes(Vec<u8>),
     FloatBits(u64),
+    Symbol(String),
 }
 
 impl Data {
@@ -71,6 +72,7 @@ impl Data {
             9 => Self::Code(Code::get(r)?),
             10 => Self::Bytes(Vec::get(r)?),
             11 => Self::FloatBits(u64::get(r)?),
+            12 => Self::Symbol(String::get(r)?),
             tag => return Err(Error::Tag("callback value", tag)),
         })
     }
@@ -90,6 +92,7 @@ crate::wire::shaped!(enum Data {
     Code(v: Code),
     Bytes(v: Vec<u8>),
     FloatBits(v: u64),
+    Symbol(v: String),
 });
 
 impl Wire for Data {
@@ -138,6 +141,10 @@ impl Wire for Data {
             }
             Self::FloatBits(v) => {
                 out.push(11);
+                v.put(out);
+            }
+            Self::Symbol(v) => {
+                out.push(12);
                 v.put(out);
             }
         }

@@ -8,6 +8,7 @@ pub enum Value<A = Fux> {
     Float(f64),
     Bool(bool),
     Str(Rc<String>),
+    Symbol(Rc<String>),
     List(Rc<List<A>>),
     App(A),
     Bytes(Rc<Vec<u8>>),
@@ -63,6 +64,7 @@ impl Value<Fux> {
             Self::Float(_) => "float",
             Self::Bool(_) => "boolean",
             Self::Str(_) => "string",
+            Self::Symbol(_) => "symbol",
             Self::List(_) => "list",
             Self::App(v) => v.kind(),
             Self::Bytes(_) => "bytes",
@@ -76,7 +78,7 @@ impl Value<Fux> {
     }
     pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         let result = match self {
-            Self::Str(s) | Self::Printed(s) => out.write_str(s),
+            Self::Str(s) | Self::Symbol(s) | Self::Printed(s) => out.write_str(s),
             Self::App(v) => return v.write_text(out),
             _ => self.write_data(out),
         };
@@ -92,6 +94,7 @@ impl Value<Fux> {
             Self::Int(n) => write!(out, "{n}"),
             Self::Bool(b) => write!(out, "#{b}"),
             Self::Str(s) => write_quoted(s, out),
+            Self::Symbol(s) => out.write_str(s),
             Self::List(xs) => {
                 out.write_str("(")?;
                 for (i, v) in xs.items().iter().enumerate() {
