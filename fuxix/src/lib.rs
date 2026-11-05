@@ -33,14 +33,11 @@ mod allocation;
 mod errno;
 #[cfg(unix)]
 pub mod file;
-#[cfg(unix)]
 pub mod io;
-#[cfg(unix)]
 pub mod poll;
 pub mod process;
 #[cfg(unix)]
 pub mod pty;
-#[cfg(unix)]
 pub mod signal;
 #[cfg(unix)]
 pub mod socket;
