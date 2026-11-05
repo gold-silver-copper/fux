@@ -6,6 +6,9 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
 
+mod children;
+pub use children::*;
+
 /// A process ID: a nonzero `DWORD`. 0 is the System Idle Process, which
 /// fux never names.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -66,7 +69,7 @@ pub fn watch(process: impl AsHandle) -> Result<Watch> {
         RegisterWaitForSingleObject(
             &mut wait,
             process.as_raw_handle(),
-            Some(ended),
+            Some(watched_ended),
             std::ptr::null(),
             INFINITE,
             WT_EXECUTEONLYONCE | WT_EXECUTEINWAITTHREAD,
@@ -82,7 +85,7 @@ pub fn watch(process: impl AsHandle) -> Result<Watch> {
 }
 
 /// What the thread pool runs when a watched child ends.
-unsafe extern "system" fn ended(_: *mut core::ffi::c_void, _: bool) {
+unsafe extern "system" fn watched_ended(_: *mut core::ffi::c_void, _: bool) {
     // A wake that can't be posted has nobody to tell.
     let _ = crate::signal::tell(super::Signal::Chld);
 }
@@ -416,6 +419,83 @@ fn terminate(process: &OwnedHandle) -> Result<()> {
 /// is taken as handled, so none ends this process.
 unsafe extern "system" fn swallow(_: u32) -> windows_sys::core::BOOL {
     1
+}
+
+/// Who a process is: its pid, and when it was made, in 100 ns counts
+/// since 1601, as Windows tells it. A pid is reused once its process is
+/// gone and every handle to it closed; the two together are never.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub pid: Pid,
+    pub created: u64,
+}
+
+/// Who `process`, a handle with `PROCESS_QUERY_LIMITED_INFORMATION`, is.
+pub(crate) fn identity_of(process: &OwnedHandle) -> std::io::Result<Identity> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetProcessId, GetProcessTimes};
+    // SAFETY: the handle is open; it touches no memory.
+    let pid = Pid::from_raw(unsafe { GetProcessId(process.as_raw_handle()) })
+        .ok_or_else(std::io::Error::last_os_error)?;
+    let [mut made, mut ended, mut kernel, mut user] = [FILETIME::default(); 4];
+    // SAFETY: the handle is open for querying; each time is written once.
+    let got = unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &mut made,
+            &mut ended,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if got == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let created = u64::from(made.dwHighDateTime) << 32 | u64::from(made.dwLowDateTime);
+    Ok(Identity { pid, created })
+}
+
+impl Job {
+    /// What this process offers another of its leader, to [`adopt`] a
+    /// copy of its handle: who it is, and the handle's value here, which
+    /// stays its own while this job lives.
+    pub fn offer(&self) -> std::io::Result<Offer> {
+        let handle =
+            u64::try_from(self.process.as_raw_handle().addr()).map_err(std::io::Error::other)?;
+        Ok(Offer {
+            program: identity_of(&self.process)?,
+            handle,
+        })
+    }
+}
+
+/// Windows has no sessions: no process has one to name.
+pub fn session(_pid: Pid) -> Option<Pid> {
+    None
+}
+
+/// How fux's signals reach a pane's programs on Windows (D-136), which has
+/// no signals: a key on the console, the console's processes ended, the
+/// job ended, or refused.
+pub fn delivery(signal: super::Signal, shell: bool) -> super::Delivery {
+    use super::{Delivery, Signal};
+    match (signal, shell) {
+        (Signal::Int, _) => Delivery::Keys(b"\x03"),
+        (Signal::Quit, _) | (Signal::Term, true) => Delivery::Keys(crate::pty::BREAK),
+        (Signal::Kill, true) => Delivery::Attached,
+        (Signal::Term | Signal::Kill, false) => Delivery::Job,
+        _ => Delivery::Unsupported,
+    }
+}
+
+/// Where `pid` works is not read on Windows yet: [`Errno::NOSYS`], so a
+/// split there is refused, as Unix refuses one whose directory it can't
+/// read (D-137).
+pub fn cwd_observed<A: crate::Allocation>(
+    _pid: Pid,
+    _budget: &mut A,
+) -> std::result::Result<Result<Option<std::path::PathBuf>>, A::Error> {
+    Ok(Err(Errno::NOSYS))
 }
 
 /// Its leader's process handle: to [`watch`] it.

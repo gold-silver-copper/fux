@@ -98,6 +98,12 @@ impl User {
         *CURRENT.get_or_init(|| User::of(this))
     }
 
+    /// Whether its token is elevated: an elevated fux keeps its own
+    /// default socket, lock and record (D-137).
+    pub fn elevated(&self) -> bool {
+        self.elevated
+    }
+
     /// Whether it is this process's user: the same SID, elevated or not
     /// alike. A process whose own user can't be read has none.
     pub fn is_current(&self) -> bool {
@@ -335,6 +341,15 @@ fn created(process: HANDLE) -> Result<SystemTime> {
 /// user (`TokenUser`): an elevated admin's objects are owned by the
 /// Administrators group, and our own server's were made with our token.
 fn owned_by_us(pipe: &OwnedHandle) -> Result<bool> {
+    owned_as_ours(pipe, SE_KERNEL_OBJECT)
+}
+
+/// Whether `object`, a handle of kind `kind` opened with `READ_CONTROL`,
+/// is owned by this process's token's default owner ([`owned_by_us`]).
+pub(crate) fn owned_as_ours(
+    object: &OwnedHandle,
+    kind: windows_sys::Win32::Security::Authorization::SE_OBJECT_TYPE,
+) -> Result<bool> {
     static OWNER: OnceLock<Result<([u8; SID], u8)>> = OnceLock::new();
     let ours = *OWNER.get_or_init(|| {
         // SAFETY: takes nothing; the pseudo-handle needs no closing.
@@ -348,8 +363,8 @@ fn owned_by_us(pipe: &OwnedHandle) -> Result<bool> {
     // the descriptor, which `Security` frees.
     let got = unsafe {
         GetSecurityInfo(
-            pipe.as_raw_handle(),
-            SE_KERNEL_OBJECT,
+            object.as_raw_handle(),
+            kind,
             OWNER_SECURITY_INFORMATION,
             &mut owner,
             std::ptr::null_mut(),
@@ -418,7 +433,7 @@ fn open(name: &[u16]) -> Result<OwnedHandle> {
 
 /// A security descriptor that lets this process's user in, and no one
 /// else, from `LocalAlloc`.
-struct Security(PSECURITY_DESCRIPTOR);
+pub(crate) struct Security(PSECURITY_DESCRIPTOR);
 
 // SAFETY: memory the process owns, read by the kernel only during calls.
 unsafe impl Send for Security {}
@@ -427,7 +442,15 @@ unsafe impl Sync for Security {}
 
 impl Security {
     fn owner_only() -> Result<Security> {
-        let sddl = format!("D:P(A;;GA;;;{})", User::current()?.sid());
+        Security::owner_only_as("")
+    }
+
+    /// A descriptor letting only this process's user in, protected from
+    /// what the object's parent would pass on, its one entry's
+    /// inheritance flags `inherit` (`OICI` for a directory whose files
+    /// are to be private too).
+    pub(crate) fn owner_only_as(inherit: &str) -> Result<Security> {
+        let sddl = format!("D:P(A;{inherit};GA;;;{})", User::current()?.sid());
         let wide: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
         let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         // SAFETY: `wide` is NUL-ended; `descriptor` is written once, with
@@ -443,6 +466,18 @@ impl Security {
         match made {
             0 => Err(Errno::last()),
             _ => Ok(Security(descriptor)),
+        }
+    }
+}
+
+impl Security {
+    /// Attributes for a call that makes an object with this descriptor,
+    /// not inherited; alive while `self` is.
+    pub(crate) fn attributes(&self) -> SECURITY_ATTRIBUTES {
+        SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(0),
+            lpSecurityDescriptor: self.0,
+            bInheritHandle: 0,
         }
     }
 }
@@ -518,6 +553,21 @@ impl Listener {
         Ok(Listener {
             name,
             security,
+            waiting: Spare::try_from(first)?,
+        })
+    }
+
+    /// The pipe `name` held by `first`, an instance of it this process was
+    /// handed ([`Listener::spare`] in its maker, then `OwnedHandle::try_from`):
+    /// it waits there for a client, and makes the later instances itself,
+    /// with this process's owner-only descriptor, which only this user's
+    /// processes may make instances under. A pane's process listens so:
+    /// its server made the name, and each client after the first reaches
+    /// an instance the pane made, whose server pid is the pane's.
+    pub fn handed(name: &str, first: OwnedHandle) -> Result<Listener> {
+        Ok(Listener {
+            name: wide(name)?,
+            security: Security::owner_only()?,
             waiting: Spare::try_from(first)?,
         })
     }

@@ -112,6 +112,17 @@ pub fn lead_session(
     unsafe { command.pre_exec(lead) };
 }
 
+/// How `signal` reaches a pane's programs: on Unix always as a signal to
+/// its foreground group, a shell's pane or not.
+pub fn delivery(_signal: Signal, _shell: bool) -> super::Delivery {
+    super::Delivery::Group
+}
+
+/// Unix has no jobs: what this process starts is free of them.
+pub fn job_fate() -> super::Fate {
+    super::Fate::Free
+}
+
 /// The session of `pid`. `None` if there is none to name: the process is
 /// gone, or is a kernel thread, whose session is 0.
 pub fn session(pid: Pid) -> Option<Pid> {

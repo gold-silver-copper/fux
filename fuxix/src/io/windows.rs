@@ -7,7 +7,7 @@
 use crate::errno::{Errno, Result};
 use crate::poll::{Events, KEY_IO, Source, sealed::Sealed};
 use std::cell::UnsafeCell;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use windows_sys::Win32::Foundation::{
@@ -536,6 +536,25 @@ pub fn pipe_for_child() -> Result<(Stream, OwnedHandle)> {
     Ok((Stream::new(ours)?, theirs))
 }
 
+/// A pipe whose other end is overlapped too, for a child that waits on
+/// it with fuxix as this process does: it makes the handle it inherits a
+/// [`Stream`] of its own (`Stream::try_from`).
+pub fn pipe_for_fuxix_child() -> Result<(Stream, OwnedHandle)> {
+    let (ours, theirs) = named(FILE_FLAG_OVERLAPPED)?;
+    Ok((Stream::new(ours)?, theirs))
+}
+
+impl TryFrom<OwnedHandle> for Stream {
+    type Error = Errno;
+
+    /// `handle`, opened overlapped and bound to no completion port (one
+    /// this process inherited, [`pipe_for_fuxix_child`]'s), as a stream
+    /// of this process's.
+    fn try_from(handle: OwnedHandle) -> Result<Stream> {
+        Stream::new(handle)
+    }
+}
+
 /// A new named pipe's two ends, as std makes its own: one instance, local
 /// clients only, under a name unique to this process. Ours is overlapped;
 /// theirs is opened with `flags`. A name some other process holds already
@@ -594,4 +613,28 @@ fn named(flags: u32) -> Result<(OwnedHandle, OwnedHandle)> {
         // SAFETY: `raw` was just opened, and nothing else owns it.
         return Ok((ours, unsafe { OwnedHandle::from_raw_handle(raw) }));
     }
+}
+
+/// Points this process's standard output at a copy of `to`, closing what
+/// it was, as Unix's `dup2` onto 1 does: a server done with the pipe its
+/// starter reads points it at `NUL`, so that pipe breaks.
+pub fn redirect_stdout(to: impl std::os::windows::io::AsHandle) -> Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle};
+    let copy = (to.as_handle().try_clone_to_owned())
+        .map_err(|error| Errno::from_io_error(&error).unwrap_or_else(Errno::last))?;
+    // SAFETY: it takes a number and touches no memory.
+    let old = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    // SAFETY: the handle is open; from now on it is the process's stdout,
+    // which std looks up at each write and never closes.
+    if unsafe { SetStdHandle(STD_OUTPUT_HANDLE, copy.as_raw_handle()) } == 0 {
+        return Err(Errno::last());
+    }
+    let _ = copy.into_raw_handle();
+    if !old.is_null() && old != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        // SAFETY: the old stdout, no longer the process's, was inherited
+        // and is closed once, here.
+        unsafe { CloseHandle(old) };
+    }
+    Ok(())
 }

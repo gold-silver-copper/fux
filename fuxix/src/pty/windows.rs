@@ -532,10 +532,10 @@ impl Start {
 
 /// A process's attribute list, in zeroed storage aligned for it, deleted
 /// when dropped.
-struct Attributes(Vec<usize>);
+pub(crate) struct Attributes(Vec<usize>);
 
 impl Attributes {
-    fn new(count: u32) -> std::io::Result<Attributes> {
+    pub(crate) fn new(count: u32) -> std::io::Result<Attributes> {
         use windows_sys::Win32::System::Threading::InitializeProcThreadAttributeList;
         let mut size = 0usize;
         // SAFETY: with no list, this only writes the size one needs.
@@ -558,13 +558,13 @@ impl Attributes {
         Ok(list)
     }
 
-    fn list(&mut self) -> *mut core::ffi::c_void {
+    pub(crate) fn list(&mut self) -> *mut core::ffi::c_void {
         self.0.as_mut_ptr().cast()
     }
 
     /// Sets `attribute` to `value`, `size` bytes, which must live as long
     /// as the list is used.
-    fn set(
+    pub(crate) fn set(
         &mut self,
         attribute: u32,
         value: *const core::ffi::c_void,
@@ -605,7 +605,7 @@ impl Drop for Attributes {
 }
 
 /// `text` as a NUL-ended UTF-16 string; one with a NUL in it is refused.
-fn wide(text: &OsStr) -> std::io::Result<Vec<u16>> {
+pub(crate) fn wide(text: &OsStr) -> std::io::Result<Vec<u16>> {
     let mut units: Vec<u16> = text.encode_wide().collect();
     if units.contains(&0) {
         return Err(nul());
@@ -622,7 +622,7 @@ fn nul() -> std::io::Error {
 /// quoted as the C runtime reads it back: as it is if it has no space,
 /// tab or quote and is not empty, else in quotes, with each quote and the
 /// backslashes before it, and those before the closing quote, escaped.
-fn quote(arg: &OsStr, line: &mut Vec<u16>) -> std::io::Result<()> {
+pub(crate) fn quote(arg: &OsStr, line: &mut Vec<u16>) -> std::io::Result<()> {
     const QUOTE: u16 = 0x22;
     const BACKSLASH: u16 = 0x5C;
     let units: Vec<u16> = arg.encode_wide().collect();
