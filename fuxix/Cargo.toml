@@ -30,9 +30,16 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_WindowsProgramming",
 ] }
 
+# Windows only, and run by CI's ConPTY step by name: they need the
+# pinned package (FUXIX_CONPTY_PACKAGE), or else the network.
 [[test]]
 name = "conpty"
 harness = false
+test = false
+
+[[test]]
+name = "conpty_fallback"
+test = false
 
 [lints.rust]
 unused_must_use = "forbid"

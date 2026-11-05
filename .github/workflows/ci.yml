@@ -329,8 +329,8 @@ jobs:
       # The pinned ConPTY package (WINDOWS.md, PR 6), downloaded once and
       # cached, hash-checked here: fuxix's ConPTY tests read it from
       # FUXIX_CONPTY_PACKAGE, so no test touches the network. The tests
-      # (fuxix/tests/conpty.rs and conpty_fallback.rs) run in the step
-      # below, and log S1's byte-exactness and S4's probes.
+      # (fuxix/tests/conpty.rs and conpty_fallback.rs) run in their own
+      # step below, and log S1's byte-exactness and S4's probes.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/conpty
@@ -365,6 +365,17 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p fuxix --test windows --locked -- --nocapture
+
+      # ConPTY and Job (WINDOWS.md, PR 6), with what each found in the log:
+      # S1's bytes exact through the fetched ConPTY, Ctrl-C and Ctrl-Break,
+      # the hang-up, the three kills, and the built-in used only when
+      # `load` said why. Then what of theirs is left running: nothing.
+      - name: fuxix ConPTY
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          cargo test -p fuxix --test conpty --test conpty_fallback --locked -- --nocapture
+          tasklist //FO CSV | grep -iE "conpty|openconsole|conhost|cmd.exe" || true
 
       # Named pipes (WINDOWS.md, PR 5), with what each found in the log:
       # the same user both ways, a name taken first, a child taking its
