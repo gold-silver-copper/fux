@@ -2,16 +2,16 @@
 # guards: keys sent with expect at a version the pane has moved past are
 #   refused stale, and none of them reach the program
 # exercises: stale-expect
-$ V=$(fux opts str agent in 80 24 size str sh program str -c arg str 'read x; read y; echo "second=$y"' arg new-tab)
-$ fux "${V%%:*}" str x text str Enter key send-keys
+$ V=$(fux '(new-tab (argument (argument (program (size (in (options) "agent") 80 24) "sh") "-c") "read x; read y; echo \"second=$y\""))')
+$ fux "(send-keys (key (text (pane \"${V%%:*}\") \"x\") \"Enter\"))"
   ~ %a:0.0.0.0.0:R1
-$ fux str "$V" changed 5 timeout wait
+$ fux "(wait (timeout (changed \"$V\") 5))"
   ~ %a:0.3.0.0.0:R1 screen
-$ fux str "$V" expect str y text str Enter key send-keys
+$ fux "(send-keys (key (text (expect \"$V\") \"y\") \"Enter\"))"
   [1] stale
-$ fux "${V%%:*}" str z text str Enter key send-keys
+$ fux "(send-keys (key (text (pane \"${V%%:*}\") \"z\") \"Enter\"))"
   ~ %a:0.3.0.0.0:R1
-$ fux "${V%%:*}" 5 until-ended | grep '^second='
+$ fux "(until-ended (pane \"${V%%:*}\") 5)" | grep '^second='
   = second=z
   ~ second=z
 @journal

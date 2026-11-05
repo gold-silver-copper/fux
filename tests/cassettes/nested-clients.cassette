@@ -2,40 +2,40 @@
 # guards: two clients shown different workspaces nested in one project step
 #   among their own siblings, each with its own place, and the project's
 #   words cover what is in the workspaces in it
-$ fux opts str home in 80 24 size new-tab >/dev/null
-$ fux opts str proj in str agent1 in str a name 80 24 size new-tab >/dev/null
-$ fux opts str proj in str agent2 in str b name 80 24 size new-tab >/dev/null
-$ fux opts str agent2 in str c name 80 24 size new-tab >/dev/null
-$ clients() { fux ls str clients get len; }
-$ fux opts str agent1 in 100 30 size attach >/dev/null &
+$ fux '(new-tab (size (in (options) "home") 80 24))' >/dev/null
+$ fux '(new-tab (name (size (in (in (options) "proj") "agent1") 80 24) "a"))' >/dev/null
+$ fux '(new-tab (name (size (in (in (options) "proj") "agent2") 80 24) "b"))' >/dev/null
+$ fux '(new-tab (name (size (in (options) "agent2") 80 24) "c"))' >/dev/null
+$ clients() { fux '(length (get (list-session) "clients"))'; }
+$ fux '(attach (size (in (options) "agent1") 100 30))' >/dev/null &
 $ until [ "$(clients)" = 1 ]; do sleep 0.05; done
-$ fux opts str agent2 in 60 20 size attach >/dev/null &
+$ fux '(attach (size (in (options) "agent2") 60 20))' >/dev/null &
 $ until [ "$(clients)" = 2 ]; do sleep 0.05; done
-$ where() { for c in c1 c2; do echo "$c $(fux str $c client focused workspace str name get) $(fux str $c client focused tab str name get)"; done; }
+$ where() { for c in c1 c2; do echo "$c $(fux '(get (workspace (focused (client (first (arguments))))) "name")' "$c") $(fux '(get (tab (focused (client (first (arguments))))) "name")' "$c")"; done; }
 $ where
   = ca agent1 a
   = cb agent2 b
   ~ ca agent1 a
   ~ cb agent2 b
-$ C=$(fux str proj workspace info str cursor get)
-$ fux str c1 client str agent1 workspace str next step; fux str c2 client str b tab str next step; where
+$ C=$(fux '(get (information (workspace "proj")) "cursor")')
+$ fux '(step (client "c1") (workspace "agent1") "next")'; fux '(step (client "c2") (tab "b") "next")'; where
   = ca agent2 b
   = cb agent2 c
   ~ ca agent2 b
   ~ cb agent2 c
-$ fux str c1 client str agent2 workspace str last step; where
+$ fux '(step (client "c1") (workspace "agent2") "last")'; where
   = ca agent1 a
   = cb agent2 c
   ~ ca agent1 a
   ~ cb agent2 c
-$ fux str proj workspace tabs each str name get print end
+$ fux '(map (lambda! (t) (get t "name")) (tabs (workspace "proj")))'
   = a
   = b
   = c
   ~ a
   ~ b
   ~ c
-$ fux str proj workspace str "$C" 0 next-events str events get each dup str event get str shown eq if str client get print else drop then end
+$ fux '(define! batch (next-events (workspace "proj") (first (arguments)) 0)) (map (lambda! (e) (get e "client")) (filter (lambda! (e) (same? (get e "event") "shown")) (get batch "events")))' "$C"
   = ca
   = ca
   = cb

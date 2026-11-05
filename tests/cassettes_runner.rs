@@ -15,14 +15,10 @@ mod runner {
         const R2: &str = "2-2222222222222222";
 
         fn ls(cursor: u64, panes: &[&str]) -> Result<Snapshot, String> {
-            let panes: Vec<String> = (panes.iter())
-                .map(|v| {
-                    format!(r#"{{"id":"%1","version":"{v}","program":{{"exited":0,"signal":null,"pid":null}}}}"#)
-                })
-                .collect();
+            let panes:Vec<String>=panes.iter().map(|v| format!("((id \"%1\") (version \"{v}\") (program ((exited 0) (signal none) (process-id none))))")).collect();
             Snapshot::read(&format!(
-                r#"{{"run":"{R1}","cursor":"{cursor}:{R1}","panes":[{}]}}"#,
-                panes.join(",")
+                "((run \"{R1}\") (cursor \"{cursor}:{R1}\") (panes ({})))",
+                panes.join(" ")
             ))
         }
 
@@ -119,7 +115,7 @@ mod runner {
         fn the_journal_is_read_within_the_replays_time() -> Result<(), String> {
             let real = Ctx::new()?.fux;
             let wrap = format!(
-                "case \" $* \" in *\" next-events \"*) exec sleep 600;; esac\nexec '{}' \"$@\"",
+                "case \" $* \" in *next-events*) exec sleep 600;; esac\nexec '{}' \"$@\"",
                 real.display()
             );
             let (fux, _, pid) = fake("journal", &wrap)?;
@@ -207,54 +203,64 @@ mod runner {
         fn only_a_call_of_one_operation_establishes_it() -> Result<(), String> {
             let v = format!("%1:0.0.0.0.0:{R1}");
             let expect = call(
-                &[
-                    "str",
-                    &v,
-                    "expect",
-                    "str",
-                    "y",
-                    "text",
-                    "str",
-                    "Enter",
-                    "key",
-                    "send-keys",
-                ],
+                &[&format!(
+                    "(send-keys (key (text (expect {}) \"y\") \"Enter\"))",
+                    fux::script::quoted(&v)
+                )],
                 1,
                 "",
             );
-            let wait = call(&["str", &v, "changed", "1", "timeout", "wait"], 0, "");
+            let wait = call(
+                &[&format!(
+                    "(wait (timeout (changed {}) 1))",
+                    fux::script::quoted(&v)
+                )],
+                0,
+                "",
+            );
             assert!(matches!(expect.operation(), Some(Operation::Expect(_))));
             assert!(matches!(wait.operation(), Some(Operation::Wait(_))));
-            let printed = call(&["str", "expect", "print", "str", &v, "print"], 0, "");
+            let printed = call(
+                &[&format!(
+                    "(print \"expect\") (print {})",
+                    fux::script::quoted(&v)
+                )],
+                0,
+                "",
+            );
             let caught = call(
-                &[
-                    "str", "timeout", "try", "str", &v, "changed", "1", "timeout", "wait", "catch",
-                    "drop", "end",
-                ],
+                &[&format!(
+                    "(catch-kind! (wait (timeout (changed {}) 1)) timeout failure #inert)",
+                    fux::script::quoted(&v)
+                )],
                 0,
                 "",
             );
             assert_eq!((printed.operation(), caught.operation()), (None, None));
-            // Refused before the operation: past a wait's longest limit, no
-            // key of that name, no keys at all.
             let refused = [
                 call(
-                    &["str", &v, "changed", "4294967296", "timeout", "wait"],
+                    &[&format!(
+                        "(wait (timeout (changed {}) 4294967296))",
+                        fux::script::quoted(&v)
+                    )],
                     1,
-                    "fux: range: timeout",
+                    "fux: range-error: timeout",
                 ),
                 call(
-                    &["str", &v, "expect", "str", "Nope", "key", "send-keys"],
+                    &[&format!(
+                        "(send-keys (key (expect {}) \"Nope\"))",
+                        fux::script::quoted(&v)
+                    )],
                     1,
                     "fux: not-a-key: key",
                 ),
                 call(
-                    &["str", &v, "expect", "send-keys"],
+                    &[&format!("(send-keys (expect {}))", fux::script::quoted(&v))],
                     2,
                     "fux: usage: send-keys",
                 ),
             ];
-            assert!(refused.iter().all(|c| c.operation().is_none()));
+            assert!(refused.iter().all(|call| call.operation().is_none()));
             // The pane had moved past v before either ran.
             let moved = || -> Result<Vec<Snapshot>, String> {
                 Ok(vec![
@@ -271,7 +277,7 @@ mod runner {
                     && !exercised.contains(&Promise::WaitAcrossChange)
             );
             let timed_out = call(
-                &["str", &v, "changed", "1", "timeout", "wait"],
+                &[&format!("(wait (timeout (changed {}) 1))", fux::script::quoted(&v))],
                 124,
                 "fux: timeout: wait",
             );

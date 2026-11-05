@@ -2,10 +2,10 @@
 # guards: a wait from a version the pane has already moved past answers that
 #   change at once, never waiting for another
 # exercises: wait-across-change
-$ V=$(fux opts str agent in 80 24 size str sh program str -c arg str 'read x; echo "got=$x"; read y' arg new-tab)
-$ fux "${V%%:*}" str x text str Enter key send-keys
+$ V=$(fux '(new-tab (argument (argument (program (size (in (options) "agent") 80 24) "sh") "-c") "read x; echo \"got=$x\"; read y"))')
+$ fux "(send-keys (key (text (pane \"${V%%:*}\") \"x\") \"Enter\"))"
   ~ %a:0.0.0.0.0:R1
-$ until fux "${V%%:*}" capture | grep -q '^got=x'; do sleep 0.05; done
-$ fux str "$V" changed 1 timeout wait
+$ until fux "(capture (pane \"${V%%:*}\"))" | grep -q '^got=x'; do sleep 0.05; done
+$ fux "(wait (timeout (changed \"$V\") 1))"
   = %a:0.*.0.0.0:R1 screen
   ~ %a:0.10.0.0.0:R1 screen

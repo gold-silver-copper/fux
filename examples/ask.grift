@@ -1,0 +1,9 @@
+; Ask a program, wait for its answer, then close its pane.
+; expect: got 5 letters
+(define! until-shows (lambda! (p text) (string (shows p text 60))))
+(define! p (new-tab (argument (argument (program (name (size (in (options) "agent") 60 10) "ask") "sh") "-c") "printf 'name? '; read n; echo got ${#n} letters; read n")))
+(until-shows p "name?")
+(line p "grift")
+(define! answer (last (filter (lambda! (line) (not? (same? line ""))) (string-split (until-shows p "letters") "\n"))))
+(kill p)
+answer
