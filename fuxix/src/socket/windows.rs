@@ -550,6 +550,14 @@ impl Sealed for Listener {
     fn ready(&self, interest: Events) -> Events {
         self.waiting.ready(interest)
     }
+
+    fn reading(&self) -> Option<&crate::io::Stream> {
+        None
+    }
+
+    fn writing(&self) -> Option<&crate::io::Stream> {
+        None
+    }
 }
 
 impl Source for Listener {}
@@ -778,6 +786,14 @@ impl Sealed for Spare {
             (None, Some(_)) if interest.intersects(Events::IN) => Events::IN,
             (None, _) => Events::NONE,
         }
+    }
+
+    fn reading(&self) -> Option<&crate::io::Stream> {
+        None
+    }
+
+    fn writing(&self) -> Option<&crate::io::Stream> {
+        None
     }
 }
 

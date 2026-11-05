@@ -93,14 +93,11 @@ pub(crate) mod sealed {
         /// What it is ready for now: of `interest`, and `ERR` and `HUP`
         /// unasked.
         fn ready(&self, interest: Events) -> Events;
-        /// The stream [`crate::io::read`] reads, if it reads.
-        fn reading(&self) -> Option<&crate::io::Stream> {
-            None
-        }
+        /// The stream [`crate::io::read`] reads, if it reads. No default:
+        /// each source says.
+        fn reading(&self) -> Option<&crate::io::Stream>;
         /// The stream [`crate::io::write`] writes, if it writes.
-        fn writing(&self) -> Option<&crate::io::Stream> {
-            None
-        }
+        fn writing(&self) -> Option<&crate::io::Stream>;
     }
 }
 

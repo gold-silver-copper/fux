@@ -80,6 +80,14 @@ impl Sealed for Pipe {
             false => Events::NONE,
         }
     }
+
+    fn reading(&self) -> Option<&crate::io::Stream> {
+        None
+    }
+
+    fn writing(&self) -> Option<&crate::io::Stream> {
+        None
+    }
 }
 
 impl Source for Pipe {}

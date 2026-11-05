@@ -359,6 +359,14 @@ impl Sealed for Stream {
         }
         ready
     }
+
+    fn reading(&self) -> Option<&Stream> {
+        Some(self)
+    }
+
+    fn writing(&self) -> Option<&Stream> {
+        Some(self)
+    }
 }
 
 impl Source for Stream {}
