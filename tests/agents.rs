@@ -1159,7 +1159,7 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     {
         let program = program.split("```").next().unwrap_or_default();
         let mut g: grift::Grift = grift::Grift::new().map_err(|_| "grift initialization")?;
-        g.read_named(&format!("guide-{i}"), program)
+        g.read_in(&format!("guide-{i}"), program)
             .map_err(|_| "guide program does not read")?;
     }
     Ok(())

@@ -440,8 +440,17 @@ fn dictionary(
         [v] => g.as_string(v)?,
         _ => return Err(g.error("arity-error", args)),
     };
-    for name in g.visible_names(&top)? {
-        let text = g.symbol_name(&name)?.to_owned();
+    let mut names = g.names(&top)?;
+    if let Some(library) = &state.library {
+        names.extend(g.names(&g.kept(library)?)?);
+    }
+    let mut names = names
+        .into_iter()
+        .map(|name| Ok((g.symbol_name(&name)?.to_owned(), name)))
+        .collect::<Result<Vec<_>, Error>>()?;
+    names.sort_by(|a, b| a.0.cmp(&b.0));
+    names.dedup_by(|a, b| a.0 == b.0);
+    for (text, name) in names {
         if wanted.as_ref().is_some_and(|n| n != &text) {
             continue;
         }
@@ -579,7 +588,27 @@ pub(super) fn run(
     )
     .map_err(|e| failed(&g, e))?;
     let baseline = g.context(None).map_err(|e| failed(&g, e))?;
-    for name in g.visible_names(&top).map_err(|e| failed(&g, e))? {
+    // Grift publishes its standard names as data; the host owns the only child
+    // context used for programs. Save both sets before user code can shadow them.
+    let built_in_names = g.symbol("built-in-names").map_err(|e| failed(&g, e))?;
+    let built_in_names = g
+        .lookup(&top, &built_in_names)
+        .map_err(|e| failed(&g, e))?
+        .ok_or_else(|| Failed::new(Code::UnknownWord, "built-in-names"))?;
+    let mut names = g.list_items(&built_in_names).map_err(|e| failed(&g, e))?;
+    names.extend(
+        g.names(&top)
+            .map_err(|e| failed(&g, e))?
+            .into_iter()
+            .map(G::Symbol),
+    );
+    for name in names {
+        let G::Symbol(name) = name else {
+            return Err(Failed::new(
+                Code::Type,
+                "built-in-names contains a non-symbol",
+            ));
+        };
         if let Some(value) = g.lookup(&top, &name).map_err(|e| failed(&g, e))? {
             g.bind(&baseline, &G::Symbol(name), value)
                 .map_err(|e| failed(&g, e))?;

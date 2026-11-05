@@ -651,12 +651,15 @@ fn attach_defaults_replace_targets_and_clear_names_locally() -> TestResult {
 fn the_dictionary_is_the_programs_own_as_records() -> TestResult {
     let program = r#"(define! sq (lambda! (x) (multiply x x)))
         (define! sq2 (lambda! (x) (sq x))) (define! sq (lambda! () 0))
+        (define! built-in-names ())
         (define! dictionary-value (dictionary))
         (list (get (word "sq") "name") (get (word "sq") "provenance")
               (get (word "first") "provenance") (get (word "split") "provenance")
               (get (word "add") "provenance")
               (length (filter (lambda! (entry) (same? (get entry "name") "sq")) dictionary-value))
               (length (filter (lambda! (entry) (same? (get entry "name") "sq2")) dictionary-value))
+              (length (filter (lambda! (entry) (same? (get entry "name") "first")) dictionary-value))
+              (length (filter (lambda! (entry) (same? (get entry "name") "built-in-names")) dictionary-value))
               (get (word "capture") "documentation"))"#;
     let left = evaluate(program, None, &mut NoRequests, &mut Vec::new())?;
     let [Value::List(values)] = left.as_slice() else {
@@ -668,6 +671,8 @@ fn the_dictionary_is_the_programs_own_as_records() -> TestResult {
         Value::str("core"),
         Value::str("fux"),
         Value::str("core"),
+        Value::Int(1),
+        Value::Int(1),
         Value::Int(1),
         Value::Int(1),
         Value::str(crate::help::explain("capture").ok_or("capture help")?),

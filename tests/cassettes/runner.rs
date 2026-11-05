@@ -2201,7 +2201,7 @@ impl Json {
         }
         let mut g: Grift = Grift::new().map_err(|_| "initializing data reader")?;
         let forms = g
-            .read_named("fux data", text)
+            .read_in("fux data", text)
             .map_err(|_| "invalid grift data")?;
         let forms = items(&g, &forms, 2)?;
         let [root] = forms.as_slice() else {

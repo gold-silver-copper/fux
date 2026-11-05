@@ -1254,7 +1254,7 @@ pub fn reference(value: &str) -> String {
 pub fn read_data(text: &str, query: &str) -> Result<String, String> {
     let mut reader: grift::Grift = grift::Grift::new().map_err(|_| "grift reader")?;
     let forms = reader
-        .read_named("result", text)
+        .read_in("result", text)
         .map_err(|_| "result does not read")?;
     let forms = reader.list_items(&forms).map_err(|_| "result forms")?;
     let [data] = forms.as_slice() else {
