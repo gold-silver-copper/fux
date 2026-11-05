@@ -69,10 +69,16 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
             write_data(g, value, &mut message)?;
         }
         for (i, form) in e.trace().iter().enumerate() {
+            use std::fmt::Write;
+            // Grift names the source of text that didn't read as a string, the
+            // line being the second of the parse error's values.
+            if let (Ok(Some(source)), Some(G::Integer(line))) = (g.as_str(form), e.values.get(1)) {
+                write!(&mut message, " at {source}:{line}")?;
+                continue;
+            }
             message.push_str(if i == 0 { " in " } else { "\n  from " });
             g.write(form, &mut message).map_err(|_| std::fmt::Error)?;
             if let Ok(Some((source, line))) = g.position(form) {
-                use std::fmt::Write;
                 write!(&mut message, " at {source}:{line}")?;
             }
         }
@@ -169,17 +175,7 @@ fn read_source(
         .files
         .read(&file)
         .map_err(|e| failure(g, Failure::new(Code::Require, e)))?;
-    let forms = match g.read_in(&name, &source) {
-        Ok(forms) => forms,
-        Err(mut e) => {
-            let location = match e.values.get(1) {
-                Some(G::Integer(line)) => format!("{name}:{line}"),
-                _ => name.clone(),
-            };
-            e.values.push(g.string(&location)?);
-            return Err(e);
-        }
-    };
+    let forms = g.read_in(&name, &source)?;
     state.host.files.required.push(file.clone());
     state.host.files.loading.push(file.clone());
     state.host.files.parents.push(state.host.file.replace(file));

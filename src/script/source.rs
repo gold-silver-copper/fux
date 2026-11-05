@@ -313,6 +313,8 @@ mod tests {
             let error = run(&root).err().ok_or("bad source accepted")?.to_string();
             assert!(error.contains("main.grift:2"), "{error}");
             assert!(error.contains("child.grift:2"), "{error}");
+            // Named once where it failed and once in the `require!` naming it.
+            assert_eq!(error.matches("child.grift").count(), 2, "{error}");
         }
         Ok(())
     }
