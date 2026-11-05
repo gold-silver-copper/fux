@@ -508,7 +508,7 @@ impl Told {
             Told::HungUp => ("hung_up", Vec::new()),
             Told::ReadFailed(error) => (
                 "read_failed",
-                vec![("read_error", Json::str(error.clone()))],
+                vec![("read-error", Json::str(error.clone()))],
             ),
             Told::Input {
                 kind,

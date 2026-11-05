@@ -1340,6 +1340,20 @@ pub fn main(
     argv: Option<Vec<std::ffi::OsString>>,
     out: &mut dyn Write,
 ) -> Result<u8, Failed> {
+    let result = main_program(args, argv, out);
+    if let Err(failure) = &result {
+        let _ = writeln!(io::stderr(), "fux: {failure}");
+        for step in failure.taken() {
+            let _ = writeln!(io::stderr(), "fux: {step}");
+        }
+    }
+    result
+}
+fn main_program(
+    args: &[String],
+    argv: Option<Vec<std::ffi::OsString>>,
+    out: &mut dyn Write,
+) -> Result<u8, Failed> {
     if matches!(args,[v] if v=="--version"||v=="-V") {
         writeln!(out, "{}", fux_wire::protocol::Build::OURS).map_err(output_failed)?;
         return Ok(0);
@@ -1432,15 +1446,15 @@ pub fn main(
                 }
             }
             Ok(cli.status.unwrap_or(0))
+        })
+        .map_err(|mut failure| {
+            if failure.actions.is_empty() {
+                failure.actions = host.actions.clone();
+            }
+            failure
         });
     if closed.get() {
         return Ok(141);
-    }
-    if let Err(f) = &result {
-        let _ = writeln!(io::stderr(), "fux: {f}");
-        for step in f.taken() {
-            let _ = writeln!(io::stderr(), "fux: {step}");
-        }
     }
     result
 }

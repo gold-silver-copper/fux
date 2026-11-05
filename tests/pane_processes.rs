@@ -306,7 +306,7 @@ fn keys_for_a_tab_go_to_each_pane_that_takes_them() -> Outcome {
         fux::script::quoted(tab.trim())
     )])?;
     assert_ne!(sent.status, 0);
-    assert!(sent.stderr.contains("not_running: "), "{}", sent.stderr);
+    assert!(sent.stderr.contains("not-running: "), "{}", sent.stderr);
     assert!(
         sent.stderr.contains(&format!("already sent to {shell}")),
         "{}",

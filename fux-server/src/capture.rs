@@ -716,7 +716,7 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
         ("state", Json::str(state)),
         ("exited", exited),
         ("signal", signal),
-        ("read_error", read_error.map_or(Json::Null, Json::str)),
+        ("read-error", read_error.map_or(Json::Null, Json::str)),
         ("input_unread", Json::count(pane.left.input)),
         (
             "foreground_group",

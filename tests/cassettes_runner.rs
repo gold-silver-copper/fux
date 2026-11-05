@@ -246,7 +246,7 @@ mod runner {
                 call(
                     &["str", &v, "expect", "str", "Nope", "key", "send-keys"],
                     1,
-                    "fux: not_a_key: key",
+                    "fux: not-a-key: key",
                 ),
                 call(
                     &["str", &v, "expect", "send-keys"],

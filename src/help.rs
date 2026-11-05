@@ -28,12 +28,13 @@ pub fn explain(name: &str) -> Option<String> {
     if let Some(word) = Word::named(name) {
         let row = word.row();
         return Some(format!(
-            "{}\n{}\nArguments: {}\n",
+            "{}\n{}\nArguments: {}\nExample: {}\n",
             row.name,
             row.about,
             row.effect
                 .split_once("--")
-                .map_or(row.effect, |(args, _)| args.trim())
+                .map_or(row.effect, |(args, _)| args.trim()),
+            row.example
         ));
     }
     if let Ok(docs) = crate::script::docs()

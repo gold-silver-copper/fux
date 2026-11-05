@@ -172,7 +172,6 @@
   (string-join (append hierarchy clients) "\n")))
 (define! events (lambda! (scope cursor-value)
   (let! ((batch (next-events scope cursor-value 3600)))
-    (when! (greater-than? (get batch "missed") 0) (raise (error (quote! journal-loss) (get batch "missed") batch)))
-    (for-each (lambda! (event) (display (value-to-string (session-data event)) "\n")) (get batch "events"))
+    (for-each (lambda! (event) (display (value-to-string (session-data event)) "\n")) (batch-events batch))
     (if! (or!? (same? (get batch "status") "gone") (same? (get batch "status") "stopped")) #inert
       (events scope (get batch "next"))))))

@@ -177,7 +177,7 @@ fn a_program_keeps_its_pane_screen_and_status() -> Outcome {
     )])?;
     assert_eq!(refused.status, 1);
     assert!(
-        refused.stderr.starts_with("fux: not_running: ") && refused.stderr.contains("exited 3"),
+        refused.stderr.starts_with("fux: not-running: ") && refused.stderr.contains("exited 3"),
         "{}",
         refused.stderr
     );
@@ -249,7 +249,7 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     assert_eq!(still.status, 124, "{}{}", still.stdout, still.stderr);
     assert!(still.stderr.ends_with(" timeout\n"), "{}", still.stderr);
     let bad = server.fux(&["(wait (changed \"0.1.2.0.0\"))"])?;
-    assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
+    assert!(bad.stderr.starts_with("fux: bad-value: "), "{}", bad.stderr);
     // Counts this pane never had (a program started more often, or more
     // output read), or another server run's, are refused.
     let server_run = since.rsplit(':').next().unwrap_or_default();
@@ -259,7 +259,7 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
         format!("{pane}:0.1.0.0.0:1-0"),
     ] {
         let other = server.fux(&[&format!("(wait (changed {}))", fux::script::quoted(&other))])?;
-        let refused = other.stderr.starts_with("fux: bad_value: ");
+        let refused = other.stderr.starts_with("fux: bad-value: ");
         assert!(refused, "{}", other.stderr);
     }
     // In one program, a wait on the action's answer waits from the version
@@ -405,7 +405,7 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         fux::script::quoted(&id(&plain))
     )])?;
     assert!(
-        refused.stderr.starts_with("fux: no_marks: "),
+        refused.stderr.starts_with("fux: no-marks: "),
         "{}",
         refused.stderr
     );
@@ -716,7 +716,7 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
     let tab = ["(new-tab (name (in (size (options) 80 24) \"+1\") \"ed\"))"];
     let taken = server.fux(&tab)?;
     assert!(
-        taken.stderr.starts_with("fux: name_taken: "),
+        taken.stderr.starts_with("fux: name-taken: "),
         "{}",
         taken.stderr
     );
@@ -754,7 +754,7 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
     );
     let signalled = server.fux(&["(signal (pane \"%1\") \"HUP\")"])?;
     assert!(
-        signalled.stderr.starts_with("fux: only_shell: "),
+        signalled.stderr.starts_with("fux: only-shell: "),
         "{}",
         signalled.stderr
     );
@@ -1184,7 +1184,7 @@ fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
             "(send-keys (text (pane {}) \"x\"))",
             fux::script::quoted(&pane)
         )])?;
-        Ok(keys.stderr.starts_with("fux: not_running: "))
+        Ok(keys.stderr.starts_with("fux: not-running: "))
     })?;
     let state = ["str", "program", "get", "str", "state", "get"];
     let hung_up = server.ok(&[&["str", &pane, "pane"][..], &state].concat())?;

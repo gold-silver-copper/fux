@@ -156,7 +156,7 @@ impl Copy {
             ("state", Json::str(state)),
             ("exited", exited),
             ("signal", signal),
-            ("read_error", read_error),
+            ("read-error", read_error),
             ("input_unread", Json::count(0)),
             ("foreground_group", Json::Null),
         ]);
@@ -278,7 +278,7 @@ impl Copy {
                 self.state = State::ReadFailed(error.clone());
                 self.read_error = Some(error.clone());
                 let error = Json::str(error.clone());
-                self.program(&[("state", Json::str("read_failed")), ("read_error", error)]);
+                self.program(&[("state", Json::str("read_failed")), ("read-error", error)]);
             }
             Told::Exited(end) => {
                 self.state = State::Exited(end.ended);

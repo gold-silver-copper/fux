@@ -53,15 +53,31 @@ struct Runtime<'a, 'b> {
     stop: Option<&'a Stop>,
     configuring: bool,
     exiting: bool,
+    library: Option<grift::Kept>,
 }
 type Interpreter<'a, 'b> = Grift<Runtime<'a, 'b>>;
 fn failure(g: &mut Interpreter<'_, '_>, f: Failure) -> Error {
     let value = g.string(&f.message).unwrap_or(G::Inert);
     g.error(f.code.name(), &[value])
 }
-fn failed(g: &Interpreter<'_, '_>, e: Error) -> Failed {
+pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
     let mut message = String::new();
-    let _ = g.describe(&e, &mut message);
+    let _ = (|| -> std::fmt::Result {
+        message.push_str(g.symbol_name(&e.kind).unwrap_or("fail"));
+        for value in &e.values {
+            message.push(' ');
+            write_data(g, value, &mut message)?;
+        }
+        for (i, form) in e.trace().iter().enumerate() {
+            message.push_str(if i == 0 { " in " } else { "\n  from " });
+            g.write(form, &mut message).map_err(|_| std::fmt::Error)?;
+            if let Ok(Some((source, line))) = g.position(form) {
+                use std::fmt::Write;
+                write!(&mut message, " at {source}:{line}")?;
+            }
+        }
+        Ok(())
+    })();
     let kind = g.symbol_name(&e.kind).unwrap_or("fail");
     let mut failed = Failed::new(
         kind.parse().unwrap_or(Code::Fail),
@@ -97,6 +113,11 @@ fn output(
         };
         result.map_err(|error| failure(g, Failure::new(Code::Output, error.to_string())))?;
     }
+    state
+        .host
+        .out
+        .flush()
+        .map_err(|error| failure(g, Failure::new(Code::Output, error.to_string())))?;
     Ok(G::Inert)
 }
 struct DataText<'g, 'a, 'b> {
@@ -229,7 +250,29 @@ fn request(
         return Err(g.error("arity-error", args));
     }
     if matches!(word, Word::Act(Act::Word | Act::Dictionary)) {
-        return dictionary(g, args);
+        return dictionary(g, state, args);
+    }
+    // Reject bounded scalars while they are borrowed; a retained string can be large.
+    if matches!(word, Word::Act(Act::Arrange))
+        && let [_, revision, nodes] = args
+    {
+        if let Some(text) = g.as_str(revision)?
+            && text.parse::<fux_wire::command::LayoutRevision>().is_err()
+        {
+            let about = g.string("not a layout revision")?;
+            return Err(g.error("bad-value", &[about, revision.clone()]));
+        }
+        let mut rest = nodes.clone();
+        while let Some((node, tail)) = g.as_pair(&rest)? {
+            rest = tail;
+            if let Some((axis, _)) = g.as_pair(&node)?
+                && let Some(text) = g.as_str(&axis)?
+                && !matches!(text, "horizontal" | "vertical" | "stack")
+            {
+                let about = g.string("unknown layout axis")?;
+                return Err(g.error("bad-value", &[about, axis]));
+            }
+        }
     }
     let mut values = args
         .iter()
@@ -361,6 +404,9 @@ fn request(
                 .asks
                 .local(&what, state.host.state.as_deref_mut(), state.host.out)
                 .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+            if matches!(what, Local::Start | Local::Attach { .. }) {
+                state.host.actions.push(name.clone());
+            }
             if matches!(what, Local::Shell(Shell::Exit(_))) {
                 runtime_exit(g, state);
                 return Err(g.error("interrupted", &[]));
@@ -382,7 +428,11 @@ fn request(
         }
     }
 }
-fn dictionary(g: &mut Interpreter<'_, '_>, args: &[G]) -> Result<G, Error> {
+fn dictionary(
+    g: &mut Interpreter<'_, '_>,
+    state: &Runtime<'_, '_>,
+    args: &[G],
+) -> Result<G, Error> {
     let top = g.top_level();
     let mut entries = Vec::new();
     let wanted = match args {
@@ -399,20 +449,31 @@ fn dictionary(g: &mut Interpreter<'_, '_>, args: &[G]) -> Result<G, Error> {
             continue;
         };
         let record = g.context(None)?;
-        let row = Word::named(&text).map(|word| word.row());
-        let doc = super::docs()
-            .ok()
-            .and_then(|docs| docs.iter().find(|doc| doc.name == text));
-        let own = g
-            .names(&top)?
-            .iter()
-            .any(|name| g.symbol_name(name).ok() == Some(&text));
-        let provenance = if row.is_some() {
+        let original = state
+            .library
+            .as_ref()
+            .map(|kept| g.kept(kept))
+            .transpose()?;
+        let original = match original {
+            Some(context) => g.lookup(&context, &name)?,
+            None => None,
+        };
+        let standard = original.as_ref() == Some(&v);
+        let native = if standard { Word::named(&text) } else { None };
+        let row = native.map(|word| word.row());
+        let doc = if standard {
+            super::docs()
+                .ok()
+                .and_then(|docs| docs.iter().find(|doc| doc.name == text))
+        } else {
+            None
+        };
+        let provenance = if !standard {
+            "run"
+        } else if row.is_some() {
             "fux"
         } else if doc.is_some() {
             "library"
-        } else if own {
-            "run"
         } else {
             "core"
         };
@@ -427,7 +488,14 @@ fn dictionary(g: &mut Interpreter<'_, '_>, args: &[G]) -> Result<G, Error> {
                 row.map(|row| row.effect.to_owned())
                     .or_else(|| doc.map(|doc| doc.parameters.clone())),
             ),
-            ("documentation", crate::help::explain(&text)),
+            (
+                "documentation",
+                if standard {
+                    crate::help::explain(&text)
+                } else {
+                    None
+                },
+            ),
             ("definition", Some(source)),
         ] {
             let key = g.symbol(name)?;
@@ -437,7 +505,7 @@ fn dictionary(g: &mut Interpreter<'_, '_>, args: &[G]) -> Result<G, Error> {
             };
             g.bind(&record, &G::Symbol(key), value)?;
         }
-        let codes = match Word::named(&text) {
+        let codes = match native {
             Some(word) => {
                 let codes = word
                     .codes()
@@ -485,6 +553,7 @@ pub(super) fn run(
         stop,
         configuring: false,
         exiting: false,
+        library: None,
     };
     let mut definitions = String::new();
     for word in Word::ALL {
@@ -509,6 +578,14 @@ pub(super) fn run(
         include_str!("sessions.grift"),
     )
     .map_err(|e| failed(&g, e))?;
+    let baseline = g.context(None).map_err(|e| failed(&g, e))?;
+    for name in g.visible_names(&top).map_err(|e| failed(&g, e))? {
+        if let Some(value) = g.lookup(&top, &name).map_err(|e| failed(&g, e))? {
+            g.bind(&baseline, &G::Symbol(name), value)
+                .map_err(|e| failed(&g, e))?;
+        }
+    }
+    runtime.library = Some(g.keep(baseline).map_err(|e| failed(&g, e))?);
     g.seal_library();
     if let Some(config) = &machine.config {
         let previous = runtime.host.state.as_deref().cloned();
@@ -646,7 +723,7 @@ fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
     })
 }
 fn from_grift(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error> {
-    from_grift_at(g, v, fux_wire::callback::DEPTH)
+    from_grift_at(g, v, fux_wire::callback::DEPTH.saturating_add(1))
 }
 fn from_grift_at(g: &mut Interpreter<'_, '_>, v: &G, depth: u8) -> Result<Value<Fux>, Error> {
     let Some(depth) = depth.checked_sub(1) else {
@@ -897,11 +974,7 @@ fn native_data(g: &Interpreter<'_, '_>, v: &G) -> Result<bool, Error> {
     Ok(matches!(g.symbol_name(&tag)?, "native-value" | "code"))
 }
 /// Walk data with an explicit stack, including a record's field values.
-fn write_data(
-    g: &Interpreter<'_, '_>,
-    value: &G,
-    out: &mut dyn std::fmt::Write,
-) -> std::fmt::Result {
+fn write_data<T>(g: &Grift<T>, value: &G, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
     enum Part {
         Value(G),
         Text(&'static str),

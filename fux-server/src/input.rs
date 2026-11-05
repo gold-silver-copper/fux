@@ -734,7 +734,7 @@ mod tests {
         // A prompt's start is a line as typing makes one: no line end.
         let open = "(sequence! (prompt (me) \"t\" (apply string-append (list \"a\" (code-point-to-string 10) \"b\")) (code! (lambda! (argument-140) #inert))) #inert)";
         let refused = output_as(&mut s, Some(c), open).err().unwrap_or_default();
-        assert!(refused.contains("bad_value"), "{refused}");
+        assert!(refused.contains("bad-value"), "{refused}");
         assert_eq!(mode(&s, c), "normal");
         Ok(())
     }

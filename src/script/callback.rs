@@ -13,7 +13,7 @@ pub(super) fn code(v: &Value<Fux>) -> Result<Code, Failure> {
     }
 }
 pub(super) fn data(v: &Value<Fux>) -> Result<Data, Failure> {
-    within(v, fux_wire::callback::DEPTH)
+    within(v, fux_wire::callback::DEPTH.saturating_add(1))
 }
 fn within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
     let next = depth.checked_sub(1).ok_or_else(|| {
@@ -518,6 +518,95 @@ mod tests {
             [child],
         ))?;
         assert_eq!(text, "pane\n");
+        Ok(())
+    }
+    #[test]
+    fn a_clients_code_values_are_read_as_their_words() -> TestResult {
+        let code = crate::testing::code("(lambda! () (confirm-close (me) (focused (me))))");
+        let answer = Data::record([("code", Data::Code(code.clone()))]);
+        let reply = fux_wire::protocol::Body::Read(answer.clone()).into();
+        let read = crate::script::answered(reply)?;
+        let [Value::App(Fux::Record(record))] = read.as_slice() else {
+            return Err("a record".into());
+        };
+        let held = record.get("code").map_err(|e| e.message)?;
+        assert_eq!(held, Value::App(Fux::Code(Rc::new(code.into()))));
+        let sent = data(&Value::App(Fux::Record(Rc::clone(record))));
+        assert_eq!(sent.map_err(|e| e.message)?, answer);
+        Ok(())
+    }
+    #[test]
+    fn callbacks_fail_on_actual_kinds_and_values_left_as_they_run() -> TestResult {
+        let context = context()?;
+        for (payload, source) in [
+            (
+                Data::Text("host".into()),
+                "(lambda! (#ignore payload) (add payload 1))",
+            ),
+            (Data::Int(1), "(lambda! (#ignore #ignore) (options))"),
+        ] {
+            assert!(admit(list(payload.clone(), source), None, &context, None).is_ok());
+            let job = Job::call(&crate::testing::code(source).into(), [Data::Null, payload]);
+            assert!(run(&job).is_err(), "{source}");
+        }
+        let job = Job::call(
+            &crate::testing::code("(lambda! (#ignore payload) (add (first payload) 1))").into(),
+            [Data::Null, Data::List(Vec::new())],
+        );
+        assert!(run(&job).is_err());
+        Ok(())
+    }
+    #[test]
+    fn a_code_value_compiles_as_a_keys_program_runs() -> TestResult {
+        let dir = fuxix::file::scratch()?.join(format!("callbacks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join("action.grift");
+        std::fs::write(&file, "(print \"read\")")?;
+        let code = format!(
+            "(lambda! () (include! {}))",
+            crate::script::quoted(&file.to_string_lossy())
+        );
+        let job = Job::from(crate::testing::code(&code));
+        let prepared = job.machine(None, None);
+        assert!(
+            prepared.is_ok(),
+            "reading the retained form does not run imports"
+        );
+        let result = run(&job);
+        std::fs::remove_dir_all(&dir)?;
+        assert!(result.is_err_and(|failure| failure.message.contains("reads no files")));
+        Ok(())
+    }
+    #[test]
+    fn a_sent_code_value_compiles_at_execute_as_a_callbacks_does() -> TestResult {
+        let job = Job::from(crate::testing::code(
+            r#"(lambda! ()
+            (define! kept "kept")
+            (define! result (execute! (code! (lambda! (a b) (add a b))) 1 2))
+            (print (data-text (list result 7 kept))))"#,
+        ));
+        assert_eq!(run(&job)?, "(3 7 \"kept\")\n");
+        let deferred = Job::from(crate::testing::code(
+            r#"(lambda! ()
+            (define! retained (code! (lambda! () (rename (pane 1) "x"))))
+            (print (kind retained)))"#,
+        ));
+        assert_eq!(run(&deferred)?, "code\n");
+        let stop = crate::script::Stop::default();
+        let stopper = stop.clone();
+        let stopping = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            stopper.stop();
+        });
+        let mut machine = crate::script::Machine::source(
+            "stopped",
+            "(execute! (code! (lambda! () (define! spin (lambda! () (spin))) (spin))))",
+        );
+        let mut out = Vec::new();
+        let mut host = Host::new(Context::default(), None, &mut out);
+        let result = crate::script::run(&mut machine, &mut host, &mut NoRequests, Some(&stop));
+        stopping.join().map_err(|_| "stopper")?;
+        assert!(result.is_err() && stop.stopped());
         Ok(())
     }
 }

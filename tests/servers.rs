@@ -82,7 +82,7 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     let none = named(&rt, "none", &["status"], &[])?;
     assert_eq!(none.status, 1, "{}", none.stderr);
     assert!(
-        none.stderr.starts_with("fux: no_server: ") && none.stderr.contains("no fux server at"),
+        none.stderr.starts_with("fux: no-server: ") && none.stderr.contains("no fux server at"),
         "{}",
         none.stderr
     );
@@ -106,7 +106,7 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     let untargeted = named(&rt, "t", &["here", "kill"], &[])?;
     assert_eq!(untargeted.status, 1);
     assert!(
-        untargeted.stderr.starts_with("fux: no_target: "),
+        untargeted.stderr.starts_with("fux: no-target: "),
         "{}",
         untargeted.stderr
     );
@@ -115,7 +115,7 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     let refused = server.fux(&["(sequence! (kill-server) #inert)"])?;
     assert_eq!(refused.status, 1);
     assert!(
-        refused.stderr.contains("people_attached"),
+        refused.stderr.contains("people-attached"),
         "{}",
         refused.stderr
     );
@@ -131,7 +131,7 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
     )])?;
     let since = sent.split_whitespace().next().unwrap_or_default();
     server.until(sh, since, |c| {
-        c.contains("own_server:") && c.contains("status=1")
+        c.contains("own-server:") && c.contains("status=1")
     })?;
     assert!(
         server
@@ -415,11 +415,11 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
     // keeps the server up.
     server.words("(new-tab (in (size (options) 80 24) \"keep\"))")?;
     for (gone, code) in [
-        (["str", b, "pane", "dup", "kill", "panes"], "no_pane"),
-        (["str", t2, "tab", "dup", "kill", "tabs"], "no_tab"),
+        (["str", b, "pane", "dup", "kill", "panes"], "no-pane"),
+        (["str", t2, "tab", "dup", "kill", "tabs"], "no-tab"),
         (
             ["str", "agent", "workspace", "dup", "kill", "tabs"],
-            "no_workspace",
+            "no-workspace",
         ),
     ] {
         let out = server.fux(&gone)?;
@@ -673,7 +673,7 @@ fn a_dump_replayed_beside_itself_makes_nothing_from_a_deleted_directory() -> Out
     let (gone, file) = (gone.to_str().ok_or("path")?, file.to_str().ok_or("path")?);
     let replay = r#"cd "$1" && rmdir "$1" && exec fux --file "$2""#;
     let ran = server.piped("/bin/sh".as_ref(), &["-c", replay, "sh", gone, file], "")?;
-    let taken = ran.stderr.starts_with("fux: name_taken: ") && ran.stderr.contains("%1, a pane,");
+    let taken = ran.stderr.starts_with("fux: name-taken: ") && ran.stderr.contains("%1, a pane,");
     assert!(taken, "{}", ran.stderr);
     assert_eq!(server.ok(&["(list-session)"])?, before);
     Ok(())

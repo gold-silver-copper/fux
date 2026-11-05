@@ -4614,7 +4614,7 @@ mod tests {
         for (ws, into) in [(1, 1), (1, 2), (1, 3), (2, 3)] {
             let code = format!("+{ws} +{into} move");
             let refused = output(&mut s, &code).err().ok_or(code.clone())?;
-            assert!(refused.starts_with("bad_value:"), "{code}: {refused}");
+            assert!(refused.starts_with("bad-value:"), "{code}: {refused}");
         }
         // Out of a, b leaves it empty: a closes.
         run(&mut s, "(sequence! (move (workspace 3) (all)) #inert)")?;
@@ -7053,7 +7053,7 @@ mod tests {
         assert!(left, "no writer left on its terminal");
         let failed = Json::object(vec![
             ("event", Json::str("read_failed")),
-            ("read_error", Json::str(fuxix::Errno::SRCH.to_string())),
+            ("read-error", Json::str(fuxix::Errno::SRCH.to_string())),
         ]);
         assert!(
             matches!(&told[..], [one] if one.data == failed
@@ -7106,7 +7106,7 @@ mod tests {
         let sent = run(&mut s, "(send-keys (text (tab 1) \"x\"))");
         let sent = sent.err().unwrap_or_default();
         assert!(
-            sent.starts_with("not_running: ") && sent.ends_with("; already sent to %1"),
+            sent.starts_with("not-running: ") && sent.ends_with("; already sent to %1"),
             "{sent}"
         );
         assert_eq!(
@@ -7740,7 +7740,7 @@ mod tests {
         let refused = output(&mut s, &format!("{capture} str done get"))
             .err()
             .ok_or("client capture supplied invented counts")?;
-        assert!(refused.starts_with("no_field: "), "{refused}");
+        assert!(refused.starts_with("no-field: "), "{refused}");
         let counts = s.pane(PaneId::of(1))?.counts().named();
         let expected: Vec<String> = counts.iter().map(|(_, n)| n.to_string()).collect();
         let expected = format!("[{}]", expected.join(","));
@@ -7766,7 +7766,7 @@ mod tests {
         let refused = output(&mut s, &closed)
             .err()
             .ok_or("closed answer supplied invented counts")?;
-        assert!(refused.starts_with("no_field: "), "{refused}");
+        assert!(refused.starts_with("no-field: "), "{refused}");
         Ok(())
     }
 
@@ -7803,7 +7803,7 @@ mod tests {
         );
         let gone = output(&mut s, &format!("{caught} capture")).err();
         assert!(
-            gone.as_ref().is_some_and(|e| e.starts_with("no_pane: ")),
+            gone.as_ref().is_some_and(|e| e.starts_with("no-pane: ")),
             "{gone:?}"
         );
         Ok(())
@@ -8277,7 +8277,7 @@ mod tests {
         assert_eq!(
             output(
                 &mut s,
-                "str not_here try me drop catch drop str recovered end"
+                "str not-here try me drop catch drop str recovered end"
             )?,
             "recovered\n"
         );
@@ -8338,15 +8338,15 @@ mod tests {
             "(sequence! (new-tab (program (name (size (in (options) \"agent\") 80 24) \"web\") \"cat\")) #inert)",
         )?;
         for (source, code) in [
-            ("(new-tab (size (options) 80 24))", "no_target:"),
+            ("(new-tab (size (options) 80 24))", "no-target:"),
             ("(new-tab (in (options) \"agent\"))", "size:"),
             (
                 "(new-tab (name (size (in (options) \"agent\") 80 24) \"web\"))",
-                "name_taken:",
+                "name-taken:",
             ),
             (
                 "(new-tab (name (size (in (options) \"agent\") 80 24) \"agent\"))",
-                "name_taken:",
+                "name-taken:",
             ),
         ] {
             let ids = s.ids.clone();
@@ -8429,7 +8429,7 @@ mod tests {
             "(sequence! (rename (workspace \"+1\") \"shared-name\") #inert)",
         ] {
             let refused = output(&mut s, source).err().ok_or(source)?;
-            let taken = refused.starts_with("name_taken:") && refused.contains("%1, a pane,");
+            let taken = refused.starts_with("name-taken:") && refused.contains("%1, a pane,");
             assert!(taken, "{refused}");
         }
         assert_eq!(output(&mut s, "(pane \"shared-name\")")?, "%1\n");
@@ -8501,7 +8501,7 @@ mod tests {
             (&split, "%5, a pane,"),
         ] {
             let refused = output(&mut s, source).err().ok_or(source)?;
-            let taken = refused.starts_with("name_taken:") && refused.contains(holder);
+            let taken = refused.starts_with("name-taken:") && refused.contains(holder);
             assert!(taken, "{source}: {refused}");
             assert_eq!(named_state(&s)?, before, "{source}");
         }
@@ -8532,7 +8532,7 @@ mod tests {
         s.start_now(sized(24, 80)?, &initial)?;
         let refused = output(&mut s, "(sequence! (rename (pane \"%1\") \"main\") #inert)").err();
         let taken =
-            |why: &String| why.starts_with("name_taken:") && why.contains("+1, a workspace,");
+            |why: &String| why.starts_with("name-taken:") && why.contains("+1, a workspace,");
         assert!(refused.is_some_and(|why| taken(&why)));
         Ok(())
     }
@@ -8713,7 +8713,7 @@ mod tests {
         let act = "(send-keys (text (pane 1) \"x\"))";
         assert!(
             output(&mut s, &format!("{act} str name get"))
-                .is_err_and(|e| e.starts_with("no_field:"))
+                .is_err_and(|e| e.starts_with("no-field:"))
         );
         assert_eq!(
             output(&mut s, &format!("{act} pane str name get"))?,

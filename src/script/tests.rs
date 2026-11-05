@@ -472,3 +472,436 @@ fn default_styled_capture_json_is_printed_whole() -> TestResult {
     assert!(out.starts_with(b"((id %1)") && out.ends_with(b")\n"));
     Ok(())
 }
+
+#[test]
+fn pane_outcomes_determine_the_reply_status() -> Result<(), Box<dyn std::error::Error>> {
+    use fux_wire::answer::{PaneAnswer, PaneResults};
+    use fux_wire::code::Code;
+    use fux_wire::id::PaneId;
+    use fux_wire::protocol::{End, Reply};
+    let version = "%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6"
+        .parse()
+        .map_err(|()| "version")?;
+    let changed = PaneAnswer::Changed {
+        version,
+        changed: vec![fux_wire::answer::Change::Screen],
+        ended: None,
+    };
+    let closed = PaneAnswer::Closed(PaneId::of(3));
+    let timeout = PaneAnswer::TimedOut {
+        since: version,
+        limit: std::time::Duration::from_millis(1500),
+    };
+    for (results, code) in [
+        (PaneResults::One(PaneAnswer::Acted(version)), None),
+        (PaneResults::One(changed.clone()), None),
+        (PaneResults::One(closed.clone()), Some(Code::Closed)),
+        (PaneResults::One(timeout.clone()), Some(Code::Timeout)),
+        (PaneResults::Many(vec![]), None),
+        (
+            PaneResults::Many(vec![changed.clone(), closed.clone(), timeout.clone()]),
+            Some(Code::Closed),
+        ),
+        (
+            PaneResults::Many(vec![changed, timeout, closed]),
+            Some(Code::Timeout),
+        ),
+    ] {
+        let reply = Reply {
+            run: Some(version.run),
+            ..results.into()
+        };
+        let bytes = fux_wire::wire::encode(&reply);
+        let decoded = fux_wire::wire::Reader::new(&bytes).whole::<Reply>()?;
+        assert_eq!(decoded, reply);
+        assert_eq!(decoded.end().code(), code);
+        assert_eq!(
+            decoded.end().status(),
+            code.map_or(0, |code| code.status().get())
+        );
+        let values = crate::script::answered(decoded.clone()).map_err(|f| f.to_string())?;
+        let value = values.first().ok_or("answer")?;
+        if let Value::App(Fux::Answer(_, run)) = value {
+            assert_eq!(*run, Some(version.run));
+        }
+        let data = record::datum(value)
+            .map_err(|f| f.message)?
+            .text()
+            .map_err(|f| f.message)?;
+        assert_eq!(data.contains("(status 124)"), has_timeout(&decoded));
+        if let End::Failed { message, .. } = decoded.end() {
+            assert!(!message.is_empty());
+            if has_timeout(&decoded) {
+                assert!(message.contains("unchanged for 1.5s"), "{message}");
+            }
+        }
+    }
+    Ok(())
+}
+fn has_timeout(reply: &super::Reply) -> bool {
+    use fux_wire::code::Code;
+    matches!(&reply.response, super::Response::Answered(answers) if answers.all().iter().any(|a| a.failure() == Some(Code::Timeout)))
+}
+
+#[test]
+fn a_batch_left_that_missed_entries_is_refused() -> TestResult {
+    use fux_wire::events::{Batch, Status};
+    let next = "1:1-0".parse().map_err(|()| "cursor")?;
+    for missed in [2, 0] {
+        let batch = Batch {
+            first: next,
+            next,
+            missed,
+            status: Status::Timeout,
+            events: Vec::new(),
+        };
+        let mut out = Vec::new();
+        let result = held_reply(
+            r#"(batch-events (next-events (all) "" 0))"#,
+            Body::Events(Box::new(batch)).into(),
+            &mut out,
+        );
+        assert!(out.is_empty());
+        if missed == 0 {
+            assert!(result.is_ok());
+        } else {
+            assert!(
+                result.is_err_and(|failure| failure.kind.as_deref() == Some("journal-loss")
+                    && failure.message.contains('2'))
+            );
+        }
+    }
+    Ok(())
+}
+#[test]
+fn a_deep_list_is_written_as_json_and_refused_past_the_wire() -> TestResult {
+    let source = "(define! nest (lambda! (n value) (if! (same? n 0) value (nest (subtract n 1) (list value))))) (string-byte-length (data-text (nest 100000 ())))";
+    let left = evaluate(source, None, &mut NoRequests, &mut Vec::new())?;
+    assert_eq!(left, [Value::Int(200002)]);
+    let mut value = Value::<Fux>::Int(0);
+    for _ in 0..fux_wire::callback::DEPTH {
+        value = Value::List(Rc::new(List::new(vec![value])));
+    }
+    assert!(callback::data(&value).is_ok());
+    value = Value::List(Rc::new(List::new(vec![value])));
+    assert!(callback::data(&value).is_err());
+    Ok(())
+}
+#[test]
+fn a_screen_past_a_grid_is_size_from_the_word_and_the_server() -> TestResult {
+    let most = u16::MAX;
+    let word = evaluate(
+        &format!("(new-tab (size (in (options) \"new-workspace\") {most} {most}))"),
+        None,
+        &mut NoRequests,
+        &mut Vec::new(),
+    )
+    .map(drop)
+    .err()
+    .map(|f| f.code);
+    let (mut session, client) = testing::attached(8, 30)?;
+    let server = session
+        .resize(client, most, most, std::time::Instant::now())
+        .map(drop)
+        .map_err(Failed::from)
+        .err()
+        .map(|f| f.code);
+    assert_eq!([word, server], [Some(Code::Size); 2]);
+    Ok(())
+}
+#[test]
+fn attach_defaults_replace_targets_and_clear_names_locally() -> TestResult {
+    use fux_wire::command::{AttachTarget, WsRef};
+    let mut draft = default_state()?.draft();
+    evaluate(
+        r#"(attach-defaults (in (options) "work"))"#,
+        Some(&mut draft),
+        &mut NoRequests,
+        &mut Vec::new(),
+    )?;
+    assert_eq!(
+        draft.attach.as_ref().and_then(|a| a.name.as_deref()),
+        Some("main")
+    );
+    assert_eq!(
+        draft.attach.as_ref().and_then(|a| a.target.clone()),
+        Some(AttachTarget::Workspace(WsRef::Name("work".into())))
+    );
+    for program in [
+        r#"(attach-defaults (in (options) "other"))"#,
+        r#"(attach-defaults (name (options) "fresh"))"#,
+        "(attach-defaults (options))",
+    ] {
+        evaluate(program, Some(&mut draft), &mut NoRequests, &mut Vec::new())?;
+    }
+    let cleared = draft.clone().finish().map_err(|f| f.to_string())?;
+    assert!(cleared.attach.target.is_none() && cleared.attach.name.is_none());
+    for program in [
+        r#"(attach-defaults (name (in (options) "work") "first"))"#,
+        r#"(attach-defaults (in (in (options) "work") "other"))"#,
+        "(attach-defaults (size (options) 80 24))",
+    ] {
+        assert!(evaluate(program, Some(&mut draft), &mut NoRequests, &mut Vec::new()).is_err());
+        assert_eq!(draft.clone().finish().map_err(|f| f.to_string())?, cleared);
+    }
+    Ok(())
+}
+
+#[test]
+fn the_dictionary_is_the_programs_own_as_records() -> TestResult {
+    let program = r#"(define! sq (lambda! (x) (multiply x x)))
+        (define! sq2 (lambda! (x) (sq x))) (define! sq (lambda! () 0))
+        (define! dictionary-value (dictionary))
+        (list (get (word "sq") "name") (get (word "sq") "provenance")
+              (get (word "first") "provenance") (get (word "split") "provenance")
+              (get (word "add") "provenance")
+              (length (filter (lambda! (entry) (same? (get entry "name") "sq")) dictionary-value))
+              (length (filter (lambda! (entry) (same? (get entry "name") "sq2")) dictionary-value))
+              (get (word "capture") "documentation"))"#;
+    let left = evaluate(program, None, &mut NoRequests, &mut Vec::new())?;
+    let [Value::List(values)] = left.as_slice() else {
+        return Err("dictionary results".into());
+    };
+    let expected = vec![
+        Value::str("sq"),
+        Value::str("run"),
+        Value::str("core"),
+        Value::str("fux"),
+        Value::str("core"),
+        Value::Int(1),
+        Value::Int(1),
+        Value::str(crate::help::explain("capture").ok_or("capture help")?),
+    ];
+    assert_eq!(values.items(), expected);
+    let changed = evaluate(
+        r#"(define! split (lambda! () 0)) (get (word "split") "provenance")"#,
+        None,
+        &mut NoRequests,
+        &mut Vec::new(),
+    )?;
+    assert_eq!(changed, [Value::str("run")]);
+    let failure = evaluate(r#"(word "nosuch")"#, None, &mut NoRequests, &mut Vec::new()).err();
+    assert!(failure.is_some_and(|failure| failure.code == Code::UnknownWord));
+    Ok(())
+}
+#[test]
+fn the_keys_own_words_are_a_clients_not_the_command_lines() -> TestResult {
+    let failure = evaluate("(me)", None, &mut NoRequests, &mut Vec::new()).err();
+    assert!(failure.is_some_and(|failure| failure.code == Code::NotHere));
+    let mut draft = default_state()?.draft();
+    let mut out = Vec::new();
+    let mut machine = Machine::source("key", "(me)");
+    let mut host = Host::job(
+        Context {
+            client: Some("c1".parse()?),
+            ..Default::default()
+        },
+        &mut draft,
+        &mut out,
+    );
+    assert_eq!(
+        run(&mut machine, &mut host, &mut NoRequests, None)?,
+        [Value::App(Fux::Client("c1".parse()?, None))]
+    );
+    // Helpers are normal grift bindings; client scope is checked when they run.
+    for name in [
+        "me-focused",
+        "confirm-close",
+        "rename-prompt",
+        "choose-among",
+        "choose-move",
+        "choose-pane",
+    ] {
+        let source = format!("(get (word {}) \"provenance\")", quoted(name));
+        assert_eq!(
+            evaluate(&source, None, &mut NoRequests, &mut Vec::new())?,
+            [Value::str("library")]
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn attach_words_accept_compiled_action_answers_and_keep_their_run() -> TestResult {
+    use super::*;
+    use fux_wire::command::{AttachTarget, Command, Request};
+    struct Record {
+        version: Version,
+        sent: usize,
+        attached: Option<(Option<Run>, Option<AttachTarget>, Option<fux_vt::Size>)>,
+    }
+    impl Asks for Record {
+        fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+            let mut reply: Reply = if matches!(
+                asked.request,
+                Request::Do(fux_wire::command::Command::Resolve { .. })
+            ) {
+                Body::Found(AnyRef::Pane(self.version.pane)).into()
+            } else if matches!(asked.request, Request::Do(Command::SendKeys { .. })) {
+                self.sent = self.sent.saturating_add(1);
+                PaneResults::One(PaneAnswer::Acted(self.version)).into()
+            } else {
+                return Err(Failed::new(Code::Usage, "unexpected request"));
+            };
+            reply.run = Some(self.version.run);
+            Ok(reply)
+        }
+        fn local(
+            &mut self,
+            what: &Local,
+            _: Option<&mut Draft>,
+            _: &mut dyn Write,
+        ) -> Result<Vec<Value<Fux>>, Failed> {
+            let Local::Attach {
+                of, target, size, ..
+            } = what
+            else {
+                return Err(Failed::new(Code::Usage, "unexpected local action"));
+            };
+            self.attached = Some((*of, target.clone(), *size));
+            Ok(Vec::new())
+        }
+    }
+    let version: Version = "%1:0.0.0.0.0:1-2".parse().map_err(|()| "version")?;
+    for (action, sized) in [
+        ("attach-defaults", false),
+        ("attach", false),
+        ("attach", true),
+    ] {
+        let subject = "(send-keys (text (pane 1) \"hello\"))";
+        let subject = if sized {
+            format!("(size {subject} 80 24)")
+        } else {
+            subject.to_owned()
+        };
+        let code = format!("({action} {subject})");
+        let mut machine = Machine::source("answer-attach", &code);
+        let mut draft = default_state()?.draft();
+        let mut sink = io::sink();
+        let mut host = Host::new(Context::default(), Some(&mut draft), &mut sink);
+        let mut record = Record {
+            version,
+            sent: 0,
+            attached: None,
+        };
+        run(&mut machine, &mut host, &mut record, None)?;
+        assert_eq!(record.sent, 1);
+        let target = Some(AttachTarget::Pane(version.pane));
+        if action == "attach-defaults" {
+            let defaults = draft.attach.ok_or("attach defaults")?;
+            assert_eq!((defaults.of, defaults.target), (Some(version.run), target));
+        } else {
+            let size = sized.then(|| fux_vt::Size::new(24, 80)).transpose()?;
+            assert_eq!(record.attached, Some((Some(version.run), target, size)));
+        }
+    }
+    // A baseline is no target: the word refuses it before it attaches.
+    for baseline in ["changed", "expect"] {
+        for action in ["attach", "attach-defaults"] {
+            let code = format!("({action} ({baseline} {}))", quoted(&version.to_string()));
+            let mut machine = Machine::source("baseline", &code);
+            let mut draft = default_state()?.draft();
+            let defaults = draft.attach.clone();
+            let mut sink = io::sink();
+            let mut host = Host::new(Context::default(), Some(&mut draft), &mut sink);
+            let mut record = Record {
+                version,
+                sent: 0,
+                attached: None,
+            };
+            let ran = run(&mut machine, &mut host, &mut record, None);
+            assert!(ran.is_err(), "{code}");
+            assert_eq!(record.attached, None, "{code}");
+            assert_eq!(draft.attach, defaults, "{code}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn telling_an_uncaught_failure_allocates_no_more_at_depth() -> TestResult {
+    let allocator = fux_vt_peak::ThreadPeak;
+    let mut told = Vec::new();
+    for depth in [10, 5000] {
+        let mut g: grift::Grift = grift::Grift::new().map_err(|e| format!("{e:?}"))?;
+        let source = format!(
+            "(define! deep (lambda! (n) (if! (same? n 0) (first ()) (add (deep (subtract n 1)) 1)))) (deep {depth})"
+        );
+        let error = g
+            .evaluate_in(&mut (), &g.top_level(), "deep", &source)
+            .err()
+            .ok_or("no failure")?;
+        let base = allocator.live();
+        allocator.reset_peak();
+        let failure = bridge::failed(&g, error);
+        told.push((allocator.peak().saturating_sub(base), failure.message));
+    }
+    let [(shallow, said), (deep, again)] = told.as_slice() else {
+        return Err("two depths".into());
+    };
+    assert!(said.contains("first") && again.contains("first"));
+    assert_eq!(
+        shallow, deep,
+        "formatting a deep trace should have bounded temporary storage"
+    );
+    Ok(())
+}
+#[test]
+fn layout_scalar_refusals_do_not_copy_retained_strings() -> TestResult {
+    struct Scalars {
+        bad: Value<Fux>,
+        base: usize,
+        peak: usize,
+    }
+    impl Asks for Scalars {
+        fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+            Err(Failed::new(
+                Code::Client,
+                "invalid scalars submitted a request",
+            ))
+        }
+        fn local(
+            &mut self,
+            what: &Local,
+            _: Option<&mut Draft>,
+            _: &mut dyn Write,
+        ) -> Result<Vec<Value<Fux>>, Failed> {
+            match what {
+                Local::Shell(Shell::Input) => Ok(vec![self.bad.clone()]),
+                Local::Shell(Shell::Getenv(name)) if name.0 == "MEASURE" => {
+                    let allocator = fux_vt_peak::ThreadPeak;
+                    self.base = allocator.live();
+                    allocator.reset_peak();
+                    Ok(vec![Value::str("")])
+                }
+                Local::Shell(Shell::Getenv(name)) if name.0 == "PEAK" => {
+                    self.peak = fux_vt_peak::ThreadPeak.peak().saturating_sub(self.base);
+                    Ok(vec![Value::str("")])
+                }
+                _ => Err(Failed::new(Code::Client, "unexpected local operation")),
+            }
+        }
+    }
+    let mut peaks = Vec::new();
+    for proposal in [
+        "(arrange t bad ())",
+        r#"(arrange t "@1:0:1-0" (list (list bad 1 1 0 0)))"#,
+    ] {
+        let bad = Value::str(std::iter::repeat_n('x', 500000).collect::<String>());
+        let mut scalars = Scalars {
+            bad,
+            base: 0,
+            peak: 0,
+        };
+        let source = format!(
+            r#"(define! bad (input)) (define! t (tab 1)) (environment-variable "MEASURE") (for-each (lambda! (#ignore) (catch-kind! {proposal} bad-value failure #inert)) (range 0 16)) (environment-variable "PEAK")"#
+        );
+        evaluate(&source, None, &mut scalars, &mut Vec::new())?;
+        peaks.push(scalars.peak);
+    }
+    assert!(
+        peaks.iter().all(|peak| *peak < 64 << 10),
+        "scalar refusal peaks: {peaks:?}"
+    );
+    Ok(())
+}

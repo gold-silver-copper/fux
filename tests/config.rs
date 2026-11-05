@@ -235,7 +235,7 @@ fn a_bad_config_is_reported() -> Outcome {
     let config = server.dir.join("config").join("fux").join("config.grift");
     std::fs::write(&config, "(sequence! (move-keys \"Nope\" \"C-a\") #inert)").map_err(e)?;
     let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
-    terminal.wait_for("bad_binding: move-keys:")?;
+    terminal.wait_for("bad-binding: move-keys:")?;
     // The defaults: C-b opens the column.
     terminal.type_bytes(b"\x02")?;
     terminal.wait_for("split side by side")?;
@@ -439,7 +439,7 @@ fn key_words_refuse_the_command_line() -> Outcome {
         let result = server.fux(words)?;
         assert_eq!(result.status, 1, "silent CLI key change: {words:?}");
         assert!(
-            result.stderr.contains("not_config") && result.stderr.contains("config"),
+            result.stderr.contains("not-config") && result.stderr.contains("config"),
             "{words:?}: {}",
             result.stderr
         );
@@ -508,7 +508,7 @@ fn explicit_settings_survive_a_failed_attach_config() -> Outcome {
         100,
         &["str", "titles", "true", "set", "opts", "attach"],
     )?;
-    terminal.wait_for("bad_binding")?;
+    terminal.wait_for("bad-binding")?;
     terminal.type_bytes(b"printf '\\033]2;explicit-title\\007'; echo cli''-ready\r")?;
     terminal.wait_for("cli-ready")?;
     terminal.pump();
@@ -555,7 +555,7 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
             server
                 .fux(&[&format!("(signal {} \"TERM\")", support::reference(pane))])?
                 .stderr
-                .contains("only_shell")
+                .contains("only-shell")
         );
         server.ok(&[&format!(
             "(sequence! (send-keys (key {} \"C-d\")) #inert)",
@@ -788,7 +788,7 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     let close = program(&["2", "at"], &["execute"]);
     let failed = server.fux(&close.iter().map(String::as_str).collect::<Vec<_>>())?;
     assert!(
-        failed.stderr.contains("unknown_word") && failed.stderr.contains("me-focused"),
+        failed.stderr.contains("unbound-symbol") && failed.stderr.contains("me-focused"),
         "{}",
         failed.stderr
     );
@@ -911,6 +911,6 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     terminal.type_bytes(b"\x02d")?;
     terminal.wait_exit()?;
     let gone = server.fux(&[&format!("(keys (client {}))", fux::script::quoted(&id))])?;
-    assert!(gone.stderr.contains("no_client"), "{}", gone.stderr);
+    assert!(gone.stderr.contains("no-client"), "{}", gone.stderr);
     Ok(())
 }

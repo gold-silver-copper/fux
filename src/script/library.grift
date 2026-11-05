@@ -130,3 +130,9 @@
     (if! (and!? (pair? code-value) (same? (first code-value) (quote! code)))
       (apply (evaluate (second code-value) caller) values)
       (raise (error (quote! type-error) code-value))))))
+
+; The strict projection used when an event stream must not skip lost entries.
+(define! batch-events (lambda! (batch)
+  (when! (greater-than? (get batch "missed") 0)
+    (raise (error (quote! journal-loss) (get batch "missed") batch)))
+  (get batch "events")))
