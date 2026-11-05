@@ -230,8 +230,8 @@ pub fn name(base: &str) -> Result<String> {
 }
 
 /// The process at the other end of `pipe`, a named pipe's end: its
-/// client's, on the server's end; its server's, the process that made the
-/// instance, on a client's. `connected` is a moment this end is known to
+/// client's, on the server's end; its server's on a client's: the process
+/// that made the pipe's first instance, whatever made the one reached. `connected` is a moment this end is known to
 /// have been connected at, the earliest known: a [`Connection`]'s
 /// ([`Connection::connected`]), or on a client's end, when [`connect`]
 /// opened it. The peer's process must have been made by then: one made
@@ -553,21 +553,6 @@ impl Listener {
         Ok(Listener {
             name,
             security,
-            waiting: Spare::try_from(first)?,
-        })
-    }
-
-    /// The pipe `name` held by `first`, an instance of it this process was
-    /// handed ([`Listener::spare`] in its maker, then `OwnedHandle::try_from`):
-    /// it waits there for a client, and makes the later instances itself,
-    /// with this process's owner-only descriptor, which only this user's
-    /// processes may make instances under. A pane's process listens so:
-    /// its server made the name, and each client after the first reaches
-    /// an instance the pane made, whose server pid is the pane's.
-    pub fn handed(name: &str, first: OwnedHandle) -> Result<Listener> {
-        Ok(Listener {
-            name: wide(name)?,
-            security: Security::owner_only()?,
             waiting: Spare::try_from(first)?,
         })
     }

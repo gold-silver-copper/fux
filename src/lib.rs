@@ -147,8 +147,8 @@ fn serve(args: &[String]) -> ExitCode {
 }
 
 /// A pane's own process, started by its server (`link::Link::start`), its
-/// socket listening on stdin (on Windows, its pipe's first instance, and
-/// the socket's path in `args`).
+/// socket listening on stdin (on Windows, the socket's path in `args`,
+/// which names the pipe it makes).
 fn pane(args: &[String]) -> ExitCode {
     let served = socket::pane_listener(args)
         .and_then(|(listener, socket)| fux_server::host::serve(listener, socket));

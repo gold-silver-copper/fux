@@ -286,58 +286,79 @@ pub fn launch_conn(exe: &Path, words: &[&str], out: Handed) -> std::io::Result<S
     Ok(ours)
 }
 
-/// Starts pane process `fux __pane SOCKET` from `exe`: the pipe `socket`
-/// names, made here, its first instance handed on its stdin, and a marker
-/// at `socket` itself, which the pane removes as it ends, so a server
-/// finds the panes waiting by their files (`server::waiting`). Its pid, as
-/// it started, which its program's handle is copied from (D-134), and the
-/// server's link to it.
+/// How long a pane's process has to say it listens.
+const PANE_START: Duration = Duration::from_secs(10);
+
+/// Starts pane process `fux __pane SOCKET` from `exe`, which makes the
+/// pipe `socket` names itself: the system names a pipe's server by the
+/// process that made its first instance, whatever made the instance
+/// reached, so a pipe the server made would name the server for as long
+/// as the pane lives, a dead one after a crash (CI, run 42117571201). It says
+/// it listens on its stdout. A marker at `socket` itself, which the pane
+/// removes as it ends, lets a server find the panes waiting by their files
+/// (`server::waiting`). Its pid, as it started, which its program's handle
+/// is copied from (D-134), and the server's link to it.
 pub fn start_pane(exe: &Path, socket: &Path) -> Result<(Pid, Stream), String> {
-    let at = |doing: &'static str| {
-        let socket = socket.display().to_string();
-        move |e: fuxix::Errno| format!("{doing} {socket}: {e}")
-    };
     let name = pipe_name(socket).map_err(|e| e.to_string())?;
-    let mut listener = fuxix::socket::Listener::bind(&name).map_err(|e| match e {
-        fuxix::Errno::ADDRINUSE => {
-            format!("a pane's process listens at {} already", socket.display())
-        }
-        e => at("binding its pipe")(e),
-    })?;
-    let first =
-        OwnedHandle::try_from(listener.spare().map_err(at("its pipe"))?).map_err(at("its pipe"))?;
-    // The instance the listener made next is let go: the pane makes its
-    // own from now on.
-    drop(listener);
+    // One a process still listens at is a pane's: never let go as debris.
+    if fuxix::socket::connect(&name).is_ok() {
+        return Err(format!(
+            "a pane's process listens at {} already",
+            socket.display()
+        ));
+    }
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     fuxix::file::private_file(&mut options)
         .open(socket)
         .map_err(|e| format!("its marker {}: {e}", socket.display()))?;
+    let (said, theirs) = fuxix::io::pipe_for_child().map_err(|e| format!("its pipe: {e}"))?;
     let args = [std::ffi::OsStr::new(crate::link::PANE), socket.as_os_str()];
     let log = std::io::stderr();
-    let stdio = [Some(first.as_handle()), None, usable(log.as_handle())];
+    let stdio = [None, Some(theirs.as_handle()), usable(log.as_handle())];
     let started = fuxix::process::start(exe, &args, stdio)
         .map_err(|e| format!("starting its process, {}: {e}", exe.display()))?;
-    drop(first);
-    let stream = fuxix::socket::connect(&name).map_err(at("reaching its process at"))?;
+    drop(theirs);
+    listens(&said)?;
+    let stream = fuxix::socket::connect(&name)
+        .map_err(|e| format!("reaching its process at {}: {e}", socket.display()))?;
     Ok((started.pid, stream))
 }
 
-/// A pane process's pipe, its first instance on its stdin, and the marker
-/// path `args` names, which also names the pipe.
+/// Waits for a pane's process to say it listens, on `said`, its stdout.
+fn listens(said: &Stream) -> Result<(), String> {
+    use fuxix::poll::{Events, PollFd};
+    let start = Instant::now();
+    loop {
+        let left = PANE_START.saturating_sub(start.elapsed());
+        if left.is_zero() {
+            return Err("its process did not listen in time".to_owned());
+        }
+        let mut fds = [PollFd::new(said, Events::IN)];
+        fuxix::poll::poll(&mut fds, Some(left)).map_err(|e| format!("poll: {e}"))?;
+        match fuxix::io::read(said, &mut [0u8; 1]) {
+            Ok(0) => return Err("its process ended before it listened".to_owned()),
+            Ok(_) => return Ok(()),
+            Err(fuxix::Errno::AGAIN) => {}
+            Err(error) => return Err(format!("its process: {error}")),
+        }
+    }
+}
+
+/// A pane process's pipe, made here, and the marker path `args` names,
+/// which also names the pipe; its server told, on stdout, that it listens.
+/// A name any process holds already is refused.
 pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>), String> {
+    use std::io::Write;
     let [socket] = args else {
         return Err("it takes its socket's path".to_owned());
     };
     let socket = PathBuf::from(socket);
     let name = pipe_name(&socket).map_err(|e| e.to_string())?;
-    let first = std::io::stdin()
-        .as_handle()
-        .try_clone_to_owned()
-        .map_err(|e| format!("its pipe: {e}"))?;
-    let listener =
-        fuxix::socket::Listener::handed(&name, first).map_err(|e| format!("its pipe: {e}"))?;
+    let listener = fuxix::socket::Listener::bind(&name).map_err(|e| format!("its pipe: {e}"))?;
+    let mut stdout = std::io::stdout();
+    (stdout.write_all(b"\n").and_then(|()| stdout.flush()))
+        .map_err(|e| format!("telling its server: {e}"))?;
     Ok((listener, Some(socket)))
 }
 
@@ -357,7 +378,7 @@ pub fn pane_first(listener: &mut PaneListener) -> Result<Stream, String> {
 }
 
 /// The pid of what listens on the pipe the path `socket` names, as the
-/// system says (the instance's maker), and a link to it; none if nothing
+/// system says (the maker of its first instance), and a link to it; none if nothing
 /// does.
 pub fn reach_named(socket: &Path) -> Option<(Option<Pid>, Stream)> {
     let stream = connect(socket).ok()?;
@@ -371,8 +392,8 @@ pub fn none_listens(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::NotFound
 }
 
-/// The pid of the process that made the instance `stream` is connected
-/// to: a pane's own, once its server took its first.
+/// The pid of the process that made the pipe `stream` is connected to: a
+/// pane's own, as it makes its own pipe (`start_pane`).
 pub fn listener_pid(stream: &Stream) -> Option<Pid> {
     let connected = std::time::SystemTime::now();
     fuxix::socket::peer(stream, connected).ok()?.pid

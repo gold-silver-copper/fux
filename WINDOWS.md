@@ -151,6 +151,11 @@ programs built on the libraries (below) are the acceptance test for the whole po
   `pane_listener`, `pane_first`, `reach_named`, `taken_stdio`, `run_pinned`, `keep_executable`,
   `prepare_terminals`). The rest of fux-server is shared; its unit tests are `cfg(all(test, unix))`
   because they drive sessions through fux's fuxth (`fux::script`), which is Unix-only until PR 8.
+- **Who a pipe's server is:** `GetNamedPipeServerProcessId` names the process that made the pipe's
+  *first* instance, even on a later instance another process made (CI run 42117571201, both
+  images), not the instance's maker as PR 5's notes say. So a pipe that must name a process after
+  its maker dies is first made by that process: a pane binds its own pipe and says so on its stdout
+  (`socket::start_pane`), never one its server made and handed over.
 - **The client is not built on Windows**: `src/client.rs`, `script`, `screens`, `keymap`,
   `client_state` and `help` are `cfg(unix)`; the binary runs `__serve`, `__pane PATH` and
   `__conn taken`, and refuses anything else once. PR 8 removes those gates. The root `tests/*.rs`

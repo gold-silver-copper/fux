@@ -570,6 +570,9 @@ fn a_crashed_panes_program_is_ended_and_its_end_told() -> Outcome {
             .join(ping.number().to_string());
         let (pid, _) = fux_server::socket::reach_named(&marker).ok_or("its pane's process")?;
         let pid = pid.ok_or("its pane's pid")?;
+        if pid.as_raw() == served.child.id() {
+            return Err("the pipe names the server, not the pane's process".to_owned());
+        }
         let killed = Std::new("taskkill.exe")
             .args(["/F", "/PID", &pid.to_string()])
             .stdout(Stdio::null())
