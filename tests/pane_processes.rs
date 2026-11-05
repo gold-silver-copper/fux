@@ -166,18 +166,18 @@ fn a_pane_process_killed_ends_its_pane_alone() -> Outcome {
     signal(own, Signal::Kill);
     eventually("its read_failed and exited", || {
         let lines = told(&server, &cursor)?;
-        Ok(lines.contains(r#""event":"read_failed""#) && lines.contains(r#""event":"exited""#))
+        Ok(lines.contains(r#"(event "read-failed")"#) && lines.contains(r#"(event "exited")"#))
     })?;
     let lines = told(&server, &cursor)?;
-    let failed = lines.find(r#""event":"read_failed""#).unwrap_or(usize::MAX);
-    let exited = lines.find(r#""event":"exited""#).unwrap_or(0);
+    let failed = lines.find(r#"(event "read-failed")"#).unwrap_or(usize::MAX);
+    let exited = lines.find(r#"(event "exited")"#).unwrap_or(0);
     assert!(failed < exited, "{lines}");
     assert!(
         lines.contains("its pane's own process was killed by signal 9"),
         "{lines}"
     );
     // Its program hung up as its terminal closed: its real status.
-    assert!(lines.contains(r#""signal":1"#), "{lines}");
+    assert!(lines.contains("(signal 1)"), "{lines}");
     assert!(
         server
             .pid()
@@ -273,7 +273,7 @@ fn a_stale_expect_is_refused_by_its_pane_and_queues_nothing() -> Outcome {
     )])?;
     assert!(stale.stderr.contains("stale: "), "{}", stale.stderr);
     let lines = told(&server, &cursor)?;
-    assert!(!lines.contains(r#""event":"input""#), "{lines}");
+    assert!(!lines.contains(r#"(event "input")"#), "{lines}");
     let capture = server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(&shell))])?;
     assert!(!capture.contains("NOT-SENT"), "{capture}");
     Ok(())
@@ -377,7 +377,10 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
     );
     // Its programs' FUX_PANE and FUX_SERVER still name it.
     let here = server.dir.join("here");
-    let line = format!(r#""$FUX" ls str run get > '{}'"#, here.display());
+    let line = format!(
+        r#""$FUX" '(get (list-session) "run")' > '{}'"#,
+        here.display()
+    );
     server.type_line(&shell, &line)?;
     eventually("its shell's answer", || {
         Ok(std::fs::read_to_string(&here).is_ok_and(|said| said.trim() == was))
@@ -605,7 +608,10 @@ fn a_paste_body_never_passes_through_the_server() -> Outcome {
     signal(own, Signal::Stop);
     let mut sending = started(
         &server,
-        &["str", &sleeper, "pane", "input", "paste", "send-keys"],
+        &[&format!(
+            "(send-keys (paste {} (input)))",
+            support::reference(&sleeper)
+        )],
     )?;
     let body = vec![b'x'; 32 << 20];
     let mut stdin = sending.stdin.take().ok_or("its stdin")?;
@@ -848,7 +854,7 @@ fn a_takeover_mid_frame_gets_its_first_screen() -> Outcome {
     std::thread::sleep(std::time::Duration::from_secs(3));
     signal(pid, Signal::Kill);
     std::thread::sleep(std::time::Duration::from_millis(1200));
-    let taken = within(server, 20, &["start"])?;
+    let taken = within(server, 20, &["(start)"])?;
     assert_eq!(taken.status, 0, "{}", taken.stderr);
     assert!(server.ok(&["(listing (list-session))"])?.contains(&framed));
     Ok(())
@@ -873,7 +879,7 @@ fn a_run_chooses_its_fux_before_reading_its_record() -> Outcome {
     let script = format!("#!/bin/sh\necho \"$@\" > '{}'\n", ran.display());
     std::fs::write(&exe, script).map_err(e)?;
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
-    let _ = within(&server, 10, &["start"])?;
+    let _ = within(&server, 10, &["(start)"])?;
     eventually("its own fux run", || Ok(ran.exists()))?;
     let said = std::fs::read_to_string(&ran).map_err(e)?;
     assert!(said.contains("__serve"), "{said}");
@@ -935,7 +941,10 @@ fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome 
     signal(own, Signal::Stop);
     let mut sending = started(
         &server,
-        &["str", &sleeper, "pane", "input", "paste", "send-keys"],
+        &[&format!(
+            "(send-keys (paste {} (input)))",
+            support::reference(&sleeper)
+        )],
     )?;
     let mut stdin = sending.stdin.take().ok_or("its stdin")?;
     stdin.write_all(&vec![b'x'; 32 << 20]).map_err(e)?;
@@ -1011,7 +1020,10 @@ fn paste(server: &Server, id: &str, input: &[u8]) -> Result<std::process::Child,
     use std::io::Write;
     let mut sending = started(
         server,
-        &["str", id, "client", "input", "paste", "send-keys"],
+        &[&format!(
+            "(send-keys (paste (client {}) (input)))",
+            fux::script::quoted(id)
+        )],
     )?;
     let mut stdin = sending.stdin.take().ok_or("its stdin")?;
     stdin.write_all(input).map_err(e)?;
