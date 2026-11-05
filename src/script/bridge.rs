@@ -109,6 +109,14 @@ impl std::fmt::Display for DataText<'_, '_, '_> {
     }
 }
 
+fn data_text(g: &mut Interpreter<'_, '_>, _: &mut Runtime<'_, '_>, args: &[G]) -> Result<G, Error> {
+    let [value] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let mut text = String::new();
+    write_data(g, value, &mut text).map_err(|_| g.error("output", args))?;
+    g.string(&text)
+}
 fn read_source(
     g: &mut Interpreter<'_, '_>,
     state: &mut Runtime<'_, '_>,
@@ -183,6 +191,17 @@ fn request(
         let [v] = args else {
             return Err(g.error("arity-error", args));
         };
+        let kind = match v {
+            G::Context(_) => Some("context"),
+            G::Operative(_) => Some("operative"),
+            G::Applicative(_) => Some("applicative"),
+            G::Inert => Some("inert"),
+            G::Ignore => Some("ignore"),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            return g.string(kind);
+        }
         let v = from_grift(g, v)?;
         let name = match &v {
             Value::App(a) => a.name(),
@@ -371,7 +390,7 @@ fn dictionary(g: &mut Interpreter<'_, '_>, args: &[G]) -> Result<G, Error> {
         [v] => g.as_string(v)?,
         _ => return Err(g.error("arity-error", args)),
     };
-    for name in g.names(&top)? {
+    for name in g.visible_names(&top)? {
         let text = g.symbol_name(&name)?.to_owned();
         if wanted.as_ref().is_some_and(|n| n != &text) {
             continue;
@@ -380,14 +399,57 @@ fn dictionary(g: &mut Interpreter<'_, '_>, args: &[G]) -> Result<G, Error> {
             continue;
         };
         let record = g.context(None)?;
-        let key = g.symbol("name")?;
-        let val = g.string(&text)?;
-        g.bind(&record, &G::Symbol(key), val)?;
-        let key = g.symbol("definition")?;
+        let row = Word::named(&text).map(|word| word.row());
+        let doc = super::docs()
+            .ok()
+            .and_then(|docs| docs.iter().find(|doc| doc.name == text));
+        let own = g
+            .names(&top)?
+            .iter()
+            .any(|name| g.symbol_name(name).ok() == Some(&text));
+        let provenance = if row.is_some() {
+            "fux"
+        } else if doc.is_some() {
+            "library"
+        } else if own {
+            "run"
+        } else {
+            "core"
+        };
         let mut source = String::new();
-        let _ = g.write(&v, &mut source);
-        let val = g.string(&source)?;
-        g.bind(&record, &G::Symbol(key), val)?;
+        g.write(&v, &mut source)
+            .map_err(|_| g.error("output", &[]))?;
+        for (name, value) in [
+            ("name", Some(text.clone())),
+            ("provenance", Some(provenance.to_owned())),
+            (
+                "effect",
+                row.map(|row| row.effect.to_owned())
+                    .or_else(|| doc.map(|doc| doc.parameters.clone())),
+            ),
+            ("documentation", crate::help::explain(&text)),
+            ("definition", Some(source)),
+        ] {
+            let key = g.symbol(name)?;
+            let value = match value {
+                Some(value) => g.string(&value)?,
+                None => G::Symbol(g.symbol("none")?),
+            };
+            g.bind(&record, &G::Symbol(key), value)?;
+        }
+        let codes = match Word::named(&text) {
+            Some(word) => {
+                let codes = word
+                    .codes()
+                    .iter()
+                    .map(|code| g.string(code.name()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                g.list(&codes)?
+            }
+            None => G::Symbol(g.symbol("none")?),
+        };
+        let key = g.symbol("codes")?;
+        g.bind(&record, &G::Symbol(key), codes)?;
         entries.push(record);
     }
     if wanted.is_some() {
@@ -409,6 +471,7 @@ pub(super) fn run(
             request as grift::HostFunction<Runtime<'_, '_>>,
         ),
         ("display", output),
+        ("data-text", data_text),
         ("read-source", read_source),
         ("finish-source", finish_source),
         ("native-check-stop", check),
@@ -426,7 +489,7 @@ pub(super) fn run(
     let mut definitions = String::new();
     for word in Word::ALL {
         let name = word.row().name;
-        if name == "json" {
+        if name == "data-text" {
             continue;
         }
         definitions.push_str(&format!(
@@ -901,8 +964,12 @@ fn write_data(
                         && let Some(bytes) = g.as_bytes(data).map_err(|_| std::fmt::Error)?
                     {
                         let app = decode_app(bytes).map_err(|_| std::fmt::Error)?;
-                        let text = Value::App(app).text().map_err(|_| std::fmt::Error)?;
-                        out.write_str(&super::quoted(&text))?;
+                        if matches!(app, Fux::Answer(..)) {
+                            record::write_data(&Value::App(app), out)?;
+                        } else {
+                            let text = Value::App(app).text().map_err(|_| std::fmt::Error)?;
+                            out.write_str(&super::quoted(&text))?;
+                        }
                     } else {
                         out.write_str("(")?;
                         todo.push(Part::Text(")"));
@@ -922,7 +989,11 @@ fn write_data(
 }
 
 fn output_value(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error> {
-    if matches!(v, G::Integer(_) | G::Boolean(_) | G::String(_)) || native_data(g, v)? {
+    if matches!(
+        v,
+        G::Integer(_) | G::Boolean(_) | G::String(_) | G::Float(_) | G::Bytes(_) | G::Symbol(_)
+    ) || native_data(g, v)?
+    {
         return from_grift(g, v);
     }
     let mut text = String::new();

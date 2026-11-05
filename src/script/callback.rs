@@ -269,4 +269,255 @@ mod tests {
         assert_eq!(decoded, payload);
         Ok(())
     }
+    use crate::TestResult;
+    use crate::screens::{Job, Screen};
+    use crate::script::record;
+    use fux_wire::callback::{Item, ListScreen};
+    fn run(job: &Job) -> Result<String, Failed> {
+        let mut machine = job.machine(None, None)?;
+        let mut state = crate::script::default_state()?.draft();
+        let mut out = Vec::new();
+        let mut host = Host::job(
+            context().map_err(|e| Failed::new(fux_wire::code::Code::BadValue, e))?,
+            &mut state,
+            &mut out,
+        );
+        crate::script::run(&mut machine, &mut host, &mut NoRequests, None)?;
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    }
+    fn context() -> Result<Context, String> {
+        Ok(Context {
+            client: Some("c1".parse().map_err(|e| format!("{e}"))?),
+            of: Some("1-2".parse().map_err(|()| "run")?),
+            ..Default::default()
+        })
+    }
+    fn list(payload: Data, code: &str) -> Open {
+        Open::List(ListScreen {
+            title: "title\x1b[31m".into(),
+            items: vec![Item {
+                payload,
+                label: "str injected kill\nlabel".into(),
+            }],
+            current: None,
+            selected: 0,
+            about: None,
+            action: crate::testing::code(code).into(),
+            // Receiving admission supplies its actual client.
+            client: Data::Null,
+        })
+    }
+    #[test]
+    fn callbacks_check_empty_snapshot_provenance_and_mixed_nested_handles() -> TestResult {
+        let context = context()?;
+        let run = context.of.ok_or("run")?;
+        let snapshot = fux_wire::inspect::Snapshot {
+            run,
+            cursor: format!("0:{run}").parse().map_err(|()| "cursor")?,
+            scope: fux_wire::inspect::Scope::All,
+            projection: fux_wire::inspect::Projection::Topology,
+            workspaces: Vec::new(),
+            tabs: Vec::new(),
+            panes: Vec::new(),
+            clients: Vec::new(),
+        };
+        let record = record::snapshot(snapshot).map_err(|e| e.message)?;
+        let original = data(&record).map_err(|e| e.message)?;
+        let bytes = fux_wire::wire::encode(&original);
+        let decoded = fux_wire::wire::Reader::new(&bytes).whole()?;
+        let restored = value(&decoded).map_err(|e| e.message)?;
+        let payload = data(&restored).map_err(|e| e.message)?;
+        assert_eq!(payload, original);
+        assert!(
+            admit(
+                list(payload.clone(), "(lambda! (#ignore #ignore) #inert)"),
+                None,
+                &context,
+                None
+            )
+            .is_ok()
+        );
+        let other = "3-4".parse().map_err(|()| "run")?;
+        let stale = Context {
+            of: Some(other),
+            ..context.clone()
+        };
+        assert!(
+            admit(
+                list(payload.clone(), "(lambda! (#ignore #ignore) #inert)"),
+                None,
+                &stale,
+                None
+            )
+            .is_err()
+        );
+        let mut inferred = None;
+        runs(&payload, &mut inferred).map_err(|e| e.message)?;
+        assert_eq!(inferred, Some(run));
+        let nested = Data::Record {
+            of: None,
+            fields: vec![(
+                "nested".into(),
+                Data::List(vec![
+                    payload,
+                    Data::Handle(
+                        fux_wire::command::AnyRef::Pane(fux_wire::id::PaneId::of(7)),
+                        Some(run),
+                    ),
+                    Data::Client(fux_wire::id::ClientId::of(2), Some(run)),
+                    Data::All,
+                ]),
+            )],
+        };
+        assert!(
+            admit(
+                list(nested.clone(), "(lambda! (#ignore #ignore) #inert)"),
+                None,
+                &context,
+                None
+            )
+            .is_ok()
+        );
+        assert!(
+            admit(
+                list(nested.clone(), "(lambda! (#ignore #ignore) #inert)"),
+                None,
+                &stale,
+                None
+            )
+            .is_err()
+        );
+        let mixed = Data::List(vec![
+            nested,
+            Data::Client(fux_wire::id::ClientId::of(2), Some(other)),
+        ]);
+        assert!(
+            admit(
+                list(mixed, "(lambda! (#ignore #ignore) #inert)"),
+                None,
+                &Context {
+                    of: None,
+                    ..context
+                },
+                None
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+    #[test]
+    fn screen_admission_checks_every_payload_run_and_aggregate_bound() -> TestResult {
+        let context = context()?;
+        let mut spec = list(
+            Data::Handle("%1".parse().map_err(|()| "pane")?, context.of),
+            "(lambda! (#ignore #ignore) #inert)",
+        );
+        let Open::List(screen) = &mut spec else {
+            return Err("list".into());
+        };
+        screen.items.push(Item {
+            label: "same kind, another run".into(),
+            payload: Data::Handle(
+                "%1".parse().map_err(|()| "pane")?,
+                Some("3-4".parse().map_err(|()| "run")?),
+            ),
+        });
+        assert!(admit(spec, None, &context, None).is_err());
+        assert!(data(&Value::App(Fux::Opts(std::rc::Rc::new(Default::default())))).is_err());
+        Ok(())
+    }
+    #[test]
+    fn prompt_admission_checks_its_captured_values_run() -> TestResult {
+        let context = context()?;
+        let pane = |run: &str| -> Result<Data, String> {
+            let run = Some(run.parse().map_err(|()| "run")?);
+            Ok(Data::Handle("%1".parse().map_err(|()| "pane")?, run))
+        };
+        let prompt = |args| {
+            Open::Prompt(fux_wire::callback::Prompt {
+                title: "t".into(),
+                line: fux_wire::act::Line::new(String::new()),
+                action: Some(fux_wire::callback::Callback {
+                    code: crate::testing::code("(lambda! (#ignore #ignore) #inert)"),
+                    args,
+                }),
+            })
+        };
+        assert!(admit(prompt(vec![pane("1-2")?]), None, &context, None).is_ok());
+        for args in [vec![pane("3-4")?], vec![Data::List(vec![pane("3-4")?])]] {
+            let refused = admit(prompt(args), None, &context, None).err();
+            assert!(refused.is_some_and(|e| e.message.contains("different server runs")));
+        }
+        Ok(())
+    }
+    #[test]
+    fn callback_snapshots_keep_all_scope_and_children_after_the_source_closes() -> TestResult {
+        let (mut session, _) = crate::script::testing::attached(8, 30)?;
+        let reply = crate::script::testing::InProcess(&mut session).ask(&Asked {
+            after: None,
+            context: Context::default(),
+            request: fux_wire::command::Command::Inspect {
+                scope: fux_wire::inspect::Scope::All,
+                projection: fux_wire::inspect::Projection::Topology,
+            }
+            .into(),
+        })?;
+        let mut values = crate::script::answered(reply)?;
+        let root = values.pop().ok_or("snapshot")?;
+        let payload = data(&root).map_err(|e| e.message)?;
+        let bytes = fux_wire::wire::encode(&payload);
+        let payload: Data = fux_wire::wire::Reader::new(&bytes).whole()?;
+        let restored = value(&payload).map_err(|e| e.message)?;
+        assert_eq!(data(&restored).map_err(|e| e.message)?, payload);
+        assert_eq!(restored, root);
+        let Value::App(Fux::Record(record)) = restored else {
+            return Err("record".into());
+        };
+        assert_eq!(record.of, Some(session.run));
+        assert_eq!(
+            record.get("scope").map_err(|e| e.message)?,
+            Value::App(Fux::All)
+        );
+        let Value::List(panes) = record.get("panes").map_err(|e| e.message)? else {
+            return Err("panes".into());
+        };
+        let child = panes.items().first().ok_or("pane")?.clone();
+        drop(panes);
+        drop(record);
+        drop(root);
+        crate::script::testing::evaluate(
+            "(kill (pane 1))",
+            None,
+            &mut crate::script::testing::InProcess(&mut session),
+            &mut Vec::new(),
+        )?;
+        let context = Context {
+            of: Some(session.run),
+            ..context()?
+        };
+        let Screen::List(screen) = admit(
+            list(
+                payload,
+                "(lambda! (#ignore payload) (print (kind (get payload \"scope\"))))",
+            ),
+            None,
+            &context,
+            None,
+        )?
+        else {
+            return Err("list".into());
+        };
+        let payload = screen.items.first().ok_or("row")?.payload.clone();
+        assert_eq!(
+            run(&Job::call(&screen.action, [screen.client, payload]))?,
+            "all\n"
+        );
+        let child = data(&child).map_err(|e| e.message)?;
+        let text = run(&Job::call(
+            &crate::testing::code("(lambda! (payload) (print (kind (get payload \"id\"))))").into(),
+            [child],
+        ))?;
+        assert_eq!(text, "pane\n");
+        Ok(())
+    }
 }

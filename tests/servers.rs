@@ -19,11 +19,7 @@ fn named(
     command
         .args(args)
         .env("XDG_RUNTIME_DIR", rt)
-        .env(
-            "FUX_SOCKET",
-            rt.join("fux")
-                .join(format!("{}", support::reference(&format!("{name}.sock")))),
-        )
+        .env("FUX_SOCKET", rt.join("fux").join(format!("{name}.sock")))
         .env_remove("FUX_PANE")
         .env_remove("FUX_SERVER")
         .stdin(Stdio::null());
@@ -79,14 +75,8 @@ fn servers_are_chosen_and_kills_are_guarded() -> Outcome {
         status.stdout
     );
     let release = env!("CARGO_PKG_VERSION");
-    assert!(status.stdout.contains(&format!(
-        "{}",
-        support::reference(&format!("release:{release}"))
-    )));
-    assert!(status.stdout.contains(&format!(
-        "{}",
-        support::reference(&format!("server_release:{release}"))
-    )));
+    assert!(status.stdout.contains(&format!("release:{release}")));
+    assert!(status.stdout.contains(&format!("server_release:{release}")));
     assert!(!status.stdout.contains("\"version\""));
     // With no server, status fails, so a shell's `if fux status` reads it.
     let none = named(&rt, "none", &["status"], &[])?;
@@ -189,16 +179,8 @@ fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
     assert!(started.status.success(), "{started:?}");
     let socket = rt.join("fux").join("d.sock");
     let pid = serving(&socket).ok_or("no server serves d")?;
-    let cwd = std::fs::read_link(format!(
-        "{}",
-        support::reference(&format!("/proc/{pid}/cwd"))
-    ))
-    .map_err(e)?;
-    let fds = std::fs::read_dir(format!(
-        "{}",
-        support::reference(&format!("/proc/{pid}/fd"))
-    ))
-    .map_err(e)?;
+    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).map_err(e)?;
+    let fds = std::fs::read_dir(format!("/proc/{pid}/fd")).map_err(e)?;
     let holds = (fds.filter_map(Result::ok))
         .filter_map(|fd| std::fs::read_link(fd.path()).ok())
         .any(|target| target == held);
@@ -259,20 +241,11 @@ fn events_tell_what_happens() -> Outcome {
         let pane = first_word(&pane);
         let created = next(r#""event":"created""#)?;
         assert!(created.contains(r#""name":"agent""#), "{created}");
-        next(&format!(
-            "{}",
-            support::reference(&format!("event:created,pane:{pane}"))
-        ))?;
+        next(&format!("event:created,pane:{pane}"))?;
         // The bell, then the exit, in the order they happened, one round or
         // two: an exit told first is passed over, and never found after.
-        next(&format!(
-            "{}",
-            support::reference(&format!("event:bell,pane:{pane}"))
-        ))?;
-        let exited = next(&format!(
-            "{}",
-            support::reference(&format!("event:exited,pane:{pane}"))
-        ))?;
+        next(&format!("event:bell,pane:{pane}"))?;
+        let exited = next(&format!("event:exited,pane:{pane}"))?;
         assert!(exited.contains(r#""exited":7"#), "{exited}");
         let killed = [&format!(
             "(sequence! (define! value-169 (pane {})) (kill value-169) (events value-169 {}) #inert)",
@@ -280,10 +253,7 @@ fn events_tell_what_happens() -> Outcome {
             fux::script::quoted(cursor.trim())
         )];
         let own = server.fux(&killed)?;
-        next(&format!(
-            "{}",
-            support::reference(&format!("event:closed,pane:{pane}"))
-        ))?;
+        next(&format!("event:closed,pane:{pane}"))?;
         assert_eq!(own.status, 0, "{}", own.stderr);
         assert!(own.stdout.ends_with("\n") && own.stdout.lines().all(|l| l.contains(pane)));
         assert!(
@@ -363,10 +333,7 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
         fux::script::quoted(a)
     )])?;
     for (pane, line) in [a, b].into_iter().zip(both.lines()) {
-        assert!(
-            line.starts_with(&format!("{}", support::reference(&format!("{pane}:")))),
-            "{both}"
-        );
+        assert!(line.starts_with(&format!("{pane}:")), "{both}");
         server.until(pane, line, |c| c.contains("\nboth-42"))?;
     }
     Ok(())

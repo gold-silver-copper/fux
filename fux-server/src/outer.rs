@@ -605,7 +605,13 @@ mod tests {
             &mut s,
             "(sequence! (show (client \"c1\") (tab \"@2\")) #inert)",
         )?;
-        run(&mut s, &format!("str {d} client str @1 tab show"))?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (tab \"@1\")) #inert)",
+                fux::script::quoted(&format!("{d}"))
+            ),
+        )?;
         assert_eq!(cell(&mut s), None);
         s.input(d, b"\x1b[6;16;8t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
@@ -986,7 +992,13 @@ mod tests {
         let bar = tab_label(&s, c);
         assert!(bar.contains(" agent1! "), "{bar}");
         for shown in ["(workspace \"agent1\")", "%1"] {
-            run(&mut s, &format!("str c1 client {shown} show"))?;
+            run(
+                &mut s,
+                &format!(
+                    "(sequence! (show (client \"c1\") {}) #inert)",
+                    crate::test_reference(&format!("{shown}"))
+                ),
+            )?;
             let _ = s.before_paint(c);
         }
         let bar = tab_label(&s, c);

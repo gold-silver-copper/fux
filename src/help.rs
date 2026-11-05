@@ -1,6 +1,7 @@
 //! Help from the same native operation table that executes commands.
 use crate::script::Word;
 pub const AGENTS: &str = include_str!("../docs/agents.md");
+pub const DATA: &str = include_str!("../docs/data.md");
 pub const COOKBOOK: &str = include_str!("../docs/cookbook.md");
 pub fn overview() -> String {
     let mut text = String::from(
@@ -57,6 +58,7 @@ fn guide(name: &str) -> Option<String> {
         }
         "guide" => return Some(AGENTS.to_owned()),
         "cookbook" => return Some(COOKBOOK.to_owned()),
+        "data" => return Some(DATA.to_owned()),
         _ => {}
     }
     let heading = format!("\n## {name}:");
@@ -91,6 +93,13 @@ mod tests {
         for section in AGENTS.split("\n## ").skip(1) {
             let topic = section.split(':').next().unwrap_or_default();
             assert!(explain(topic).is_some(), "{topic}");
+        }
+    }
+    #[test]
+    fn the_json_guide_states_this_protocol_and_its_codes() {
+        assert!(DATA.contains(&format!("protocol {}", fux_wire::protocol::PROTOCOL)));
+        for code in fux_wire::code::Code::all() {
+            assert!(DATA.contains(&format!("`{code}`")), "{code}");
         }
     }
 }

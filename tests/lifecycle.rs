@@ -231,7 +231,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
             if !typed.status.success() {
                 return Err(String::from_utf8_lossy(&typed.stderr).into_owned());
             }
-            let expected = format!("{}", support::reference(&format!("FUX-SHELL:{expected}")));
+            let expected = format!("FUX-SHELL:{expected}");
             eventually(&format!("a pane running {name}"), || {
                 let observed = capture()?;
                 Ok(observed.status.success()

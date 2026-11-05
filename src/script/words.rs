@@ -330,6 +330,8 @@ words! {
         Input SendKeys "send-keys" "target -- target" raises(Type Unused Usage asks) "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" raises(Type Range asks) "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 send-mouse" [];
         Input Signal "signal" "subject name -- answer" raises(Type Unused asks) "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
+        Reading DataText "data-text" "value -- string" raises(Type Unused) "serialize a value as readable grift data; retained captures stream one row at a time" "fux '(data-text (capture (pane 1)))'" [];
+        Reading Datum "datum" "value -- data" raises(Type Unused) "expose a retained result as grift data, without reading it again" "fux '(datum (capture (pane 1)))'" [];
         Reading Capture "capture" "capture-source -- capture-source" raises(Type Unused asks) "a pane's observation (its facts, as info gives them) with its screen, read with its options; or what a client terminal shows (without pane options or a version)" "fux %3 100 history capture" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols Since];
         Reading Snapshot "snapshot" "snapshot-scope projection -- record" raises(Type asks) "one bounded observation: facts, topology or recipe" "fux all str topology snapshot json" [];
         Reading Get "get" "readable field -- value" raises(Type NoField Range TooLong asks) "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux %3 str program get str exited get" [];
@@ -413,7 +415,7 @@ words! {
     Screen {
         Clients Choose "choose" "client title list list list callback --" raises(Type TooLong NotHere asks) "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux str c1 client str hosts list list str host str Host end end list end list 0 end code 2drop end choose";
         Clients Prompt "prompt" "client name text callback --" raises(Type TooLong NotHere asks) "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs code @2 swap rename end prompt";
-        Clients CommandPrompt "command-prompt" "client --" raises(Type NotHere asks) "a prompt for fuxth" "fux str c1 client command-prompt";
+        Clients CommandPrompt "command-prompt" "client --" raises(Type NotHere asks) "a prompt for grift" "fux str c1 client command-prompt";
     }
     Keys {
         Config Bind "bind-key" "keys code --" raises(Type NotConfig BadBinding) "keys run code: each key but the last holds a map of more keys, made as needed, the first in the map a client is in while it holds none (config)" "str 'C-b g v' code me focused str horizontal axis split drop end bind";
@@ -1495,6 +1497,13 @@ impl Host<'_> {
                 later(ask(signal))
             }
             // ----------------------------------------------------- reading
+            Act::DataText => {
+                let mut text = String::new();
+                super::record::write_data(&next()?, &mut text)
+                    .map_err(|_| fail(Raise::Output, "writing data"))?;
+                now(out, Value::str(text))
+            }
+            Act::Datum => now(out, super::record::datum(&next()?)?),
             Act::Capture => {
                 let value = next()?;
                 if let Value::App(Fux::Client(c, _)) = value {
@@ -2390,6 +2399,76 @@ mod tests {
                 assert_eq!(Fux::Opts(actual).name(), kind, "{target:?} {opt}");
             }
         }
+        Ok(())
+    }
+    #[test]
+    fn every_word_fails_only_with_the_codes_it_declares() -> TestResult {
+        use fux_wire::id::{ClientId, TabId, WsId};
+        let opts = std::rc::Rc::new(Opts::default());
+        let on_pane = Opts {
+            on: Some(On::Target(AnyRef::Pane(PaneId::of(1)))),
+            ..Opts::default()
+        };
+        let values = [
+            Value::Int(0),
+            Value::Int(-1),
+            Value::Int(80),
+            Value::str(""),
+            Value::str("x"),
+            Value::str("next"),
+            Value::Bool(true),
+            Value::List(Rc::new(crate::script::List::new(Vec::new()))),
+            Value::List(Rc::new(crate::script::List::new(vec![Value::str("a")]))),
+            Value::App(Fux::Pane(PaneId::of(1), None)),
+            Value::App(Fux::Tab(TabId::of(1), None)),
+            Value::App(Fux::Workspace(WsId::of(1), None)),
+            Value::App(Fux::Client(ClientId::of(1), None)),
+            Value::App(Fux::All),
+            Value::App(Fux::Null),
+            Value::App(Fux::Opts(opts)),
+            Value::App(Fux::Opts(Rc::new(on_pane))),
+            Value::App(Fux::Extent(Extent::Cells(3))),
+        ];
+        let mut draft = crate::script::default_state()?.draft();
+        let mut seed = 1u64;
+        let mut wrong = Vec::new();
+        for &word in Word::ALL {
+            let codes = word.codes();
+            let takes = word
+                .row()
+                .effect
+                .split_once("--")
+                .map_or(0, |(t, _)| t.split_whitespace().count());
+            for _ in 0..500 {
+                let mut stack = Vec::new();
+                for _ in 0..takes {
+                    seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let at = usize::try_from(seed >> 33).unwrap_or(0) % values.len();
+                    stack.extend(values.get(at).cloned());
+                }
+                let mut sink = Vec::new();
+                let mut host = Host::new(
+                    fux_wire::protocol::Context::default(),
+                    Some(&mut draft),
+                    &mut sink,
+                );
+                let mut stack = stack.into_iter();
+                let mut next = || (stack.next()).ok_or_else(|| fail(Raise::StackUnderflow, "test"));
+                if let Err(failure) = host.dispatch(word, &mut next, &mut Vec::new())
+                    && !codes.contains(&failure.code)
+                {
+                    wrong.push(format!(
+                        "{word:?}: {}: {}",
+                        failure.code.name(),
+                        failure.message
+                    ));
+                }
+            }
+        }
+        wrong.dedup();
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         Ok(())
     }
 }

@@ -11,13 +11,14 @@ fn another_runs_handles_are_refused_before_mutating() -> Outcome {
     let b = Server::start("")?;
     let theirs = a.words("(new-tab (program (size (in (options) \"agent\") 80 24) \"cat\"))")?;
     b.words("(new-tab (program (size (in (options) \"agent\") 80 24) \"cat\"))")?;
+    let version = fux::script::quoted(theirs.trim());
     for action in [
-        "expect str forbidden text send-keys",
-        "pane kill",
-        "pane tab kill",
-        "changed 0 timeout wait",
+        format!("(send-keys (text (expect {version}) \"forbidden\"))"),
+        format!("(kill (pane {version}))"),
+        format!("(kill (tab (pane {version})))"),
+        format!("(wait (timeout (changed {version}) 0))"),
     ] {
-        let out = b.fux(&[&format!("str {} {action}", theirs.trim())])?;
+        let out = b.fux(&[&action])?;
         assert_eq!(out.status, 1, "{action}: {}", out.stderr);
         assert!(out.stderr.contains("server run"), "{}", out.stderr);
         assert_eq!(b.panes()?.len(), 2);
@@ -37,7 +38,7 @@ fn a_background_descendant_cannot_be_here_after_respawn() -> Outcome {
     // It gives its pid once in a session of its own: till then the
     // respawn's signals to the pane's session reach it too.
     let descendant = format!(
-        "echo $$ > \"{}\"; while [ ! -f \"{}\" ]; do sleep 0.02; done; \"$FUX\" here kill > \"{}\" 2>&1; echo $? > \"{}\"",
+        "echo $$ > \"{}\"; while [ ! -f \"{}\" ]; do sleep 0.02; done; \"$FUX\" \"(kill (here))\" > \"{}\" 2>&1; echo $? > \"{}\"",
         pid.display(),
         released.display(),
         result.display(),
@@ -87,8 +88,7 @@ fn a_pipeline_keeps_its_group_when_its_leader_is_gone() -> Outcome {
     let (_, shell) = server.newest_pane()?;
     server.type_line("%1", "true | sleep 300")?;
     eventually("a foreground group whose leader exited", || {
-        let program = ["%1", "str", "program", "get"];
-        let group = server.ok(&[&program[..], &["str", "foreground_group", "get"]].concat())?;
+        let group = server.ok(&["(get (get (pane 1) \"program\") \"foreground-group\")"])?;
         let group = group.trim().parse::<i32>().ok();
         Ok(group.is_some_and(|g| g != shell && !exists(g)))
     })?;

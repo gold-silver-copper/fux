@@ -392,10 +392,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         ),
     ] {
         let wrong = said(words)?;
-        assert!(
-            wrong.ends_with(&format!("{}", support::reference(&format!("{usage}")))),
-            "{wrong}"
-        );
+        assert!(wrong.ends_with(&format!("{usage}\n")), "{wrong}");
     }
     // `help WORD` of no word says so, as help, and where, as any error.
     assert_eq!(
@@ -527,10 +524,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
         revision.trim().parse().map_err(|()| "layout revision")?;
     assert_eq!(parsed.tab.to_string(), "@1");
     assert!(
-        json.contains(&format!(
-            "{}",
-            support::reference(&format!("layout_revision:{parsed}"))
-        )),
+        json.contains(&format!("layout_revision:{parsed}")),
         "{json}"
     );
     assert_eq!(

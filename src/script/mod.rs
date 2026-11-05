@@ -1,15 +1,17 @@
-//! fux's command line, config, bindings and prompt: fuxth programs, run in
+//! fux's command line, config, bindings and prompt: grift programs, run in
 //! a client. Words build typed requests (`opts … new-tab`, `%2 … send-keys`)
 //! and execution words submit them: the program suspends while the server
 //! does what one asks, and goes on with what it answers, as typed values
 //! (a pane's handle, a capture), never text to be read back.
 //!
-//! Every run is fresh: its own stack and dictionary, the bundled library's
+//! Every run is fresh: its own interpreter and context, the bundled library's
 //! words first (`library.grift`).
 mod callback;
 mod docs;
 pub use docs::{Doc, docs};
 
+#[cfg(test)]
+mod lists;
 mod record;
 pub(crate) mod settings;
 mod source;
@@ -44,10 +46,10 @@ pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opt
 /// bindings and prompt see.
 pub type Config = Arc<source::Frozen>;
 
-/// The bundled words, written in fuxth.
+/// The bundled operations, written in grift.
 const LIBRARY: &str = include_str!("library.grift");
 
-/// The first line of a fuxth script, which runs it as `fux --file`.
+/// The first line of a grift script, which runs it as `fux --file`.
 pub const SHEBANG: &str = "#!/usr/bin/env -S fux --file";
 
 /// fux's default keys: a config, run before the user's.
@@ -986,7 +988,7 @@ fn acts(request: &Request) -> bool {
 }
 
 /// What a reply's answer puts on the stack: nothing, a string, handles, or
-/// an answer of fux's; a field's value as fuxth's own where it is one.
+/// an answer of fux's; a field's value as grift's own where it is one.
 pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
     let run = reply.run;
     let body = match reply.response {
@@ -1178,7 +1180,7 @@ pub fn default_state() -> Result<ClientState, Failed> {
     }
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
-/// The config file, a fuxth program a typing terminal runs as it attaches:
+/// The config file, a grift program a typing terminal runs as it attaches:
 /// `$XDG_CONFIG_HOME/fux/config.grift`, else `~/.config/fux/config.grift`.
 pub fn default_path() -> Option<std::path::PathBuf> {
     let set = |name: &str| std::env::var_os(name).filter(|d| !d.is_empty());
@@ -1310,7 +1312,27 @@ pub fn run(
     asks: &mut dyn Asks,
     stop: Option<&Stop>,
 ) -> Result<Vec<Value<Fux>>, Failed> {
-    bridge::run(machine, host, asks, stop)
+    let values = bridge::run(machine, host, asks, stop)?;
+    for value in &values {
+        let items = match value {
+            Value::List(items) => items.items(),
+            value => std::slice::from_ref(value),
+        };
+        for item in items {
+            if let Value::App(Fux::Opts(options)) = item {
+                let end = if options.inputs.is_empty() {
+                    from_opts("or")
+                } else {
+                    "send-keys".to_owned()
+                };
+                let mut failure =
+                    Failed::new(Code::Unused, format!("{}: end with {end}", item.kind()));
+                failure.actions = host.actions.clone();
+                return Err(failure);
+            }
+        }
+    }
+    Ok(values)
 }
 /// One quoted grift program; every following shell argument stays a string.
 pub fn main(

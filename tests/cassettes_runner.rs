@@ -205,7 +205,7 @@ mod runner {
         /// establishes that operation; text that only names one does not.
         #[test]
         fn only_a_call_of_one_operation_establishes_it() -> Result<(), String> {
-            let v = format!("{}", support::reference(&format!("%1:0.0.0.0.0:{R1}")));
+            let v = format!("%1:0.0.0.0.0:{R1}");
             let expect = call(
                 &[
                     "str",
@@ -258,20 +258,8 @@ mod runner {
             // The pane had moved past v before either ran.
             let moved = || -> Result<Vec<Snapshot>, String> {
                 Ok(vec![
-                    ls(
-                        1,
-                        &[&format!(
-                            "{}",
-                            support::reference(&format!("%1:0.3.0.0.0:{R1}"))
-                        )],
-                    )?,
-                    ls(
-                        1,
-                        &[&format!(
-                            "{}",
-                            support::reference(&format!("%1:0.3.0.0.0:{R1}"))
-                        )],
-                    )?,
+                    ls(1, &[&format!("%1:0.3.0.0.0:{R1}")])?,
+                    ls(1, &[&format!("%1:0.3.0.0.0:{R1}")])?,
                 ])
             };
             let mut calls = vec![(1, printed), (1, caught)];
@@ -311,7 +299,7 @@ mod runner {
             // A whole word at the shim's 4,000 characters is still checked,
             // cut or not; only a cut one no delimiter ends is not, and it is
             // answered apart, as unchecked.
-            let whole = format!("{}", support::reference(&format!("%1:0.x.0.0.0:{R1}")));
+            let whole = format!("%1:0.x.0.0.0:{R1}\n");
             let padded = format!(
                 "{}{whole}",
                 std::iter::repeat_n(' ', 4000_usize.saturating_sub(whole.len()))
@@ -356,12 +344,7 @@ mod runner {
             let mut names = Names::new("/nowhere");
             let lines: Vec<String> = [R1, R2, R2, R1, R2]
                 .iter()
-                .map(|run| {
-                    names.line(&format!(
-                        "{}",
-                        support::reference(&format!("%1:0.0.0.0.0:{run}"))
-                    ))
-                })
+                .map(|run| names.line(&format!("%1:0.0.0.0.0:{run}")))
                 .collect();
             assert_eq!(
                 lines,
@@ -384,10 +367,7 @@ mod runner {
         #[test]
         fn a_resize_excuses_one_revision_of_an_ended_screen() -> Result<(), String> {
             let events = [
-                format!(
-                    "{}",
-                    support::reference(&format!("{{event:created,workspace:+1,next:1:{R1}}}"))
-                ),
+                format!("{{event:created,workspace:+1,next:1:{R1}}}"),
                 format!(
                     "{}",
                     support::reference(&format!(
@@ -414,12 +394,7 @@ mod runner {
                 ),
             ];
             let events: Vec<&str> = events.iter().map(String::as_str).collect();
-            let at = |screen: u64| {
-                format!(
-                    "{}",
-                    support::reference(&format!("%1:0.{screen}.0.0.1:{R1}"))
-                )
-            };
+            let at = |screen: u64| format!("%1:0.{screen}.0.0.1:{R1}");
             let still = |n| ls(n, &[&at(10)]);
             for (drained, screen, broken) in
                 [(true, 11, false), (true, 110, true), (false, 110, false)]
@@ -446,7 +421,7 @@ mod runner {
             let array = |n: usize| format!("[{}]", vec!["0"; n].join(","));
             assert!(Json::read(&array(ITEMS), ITEMS).is_ok());
             assert!(Json::read(&array(ITEMS.saturating_add(1)), ITEMS).is_err());
-            let pane = format!("{}", support::reference(&format!("%1:0.0.0.0.0:{R1}")));
+            let pane = format!("%1:0.0.0.0.0:{R1}");
             assert!(ls(0, &vec![pane.as_str(); ITEMS.saturating_add(1)]).is_err());
             let line = r#"{"argv":["ls"],"stdin":"","status":0,"out":"","err":""}"#;
             let mut calls = Vec::new();

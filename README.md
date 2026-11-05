@@ -23,18 +23,18 @@ A command line is one quoted grift program. Every following shell argument stays
 available through `(arguments)`. The command prompt accepts the same program syntax.
 
 ```sh
-fux '(split (axis (pane 3) "horizontal"))'
-fux '(line (pane 3) "ls -l")'
-fux '(capture (pane 3))'
-fux '(get (pane 3) "columns")'
-fux '(line (pane 3) (first (arguments)))' 'echo "quotes (remain data)"'
+fux '(split (axis (pane 1) "horizontal"))'
+fux '(line (pane 1) "ls -l")'
+fux '(capture (pane 1))'
+fux '(get (pane 1) "columns")'
+fux '(line (pane 1) (first (arguments)))' 'echo "quotes (remain data)"'
 ```
 
 Use a private server when driving programs beside someone else's terminal:
 
 ```sh
-export TMPDIR="$HOME/.cache/claude-tmp/fux-example"
-mkdir -p "$TMPDIR"
+export TMPDIR="${TMPDIR:-$HOME/.cache/claude-tmp}/fux-example-$$"
+mkdir -p -m 700 "$TMPDIR"
 export FUX_SOCKET="$TMPDIR/fux.sock"
 fux '(start)'
 fux '(define! p (new-tab (program (size (in (options) "jobs") 80 24) "/bin/sh"))) (rename p "shell")'

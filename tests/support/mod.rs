@@ -811,9 +811,7 @@ pub fn resident_mib(pid: u32) -> Result<f64, String> {
 
 /// The CPU time a process has used, in seconds.
 pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
-    if let Ok(stat) =
-        std::fs::read_to_string(format!("{}", reference(&format!("/proc/{pid}/stat"))))
-    {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         // After the command name, which is in parentheses and may hold
         // spaces, the fields start at the state, field 3: user and system
         // time, fields 14 and 15, are the 12th and 13th here, in ticks.
@@ -1222,6 +1220,9 @@ pub fn ended(version: &str) -> bool {
 
 /// Explicit grift constructors for the typed identities a fixture holds.
 pub fn reference(value: &str) -> String {
+    if value.starts_with('(') {
+        return value.to_owned();
+    }
     if let Ok(number) = value.parse::<i64>()
         && !value.starts_with('+')
     {

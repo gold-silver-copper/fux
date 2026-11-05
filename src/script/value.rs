@@ -122,8 +122,7 @@ impl Value<Fux> {
     }
 }
 
-fn write_quoted(text: &str, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-    out.write_char('"')?;
+pub(super) fn write_escaped(text: &str, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
     for character in text.chars() {
         match character {
             '"' => out.write_str("\\\"")?,
@@ -135,6 +134,11 @@ fn write_quoted(text: &str, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
             c => out.write_char(c)?,
         }
     }
+    Ok(())
+}
+fn write_quoted(text: &str, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+    out.write_char('"')?;
+    write_escaped(text, out)?;
     out.write_char('"')
 }
 /// One grift string literal, also used by generated config lines.

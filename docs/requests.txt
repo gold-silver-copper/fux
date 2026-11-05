@@ -123,7 +123,10 @@ Data::Handle v: AnyRef, run: Option<Run>
 Data::Client v: ClientId, run: Option<Run>
 Data::All
 Data::Code v: Code
-Code words: Vec<String>
+Data::Bytes v: Vec<u8>
+Data::FloatBits v: u64
+Data::Symbol v: String
+Code source: String
 Callback code: Code, args: Vec<Data>
 Prompt title: String, line: String, action: Option<Callback>
 Way::Step step: Sibling

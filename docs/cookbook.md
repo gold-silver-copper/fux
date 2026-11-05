@@ -36,3 +36,42 @@ fux '(kill (workspace "quoted"))'
     (line (focused (me)) line-value)))))))
 (label "type a command")
 ```
+
+
+## Read held capture data
+
+```sh
+fux '(get (datum (capture (pane 1))) "lines")'
+```
+
+## Read several facts in one observation
+
+```sh
+fux '(define! observed (information (pane 1))) (map (lambda! (p) (get p "columns")) (get observed "panes"))'
+```
+
+## Handle a refusal by kind
+
+```sh
+fux '(catch-kind! (kill (pane 999)) no-pane failure (display "pane is gone\n"))'
+```
+
+## Save a session as readable data
+
+```sh
+fux '(dump (all))' > saved.grift
+```
+
+## Discover operations
+
+```sh
+fux '(explain "split")'
+fux '(list-keys)'
+```
+
+## Set the client prefix
+
+```grift
+(move-keys "C-b" "C-a")
+(set "escape-delay-ms" 35)
+```

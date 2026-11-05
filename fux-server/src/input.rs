@@ -1098,7 +1098,10 @@ mod tests {
         for key in ["1", "F5", "M-n"] {
             run(
                 &mut s,
-                &format!("str 'C-b {key}' code opts str / cwd new-tab drop end bind"),
+                &format!(
+                    "(sequence! (bind-key {} (code! (lambda! () (sequence! (new-tab (directory (options) \"/\")) #inert)))) #inert)",
+                    fux::script::quoted(&format!("C-b {key}"))
+                ),
             )?;
         }
         s.input(c, &prefixed("1"));
@@ -1478,7 +1481,13 @@ mod tests {
             s.input(c, &[0x7f; 16]);
             s.input(c, b"destination\r");
             assert_eq!(
-                output(&mut s, &format!("{target} str name get"))?,
+                output(
+                    &mut s,
+                    &format!(
+                        "(sequence! \"name\" (get {} \"name\"))",
+                        crate::test_reference(&format!("{target}"))
+                    )
+                )?,
                 "destination\n",
                 "{open}"
             );
@@ -1500,7 +1509,14 @@ mod tests {
             );
             s.input(c, b"y");
             assert!(
-                output(&mut s, &format!("{target} str name get")).is_err(),
+                output(
+                    &mut s,
+                    &format!(
+                        "(sequence! \"name\" (get {} \"name\"))",
+                        crate::test_reference(&format!("{target}"))
+                    )
+                )
+                .is_err(),
                 "{open}"
             );
         }
@@ -1544,7 +1560,12 @@ mod tests {
             ("(list (list 7 \"seven\"))", "()", "(list -1)", false),
             ("(list (list 7 \"seven\"))", "()", "(list 1)", false),
         ] {
-            let code = format!("me str title {rows} {current} {selected} code 2drop end choose");
+            let code = format!(
+                "(sequence! (choose (me) \"title\" {} {} {} (code! (lambda! (argument-106 argument-107) #inert))) #inert)",
+                crate::test_reference(&format!("{rows}")),
+                crate::test_reference(&format!("{current}")),
+                crate::test_reference(&format!("{selected}"))
+            );
             assert_eq!(
                 output_as(&mut s, Some(c), &code).is_ok(),
                 accepted,

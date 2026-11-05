@@ -141,10 +141,7 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
         "(signal (pane {}) \"TERM\")",
         fux::script::quoted(&pane)
     )])?;
-    assert!(
-        answer.starts_with(&format!("{}", support::reference(&format!("{pane}:")))),
-        "{answer}"
-    );
+    assert!(answer.starts_with(&format!("{pane}:")), "{answer}");
     gone(front, "the foreground program, after signal TERM")?;
     assert!(alive(job), "signal ended a background job");
     assert!(alive(shell), "signal ended the shell");
@@ -275,11 +272,7 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     // End of input: cat exits, and its pane's process, its parent, reaps it.
     let gone = fuxix::process::Pid::from_raw(orphan).ok_or("a pid")?;
     let parent = |pid: &str| -> Result<Option<String>, String> {
-        let stat = std::fs::read_to_string(format!(
-            "{}",
-            support::reference(&format!("/proc/{pid}/stat"))
-        ))
-        .map_err(e)?;
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(e)?;
         let parent = stat
             .rsplit(')')
             .next()

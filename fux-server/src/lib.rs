@@ -137,3 +137,27 @@ mod test_picture {
         Ok(std::sync::Arc::clone(shown.picture))
     }
 }
+
+#[cfg(test)]
+fn test_reference(value: &str) -> String {
+    if value.starts_with('(') {
+        return value.to_owned();
+    }
+    if let Ok(number) = value.parse::<i64>() {
+        return number.to_string();
+    }
+    let constructor = match value.chars().next() {
+        Some('%') => "pane",
+        Some('@') => "tab",
+        Some('+') => "workspace",
+        Some('c')
+            if value
+                .get(1..)
+                .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit())) =>
+        {
+            "client"
+        }
+        _ => return fux::script::quoted(value),
+    };
+    format!("({constructor} {})", fux::script::quoted(value))
+}

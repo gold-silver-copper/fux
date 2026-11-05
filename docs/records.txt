@@ -4,61 +4,60 @@ answer[changed]: pane version respawns screen bells done ended status changed
 answer[closed]: pane status
 answer[ended]: pane version respawns screen bells done ended status changed exited signal
 answer[timed_out]: pane version respawns screen bells done ended status
-capture[client]: screen_cursor lines client screen_rows screen_cols
+capture[client]: screen-cursor lines client screen-rows screen-columns
 capture[pane].cell: width height
 capture[pane].last_output: start end
-capture[pane].launch.cwd: encoding text
-capture[pane].launch: choice cwd
-capture[pane].links[]: row col len uri
-capture[pane].lost: copies_cut copies_not_text pictures memory
-capture[pane].pictures[]: row col rows cropped cols width height
-capture[pane].program: pane generation argv pid state exited signal read_error input_unread foreground_group
-capture[pane].styles[][]: col len fg bg bold inverse hidden dim italic strikeout underline blink
-capture[pane]: screen_cursor lines styles changed_rows id tab version wrap_pending respawns screen bells done ended name label title rows cols row col program launch alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output notification truncated input_queued cursor above wrapped_rows links
-dictionary[]: name provenance effect documentation definition codes
+capture[pane].launch.directory: encoding text
+capture[pane].launch: choice directory
+capture[pane].links[]: row column length uri
+capture[pane].lost: copies-cut copies-not-text pictures memory
+capture[pane].pictures[]: row column rows cropped columns width height
+capture[pane].program: pane generation arguments process-id state exited signal read-error input-unread foreground-group
+capture[pane].styles[][]: column length fg bg bold inverse hidden dim italic strikeout underline blink
+capture[pane]: screen-cursor lines styles changed-rows id tab version wrap-pending respawns screen bells done ended name label title rows columns row column program launch alternate-screen mouse-mode mouse-encoding bracketed-paste focus-events application-cursor application-keypad keyboard-flags pictures lost cell cursor-visible history-bytes program-clipboard reflow alternate-scroll-lines picture-bytes history-lines command-running last-status last-output notification truncated input-queued cursor above wrapped-rows links
 events.events[].origin[client]: kind client
 events.events[].origin[outside]: kind
 events.events[].origin[pane]: kind pane generation
 events.events[].origin[program]: kind pane generation
 events.events[].origin[server]: kind
-events.events[][attached]: event pane tab workspace client kind read_only origin seq next
-events.events[][bell]: event pane tab workspace origin seq next
-events.events[][closed]: event pane tab workspace why origin seq next
-events.events[][closed]: event tab workspace why origin seq next
-events.events[][closed]: event workspace parent why origin seq next
-events.events[][command_started]: event pane tab workspace origin seq next
-events.events[][created]: event pane tab workspace role origin seq next
-events.events[][created]: event tab workspace name origin seq next
-events.events[][created]: event workspace parent name origin seq next
-events.events[][detached]: event pane tab workspace client why origin seq next
-events.events[][done]: event pane tab workspace status origin seq next
-events.events[][exited]: event pane tab workspace exited input_unread origin seq next
-events.events[][exited]: event pane tab workspace signal input_unread origin seq next
-events.events[][history_budget]: event pane tab workspace history_bytes origin seq next
-events.events[][history_cleared]: event pane tab workspace origin seq next
-events.events[][hung_up]: event pane tab workspace origin seq next
-events.events[][input]: event pane tab workspace generation kind bytes expected origin seq next
-events.events[][input]: event pane tab workspace generation kind bytes origin seq next
-events.events[][laid_out]: event tab workspace layout_revision origin seq next
-events.events[][moved]: event pane tab workspace from_tab from_workspace origin seq next
-events.events[][moved]: event workspace parent origin seq next
-events.events[][notification]: event pane tab workspace text truncated origin seq next
-events.events[][read_failed]: event pane tab workspace read_error origin seq next
-events.events[][renamed]: event pane tab workspace name origin seq next
-events.events[][renamed]: event tab workspace name origin seq next
-events.events[][renamed]: event workspace parent name origin seq next
-events.events[][reordered]: event tab workspace origin seq next
-events.events[][reordered]: event workspace parent origin seq next
-events.events[][resized]: event pane tab workspace cols rows origin seq next
-events.events[][respawned]: event pane tab workspace generation input_unread origin seq next
-events.events[][screen]: event pane tab workspace client kind origin seq next
-events.events[][shown]: event pane tab workspace client origin seq next
-events.events[][signalled]: event pane tab workspace generation signal origin seq next
-events.events[][stopped]: event reason origin seq next
-events.events[][title]: event pane tab workspace title truncated origin seq next
-events.events[][view_resized]: event pane tab workspace client cols rows origin seq next
-events.events[][zoomed]: event pane tab workspace origin seq next
-events.events[][zoomed]: event tab workspace pane origin seq next
+events.events[][attached]: event pane tab workspace client kind read-only origin sequence next
+events.events[][bell]: event pane tab workspace origin sequence next
+events.events[][closed]: event pane tab workspace why origin sequence next
+events.events[][closed]: event tab workspace why origin sequence next
+events.events[][closed]: event workspace parent why origin sequence next
+events.events[][command_started]: event pane tab workspace origin sequence next
+events.events[][created]: event pane tab workspace role origin sequence next
+events.events[][created]: event tab workspace name origin sequence next
+events.events[][created]: event workspace parent name origin sequence next
+events.events[][detached]: event pane tab workspace client why origin sequence next
+events.events[][done]: event pane tab workspace status origin sequence next
+events.events[][exited]: event pane tab workspace exited input-unread origin sequence next
+events.events[][exited]: event pane tab workspace signal input-unread origin sequence next
+events.events[][history_budget]: event pane tab workspace history-bytes origin sequence next
+events.events[][history_cleared]: event pane tab workspace origin sequence next
+events.events[][hung_up]: event pane tab workspace origin sequence next
+events.events[][input]: event pane tab workspace generation kind bytes expected origin sequence next
+events.events[][input]: event pane tab workspace generation kind bytes origin sequence next
+events.events[][laid_out]: event tab workspace layout-revision origin sequence next
+events.events[][moved]: event pane tab workspace from-tab from-workspace origin sequence next
+events.events[][moved]: event workspace parent origin sequence next
+events.events[][notification]: event pane tab workspace text truncated origin sequence next
+events.events[][read_failed]: event pane tab workspace read-error origin sequence next
+events.events[][renamed]: event pane tab workspace name origin sequence next
+events.events[][renamed]: event tab workspace name origin sequence next
+events.events[][renamed]: event workspace parent name origin sequence next
+events.events[][reordered]: event tab workspace origin sequence next
+events.events[][reordered]: event workspace parent origin sequence next
+events.events[][resized]: event pane tab workspace columns rows origin sequence next
+events.events[][respawned]: event pane tab workspace generation input-unread origin sequence next
+events.events[][screen]: event pane tab workspace client kind origin sequence next
+events.events[][shown]: event pane tab workspace client origin sequence next
+events.events[][signalled]: event pane tab workspace generation signal origin sequence next
+events.events[][stopped]: event reason origin sequence next
+events.events[][title]: event pane tab workspace title truncated origin sequence next
+events.events[][view_resized]: event pane tab workspace client columns rows origin sequence next
+events.events[][zoomed]: event pane tab workspace origin sequence next
+events.events[][zoomed]: event tab workspace pane origin sequence next
 events: events first next missed status reason
 keys.keymap[].keymap[].keymap[].keymap[][binding]: kind key code label group
 keys.keymap[].keymap[].keymap[][binding]: kind key code label group
@@ -70,52 +69,51 @@ keys.line[]: key action code label
 keys.list[]: key action code label
 keys: at keymap list line
 preferences[]: name value type
-snapshot.facts.clients[].choices[]: layout_revision stack current last
-snapshot.facts.clients[].output: graphics underline_styles clipboard kitty_flags_requested
+snapshot.facts.clients[].choices[]: layout-revision stack current last
+snapshot.facts.clients[].output: graphics underline-styles clipboard kitty-flags-requested
 snapshot.facts.clients[].seats[]: in current last
-snapshot.facts.clients[].terminal.cell_reported: width height
-snapshot.facts.clients[].terminal: sixel_reported cell_reported underline_styles_reported kitty_flags_reported
-snapshot.facts.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane seats choices opening
+snapshot.facts.clients[].terminal.cell-reported: width height
+snapshot.facts.clients[].terminal: sixel-reported cell-reported underline-styles-reported kitty-flags-reported
+snapshot.facts.clients[]: id kind terminal output read-only rows columns pane-rows pane-columns workspace tab pane seats choices opening
 snapshot.facts.panes[].cell: width height
-snapshot.facts.panes[].last_output: start end
-snapshot.facts.panes[].launch.cwd: encoding text
-snapshot.facts.panes[].launch: choice cwd
-snapshot.facts.panes[].lost: copies_cut copies_not_text pictures memory
-snapshot.facts.panes[].pictures[]: row col rows cropped cols width height
-snapshot.facts.panes[].program: pane generation argv pid state exited signal read_error input_unread foreground_group
-snapshot.facts.panes[]: id tab version respawns screen bells done ended name label title rows cols row col program launch alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output notification truncated input_queued
-snapshot.facts.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
+snapshot.facts.panes[].last-output: start end
+snapshot.facts.panes[].launch.directory: encoding text
+snapshot.facts.panes[].launch: choice directory
+snapshot.facts.panes[].lost: copies-cut copies-not-text pictures memory
+snapshot.facts.panes[].pictures[]: row column rows cropped columns width height
+snapshot.facts.panes[].program: pane generation arguments process-id state exited signal read-error input-unread foreground-group
+snapshot.facts.panes[]: id tab version respawns screen bells done ended name label title rows columns row column program launch alternate-screen mouse-mode mouse-encoding bracketed-paste focus-events application-cursor application-keypad keyboard-flags pictures lost cell cursor-visible history-bytes program-clipboard reflow alternate-scroll-lines picture-bytes history-lines command-running last-status last-output notification truncated input-queued
+snapshot.facts.tabs[]: id workspace name label fit columns rows host nodes layout-revision zoomed
 snapshot.facts.workspaces[]: id parent name label children
 snapshot.facts: run cursor scope projection workspaces tabs panes clients
-snapshot.recipe.clients[].choices[]: layout_revision stack current last
-snapshot.recipe.clients[].output: graphics underline_styles clipboard kitty_flags_requested
+snapshot.recipe.clients[].choices[]: layout-revision stack current last
+snapshot.recipe.clients[].output: graphics underline-styles clipboard kitty-flags-requested
 snapshot.recipe.clients[].seats[]: in current last
-snapshot.recipe.clients[].terminal.cell_reported: width height
-snapshot.recipe.clients[].terminal: sixel_reported cell_reported underline_styles_reported kitty_flags_reported
-snapshot.recipe.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane seats choices opening
+snapshot.recipe.clients[].terminal.cell-reported: width height
+snapshot.recipe.clients[].terminal: sixel-reported cell-reported underline-styles-reported kitty-flags-reported
+snapshot.recipe.clients[]: id kind terminal output read-only rows columns pane-rows pane-columns workspace tab pane seats choices opening
 snapshot.recipe.panes[].cell: width height
-snapshot.recipe.panes[].cwd.path: encoding text
-snapshot.recipe.panes[].cwd[failed]: status operation errno
-snapshot.recipe.panes[].cwd[known]: status path
-snapshot.recipe.panes[].last_output: start end
-snapshot.recipe.panes[].launch.cwd: encoding text
-snapshot.recipe.panes[].launch: choice cwd
-snapshot.recipe.panes[].lost: copies_cut copies_not_text pictures memory
-snapshot.recipe.panes[].pictures[]: row col rows cropped cols width height
-snapshot.recipe.panes[].program: pane generation argv pid state exited signal read_error input_unread foreground_group
-snapshot.recipe.panes[]: id tab version respawns screen bells done ended name label title rows cols row col program launch alt_screen mouse_mode mouse_encoding bracketed_paste focus_events app_cursor app_keypad keyboard_flags pictures lost cell cursor_visible history_bytes program_clipboard reflow alternate_scroll_lines picture_bytes history_lines command_running last_status last_output notification truncated input_queued cwd
-snapshot.recipe.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
+snapshot.recipe.panes[].directory.path: encoding text
+snapshot.recipe.panes[].directory[failed]: status operation errno
+snapshot.recipe.panes[].directory[known]: status path
+snapshot.recipe.panes[].last-output: start end
+snapshot.recipe.panes[].launch.directory: encoding text
+snapshot.recipe.panes[].launch: choice directory
+snapshot.recipe.panes[].lost: copies-cut copies-not-text pictures memory
+snapshot.recipe.panes[].pictures[]: row column rows cropped columns width height
+snapshot.recipe.panes[].program: pane generation arguments process-id state exited signal read-error input-unread foreground-group
+snapshot.recipe.panes[]: id tab version respawns screen bells done ended name label title rows columns row column program launch alternate-screen mouse-mode mouse-encoding bracketed-paste focus-events application-cursor application-keypad keyboard-flags pictures lost cell cursor-visible history-bytes program-clipboard reflow alternate-scroll-lines picture-bytes history-lines command-running last-status last-output notification truncated input-queued directory
+snapshot.recipe.tabs[]: id workspace name label fit columns rows host nodes layout-revision zoomed
 snapshot.recipe.workspaces[]: id parent name label children
 snapshot.recipe: run cursor scope projection workspaces tabs panes clients
-snapshot.topology.clients[].choices[]: layout_revision stack current last
-snapshot.topology.clients[].output: graphics underline_styles clipboard kitty_flags_requested
+snapshot.topology.clients[].choices[]: layout-revision stack current last
+snapshot.topology.clients[].output: graphics underline-styles clipboard kitty-flags-requested
 snapshot.topology.clients[].seats[]: in current last
-snapshot.topology.clients[].terminal.cell_reported: width height
-snapshot.topology.clients[].terminal: sixel_reported cell_reported underline_styles_reported kitty_flags_reported
-snapshot.topology.clients[]: id kind terminal output read_only rows cols pane_rows pane_cols workspace tab pane seats choices opening
-snapshot.topology.panes[]: id tab version respawns screen bells done ended name label title rows cols row col
-snapshot.topology.tabs[]: id workspace name label fit cols rows host nodes layout_revision zoomed
+snapshot.topology.clients[].terminal.cell-reported: width height
+snapshot.topology.clients[].terminal: sixel-reported cell-reported underline-styles-reported kitty-flags-reported
+snapshot.topology.clients[]: id kind terminal output read-only rows columns pane-rows pane-columns workspace tab pane seats choices opening
+snapshot.topology.panes[]: id tab version respawns screen bells done ended name label title rows columns row column
+snapshot.topology.tabs[]: id workspace name label fit columns rows host nodes layout-revision zoomed
 snapshot.topology.workspaces[]: id parent name label children
 snapshot.topology: run cursor scope projection workspaces tabs panes clients
-status: socket release protocol server_release server_protocol server_pid compatible
-word: name provenance effect documentation definition codes
+status: socket release protocol server-release server-protocol server-process-id compatible

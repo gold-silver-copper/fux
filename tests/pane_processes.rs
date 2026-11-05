@@ -98,11 +98,8 @@ fn connections(pid: i32) -> Vec<i32> {
     (children(pid, "__conn").into_iter())
         .filter(|conn| {
             taken.contains(conn)
-                || std::fs::read_link(format!(
-                    "{}",
-                    support::reference(&format!("/proc/{conn}/fd/1"))
-                ))
-                .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
+                || std::fs::read_link(format!("/proc/{conn}/fd/1"))
+                    .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
         })
         .collect()
 }
@@ -115,11 +112,7 @@ fn server_pid(server: &Server) -> Result<i32, String> {
 /// The most memory a process held at once, in KiB (Linux's `VmHWM`).
 #[cfg(target_os = "linux")]
 fn peak_kib(pid: i32) -> Result<u64, String> {
-    let status = std::fs::read_to_string(format!(
-        "{}",
-        support::reference(&format!("/proc/{pid}/status"))
-    ))
-    .map_err(e)?;
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(e)?;
     (status.lines())
         .find_map(|line| line.strip_prefix("VmHWM:"))
         .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
@@ -143,22 +136,14 @@ fn kept(server: &Server) -> PathBuf {
 /// (`prlimit`, util-linux): an allocation past it fails.
 #[cfg(target_os = "linux")]
 fn cap(pid: i32, more: u64) -> Outcome {
-    let status = std::fs::read_to_string(format!(
-        "{}",
-        support::reference(&format!("/proc/{pid}/status"))
-    ))
-    .map_err(e)?;
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(e)?;
     let kib: u64 = (status.lines())
         .find_map(|line| line.strip_prefix("VmSize:"))
         .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
         .ok_or("its size")?;
     let limit = kib.saturating_mul(1024).saturating_add(more).to_string();
     let out = std::process::Command::new("prlimit")
-        .args([
-            "--pid",
-            &pid.to_string(),
-            &format!("{}", support::reference(&format!("--as={limit}:{limit}"))),
-        ])
+        .args(["--pid", &pid.to_string(), &format!("--as={limit}:{limit}")])
         .output()
         .map_err(e)?;
     match out.status.success() {
@@ -456,11 +441,7 @@ fn taken_back_with_its_spare_stopped(full: bool) -> Outcome {
         }
     });
     let still = processes().into_iter().any(|(p, ..)| p == spare)
-        && std::fs::read_to_string(format!(
-            "{}",
-            support::reference(&format!("/proc/{spare}/stat"))
-        ))
-        .is_ok_and(|stat| {
+        && std::fs::read_to_string(format!("/proc/{spare}/stat")).is_ok_and(|stat| {
             stat.rsplit_once(") ")
                 .is_some_and(|(_, r)| r.starts_with('T'))
         });
@@ -801,7 +782,7 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
     assert!(
         server
             .ok(&["(listing (list-session))"])?
-            .contains(&format!("{}", support::reference(&format!("{shell}"))))
+            .contains(&format!("{shell}"))
     );
     std::fs::remove_dir(&blocked).map_err(e)?;
     server.type_line(&shell, "echo still-here")?;
@@ -931,17 +912,11 @@ fn a_takeover_keeps_ended_program_panes_by_their_role() -> Outcome {
     server.ok(&["(sequence! (start) #inert)"])?;
     let listing = server.ok(&["(listing (list-session))"])?;
     for kept in [&ended, &lost] {
-        assert!(
-            listing.contains(&format!("{}", support::reference(&format!("{kept}")))),
-            "{kept}: {listing}"
-        );
+        assert!(listing.contains(&format!("{kept}")), "{kept}: {listing}");
         let state = server.ok(&[&format!("(sequence! (define! value-1369 (pane {})) \"program\" (define! value-1371 (get value-1369 \"program\")) \"state\" (get value-1371 \"state\"))", fux::script::quoted(kept))])?;
         assert_eq!(state.trim(), "ended", "{kept}");
     }
-    assert!(
-        !listing.contains(&format!("{}", support::reference(&format!("{shell}")))),
-        "{listing}"
-    );
+    assert!(!listing.contains(&format!("{shell}")), "{listing}");
     Ok(())
 }
 

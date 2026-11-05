@@ -38,10 +38,7 @@ fn underline_styles_follow_terminal_capabilities() -> Outcome {
         client.keys(CURLY)?;
         wait_painted(
             &mut client,
-            &format!(
-                "{}",
-                support::reference(&format!("\x1b[0;{style};58:2::255:0:0mcurly"))
-            ),
+            &format!("\x1b[0;{style};58:2::255:0:0mcurly"),
             1,
         )?;
         if style == "4" {

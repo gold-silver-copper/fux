@@ -58,7 +58,7 @@ fn number(n: impl TryInto<i64>) -> Result<V, Failure> {
     n.try_into().map(Value::Int).map_err(|_| {
         Failure::new(
             Code::from(Raise::Range).into(),
-            "integer is past fuxth's range",
+            "integer is past the signed 64-bit range",
         )
     })
 }
@@ -479,6 +479,62 @@ pub(super) fn answer_field(
     }
 }
 
+/// Expose retained results as ordinary records without resolving their sources.
+pub(super) fn datum(value: &V) -> Result<V, Failure> {
+    match value {
+        Value::App(Fux::Opts(_)) => Err(Failure::new(
+            Code::Unused,
+            "act on the request before reading its data",
+        )),
+        Value::List(items) => Builder.list(items.items(), |_, item| datum(item)),
+        Value::App(Fux::Answer(answer, run)) => {
+            if let super::Answer::Panes(answers) = &**answer {
+                return Builder.list(answers, |_, answer| {
+                    datum(&Value::App(Fux::Answer(
+                        Rc::new(super::Answer::Pane(answer.clone())),
+                        *run,
+                    )))
+                });
+            }
+            let mut fields = Vec::new();
+            let mut add = |name: &str| -> Result<(), Failure> {
+                match answer_field(answer, *run, name) {
+                    Ok(value) => fields.push((name.to_owned(), value)),
+                    Err(error) if error.code == Code::NoField => (),
+                    Err(error) => return Err(error),
+                }
+                Ok(())
+            };
+            match &**answer {
+                super::Answer::Pane(_) => {
+                    for (_, name) in AnswerField::ALL {
+                        add(name)?;
+                    }
+                }
+                super::Answer::Capture(capture) => {
+                    for (_, name) in CapturedField::ALL {
+                        add(name)?;
+                    }
+                    if let fux_wire::answer::Of::Pane { pane, read, .. } = &capture.of {
+                        for (name, _) in pane.fields() {
+                            add(name)?;
+                        }
+                        for (name, _) in read {
+                            add(name)?;
+                        }
+                    }
+                    for (_, name) in CaptureField::ALL {
+                        add(name)?;
+                    }
+                }
+                super::Answer::Panes(_) => (),
+            }
+            Builder.finish(fields, *run)
+        }
+        value => Ok(value.clone()),
+    }
+}
+
 /// A capture's own field, if it has it: `styles` only if read with them,
 /// `changed_rows` only if read `since` a version.
 fn capture_field(
@@ -688,4 +744,76 @@ mod tests {
         };
         assert!(within.first().is_some_and(|v| from_json(v).is_ok()));
     }
+}
+
+/// Write retained native data with temporary storage bounded by one captured row.
+pub(super) fn write_data(value: &V, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+    let Value::App(Fux::Answer(answer, run)) = value else {
+        return value.write_data(out);
+    };
+    let super::Answer::Capture(capture) = &**answer else {
+        return datum(value).map_err(|_| std::fmt::Error)?.write_data(out);
+    };
+    struct Escaped<'a>(&'a mut dyn std::fmt::Write);
+    impl std::fmt::Write for Escaped<'_> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            super::value::write_escaped(text, self.0)
+        }
+    }
+    out.write_char('(')?;
+    let mut started = false;
+    let mut field = |name: &str, value: V| -> std::fmt::Result {
+        if std::mem::replace(&mut started, true) {
+            out.write_char(' ')?;
+        }
+        write!(out, "({} ", super::field_name(name))?;
+        value.write_data(out)?;
+        out.write_char(')')
+    };
+    let mut names: Vec<_> = CapturedField::ALL.iter().map(|(_, name)| *name).collect();
+    if let fux_wire::answer::Of::Pane { pane, read, .. } = &capture.of {
+        names.extend(pane.fields().map(|(name, _)| name));
+        names.extend(read.iter().map(|(name, _)| name.as_str()));
+    }
+    names.push("screen_cursor");
+    for name in names {
+        match answer_field(answer, *run, name) {
+            Ok(value) => field(name, value)?,
+            Err(error) if error.code == Code::NoField => (),
+            Err(_) => return Err(std::fmt::Error),
+        }
+    }
+    out.write_str(" (lines (")?;
+    for (i, line) in capture.lines.iter().enumerate() {
+        if i > 0 {
+            out.write_char(' ')?;
+        }
+        out.write_char('"')?;
+        capture.write_line(&mut Escaped(out), line, false, &mut Vec::new())?;
+        out.write_char('"')?;
+    }
+    out.write_str("))")?;
+    if let Some(rows) = &capture.changed_rows {
+        out.write_str(" (changed-rows (")?;
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                out.write_char(' ')?;
+            }
+            write!(out, "{row}")?;
+        }
+        out.write_str("))")?;
+    }
+    if capture.styled {
+        out.write_str(" (styles (")?;
+        for (i, line) in capture.lines.iter().enumerate() {
+            if i > 0 {
+                out.write_char(' ')?;
+            }
+            styles(&mut Builder, capture, line)
+                .map_err(|_| std::fmt::Error)?
+                .write_data(out)?;
+        }
+        out.write_str("))")?;
+    }
+    out.write_char(')')
 }

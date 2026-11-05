@@ -60,7 +60,7 @@ mod tests {
     }
 
     /// docs/codes.txt lists every error code with its exit status,
-    /// whether a `try` catches it, and its number in Forth's table.
+    /// whether it can be raised by native operations.
     #[test]
     fn codes_list_is_current() -> Result<(), String> {
         let lines = crate::code::Code::all().map(|code| {
@@ -68,9 +68,7 @@ mod tests {
             format!("{code} {} {caught}", code.status())
         });
         let head = format!(
-            "Every error code, its exit status, whether `try` catches it, and its \
-             number in Forth's table of `throw` codes, if it has one (fux-wire's code \
-             table, then fuxth's). Generated: FUX_BLESS=1 {TEST}"
+            "Every native error kind, its exit status, and whether it can be raised. Generated: FUX_BLESS=1 {TEST}"
         );
         check("codes.txt", &file(&head, lines), TEST)
     }

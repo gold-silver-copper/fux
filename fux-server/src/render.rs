@@ -2611,7 +2611,10 @@ mod tests {
             "(sequence! (new-tab (program (directory (in (options) \"agent\") \"/\") \"x\")) #inert)",
         )?;
         let id = s.focused(c).ok_or("the pane")?;
-        let respawn = format!("{id} kill-first respawn");
+        let respawn = format!(
+            "(respawn (kill-first {}))",
+            crate::test_reference(&format!("{id}"))
+        );
         // Both parsers have gone through the same sizing and host setup.
         run(&mut s, &respawn)?;
         s.out(id, b"A");

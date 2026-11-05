@@ -1055,10 +1055,8 @@ fn a_first_shell_starts_in_the_invocation_directory() -> Outcome {
     .into_iter()
     .enumerate()
     {
-        let socket = dir
-            .join(format!("{}", support::reference(&format!("s{i}"))))
-            .join("fux.sock");
-        let marker = dir.join(format!("{}", support::reference(&format!("cwd{i}"))));
+        let socket = dir.join(format!("s{i}")).join("fux.sock");
+        let marker = dir.join(format!("cwd{i}"));
         let mut terminal = Terminal::start(10, 40, &[FUX], |command| {
             command
                 .current_dir(&dir)
@@ -1093,9 +1091,7 @@ fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
     let server = Server::start("")?;
     let before = server.ok(&["(listing (list-session))"])?;
     for (i, given) in ["", "str . cwd", "str tmp cwd"].into_iter().enumerate() {
-        let gone = server
-            .dir
-            .join(format!("{}", support::reference(&format!("gone-{i}"))));
+        let gone = server.dir.join(format!("gone-{i}"));
         std::fs::create_dir_all(&gone).map_err(e)?;
         let script =
             format!(r#"cd "$1" && rmdir "$1" && fux opts str main in 80 24 size {given} new-tab"#);
@@ -1149,7 +1145,7 @@ fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
     let rounds = 400;
     let mut expected = String::new();
     for i in 0..rounds {
-        let line = format!("{}", support::reference(&format!("line-{i}")));
+        let line = format!("line-{i}");
         // A line in two writes, with a resize, and so a SIGWINCH, between
         // them and after them.
         let (head, tail) = line.split_at_checked(3).ok_or("a line")?;

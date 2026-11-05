@@ -7,8 +7,8 @@ read with `(arguments)`. The config, keys, prompt and saved sessions use the sam
 Use a private server when driving programs beside another person:
 
 ```sh
-export TMPDIR="$HOME/.cache/claude-tmp/fux-example"
-mkdir -p "$TMPDIR"
+export TMPDIR="${TMPDIR:-$HOME/.cache/claude-tmp}/fux-example-$$"
+mkdir -p -m 700 "$TMPDIR"
 export FUX_SOCKET="$TMPDIR/fux.sock"
 fux '(start)'
 ```
@@ -22,6 +22,11 @@ fux '(line (pane "shell") "echo result=$((6*7))")'
 fux '(shows (pane "shell") "result=42" 10)'
 fux '(capture (pane "shell"))'
 fux '(get (pane "shell") "columns")'
+```
+
+Close the workspace when finished:
+
+```sh
 fux '(kill (workspace "jobs"))'
 ```
 

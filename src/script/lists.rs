@@ -1,9 +1,9 @@
 //! `docs/words.txt` and `docs/records.txt`, written from fux's word table
 //! and the libraries' definitions, and from records the record builders
 //! make; a test fails while a list is stale (`fux_wire::lists`).
+use super::Value;
 use super::{Fux, Word, record};
 use fux_wire::lists::{check, file};
-use fuxth::Value;
 
 const TEST: &str = "cargo test -p fux --lib lists";
 
@@ -14,15 +14,21 @@ fn words_list_is_current() -> Result<(), String> {
     let fuxs = Word::ALL.iter().map(|w| (w.row().name, w.row().effect));
     let mut lines = vec!["## fux's words".to_owned()];
     lines.extend(fuxs.map(|(name, effect)| format!("{name} ( {effect} )")));
-    lines.push("## the libraries' words, written in fuxth".to_owned());
-    let docs = super::docs();
-    lines.extend(docs.iter().map(|d| format!("{} ( {} )", d.name, d.effect)));
-    lines.push("## the core's words".to_owned());
-    let core = fuxth::Builtin::ALL.into_iter().filter(|b| !b.hosted());
-    lines.extend(core.map(|b| match b.immediate() {
-        true => format!("{} ( {} ) immediate", b.name(), b.effect()),
-        false => format!("{} ( {} )", b.name(), b.effect()),
-    }));
+    lines.push("## the libraries' operations, written in grift".to_owned());
+    let docs = super::docs().map_err(|e| e.to_string())?;
+    lines.extend(docs.iter().map(|d| format!("{} {}", d.name, d.parameters)));
+    lines.push("## grift's standard names".to_owned());
+    let grift: grift::Grift = grift::Grift::new().map_err(|e| format!("{e:?}"))?;
+    let names = grift
+        .names(&grift.top_level())
+        .map_err(|e| format!("{e:?}"))?;
+    let mut names = names
+        .into_iter()
+        .map(|name| grift.symbol_name(&name).map(str::to_owned))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("{e:?}"))?;
+    names.sort();
+    lines.extend(names);
     let head = format!(
         "Every word a fux program may use, with its stack effect as `fux help WORD` \
          shows it. Generated: FUX_BLESS=1 {TEST}"
@@ -71,18 +77,15 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
                     Some((name, value))
                 })
                 .collect();
-            let names: Vec<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
+            let names_owned: Vec<_> = fields
+                .iter()
+                .map(|(name, _)| super::field_name(name))
+                .collect();
+            let names: Vec<&str> = names_owned.iter().map(String::as_str).collect();
             line(path, &names);
             fields
         }
-        Value::Int(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_) => return,
+        _ => return,
     };
     for (key, value) in &fields {
         records(&format!("{path}.{key}"), value, out);
@@ -153,8 +156,10 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     session.output(pane, shown.as_bytes(), now);
     let run = session.run;
     let mut draft = super::default_state()?.draft();
-    let dir = fux_wire::words::quote(env!("CARGO_MANIFEST_DIR"));
-    let split = format!("%1 str vertical axis str {dir} cwd split %1 str {dir} cwd stack");
+    let dir = super::quoted(env!("CARGO_MANIFEST_DIR"));
+    let split = format!(
+        "(split (directory (axis (pane 1) \"vertical\") {dir})) (stack (directory (pane 1) {dir}))"
+    );
     let asks = &mut InProcess(&mut session);
     evaluate(&split, Some(&mut draft), asks, &mut Vec::new())?;
     let mut lines = Vec::new();
@@ -202,13 +207,19 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     let held = [
         (
             "capture[pane]",
-            format!("%1 styles str {before} since capture"),
+            format!(
+                "(capture (since (styles (pane 1)) {}))",
+                super::quoted(&before.to_string())
+            ),
         ),
-        ("capture[client]", format!("str {client} client capture")),
+        (
+            "capture[client]",
+            format!("(capture (client {}))", super::quoted(&client.to_string())),
+        ),
     ];
     let held = held.into_iter().chain([
-        ("word", "str dup word".to_owned()),
-        ("dictionary", "dictionary".to_owned()),
+        ("word", "(word \"first\")".to_owned()),
+        ("dictionary", "(dictionary)".to_owned()),
     ]);
     for (path, code) in held {
         for value in evaluate(&code, None, asks, &mut Vec::new())? {
