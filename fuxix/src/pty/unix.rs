@@ -738,7 +738,9 @@ mod tests {
     #[test]
     #[ignore = "opens thousands of PTYs on every core: cargo test -p fuxix -- --ignored"]
     fn concurrent_opens_across_processes_never_fail() -> std::result::Result<(), String> {
-        const NAME: &str = "pty::tests::concurrent_opens_across_processes_never_fail";
+        // Its path as libtest names it: this module's, without the crate.
+        let module = module_path!().split_once("::").map_or("", |(_, path)| path);
+        let name = format!("{module}::concurrent_opens_across_processes_never_fail");
         if let Some(rounds) = std::env::var_os(STRESS_WORKER) {
             let rounds: usize = rounds
                 .to_str()
@@ -764,7 +766,7 @@ mod tests {
             .map(|_| {
                 std::process::Command::new(&exe)
                     .args([
-                        NAME,
+                        name.as_str(),
                         "--exact",
                         "--include-ignored",
                         "--nocapture",
