@@ -9,6 +9,12 @@
 //! - The signals reach what D-136 says, on a shell pane and a program
 //!   pane: INT and QUIT as keys, KILL of a shell's job, `only_shell`,
 //!   TERM ending a program's job with fux's own code, HUP refused.
+//! - A pane's own process killed outright: its server ends the program
+//!   through its copy of the program's handle, and tells its real end
+//!   (D-134).
+//! - With no pinned ConPTY to be had, Windows' built-in one runs a
+//!   program to its end, its exit told, and the server says once what the
+//!   built-in loses (D-130).
 //!
 //! One thread polls at a time in a process (WINDOWS.md, PR 4): the tests
 //! take turns.
@@ -92,7 +98,7 @@ fn serve(socket: &Path, log: &Path) -> Result<Served, String> {
         .ok_or("the socket's folder")?;
     let conpty = home.join("fux").join("conpty");
     if let Some(package) = std::env::var_os("FUXIX_CONPTY_PACKAGE")
-        && !conpty.join(PACKAGE).exists()
+        && !conpty.exists()
     {
         std::fs::create_dir_all(&conpty).map_err(text)?;
         std::fs::copy(package, conpty.join(PACKAGE)).map_err(text)?;
@@ -355,14 +361,12 @@ fn a_new_server_takes_the_run_back_and_drives_its_live_panes() -> Outcome {
     })?;
     first.child.kill().map_err(text)?;
     first.child.wait().map_err(text)?;
-    eprintln!("killed server {}", first.child.id());
-    let before = screen_beats(&socket, beat);
-    eprintln!("beats before the takeover: {before:?} (none: no server)");
+    say(&format!("killed server {}", first.child.id()));
     let second = serve(&socket, &dir.join("second.log"))?;
     let taken = (|| -> Outcome {
         let seen = beats(&screen(&socket, beat)?);
         shows(&socket, beat, Duration::from_secs(20), |s| beats(s) > seen)?;
-        eprintln!("the program kept running: beat {seen} and on");
+        say(&format!("the program kept running: beat {seen} and on"));
         typed(&socket, shell, "echo after-takeover\r")?;
         shows(&socket, shell, Duration::from_secs(20), |s| {
             s.lines().any(|line| line.trim() == "after-takeover")
@@ -375,7 +379,7 @@ fn a_new_server_takes_the_run_back_and_drives_its_live_panes() -> Outcome {
             s.lines()
                 .any(|l| l.contains("Columns:") && l.contains("100"))
         })?;
-        eprintln!("typed and resized after the takeover");
+        say("typed and resized after the takeover");
         for pane in [beat, shell] {
             let kill = Command::Kill {
                 target: Some(AnyRef::Pane(pane)),
@@ -386,7 +390,7 @@ fn a_new_server_takes_the_run_back_and_drives_its_live_panes() -> Outcome {
     })();
     let log = second.log();
     let stopped = stop(&socket);
-    eprintln!("the second server's log:\n{log}");
+    say(&format!("the second server's log:\n{log}"));
     taken?;
     stopped
 }
@@ -396,10 +400,6 @@ fn beats(screen: &str) -> u64 {
     (screen.lines().rev())
         .find_map(|line| line.trim().strip_prefix("beat ")?.trim().parse().ok())
         .unwrap_or(0)
-}
-
-fn screen_beats(socket: &Path, pane: PaneId) -> Option<u64> {
-    screen(socket, pane).ok().map(|s| beats(&s))
 }
 
 /// D-136 on a shell pane and a program pane: INT and QUIT reach the
@@ -422,14 +422,14 @@ fn signals_reach_what_d136_says() -> Outcome {
         shows(&socket, shell, long, |s| s.contains("127.0.0.1:"))?;
         assert_eq!(signal(&socket, shell, Signal::Quit)?, None);
         shows(&socket, shell, long, |s| s.contains("Ping statistics"))?;
-        eprintln!("QUIT reached ping as Ctrl-Break");
+        say("QUIT reached ping as Ctrl-Break");
         // INT: Ctrl-C ends ping; the shell answers again.
         assert_eq!(signal(&socket, shell, Signal::Int)?, None);
         typed(&socket, shell, "echo after-int\r")?;
         shows(&socket, shell, long, |s| {
             s.lines().any(|l| l.trim() == "after-int")
         })?;
-        eprintln!("INT ended ping, and the shell answers");
+        say("INT ended ping, and the shell answers");
         // KILL: what the shell started on its console ends; the shell
         // lives. Then nothing is left beside it.
         typed(&socket, shell, "start /b ping -n 60 127.0.0.1 >nul\r")?;
@@ -445,7 +445,7 @@ fn signals_reach_what_d136_says() -> Outcome {
         shows(&socket, shell, long, |s| {
             s.lines().any(|l| l.trim() == "after-kill")
         })?;
-        eprintln!("KILL ended the shell's job, then said only_shell");
+        say("KILL ended the shell's job, then said only_shell");
         // HUP has no counterpart: refused.
         let hup = signal(&socket, shell, Signal::Hup)?;
         assert_eq!(
@@ -468,13 +468,148 @@ fn signals_reach_what_d136_says() -> Outcome {
         };
         let killed = fuxix::process::KILLED.to_string();
         assert!(ended.contains(&killed), "{ended}");
-        eprintln!("TERM ended the program pane's job: {ended}");
+        say(&format!("TERM ended the program pane's job: {ended}"));
         Ok(())
     })();
     let log = served.log();
     let stopped = stop(&socket);
     if checked.is_err() {
-        eprintln!("the server's log:\n{log}");
+        say(&format!("the server's log:\n{log}"));
+    }
+    checked?;
+    stopped
+}
+
+/// The journal's events so far, each as its JSON, a line each.
+fn journal(socket: &Path) -> Result<String, String> {
+    let request = Request::NextEvents {
+        scope: fux_wire::inspect::Scope::All,
+        from: None,
+        timeout: fux_wire::command::Limit::from_secs(0),
+    };
+    match ask(socket, request, ASK)?.response {
+        Response::Returned(Body::Events(batch)) => Ok((batch.events.iter())
+            .map(|item| item.data.render())
+            .collect::<Vec<_>>()
+            .join("\n")),
+        other @ (Response::Answered(_) | Response::Returned(_) | Response::Failed { .. }) => {
+            Err(format!("next-events answered {other:?}"))
+        }
+    }
+}
+
+/// Waits till the journal holds what `holds` accepts.
+fn journaled(
+    socket: &Path,
+    wait: Duration,
+    holds: impl Fn(&str) -> bool,
+) -> Result<String, String> {
+    let deadline = after(wait)?;
+    loop {
+        let now = journal(socket)?;
+        if holds(&now) {
+            return Ok(now);
+        }
+        if Instant::now() > deadline {
+            return Err(format!("the journal did not hold it in {wait:?}:\n{now}"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A pane's own process killed outright (a crash): the server, holding a
+/// copy of its program's handle (D-134), ends the program if the grace
+/// runs out and tells its real end, as no one else can now.
+#[test]
+fn a_crashed_panes_program_is_ended_and_its_end_told() -> Outcome {
+    let _turn = turn();
+    let dir = scratch("crash")?;
+    let socket = dir.join("fux").join("s.sock");
+    let served = serve(&socket, &dir.join("server.log"))?;
+    let checked = (|| -> Outcome {
+        let ping = Start::Program(program(&["ping.exe", "-n", "60", "127.0.0.1"])?);
+        let ping = new_tab(&socket, ping)?;
+        shows(&socket, ping, Duration::from_secs(20), |s| {
+            s.contains("127.0.0.1:")
+        })?;
+        let marker = dir
+            .join("fux")
+            .join("s.sock.panes")
+            .join(ping.number().to_string());
+        let (pid, _) = fux_server::socket::reach_named(&marker).ok_or("its pane's process")?;
+        let pid = pid.ok_or("its pane's pid")?;
+        let killed = Std::new("taskkill.exe")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .status()
+            .map_err(text)?;
+        if !killed.success() {
+            return Err(format!("taskkill of pane process {pid}: {killed}"));
+        }
+        say(&format!("killed {ping}'s own process {pid}"));
+        // Its console closed with it, which ends ping with Ctrl-C's code
+        // (0xC000013A), unless the grace ran out first and the server
+        // killed it with fux's own: either is its real end, which only the
+        // server's copy of its handle tells (without it the end is lost).
+        let codes = [fuxix::process::KILLED, 0xC000_013A_u32.cast_signed()];
+        let exited = |line: &str| {
+            line.contains("exited") && codes.iter().any(|code| line.contains(&code.to_string()))
+        };
+        let told = journaled(&socket, Duration::from_secs(20), |j| j.lines().any(exited))?;
+        let line = told.lines().find(|line| exited(line)).unwrap_or_default();
+        say(&format!("its program's real end was told: {line}"));
+        Ok(())
+    })();
+    let log = served.log();
+    let stopped = stop(&socket);
+    if checked.is_err() {
+        say(&format!("the server's log:\n{log}"));
+    }
+    checked?;
+    stopped
+}
+
+/// No pinned ConPTY to be had (its folder can't be made): Windows'
+/// built-in one runs a program to its end, its exit status told, and the
+/// server says once, in its log, what the built-in loses.
+#[test]
+fn the_builtin_conpty_runs_a_program_to_its_end() -> Outcome {
+    let _turn = turn();
+    let dir = scratch("builtin")?;
+    let socket = dir.join("fux").join("s.sock");
+    std::fs::create_dir_all(dir.join("fux")).map_err(text)?;
+    // A file where the ConPTY's folder would be: nothing is fetched.
+    std::fs::write(dir.join("fux").join("conpty"), b"").map_err(text)?;
+    let served = serve(&socket, &dir.join("server.log"))?;
+    let checked = (|| -> Outcome {
+        let said = served.log();
+        let notices = said.matches("built-in ConPTY").count();
+        if notices != 1 {
+            return Err(format!("the built-in said {notices} times:\n{said}"));
+        }
+        let echo = Start::Program(program(&[CMD, "/q", "/c", "echo built-in-ran & exit 3"])?);
+        let echo = new_tab(&socket, echo)?;
+        shows(&socket, echo, Duration::from_secs(20), |s| {
+            s.contains("built-in-ran")
+        })?;
+        let deadline = after(Duration::from_secs(20))?;
+        let ended = loop {
+            match signal(&socket, echo, Signal::Int)? {
+                Some((_, message)) if message.contains("exited") => break message,
+                _ if Instant::now() > deadline => return Err("its end was never told".to_owned()),
+                _ => std::thread::sleep(Duration::from_millis(100)),
+            }
+        };
+        if !ended.ends_with("exited 3") {
+            return Err(format!("its end: {ended}"));
+        }
+        say(&format!("the built-in ran it to its end: {ended}"));
+        Ok(())
+    })();
+    let log = served.log();
+    let stopped = stop(&socket);
+    if checked.is_err() {
+        say(&format!("the server's log:\n{log}"));
     }
     checked?;
     stopped

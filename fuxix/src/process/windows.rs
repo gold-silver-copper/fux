@@ -7,7 +7,9 @@ use std::num::NonZeroU32;
 use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
 
 mod children;
+mod cwd;
 pub use children::*;
+pub use cwd::cwd_observed;
 
 /// A process ID: a nonzero `DWORD`. 0 is the System Idle Process, which
 /// fux never names.
@@ -512,16 +514,6 @@ pub fn delivery(signal: super::Signal, shell: bool) -> super::Delivery {
         (Signal::Term | Signal::Kill, false) => Delivery::Job,
         _ => Delivery::Unsupported,
     }
-}
-
-/// Where `pid` works is not read on Windows yet: [`Errno::NOSYS`], so a
-/// split there is refused, as Unix refuses one whose directory it can't
-/// read (D-137).
-pub fn cwd_observed<A: crate::Allocation>(
-    _pid: Pid,
-    _budget: &mut A,
-) -> std::result::Result<Result<Option<std::path::PathBuf>>, A::Error> {
-    Ok(Err(Errno::NOSYS))
 }
 
 /// Its leader's process handle: to [`watch`] it.

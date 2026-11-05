@@ -261,6 +261,33 @@ fn held(path: &Path, pin: &str) -> Result<File, Error> {
     Ok(file)
 }
 
+/// The package at `package` read once (32 MiB at most), checked, and
+/// written to a new file in `stage`, fux's own fresh folder: that copy.
+fn private_copy(package: &Path, stage: &Path) -> Result<PathBuf, Error> {
+    use std::io::Write;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+        .open(package)
+        .map_err(at("opening the ConPTY package"))
+        .map_err(|e| named(e, package))?;
+    let mut bytes = Vec::new();
+    file.take(32 << 20)
+        .read_to_end(&mut bytes)
+        .map_err(at("reading the ConPTY package"))?;
+    check(&bytes, PACKAGE_SHA256, package)?;
+    let copy = stage.join("package.checked");
+    let mut written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&copy)
+        .map_err(at("copying the ConPTY package"))?;
+    written
+        .write_all(&bytes)
+        .map_err(at("copying the ConPTY package"))?;
+    Ok(copy)
+}
+
 /// `error`, saying which file.
 fn named(error: Error, path: &Path) -> Error {
     Error {
@@ -399,11 +426,14 @@ fn unpack(dir: &Path, stage: &Path, arch: &Arch) -> Result<PathBuf, Error> {
             package
         }
     };
-    // Held until tar has read it: the archive tar parses is the one hashed.
-    let held_package = held(&package, PACKAGE_SHA256)?;
+    // tar reads a private copy written from the very bytes hashed, held
+    // unwritable till it has read it: a package path re-pointed after the
+    // hash (a link put in its place) is never read again.
+    let checked = private_copy(&package, stage)?;
+    let held_package = held(&checked, PACKAGE_SHA256)?;
     let mut tar = std::process::Command::new(system.join("tar.exe"));
     tar.arg("-xf")
-        .arg(&package)
+        .arg(&checked)
         .arg("-C")
         .arg(stage)
         .args([arch.dll.0, arch.console.0]);
