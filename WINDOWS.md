@@ -163,8 +163,8 @@ programs built on the libraries (below) are the acceptance test for the whole po
   must keep polling its listener and hand such a client to a `__conn taken`.
 - `socket::connect` checks the server's user before returning, and fails with `Errno::ACCES` (the
   descriptor refused it, or the server is another user or elevation) or `Errno::AGAIN` (every
-  instance busy). A connection's server pid is the instance's maker, so a client still reads the
-  server's pid after a handoff, as on Unix.
+  instance still busy after a second of `WaitNamedPipeW`). A connection's server pid is the
+  instance's maker, so a client still reads the server's pid after a handoff, as on Unix.
 - Not tested on CI: an elevated and a normal process of the same user (the runner's account has no
   split token); the check is the same comparison the second-user test exercises.
 - A handed instance goes through std's `Stdio::from`: std (1.95, `sys/process/windows.rs`) makes the
