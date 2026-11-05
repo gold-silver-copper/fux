@@ -177,8 +177,17 @@ impl Op {
     }
 
     /// Starts a read into the buffer, emptied. One that finishes at once
-    /// leaves its bytes there; one that fails at once, its error.
+    /// leaves its bytes there; one that fails at once, its error. One that
+    /// finishes at once with nothing (a writer wrote nothing) queues no
+    /// packet, so it is started again: else nothing is in flight to tell
+    /// what comes next.
     fn read(self: &Arc<Self>, handle: &OwnedHandle, state: &mut State) {
+        while self.read_once(handle, state) {}
+    }
+
+    /// One read call: whether it finished at once with nothing and no
+    /// error, to be made again.
+    fn read_once(self: &Arc<Self>, handle: &OwnedHandle, state: &mut State) -> bool {
         let overlapped = self.fresh(state);
         let buffer = self.bytes(state);
         let (into, room) = (
@@ -194,11 +203,12 @@ impl Op {
         let errno = (done == 0).then(Errno::last);
         if errno == Some(Errno::from_code(ERROR_IO_PENDING)) {
             state.pending = true;
-            return;
+            return false;
         }
         Op::reclaim(lent);
         (state.start, state.end) = (0, usize::try_from(got).unwrap_or(0));
         state.failed = errno;
+        got == 0 && errno.is_none()
     }
 
     /// Writes `start..end` of the buffer: at once as far as the pipe takes

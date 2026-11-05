@@ -191,15 +191,9 @@ fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> 
         for fd in fds.iter() {
             fd.source.arm(fd.events);
         }
-        // What finished already, taken in without waiting.
-        let mut taken = 0usize;
-        loop {
-            let got = take(port, 0)?;
-            taken = taken.saturating_add(got);
-            if got < PACKETS {
-                break;
-            }
-        }
+        // What finished already, taken in without waiting: one batch, so
+        // that packets that keep coming can't keep a poll from looking.
+        let taken = take(port, 0)?;
         let mut ready = 0usize;
         for fd in fds.iter_mut() {
             fd.revents = fd.source.ready(fd.events);
@@ -208,6 +202,12 @@ fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> 
         if ready > 0 {
             return Ok(ready);
         }
+        // Looked at after every batch: wakes for others can't hold off
+        // the timeout.
+        let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        if left.is_some_and(|left| left.is_zero()) {
+            return Ok(0);
+        }
         // A packet taken may have left a source with nothing in flight
         // and nothing to tell (a read of no bytes): it is armed again,
         // and looked at again, before any wait, which nothing else would
@@ -215,11 +215,7 @@ fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> 
         if taken > 0 {
             continue;
         }
-        if let Some(deadline) = deadline {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Ok(0);
-            }
+        if let Some(left) = left {
             timer()?.set(left)?;
             *timed = true;
         }
