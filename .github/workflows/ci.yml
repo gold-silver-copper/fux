@@ -351,8 +351,9 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: |
-          $pw = 'Fx!' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+          $pw = 'Fx!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
           "::add-mask::$pw"
+          # 13 characters: from 15 on, net user asks a question no one answers.
           net user fuxixother $pw /add | Out-Null
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Set-Service seclogon -StartupType Manual

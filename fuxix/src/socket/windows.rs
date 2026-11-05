@@ -55,7 +55,7 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeInfo,
     GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_SERVER_END,
-    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
@@ -241,38 +241,55 @@ pub fn peer(pipe: impl AsHandle) -> Result<Peer> {
 /// Connects to the pipe `name`, as a stream, once its server is found to
 /// be this process's user ([`peer`]); one that isn't is refused with
 /// [`Errno::ACCES`] before anything is sent, as is a pipe the server's
-/// descriptor keeps this user out of. With every instance taken it fails
-/// with [`Errno::AGAIN`], as a full listener's connect does on Unix; with
-/// no such pipe, with `ERROR_FILE_NOT_FOUND`. The server may only identify
-/// the client, never act as it.
+/// descriptor keeps this user out of. With every instance taken (a server
+/// that hasn't yet made the next) it waits for one, a second at most, then
+/// fails with [`Errno::AGAIN`], as a full listener's connect does on Unix;
+/// with no such pipe, with `ERROR_FILE_NOT_FOUND`. The server may only
+/// identify the client, never act as it.
 pub fn connect(name: &str) -> Result<Stream> {
     let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
-    let flags = FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
-    // SAFETY: `wide` is NUL-ended; opened for reading and writing, not
-    // shared, not inherited.
-    let raw = unsafe {
-        CreateFileW(
-            wide.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            flags,
-            std::ptr::null_mut(),
-        )
-    };
-    if raw == INVALID_HANDLE_VALUE {
-        return Err(match Errno::last() {
-            errno if errno == Errno::from_code(ERROR_PIPE_BUSY) => Errno::AGAIN,
-            errno => errno,
-        });
-    }
-    // SAFETY: `raw` was just opened, and nothing else owns it.
-    let pipe = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let pipe = open(&wide)?;
     if !peer(&pipe)?.user.is_current() {
         return Err(Errno::ACCES);
     }
     Stream::new(pipe)
+}
+
+/// Opens the pipe `name` (NUL-ended), waiting up to `BUSY` ms in all for an
+/// instance while every one is taken.
+fn open(name: &[u16]) -> Result<OwnedHandle> {
+    const BUSY: u32 = 1000;
+    let flags = FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+    let busy = Errno::from_code(ERROR_PIPE_BUSY);
+    let start = std::time::Instant::now();
+    loop {
+        // SAFETY: `name` is NUL-ended; opened for reading and writing, not
+        // shared, not inherited.
+        let raw = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                flags,
+                std::ptr::null_mut(),
+            )
+        };
+        if raw != INVALID_HANDLE_VALUE {
+            // SAFETY: `raw` was just opened, and nothing else owns it.
+            return Ok(unsafe { OwnedHandle::from_raw_handle(raw) });
+        }
+        let errno = Errno::last();
+        let gone = u32::try_from(start.elapsed().as_millis()).unwrap_or(BUSY);
+        let left = BUSY.saturating_sub(gone);
+        if errno != busy || left == 0 {
+            return Err(if errno == busy { Errno::AGAIN } else { errno });
+        }
+        // SAFETY: `name` is NUL-ended; it only waits. An instance free
+        // again may be taken by another client first: then busy again.
+        unsafe { WaitNamedPipeW(name.as_ptr(), left) };
+    }
 }
 
 /// A security descriptor that lets this process's user in, and no one
