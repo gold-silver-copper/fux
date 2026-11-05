@@ -138,9 +138,11 @@ programs built on the libraries (below) are the acceptance test for the whole po
 - Console close, logoff and shutdown are `Hup` and `Term` on the pipe, but Windows ends the process
   once the handler returns (or after 5 s): PR 7/8 decide whether the handler must wait for the loop.
 - Measured on the runners (PR 4's CI, `fuxix/tests/windows.rs`, the same on 26200 arm64 and 26100
-  x64): a 1 ms timeout never early, late by p50 0.52-0.55 ms, p99 0.59-0.60 ms; an idle loop 0 CPU
-  ticks in 2 s (`GetProcessTimes` counts in ~15.6 ms ticks); 4 MiB + 1 MiB both ways through one
-  pipe with 500 signals, exact; 2000 raises from 4 threads, each seen; a child's 1 MiB and its `Chld`.
+  x64): a 1 ms timeout never early, late by p50 0.52-0.55 ms, p99 0.59-0.60 ms (later runs on
+  windows-11-arm now and then saw p99 3.7-3.9 ms, the runner's, so the test holds p50 < 2 ms and
+  p99 < 10 ms); an idle loop 0 CPU ticks in 2 s (`GetProcessTimes` counts in ~15.6 ms ticks);
+  4 MiB + 1 MiB both ways through one pipe with 500 signals, exact; 2000 raises from 4 threads, each
+  seen; a child's 1 MiB and its `Chld`.
 
 ## What PR 7 builds on (found in PR 5)
 - `fuxix::socket` is one module on both OSes. Its `Peer { user, pid }` and `User` are shared names:

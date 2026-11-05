@@ -224,8 +224,9 @@ fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> 
         if let Some(left) = left {
             timer()?.set(left)?;
             *timed = true;
-            // Whole milliseconds, rounded up, and one more: the timer ends
-            // the wait first; this only if its thread has stopped.
+            // Whole milliseconds plus one, never shorter than the timer:
+            // the timer ends the wait first; this only if its thread has
+            // stopped.
             let millis = left.as_millis().saturating_add(1);
             backstop = u32::try_from(millis).unwrap_or(INFINITE).min(INFINITE - 1);
         }
@@ -324,8 +325,8 @@ fn take(port: HANDLE, millis: u32) -> Result<()> {
 }
 
 /// The timer a poll's timeout is waited out with: high-resolution, and
-/// auto-reset, so a thread-pool wait registered once for good posts a
-/// packet each time it fires.
+/// auto-reset, so its thread ([`ring`]) wakes the poll each time it
+/// fires.
 struct Timer(OwnedHandle);
 
 fn timer() -> Result<&'static Timer> {

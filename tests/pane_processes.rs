@@ -244,7 +244,11 @@ fn a_client_that_stops_reading_ends_only_its_connection() -> Outcome {
         return Err(format!("its connection's process: {conns:?}"));
     };
     let conn = *conn;
-    cap(conn, 16 << 20)?;
+    // What it holds for its client grows by doubling, so it ends once
+    // about half its cap is held. The copies come no faster than its
+    // pane's process reads them, a few MiB a second in a debug build, less
+    // on CI: a cap of 16 MiB, 8 of them to hold, missed `PATIENCE` there.
+    cap(conn, 4 << 20)?;
     let shell = support::focused(&server)?;
     // It no longer reads (`pump`) from here on.
     let copies = r#"while :; do printf '\033]52;c;aGk=\a'; done"#;
