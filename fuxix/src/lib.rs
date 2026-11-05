@@ -1,7 +1,9 @@
 //! The system calls fux makes, on Linux, Android and macOS, over `libc`.
-//! On Windows, so far only the types every OS shares: a [`process::Pid`],
-//! a [`process::Signal`]'s name, a [`process::Status`], an [`Errno`] and
-//! [`Allocation`]; the modules that make calls are Unix only.
+//! On Windows, the types every OS shares (a [`process::Pid`], a
+//! [`process::Signal`]'s name, a [`process::Status`], an [`Errno`] and
+//! [`Allocation`]) and the event loop: [`poll`], [`signal::Pipe`] and
+//! [`io`]'s reads and writes, over one I/O completion port per process,
+//! with `windows-sys`; the other modules are Unix only.
 //!
 //! fux forbids `unsafe` code; this crate is where the `unsafe` it needs
 //! lives, one call per block, each with its reasoning. Every function is

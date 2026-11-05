@@ -95,9 +95,9 @@ programs built on the libraries (below) are the acceptance test for the whole po
 - **"Killed by fux" on Windows** (D-136): `Status` there is only `Exited(i32)`, the native code as std,
   cmd and PowerShell show it (`0xC000013A` is -1073741510). The PR that adds terminate decides how the
   server says fux ended a program: likely from the `Signal` it sent, which it knows, not from a number.
-- **Errno names on Windows:** `Errno` holds Windows' own error code and has no constants yet. The
-  event-loop PR adds `last()` and the codes it needs (`ERROR_BROKEN_PIPE`, `ERROR_NO_DATA` for a gone
-  peer, `ERROR_IO_PENDING`), checked on Windows, not guessed.
+- **Errno names on Windows** (settled in PR 4): `Errno::AGAIN` is `WSAEWOULDBLOCK` (10035), the code
+  std reads as `WouldBlock`; `is_peer_gone` is `ERROR_BROKEN_PIPE`, `ERROR_NO_DATA` or
+  `ERROR_PIPE_NOT_CONNECTED`; a read's end is `ERROR_BROKEN_PIPE` or `ERROR_HANDLE_EOF`.
 - **JSON for a Windows path that isn't text:** the wire carries Windows strings as their UTF-16 units.
   `docs/json.md`'s `{encoding: hex}` means a Unix path's bytes; the server PR picks and documents the
   Windows form (for example WTF-8 bytes in `hex`).
@@ -117,6 +117,30 @@ programs built on the libraries (below) are the acceptance test for the whole po
   Windows only KILL (terminate the job with fux's exit code, D-136) is a job operation and the hangup is
   closing the pseudo console, not a signal; and `Slave::spawn` returns std's `Child`, which a
   `CreateProcessW` spawn doesn't have.
+
+## What PR 5 and PR 6 build on (found in PR 4)
+- The loop is `fuxix::poll` over one completion port per process (`poll/windows.rs`). Every source
+  is a `poll::Source`, sealed: today `io::Stream` and `signal::Pipe`. A new kind of source (PR 5's
+  listener) implements the crate-private `poll::sealed::Sealed`: `arm` starts what must be in flight
+  (an overlapped `ConnectNamedPipe`), `ready` says what finished. A packet with `poll::KEY_IO` must
+  carry an `OVERLAPPED` that is the first field of an `io::Op`; a listener needs its own key.
+- A named-pipe connection is an `io::Stream`: `Stream::new` (crate-private) binds any overlapped
+  handle to the port with `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS`.
+- `io::pipe` and `io::pipe_for_child` make an unnamed-style pair as std does (one instance, local
+  clients only, the first-instance flag, default security). PR 5's IPC pipe needs the owner-only
+  descriptor; these pairs don't, as their name is opened at once and a stranger who opens it first
+  makes the pair fail.
+- ConPTY's two pipes are two `io::pipe_for_child` (the handle goes to `CreatePseudoConsole`), and the
+  program's end is `process::watch` on its process handle (it takes a `std::process::Child` today;
+  PR 6's `CreateProcessW` spawn needs it to take a handle).
+- **One thread polls at a time**, enforced: a second thread's poll fails with `ERROR_BUSY`. Tests that
+  poll in one test binary take turns (`fuxix/tests/windows.rs`, `turn`), and so must fux-server's.
+- Console close, logoff and shutdown are `Hup` and `Term` on the pipe, but Windows ends the process
+  once the handler returns (or after 5 s): PR 7/8 decide whether the handler must wait for the loop.
+- Measured on the runners (PR 4's CI, `fuxix/tests/windows.rs`, the same on 26200 arm64 and 26100
+  x64): a 1 ms timeout never early, late by p50 0.52-0.55 ms, p99 0.59-0.60 ms; an idle loop 0 CPU
+  ticks in 2 s (`GetProcessTimes` counts in ~15.6 ms ticks); 4 MiB + 1 MiB both ways through one
+  pipe with 500 signals, exact; 2000 raises from 4 threads, each seen; a child's 1 MiB and its `Chld`.
 
 ## Rules the spikes found (each cost a failed run)
 - **ConPTY**
