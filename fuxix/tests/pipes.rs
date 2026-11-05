@@ -118,6 +118,10 @@ fn the_same_user_connects_and_talks_both_ways() -> Outcome {
     let name = unique("same")?;
     let mut listener = Listener::bind(&name).map_err(text)?;
     assert_eq!(listener.accept().err(), Some(Errno::AGAIN));
+    // A NUL would cut the name short there, to this pipe's.
+    let cut = format!("{name}\0-other");
+    assert_eq!(connect(&cut).err(), Some(Errno::INVAL));
+    assert_eq!(Listener::bind(&cut).err(), Some(Errno::INVAL));
     let client = connect(&name).map_err(text)?;
     ready(&listener, deadline)?;
     let served = listener.accept().map_err(text)?;
@@ -139,6 +143,27 @@ fn the_same_user_connects_and_talks_both_ways() -> Outcome {
         "PIPES same-user peer={} pid={:?} both ways ok",
         theirs.user, theirs.pid
     ));
+    Ok(())
+}
+
+/// A client that came and went before the listener looked is no
+/// connection: the instance waits again, and the next client is served.
+#[test]
+fn a_client_gone_before_accept_leaves_the_instance_waiting() -> Outcome {
+    let _turn = turn();
+    let deadline = after(Duration::from_secs(20))?;
+    let name = unique("gone")?;
+    let mut listener = Listener::bind(&name).map_err(text)?;
+    drop(connect(&name).map_err(text)?);
+    let mut fds = [PollFd::new(&listener, Events::IN)];
+    let ready_now = poll(&mut fds, Some(Duration::from_millis(200))).map_err(text)?;
+    let told = fds.iter().map(PollFd::revents).collect::<Vec<_>>();
+    assert_eq!(ready_now, 0, "a client gone was told: {told:?}");
+    let client = connect(&name).map_err(text)?;
+    send(&client, b"hi\n", deadline)?;
+    ready(&listener, deadline)?;
+    let served = listener.accept().map_err(text)?.stream().map_err(text)?;
+    assert_eq!(line(&served, deadline)?.as_deref(), Some("hi"));
     Ok(())
 }
 

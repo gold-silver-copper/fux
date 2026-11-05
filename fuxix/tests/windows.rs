@@ -262,31 +262,41 @@ fn cpu_time() -> Result<Duration, String> {
 }
 
 /// A loop with nothing to do, waiting with no timeout, uses under 1 % of
-/// a core over 2 s, and wakes when a byte comes.
+/// a core over 2 s, and wakes when a byte comes. A wake lost is a failure,
+/// not a hang: 10 s after its byte the writer raises `Usr1`.
 #[test]
 fn an_idle_loop_uses_no_cpu_and_wakes_when_a_byte_comes() -> Outcome {
     let _turn = turn();
     let (a, b) = pipe().map_err(text)?;
     let signals = Pipe::new(&[Signal::Usr1]).map_err(text)?;
     let idle = Duration::from_secs(2);
+    let (woke, watchdog) = std::sync::mpsc::channel::<()>();
     let writer = std::thread::spawn(move || {
         std::thread::sleep(idle);
-        write_what_fits(&b, b"x").map(|_| b)
+        let wrote = write_what_fits(&b, b"x").map(|_| b);
+        let waited = watchdog.recv_timeout(Duration::from_secs(10));
+        if waited == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            signal::raise(Signal::Usr1).map_err(text)?;
+        }
+        wrote.map_err(text)
     });
     let (cpu, started) = (cpu_time()?, Instant::now());
     let mut poll = Poll::default();
     let mut list = poll.list();
     let byte = list.push(PollFd::new(&a, Events::IN));
-    list.push(PollFd::new(signals.reader(), Events::IN));
+    let usr1 = list.push(PollFd::new(signals.reader(), Events::IN));
     let ready = list.poll(None).map_err(text)?;
+    let _ = woke.send(());
     let (slept, used) = (started.elapsed(), cpu_time()?.saturating_sub(cpu));
+    if list.events(usr1).intersects(Events::IN) {
+        return Err(format!(
+            "the byte did not wake the loop; Usr1 did, after {slept:?}"
+        ));
+    }
     assert_eq!(ready, 1);
     assert!(list.events(byte).intersects(Events::IN));
     drop(list);
-    let _b = writer
-        .join()
-        .map_err(|_| "the writer panicked")?
-        .map_err(text)?;
+    let _b = writer.join().map_err(|_| "the writer panicked")??;
     let mut buffer = [0u8; 4];
     assert_eq!(read(&a, &mut buffer), Ok(1));
     let percent = used.as_secs_f64() * 100.0 / slept.as_secs_f64();
@@ -464,8 +474,8 @@ fn a_dropped_streams_last_write_and_end_arrive_with_no_poll() -> Outcome {
         "the bytes differ"
     );
     assert!(
-        written > 64 * 1024,
-        "only {written} bytes went: no write was left in flight"
+        written < data.len(),
+        "all {written} bytes went at once: no write was left in flight"
     );
     Ok(())
 }

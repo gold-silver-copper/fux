@@ -188,12 +188,15 @@ pub fn poll(fds: &mut [PollFd<'_>], timeout: Option<Duration>) -> Result<usize> 
 fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> Result<usize> {
     let port = port()?;
     loop {
+        // What finished already, taken in without waiting: one batch, so
+        // that packets that keep coming can't keep a poll from looking.
+        take(port, 0)?;
+        // Armed after the take: a packet taken may have left a source with
+        // nothing in flight (a read of no bytes), which is started again
+        // here rather than told ready with nothing to read.
         for fd in fds.iter() {
             fd.source.arm(fd.events);
         }
-        // What finished already, taken in without waiting: one batch, so
-        // that packets that keep coming can't keep a poll from looking.
-        let taken = take(port, 0)?;
         let mut ready = 0usize;
         for fd in fds.iter_mut() {
             fd.revents = fd.source.ready(fd.events);
@@ -207,13 +210,6 @@ fn wait(fds: &mut [PollFd<'_>], deadline: Option<Instant>, timed: &mut bool) -> 
         let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
         if left.is_some_and(|left| left.is_zero()) {
             return Ok(0);
-        }
-        // A packet taken may have left a source with nothing in flight
-        // and nothing to tell (a read of no bytes): it is armed again,
-        // and looked at again, before any wait, which nothing else would
-        // end.
-        if taken > 0 {
-            continue;
         }
         if let Some(left) = left {
             timer()?.set(left)?;
@@ -287,8 +283,8 @@ pub(crate) fn wake() -> Result<()> {
 }
 
 /// Takes the packets queued, up to [`PACKETS`], waiting at most `millis`
-/// for the first: how many.
-fn take(port: HANDLE, millis: u32) -> Result<usize> {
+/// for the first.
+fn take(port: HANDLE, millis: u32) -> Result<()> {
     let mut entries = [OVERLAPPED_ENTRY::default(); PACKETS];
     let mut taken = 0u32;
     let room = u32::try_from(entries.len()).unwrap_or(0);
@@ -300,7 +296,7 @@ fn take(port: HANDLE, millis: u32) -> Result<usize> {
     if done == 0 {
         let errno = Errno::last();
         return match errno == Errno::from_code(WAIT_TIMEOUT) {
-            true => Ok(0),
+            true => Ok(()),
             false => Err(errno),
         };
     }
@@ -310,7 +306,7 @@ fn take(port: HANDLE, millis: u32) -> Result<usize> {
             crate::io::finished(entry);
         }
     }
-    Ok(taken)
+    Ok(())
 }
 
 /// The timer a poll's timeout is waited out with: high-resolution, and

@@ -161,9 +161,16 @@ programs built on the libraries (below) are the acceptance test for the whole po
 - Every instance takes a client: while a spare waits, the listener's own next instance can take one
   too. On Unix the server stops accepting while a spare waits (`FromConn::Waiting`); on Windows it
   must keep polling its listener and hand such a client to a `__conn taken`.
-- `socket::connect` checks the server's user before returning, and fails with `Errno::ACCES` (the
-  descriptor refused it, or the server is another user or elevation) or `Errno::AGAIN` (every
-  instance still busy after a second of `WaitNamedPipeW`). A connection's server pid is the
+- `socket::connect` checks the server's user before returning, and the pipe's owner against this
+  process's default owner (`TokenOwner`; Administrators for an elevated admin), which a squatter of
+  another user can't forge even should the server's pid be reused. It fails with `Errno::ACCES` (the
+  descriptor refused it, or the server is another user or elevation, or the owner differs),
+  `Errno::INVAL` (a NUL in the name) or `Errno::AGAIN` (every instance still busy after a second of
+  `WaitNamedPipeW`). `peer` checks the pipe is still connected after it opened the peer's process,
+  so a pid reused by then is refused.
+- A failed connect makes the listener ready to read as well as `ERR`, so a server polling for `IN`
+  calls `accept`, which tells the error and makes the next instance. A client that came and went
+  before the connect saw it is no client: the instance is disconnected and waits again. A connection's server pid is the
   instance's maker, so a client still reads the server's pid after a handoff, as on Unix.
 - Not tested on CI: an elevated and a normal process of the same user (the runner's account has no
   split token); the check is the same comparison the second-user test exercises.
@@ -171,6 +178,15 @@ programs built on the libraries (below) are the acceptance test for the whole po
   inheritable copy only under its spawn lock, so no other std spawn inherits it. It does not pass a
   handle list (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`), so the child also inherits any other handle
   made inheritable; fuxix makes none. PR 6's own spawn should add that list (below).
+  PR 7's handoff should not rely on std there: it should spawn with a
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of exactly the handed instance (portable-pty's
+  `src/win/procthreadattr.rs`), so nothing else made inheritable meanwhile leaks into the child.
+- A source polled with `Events::NONE` never arms a read, so a stream's `HUP` and `ERR` (learned only
+  from a read or write that ends) are never told for it. PR 7's server must poll every connection
+  for `IN` (or keep a write in flight) to learn that its client went.
+- A stream dropped with its read in flight cancels that read, but the read's 64 KiB buffer is freed
+  only when some later poll takes the cancelled read's packet. A server that drops many streams and
+  stops polling holds that memory until it polls again.
 - For PR 6, from portable-pty 0.9 (`win/psuedocon.rs`, `win/procthreadattr.rs`): spawn with
   `CreateProcessW(…, bInheritHandles = FALSE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT)`,
   an attribute list holding `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` (the `HPCON` value itself as

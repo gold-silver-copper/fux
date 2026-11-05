@@ -16,6 +16,10 @@ impl Errno {
     /// Access refused (`ERROR_ACCESS_DENIED`): a pipe whose server is not
     /// this process's user, or whose descriptor keeps this user out.
     pub const ACCES: Self = Self::from_code(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED);
+    /// An argument refused (`ERROR_INVALID_PARAMETER`): a pipe name with
+    /// a NUL in it.
+    pub const INVAL: Self =
+        Self::from_code(windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER);
     /// The resource is busy: another thread is polling (one at a time).
     pub(crate) const BUSY: Self = Self(windows_sys::Win32::Foundation::ERROR_BUSY.cast_signed());
 

@@ -7,7 +7,7 @@ impl Errno {
     pub const AGAIN: Self = Self(libc::EAGAIN);
     pub const INPROGRESS: Self = Self(libc::EINPROGRESS);
     pub const SRCH: Self = Self(libc::ESRCH);
-    pub(crate) const INVAL: Self = Self(libc::EINVAL);
+    pub const INVAL: Self = Self(libc::EINVAL);
     /// No room left: as `signal::notify` says, when every slot is held.
     pub(crate) const NOSPC: Self = Self(libc::ENOSPC);
     /// I/O error; a PTY master reports this when its slave closes.
