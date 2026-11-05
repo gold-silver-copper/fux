@@ -33,6 +33,11 @@ use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON
 /// gives or one write takes.
 const BUFFER: usize = 64 * 1024;
 
+/// How many reads in a row may finish at once with nothing before one
+/// call gives up: a writer writing nothing over and over can't hold a
+/// poll from its timeout.
+const EMPTY_READS: usize = 16;
+
 /// A byte stream on Windows: one end of a pipe fuxix made ([`pipe`],
 /// [`pipe_for_child`]), to wait on with [`crate::poll`] and read and write
 /// with [`read`], [`write`] and [`write_what_fits`].
@@ -179,10 +184,15 @@ impl Op {
     /// Starts a read into the buffer, emptied. One that finishes at once
     /// leaves its bytes there; one that fails at once, its error. One that
     /// finishes at once with nothing (a writer wrote nothing) queues no
-    /// packet, so it is started again: else nothing is in flight to tell
-    /// what comes next.
+    /// packet, so it is started again, up to [`EMPTY_READS`] times: past
+    /// that, nothing is in flight, and the stream is told readable
+    /// (`Sealed::ready`) so that its poll looks again rather than sleeps.
     fn read(self: &Arc<Self>, handle: &OwnedHandle, state: &mut State) {
-        while self.read_once(handle, state) {}
+        for _ in 0..EMPTY_READS {
+            if !self.read_once(handle, state) {
+                return;
+            }
+        }
     }
 
     /// One read call: whether it finished at once with nothing and no
@@ -324,7 +334,11 @@ impl Sealed for Stream {
         let mut ready = Events::NONE;
         let read = lock(&self.read);
         let buffered = read.start < read.end;
-        if interest.intersects(Events::IN) && (buffered || read.failed.is_some()) {
+        // Armed, nothing in flight, nothing read and nothing wrong: only
+        // reads of nothing, given up on (`Op::read`); a read takes it
+        // from there, `AGAIN` if it is nothing still.
+        let empty = !read.pending && !buffered && read.failed.is_none();
+        if interest.intersects(Events::IN) && (buffered || read.failed.is_some() || empty) {
             ready |= Events::IN;
         }
         match read.failed {
