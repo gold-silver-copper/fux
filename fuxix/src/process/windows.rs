@@ -224,25 +224,30 @@ impl Job {
 
     /// Ends it with [`KILLED`] as far as `reach` says: [`Reach::Group`] its
     /// leader alone (Windows has no process groups), [`Reach::Session`]
-    /// every process in its job. A leader ended already is a failure with
-    /// [`Errno::SRCH`].
+    /// every process in its job, [`Reach::Attached`] each of
+    /// [`Job::attached`] that is still in its job. A leader ended already
+    /// is a failure with [`Errno::SRCH`].
     pub fn kill(&self, reach: Reach) -> Sent {
         use windows_sys::Win32::System::JobObjects::TerminateJobObject;
-        use windows_sys::Win32::System::Threading::TerminateProcess;
         let code = KILLED.cast_unsigned();
-        let ended = matches!(self.ended(), Ok(Some(_)));
         let done = match reach {
-            Reach::Group if ended => Err(Errno::SRCH),
-            // SAFETY: the process handle is open; it touches no memory.
-            Reach::Group => match unsafe { TerminateProcess(self.process.as_raw_handle(), code) } {
-                0 => Err(Errno::last()),
-                _ => Ok(()),
-            },
+            Reach::Group if matches!(self.ended(), Ok(Some(_))) => Err(Errno::SRCH),
+            Reach::Group => terminate(&self.process),
             // SAFETY: the job handle is open; it touches no memory.
             Reach::Session => match unsafe { TerminateJobObject(self.job.as_raw_handle(), code) } {
                 0 => Err(Errno::last()),
                 _ => Ok(()),
             },
+            Reach::Attached => {
+                let attached = self.attached();
+                let failed = (attached.pids.into_iter())
+                    .filter_map(|pid| Some((pid, self.terminate_member(pid).err()?)))
+                    .collect();
+                return Sent {
+                    scan: attached.scan,
+                    failed,
+                };
+            }
         };
         Sent {
             scan: Scan::Complete,
@@ -252,6 +257,90 @@ impl Job {
                 .into_iter()
                 .collect(),
         }
+    }
+
+    /// Ends `pid` with [`KILLED`] if it is in this job: a pid reused
+    /// since it was listed is not.
+    fn terminate_member(&self, pid: Pid) -> Result<()> {
+        use std::os::windows::io::FromRawHandle;
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        };
+        let access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+        // SAFETY: it takes numbers and touches no memory.
+        let raw = unsafe { OpenProcess(access, 0, pid.as_raw()) };
+        if raw.is_null() {
+            return Err(Errno::SRCH);
+        }
+        // SAFETY: `raw` was just opened, and nothing else owns it.
+        let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut inside = 0;
+        // SAFETY: both handles are open; `inside` is writable.
+        let asked = unsafe {
+            IsProcessInJob(
+                process.as_raw_handle(),
+                self.job.as_raw_handle(),
+                &mut inside,
+            )
+        };
+        match (asked, inside) {
+            (0, _) => Err(Errno::last()),
+            (_, 0) => Err(Errno::SRCH),
+            _ => terminate(&process),
+        }
+    }
+
+    /// The processes on its pseudo console but its leader that are in its
+    /// job: what a shell started on it and runs now. The console is asked
+    /// by attaching to it (`AttachConsole`), which a process with a console
+    /// of its own can't (`Scan::Failed` with `ACCES`): a pane process
+    /// starts detached. While attached, every console event is swallowed,
+    /// so a Ctrl-Break meanwhile ends nothing of this process (spike S5).
+    pub fn attached(&self) -> Tree {
+        use std::sync::{Mutex, PoisonError};
+        use windows_sys::Win32::System::Console::{
+            AttachConsole, FreeConsole, GetConsoleProcessList, SetConsoleCtrlHandler,
+        };
+        static ATTACHING: Mutex<()> = Mutex::new(());
+        let mut tree = Tree::default();
+        let mut pids = vec![0u32; TREE_MAX.saturating_add(1)];
+        let room = u32::try_from(pids.len()).unwrap_or(0);
+        let one = ATTACHING.lock().unwrap_or_else(PoisonError::into_inner);
+        // SAFETY: it takes a number; this process has no console (else it
+        // fails), and frees the one it attaches to below.
+        if unsafe { AttachConsole(self.leader.as_raw()) } == 0 {
+            drop(one);
+            tree.scan = Scan::Failed(Errno::last());
+            return tree;
+        }
+        // SAFETY: `swallow` lives as long as the process and is safe on
+        // any thread; it is removed below.
+        unsafe { SetConsoleCtrlHandler(Some(swallow), 1) };
+        // SAFETY: `pids` is writable for `room` pids.
+        let listed = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), room) };
+        let error = Errno::last();
+        // SAFETY: it takes nothing; it frees the console attached above.
+        unsafe { FreeConsole() };
+        // SAFETY: removes the handler set above.
+        unsafe { SetConsoleCtrlHandler(Some(swallow), 0) };
+        drop(one);
+        let listed = usize::try_from(listed).unwrap_or(usize::MAX);
+        if listed == 0 {
+            tree.scan = Scan::Failed(error);
+            return tree;
+        }
+        if listed > pids.len() {
+            tree.scan = Scan::Truncated;
+        }
+        let this = std::process::id();
+        tree.pids = (pids.into_iter().take(listed))
+            .filter(|pid| *pid != this)
+            .filter_map(Pid::from_raw)
+            .filter(|pid| *pid != self.leader)
+            .take(TREE_MAX)
+            .collect();
+        tree
     }
 
     /// Whether its leader has ended, and how: its native exit code, read
@@ -282,6 +371,22 @@ impl Job {
             Err(errno) => Ok(Err(errno)),
         }
     }
+}
+
+/// Ends `process` with [`KILLED`].
+fn terminate(process: &OwnedHandle) -> Result<()> {
+    use windows_sys::Win32::System::Threading::TerminateProcess;
+    // SAFETY: the handle is open; it touches no memory.
+    match unsafe { TerminateProcess(process.as_raw_handle(), KILLED.cast_unsigned()) } {
+        0 => Err(Errno::last()),
+        _ => Ok(()),
+    }
+}
+
+/// The console handler while [`Job::attached`] is attached: every event
+/// is taken as handled, so none ends this process.
+unsafe extern "system" fn swallow(_: u32) -> windows_sys::core::BOOL {
+    1
 }
 
 /// Its leader's process handle: to [`watch`] it.

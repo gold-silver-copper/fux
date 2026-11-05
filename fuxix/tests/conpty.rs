@@ -51,7 +51,7 @@ mod windows {
         if let Some(probe) = std::env::var_os(PROBE) {
             return run_probe(&probe.to_string_lossy());
         }
-        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("conpty");
+        let dir = folder();
         let mut failed = 0u8;
         let mut report = |name: &str, outcome: Outcome| {
             match &outcome {
@@ -60,8 +60,13 @@ mod windows {
             }
             failed = failed.saturating_add(u8::from(outcome.is_err()));
         };
-        report("the_package_fetches_and_loads", fetched(&dir));
-        let tests: [Test; 4] = [
+        report("setup: the package fetches and loads", fetched(&dir));
+        let attached: Test = (
+            "kill_of_the_attached_ends_what_the_shell_runs_and_the_shell_lives",
+            shell_lives,
+        );
+        let tests: [Test; 5] = [
+            attached,
             (
                 "bytes_arrive_exact_through_the_fetched_conpty",
                 bytes_arrive_exact,
@@ -86,6 +91,11 @@ mod windows {
             0 => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,
         }
+    }
+
+    /// The ConPTY's folder.
+    fn folder() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("conpty")
     }
 
     fn text(error: impl std::fmt::Display) -> String {
@@ -139,12 +149,17 @@ mod windows {
 
     impl Pane {
         fn start(probe: &str) -> Result<Pane, String> {
+            let exe = std::env::current_exe().map_err(text)?;
+            Pane::run(&[exe.into_os_string()], probe)
+        }
+
+        /// `argv` on a new pane, with `PROBE` set to `probe`.
+        fn run(argv: &[std::ffi::OsString], probe: &str) -> Result<Pane, String> {
             let size = Size::new(24, 80).ok_or("a size")?;
             let (master, slave) = pty::open(size).map_err(text)?;
-            let exe = std::env::current_exe().map_err(text)?;
             let job = slave
                 .spawn(
-                    &[exe],
+                    argv,
                     |command| {
                         command.env(PROBE, probe);
                     },
@@ -339,6 +354,13 @@ mod windows {
         let deadline = after(Duration::from_secs(15))?;
         let mut pane = Pane::start("family")?;
         pane.read_until(deadline, |out| contains(out, b"ready"))?;
+        // While it runs, the console takes a new size and tells it back.
+        let size = Size::new(30, 100).ok_or("a size")?;
+        terminal::set_window_size(&pane.master, size, None).map_err(text)?;
+        let told = terminal::window_size(&pane.master).map(|(size, _)| size);
+        if told != Some(size) {
+            return Err(format!("window_size {told:?} after setting {size:?}"));
+        }
         let sent = pane.job.kill(fuxix::process::Reach::Group);
         if !sent.failed.is_empty() {
             return Err(format!("kill(Group): {sent:?}"));
@@ -355,14 +377,101 @@ mod windows {
         if again.failed.first().map(|(_, errno)| *errno) != Some(fuxix::Errno::SRCH) {
             return Err(format!("a second kill(Group): {again:?}"));
         }
-        // The window size is the pseudo console's, set or not.
-        let size = Size::new(30, 100).ok_or("a size")?;
-        terminal::set_window_size(&pane.master, size, None).map_err(text)?;
-        let told = terminal::window_size(&pane.master).map(|(size, _)| size);
-        if told != Some(size) {
-            return Err(format!("window_size {told:?} after setting {size:?}"));
-        }
         say!("kill(Group): {status:?} (KILLED), the child lives: {members:?}");
+        Ok(())
+    }
+
+    /// S5: `kill(Attached)` from a detached process (as fux's pane
+    /// process is) ends what a shell runs on its console, but neither the
+    /// shell, which still answers, nor what left the console. Run in this
+    /// binary again, detached, as the probe `attached-host`.
+    fn shell_lives() -> Outcome {
+        const DETACHED_PROCESS: u32 = 0x8;
+        let deadline = after(Duration::from_secs(25))?;
+        let exe = std::env::current_exe().map_err(text)?;
+        let mut host = std::process::Command::new(exe)
+            .env(PROBE, "attached-host")
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(text)?;
+        let status = loop {
+            if let Some(status) = host.try_wait().map_err(text)? {
+                break status;
+            }
+            if Instant::now() > deadline {
+                let _ = host.kill();
+                let _ = host.wait();
+                return Err("the detached host did not finish".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let mut log = String::new();
+        if let Some(mut stderr) = host.stderr.take() {
+            use std::io::Read as _;
+            let _ = stderr.read_to_string(&mut log);
+        }
+        say!("{}", log.trim_end());
+        match status.success() {
+            true => Ok(()),
+            false => Err(format!("the detached host: {status}")),
+        }
+    }
+
+    /// The detached host of [`shell_lives`]: its own `load`, then `cmd`
+    /// with a `start /b` program on its console, which starts one off it.
+    fn attached_host() -> Outcome {
+        let deadline = after(Duration::from_secs(20))?;
+        pty::load(&folder()).map_err(|e| format!("load: {e}"))?;
+        let system = std::env::var_os("SystemRoot").ok_or("no SystemRoot")?;
+        let cmd = std::path::Path::new(&system)
+            .join("System32")
+            .join("cmd.exe");
+        let argv = [cmd.into_os_string(), "/d".into(), "/k".into()];
+        let mut shell = Pane::run(&argv, "family")?;
+        shell.read_until(deadline, |out| contains(out, b">"))?;
+        let exe = std::env::current_exe().map_err(text)?;
+        shell.write(format!("start /b \"\" \"{}\"\r", exe.display()).as_bytes())?;
+        let on_console = loop {
+            let attached = shell.job.attached();
+            let members = shell.job.members();
+            if attached.pids.len() == 1 && members.pids.len() == 2 {
+                break attached;
+            }
+            if Instant::now() > deadline {
+                return Err(format!("attached {attached:?}, members {members:?}"));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let sent = shell.job.kill(fuxix::process::Reach::Attached);
+        if !sent.failed.is_empty() || sent.scan != Scan::Complete {
+            return Err(format!("kill(Attached): {sent:?}"));
+        }
+        loop {
+            let attached = shell.job.attached();
+            if attached.pids.is_empty() && attached.scan == Scan::Complete {
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err(format!("after kill(Attached), attached {attached:?}"));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let members = shell.job.members();
+        if members.pids.len() != 1 || members.pids == on_console.pids {
+            return Err(format!("after kill(Attached), members {members:?}"));
+        }
+        if shell.job.ended().map_err(text)?.is_some() {
+            return Err("the shell ended".into());
+        }
+        shell.write(b"echo fux-%OS%\r")?;
+        shell.read_until(deadline, |out| contains(out, b"fux-Windows_NT"))?;
+        say!(
+            "kill(Attached) ended {:?} (start /b); the shell answers, and its detached child lives: {members:?}",
+            on_console.pids
+        );
         Ok(())
     }
 
@@ -433,6 +542,13 @@ mod windows {
                 std::thread::sleep(Duration::from_secs(20));
                 ExitCode::SUCCESS
             }
+            "attached-host" => match attached_host() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(why) => {
+                    say!("attached-host: {why}");
+                    ExitCode::FAILURE
+                }
+            },
             "alone" => {
                 std::thread::sleep(Duration::from_secs(20));
                 ExitCode::SUCCESS

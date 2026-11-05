@@ -163,6 +163,11 @@ pub enum Reach {
     /// Its group and every other process in its session ([`Job::members`]).
     /// On Windows, every process in its job object.
     Session,
+    /// Windows: every process on its pseudo console but the leader, that
+    /// is in its job ([`Job::attached`]): what a shell runs, while the
+    /// shell lives on (D-136's KILL of a shell pane).
+    #[cfg(windows)]
+    Attached,
 }
 
 /// What a [`Job::signal`] may have missed: the members it did not find
