@@ -10,8 +10,9 @@
 //!
 //! A binding runs grift: its code value is read and run by the client,
 //! fresh, each time its keys are typed, the client itself its `me`. The default
-//! bindings are a config too, `script/keys.fux`, run on `Keymap::default`
+//! bindings are a config too, `script/keys.grift`, run on `Keymap::default`
 //! before the user's.
+use crate::script::quoted;
 use crate::screens::{Effect, HIDE};
 use fux_vt::keys::{Key, KeyPress, Keystroke, Modifiers};
 use fux_wire::act::ScreenAct;
@@ -41,12 +42,12 @@ impl Binding {
     /// The config line that binds `keys` to it: its label and group too,
     /// unless they are what `bind` gives.
     fn line(&self, keys: &str) -> String {
-        let mut line = format!("(bind-key {keys:?} (code! {}))", self.code.text());
+        let mut line = format!("(bind-key {} (code! {}))", quoted(keys), self.code.text());
         if self.label != self.code.text() {
-            line += &format!(" (label {:?})", self.label);
+            line += &format!(" (label {})", quoted(&self.label));
         }
         if self.group != OTHER_GROUP {
-            line += &format!(" (group {:?})", self.group);
+            line += &format!(" (group {})", quoted(&self.group));
         }
 
         line
@@ -402,7 +403,9 @@ impl Keymap {
             Entry::Map(_) => None,
         });
         let repeats = all.iter().filter_map(|(keys, entry)| match entry {
-            Entry::Map(map) if map.repeat => Some(format!("(repeat {:?})\n", keys_text(keys))),
+            Entry::Map(map) if map.repeat => {
+                Some(format!("(repeat {})\n", quoted(&keys_text(keys))))
+            }
             Entry::Run(_) | Entry::Map(_) => None,
         });
         std::iter::once("(unbind-all)\n".to_owned())
@@ -807,14 +810,18 @@ impl<A: Named> Bindable for Table<A> {
 
     fn lines(&self, modal: &str) -> String {
         let line = |(key, act, label): &(KeyPress, A, Option<String>)| {
-            let key = key.to_string();
+            let key = quoted(&key.to_string());
             let label = label
                 .as_ref()
-                .map(|l| format!(" (label {l:?})"))
+                .map(|l| format!(" (label {})", quoted(l)))
                 .unwrap_or_default();
             match act.source() {
-                Some(code) => format!("(bind-action {key:?} (code! {})){label}\n", code.text()),
-                None => format!("(bind-in {modal:?} {key:?} {:?}){label}\n", act.name()),
+                Some(code) => format!("(bind-action {key} (code! {})){label}\n", code.text()),
+                None => format!(
+                    "(bind-in {} {key} {}){label}\n",
+                    quoted(modal),
+                    quoted(act.name())
+                ),
             }
         };
         self.0.iter().map(line).collect()

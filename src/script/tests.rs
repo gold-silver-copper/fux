@@ -154,6 +154,16 @@ fn the_default_keys_are_a_config_list_keys_prints() -> TestResult {
     let state = run_file(&path);
     std::fs::remove_file(path)?;
     assert_eq!(state?.keys, defaults.keys);
+    // Whatever a label holds, in a binding's or a screen's key.
+    let labels = "(bind-key \"F9\" (code! (lambda! () #inert))) (label \"\u{26a0}\u{fe0f} zap\u{ad}\")
+        (bind-action \"z\" (code! (lambda! (c p) #inert))) (label \"\u{200b}z\")";
+    let path = std::env::temp_dir().join(format!("label-keys-{}.grift", std::process::id()));
+    std::fs::write(&path, labels)?;
+    let labelled = run_file(&path)?;
+    std::fs::write(&path, labelled.keys.describe())?;
+    let state = run_file(&path);
+    std::fs::remove_file(path)?;
+    assert_eq!(state?.keys, labelled.keys);
     Ok(())
 }
 #[test]
