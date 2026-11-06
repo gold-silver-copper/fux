@@ -1,3 +1,0 @@
-script::words::tests::every_name_is_a_shell_word	Shell-token spelling was replaced by one quoted grift program under owner decision 1a.
-script::words::tests::a_code_value_its_words_would_not_make_again_is_refused	Forth parsing words and execution tokens were replaced by explicitly retained grift forms.
-script::callback::tests::a_sent_code_value_compiles_once_where_it_runs_again	Grift interprets retained forms and has no Forth execution-token compilation cache.
