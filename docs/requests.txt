@@ -126,7 +126,8 @@ Data::Code v: Code
 Data::Bytes v: Vec<u8>
 Data::FloatBits v: u64
 Data::Symbol v: String
-Code source: String
+Code source: String, place: Option<Box<Place>>
+Place file: String, line: u32
 Callback code: Code, args: Vec<Data>
 Prompt title: String, line: String, action: Option<Callback>
 Way::Step step: Sibling
