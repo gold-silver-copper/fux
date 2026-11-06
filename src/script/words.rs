@@ -861,18 +861,27 @@ fn directory(value: &Value<Fux>) -> Result<std::path::PathBuf, Failure> {
                     .to_digit(16)
                     .and_then(|d| u8::try_from(d).ok())
             };
-            let pair = |pair: &[u8]| match pair {
-                [high, low] => Some(
+            let (pairs, odd) = text.as_bytes().as_chunks::<2>();
+            let byte = |[high, low]: &[u8; 2]| {
+                Some(
                     digit(*high)?
                         .saturating_mul(16)
                         .saturating_add(digit(*low)?),
-                ),
-                _ => None,
+                )
             };
-            let bytes = text.as_bytes().chunks(2).map(pair).collect::<Option<_>>();
-            bytes.ok_or_else(|| fail(Code::BadValue, format!("{text:?}: no directory's hex")))?
+            let bytes = pairs.iter().map(byte).collect::<Option<_>>();
+            bytes
+                .filter(|_| odd.is_empty())
+                .ok_or_else(|| fail(Code::BadValue, format!("{text:?}: no directory's hex")))?
         }
-        other => return Ok(string(other)?.into()),
+        other @ (Value::Printed(_)
+        | Value::Float(_)
+        | Value::Symbol(_)
+        | Value::Int(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::App(_)) => return Ok(string(other)?.into()),
     };
     path_of_bytes(bytes)
 }

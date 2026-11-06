@@ -162,6 +162,14 @@ wire! {
     #[derive(Clone, Debug, Default)]
     pub struct Code {
         pub source: String,
+        pub place: Option<Box<Place>>,
+    }
+}
+
+wire! {
+    /// A file and a line in it.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Place {
         pub file: String,
         pub line: u32,
     }

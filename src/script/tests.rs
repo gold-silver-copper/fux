@@ -950,7 +950,8 @@ fn a_callback_fails_at_the_line_it_was_written() -> TestResult {
     let [Value::App(Fux::Code(code))] = values.as_slice() else {
         return Err("no code value".into());
     };
-    assert_eq!((code.file.as_str(), code.line), ("test", 3));
+    let place = code.place.as_ref().ok_or("no place")?;
+    assert_eq!((place.file.as_str(), place.line), ("test", 3));
     let program = crate::screens::Program::Code((**code).clone());
     let mut machine = callback_machine(None, &program, Some(&[]), None)?;
     let mut out = Vec::new();

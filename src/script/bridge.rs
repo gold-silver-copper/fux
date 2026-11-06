@@ -41,8 +41,10 @@ pub fn callback_machine(
     }
     let (source, callback, name, line) = match program {
         crate::screens::Program::Line(s) => (s.clone(), false, "key", 0),
-        crate::screens::Program::Code(c) if c.file.is_empty() => (c.source.clone(), true, "key", 0),
-        crate::screens::Program::Code(c) => (c.source.clone(), true, c.file.as_str(), c.line),
+        crate::screens::Program::Code(c) => match &c.place {
+            Some(place) => (c.source.clone(), true, place.file.as_str(), place.line),
+            None => (c.source.clone(), true, "key", 0),
+        },
     };
     Ok(Machine {
         config: config.cloned(),
@@ -315,9 +317,7 @@ fn call_text<T>(g: &Grift<T>, name: &str, args: &[G]) -> String {
         }
     }
     if text.len() > MOST {
-        let end = (0..=MOST).rev().find(|at| text.is_char_boundary(*at));
-        text.truncate(end.unwrap_or(0));
-        text.push('…');
+        text = text.chars().take(MOST).chain(['…']).collect();
     }
     text.push(')');
     text
@@ -1004,7 +1004,10 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
             g.list(&items)?
         }
         Value::App(Fux::Code(code)) => {
-            let forms = g.read_in(&code.file, &on_its_line(&code.source, code.line))?;
+            let forms = match &code.place {
+                Some(place) => g.read_in(&place.file, &on_its_line(&code.source, place.line))?,
+                None => g.read(&code.source)?,
+            };
             let form = g
                 .list_items(&forms)?
                 .into_iter()
@@ -1055,7 +1058,9 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
 /// `source` on `line` of its file, as a failure in it then names that line.
 fn on_its_line(source: &str, line: u32) -> String {
     let lines = usize::try_from(line.saturating_sub(1)).unwrap_or(0);
-    format!("{}{source}", "\n".repeat(lines))
+    std::iter::repeat_n('\n', lines)
+        .chain(source.chars())
+        .collect()
 }
 
 /// The head of a code value, a request and the field a run goes in.
@@ -1127,14 +1132,13 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                     let mut source = String::new();
                     g.write(form, &mut source)
                         .map_err(|_| g.error("bad-value", std::slice::from_ref(form)))?;
-                    let (file, line) = match g.position(form)? {
-                        Some((file, line)) => (file.to_owned(), line),
-                        None => (String::new(), 0),
-                    };
+                    let place = g.position(form)?.map(|(file, line)| {
+                        let file = file.to_owned();
+                        Box::new(fux_wire::callback::Place { file, line })
+                    });
                     Value::App(Fux::Code(Rc::new(fux_wire::callback::Code {
                         source,
-                        file,
-                        line,
+                        place,
                     })))
                 }
                 (REQUEST, [_, subject, steps @ ..]) => {
