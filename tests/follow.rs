@@ -80,7 +80,10 @@ mod unix {
         }
         let args: Vec<_> = std::env::args().skip(1).collect();
         let mut stdin = String::new();
-        let _ = std::io::stdin().read_to_string(&mut stdin);
+        // A terminal's has no end to read to.
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            let _ = std::io::stdin().read_to_string(&mut stdin);
+        }
         let _ = write!(std::io::stdout(), "{args:?}\n{stdin}");
         ExitCode::from(FOLLOWED)
     }
@@ -110,10 +113,7 @@ mod unix {
         against_protocol(999, name, args, stdin, env, connections)
     }
 
-    /// Runs fux with `args`, `stdin` and `env` against a server of `protocol`,
-    /// played in a socket of its own: it answers `connections` Hellos as
-    /// servers do, hanging up after each, and fails if they do not come within
-    /// `PATIENCE`.
+    /// Runs fux with `args`, `stdin` and `env` against a server of `protocol`.
     fn against_protocol(
         protocol: u32,
         name: &str,
@@ -121,6 +121,62 @@ mod unix {
         stdin: &str,
         env: &[(&str, &str)],
         connections: usize,
+    ) -> Result<Ran, String> {
+        serving(protocol, name, connections, |socket| {
+            let mut child = Command::new(FUX)
+                .args(args)
+                .envs(env.iter().copied())
+                .env("FUX_SOCKET", socket)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(e)?;
+            let mut input = child.stdin.take().ok_or("no stdin")?;
+            input.write_all(stdin.as_bytes()).map_err(e)?;
+            drop(input);
+            let out = child.wait_with_output().map_err(e)?;
+            Ok(Ran {
+                status: out.status.code(),
+                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            })
+        })
+    }
+
+    /// A plain `fux`, on a terminal, against a server of `protocol`.
+    fn attach_to_protocol(protocol: u32) -> Result<Ran, String> {
+        // It looks for a server first, then connects.
+        serving(protocol, "attach", 2, |socket| {
+            let size = fuxix::terminal::Size::from((
+                std::num::NonZeroU16::MIN.saturating_add(23),
+                std::num::NonZeroU16::MIN.saturating_add(79),
+            ));
+            let (master, slave) = fuxix::pty::open(size).map_err(e)?;
+            let setup = |command: &mut Command| {
+                command.env("FUX_SOCKET", socket).env("TERM", "xterm");
+            };
+            let dispositions = fuxix::process::Dispositions::Default;
+            let (mut child, _) = slave.spawn(&[FUX], setup, dispositions).map_err(e)?;
+            let status = child.wait().map_err(e)?;
+            drop(master);
+            Ok(Ran {
+                status: status.code(),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        })
+    }
+
+    /// What `run` came to given the socket of a server of `protocol`, played
+    /// in a directory of its own: it answers `connections` Hellos as servers
+    /// do, hanging up after each, and fails if they do not come within
+    /// `PATIENCE`.
+    fn serving(
+        protocol: u32,
+        name: &str,
+        connections: usize,
+        run: impl FnOnce(&std::path::Path) -> Result<Ran, String>,
     ) -> Result<Ran, String> {
         use fux_wire::protocol::{Frame, Greeting, Hello, Role};
         use std::os::unix::fs::PermissionsExt;
@@ -154,33 +210,17 @@ mod unix {
                 });
                 let exit = Greeting::Exit("the server speaks protocol 999");
                 // In one write: the client may hang up once it has read the
-                // Hello.
+                // Hello, or at once, only looking for a server.
                 let mut said = hello.encode();
                 said.extend(exit.encode());
-                stream.write_all(&said).map_err(e)?;
+                let _ = stream.write_all(&said);
             }
             Ok(())
         });
-        let mut child = Command::new(FUX)
-            .args(args)
-            .envs(env.iter().copied())
-            .env("FUX_SOCKET", dir.join("fux.sock"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(e)?;
-        let mut input = child.stdin.take().ok_or("no stdin")?;
-        input.write_all(stdin.as_bytes()).map_err(e)?;
-        drop(input);
-        let out = child.wait_with_output().map_err(e)?;
+        let ran = run(&dir.join("fux.sock"))?;
         server.join().map_err(|_| "the server panicked")??;
         let _ = std::fs::remove_dir_all(&dir);
-        Ok(Ran {
-            status: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        })
+        Ok(ran)
     }
 
     /// The line fux says as it follows the server, whose binary is this one.
@@ -326,6 +366,21 @@ mod unix {
                 && status.stdout.contains("(server-protocol 76)")
                 && status.stdout.contains("(compatible #false)"),
             &status,
+        )?;
+        // A plain attach hands that binary no grift, so it still goes there:
+        // the one way to reach a server whose file was replaced.
+        let attach = attach_to_protocol(76)?;
+        let follows = if cfg!(target_os = "macos") {
+            1
+        } else {
+            FOLLOWED.into()
+        };
+        check(attach.status == Some(follows), &attach)?;
+        // What this fux can't read is told on one line of the refusal.
+        let unread = against_protocol(76, "unread", &["(nosuch)"], "", &[], 1)?;
+        check(
+            unread.stderr.contains("nosuch") && !unread.stderr.contains("\\n"),
+            &unread,
         )
     }
 

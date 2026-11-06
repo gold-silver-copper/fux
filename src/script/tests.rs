@@ -601,7 +601,13 @@ fn a_batch_left_that_missed_entries_is_refused() -> TestResult {
         };
         assert!(record.is_batch());
         assert_eq!(record.printed_events().is_err(), missed > 0);
-        // One loss, one kind, however the batch came to be refused.
+        // One loss, one kind, however the batch came to be refused, and the
+        // word says so.
+        assert!(
+            Word::Act(Act::NextEvents)
+                .codes()
+                .contains(&Code::JournalLoss)
+        );
         assert!(
             record
                 .printed_events()

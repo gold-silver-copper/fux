@@ -1870,8 +1870,13 @@ fn uncompiled(failed: Failed, rerun: Option<&client::Rerun>) -> Failed {
         return failed;
     };
     let unfollowed = client_failed(client::follow(said, server, rerun));
+    // Its cause: a message is one line.
+    let cause = Failed {
+        trace: Vec::new(),
+        ..failed
+    };
     Failed {
-        message: format!("{}; this fux cannot read it: {failed}", unfollowed.message),
+        message: format!("{}; this fux cannot read it: {cause}", unfollowed.message),
         ..unfollowed
     }
 }

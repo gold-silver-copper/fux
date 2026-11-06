@@ -178,10 +178,6 @@ fn send_keys_and_signal() -> Outcome {
     Ok(())
 }
 
-/// A word's error names its code and exits 2 for a mistake in the program;
-/// a wait's failure keeps its status, its stdout empty; what is left on the
-/// stack is printed, a value a line, bottom first; `json` turns an answer
-/// into JSON.
 /// A failure says its kind, place and cause on its first line, each form
 /// after it on a line of its own and cut short, however long the program:
 /// a restore refused prints no saved session.
@@ -224,6 +220,9 @@ fn a_failure_says_its_cause_first_and_stays_short() -> Outcome {
     Ok(())
 }
 
+/// A word's error names its code and exits 2 for a mistake in the program;
+/// a wait's failure keeps its status, its stdout empty; what is left on the
+/// stack is printed, a value a line, bottom first.
 #[test]
 fn errors_statuses_and_what_is_left() -> Outcome {
     let server = Server::start("")?;

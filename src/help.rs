@@ -43,8 +43,8 @@ pub fn overview() -> String {
 /// What holds for every program: how one fails, and where its server is.
 fn how_it_runs() -> String {
     include_str!("help-running.txt")
-        .replace("SHEBANG", crate::script::SHEBANG)
-        .replace("SOCKET", fux_server::socket::SOCKET_HELP)
+        .replace("{shebang}", crate::script::SHEBANG)
+        .replace("{socket}", fux_server::socket::SOCKET_HELP)
 }
 
 /// Every setting `set` takes, what each takes and does, and the bundled
@@ -250,6 +250,7 @@ mod tests {
         let help = overview();
         assert!(help.contains("already took effect"));
         assert!(help.contains("runs\nnone of its forms"));
+        assert!(help.contains("FUX_SOCKET's socket ("), "{help}");
     }
     #[test]
     fn set_lists_every_setting() {

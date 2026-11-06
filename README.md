@@ -191,9 +191,9 @@ program's end, and `expect` sends keys only if the pane is still at the
 version you read. fux never judges whether a program is done: `fux
 '(explain "agents")'` says what to wait for, and `fux '(explain "recipes")'` how.
 
-A failure prints nothing more on stdout: stderr says `fux: KIND: VALUES`,
-with the form, file and line it came from, then what had already taken
-effect. fux exits 1
+A failure prints nothing more on stdout: stderr says `fux: KIND: MESSAGE
+(FILE:LINE)`, then what had already taken effect, then the forms it happened
+in. fux exits 1
 for a refusal; 2 for a mistake in the program (an unbound name, a value of
 the wrong type, a form that doesn't read …); 4 if the pane waited on closed; 124 if nothing changed
 in time; and 141, quietly, if stdout's reader went (`| head -n 1`). The
@@ -387,8 +387,8 @@ fux to do it with, so an upgrade waits for the next fresh run. Detaching, or a c
 programs running. A command line against a server of another fux protocol
 runs again with that server's own binary, saying so on stderr; where that
 cannot be, it fails `mismatch`, saying why. A server from before grift reads
-no grift, so nothing runs with its binary: stop it, and `(status)` says which
-process it is.
+no grift, so no program runs with its binary, only a plain `fux`, which attaches
+with it: to run a program, stop it, and `(status)` says which process it is.
 
 ## Terminal features
 

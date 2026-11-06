@@ -474,7 +474,9 @@ fn followed(
         std::env::var_os(FOLLOWED).as_deref(),
         &socket::follower_id().to_string(),
     )?;
-    if said.protocol < fux_wire::protocol::GRIFT {
+    // A plain attach hands it no grift, and is how a server whose file was
+    // replaced is reached: that binary is only left at /proc/PID/exe.
+    if said.protocol < fux_wire::protocol::GRIFT && rerun.argv.len() > 1 {
         return Err("it reads no grift, which this client speaks: stop it to go on".to_owned());
     }
     let pid = server.ok_or("the system does not say which process the server is")?;

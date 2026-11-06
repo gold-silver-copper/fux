@@ -680,14 +680,20 @@ fn a_session_that_goes_round_is_refused() -> Outcome {
               (panes (((id "%1") (name none)))))))"#
         );
         std::fs::write(&file, recipe).map_err(e)?;
-        let mut restore = server.spawn(&["--file", path])?;
+        let mut restore = (server.command(fux()))
+            .args(["--file", path])
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(e)?;
         let ended = eventually("the restore to end", || {
             Ok(restore.try_wait().map_err(e)?.is_some())
         });
         let _ = restore.kill();
-        let status = restore.wait().map_err(e)?;
+        let told = restore.wait_with_output().map_err(e)?;
         ended?;
-        assert!(!status.success());
+        let said = String::from_utf8_lossy(&told.stderr);
+        assert!(!told.status.success());
+        assert!(said.starts_with("fux: bad-value: "), "{said}");
         assert_eq!(server.ok(&["(list-session)"])?, before);
     }
     Ok(())

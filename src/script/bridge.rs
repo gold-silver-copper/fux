@@ -826,7 +826,7 @@ host_functions! {
     "data-text" data_text, "serialize a value as readable grift data";
     "read-source" read_source, "the forms of a file, for include! and require!";
     "finish-source" finish_source, "end the file read-source began";
-    "native-check-stop" check, "fail if the run was stopped, for a library's loop";
+    "native-check-stop" check, "fail if this job was stopped: every run's first step, and so always, after a stop, in a cleanup";
     "kind" kind, "a value's kind, as a string: pane, answer, record, or grift's own";
     "string" text_of, "a value's text, as it prints";
 }
@@ -982,7 +982,14 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
                 true => "the program's value is a combiner: call it".to_owned(),
                 false => format!("{name} is a word: call it, as ({name})"),
             };
-            Err(Failed::new(Code::Usage, why))
+            // A file's last form ends on its last line of code; grift keeps
+            // no place for a name alone.
+            let code = |(_, l): &(_, &str)| !matches!(l.trim().chars().next(), None | Some(';'));
+            let last = text.lines().enumerate().filter(code).last();
+            let last = last.filter(|_| machine.path.is_some());
+            let mut refused = Failed::new(Code::Usage, why);
+            refused.place = last.map(|(n, _)| format!("{}:{}", machine.name, n.saturating_add(1)));
+            Err(refused)
         }
         Ok(v) => match output_value(g, &v) {
             // A list's items, each said alone; a record's fields are one value.

@@ -297,6 +297,10 @@ fn a_bad_config_is_reported() -> Outcome {
             .ok_or("a bare name ran")?;
         assert!(failed.to_string().contains(name), "{failed}");
     }
+    // A word left uncalled as its last value loses the config, so says where.
+    std::fs::write(&config, "(set \"bell\" #false)\nzoom\n\n; the end\n").map_err(e)?;
+    let failed = fux::script::run_file(&config).err().ok_or("zoom ran")?;
+    assert!(failed.to_string().contains("config.grift:2"), "{failed}");
     // `me` is no client here, and doesn't say this is a command line.
     std::fs::write(&config, "(me)\n").map_err(e)?;
     let failed = fux::script::run_file(&config).err().ok_or("(me) ran")?;

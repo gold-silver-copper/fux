@@ -283,7 +283,7 @@ impl Server {
     }
 
     /// `program`, to run against this server.
-    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+    pub fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut command = Command::new(program);
         command
             .env("FUX_SOCKET", &self.socket)

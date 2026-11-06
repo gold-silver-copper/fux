@@ -507,9 +507,10 @@ such as a failed wait's answer) and `trace`, the forms it came through;
 `(raise failure)` raises it again, and `(finally! EXPRESSION CLEANUP...)`
 always cleans up: after a failure, and after a stop (the prefix, then Esc),
 when the cleanup's requests still reach the server and what they did is
-listed. A second stop ends a cleanup that won't finish, and a process killed
-outright, as a signal ends a command line, cleans up nothing. A failure it
-does not name goes on, its status kept. An
+listed. A cleanup's own failure after a stop doesn't show: the notice says
+`stopped` and what took effect. A second stop ends a cleanup that won't
+finish, and a process killed outright, as a signal ends a command line,
+cleans up nothing. A failure it does not name goes on, its status kept. An
 action leaves its answer: printed, it is the lines above; given to an
 operation that wants a pane, it is its pane (an action's or wait's on a tab
 or workspace is a list of answers, which no such operation takes, however
