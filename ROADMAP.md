@@ -29,55 +29,39 @@ to 1.0 is a closed list, not a series of scenarios that keep growing.
 1. **`unlimit`** (D-83): one removal PR.
    - **Removed:**
      - the region and budget machinery (#333, #334, #336);
-     - fuxth's step and byte budgets;
+     - the language's step and byte budgets;
      - fux's own caps and admission limits.
    - **Kept:** only the sizes a user sets as preferences (history, the
      journal ring), and what parsing untrusted wire input safely needs.
    - **Not touched:** fux-vt and fuxix, which are frozen (D-42 still holds
      for them).
    - It runs alone, because it touches every crate.
-2. **The fuxth design** (D-84), beside `unlimit` (no code): the staged plan
-   that turns fuxth into a real Forth. It covers:
-   - Forth 2012 Core, with each deviation and its reason;
-   - the standalone `fuxth` runner with the terminal and file words an
-     editor needs (`key`, `emit`, `type`, `at-xy`, `page`, the file word
-     set), leaning on the OS (D-82);
-   - the spec of fuxed version 0.
+2. **grift replaces fuxth.** fux's language is grift, a Lisp of its own project, and fuxth, its
+   runner and fuxed are kept in `archived/`. The plan that would have made fuxth a real Forth
+   (D-84), and the fuxed experiment on it, end there.
 
-   It revises `/home/gsc/code/fux/prompts/fuxth-forth.md` and its page is
-   `~/code/notes/projects/fux/live/milestones/fuxth.md`.
+## Then
 
-## Then, in parallel (two lanes at a time)
-
-- **The fuxth track:** the plan's PRs, in the fuxth crates.
-- **The fuxed experiment,** as soon as the runner can read keys, draw and
-  open files.
-  - **Where:** a completely independent fuxth program, which doesn't use
-    fux, in `fuxed/`.
-  - **Who:** an Opus agent writes it, and records every missing word or
-    mechanism as a finding.
-  - **Findings go into the fuxth track.**
 - **The fux 1.0 list** (D-80):
   - the gap check's tasks, minus task 31 (confinement, D-81), task 9 (the
     limits record, D-83) and task 25 (step and byte usage, D-83);
   - the removals (D-68);
   - `since` and `faint-marks`.
 
-  Its fuxth lane (code values, word records, failure reports) moves to the
-  fuxth track. Page: `~/code/notes/projects/fux/live/milestones/1.0.md`.
+  Its language lane (code values, word records, failure reports) goes with
+  grift. Page: `~/code/notes/projects/fux/live/milestones/1.0.md`.
 
 ## fux 1.0 (D-65, D-84, D-85)
 
 It is reached when all of these hold:
 - every gap-check row is "have";
 - the removals are done;
-- fuxth's Forth core has landed;
+- grift has replaced fuxth;
 - each changed contract has been shown in the real program;
 - fux is smaller than on 2026-10-31;
 - the gate passes.
 
-Then fux's public interface freezes, as VISION.md says. fuxth and fuxed
-keep going toward their own 1.0.
+Then fux's public interface freezes, as VISION.md says.
 
 ## Not on this roadmap
 

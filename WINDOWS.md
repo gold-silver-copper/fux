@@ -66,15 +66,15 @@ were settled by an experiment both sides agreed on beforehand (spike S5).
 | `foreground_group` | null |
 | split directory | the shell's process directory; pwsh needs `[Environment]::CurrentDirectory = $PWD.ProviderPath` in its prompt (document it) |
 | built-in ConPTY (offline) | works, with a one-time notice: no sixel or synchronized output, titles and links rewritten |
-| `fux all str '' events \| head -1` | ends within 100 ms of the reader going, the pipe being asked; where it won't say, at the next event's write |
+| `fux '(events (all) "")' \| head -1` | ends within 100 ms of the reader going, the pipe being asked; where it won't say, at the next event's write |
 | a client killed outright (`taskkill /F`) | nothing can put the console back from inside: the shell after it finds raw modes (Unix's `kill -9` of a client leaves a raw terminal too) |
 
 ## Order of work (one PR each)
 Each PR keeps the Linux and macOS CI jobs green and adds its checks to a Windows job running on
 `windows-11-arm` (Windows 11 25H2) and `windows-2025` (Server 2025, the Windows 11 24H2 code base). The 30
 programs built on the libraries (below) are the acceptance test for the whole port.
-1. **Windows CI and the 32-bit fux-vt fix.** A CI job that builds and tests fux-vt, fuxth and fuxth-core on
-   both images; `fux-vt/src/link.rs:141`'s size assert holds only on 64-bit (gate it on pointer width); a
+1. **Windows CI and the 32-bit fux-vt fix.** A CI job that builds and tests fux-vt and the language crates on
+   both images (then fuxth; fux's language is now grift, and fuxth is in `archived/`); `fux-vt/src/link.rs:141`'s size assert holds only on 64-bit (gate it on pointer width); a
    wasm32 build check for fux-vt; `.gitattributes` so CRLF checkouts don't break byte-exact test data.
    Done when: the Windows job is green and fux-vt builds for wasm32.
 2. **fuxix per module.** The "Linux, Android and macOS only" `compile_error!` (`fuxix/src/lib.rs:21-22`)
@@ -90,7 +90,7 @@ programs built on the libraries (below) are the acceptance test for the whole po
    S1's byte-exactness check passes through the downloaded ConPTY, and S4's signal probes pass.
 7. **fux-server on Windows:** pane and connection processes, takeover, the signal mapping. Done when: S3's
    takeover probe passes against real fux (kill the server; a new one drives the live panes).
-8. **The client and fuxth-run on Windows:** console VT input and output, resize events, restore. Done when:
+8. **The client on Windows** (and the fuxth runner, since archived): console VT input and output, resize events, restore. Done when:
    `fux` runs in Windows Terminal on a Windows 11 machine and the dogfood programs pass.
 
 ## The finish line, revised (PR 8)
@@ -127,9 +127,9 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
 - **Errno names on Windows** (settled in PR 4): `Errno::AGAIN` is `WSAEWOULDBLOCK` (10035), the code
   std reads as `WouldBlock`; `is_peer_gone` is `ERROR_BROKEN_PIPE`, `ERROR_NO_DATA` or
   `ERROR_PIPE_NOT_CONNECTED`; a read's end is `ERROR_BROKEN_PIPE` or `ERROR_HANDLE_EOF`.
-- **JSON for a Windows path that isn't text:** the wire carries Windows strings as their UTF-16 units.
-  `docs/json.md`'s `{encoding: hex}` means a Unix path's bytes; the server PR picks and documents the
-  Windows form (for example WTF-8 bytes in `hex`).
+- **A Windows path that isn't text:** the wire carries Windows strings as their UTF-16 units.
+  `docs/records.md`'s `((encoding "hex") (text ...))` is a Unix path's bytes, and on Windows a path's
+  WTF-8 bytes (UTF-8, with a lone surrogate as its three bytes).
 
 ## What PR 6 builds on (found in PR 3)
 - **`process::Job`** is mechanism only: `leader`, `members` (a `Tree`), `signal(Signal, Reach)` (a
@@ -198,8 +198,10 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   peer. The root `tests/*.rs` stay Unix's whole: `tests/support` drives a client over a nonblocking
   `UnixStream`, holds a `Slave::spawn`'s `Child`, asks `ps`, and every test scripts `/bin/sh`.
   `tests/windows.rs` and `tests/console.rs` stand in for them on Windows.
-- **A bare word's `\` escapes in fuxth,** on Windows as on Unix: `C:\work` in a `.fux` file or a
-  command line is `C:work`. Quote a Windows path (`'C:\work'`), or write it with `/`.
+- **`\` is grift's escape in a string,** on Windows as on Unix: `"C:\work"` in a `.grift` file or a
+  program on a command line doesn't read (`parse-error`, `bad-escape`). Double it (`"C:\\work"`), write it
+  with `/` (`"C:/work"`), or pass it after the program as a shell argument, which stays a string as it
+  is: `fux '(directory ...)' 'C:\work'` with `(first (arguments))`.
 - **`fux` must not link `user32`:** Windows' documentation says such a process isn't sent logoff or
   shutdown events (from the docs, not tested). Nothing here does.
 - **Restoring on a panic can't come first:** `LEAVE` needs VT processing still on, or a console without
@@ -212,7 +214,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   processes are started and linked (`connect`, `accept`, `peer`, `launch_conn`, `start_pane`,
   `pane_listener`, `pane_first`, `reach_named`, `taken_stdio`, `run_pinned`, `keep_executable`,
   `prepare_terminals`). The rest of fux-server is shared; its unit tests are `cfg(all(test, unix))`
-  because they drive sessions through fux's fuxth (`fux::script`), which is Unix-only until PR 8.
+  because they drive sessions through fux's language (`fux::script`), which is Unix-only until PR 8.
 - **Who a pipe's server is:** `GetNamedPipeServerProcessId` names the process that made the pipe's
   *first* instance, even on a later instance another process made (CI run 42117571201, both
   images), not the instance's maker as PR 5's notes say. So a pipe that must name a process after
@@ -387,7 +389,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
 - Corporate lockdowns (AppLocker, WDAC) blocking the downloaded `OpenConsole.exe`.
 - Memory per empty pane: each pane adds an `OpenConsole.exe`, likely over the 1 MiB Unix figure.
 - `cargo install` while a run is alive: the kept executable must be a copy, not a hard link.
-- `kill <server pid>` looks like a crash on Windows (takeover follows); `fux kill-server` stops cleanly.
+- `kill <server pid>` looks like a crash on Windows (takeover follows); `fux '(kill-server)'` stops cleanly.
   Windows' `timeout.exe` differs from GNU's, so agent recipes need a note.
 - Helper processes (the download, console listing) must start without a console window.
 
