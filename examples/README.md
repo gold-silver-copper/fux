@@ -6,4 +6,4 @@ status it exits with (`; status:`); `tests/cassettes/examples.cassette` runs
 them all on a private server. Run one on yours with `fux --file examples/NAME.grift`.
 
 The language itself, without fux, is in
-[grift's `docs/LANGUAGE.md`](https://github.com/gold-silver-copper/grift/blob/master/docs/LANGUAGE.md).
+[grift's `docs/LANGUAGE.md`](https://github.com/gold-silver-copper/grift/blob/pure/docs/LANGUAGE.md).

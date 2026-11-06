@@ -160,7 +160,7 @@ impl std::fmt::Display for Error {
             Self::NoTab(id) => write!(f, "no tab {id}"),
             Self::NoWorkspaceGiven => f.write_str(
                 "no workspace given: name one (`(workspace NAME)`; for new-tab, the \
-                     option `(in (opts) NAME)`)",
+                     option `(in (options) NAME)`)",
             ),
             Self::NoClient(id) => write!(f, "no client {id}"),
             Self::OnlyOne(kind) => write!(f, "only one {}", kind.name()),

@@ -290,7 +290,12 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     }
     // A new tab from outside a pane is told the option that places it.
     let nowhere = server.fux(&["(new-tab (name (size (options) 80 24) \"logs\"))"])?;
-    assert!(nowhere.stderr.contains("workspace"), "{}", nowhere.stderr);
+    let hint = "`(in (options) NAME)`";
+    assert!(nowhere.stderr.contains(hint), "{}", nowhere.stderr);
+    // And one with no size the word that gives it, as a program calls it.
+    let unsized_tab = server.fux(&["(new-tab (in (options) \"agent\"))"])?;
+    let hint = "`(size OPTIONS COLUMNS ROWS)`";
+    assert!(unsized_tab.stderr.contains(hint), "{}", unsized_tab.stderr);
     let placed = ["(new-tab (in (name (size (options) 80 24) \"logs\") \"agent\"))"];
     assert_eq!(server.fux(&placed)?.status, 0);
     Ok(())

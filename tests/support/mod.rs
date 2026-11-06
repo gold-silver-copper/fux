@@ -882,7 +882,7 @@ pub fn journal() -> Result<String, String> {
 }
 
 /// Stops the server on `socket` as a person does, and waits, bounded, till
-/// its socket is gone: `kill` on its process (`status`'s `server_pid`);
+/// its socket is gone: `kill` on its process (`status`'s `server-process-id`);
 /// where the system names no process (macOS), `kill-server`, which refuses
 /// while a terminal is attached, so the test ends its own clients first.
 /// None answering is stopped already.

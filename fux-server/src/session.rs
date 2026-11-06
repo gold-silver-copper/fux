@@ -1931,7 +1931,7 @@ impl Session {
         let size = (own.or_else(tab)).and_then(|area| Size::new(area.h(), area.w()).ok());
         let why = "the caller has no screen that sizes panes and no tab, and no size was given";
         (size.map(Fit::Clients))
-            .ok_or_else(|| fail(Code::Size, format!("{why}: give a size (`COLS ROWS size`)")))
+            .ok_or_else(|| fail(Code::Size, format!("{why}: give a size (`(size OPTIONS COLUMNS ROWS)`)")))
     }
 
     /// The clients showing tab `tab` that size it laid out as `root`.
@@ -2994,7 +2994,7 @@ impl Session {
                 let pane = pane.map_or_else(String::new, |p| format!(" {p},"));
                 let message = format!(
                     "this runs in{pane} a pane of the server it would stop, with everything \
-                     else in it; `kill` on status's server_pid stops it anyway"
+                     else in it; `kill` on status's server-process-id stops it anyway"
                 );
                 return Err(fail(Code::OwnServer, message));
             }
@@ -3007,7 +3007,7 @@ impl Session {
                     n => format!("{n} people are"),
                 };
                 let message = format!(
-                    "{who} attached to this server; `kill` on status's server_pid stops it anyway"
+                    "{who} attached to this server; `kill` on status's server-process-id stops it anyway"
                 );
                 return Err(fail(Code::PeopleAttached, message));
             }
@@ -3162,7 +3162,7 @@ impl Session {
             (None, Here::Cli(..)) => {
                 return Err(fail(
                     Code::NoTarget,
-                    "this acts on a client's screen: name one (`str c1 client`; `fux ls` lists them)",
+                    "this acts on a client's screen: name one (`(client \"c1\")`; `(listing (list-session))` lists them)",
                 ));
             }
         };
@@ -3354,7 +3354,7 @@ impl Session {
         let (cols, rows) = (area.w(), area.h());
         let message = format!(
             "{tab} has no room to show every pane laid out so on its size, {cols}x{rows} \
-             (`TAB COLS ROWS resize` makes it bigger)"
+             (`(resize TAB COLUMNS ROWS)` makes it bigger)"
         );
         Err(fail(Code::Size, message))
     }

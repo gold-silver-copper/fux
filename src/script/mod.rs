@@ -501,8 +501,9 @@ impl Failed {
         }
     }
 
-    /// The cause before its source, for a notice with limited room, then
-    /// the steps that had taken effect.
+    /// For a notice's one line: the steps that had taken effect, which a
+    /// long trace after the cause would push off it, then the cause before
+    /// its source.
     pub fn notice(&self) -> String {
         let message = match &self.place {
             Some(place) => format!("{} ({place})", self.message),
