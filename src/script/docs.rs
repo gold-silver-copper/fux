@@ -21,9 +21,11 @@ pub fn language() -> Result<Vec<String>, grift::Error> {
     let mut g: Grift = Grift::new()?;
     let names = g.evaluate(&mut (), "built-in-names")?;
     let symbols = g.list_items(&names)?.into_iter();
-    let symbols = symbols.filter_map(|name| match name {
-        Value::Symbol(symbol) => Some(g.symbol_name(&symbol).map(str::to_owned)),
-        _ => None,
+    let symbols = symbols.filter_map(|name| {
+        let Value::Symbol(symbol) = name else {
+            return None;
+        };
+        Some(g.symbol_name(&symbol).map(str::to_owned))
     });
     symbols.collect()
 }

@@ -8,8 +8,10 @@ const LANGUAGE: &str = "https://github.com/gold-silver-copper/grift/blob/pure/do
 pub fn overview() -> String {
     let from_opts = crate::script::from_opts("and");
     let mut text = include_str!("help-usage.txt").replace("FROM_OPTIONS", &from_opts);
-    for names in crate::script::language().unwrap_or_default().chunks(6) {
-        text.push_str(&format!("  {}\n", names.join(" ")));
+    let names = crate::script::language().unwrap_or_default();
+    let (rows, rest) = names.as_chunks::<6>();
+    for row in rows.iter().map(<[String; 6]>::as_slice).chain([rest]) {
+        text.push_str(&format!("  {}\n", row.join(" ")));
     }
     text.push_str(include_str!("help-columns.txt"));
     for (name, said) in crate::script::NAMES {
