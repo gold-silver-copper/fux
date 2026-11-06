@@ -466,6 +466,9 @@ fn followed(
         std::env::var_os(FOLLOWED).as_deref(),
         &socket::follower_id().to_string(),
     )?;
+    if said.protocol < fux_wire::protocol::GRIFT {
+        return Err("it reads no grift, which this client speaks: stop it to go on".to_owned());
+    }
     let pid = server.ok_or("the system does not say which process the server is")?;
     let (exe, path, same) = socket::server_binary(pid)?;
     // Run again, it would meet the same server, and follow it again.

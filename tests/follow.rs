@@ -28,7 +28,7 @@ mod unix {
         if std::env::args_os().next().is_some_and(|arg0| arg0 == FUX) {
             return followed();
         }
-        let tests: [(&str, Test); 6] = [
+        let tests: [(&str, Test); 7] = [
             ("a_command_follows_the_server", a_command_follows_the_server),
             (
                 "a_program_read_from_stdin_follows",
@@ -43,6 +43,10 @@ mod unix {
                 a_program_that_acted_is_not_followed,
             ),
             ("a_command_follows_once", a_command_follows_once),
+            (
+                "a_server_that_reads_no_grift_is_not_followed",
+                a_server_that_reads_no_grift_is_not_followed,
+            ),
             (
                 "a_program_file_that_is_a_pipe_is_not_followed",
                 a_program_file_that_is_a_pipe_is_not_followed,
@@ -95,10 +99,23 @@ mod unix {
     }
 
     /// Runs fux with `args`, `stdin` and `env` against a server of protocol
-    /// 999, played in a socket of its own: it answers `connections` Hellos as
+    /// 999.
+    fn against_another_protocol(
+        name: &str,
+        args: &[&str],
+        stdin: &str,
+        env: &[(&str, &str)],
+        connections: usize,
+    ) -> Result<Ran, String> {
+        against_protocol(999, name, args, stdin, env, connections)
+    }
+
+    /// Runs fux with `args`, `stdin` and `env` against a server of `protocol`,
+    /// played in a socket of its own: it answers `connections` Hellos as
     /// servers do, hanging up after each, and fails if they do not come within
     /// `PATIENCE`.
-    fn against_another_protocol(
+    fn against_protocol(
+        protocol: u32,
         name: &str,
         args: &[&str],
         stdin: &str,
@@ -131,7 +148,7 @@ mod unix {
                 };
                 stream.set_nonblocking(false).map_err(e)?;
                 let hello = Greeting::Hello(Hello {
-                    protocol: 999,
+                    protocol,
                     version: "9.9.9".into(),
                     role: Role::Command,
                 });
@@ -289,6 +306,27 @@ mod unix {
             )?;
         }
         Ok(())
+    }
+
+    /// A server older than grift reads none: its binary is not handed the
+    /// program, whose failure there would say nothing of why. The refusal
+    /// says to stop that server, and `(status)` still tells of it.
+    fn a_server_that_reads_no_grift_is_not_followed() -> Outcome {
+        let ran = against_protocol(76, "fuxth", &["(list-session)"], "", &[], 1)?;
+        check(
+            ran.status == Some(1)
+                && ran.stderr.starts_with("fux: mismatch: ")
+                && ran.stderr.contains("stop it")
+                && !ran.stderr.contains("running the server's own binary"),
+            &ran,
+        )?;
+        let status = against_protocol(76, "status", &["(status)"], "", &[], 1)?;
+        check(
+            status.status == Some(0)
+                && status.stdout.contains("(server-protocol 76)")
+                && status.stdout.contains("(compatible #false)"),
+            &status,
+        )
     }
 
     /// A program file that may not read the same again (a pipe) is read as
