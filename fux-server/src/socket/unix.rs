@@ -524,7 +524,7 @@ pub const CLIENT_STOPS: [fuxix::process::Signal; 3] = crate::STOPS;
 
 /// What starts a server at `path`, quoted for a shell.
 pub(super) fn start_another(path: &str) -> String {
-    format!("`FUX_SOCKET={path} fux start` starts one")
+    format!("`FUX_SOCKET={path} fux '(start)'` starts one")
 }
 
 /// Connects to the server at `socket`.

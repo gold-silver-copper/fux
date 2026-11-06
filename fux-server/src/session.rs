@@ -7287,10 +7287,10 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/true program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
         )?;
         let id = PaneId::of(2);
-        run(&mut s, "%2 respawn")?;
+        run(&mut s, "(respawn (pane 2))")?;
         let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         let pid = child.leader.pid();

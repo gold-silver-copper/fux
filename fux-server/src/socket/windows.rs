@@ -515,7 +515,7 @@ pub const CLIENT_STOPS: [fuxix::process::Signal; 4] = [
 
 /// What starts a server at `path`.
 pub(super) fn start_another(path: &str) -> String {
-    format!("`set FUX_SOCKET={path}`, then `fux start`, starts one")
+    format!("`set FUX_SOCKET={path}`, then `fux '(start)'`, starts one")
 }
 
 /// A client's refusal: no folder or no record is no server; a folder not
