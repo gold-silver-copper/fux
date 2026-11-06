@@ -237,6 +237,7 @@ fn a_failure_gives_its_code_number_and_message_to_get() -> Outcome {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn only_a_file_the_os_says_is_not_there_fails_not_found() -> Outcome {
     let dir = dir("not-found")?;
