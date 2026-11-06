@@ -128,8 +128,13 @@ fn serve(socket: &Path, log: &Path) -> Result<Served, String> {
     let stdout = child.stdout.take().ok_or("its stdout")?;
     let (said, heard) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        // What it says first is for its starter to show.
+        let mut stdout = BufReader::new(stdout);
         let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
+        while {
+            line.clear();
+            matches!(stdout.read_line(&mut line), Ok(n) if n > 0) && line.starts_with("notice: ")
+        } {}
         let _ = said.send(line);
     });
     let line = heard.recv_timeout(Duration::from_secs(30)).map_err(|_| {

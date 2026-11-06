@@ -371,9 +371,11 @@ jobs:
       # fux's client (WINDOWS.md, PR 8), real `fux` attached in a console a
       # test hosts (tests/console.rs), through cmd.exe as in a terminal.
       - name: fux client
+        if: ${{ !cancelled() }}
         timeout-minutes: 8
         run: |
           set -euo pipefail
+          cargo test -p fuxix --test console --locked -- --nocapture
           cargo test -p fux --test console --locked -- --nocapture
           tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe" || true
 

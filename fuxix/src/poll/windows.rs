@@ -116,6 +116,26 @@ pub(crate) mod sealed {
 /// a read or a queue for.
 pub trait Source: sealed::Sealed {}
 
+impl<S: Source + ?Sized> sealed::Sealed for &S {
+    fn arm(&self, interest: Events) {
+        (**self).arm(interest);
+    }
+
+    fn ready(&self, interest: Events) -> Events {
+        (**self).ready(interest)
+    }
+
+    fn read(&self, buffer: &mut [u8]) -> Result<usize> {
+        (**self).read(buffer)
+    }
+
+    fn write(&self, bytes: &[u8]) -> Result<usize> {
+        (**self).write(bytes)
+    }
+}
+
+impl<S: Source + ?Sized> Source for &S {}
+
 /// A source to wait on, borrowed for as long as it is waited on.
 pub struct PollFd<'fd> {
     source: &'fd dyn Source,

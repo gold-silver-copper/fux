@@ -1,4 +1,6 @@
 //! The `fuxth` runner, run as a program: over pipes, and on a terminal.
+// Unix alone for now: it drives a pty, signals and FIFOs (WINDOWS.md, PR 8).
+#![cfg(unix)]
 use fuxix::poll::{Events, PollFd, poll};
 use fuxix::terminal::Size;
 use std::io::Write;

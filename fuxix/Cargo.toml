@@ -46,6 +46,12 @@ test = false
 name = "conpty_fallback"
 test = false
 
+# Its own main, as a program in a console prints nothing of a harness's.
+[[test]]
+name = "console"
+harness = false
+test = false
+
 [lints.rust]
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"
