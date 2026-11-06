@@ -296,7 +296,8 @@ The optional config is `$XDG_CONFIG_HOME/fux/config.grift`, else
 attaches. Command lines, `(start)`, watchers and headless clients never
 load it. A config builds one candidate client state, keys, definitions
 and preferences together; one that fails keeps the whole bundled state
-and shows why.
+and shows why. An old `config.fux` is not read, nor is a session saved before
+grift: write them again in grift.
 
 ```grift
 (move-keys "C-b" "C-a")
@@ -385,7 +386,9 @@ cookbook's "Take a crashed server's panes back"); it keeps its run's own
 fux to do it with, so an upgrade waits for the next fresh run. Detaching, or a client's crash, leaves the server and its
 programs running. A command line against a server of another fux protocol
 runs again with that server's own binary, saying so on stderr; where that
-cannot be, it fails `mismatch`, saying why.
+cannot be, it fails `mismatch`, saying why. A server from before grift reads
+no grift, so nothing runs with its binary: stop it, and `(status)` says which
+process it is.
 
 ## Terminal features
 

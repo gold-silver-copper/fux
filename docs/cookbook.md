@@ -457,13 +457,18 @@ fux '(filter (lambda! (p) (same? (get p "name") "bell")) (preferences (client (f
 kill "$A"
 ```
 
-A prompt's callback takes the line typed. This binding asks for a line and
-types it into the focused pane; `code!` keeps it a value until Enter runs it.
+A prompt's callback takes the line typed. `code!` keeps it a value until
+Enter runs it, later and in an interpreter of its own, so the config's names
+reach it and a local of the binding doesn't. What it needs from the key press
+goes in a list beside it, and it takes those values before the line. This
+binding asks for a line and types it into the pane focused when the key was
+pressed.
 
 ```grift
 (bind-key "C-b p" (code! (lambda! ()
-  (prompt (me) "command" "" (code! (lambda! (line-value)
-    (line (focused (me)) line-value)))))))
+  (prompt (me) "command" ""
+    (list (list (focused (me))) (code! (lambda! (target line-value)
+      (line target line-value))))))))
 (label "type a command")
 ```
 
