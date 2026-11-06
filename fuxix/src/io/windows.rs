@@ -19,6 +19,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
     PIPE_ACCESS_DUPLEX, ReadFile, SetFileCompletionNotificationModes, WriteFile,
 };
+use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::IO::{
     CancelIoEx, CreateIoCompletionPort, OVERLAPPED, OVERLAPPED_ENTRY,
 };
@@ -401,12 +402,12 @@ impl Sealed for Stream {
         ready
     }
 
-    fn reading(&self) -> Option<&Stream> {
-        Some(self)
+    fn read(&self, buffer: &mut [u8]) -> Result<usize> {
+        self.take(buffer)
     }
 
-    fn writing(&self) -> Option<&Stream> {
-        Some(self)
+    fn write(&self, bytes: &[u8]) -> Result<usize> {
+        self.give(bytes)
     }
 }
 
@@ -475,84 +476,96 @@ fn linger(op: &Op) {
     }
 }
 
-/// Takes bytes the stream read into `buffer`: how many, 0 at the end, and
-/// `AGAIN` while none have come. Taking the last starts the next read. A
-/// [`crate::pty::Master`] reads its program's output; a source that reads
+/// Reads from `source` into `buffer`: how many bytes, 0 at the end, and
+/// `AGAIN` while none have come. A [`Stream`] gives what it read ahead,
+/// and taking the last starts the next read; a [`crate::pty::Master`] its
+/// program's output; stdin what was typed or piped. A source that reads
 /// nothing fails with `BADF`.
 pub fn read(source: &(impl Source + ?Sized), buffer: &mut [u8]) -> Result<usize> {
-    let stream = source.reading().ok_or(Errno::BADF)?;
-    if buffer.is_empty() {
-        return Ok(0);
-    }
-    let op = &stream.read;
-    let mut state = lock(op);
-    if !state.pending && state.start >= state.end && state.failed.is_none() {
-        op.read(&stream.handle, &mut state);
-    }
-    if !state.ahead.is_empty() {
-        let mut taken = 0usize;
-        for to in buffer.iter_mut() {
-            let Some(from) = state.ahead.pop_front() else {
-                break;
-            };
-            *to = from;
-            taken = taken.saturating_add(1);
+    source.read(buffer)
+}
+
+/// Writes `bytes` to `source`: how many it took, or `AGAIN` while a
+/// [`Stream`]'s write is in flight, whose error is told by the next. A
+/// [`crate::pty::Master`] writes its program's input; stdout waits for its
+/// reader, as a blocking descriptor does. A source that writes nothing
+/// fails with `BADF`.
+pub fn write(source: &(impl Source + ?Sized), bytes: &[u8]) -> Result<usize> {
+    source.write(bytes)
+}
+
+impl Stream {
+    /// Takes bytes it read into `buffer`.
+    fn take(&self, buffer: &mut [u8]) -> Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
         }
-        return Ok(taken);
+        let op = &self.read;
+        let mut state = lock(op);
+        if !state.pending && state.start >= state.end && state.failed.is_none() {
+            op.read(&self.handle, &mut state);
+        }
+        if !state.ahead.is_empty() {
+            let mut taken = 0usize;
+            for to in buffer.iter_mut() {
+                let Some(from) = state.ahead.pop_front() else {
+                    break;
+                };
+                *to = from;
+                taken = taken.saturating_add(1);
+            }
+            return Ok(taken);
+        }
+        if state.start < state.end {
+            let (start, end) = (state.start, state.end);
+            let read = op.bytes(&mut state).get(start..end).unwrap_or_default();
+            let mut taken = 0usize;
+            for (to, from) in buffer.iter_mut().zip(read) {
+                *to = *from;
+                taken = taken.saturating_add(1);
+            }
+            state.start = start.saturating_add(taken);
+            if state.start >= state.end && state.failed.is_none() {
+                op.read(&self.handle, &mut state);
+            }
+            return Ok(taken);
+        }
+        match state.failed {
+            Some(errno) if errno.is_end() => Ok(0),
+            Some(errno) => Err(errno),
+            None => Err(Errno::AGAIN),
+        }
     }
-    if state.start < state.end {
-        let (start, end) = (state.start, state.end);
-        let read = op.bytes(&mut state).get(start..end).unwrap_or_default();
+
+    /// Gives it as much of `bytes` as its buffer holds, to be written from
+    /// there.
+    fn give(&self, bytes: &[u8]) -> Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let op = &self.write;
+        let mut state = lock(op);
+        if let Some(errno) = state.failed {
+            return Err(errno);
+        }
+        if state.pending || state.start < state.end {
+            return Err(Errno::AGAIN);
+        }
         let mut taken = 0usize;
-        for (to, from) in buffer.iter_mut().zip(read) {
+        for (to, from) in op.bytes(&mut state).iter_mut().zip(bytes) {
             *to = *from;
             taken = taken.saturating_add(1);
         }
-        state.start = start.saturating_add(taken);
-        if state.start >= state.end && state.failed.is_none() {
-            op.read(&stream.handle, &mut state);
+        (state.start, state.end) = (0, taken);
+        op.write(&self.handle, &mut state);
+        // Refused at once, with nothing written: the error is this call's.
+        let refused = state.failed.filter(|_| state.start == 0);
+        if refused.is_some() {
+            state.end = 0;
         }
-        return Ok(taken);
+        drop(state);
+        refused.map_or(Ok(taken), Err)
     }
-    match state.failed {
-        Some(errno) if errno.is_end() => Ok(0),
-        Some(errno) => Err(errno),
-        None => Err(Errno::AGAIN),
-    }
-}
-
-/// Gives the stream as much of `bytes` as its buffer holds, to be written
-/// from there: how many, or `AGAIN` while a write is in flight. An error
-/// the write ends with is told by the next. A [`crate::pty::Master`]
-/// writes its program's input; a source that writes nothing fails with
-/// `BADF`.
-pub fn write(source: &(impl Source + ?Sized), bytes: &[u8]) -> Result<usize> {
-    let stream = source.writing().ok_or(Errno::BADF)?;
-    if bytes.is_empty() {
-        return Ok(0);
-    }
-    let op = &stream.write;
-    let mut state = lock(op);
-    if let Some(errno) = state.failed {
-        return Err(errno);
-    }
-    if state.pending || state.start < state.end {
-        return Err(Errno::AGAIN);
-    }
-    let mut taken = 0usize;
-    for (to, from) in op.bytes(&mut state).iter_mut().zip(bytes) {
-        *to = *from;
-        taken = taken.saturating_add(1);
-    }
-    (state.start, state.end) = (0, taken);
-    op.write(&stream.handle, &mut state);
-    // Refused at once, with nothing written: the error is this call's.
-    let refused = state.failed.filter(|_| state.start == 0);
-    if refused.is_some() {
-        state.end = 0;
-    }
-    drop(state);
-    refused.map_or(Ok(taken), Err)
 }
 
 /// Writes as much of `bytes` as `stream` takes now: until all are written
@@ -667,12 +680,56 @@ fn named(flags: u32) -> Result<(OwnedHandle, OwnedHandle)> {
     }
 }
 
+/// Whether this process's stdout is a pipe, whose reader can go.
+pub fn stdout_is_fifo() -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+    // SAFETY: it takes a number and touches no memory.
+    let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    // SAFETY: an invalid handle only fails; it touches no memory.
+    unsafe { GetFileType(handle) == FILE_TYPE_PIPE }
+}
+
+/// How long a poll watching stdout's reader waits at most between looks:
+/// nothing tells a pipe's writer its reader went (`stdout_reader_gone`).
+pub const STDOUT_LOOK: Option<std::time::Duration> = Some(std::time::Duration::from_millis(100));
+
+/// Whether stdout is a pipe whose reader closed it, as the pipe's own state
+/// says: asked of a write-only handle, which `PeekNamedPipe` refuses. Where
+/// the system won't say, not gone: the next write tells.
+pub(crate) fn stdout_reader_gone() -> bool {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_PIPE_CLOSING_STATE, FILE_PIPE_LOCAL_INFORMATION, FilePipeLocalInformation,
+        NtQueryInformationFile,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+    if !stdout_is_fifo() {
+        return false;
+    }
+    // SAFETY: it takes a number and touches no memory.
+    let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    let mut status = IO_STATUS_BLOCK::default();
+    let mut local = FILE_PIPE_LOCAL_INFORMATION::default();
+    let size = u32::try_from(std::mem::size_of_val(&local)).unwrap_or(0);
+    // SAFETY: the handle is this process's stdout; `status` and `local`
+    // are writable, `local` for `size` bytes.
+    let asked = unsafe {
+        NtQueryInformationFile(
+            handle,
+            &mut status,
+            (&raw mut local).cast(),
+            size,
+            FilePipeLocalInformation,
+        )
+    };
+    asked >= 0 && local.NamedPipeState == FILE_PIPE_CLOSING_STATE
+}
+
 /// Points this process's standard output at a copy of `to`, closing what
 /// it was, as Unix's `dup2` onto 1 does: a server done with the pipe its
 /// starter reads points it at `NUL`, so that pipe breaks.
 pub fn redirect_stdout(to: impl std::os::windows::io::AsHandle) -> Result<()> {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle};
+    use windows_sys::Win32::System::Console::SetStdHandle;
     let copy = (to.as_handle().try_clone_to_owned())
         .map_err(|error| Errno::from_io_error(&error).unwrap_or_else(Errno::last))?;
     // SAFETY: it takes a number and touches no memory.

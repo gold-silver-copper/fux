@@ -31,10 +31,13 @@
 //! A [`Listener`] and a [`Spare`] are [`crate::poll::Source`]s, ready to
 //! read once a client connected: a connect in flight is waited on by a
 //! thread-pool wait on its event, whose callback only wakes the poll.
+//!
+//! A [`Client`] is a client's own end, kept off the process's completion
+//! port, so that a thread may wait on it while another polls.
 use super::Peer;
 use crate::errno::{Errno, Result};
 use crate::io::Stream;
-use crate::poll::{Events, Source, sealed::Sealed};
+use crate::poll::{Events, Source, Wait, sealed::Sealed, woken};
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
@@ -66,10 +69,12 @@ use windows_sys::Win32::System::Pipes::{
     WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcess, GetProcessTimes, INFINITE, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, RegisterWaitForSingleObject, ResetEvent, UnregisterWaitEx,
-    WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
+    CreateEventW, GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken,
+    PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent,
 };
+
+mod client;
+pub use client::Client;
 
 /// Each instance's buffers in the kernel, as `io`'s pipes have.
 const BUFFER: u32 = 64 * 1024;
@@ -304,12 +309,17 @@ pub fn peer(pipe: impl AsHandle, connected: SystemTime) -> Result<Peer> {
 /// `ERROR_FILE_NOT_FOUND`. The server may only identify the client, never
 /// act as it.
 pub fn connect(name: &str) -> Result<Stream> {
+    Stream::new(checked(name)?.0)
+}
+
+/// The pipe `name` opened and found to be ours ([`connect`]), and when.
+fn checked(name: &str) -> Result<(OwnedHandle, SystemTime)> {
     let pipe = open(&wide(name)?)?;
     let opened = SystemTime::now();
     if !peer(&pipe, opened)?.user.is_current() || !owned_by_us(&pipe)? {
         return Err(Errno::ACCES);
     }
-    Stream::new(pipe)
+    Ok((pipe, opened))
 }
 
 /// `name` as a NUL-ended wide string; one with a NUL in it, which Windows
@@ -685,12 +695,12 @@ impl Sealed for Listener {
         self.waiting.ready(interest)
     }
 
-    fn reading(&self) -> Option<&crate::io::Stream> {
-        None
+    fn read(&self, _: &mut [u8]) -> Result<usize> {
+        Err(Errno::BADF)
     }
 
-    fn writing(&self) -> Option<&crate::io::Stream> {
-        None
+    fn write(&self, _: &[u8]) -> Result<usize> {
+        Err(Errno::BADF)
     }
 }
 
@@ -737,27 +747,6 @@ struct State {
     failed: Option<Errno>,
     /// The thread-pool wait on `event` while a connect is in flight.
     wait: Option<Wait>,
-}
-
-/// A registered wait, unregistered when dropped.
-struct Wait(HANDLE);
-
-// SAFETY: a registered wait may be unregistered from any thread.
-unsafe impl Send for Wait {}
-
-impl Drop for Wait {
-    fn drop(&mut self) {
-        // SAFETY: unregisters this wait, once, waiting for a callback
-        // already running to finish, before the event it waits on closes.
-        unsafe { UnregisterWaitEx(self.0, INVALID_HANDLE_VALUE) };
-    }
-}
-
-/// What the thread pool runs when a connect ends: wakes the poll, which
-/// looks at what ended.
-unsafe extern "system" fn came(_: *mut core::ffi::c_void, _: bool) {
-    // A wake that can't be posted has nobody to tell.
-    let _ = crate::poll::wake();
 }
 
 fn lock(connect: &Connect) -> MutexGuard<'_, State> {
@@ -892,7 +881,8 @@ impl Sealed for Spare {
             None => state.connected = Some(SystemTime::now()),
             Some(errno) if errno == Errno::from_code(ERROR_IO_PENDING) => {
                 state.pending = true;
-                match register(event) {
+                // Unregistered before the event closes (`Connect`).
+                match Wait::once(event, woken) {
                     Ok(wait) => state.wait = Some(wait),
                     // No wake will come: told as the error, and the
                     // connect cancelled as the spare goes.
@@ -922,12 +912,12 @@ impl Sealed for Spare {
         }
     }
 
-    fn reading(&self) -> Option<&crate::io::Stream> {
-        None
+    fn read(&self, _: &mut [u8]) -> Result<usize> {
+        Err(Errno::BADF)
     }
 
-    fn writing(&self) -> Option<&crate::io::Stream> {
-        None
+    fn write(&self, _: &[u8]) -> Result<usize> {
+        Err(Errno::BADF)
     }
 }
 
@@ -942,29 +932,6 @@ fn again(handle: &OwnedHandle) {
     unsafe { DisconnectNamedPipe(handle.as_raw_handle()) };
     // A wake that can't be posted has a broken port: the poll fails.
     let _ = crate::poll::wake();
-}
-
-/// A thread-pool wait on `event` that wakes the poll once it is set.
-fn register(event: HANDLE) -> Result<Wait> {
-    crate::poll::port()?;
-    let mut wait: HANDLE = std::ptr::null_mut();
-    // SAFETY: the event stays open till the wait is unregistered (`Wait`
-    // is dropped first, `Spare::settle` or `Drop`); `came` takes no
-    // context and only posts a packet, short enough for the wait thread.
-    let registered = unsafe {
-        RegisterWaitForSingleObject(
-            &mut wait,
-            event,
-            Some(came),
-            std::ptr::null(),
-            INFINITE,
-            WT_EXECUTEONLYONCE | WT_EXECUTEINWAITTHREAD,
-        )
-    };
-    match registered {
-        0 => Err(Errno::last()),
-        _ => Ok(Wait(wait)),
-    }
 }
 
 impl Drop for Spare {

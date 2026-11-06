@@ -246,6 +246,8 @@ mod tests {
         }
     }
 
+    // Unix alone: a symbolic link, which Windows lets few users make.
+    #[cfg(unix)]
     #[test]
     fn a_diamond_runs_each_canonical_file_once() -> TestResult {
         let f = Fixture::new()?;

@@ -48,6 +48,8 @@ pub const SHEBANG: &str = "#!/usr/bin/env -S fux --file";
 /// fux's default keys: a config, run before the user's.
 const KEYS: &str = include_str!("keys.fux");
 pub(crate) const DEFAULTS: &str = include_str!("client-defaults.fux");
+/// What differs on Windows, run after them: the default shell.
+const WINDOWS_DEFAULTS: &str = include_str!("windows.fux");
 
 /// A value of fux's own on the stack.
 #[derive(Clone, Debug, PartialEq)]
@@ -903,7 +905,7 @@ impl Write for Watched<'_> {
 #[derive(Clone, Default)]
 pub struct Stop {
     flag: Arc<AtomicBool>,
-    stream: Arc<Mutex<Option<std::os::unix::net::UnixStream>>>,
+    stream: Arc<Mutex<Option<fux_server::socket::Client>>>,
 }
 
 impl Stop {
@@ -917,7 +919,7 @@ impl Stop {
 
     /// `stream` is the connection of the request under way (`None`: no
     /// request is): what a stop shuts down.
-    fn hold(&self, stream: Option<std::os::unix::net::UnixStream>) {
+    fn hold(&self, stream: Option<fux_server::socket::Client>) {
         if let Ok(mut held) = self.stream.lock() {
             *held = stream;
         }
@@ -1606,8 +1608,8 @@ fn local(
             words::check_attach_creation(&creation, target.is_some(), *read_only)
                 .map_err(|why| Failed::new(Code::of(why.code), why.message))?;
             // Watching or naming a run starts no replacement server.
-            let socket = match *read_only || of.is_some() {
-                true => server.socket()?,
+            let (socket, notices) = match *read_only || of.is_some() {
+                true => (server.socket()?, Vec::new()),
                 false => started(server, committed.preferences.journal_entries)?,
             };
             if *read_only && !client::answers(&socket) {
@@ -1622,6 +1624,7 @@ fn local(
                 creation,
                 state: committed,
                 problem,
+                notices,
             };
             client::attach(&socket, attach, *size).map_err(|e| server.failed(e))?;
         }
@@ -1648,16 +1651,17 @@ fn local(
 }
 
 /// The server's socket, starting it in the background if none answers,
-/// its journal keeping `journal` events.
+/// its journal keeping `journal` events, and what one started said.
 fn started(
     server: &mut Server,
     journal: fux_wire::command::JournalEntries,
-) -> Result<SocketPath, Failed> {
+) -> Result<(SocketPath, Vec<String>), Failed> {
     let socket = server.socket()?;
-    if !client::answers(&socket) {
-        client::start_server(&socket, journal).map_err(client_failed)?;
-    }
-    Ok(socket)
+    let notices = match client::answers(&socket) {
+        true => Vec::new(),
+        false => client::start_server(&socket, journal).map_err(client_failed)?,
+    };
+    Ok((socket, notices))
 }
 
 /// A typing terminal's whole state and one diagnostic if it failed.
@@ -1674,17 +1678,18 @@ pub fn default_state() -> Result<ClientState, Failed> {
     for (name, text) in [("client-defaults.fux", DEFAULTS), ("keys.fux", KEYS)] {
         run_quiet(&token::source(name, text)?, Some(&mut draft), true)?;
     }
+    if cfg!(windows) {
+        let windows = token::source("windows.fux", WINDOWS_DEFAULTS)?;
+        run_quiet(&windows, Some(&mut draft), true)?;
+    }
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 
 /// The config file, a fuxth program a typing terminal runs as it attaches:
-/// `$XDG_CONFIG_HOME/fux/config.fux`, else `~/.config/fux/config.fux`.
+/// `$XDG_CONFIG_HOME/fux/config.fux`, else `~/.config/fux/config.fux`
+/// (Windows: `%APPDATA%\\fux\\config.fux`).
 pub fn default_path() -> Option<std::path::PathBuf> {
-    let set = |name: &str| std::env::var_os(name).filter(|d| !d.is_empty());
-    let config = set("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| set("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))?;
-    Some(config.join("fux").join("config.fux"))
+    Some(fuxix::file::config_dir()?.join("fux").join("config.fux"))
 }
 
 fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {

@@ -368,6 +368,15 @@ jobs:
           cargo test -p fux --test windows --locked -- --nocapture --test-threads 1
           tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe|ping" || true
 
+      # fux's client (WINDOWS.md, PR 8), real `fux` attached in a console a
+      # test hosts (tests/console.rs), through cmd.exe as in a terminal.
+      - name: fux client
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          cargo test -p fux --test console --locked -- --nocapture
+          tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe" || true
+
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured
       # in the log: a flood both ways with signals, no lost wake-up, an idle
       # loop's CPU, a 1 ms timeout's lateness, a child's exit as Chld.

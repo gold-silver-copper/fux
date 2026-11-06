@@ -12,7 +12,7 @@ mod conpty;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use conpty::{fetch, load};
+pub use conpty::{fetch, fetched, load};
 #[cfg(windows)]
 pub use windows::*;
 

@@ -44,6 +44,19 @@ pub fn write_what_fits(fd: impl AsFd, bytes: &[u8]) -> Result<usize> {
     Ok(written)
 }
 
+/// Whether this process's stdout is a pipe, whose reader can go.
+pub fn stdout_is_fifo() -> bool {
+    use std::os::fd::AsFd as _;
+    use std::os::unix::fs::FileTypeExt as _;
+    (std::io::stdout().as_fd().try_clone_to_owned())
+        .and_then(|fd| std::fs::File::from(fd).metadata())
+        .is_ok_and(|meta| meta.file_type().is_fifo())
+}
+
+/// How long a poll watching stdout's reader waits at most between looks:
+/// for ever, as the poll itself tells it went.
+pub const STDOUT_LOOK: Option<std::time::Duration> = None;
+
 /// Makes reads and writes on `fd` return `AGAIN` rather than wait.
 pub fn set_nonblocking(fd: impl AsFd, nonblocking: bool) -> Result<()> {
     let raw = fd.as_fd().as_raw_fd();

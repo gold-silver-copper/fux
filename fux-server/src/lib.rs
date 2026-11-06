@@ -86,7 +86,6 @@ pub mod wait;
 pub mod workspace;
 
 use fuxix::process::Signal;
-use std::io::{PipeReader, Read};
 use std::time::{Duration, Instant};
 
 /// `wait` after `from`. A time too far off for an `Instant` is taken as
@@ -97,12 +96,6 @@ pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
 
 /// The signals that stop a server and detach a client.
 pub const STOPS: [Signal; 3] = [Signal::Term, Signal::Int, Signal::Hup];
-
-/// Reads whatever a pipe holds.
-pub fn drain(mut pipe: &PipeReader) {
-    let mut buffer = [0u8; 256];
-    while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
-}
 
 /// Takes every signal a signal pipe holds.
 pub(crate) fn take_signals(pipe: &fuxix::signal::Pipe) {

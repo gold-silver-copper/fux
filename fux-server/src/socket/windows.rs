@@ -472,13 +472,17 @@ fn conpty() -> Result<PathBuf, String> {
 }
 
 /// Gets the pinned ConPTY ready before the server serves (D-130): fetched
-/// on first use (`fuxix::pty::fetch`), then chosen as each pane will
-/// choose it. What the built-in loses, if it is the one, said once, here.
-pub fn prepare_terminals() -> Option<String> {
+/// on first use (`fuxix::pty::fetch`), `notice` saying so before the wait
+/// only if a download will happen, then chosen as each pane will choose
+/// it. What the built-in loses, if it is the one, said once, here.
+pub fn prepare_terminals(notice: impl Fn(&str)) -> Option<String> {
     let dir = match conpty() {
         Ok(dir) => dir,
         Err(why) => return Some(format!("no folder for the pinned ConPTY: {why}")),
     };
+    if !fuxix::pty::fetched(&dir) {
+        notice("fetching Windows' ConPTY, once");
+    }
     let fetched = fuxix::pty::fetch(&dir).err();
     let loaded = fuxix::pty::load(&dir).err()?;
     let why = fetched.map_or_else(|| loaded.to_string(), |e| e.to_string());
@@ -495,3 +499,193 @@ pub fn load_terminals() {
         let _ = fuxix::pty::load(&dir);
     }
 }
+
+/// A client's connection to its server, off the process's completion port:
+/// its worker waits on requests while the main thread polls.
+pub type Client = fuxix::socket::Client;
+
+/// The signals that detach an attached client, with Ctrl-Break, which a
+/// console sends whatever its mode.
+pub const CLIENT_STOPS: [fuxix::process::Signal; 4] = [
+    fuxix::process::Signal::Term,
+    fuxix::process::Signal::Int,
+    fuxix::process::Signal::Hup,
+    fuxix::process::Signal::Quit,
+];
+
+/// What starts a server at `path`.
+pub(super) fn start_another(path: &str) -> String {
+    format!("`set FUX_SOCKET={path}`, then `fux start`, starts one")
+}
+
+/// A client's refusal: no folder or no record is no server; a folder not
+/// ours alone is refused before any record there is read, as a bad
+/// directory is on Unix. No file is at the path to look at.
+pub fn check_client_socket(socket: &SocketPath) -> Result<(), Error> {
+    let path = socket.path();
+    if fs::symlink_metadata(socket.directory()).is_err() {
+        return Err(Error::NoServer(path.to_owned()));
+    }
+    private_directory(socket, false)?;
+    match record_path(path).exists() {
+        true => Ok(()),
+        false => Err(Error::NoServer(path.to_owned())),
+    }
+}
+
+/// Whether a server runs on `socket`: its folder is ours, `.server` names
+/// a live process, and `.lock` is held, asked as a starting server asks,
+/// once none is starting there. Every instance being busy says nothing: a
+/// squatter's are busy too. A client that finds no record makes no file.
+pub fn owned(socket: &SocketPath) -> bool {
+    let path = socket.path();
+    private_directory(socket, false).is_ok() && recorded_runs(path) && lock_held(path)
+}
+
+/// Whether a server holds the lock of the socket at `path`.
+fn lock_held(path: &Path) -> bool {
+    let Ok((starting, _)) = lock_file(path, ".starting") else {
+        return false;
+    };
+    if starting.lock().is_err() {
+        return false;
+    }
+    let Ok((lock, _)) = lock_file(path, ".lock") else {
+        return false;
+    };
+    matches!(lock.try_lock(), Err(fs::TryLockError::WouldBlock))
+}
+
+/// How long a client waits on a server whose every instance is taken, as
+/// a full backlog holds a Unix client: a loaded server's next is coming.
+const BUSY_WAIT: Duration = Duration::from_secs(5);
+
+/// Connects to the server at `socket`. A pipe that is gone while its record
+/// is left is what Unix's refused connect says: one that stopped left it.
+/// Every instance busy is waited on only while `owned` says a server runs:
+/// a squatter's busy instances are no server, and time out.
+pub fn dial(socket: &SocketPath) -> std::io::Result<Client> {
+    let name = pipe_name(socket.path()).map_err(std::io::Error::other)?;
+    let start = Instant::now();
+    loop {
+        match Client::connect(&name) {
+            Ok(client) => return Ok(client),
+            Err(fuxix::Errno::AGAIN) if start.elapsed() < BUSY_WAIT && owned(socket) => {}
+            Err(fuxix::Errno::AGAIN) => return Err(std::io::ErrorKind::TimedOut.into()),
+            Err(errno) => {
+                let error = std::io::Error::from(errno);
+                return Err(match none_listens(&error) {
+                    true => std::io::ErrorKind::ConnectionRefused.into(),
+                    false => error,
+                });
+            }
+        }
+    }
+}
+
+/// Who serves `client`, as the system says.
+pub fn client_peer(client: &Client) -> fuxix::Result<fuxix::socket::Peer> {
+    client.peer()
+}
+
+/// The server's log at `path`, opened to append, never through a link.
+pub fn open_log(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    let file = fuxix::file::private_file(&mut options).open(path)?;
+    match file.metadata()?.is_file() {
+        true => Ok(file),
+        false => Err(std::io::Error::other("not a regular file")),
+    }
+}
+
+/// A server being started: what it says on stdout, then its end.
+pub struct Starting {
+    pid: Pid,
+    output: Option<std::io::PipeReader>,
+}
+
+/// How long a server whose stdout closed has to end.
+const ENDING: Duration = Duration::from_secs(2);
+
+/// Starts `exe` with `args` in the background, its stderr `log`, its stdout
+/// a pipe to read; without the variable `unset`. Through
+/// `fuxix::process::start`, whose handle list hands it these alone (D-140):
+/// with std's, it would inherit what the client inherited, and `fux start |
+/// findstr x` would never end. It runs in its socket's folder: a process's
+/// directory can't be removed or renamed, so the user's would stay pinned.
+pub fn start_server(
+    exe: &Path,
+    args: &[&std::ffi::OsStr],
+    socket: &SocketPath,
+    log: File,
+    unset: &str,
+) -> std::io::Result<Starting> {
+    let (output, theirs) = std::io::pipe()?;
+    let stdio = [None, Some(theirs.as_handle()), Some(log.as_handle())];
+    let directory = Some(socket.directory());
+    let started = fuxix::process::start_in(exe, args, stdio, directory, &[unset])?;
+    Ok(Starting {
+        pid: started.pid,
+        output: Some(output),
+    })
+}
+
+impl Starting {
+    /// What it writes on stdout, to read until it closes.
+    pub fn output(&mut self) -> Option<impl std::io::Read + use<>> {
+        self.output.take()
+    }
+
+    /// Waits for it to end: how, as words. Dropped instead, it runs on.
+    pub fn ended(self) -> std::io::Result<String> {
+        let start = Instant::now();
+        loop {
+            match fuxix::process::reap(self.pid) {
+                Ok(Some(status)) => return Ok(format!("{status:?}")),
+                Ok(None) if start.elapsed() < ENDING => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) => return Ok("it runs on, saying nothing".to_owned()),
+                Err(errno) => return Err(errno.into()),
+            }
+        }
+    }
+}
+
+/// The program process `pid` runs, to run it; its path, to say; and whether
+/// it is this very binary, by path, as `follow` asks.
+pub fn server_binary(pid: Pid) -> Result<(PathBuf, PathBuf, bool), String> {
+    let path = fuxix::process::image(pid).map_err(|e| format!("process {pid}: {e}"))?;
+    let ours = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+    let real = |path: &Path| fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()));
+    let same = real(&path)? == real(&ours)?;
+    Ok((path.clone(), path, same))
+}
+
+/// Runs `command`, having no `exec`: waits for it, and this process ends
+/// with its code. Returns only if it can't start. `arg0` has no place here:
+/// std names a program by its path.
+pub fn rerun(mut command: std::process::Command, _arg0: &std::ffi::OsStr) -> std::io::Error {
+    match command.status() {
+        // No terminal is raw here: a command line, ending as what took its
+        // place did.
+        Ok(status) => fuxix::process::end(status.code().unwrap_or(1)),
+        Err(error) => error,
+    }
+}
+
+/// The id a command that followed finds in its mark: its parent's, as there
+/// is no `exec` to keep one.
+pub fn follower_id() -> u32 {
+    fuxix::process::ancestry().get(1).copied().unwrap_or(0)
+}
+
+/// Windows starts no connection's process before its client.
+pub fn waiting_stdio() -> Result<(), String> {
+    Err("Windows starts no connection's process before its client".to_owned())
+}
+
+/// Where `fux help` says a server is found.
+pub const SOCKET_HELP: &str = "(`set FUX_SOCKET=C:\\abs\\path`, then `fux …`); else\n\
+     server.sock in %LOCALAPPDATA%\\fux.";
