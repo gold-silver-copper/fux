@@ -1002,3 +1002,16 @@ fn printed_data_reads_back_with_its_run() -> TestResult {
 fn run_program(machine: &mut Machine, host: &mut Host<'_>) -> Result<Vec<Value<Fux>>, Failed> {
     run(machine, host, &mut NoRequests, None)
 }
+
+/// A library loads on first use, so nothing marks its code as a library's:
+/// a failure in it still names the program's line, not the library's.
+#[test]
+fn a_failure_in_a_library_names_the_users_line() -> TestResult {
+    let source = "\n\n(assert-kind 1 \"pane\" \"a pane\")";
+    let failed = evaluate(source, None, &mut NoRequests, &mut Vec::new())
+        .err()
+        .ok_or("the library took it")?;
+    assert!(failed.message.contains("at test:3"), "{failed}");
+    assert!(!failed.message.contains("library.grift"), "{failed}");
+    Ok(())
+}

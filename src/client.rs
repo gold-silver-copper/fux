@@ -2132,6 +2132,77 @@ mod tests {
         })
     }
 
+    /// What each job in turn came to on one worker.
+    fn jobs_on_a_worker(
+        state: &Mutex<ClientState>,
+        jobs: &[&str],
+    ) -> Result<Vec<Option<String>>, Box<dyn std::error::Error>> {
+        struct Refuse;
+        impl script::Asks for Refuse {
+            fn ask(&mut self, _: &Asked) -> Result<Reply, script::Failed> {
+                Err(script::Failed::new(Code::NotConfig, "operation refused"))
+            }
+        }
+        let me = (
+            fux_wire::id::ClientId::of(1),
+            fux_wire::command::Run::now().ok_or("clock")?,
+        );
+        let mut said = Vec::new();
+        let done = |ran: Ran| {
+            said.push(ran.notice.map(|(text, _)| text));
+            true
+        };
+        let stop = script::Stop::default();
+        let jobs = jobs.iter().map(|job| (Job::from(*job), 0));
+        work(
+            &mut Refuse,
+            me,
+            state,
+            &stop,
+            &mut |_| {},
+            jobs,
+            |_| {},
+            done,
+        );
+        Ok(said)
+    }
+
+    /// A job leaves nothing for the next on the same worker: not what it
+    /// defined, not what it put in a context its config holds, not what a
+    /// failure stopped it in the middle of.
+    #[test]
+    fn a_job_leaves_nothing_for_the_next() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("fux-isolated-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("config.grift");
+        std::fs::write(&path, "(define! store (context))\n")?;
+        let state = Mutex::new(script::run_file(&path).map_err(|e| e.to_string())?);
+        let said = jobs_on_a_worker(
+            &state,
+            &[
+                "(define! mine 1) (bind store (quote! left) 2) (print (names store))",
+                "(print (names store))",
+                "(print mine)",
+                "(bind store (quote! failed) 3) (first 1)",
+                "(print (names store))",
+            ],
+        )?;
+        std::fs::remove_dir_all(dir)?;
+        let said: Vec<String> = said.into_iter().map(Option::unwrap_or_default).collect();
+        assert_eq!(said.first().map(String::as_str), Some("(left)"), "{said:?}");
+        assert_eq!(said.get(1).map(String::as_str), Some("()"), "{said:?}");
+        assert!(
+            said.get(2).is_some_and(|s| s.contains("unbound-symbol")),
+            "{said:?}"
+        );
+        assert!(
+            said.get(3).is_some_and(|s| s.contains("type-error")),
+            "{said:?}"
+        );
+        assert_eq!(said.get(4).map(String::as_str), Some("()"), "{said:?}");
+        Ok(())
+    }
+
     #[test]
     fn presentation_commits_whole_and_survives_a_later_failure()
     -> Result<(), Box<dyn std::error::Error>> {
