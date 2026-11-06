@@ -590,8 +590,8 @@ of that server's panes. Each script should clean up the targets and processes it
   talks to one server; join two with a
   pipe: `fux '(capture (pane 1))' | FUX_SOCKET="$XDG_RUNTIME_DIR/fux/b.sock" fux
   '(send-keys (paste (pane 1) (input)))'`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
-  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `.sock` files:
-  `status` each.
+  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`; on Windows `%LOCALAPPDATA%\fux`) are its
+  `.sock` files, on Windows the `.server` records beside the pipes they name: `status` each.
 
   ```sh
   for s in "${XDG_RUNTIME_DIR-$TMPDIR}"/fux/*.sock; do FUX_SOCKET=$s fux '(status)'; done
@@ -627,7 +627,7 @@ of that server's panes. Each script should clean up the targets and processes it
   choose; `fux '(start)' && fux --file FILE` makes them again on a fresh server,
   never its processes' state. That is another server run: versions from
   before it are refused.
-- fux is controlled through its Unix socket alone: a sandbox that denies
+- fux is controlled through its Unix socket (on Windows, its named pipe) alone: a sandbox that denies
   `connect` to it (Codex's denies every `connect`) cannot drive fux. Run
   fux commands outside such a sandbox, or allow the socket.
 - `(attach (tab 2))` shows that tab's first pane (its zoomed one, if zoomed); `(attach (pane 3))` focuses that pane.
