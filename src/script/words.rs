@@ -892,16 +892,32 @@ fn path_of_bytes(bytes: Vec<u8>) -> Result<std::path::PathBuf, Failure> {
     Ok(std::ffi::OsString::from_vec(bytes).into())
 }
 
-/// A Windows path that isn't text, a lone surrogate's, isn't made again.
+/// A Windows path's WTF-8 bytes (UTF-8, a lone surrogate as its three
+/// bytes), made again as the UTF-16 units they are.
 #[cfg(windows)]
 fn path_of_bytes(bytes: Vec<u8>) -> Result<std::path::PathBuf, Failure> {
-    let text = String::from_utf8(bytes).map_err(|_| {
-        fail(
-            Code::BadValue,
-            "a directory that isn't text can't be restored on Windows",
-        )
-    })?;
-    Ok(text.into())
+    use std::os::windows::ffi::OsStringExt;
+    let bad = || fail(Code::BadValue, "a directory's bytes are no WTF-8");
+    let mut units = Vec::with_capacity(bytes.len());
+    let mut rest = bytes.as_slice();
+    while !rest.is_empty() {
+        let text = match std::str::from_utf8(rest) {
+            Ok(text) => text,
+            Err(error) => rest
+                .split_at_checked(error.valid_up_to())
+                .and_then(|(valid, _)| std::str::from_utf8(valid).ok())
+                .ok_or_else(bad)?,
+        };
+        units.extend(text.encode_utf16());
+        rest = rest.get(text.len()..).ok_or_else(bad)?;
+        if let [0xED, high @ 0xA0..=0xBF, low @ 0x80..=0xBF, after @ ..] = rest {
+            units.push(0xD000 | (u16::from(*high) & 0x3F) << 6 | u16::from(*low) & 0x3F);
+            rest = after;
+        } else if !rest.is_empty() {
+            return Err(bad());
+        }
+    }
+    Ok(std::ffi::OsString::from_wide(&units).into())
 }
 
 /// The options or request an option makes of what it goes on, `next`
@@ -1385,6 +1401,7 @@ impl Host<'_> {
                 read_only,
                 size,
                 creation,
+                configured,
                 ..
             })) => local(Local::Attach {
                 of,
@@ -1392,6 +1409,7 @@ impl Host<'_> {
                 read_only,
                 size,
                 creation,
+                configured,
             }),
             result @ (Done::Now | Done::Later(_)) => Ok(result),
         }
@@ -1403,7 +1421,7 @@ impl Host<'_> {
         &mut self,
         built: &Opts,
     ) -> Result<(fux_wire::command::Start, fux_wire::command::PaneOptions), Failure> {
-        self.prepare()
+        self.prepare(false)
             .map_err(|why| fail(Code::Config, why.to_string()))?;
         let preferences = &self
             .state
@@ -1931,6 +1949,7 @@ impl Host<'_> {
                     read_only: built.watch,
                     size: built.size.map(|screen| screen.size()),
                     creation: Box::new(built),
+                    configured: None,
                 })
             }
             Act::Show => {
@@ -1954,14 +1973,14 @@ impl Host<'_> {
             Act::Preferences => read_client(client(&next()?)?, ClientRead::Preferences),
             // ------------------------------------------------------ server
             Act::Start => {
-                self.prepare()
+                self.prepare(false)
                     .map_err(|why| fail(Code::Config, why.to_string()))?;
                 local(Local::Start)
             }
             Act::Status => local(Local::Status),
             Act::KillServer => tell(Command::KillServer),
             Act::AttachDefaults => {
-                self.prepare()
+                self.prepare(false)
                     .map_err(|why| fail(Code::Config, why.to_string()))?;
                 let value = next()?;
                 let of = super::scope(&value);
@@ -1987,7 +2006,7 @@ impl Host<'_> {
                 Ok(Done::Now)
             }
             Act::Set => {
-                self.prepare()
+                self.prepare(false)
                     .map_err(|failed| fail(Code::Config, failed.to_string()))?;
                 let name = string(&next()?)?;
                 let value = next()?;
@@ -2026,7 +2045,7 @@ impl Host<'_> {
             // ------------------------------------------------------ config
             // A client's own; else the bundled keys, without a user config.
             Act::ListKeys => {
-                self.prepare()
+                self.prepare(false)
                     .map_err(|failed| fail(Code::Config, failed.to_string()))?;
                 let text = match &self.state {
                     Some(state) => state.keys.describe(),
@@ -2369,6 +2388,16 @@ mod tests {
             let refused = super::version(&value).err().map(|f| f.code);
             assert_eq!(refused, Some(Code::Type), "{}", value.kind());
         }
+        Ok(())
+    }
+    /// A Windows directory holding a lone surrogate comes back unit for unit.
+    #[cfg(windows)]
+    #[test]
+    fn a_lone_surrogates_directory_is_made_again() -> TestResult {
+        use std::os::windows::ffi::OsStrExt;
+        let path = super::path_of_bytes(b"C:\\x\xed\xa0\x80y".to_vec()).map_err(|f| f.message)?;
+        let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+        assert_eq!(units, [0x43, 0x3a, 0x5c, 0x78, 0xd800, 0x79]);
         Ok(())
     }
     #[test]

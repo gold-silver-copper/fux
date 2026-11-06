@@ -97,7 +97,7 @@ impl Record {
 }
 
 /// The kinds a server's answer is, and how each is said.
-const HELD: [(&str, &str); 4] = [
+pub(super) const HELD: [(&str, &str); 4] = [
     ("answer", "an action's answer"),
     ("closed-answer", "a closed pane's answer"),
     ("capture", "a capture"),

@@ -16,15 +16,15 @@
     (if! (not? (empty-list? (string-search (string seen) needle 0))) seen
       (if! (same? (get seen "ended") 1)
         (raise (error (quote! ended-before-text) needle))
-        (shows (capture (wait (timeout (changed seen) seconds))) needle seconds))))))
+        (shows (capture (wait (timeout (changed (get seen "version")) seconds))) needle seconds))))))
 (define! quiet (lambda! (value seconds)
   (let! ((seen (observed value)))
-    (catch-kind! (quiet (capture (wait (timeout (changed seen) seconds))) seconds)
+    (catch-kind! (quiet (capture (wait (timeout (changed (get seen "version")) seconds))) seconds)
       timeout failure seen))))
 (define! until-ended (lambda! (value seconds)
   (let! ((seen (observed value)))
     (if! (same? (get seen "ended") 1) seen
-      (until-ended (capture (wait (timeout (changed seen) seconds))) seconds)))))
+      (until-ended (capture (wait (timeout (changed (get seen "version")) seconds))) seconds)))))
 (define! grows (lambda! (value count amount seconds)
   (when! (not? (member? count (quote! ("screen" "bells" "done" "ended")))) (raise (error (quote! bad-value) count)))
   (let! ((seen (if! (same? (kind value) "pane") (observed value) value))

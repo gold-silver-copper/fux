@@ -327,6 +327,8 @@ pub enum Local {
         read_only: bool,
         size: Option<fux_vt::Size>,
         creation: Box<Opts>,
+        /// A typing terminal's config, evaluated with the bundled state.
+        configured: Option<Box<Result<ClientState, Failed>>>,
     },
     Start,
     Status,
@@ -425,14 +427,18 @@ impl<'a> Host<'a> {
     }
 
     /// Ordinary CLI commands need no keys or preference initialization.
-    fn prepare(&mut self) -> Result<(), Failed> {
+    /// The bundled state, and with `typing` the config on it, in one
+    /// interpreter, as attaching waits on them: the config's outcome.
+    fn prepare(&mut self, typing: bool) -> Result<Option<Result<ClientState, Failed>>, Failed> {
         if self.cli
             && let Some(state) = self.state.as_deref_mut()
             && !state.initialized()
         {
-            *state = default_state()?.draft();
+            let (defaults, configured) = bundled(typing)?;
+            *state = defaults.draft();
+            return Ok(configured);
         }
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -1047,6 +1053,7 @@ fn local(
             read_only,
             size,
             creation,
+            configured: evaluated,
         } => {
             if size.is_none() && std::env::var_os("FUX_PANE").is_some_and(|p| !p.is_empty()) {
                 let why = "this is a fux pane: attaching here would show fux inside itself \
@@ -1071,10 +1078,10 @@ fn local(
                 .finish()
                 .map_err(|why| Failed::new(Code::Config, why))?;
             let typing = size.is_none() && !read_only;
-            let (committed, problem) = if typing {
-                configured(&defaults)
-            } else {
-                (defaults, None)
+            let (committed, problem) = match evaluated {
+                Some(evaluated) if typing => told((**evaluated).clone(), &defaults),
+                Some(_) | None if typing => configured(&defaults),
+                Some(_) | None => (defaults, None),
             };
             let explicit = target.is_some() || creation.given.contains(&words::Opt::Name);
             let target = if explicit {
@@ -1153,7 +1160,16 @@ fn started(
 
 /// A typing terminal's whole state and one diagnostic if it failed.
 pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>) {
-    match config_state(defaults) {
+    told(config_state(defaults), defaults)
+}
+
+/// A config's outcome: its state; or, said on stderr, the bundled state and
+/// the notice a client shows.
+fn told(
+    outcome: Result<ClientState, Failed>,
+    defaults: &ClientState,
+) -> (ClientState, Option<String>) {
+    match outcome {
         Ok(state) => (state, None),
         Err(failed) => {
             let _ = writeln!(io::stderr(), "fux: {failed}");
@@ -1164,15 +1180,53 @@ pub fn configured(defaults: &ClientState) -> (ClientState, Option<String>) {
 
 /// Complete bundled policy and keys, checked before a client becomes live.
 pub fn default_state() -> Result<ClientState, Failed> {
+    bundled(false).map(|(defaults, _)| defaults)
+}
+
+/// The bundled state, and with `config` the outcome of the user's config on
+/// it, each evaluated in one interpreter.
+fn bundled(config: bool) -> Result<(ClientState, Option<Result<ClientState, Failed>>), Failed> {
     let mut draft = Draft::default();
     let windows = cfg!(windows).then_some(("windows.grift", WINDOWS_DEFAULTS));
-    let bundled = [("client-defaults.grift", DEFAULTS), ("keys.grift", KEYS)];
-    let bundled: Vec<_> = bundled.into_iter().chain(windows).collect();
+    let sources = [("client-defaults.grift", DEFAULTS), ("keys.grift", KEYS)];
     let mut sink = io::sink();
     let mut host = Host::new(Context::default(), Some(&mut draft), &mut sink);
-    bridge::run_sources(&bundled, &mut host, &mut ConfigOnly { diagnostics: true })?;
-    draft.finish().map_err(|why| Failed::new(Code::Config, why))
+    let mut asks = ConfigOnly { diagnostics: true };
+    let mut state = Runtime::new(&mut host, &mut asks, None);
+    let mut g = interpreter(&mut state)?;
+    for (name, text) in sources.into_iter().chain(windows) {
+        evaluate_job(&mut g, &mut state, &Machine::source(name, text))?;
+    }
+    let finished = |state: &mut Runtime<'_, '_, ConfigOnly>| {
+        let draft = state.host.draft().map(std::mem::take).unwrap_or_default();
+        draft.finish().map_err(|why| Failed::new(Code::Config, why))
+    };
+    let defaults = finished(&mut state)?;
+    if !config {
+        return Ok((defaults, None));
+    }
+    state.asks.diagnostics = false;
+    let outcome = match config_source() {
+        Ok(None) => Ok(defaults.clone()),
+        Err(failed) => Err(failed),
+        Ok(Some(config)) => {
+            let mut machine = Machine::source(&config.name, &config.text);
+            machine.path = config.path.clone();
+            if let Some(draft) = state.host.draft() {
+                *draft = defaults.draft();
+            }
+            evaluate_job(&mut g, &mut state, &machine).and_then(|_| {
+                let files = std::mem::take(&mut state.host.files);
+                if let Some(draft) = state.host.draft() {
+                    draft.config = Some(Arc::new(config.with(files)));
+                }
+                finished(&mut state)
+            })
+        }
+    };
+    Ok((defaults, Some(outcome)))
 }
+
 /// The config file, a grift program a typing terminal runs as it attaches:
 /// `$XDG_CONFIG_HOME/fux/config.grift`, else `~/.config/fux/config.grift`
 /// (Windows: `%APPDATA%\\fux\\config.grift`).
@@ -1181,22 +1235,29 @@ pub fn default_path() -> Option<std::path::PathBuf> {
 }
 
 fn config_state(defaults: &ClientState) -> Result<ClientState, Failed> {
+    match config_source()? {
+        Some(config) => run_config_on(config, defaults),
+        None => Ok(defaults.clone()),
+    }
+}
+
+/// The user's config, as it reads now: none if there is no such file.
+fn config_source() -> Result<Option<source::Frozen>, Failed> {
     let Some(path) = default_path() else {
-        return Ok(defaults.clone());
+        return Ok(None);
     };
-    let config = match source::Frozen::file(&path) {
-        Ok(config) => config,
+    match source::Frozen::file(&path) {
+        Ok(config) => Ok(Some(config)),
         Err(error)
             if error.kind() == io::ErrorKind::NotFound
                 && path
                     .symlink_metadata()
                     .is_err_and(|e| e.kind() == io::ErrorKind::NotFound) =>
         {
-            return Ok(defaults.clone());
+            Ok(None)
         }
-        Err(error) => return Err(read_failed(&path.display().to_string(), &error.to_string())),
-    };
-    run_config_on(config, defaults)
+        Err(error) => Err(read_failed(&path.display().to_string(), &error.to_string())),
+    }
 }
 
 /// Reads a config file and runs it without a transport capability, its

@@ -243,6 +243,9 @@ fn kind<A: Asks + ?Sized>(
     if let Some(kind) = kind {
         return g.string(kind);
     }
+    if let Some(held) = held_kind(g, v)? {
+        return g.string(&held);
+    }
     let v = from_grift(g, v)?;
     let name = match &v {
         Value::App(a) => a.name(),
@@ -265,9 +268,55 @@ fn text_of<A: Asks + ?Sized>(
     let [v] = args else {
         return Err(g.error("arity-error", args));
     };
+    if held_kind(g, v)?.is_some() {
+        let mut text = String::new();
+        held_text(g, v, &mut text)?;
+        return g.string(&text);
+    }
     let v = from_grift(g, v)?;
     let text = v.text().map_err(|f| failure(g, f))?;
     g.string(&text)
+}
+
+/// The kind of the server's answer `v` is, its first field: read without
+/// making a whole capture a value to ask it.
+fn held_kind<T>(g: &Grift<T>, v: &G) -> Result<Option<String>, Error> {
+    let Some((first, _)) = g.as_pair(v)? else {
+        return Ok(None);
+    };
+    let Some((key, value)) = field(g, &first)? else {
+        return Ok(None);
+    };
+    let kind = g
+        .as_string(&value)?
+        .filter(|kind| key == "kind" && record::HELD.iter().any(|(name, _)| name == kind));
+    Ok(kind)
+}
+
+/// A held answer's text, as `Record::write_held` says it.
+fn held_text<T>(g: &Grift<T>, v: &G, out: &mut String) -> Result<(), Error> {
+    let items = g.list_items(v)?;
+    let mut lines = None;
+    for item in &items {
+        if let Some((key, value)) = field(g, item)? {
+            match key.as_str() {
+                "text" => {
+                    out.push_str(g.as_str(&value)?.unwrap_or_default());
+                    return Ok(());
+                }
+                "lines" => lines = Some(value),
+                _ => {}
+            }
+        }
+    }
+    let lines = lines.map(|lines| g.list_items(&lines)).transpose()?;
+    for (i, line) in lines.unwrap_or_default().iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(g.as_str(line)?.unwrap_or_default());
+    }
+    Ok(())
 }
 
 /// `get` of a value that is a record: its field, no server asked.
@@ -476,11 +525,20 @@ pub(super) fn request<A: Asks + ?Sized>(
             out = answered(reply).map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
         }
         Done::Later(Ask::Local(what)) => {
-            if matches!(what, Local::Attach { .. }) {
-                state
+            let mut what = what;
+            if let Local::Attach {
+                read_only,
+                size,
+                configured,
+                ..
+            } = &mut what
+            {
+                let typing = size.is_none() && !*read_only;
+                *configured = state
                     .host
-                    .prepare()
-                    .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+                    .prepare(typing)
+                    .map_err(|f| failure(g, Failure::new(f.code, f.message)))?
+                    .map(Box::new);
             }
             if state.replaying && matches!(what, Local::Shell(Shell::Warn(_))) {
                 return Ok(G::Inert);
@@ -885,20 +943,6 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
             Err(f)
         }
     }
-}
-
-/// Evaluates bundled `sources` in order in one fresh interpreter.
-pub(super) fn run_sources(
-    sources: &[(&str, &str)],
-    host: &mut Host<'_>,
-    asks: &mut dyn Asks,
-) -> Result<(), Failed> {
-    let mut state = Runtime::new(host, asks, None);
-    let mut g = interpreter(&mut state)?;
-    for (name, text) in sources {
-        evaluate_job(&mut g, &mut state, &Machine::source(name, text))?;
-    }
-    Ok(())
 }
 
 /// Runs `machine` in a new interpreter.
