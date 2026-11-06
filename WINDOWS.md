@@ -174,6 +174,14 @@ programs built on the libraries (below) are the acceptance test for the whole po
   silently: `terminal::open_stdio` opens the console for each one missing, so `fux` in a pane works.
 - **A Ctrl-Break reaches every process on the console:** a shell with no handler ends with it, and
   takes the client's shell down, as on any console.
+- **What runs on Windows and what stays Unix's:** fux-server's and fux's unit tests run with
+  `--test-threads 1` (one poller). Those that stay Unix's are `#[cfg(unix)]` with why: they run
+  `/bin/sh` or `/bin/cat`, name `/` as an absolute directory, or stand a Unix socket or a FIFO in for a
+  peer. The root `tests/*.rs` stay Unix's whole: `tests/support` drives a client over a nonblocking
+  `UnixStream`, holds a `Slave::spawn`'s `Child`, asks `ps`, and every test scripts `/bin/sh`.
+  `tests/windows.rs` and `tests/console.rs` stand in for them on Windows.
+- **`fux` must not link `user32`:** Windows' documentation says such a process isn't sent logoff or
+  shutdown events (from the docs, not tested). Nothing here does.
 - **Restoring on a panic can't come first:** `LEAVE` needs VT processing still on, or a console without
   it prints it as text. So the panic hook writes `LEAVE` on a thread waited for 250 ms at most, then
   restores: a console that stopped reading delays restoring by that, and no more.

@@ -1,6 +1,6 @@
 //! fux's server on Windows (WINDOWS.md, PR 7), driven as its clients
-//! drive it, over its pipe, by a small client of the wire protocol: fux's
-//! own client is Unix's till PR 8. Each test checks one property, against
+//! drive it, over its pipe, by a small client of the wire protocol (fux's
+//! own client: `tests/console.rs`). Each test checks one property, against
 //! the real `fux` binary on a private socket, and has a deadline.
 //!
 //! - A server killed outright leaves its panes running, and a new server

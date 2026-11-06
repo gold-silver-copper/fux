@@ -1,5 +1,5 @@
 //! Identities stay within the server run and program that gave them.
-// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+// They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #![cfg(unix)]
 mod support;
 use support::*;

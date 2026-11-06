@@ -2,7 +2,7 @@
 //! it means, not stopping or closing the wrong thing, hearing what happens as
 //! it happens, a place's panes and tabs as handles, sending keys to every
 //! pane of a tab, and making a dump's panes again.
-// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+// They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #![cfg(unix)]
 mod support;
 use std::io::{BufRead, BufReader};
