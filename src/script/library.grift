@@ -45,7 +45,7 @@
         (step client workspace-value "next"))))))
 (define! inner (lambda! (target)
   (let! ((children (filter (lambda! (v) (same? (kind v) "workspace")) (get (workspace target) "children"))))
-    (if! (empty-list? children) (raise (error (quote! no-workspace) "none holds it" target)) (first children)))))
+    (if! (empty-list? children) (raise (error (quote! no-workspace) "none is in it" target)) (first children)))))
 (define! rename-prompt (lambda! (client target)
   (let! ((name-value (get target "name")))
     (prompt client (string-append "rename " (kind target) " " (string target))

@@ -1215,6 +1215,9 @@ mod tests {
         s.input(c, &prefixed("wj"));
         let agent1 = (fux_wire::id::WsId::of(2), fux_wire::id::TabId::of(2));
         assert_eq!(at(&s), Some(agent1));
+        // Nothing is in this one.
+        s.input(c, &prefixed("wj"));
+        assert!(notice(&s, c).contains("none is in it"), "{}", notice(&s, c));
         s.input(c, &prefixed("wk"));
         assert_eq!(at(&s), start);
         Ok(())

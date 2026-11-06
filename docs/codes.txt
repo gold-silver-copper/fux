@@ -10,6 +10,7 @@ no-client 1 try
 no-target 1 try
 stray-pane 1 try
 no-field 1 try
+journal-loss 1 try
 nothing-there 1 try
 name-taken 1 try
 bad-value 1 try

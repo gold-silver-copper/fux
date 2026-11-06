@@ -36,6 +36,7 @@ codes! {
     NoTarget "no-target" [asked],
     StrayPane "stray-pane" [asked],
     NoField "no-field" [asked],
+    JournalLoss "journal-loss",
     NothingThere "nothing-there" [asked],
     NameTaken "name-taken" [asked],
     BadValue "bad-value" [asked],

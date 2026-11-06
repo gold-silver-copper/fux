@@ -79,7 +79,7 @@ impl Record {
     pub(super) fn printed_events(&self) -> Result<Vec<V>, Failure> {
         if let Ok(Value::Int(missed @ 1..)) = self.get("missed") {
             let why = format!("{missed} journal entries missed; resnapshot before continuing");
-            return Err(Failure::new(Code::Fail, why));
+            return Err(Failure::new(Code::JournalLoss, why));
         }
         let Value::List(events) = self.get("events")? else {
             return Ok(Vec::new());

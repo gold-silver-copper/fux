@@ -1493,7 +1493,7 @@ impl Host<'_> {
                 Some(c) => now(out, Value::App(Fux::Client(c, self.context.of))),
                 None => Err(fail(
                     Code::NotHere,
-                    "the client whose key or prompt runs this: this runs from the command line",
+                    "the client whose key or prompt runs this: no key or prompt runs this",
                 )),
             },
             Act::Focused => {
@@ -1687,38 +1687,17 @@ impl Host<'_> {
             Act::Tabs => later(members_of(scope(&next()?)?, Members::Tabs)),
             Act::Get => {
                 let value = next()?;
-                // A live field's handle, checked before the field is taken.
-                let live = match &value {
-                    Value::App(Fux::Record(_)) => None,
-                    value @ (Value::Float(_)
-                    | Value::Symbol(_)
-                    | Value::Bytes(_)
-                    | Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::Str(_)
-                    | Value::List(_)
-                    | Value::App(_)) => Some(target(value)?),
-                };
-                let field = string(&next()?)?;
-                if let Some(target) = live {
+                let Value::App(Fux::Record(record)) = &value else {
+                    // A live field's handle, checked before the field is taken.
+                    let target = target(&value)?;
+                    let field = super::native_field(&string(&next()?)?);
                     return later(ask(Command::Inspect {
                         scope: fux_wire::inspect::Scope::Target(target),
-                        projection: fux_wire::inspect::Projection::Field(super::native_field(
-                            &field,
-                        )),
+                        projection: fux_wire::inspect::Projection::Field(field),
                     }));
-                }
-                match value {
-                    Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
-                    other @ (Value::Float(_)
-                    | Value::Symbol(_)
-                    | Value::Bytes(_)
-                    | Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::Str(_)
-                    | Value::List(_)
-                    | Value::App(_)) => Err(wrong("a handle or held observation", &other)),
-                }
+                };
+                let field = string(&next()?)?;
+                now(out, record.get(&field)?)
             }
             Act::NextEvents => {
                 let scope = observation_scope(&next()?)?;
