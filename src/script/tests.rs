@@ -1187,3 +1187,108 @@ fn a_request_read_back_takes_what_its_words_take() {
         );
     }
 }
+
+/// A stop as a program's thread sees it, held up `at` a step of it. With
+/// `word` it comes as the program's first word begins; else as the program
+/// first prints. Says how many requests reached the server, what the run
+/// came to, and asks over a real connection, as a stop shuts one.
+#[cfg(unix)]
+fn stopped_at(at: Step, program: &str, word: bool) -> Result<(usize, Failed), String> {
+    use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
+    const PATIENCE: Duration = Duration::from_secs(60);
+    struct Begins(mpsc::Sender<()>);
+    impl Write for Begins {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.send(());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let (begin, begun) = mpsc::channel();
+    let (held, holding) = mpsc::channel();
+    let (arrive, arrival) = mpsc::channel();
+    let (end, ended) = mpsc::channel();
+    let arrival = Mutex::new(arrival);
+    let holding = Mutex::new(holding);
+    let (first, waited) = (std::sync::atomic::AtomicBool::new(word), arrive.clone());
+    let begins = begin.clone();
+    let stop = Stop::pausing(move |step| {
+        if step == at {
+            let _ = held.send(());
+            let _ = arrival.lock().map(|a| a.recv_timeout(PATIENCE));
+        } else if step == Step::Looks && first.swap(false, Ordering::SeqCst) {
+            let _ = begins.send(());
+            let _ = holding.lock().map(|h| h.recv_timeout(PATIENCE));
+        } else if step == Step::Waits {
+            let _ = waited.send(());
+        }
+    });
+    let stopper = stop.clone();
+    let stopping = std::thread::spawn(move || {
+        let _ = begun.recv_timeout(PATIENCE);
+        stopper.stop();
+        let _ = end.send(());
+    });
+    let (mine, peer) = std::os::unix::net::UnixStream::pair().map_err(|e| e.to_string())?;
+    // Answers once the stop has ended, so a stop that shuts a request shuts
+    // it before its answer.
+    let answering = std::thread::spawn(move || {
+        use fux_wire::protocol::Frame;
+        let mut peer = peer;
+        let (mut decoder, mut bytes) = (fux_wire::protocol::Decoder::default(), [0; 4096]);
+        let mut asked = 0_usize;
+        while let Ok(read @ 1..) = peer.read(&mut bytes) {
+            decoder.push(bytes.get(..read).unwrap_or_default());
+            while let Ok(Some(request)) = decoder.frame::<Asked>() {
+                asked = asked.saturating_add(1);
+                let _ = arrive.send(());
+                let _ = ended.recv_timeout(PATIENCE);
+                let reply: Reply = testing::found(&request).unwrap_or_else(|| Body::Empty.into());
+                let mut out = fux_vt::bytes::ByteQueue::default();
+                let encoded = fux_wire::wire::encode(&reply);
+                fux_wire::protocol::split_into(
+                    &encoded,
+                    fux_wire::protocol::ToCommand::Part,
+                    &mut out,
+                );
+                out.push_with(|frames| fux_wire::protocol::ToCommand::PartsEnd.encode_into(frames));
+                let _ = peer.write_all(out.as_slice());
+            }
+        }
+        asked
+    });
+    let mut asks = Server {
+        requests: Some(crate::client::Requests::over(mine)),
+        stop: stop.clone(),
+        ..Server::default()
+    };
+    let mut out = Begins(begin);
+    let mut host = Host::new(Context::default(), None, &mut out);
+    let mut machine = Machine::source("stopped", program);
+    let result = run(&mut machine, &mut host, &mut asks, Some(&stop));
+    drop(asks);
+    stopping.join().map_err(|_| "the stopper panicked")?;
+    let asked = answering.join().map_err(|_| "the server panicked")?;
+    Ok((asked, result.err().ok_or("a stopped run ended well")?))
+}
+
+/// However a stop is held up, a program's thread never finds it half done: a
+/// body's word is refused before it asks, and a cleanup's requests all reach
+/// the server, none shut by the stop that let them run.
+#[cfg(unix)]
+#[test]
+fn a_stop_is_one_step_to_the_program() -> TestResult {
+    for at in [Step::Told, Step::Noted] {
+        let (asked, _) = stopped_at(at, r#"(rename (pane 1) "went-on")"#, true)?;
+        assert_eq!(asked, 0);
+        let cleaned = r#"(define! spin (lambda! () (spin)))
+            (finally! (sequence! (display "go") (spin)) (rename (pane 1) "cleaned"))"#;
+        let (asked, failed) = stopped_at(at, cleaned, false)?;
+        assert_eq!(asked, 2, "{failed}");
+        assert!(failed.actions.iter().any(|step| step.contains("cleaned")));
+    }
+    Ok(())
+}

@@ -941,9 +941,7 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
 ) -> Result<Vec<Value<Fux>>, Failed> {
     if let Some(stop) = state.stop {
         stop.check()?;
-        if let Ok(mut held) = stop.interrupt.lock() {
-            *held = Some(g.interrupter());
-        }
+        stop.listen(Some(g.interrupter()));
     }
     state.host.file = machine.path.clone();
     let program = place(g, PROGRAM).map_err(|e| failed(g, e))?;
@@ -969,10 +967,8 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
     // Inside the run: grift drops a stop that comes between runs.
     let source = format!("(native-check-stop) {text}");
     let result = g.evaluate_in(state, &program, &machine.name, &source);
-    if let Some(stop) = state.stop
-        && let Ok(mut held) = stop.interrupt.lock()
-    {
-        *held = None;
+    if let Some(stop) = state.stop {
+        stop.listen(None);
     }
     match result {
         Ok(G::Inert) => Ok(Vec::new()),

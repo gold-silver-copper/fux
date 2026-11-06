@@ -2609,7 +2609,7 @@ mod tests {
                     .ok_or("pane")?)
             });
             let result = (|| -> Result<Reply, String> {
-                let mut asks = fux::script::Server::new(path);
+                let mut asks = fux::script::Server::stoppable(path, Default::default());
                 let client = "c1".parse().map_err(|e| format!("client: {e}"))?;
                 let mut mutation = key_request(original, client, 0);
                 asks.after = mutation

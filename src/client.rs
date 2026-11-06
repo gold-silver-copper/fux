@@ -343,6 +343,14 @@ impl Requests {
         }
     }
 
+    /// Requests over `stream`, already greeted.
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(crate) fn over(stream: Client) -> Requests {
+        let decoder = Decoder::default();
+        Requests { stream, decoder }
+    }
+
     /// What stops it from another thread: shut down, the request under way
     /// ends as if the server had closed the connection.
     pub fn stopper(&self) -> Option<Client> {
@@ -1176,6 +1184,8 @@ fn run_job<'a, 'b, 'c>(
         script::refuse_unfinished(&values, runtime.host)?;
         Ok(values)
     })();
+    #[cfg(test)]
+    stop.pause(script::Step::Ended);
     if result.is_ok()
         && let Err(failed) = stop.check().and_then(|()| match runtime.host.draft() {
             Some(draft) => script::Asks::commit(runtime.asks, draft, context),
@@ -1188,8 +1198,8 @@ fn run_job<'a, 'b, 'c>(
     let notice = match result {
         // Stopped as asked (the prefix, then Esc): no failure of its own, but
         // what took effect, its cleanups' steps among them, is told (D-25).
-        Err(failed) if stop.stopped() => {
-            let steps = failed.actions.iter();
+        Err(_) if stop.stopped() => {
+            let steps = runtime.host.actions.iter();
             let told = steps.map(|step| format!(" · already took effect: {step}"));
             Some((format!("stopped{}", told.collect::<String>()), false))
         }
@@ -2155,6 +2165,40 @@ mod tests {
             done,
         );
         Ok(said)
+    }
+
+    /// A stop too late for grift to act on, the run ended well, still tells
+    /// what took effect (D-25).
+    #[test]
+    fn a_stop_after_the_last_step_lists_it() -> Result<(), Box<dyn std::error::Error>> {
+        struct Answers;
+        impl script::Asks for Answers {
+            fn ask(&mut self, asked: &Asked) -> Result<Reply, script::Failed> {
+                let empty = || fux_wire::protocol::Body::Empty.into();
+                Ok(script::testing::found(asked).unwrap_or_else(empty))
+            }
+        }
+        let state = Mutex::new(script::default_state().map_err(|e| e.to_string())?);
+        let me = (
+            fux_wire::id::ClientId::of(1),
+            fux_wire::command::Run::now().ok_or("clock")?,
+        );
+        let late = std::sync::Arc::new(std::sync::OnceLock::<script::Stop>::new());
+        let stops = late.clone();
+        let stop = script::Stop::pausing(move |step| {
+            if let (script::Step::Ended, Some(stop)) = (step, stops.get()) {
+                stop.stop();
+            }
+        });
+        late.set(stop.clone()).map_err(|_| "set twice")?;
+        let job = r#"(rename (pane 1) "x")"#.into();
+        let ran = one_job(&mut Answers, me, &state, job, &stop, &mut |_| {});
+        let said = ran.notice.map(|(text, _)| text).unwrap_or_default();
+        assert!(
+            said.starts_with("stopped · already took effect: (rename"),
+            "{said}"
+        );
+        Ok(())
     }
 
     /// A job leaves nothing for the next on the same worker: not what it

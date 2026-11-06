@@ -40,7 +40,7 @@ pub use bridge::{
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 pub use value::{Done, Failure, List, Value, quoted};
 
 pub use callback::admit;
@@ -381,7 +381,7 @@ pub struct Host<'a> {
     /// Where `include` and `require` read files.
     pub(crate) files: source::Files,
     file: Option<std::path::PathBuf>,
-    actions: Vec<String>,
+    pub(crate) actions: Vec<String>,
     /// How many of `actions` went for room.
     skipped: usize,
 }
@@ -645,41 +645,108 @@ impl Write for Watched<'_> {
 pub struct Stop {
     /// Whether this job is stopped, whatever its cleanups then do.
     flag: Arc<AtomicBool>,
+    reach: Arc<Mutex<Reach>>,
+    #[cfg(test)]
+    pause: Option<Arc<dyn Fn(Step) + Send + Sync>>,
+}
+
+/// What a stop changes, behind one lock it holds throughout: a word that
+/// looks waits for a stop under way, so a cleanup grift has already begun
+/// can neither be refused for that stop nor have its request shut by it.
+#[derive(Default)]
+struct Reach {
+    interrupt: Option<grift::Interrupter>,
     /// A stop came since a request last looked (`Stop::news`).
-    unheard: Arc<AtomicBool>,
-    stream: Arc<Mutex<Option<fux_server::socket::Client>>>,
-    interrupt: Arc<Mutex<Option<grift::Interrupter>>>,
+    unheard: bool,
+    stream: Option<fux_server::socket::Client>,
+}
+
+/// Where a test may hold a stop or a request up (`Stop::pausing`).
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Step {
+    /// The stop has told grift.
+    Told,
+    /// The stop has set what a request looks for.
+    Noted,
+    /// A word is about to look for a stop.
+    Looks,
+    /// A request waits for a stop to end.
+    Waits,
+    /// A job's program has ended.
+    Ended,
+}
+
+#[cfg(test)]
+impl Stop {
+    /// A stop that runs `pause` at each `Step`.
+    pub(crate) fn pausing(pause: impl Fn(Step) + Send + Sync + 'static) -> Stop {
+        Stop {
+            pause: Some(Arc::new(pause)),
+            ..Stop::default()
+        }
+    }
+
+    pub(crate) fn pause(&self, step: Step) {
+        if let Some(pause) = &self.pause {
+            pause(step);
+        }
+    }
+
+    /// `Step::Waits`, if a stop under way has `Reach`.
+    fn pause_if_held(&self) {
+        if matches!(
+            self.reach.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ) {
+            self.pause(Step::Waits);
+        }
+    }
 }
 
 impl Stop {
     /// Stops the run under way.
     pub fn stop(&self) {
         self.flag.store(true, Ordering::SeqCst);
-        if let Ok(mut held) = self.interrupt.lock()
-            && let Some(stop) = held.as_mut()
-        {
+        let mut reach = self.reach();
+        if let Some(stop) = reach.interrupt.as_mut() {
             let _ = stop.stop();
         }
-        // After the interrupter, so what reads this finds grift told; before
-        // the stream, so a request held too late to be shut reads it.
-        self.unheard.store(true, Ordering::SeqCst);
-        if let Some(stream) = self.stream.lock().ok().and_then(|mut s| s.take()) {
+        #[cfg(test)]
+        self.pause(Step::Told);
+        reach.unheard = true;
+        #[cfg(test)]
+        self.pause(Step::Noted);
+        if let Some(stream) = reach.stream.take() {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
     }
 
+    /// `Reach`, once any stop under way has done with it.
+    fn reach(&self) -> std::sync::MutexGuard<'_, Reach> {
+        #[cfg(test)]
+        self.pause_if_held();
+        self.reach.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// `stream` is the connection of the request under way (`None`: no
-    /// request is): what a stop shuts down.
-    fn hold(&self, stream: Option<fux_server::socket::Client>) {
-        if let Ok(mut held) = self.stream.lock() {
-            *held = stream;
-        }
+    /// request is): what a stop shuts down. Says whether a stop came that
+    /// `Stop::news` has not told of.
+    fn hold(&self, stream: Option<fux_server::socket::Client>) -> bool {
+        let mut reach = self.reach();
+        reach.stream = stream;
+        reach.unheard
+    }
+
+    /// `interrupter` is what tells this run's grift (`None`: no run is).
+    pub(crate) fn listen(&self, interrupter: Option<grift::Interrupter>) {
+        self.reach().interrupt = interrupter;
     }
 
     /// Ready for the next run.
     pub fn reset(&self) {
         self.flag.store(false, Ordering::SeqCst);
-        self.unheard.store(false, Ordering::SeqCst);
+        self.reach().unheard = false;
     }
 
     /// Whether the run is to stop.
@@ -690,38 +757,24 @@ impl Stop {
     /// Whether a stop came since this last said so: the caller is to give
     /// grift a step, which ends the run if grift has yet to act on it.
     pub(crate) fn news(&self) -> bool {
-        self.unheard.swap(false, Ordering::SeqCst)
-    }
-
-    /// Whether a stop came that `Stop::news` has not told of.
-    fn unheard(&self) -> bool {
-        self.unheard.load(Ordering::SeqCst)
+        #[cfg(test)]
+        self.pause(Step::Looks);
+        std::mem::take(&mut self.reach().unheard)
     }
 
     /// Refuse a cancelled job before it takes another step.
     pub(crate) fn check(&self) -> Result<(), Failed> {
-        if self.stopped() {
-            Err(cancelled())
-        } else {
-            Ok(())
-        }
+        (!self.stopped()).then_some(()).ok_or_else(cancelled)
     }
 }
 
 impl Server {
-    /// The server on `socket`.
-    pub fn new(socket: std::path::PathBuf) -> Server {
-        Server {
-            socket: Some(socket),
-            ..Self::default()
-        }
-    }
-
     /// The server on `socket`, whose runs `stop` can stop.
     pub fn stoppable(socket: std::path::PathBuf, stop: Stop) -> Server {
         Server {
             stop,
-            ..Server::new(socket)
+            socket: Some(socket),
+            ..Self::default()
         }
     }
 
@@ -820,18 +873,15 @@ impl Asks for Server {
             }
         };
         // Held while it asks, so a stop ends a request that waits; a stop
-        // that came first is seen once it is held, so none is missed.
-        self.stop.hold(requests.stopper());
-        let reply = match self.stop.unheard() {
+        // that came first is seen as it is held, so none is missed.
+        let reply = match self.stop.hold(requests.stopper()) {
             true => Err(cancelled()),
             false => (requests.ask(asked, self.out.as_deref())).map_err(client_failed),
         };
-        // Let go of before a stop is looked for: one from then on cannot
-        // shut what is kept.
-        self.stop.hold(None);
         // A failed request's connection is not asked again, nor one a stop
-        // may have shut, however the request ended.
-        if reply.is_err() || self.stop.unheard() {
+        // may have shut, however the request ended; a stop from here on
+        // cannot shut what is kept.
+        if self.stop.hold(None) || reply.is_err() {
             self.requests = None;
         }
         reply
