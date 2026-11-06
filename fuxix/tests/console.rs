@@ -81,21 +81,16 @@ mod windows {
             say!("the ConPTY: {why}");
             return ExitCode::FAILURE;
         }
-        let mut failed = false;
-        for (name, test) in [
-            ("a_panic_puts_the_console_back", panic as fn() -> Outcome),
-            ("a_close_no_pipe_asked_for_puts_it_back", close),
-        ] {
-            let outcome = test();
-            match &outcome {
-                Ok(()) => say!("test {name} ... ok"),
-                Err(why) => say!("test {name} ... FAILED: {why}"),
+        let name = "what_ends_a_process_unasked_puts_the_console_back";
+        match panic().and_then(|()| close()) {
+            Ok(()) => {
+                say!("test {name} ... ok");
+                ExitCode::SUCCESS
             }
-            failed |= outcome.is_err();
-        }
-        match failed {
-            true => ExitCode::FAILURE,
-            false => ExitCode::SUCCESS,
+            Err(why) => {
+                say!("test {name} ... FAILED: {why}");
+                ExitCode::FAILURE
+            }
         }
     }
 

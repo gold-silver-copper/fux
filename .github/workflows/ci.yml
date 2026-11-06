@@ -283,13 +283,13 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # The crates that build on Windows today, on Windows 11 25H2 (arm64) and
-  # Server 2025 (x64, Windows 11 24H2's code base). Each step of the port
-  # (WINDOWS.md, "Order of work") adds its crates and checks here.
+  # fux on Windows 11 25H2 (arm64) and Server 2025 (x64, Windows 11 24H2's
+  # code base): every crate, the server and the client, in a console a test
+  # hosts and in real Windows Terminal on the runner's desktop (WINDOWS.md).
   windows:
     name: windows (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -349,13 +349,23 @@ jobs:
           echo "02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee  $package" | sha256sum --check
           echo "FUXIX_CONPTY_PACKAGE=$package" >> "$GITHUB_ENV"
 
-      - name: fux-vt, fuxth, fuxix, fux-wire, fux-server and fux
+      - name: fux-vt, fuxth, fuxix, fux-wire, fux-server, fux and fuxth-run
         run: |
           set -euo pipefail
           packages=(-p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth -p fuxix -p fux-wire)
-          cargo clippy "${packages[@]}" -p fux-server -p fux --all-targets --locked -- -D warnings
+          cargo clippy "${packages[@]}" -p fux-server -p fux -p fuxth-run --all-targets --locked -- -D warnings
           cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings
           cargo test "${packages[@]}" --locked -- --skip another_user_is_refused
+
+      # One polling thread per process (WINDOWS.md, PR 4): these poll, so
+      # they take turns.
+      - name: fux-server, fux and fuxth-run units
+        if: ${{ !cancelled() }}
+        timeout-minutes: 7
+        run: |
+          set -euo pipefail
+          cargo test -p fux-server -p fux -p fuxth-run --lib --bins --locked -- --test-threads 1
+          cargo test -p fuxth-run --test runner --locked -- --test-threads 1
 
       # fux's server (WINDOWS.md, PR 7), real fux driven over its pipe by
       # a small wire client, with what each found in the log: a server
@@ -379,6 +389,77 @@ jobs:
           cargo test -p fux --test console --locked -- --nocapture; client=$?
           tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe" || true
           exit $((console + client))
+
+      # The same tests as a standard user: no elevation, so fux's own
+      # folder, and no administrator's rights over the runner's files. The
+      # user is made here, with a masked password only this step sees.
+      - name: fux client, as a standard user
+        if: ${{ !cancelled() }}
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          $pw = 'Fx!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
+          "::add-mask::$pw"
+          net user fuxclient $pw /add | Out-Null
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Set-Service seclogon -StartupType Manual
+          Start-Service seclogon
+          icacls $PWD /grant '*S-1-5-32-545:(OI)(CI)M' /Q | Out-Null
+          icacls (Split-Path $env:FUXIX_CONPTY_PACKAGE) /grant '*S-1-5-32-545:(OI)(CI)RX' /Q | Out-Null
+          [Environment]::SetEnvironmentVariable('FUXIX_CONPTY_PACKAGE', $env:FUXIX_CONPTY_PACKAGE, 'Machine')
+          $secret = ConvertTo-SecureString $pw -AsPlainText -Force
+          $user = New-Object System.Management.Automation.PSCredential('fuxclient', $secret)
+          $failed = 0
+          foreach ($exe in Get-ChildItem target\debug\deps\console-*.exe) {
+            "=== $($exe.Name)"
+            $log = "$env:RUNNER_TEMP\console.txt"
+            $run = Start-Process -FilePath $exe.FullName -Credential $user -WorkingDirectory $PWD `
+              -RedirectStandardError $log -RedirectStandardOutput "$log.out" -PassThru -Wait
+            Get-Content $log
+            "exit $($run.ExitCode)"
+            $failed += [int]($run.ExitCode -ne 0)
+          }
+          exit $failed
+
+      # Real fux in real Windows Terminal, on the runner's desktop, with
+      # Defender's real-time protection on, fetching the ConPTY itself and
+      # typed at through the keyboard: CI's nearest to a person. Its
+      # screenshots are kept. What it can't show: WINDOWS.md, "Not verified
+      # yet".
+      - name: fux in Windows Terminal
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $false
+          foreach ($i in 1..30) {
+            if ((Get-MpComputerStatus).RealTimeProtectionEnabled) { break }
+            Start-Sleep 1
+          }
+          "real-time protection: $((Get-MpComputerStatus).RealTimeProtectionEnabled)"
+          $version = '1.25.2733.0'
+          $arch, $hash = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+            'arm64', '11b4fe264ecaa71b08cd84195536f68c669808155338e9f47f4da668b4cf0e26'
+          } else {
+            'x64', 'bf3ef2012f6c44d8340a4c58125acc9498d19b580f9890dc043cdf831852e796'
+          }
+          $zip = "$env:RUNNER_TEMP\wt.zip"
+          curl.exe -fsSL --retry 5 -o $zip "https://github.com/microsoft/terminal/releases/download/v$version/Microsoft.WindowsTerminal_${version}_$arch.zip"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $hash) { throw 'Windows Terminal hash' }
+          Expand-Archive $zip "$env:RUNNER_TEMP\wt"
+          $terminal = Get-ChildItem "$env:RUNNER_TEMP\wt" -Recurse -Filter WindowsTerminal.exe | Select-Object -First 1
+          New-Item -ItemType File (Join-Path $terminal.DirectoryName '.portable') -Force | Out-Null
+          # A copy: a runner's tests may still hold the build's own.
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\run" | Out-Null
+          Copy-Item target\debug\fux.exe "$env:RUNNER_TEMP\run\fux.exe"
+          ./tests/windows-terminal.ps1 -Fux "$env:RUNNER_TEMP\run\fux.exe" -Terminal $terminal.FullName -Out "$env:RUNNER_TEMP\terminal"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: windows-terminal-${{ matrix.os }}
+          path: ${{ runner.temp }}/terminal/*.png
+          if-no-files-found: warn
 
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured
       # in the log: a flood both ways with signals, no lost wake-up, an idle
