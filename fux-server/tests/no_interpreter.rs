@@ -28,14 +28,7 @@ fn the_server_builds_without_the_interpreter() -> Result<(), Box<dyn std::error:
         String::from_utf8_lossy(&tree.stderr)
     );
     let linked: BTreeSet<&str> = text.lines().filter_map(|l| l.split(' ').next()).collect();
-    let allowed = [
-        "fux-server",
-        "fux-vt",
-        "fux-wire",
-        "fuxix",
-        "fuxth-core",
-        "libc",
-    ];
+    let allowed = ["fux-server", "fux-vt", "fux-wire", "fuxix", "libc"];
     assert_eq!(linked, BTreeSet::from(allowed));
     Ok(())
 }

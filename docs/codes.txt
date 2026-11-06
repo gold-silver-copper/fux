@@ -1,69 +1,54 @@
-# Every error code, its exit status, whether `try` catches it, and its number in Forth's table of `throw` codes, if it has one (fux-wire's code table, then fuxth's). Generated: FUX_BLESS=1 cargo test -p fux-wire lists
-no_server 1 try
+# Every native error kind, its exit status, and whether it can be raised. Generated: FUX_BLESS=1 cargo test -p fux-wire lists
+cancelled 1 uncaught
+no-server 1 try
 mismatch 1 try
 client 1 try
-no_pane 1 try
-no_tab 1 try
-no_workspace 1 try
-no_client 1 try
-no_target 1 try
-stray_pane 1 try
-no_field 1 try
-nothing_there 1 try
-name_taken 1 try
-bad_value 1 try
+no-pane 1 try
+no-tab 1 try
+no-workspace 1 try
+no-client 1 try
+no-target 1 try
+stray-pane 1 try
+no-field 1 try
+nothing-there 1 try
+name-taken 1 try
+bad-value 1 try
 usage 2 try
-not_running 1 try
-still_running 1 try
-not_run 1 try
-only_shell 1 try
+not-running 1 try
+still-running 1 try
+not-run 1 try
+only-shell 1 try
 stale 1 try
-no_marks 1 try
+no-marks 1 try
 start 1 try
 size 1 try
 mouse 1 try
 signal 1 try
 indeterminate 1 try
-not_headless 1 try
-own_server 1 try
-people_attached 1 try
+not-headless 1 try
+own-server 1 try
+people-attached 1 try
 timeout 124 try
 closed 4 try
-not_here 1 try
-not_config 1 try
+not-here 1 try
+not-config 1 try
 config 1 try
-bad_binding 1 try
+bad-binding 1 try
 read 1 try
-unset_var 1 try
+unset-variable 1 try
 output 1 try
 nested 1 try
-not_a_key 1 try
-cancelled 1 uncaught
-require 2 try -37
-open_quote 2 try -39
-unknown_word 2 try -13
-missing_token 2 try -16
-bad_name 1 try -32
-not_top_level 2 try -14
-unmatched 2 try -22
-unclosed 2 uncaught
-stack_underflow 2 try -4
-type 2 try -12
-div_by_zero 1 try -10
-overflow 1 try -11
-unset 1 try
+not-a-key 1 try
+type-error 2 try
+range-error 1 try
+arity-error 2 try
+too-long 1 try
 unused 1 try
-range 1 try -24
-invalid_address 1 try -9
-memory 1 try -8
-ids_exhausted 1 try
-fail 1 try -2
-abort 1 try -1
-quit 1 try -56
-interrupt 1 try -28
-end_of_input 1 try -39
-unsupported 1 try -21
-thrown 1 try
-bad_codes 2 try
-too_long 1 try
-contract 1 uncaught
+unbound-symbol 2 try
+bad-name 1 try
+out-of-memory 1 try
+ids-exhausted 1 try
+fail 1 try
+read-error 2 try
+contract-error 1 try
+parse-error 2 try

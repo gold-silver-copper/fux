@@ -1,6 +1,17 @@
 //! Words in a sentence, and quoting words for display.
 
-pub use fuxth_core::quote;
+/// Quote one shell argument.
+pub fn quote(text: &str) -> String {
+    if !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_./:%@+-".contains(c))
+    {
+        text.to_owned()
+    } else {
+        format!("'{}'", text.replace('\'', "'\"'\"'"))
+    }
+}
 
 /// `names` in a sentence: `a, b and c`, `last` (`and`, `or`) before the
 /// last one.

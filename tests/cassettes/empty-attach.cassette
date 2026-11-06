@@ -3,20 +3,20 @@
 #   workspace, its shell laid out on the whole of the attach's screen,
 #   and the client ends when detached
 # fix: #317
-$ fux ls str workspaces get len
+$ fux '(length (get (list-session) "workspaces"))'
   = 0
   ~ 0
-$ fux opts 100 30 size attach >"$DIR/attach.out" 2>&1 & echo $! >"$DIR/attach.pid"
-$ until fux str c1 client capture >/dev/null 2>&1; do sleep 0.05; done
-$ fux ls str workspaces get len
+$ fux '(attach (size (options) 100 30))' >"$DIR/attach.out" 2>&1 & echo $! >"$DIR/attach.pid"
+$ until fux '(capture (client "c1"))' >/dev/null 2>&1; do sleep 0.05; done
+$ fux '(length (get (list-session) "workspaces"))'
   = 1
   ~ 1
-$ fux ls str panes get first let p p str cols get p str rows get
+$ fux '(define! p (first (get (list-session) "panes"))) (list (get p "columns") (get p "rows"))'
   = 100
   = 30
   ~ 100
   ~ 30
-$ fux str c1 client detach
+$ fux '(detach (client "c1"))'
 $ wait "$(cat "$DIR/attach.pid")"; cat "$DIR/attach.out"
   = ca
   = [detached]

@@ -20,6 +20,9 @@ pub enum Data {
     Handle(AnyRef, Option<Run>),
     Client(ClientId, Option<Run>),
     Code(Code),
+    Bytes(Vec<u8>),
+    FloatBits(u64),
+    Symbol(String),
 }
 
 impl Data {
@@ -67,6 +70,9 @@ impl Data {
             7 => Self::Client(ClientId::get(r)?, Option::get(r)?),
             8 => Self::All,
             9 => Self::Code(Code::get(r)?),
+            10 => Self::Bytes(Vec::get(r)?),
+            11 => Self::FloatBits(u64::get(r)?),
+            12 => Self::Symbol(String::get(r)?),
             tag => return Err(Error::Tag("callback value", tag)),
         })
     }
@@ -84,6 +90,9 @@ crate::wire::shaped!(enum Data {
     Client(v: ClientId, run: Option<Run>),
     All,
     Code(v: Code),
+    Bytes(v: Vec<u8>),
+    FloatBits(v: u64),
+    Symbol(v: String),
 });
 
 impl Wire for Data {
@@ -126,6 +135,18 @@ impl Wire for Data {
                 out.push(9);
                 v.put(out);
             }
+            Self::Bytes(v) => {
+                out.push(10);
+                v.put(out);
+            }
+            Self::FloatBits(v) => {
+                out.push(11);
+                v.put(out);
+            }
+            Self::Symbol(v) => {
+                out.push(12);
+                v.put(out);
+            }
         }
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -139,15 +160,14 @@ wire! {
     /// dictionary. Only a program's own source makes one, never a string.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Code {
-        pub words: Vec<String>,
+        pub source: String,
     }
 }
 
 impl Code {
-    /// Its words as written: each quoted as fuxth reads it back.
+    /// Its grift form, written when a program explicitly made code.
     pub fn text(&self) -> String {
-        let words: Vec<String> = self.words.iter().map(|w| crate::words::quote(w)).collect();
-        words.join(" ")
+        self.source.clone()
     }
 }
 

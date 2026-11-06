@@ -1,0 +1,5 @@
+; Start three programs before waiting for them; sum their exit statuses.
+; expect: 6
+(define! job (lambda! (n) (new-tab (argument (argument (argument (program (size (in (options) "agent") 80 24) "sh") "-c") "sleep 0.2; exit \"$0\"") (integer-to-string n)))))
+(define! jobs (map job (list 1 2 3)))
+(fold add 0 (map (lambda! (job) (get (get (until-ended job 60) "program") "exited")) jobs))

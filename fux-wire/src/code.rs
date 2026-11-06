@@ -1,316 +1,104 @@
-//! What kind of failure a failure is: its code, a name that stays the same,
-//! for a script to tell failures apart by (`fux: CODE: MESSAGE`). Every
-//! code fux gives is here, the language's own among them as fuxth names
-//! them; `docs/json.md` lists them all.
+//! Failures shared by the native server and its grift clients.
 use crate::command::{AnyRef, Kind};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use fux_vt::keys::Direction;
 use std::num::NonZeroU8;
-
-/// The exit statuses, a meaning each, besides 0: what was asked came.
-/// Any failure but these.
 const FAILED: NonZeroU8 = NonZeroU8::MIN;
-/// A mistake in the program itself, as other programs exit on a usage
-/// error.
 const PROGRAM: NonZeroU8 = NonZeroU8::MIN.saturating_add(1);
-/// The pane waited on closed.
 const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
-/// The time limit came first: as `timeout(1)`.
 const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
-
-/// `codes! { raises [Lang…]; asked [Lang…]; run_loop [Variant "name", …];
-/// /// doc Variant "name", Closed "closed" [asked] CLOSED, … }` expands to
-/// the enum `Code` of those variants and `Lang`, the language's own codes;
-/// `Code::ALL`, fux's own in order; `Code::status`, each one's exit status:
-/// the one its row names (`Code::Closed => CLOSED`), else `FAILED`; the
-/// language's, `PROGRAM` for a mistake in the program (`in_program`), else
-/// `FAILED`; `Code::raised`, whether a word a program runs can fail with
-/// it, so a `try` may catch it: not for a `run_loop` one, which only the
-/// loop running the program gives; a language's code if fuxth's words
-/// raise it, or fux's (`raises`); `Code::asked`, whether asking a request
-/// can fail with it: a row marked `[asked]`, a language's code `asked`
-/// lists; `Raise`, what a word's `fail` takes: the
-/// rows' codes and `raises`'s, never a `run_loop` one; and
-/// `fuxth_core::Code::from`, each one as the language takes it (one of fux's as
-/// `Host`, by its name).
 macro_rules! codes {
-    (@status) => {
-        FAILED
-    };
-    (@status $status:ident) => {
-        $status
-    };
-    (@asked) => {
-        false
-    };
-    (@asked asked) => {
-        true
-    };
-    (raises [$($lang:ident),*];
-    asked [$($asked_lang:ident),*];
-    run_loop [$($(#[$loop_doc:meta])* $looped:ident $loop_name:literal,)*];
-    $($(#[$doc:meta])* $variant:ident $name:literal $([$asked:ident])? $($status:ident)?,)*) => {
+    (@status) => { FAILED };
+    (@status $status:ident) => { $status };
+    (@asked) => { false };
+    (@asked asked) => { true };
+    ($($variant:ident $name:literal $([$asked:ident])? $($status:ident)?,)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Code {
-            $($(#[$doc])* $variant,)*
-            $($(#[$loop_doc])* $looped,)*
-            /// One of the language's own (fuxth's), as fuxth names it.
-            Lang(LangCode),
-        }
-
+        pub enum Code { $($variant,)* }
+        pub type Raise = Code;
         impl Code {
-            pub const ALL: &[Code] = &[$(Code::$variant,)* $(Code::$looped),*];
-
-            /// The exit status a failure, or an answer, of this kind ends
-            /// with.
-            pub fn status(self) -> NonZeroU8 {
-                match self {
-                    $(Code::$variant => codes!(@status $($status)?),)*
-                    Code::Lang(LangCode(code)) if in_program(code) => PROGRAM,
-                    $(Code::$looped)|* | Code::Lang(_) => FAILED,
-                }
-            }
-
-            /// Whether a word a program runs can fail with it.
-            pub fn raised(self) -> bool {
-                match self {
-                    $(Code::$variant)|* => true,
-                    $(Code::$looped)|* => false,
-                    Code::Lang(LangCode(code)) => code.raised() || Raise::LANG.contains(&code),
-                }
-            }
-
-            /// Whether asking a request can fail with it: the server's
-            /// answer, or the client's own as it asks (its connection, its
-            /// config, where it runs), or as it reads the answer.
-            pub fn asked(self) -> bool {
-                match self {
-                    $(Code::$variant => codes!(@asked $($asked)?),)*
-                    $(Code::$looped)|* => false,
-                    Code::Lang(LangCode(code)) => [$(fuxth_core::Code::$asked_lang),*].contains(&code),
-                }
-            }
-        }
-
-        /// A code a word's `fail` (or the session's) takes, each one a
-        /// `try` may catch: one of fux's own but the run loop's, or one of
-        /// the language's that fux's words raise (`raises`), which the
-        /// vocabulary declares. A code of the language's that only
-        /// compiling finds (`Code::of`) is none. A failure a word's request
-        /// comes back with (`script::Failed`) holds any `Code`.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Raise {
-            $($(#[$doc])* $variant,)*
-            $($lang,)*
-        }
-
-        impl Raise {
-            /// The language's codes fux's words raise.
-            pub const LANG: &[fuxth_core::Code] = &[$(fuxth_core::Code::$lang),*];
-        }
-
-        impl From<Raise> for Code {
-            fn from(code: Raise) -> Code {
-                match code {
-                    $(Raise::$variant => Code::$variant,)*
-                    $(Raise::$lang => Code::Lang(LangCode(fuxth_core::Code::$lang)),)*
-                }
-            }
-        }
-
-        impl From<Code> for fuxth_core::Code {
-            fn from(code: Code) -> fuxth_core::Code {
-                match code {
-                    $(Code::$variant => fuxth_core::Code::Host($name),)*
-                    $(Code::$looped => fuxth_core::Code::Host($loop_name),)*
-                    Code::Lang(LangCode(code)) => code,
-                }
-            }
+            pub const ALL: &[Code] = &[$(Code::$variant,)*];
+            pub fn name(self) -> &'static str { match self { $(Self::$variant => $name,)* } }
+            pub fn status(self) -> NonZeroU8 { match self { $(Self::$variant => codes!(@status $($status)?),)* } }
+            pub fn asked(self) -> bool { match self { $(Self::$variant => codes!(@asked $($asked)?),)* } }
+            pub fn raised(self) -> bool { self != Self::Cancelled }
         }
     };
 }
-
 codes! {
-    // The language's codes fux's words raise as they run: those fuxth's
-    // own words raise too, and those fuxth finds only compiling or at a
-    // program's end: `unused`, options a word would leave unused;
-    // `unknown_word`, `explain`'s word that is none; `bad_name`, a name a
-    // pane, tab or workspace cannot have.
-    raises [Type, Range, StackUnderflow, TooLong, Unused, UnknownWord, BadName, Memory, IdsExhausted];
-    // The language's codes asking a request can fail with: the server's
-    // (`fail`, journal entries a batch missed) and reading its answer.
-    asked [Range, TooLong, BadName, Memory, IdsExhausted, Fail];
-    // What only the loop running a program gives, never a word: no `try`
-    // catches it.
-    run_loop [
-        /// A run the prefix, then Esc, stopped.
-        Cancelled "cancelled",
-    ];
-    // Where a client finds its server.
-    /// No server runs at the socket.
-    NoServer "no_server" [asked],
-    /// The client and the server speak different protocols.
+    Cancelled "cancelled",
+    NoServer "no-server" [asked],
     Mismatch "mismatch" [asked],
-    /// A part of fux's could not do its part: the client's socket or
-    /// terminal, or the server's run record (a change it could not record
-    /// is not made).
     Client "client" [asked],
-    // What a command names.
-    /// A pane named is not there.
-    NoPane "no_pane" [asked],
-    /// A tab named is not there.
-    NoTab "no_tab" [asked],
-    /// A workspace named is not there; or a client that only watches
-    /// attaches to a server that holds none.
-    NoWorkspace "no_workspace" [asked],
-    /// A client named is not there.
-    NoClient "no_client" [asked],
-    /// Nothing to act on was named, and the caller has none.
-    NoTarget "no_target" [asked],
-    /// `FUX_PANE` is another run's, has no `FUX_SERVER`, or names an old program generation.
-    StrayPane "stray_pane" [asked],
-    /// A field `get` names that the object has not.
-    NoField "no_field" [asked],
-    /// No pane, tab or workspace that way, or before or after it.
-    NothingThere "nothing_there" [asked],
-    /// A name taken by another pane, tab or workspace.
-    NameTaken "name_taken" [asked],
-    /// A value out of what a word takes.
-    BadValue "bad_value" [asked],
-    /// A command used wrongly.
+    NoPane "no-pane" [asked],
+    NoTab "no-tab" [asked],
+    NoWorkspace "no-workspace" [asked],
+    NoClient "no-client" [asked],
+    NoTarget "no-target" [asked],
+    StrayPane "stray-pane" [asked],
+    NoField "no-field" [asked],
+    NothingThere "nothing-there" [asked],
+    NameTaken "name-taken" [asked],
+    BadValue "bad-value" [asked],
     Usage "usage" [asked] PROGRAM,
-    // What a command meets.
-    /// A program that exited or closed its terminal, or none the pane's
-    /// while it respawns; or its terminal reads failed: nothing takes input there.
-    NotRunning "not_running" [asked],
-    /// A program still running, which a respawn would not end; or a
-    /// respawn of the pane still under way.
-    StillRunning "still_running" [asked],
-    /// A respawn of a pane that was started with no program.
-    NotRun "not_run" [asked],
-    /// The pane only has its shell, which `signal` does not signal.
-    OnlyShell "only_shell" [asked],
-    /// A pane or tab no longer at the version or layout revision given:
-    /// it changed since it was seen, and nothing was sent or arranged.
+    NotRunning "not-running" [asked],
+    StillRunning "still-running" [asked],
+    NotRun "not-run" [asked],
+    OnlyShell "only-shell" [asked],
     Stale "stale" [asked],
-    /// A pane where no shell command was marked (OSC 133), for what needs
-    /// one (`last-output`).
-    NoMarks "no_marks" [asked],
-    /// A program that could not start.
+    NoMarks "no-marks" [asked],
     Start "start" [asked],
-    /// A size no pane or tab can have: a screen of no rows or columns, or
-    /// past what a grid holds (`attach`, its terminal resized, the word
-    /// `size`), or with
-    /// no room for a pane below its bar as it starts a server's first
-    /// shell; a new tab or workspace given none, whose caller has no
-    /// screen that sizes panes and no tab; a pane's
-    /// `resize-pane` the layout cannot give; a tab resized, a
-    /// split or a pane moved where its tab's panes would not all show.
     Size "size" [asked],
-    /// A mouse event the pane's program does not ask for.
     Mouse "mouse" [asked],
-    /// A signal that could not be sent.
     Signal "signal" [asked],
-    /// A pane's own process ended before it said whether it did what it
-    /// was asked: it may have.
     Indeterminate "indeterminate" [asked],
-    /// A client with a terminal, which sets its own size.
-    NotHeadless "not_headless" [asked],
-    /// `kill-server` from one of the server's own panes.
-    OwnServer "own_server" [asked],
-    /// `kill-server` with people attached, not forced.
-    PeopleAttached "people_attached" [asked],
-    // How a wait ends.
-    /// A wait's limit came first.
+    NotHeadless "not-headless" [asked],
+    OwnServer "own-server" [asked],
+    PeopleAttached "people-attached" [asked],
     Timeout "timeout" [asked] TIMED_OUT,
-    /// The pane waited on closed.
     Closed "closed" [asked] CLOSED,
-    // A program of words.
-    /// A word run where its context is missing: a command-line word in a
-    /// key or config, or `me` outside a key or prompt.
-    NotHere "not_here" [asked],
-    /// A word a config file may not hold.
-    NotConfig "not_config" [asked],
-    /// The config file or a setting refused.
+    NotHere "not-here" [asked],
+    NotConfig "not-config" [asked],
     Config "config" [asked],
-    /// A key binding that cannot be made.
-    BadBinding "bad_binding",
-    /// A file that could not be read, or stdin.
+    BadBinding "bad-binding",
     Read "read",
-    /// An environment variable `getenv` names that is not set.
-    UnsetVar "unset_var",
-    /// Output that could not be written.
+    UnsetVar "unset-variable",
     Output "output" [asked],
-    /// A word that may not run inside another's run.
     Nested "nested",
-    /// A key name no key has.
-    NotAKey "not_a_key",
+    NotAKey "not-a-key",
+    Type "type-error" PROGRAM,
+    Range "range-error" [asked],
+    StackUnderflow "arity-error" PROGRAM,
+    TooLong "too-long" [asked],
+    Unused "unused",
+    UnknownWord "unbound-symbol" PROGRAM,
+    BadName "bad-name" [asked],
+    Memory "out-of-memory" [asked],
+    IdsExhausted "ids-exhausted" [asked],
+    Fail "fail" [asked],
+    Require "read-error" PROGRAM,
+    Contract "contract-error",
+    Parse "parse-error" PROGRAM,
 }
-
 impl Code {
-    /// Every code: fux's own, then the language's.
     pub fn all() -> impl Iterator<Item = Code> {
-        let lang = fuxth_core::Code::ALL
-            .iter()
-            .map(|c| Code::Lang(LangCode(*c)));
-        Code::ALL.iter().copied().chain(lang)
+        Self::ALL.iter().copied()
     }
-
-    pub fn name(self) -> &'static str {
-        fuxth_core::Code::from(self).name()
+    pub fn of(code: Code) -> Code {
+        code
     }
 }
-
 impl std::fmt::Display for Code {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }
 }
-
 impl std::str::FromStr for Code {
     type Err = ();
-    fn from_str(name: &str) -> Result<Code, ()> {
-        Code::all().find(|c| c.name() == name).ok_or(())
+    fn from_str(name: &str) -> Result<Self, ()> {
+        Self::all().find(|c| c.name() == name).ok_or(())
     }
 }
-
-/// A code of the language's own, never a host's (a host's is one of fux's
-/// own): so a code's name has one meaning, and one status.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LangCode(fuxth_core::Code);
-
-/// Whether the language's `code` is a mistake in the program itself: its
-/// text, as compiling finds it, or a word given too few values or one of
-/// the wrong kind.
-fn in_program(code: fuxth_core::Code) -> bool {
-    use fuxth_core::Code as Lang;
-    matches!(
-        code,
-        Lang::Require
-            | Lang::OpenQuote
-            | Lang::UnknownWord
-            | Lang::MissingToken
-            | Lang::Unmatched
-            | Lang::Unclosed
-            | Lang::NotTopLevel
-            | Lang::BadCodes
-            | Lang::Type
-            | Lang::StackUnderflow
-    )
-}
-
-impl Code {
-    /// The language's code as fux names it, found by its name among them
-    /// all: a host's (every host code is one of fux's own, given by
-    /// `fuxth_core::Code::from`; one it does not know is the program's failure,
-    /// `fail`), the language's own as it is. Not a `From`, so that a
-    /// word's `fail` (and the session's), which take a `Raise`, never
-    /// name a code of the language's that only compiling finds.
-    pub fn of(code: fuxth_core::Code) -> Code {
-        (code.name().parse()).unwrap_or(Code::Lang(LangCode(fuxth_core::Code::Fail)))
-    }
-}
-
 /// Why a command, or attaching a client, failed: its code says its exit
 /// status.
 #[derive(Debug)]
@@ -371,12 +159,12 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoWorkspace(id) => write!(f, "no workspace {id}"),
-            Self::NoPaneGiven => f.write_str("no pane given: name one (`str %N pane`)"),
+            Self::NoPaneGiven => f.write_str("no pane given: name one (`(pane N)`)"),
             Self::NoPane(id) => write!(f, "no pane {id}"),
             Self::NoTab(id) => write!(f, "no tab {id}"),
             Self::NoWorkspaceGiven => f.write_str(
-                "no workspace given: name one (`str NAME workspace`; for new-tab, the \
-                     option `str NAME in`)",
+                "no workspace given: name one (`(workspace NAME)`; for new-tab, the \
+                     option `(in (opts) NAME)`)",
             ),
             Self::NoClient(id) => write!(f, "no client {id}"),
             Self::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
@@ -398,45 +186,3 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
-
-impl From<Error> for fuxth_core::Failure {
-    fn from(error: Error) -> Self {
-        Self::new(error.code().into(), error.to_string())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Code;
-
-    /// A host's code fux does not know is no code of the language's: it is
-    /// the program's failure.
-    #[test]
-    fn an_unknown_host_code_is_the_programs_failure() {
-        assert_eq!(Code::of(fuxth_core::Code::Host("nosuch")).name(), "fail");
-        assert_eq!(Code::of(fuxth_core::Code::Host("closed")), Code::Closed);
-    }
-
-    /// Every code has a name of its own, and docs/json.md's list of
-    /// errors names each, and no other.
-    #[test]
-    fn every_code_has_its_own_name_and_the_docs_list_it() {
-        let docs = include_str!("../../docs/json.md");
-        let errors = docs.split("## Errors").nth(1).unwrap_or_default();
-        // The list: from its first item to the blank line after it.
-        let list = errors.split("\n- ").skip(1).collect::<Vec<_>>().join(" ");
-        let list = list.split("\n\n").next().unwrap_or_default();
-        // What is quoted: every other piece between backquotes.
-        let quoted = list.split('`').enumerate().filter(|(i, _)| i % 2 == 1);
-        let listed: std::collections::BTreeSet<&str> = quoted.map(|(_, name)| name).collect();
-        let mut names = std::collections::BTreeSet::new();
-        for (i, code) in Code::all().enumerate() {
-            assert_eq!(code.name().parse(), Ok(code), "{code:?}");
-            assert_eq!(Code::of(fuxth_core::Code::from(code)), code);
-            let named = Code::all().skip(i + 1).any(|c| c.name() == code.name());
-            assert!(!named, "{code:?} shares its name");
-            names.insert(code.name());
-        }
-        assert_eq!(listed, names, "docs/json.md's Errors and fux's codes");
-    }
-}

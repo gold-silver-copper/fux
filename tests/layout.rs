@@ -9,10 +9,10 @@ const PREFIX: &str = "\x02";
 
 /// `%N` and its size, from `fux ls listing`.
 fn size(server: &Server, pane: &str) -> Result<(u16, u16), String> {
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     let line = ls
         .lines()
-        .find(|l| l.trim_start().starts_with(&format!("{pane} ")))
+        .find(|l| l.trim_start().starts_with(&format!("{pane}")))
         .ok_or_else(|| format!("{pane} is not listed: {ls}"))?;
     let dims = line
         .split_whitespace()
@@ -46,7 +46,7 @@ fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane(
     client.wait_for("in-three")?;
     // The CLI splits too; a line typed once its shell's prompt shows goes
     // into the new shell.
-    let made = server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
+    let made = server.ok(&["(split (axis (pane \"%1\") \"vertical\"))"])?;
     let pane = made.split(':').next().unwrap_or_default();
     server.type_line(pane, "echo \"from cli\"")?;
     client.wait_for("from cli")?;
@@ -66,9 +66,7 @@ fn focus_moves_next_previous_last_and_by_direction() -> Outcome {
     client.keys(&format!("{PREFIX}o"))?;
     eventually("next wraps to %1", || Ok(focused(&server)? == "%1"))?;
     // The previous pane has no key of its own: the command.
-    server.ok(&[
-        "str", "c1", "client", "dup", "focused", "str", "previous", "step",
-    ])?;
+    server.ok(&["(sequence! (define! value-1013 (client \"c1\")) (step value-1013 (focused value-1013) \"previous\") #inert)"])?;
     eventually("previous: %3", || Ok(focused(&server)? == "%3"))?;
     client.keys(&format!("{PREFIX}q"))?;
     eventually("last: %1", || Ok(focused(&server)? == "%1"))?;
@@ -90,7 +88,7 @@ fn focus_moves_next_previous_last_and_by_direction() -> Outcome {
     })?;
     assert_eq!(focused(&server)?, "%1");
     // From the CLI, a client's focus is named by its client.
-    server.ok(&["str", "c1", "client", "str", "%3", "pane", "show"])?;
+    server.ok(&["(sequence! (show (client \"c1\") (pane \"%3\")) #inert)"])?;
     assert_eq!(focused(&server)?, "%3");
     Ok(())
 }
@@ -113,15 +111,15 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
         Ok(size(&server, "%2")?.1 == 35)
     })?;
     assert_eq!(size(&server, "%1")?.1, 45);
-    server.ok(&["str", "%1", "pane", "str", "left", "10", "move-border"])?;
+    server.ok(&["(sequence! (move-border (pane \"%1\") \"left\" 10) #inert)"])?;
     assert_eq!(size(&server, "%1")?.1, 35);
     // The program sees its new size.
     client.keys("stty size\r")?;
     client.wait("the size", |t| t.lines().any(|l| l.ends_with("20 45")))?;
     // Never below the minimum.
-    server.ok(&["str", "%2", "pane", "str", "left", "200", "move-border"])?;
+    server.ok(&["(sequence! (move-border (pane \"%2\") \"left\" 200) #inert)"])?;
     assert_eq!(size(&server, "%1")?.1, 2);
-    let stuck = server.fux(&["str", "%1", "pane", "str", "up", "1", "move-border"])?;
+    let stuck = server.fux(&["(sequence! (move-border (pane \"%1\") \"up\" 1) #inert)"])?;
     assert_eq!(stuck.status, 1);
     assert!(
         stuck.stderr.contains("it has no border there"),
@@ -129,7 +127,7 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
         stuck.stderr
     );
     // A move of 0 moves nothing, and is not refused.
-    server.ok(&["str", "%1", "pane", "str", "right", "0", "move-border"])?;
+    server.ok(&["(sequence! (move-border (pane \"%1\") \"right\" 0) #inert)"])?;
     assert_eq!(size(&server, "%1")?.1, 2);
     Ok(())
 }
@@ -167,7 +165,13 @@ fn the_bar_draws_over_the_panes_only_while_the_prefix_is_in_use() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    let whole = || Ok::<_, String>(server.ok(&["ls", "listing"])?.contains("%1 60x10"));
+    let whole = || {
+        Ok::<_, String>(
+            server
+                .ok(&["(listing (list-session))"])?
+                .contains("%1 60x10"),
+        )
+    };
     assert!(whole()?);
     client.keys("clear; printf '\\033[10;1Hbottom''-row'; sleep 100\r")?;
     client.wait("the bottom row", |t| t.lines().nth(9) == Some("bottom-row"))?;
@@ -180,7 +184,7 @@ fn the_bar_draws_over_the_panes_only_while_the_prefix_is_in_use() -> Outcome {
     assert!(whole()?);
     client.keys("\x1b")?;
     client.wait("the row again", |t| t.lines().nth(9) == Some("bottom-row"))?;
-    let other = server.words("opts 60 10 size str +1 workspace in new-tab")?;
+    let other = server.words("(new-tab (in (size (options) 60 10) (workspace \"+1\")))")?;
     let other = other.split(':').next().unwrap_or_default();
     server.type_line(other, "printf '\\a'")?;
     client.wait("a corner notice", |t| {
@@ -201,9 +205,13 @@ fn the_bar_shows_workspace_tabs_pane_and_title() -> Outcome {
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
     // Its row is the panes' no longer.
-    assert!(server.ok(&["ls", "listing"])?.contains("%1 60x9"));
-    server.ok(&["str", "+1", "workspace", "str", "work", "rename"])?;
-    server.ok(&["str", "@1", "tab", "str", "code", "rename"])?;
+    assert!(
+        server
+            .ok(&["(listing (list-session))"])?
+            .contains("%1 60x9")
+    );
+    server.ok(&["(sequence! (rename (workspace \"+1\") \"work\") #inert)"])?;
+    server.ok(&["(sequence! (rename (tab \"@1\") \"code\") #inert)"])?;
     client.wait("the names", |t| {
         t.lines()
             .last()
@@ -216,8 +224,8 @@ fn the_bar_shows_workspace_tabs_pane_and_title() -> Outcome {
     })?;
     assert!(
         server
-            .ok(&["ls", "json"])?
-            .contains("\"title\":\"my-title\"")
+            .ok(&["(list-session)"])?
+            .contains("(title \"my-title\")")
     );
     Ok(())
 }
@@ -239,7 +247,7 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     // Still in move mode: left puts 2 beside 1 on the left, 2 | 1.
     client.keys("h\r")?;
     eventually("swapped places", || {
-        let ls = server.ok(&["ls", "listing"])?;
+        let ls = server.ok(&["(listing (list-session))"])?;
         let order: Vec<&str> = ls
             .lines()
             .filter_map(|l| l.trim_start().split(' ').next())
@@ -249,8 +257,8 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     })?;
     // From the CLI: 2 | (1 / 3), then 2 moves right, beside 1 (the nearer
     // of 1 and 3 by centre, then by number): (1 | 2) / 3.
-    server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
-    server.ok(&["str", "%2", "pane", "str", "right", "move"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"vertical\"))"])?;
+    server.ok(&["(sequence! (move (pane \"%2\") \"right\") #inert)"])?;
     assert_eq!(size(&server, "%3")?.1, 81, "3 spans the width");
     assert_eq!(
         size(&server, "%1")?.0,
@@ -264,7 +272,7 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
 /// The non-blank rows of a pane's screen, from `capture`, as it is now.
 fn captured(server: &Server, pane: &str) -> Result<Vec<String>, String> {
     Ok(server
-        .ok(&["str", pane, "pane", "capture"])?
+        .ok(&[&format!("(capture (pane {}))", fux::script::quoted(pane))])?
         .lines()
         .map(str::to_owned)
         .filter(|l| !l.trim().is_empty())
@@ -292,7 +300,7 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
         Some("last-line"),
         "{before:?}"
     );
-    server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"vertical\"))"])?;
     eventually("the shrunk pane", || {
         let rows = captured(&server, "%1")?;
         Ok(rows.len() < before.len() && rows.last().map(String::as_str) == Some("last-line"))
@@ -313,7 +321,7 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
             .is_some_and(|above| *above == "row-40")
     })?;
     // Growing again brings back the rows the shrink moved into history.
-    server.ok(&["str", "%2", "pane", "kill"])?;
+    server.ok(&["(sequence! (kill (pane \"%2\")) #inert)"])?;
     eventually("the rows restored", || {
         Ok(captured(&server, "%1")? == before)
     })
@@ -334,29 +342,35 @@ fn a_split_pane_keeps_its_last_line_and_regains_its_rows() -> Outcome {
 fn a_layout_as_deep_as_its_panes_is_laid_out_on_a_small_stack() -> Outcome {
     const PANES: u32 = 600;
     let server = Server::start_limited("", "-s 256")?;
-    let stack = "str %1 pane str true program stack drop\n";
+    let stack = "(sequence! (stack (program (pane \"%1\") \"true\")) #inert)";
     let stacked: String = std::iter::repeat_n(stack, PANES as usize - 1).collect();
     let out = server.piped(fux().as_ref(), &["-"], &stacked)?;
     assert_eq!(out.status, 0, "{}", out.stderr);
-    let revision = server.words("@1 str layout_revision get")?;
+    let revision = server.words("(sequence! (define! value-448 (tab 1)) \"layout_revision\" (get value-448 \"layout-revision\"))")?;
     // stack[%1, stack[%2, … stack[%599, %600]]]: node 2k is a stack of
     // node 2k+1, pane k+1, and node 2k+2, the rest.
-    let mut nodes = format!("@1 str {} list", revision.trim());
+    let mut nodes = format!(
+        "(arrange (tab 1) {} (list",
+        fux::script::quoted(revision.trim())
+    );
     for k in 0..PANES - 1 {
         let (pane, rest) = (2 * k + 1, 2 * k + 2);
-        nodes += &format!(" list str stack list {pane} {rest} end end %{}", k + 1);
+        nodes += &format!(" (list \"stack\" (list {pane} {rest})) (pane {})", k + 1);
     }
-    nodes += &format!(" %{PANES} end arrange");
+    nodes += &format!(" (pane {PANES})))");
     let out = server.piped(fux().as_ref(), &["-"], &nodes)?;
     assert_eq!(out.status, 0, "{}", out.stderr);
     let mut client = server.attach(24, 80)?;
     client.ready()?;
-    server.words(&format!("str c1 client %{PANES} show"))?;
-    let shown = server.words("str c1 client focused")?;
+    server.words(&format!(
+        "(sequence! (show (client \"c1\") {}) #inert)",
+        support::reference(&format!("%{PANES}"))
+    ))?;
+    let shown = server.words("(focused (client \"c1\"))")?;
     assert_eq!(shown.trim(), format!("%{PANES}"));
     let pid = server.pid().ok_or("the server's pid")?;
     assert!(alive(i32::try_from(pid).map_err(e)?), "{}", server.log());
-    let nodes = server.words("@1 str topology snapshot str tabs get first str nodes get len")?;
+    let nodes = server.words("(sequence! (define! value-458 (snapshot (tab 1) \"topology\")) \"tabs\" (define! value-461 (first (get value-458 \"tabs\"))) \"nodes\" (length (get value-461 \"nodes\")))")?;
     assert_eq!(nodes.trim(), (2 * PANES - 1).to_string());
     Ok(())
 }

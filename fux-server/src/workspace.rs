@@ -911,7 +911,7 @@ impl Parts {
                 Actor::Server => "fux".to_owned(),
             };
             let tabs = match tabs {
-                1 => "1 tab".to_owned(),
+                1 => "(tab 1)".to_owned(),
                 n => format!("{n} tabs"),
             };
             let here = self.trail(here);

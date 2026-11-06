@@ -90,7 +90,7 @@ fn a_pane_part_way_through_frames_holds_up_no_other() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    server.ok(&["str", "%1", "pane", "str", "vertical", "axis", "split"])?;
+    server.ok(&["(split (axis (pane \"%1\") \"vertical\"))"])?;
     server.type_line(
         "%2",
         "sleep 2; while :; do printf '\\033[?2026h'; printf 'X\\033[65535b%.0s' $(seq 4000); \

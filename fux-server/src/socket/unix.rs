@@ -583,19 +583,19 @@ mod tests {
         assert!(
             Error::NoServer(PathBuf::from("/x/y/absent.sock"))
                 .to_string()
-                .ends_with("`FUX_SOCKET=/x/y/absent.sock fux start` starts one")
+                .ends_with("`FUX_SOCKET=/x/y/absent.sock fux '(start)'` starts one")
         );
         // A path with a blank is quoted, so the command can be pasted.
         assert!(
             Error::NoServer(PathBuf::from("/x/my dir/absent.sock"))
                 .to_string()
-                .ends_with("`FUX_SOCKET='/x/my dir/absent.sock' fux start` starts one")
+                .ends_with("`FUX_SOCKET='/x/my dir/absent.sock' fux '(start)'` starts one")
         );
         // As is one a shell would read otherwise: `;`, a quote.
         assert!(
             Error::NoServer(PathBuf::from("/x/a;b'c.sock"))
                 .to_string()
-                .ends_with(r"`FUX_SOCKET='/x/a;b'\''c.sock' fux start` starts one")
+                .ends_with(r###"`FUX_SOCKET='/x/a;b'"'"'c.sock' fux '(start)'` starts one"###)
         );
     }
 

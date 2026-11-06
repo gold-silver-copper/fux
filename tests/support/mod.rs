@@ -42,8 +42,7 @@ pub fn fux() -> &'static str {
     BIN.get_or_init(|| std::env::var("FUX_BIN").unwrap_or_else(|_| FUX.to_owned()))
 }
 /// A config that gives the bar a row of its own, below the panes.
-pub const BAR_ROW: &str =
-    "str bar list str bottom list str workspace str tabs end list str pane end false end set";
+pub const BAR_ROW: &str = "(sequence! (set \"bar\" (list \"bottom\" (list \"workspace\" \"tabs\") (list \"pane\") #false)) #inert)";
 
 /// How long a test waits for something to show.
 pub const PATIENCE: Duration = Duration::from_secs(10);
@@ -157,10 +156,10 @@ impl Server {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
         let config_dir = dir.join("config").join("fux");
         std::fs::create_dir_all(&config_dir).map_err(e)?;
-        let config_path = config_dir.join("config.fux");
+        let config_path = config_dir.join("config.grift");
         std::fs::write(
             &config_path,
-            format!("str shell list str /bin/sh end set\n{config}\n"),
+            format!("(set \"shell\" (list \"/bin/sh\"))\n{config}\n"),
         )
         .map_err(e)?;
         let socket = dir.join("fux").join("fux.sock");
@@ -225,33 +224,20 @@ impl Server {
         // workspace main, is 80 by 24, in the server's home, its tab sized
         // by the clients showing it once one does.
         let home = server.dir.to_string_lossy().into_owned();
-        let first = [
-            "opts", "str", "main", "in", "80", "24", "size", "str", &home, "cwd",
-        ];
-        let argv = server.state.preferences.shell.argv();
-        let mut launch: Vec<&str> = vec!["list"];
-        for word in &argv {
-            launch.extend(["str", word]);
-        }
-        let history = server.state.preferences.history_bytes.get().to_string();
-        let clipboard = if server.state.preferences.program_clipboard {
-            "true"
-        } else {
-            "false"
-        };
-        launch.extend([
-            "end",
-            "shell-program",
-            &history,
-            "history-bytes",
-            clipboard,
-            "program-clipboard",
-            "new-tab",
-            "drop",
-            "@1",
-            "resize-auto",
-        ]);
-        server.ok(&[&first[..], launch.as_slice()].concat())?;
+        let arguments = server.state.preferences.shell.argv();
+        let program = format!(
+            "(define! pane-value (new-tab (program-clipboard (history-bytes (shell-program (directory (size (in (options) \"main\") 80 24) {}) (list {})) {}) #{}))) (resize-auto (tab pane-value))",
+            fux::script::quoted(&home),
+            arguments
+                .iter()
+                .map(|value| fux::script::quoted(value))
+                .collect::<Vec<_>>()
+                .join(" "),
+            server.state.preferences.history_bytes.get(),
+            server.state.preferences.program_clipboard,
+        );
+        server.ok(&[&program])?;
+
         Ok((server, held))
     }
 
@@ -271,18 +257,25 @@ impl Server {
 
     /// Starts `fux ARGS…` against this server, not waiting for it: for one
     /// that waits on a client of the test's, pumped the while.
-    pub fn spawn(&self, args: &[&str]) -> Result<std::process::Child, String> {
-        self.command(fux()).args(args).spawn().map_err(e)
+    pub fn spawn(&self, args: &[impl AsRef<str>]) -> Result<std::process::Child, String> {
+        self.command(fux())
+            .args(args.iter().map(AsRef::as_ref))
+            .spawn()
+            .map_err(e)
     }
 
     /// Runs `fux ARGS…` against this server.
-    pub fn fux(&self, args: &[&str]) -> Result<Output, String> {
+    pub fn fux(&self, args: &[impl AsRef<str>]) -> Result<Output, String> {
         self.fux_env(args, &[])
     }
 
-    pub fn fux_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Output, String> {
+    pub fn fux_env(
+        &self,
+        args: &[impl AsRef<str>],
+        env: &[(&str, &str)],
+    ) -> Result<Output, String> {
         let mut command = self.command(fux());
-        command.args(args);
+        command.args(args.iter().map(AsRef::as_ref));
         for (k, v) in env {
             command.env(k, v);
         }
@@ -333,12 +326,14 @@ impl Server {
     }
 
     /// Runs a command that must succeed; its stdout.
-    pub fn ok(&self, args: &[&str]) -> Result<String, String> {
+    pub fn ok(&self, args: &[impl AsRef<str>]) -> Result<String, String> {
         let out = self.fux(args)?;
         if out.status != 0 {
             return Err(format!(
-                "fux {args:?} failed ({}): {}",
-                out.status, out.stderr
+                "fux {:?} failed ({}): {}",
+                args.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+                out.status,
+                out.stderr
             ));
         }
         Ok(out.stdout)
@@ -346,13 +341,13 @@ impl Server {
 
     /// Runs whitespace-separated CLI arguments.
     pub fn words(&self, words: &str) -> Result<String, String> {
-        self.ok(&words.split_whitespace().collect::<Vec<_>>())
+        self.ok(&[words])
     }
 
     /// The version of `pane` (`PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`).
     pub fn version(&self, pane: &str) -> Result<String, String> {
         Ok(self
-            .ok(&["str", pane, "pane", "version"])?
+            .ok(&[&format!("(version (pane {}))", fux::script::quoted(pane))])?
             .trim()
             .to_owned())
     }
@@ -369,7 +364,10 @@ impl Server {
         let deadline = after(PATIENCE);
         let mut since = since.to_owned();
         loop {
-            let capture = self.ok(&["str", pane, "pane", "all-history", "capture"])?;
+            let capture = self.ok(&[&format!(
+                "(capture (all-history (pane {})))",
+                fux::script::quoted(pane)
+            )])?;
             if done(&capture) {
                 return Ok(capture);
             }
@@ -389,7 +387,11 @@ impl Server {
                 return Err(format!("{pane} unchanged at {since}"));
             }
             let left = left.to_string();
-            let waited = ["str", since, "changed", &left, "timeout", "wait"];
+            let waited = [&format!(
+                "(wait (timeout (changed {}) {}))",
+                fux::script::quoted(since),
+                reference(&left)
+            )];
             let out = self.fux(&waited)?;
             match out.status {
                 0 => {
@@ -418,9 +420,7 @@ impl Server {
             since = self.changed(pane, &since, deadline)?;
         }
         Ok(self
-            .ok(&[
-                "str", pane, "pane", "str", "program", "get", "str", "exited", "get",
-            ])?
+            .ok(&[&format!("(sequence! (define! value-13 (pane {})) \"program\" (define! value-15 (get value-13 \"program\")) \"exited\" (get value-15 \"exited\"))", fux::script::quoted(pane))])?
             .trim()
             .to_owned())
     }
@@ -894,7 +894,7 @@ pub fn stop_server(socket: &Path) -> Outcome {
         Some(pid) => fuxix::process::kill(pid, fuxix::process::Signal::Term).map_err(e)?,
         None => {
             let out = Command::new(fux())
-                .arg("kill-server")
+                .arg("(kill-server)")
                 .env("FUX_SOCKET", socket)
                 .env_remove("FUX_PANE")
                 .env_remove("FUX_SERVER")
@@ -952,7 +952,7 @@ impl Server {
     /// The panes `fux ls listing` lists, in order, with their shells' pids.
     pub fn panes(&self) -> Result<Vec<(String, i32)>, String> {
         Ok(self
-            .ok(&["ls", "listing"])?
+            .ok(&["(listing (list-session))"])?
             .lines()
             .filter_map(|line| {
                 let mut words = line.split_whitespace();
@@ -974,20 +974,15 @@ impl Server {
     /// Types a line into a pane once its shell shows a prompt.
     pub fn type_line(&self, pane: &str, line: &str) -> Outcome {
         eventually(&format!("a prompt in {pane}"), || {
-            Ok(self.ok(&["str", pane, "pane", "capture"])?.contains('$'))
+            Ok(self
+                .ok(&[&format!("(capture (pane {}))", fux::script::quoted(pane))])?
+                .contains('$'))
         })?;
-        self.ok(&[
-            "str",
-            pane,
-            "pane",
-            "str",
-            line,
-            "text",
-            "str",
-            "Enter",
-            "key",
-            "send-keys",
-        ])?;
+        self.ok(&[&format!(
+            "(send-keys (key (text (pane {}) {}) \"Enter\"))",
+            fux::script::quoted(pane),
+            fux::script::quoted(line)
+        )])?;
         Ok(())
     }
 }
@@ -1188,7 +1183,7 @@ impl Drop for Terminal {
 
 /// The pane client c1 has in focus, as `fux ls listing` says.
 pub fn focused(server: &Server) -> Result<String, String> {
-    let ls = server.ok(&["ls", "listing"])?;
+    let ls = server.ok(&["(listing (list-session))"])?;
     let client = ls
         .lines()
         .find(|l| l.starts_with("client c1"))
@@ -1221,4 +1216,68 @@ pub fn count(version: &str, n: usize) -> Option<&str> {
 /// Whether `version` says its program ended (`ENDED`, its last count, 1).
 pub fn ended(version: &str) -> bool {
     count(version, 4) == Some("1")
+}
+
+/// Explicit grift constructors for the typed identities a fixture holds.
+pub fn reference(value: &str) -> String {
+    if value.starts_with('(') {
+        return value.to_owned();
+    }
+    if let Ok(number) = value.parse::<i64>()
+        && !value.starts_with('+')
+    {
+        return number.to_string();
+    }
+    if matches!(value, "true" | "false") {
+        return format!("#{value}");
+    }
+    if value == "all" {
+        return "(all)".into();
+    }
+    let constructor = match value.chars().next() {
+        Some('%') => "pane",
+        Some('@') => "tab",
+        Some('+') => "workspace",
+        Some('c')
+            if value
+                .get(1..)
+                .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit())) =>
+        {
+            "client"
+        }
+        _ => return fux::script::quoted(value),
+    };
+    format!("({constructor} {})", fux::script::quoted(value))
+}
+
+/// Read one emitted datum and query it without evaluating the emitted form.
+pub fn read_data(text: &str, query: &str) -> Result<String, String> {
+    let mut reader: grift::Grift = grift::Grift::new().map_err(|_| "grift reader")?;
+    let forms = reader
+        .read_in("result", text)
+        .map_err(|_| "result does not read")?;
+    let forms = reader.list_items(&forms).map_err(|_| "result forms")?;
+    let [data] = forms.as_slice() else {
+        return Err(format!("expected one datum: {text}"));
+    };
+    reader
+        .define("data", data.clone())
+        .map_err(|_| "bind data")?;
+    reader
+        .evaluate(
+            &mut (),
+            "(define! field (lambda! (record name) (second (find-association name record))))",
+        )
+        .map_err(|_| "field helper")?;
+    let result = reader
+        .evaluate(&mut (), query)
+        .map_err(|_| format!("query {query} failed for {text}"))?;
+    if let Some(text) = reader.as_string(&result).map_err(|_| "string result")? {
+        return Ok(text);
+    }
+    let mut text = String::new();
+    reader
+        .write(&result, &mut text)
+        .map_err(|_| "printing result")?;
+    Ok(text)
 }

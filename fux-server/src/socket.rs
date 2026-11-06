@@ -114,16 +114,16 @@ pub fn socket_path(socket: Option<&Path>) -> Result<SocketPath, Error> {
     }
 }
 
-/// What starts the server at `path`: `fux start` the default's (or
+/// What starts the server at `path`: `fux '(start)'` the default's (or
 /// `FUX_SOCKET`'s), with `FUX_SOCKET` set to it another's.
 pub fn start_hint(path: &Path) -> String {
     let default = socket_path(None).is_ok_and(|s| s.path == path);
     if default {
-        return "`fux` in a terminal starts one, or `fux start` one with no terminal".into();
+        return "`fux` in a terminal starts one, or `fux '(start)'` one with no terminal".into();
     }
     // Quoted for a shell, as the hint is a command to run.
     let path = fux_wire::words::quote(&path.to_string_lossy());
-    format!("`FUX_SOCKET={path} fux start` starts one")
+    format!("`FUX_SOCKET={path} fux '(start)'` starts one")
 }
 
 /// fux's directory: under the first of `BASES` that is set (Unix:

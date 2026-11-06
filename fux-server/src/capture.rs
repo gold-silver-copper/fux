@@ -690,7 +690,7 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
         // It closed its terminal and runs on: nothing reads keys there
         // (the terminal hung up; Linux says so).
         Process::HungUp(_) => "hung_up",
-        Process::ReadFailed(..) => "read_failed",
+        Process::ReadFailed(..) => "read-failed",
         Process::Exited(_) => "ended",
         Process::Respawning => return Ok(Json::Null),
     };
@@ -716,7 +716,7 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
         ("state", Json::str(state)),
         ("exited", exited),
         ("signal", signal),
-        ("read_error", read_error.map_or(Json::Null, Json::str)),
+        ("read-error", read_error.map_or(Json::Null, Json::str)),
         ("input_unread", Json::count(pane.left.input)),
         (
             "foreground_group",
@@ -738,8 +738,8 @@ pub(crate) fn terminal(fact: Terminal, p: &Pane) -> Json {
             MouseProtocolMode::Press => Json::str("press"),
             MouseProtocolMode::PressRelease => Json::str("press_release"),
             MouseProtocolMode::Highlight => Json::str("highlight"),
-            MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
-            MouseProtocolMode::AnyMotion => Json::str("any_motion"),
+            MouseProtocolMode::ButtonMotion => Json::str("button-motion"),
+            MouseProtocolMode::AnyMotion => Json::str("any-motion"),
         },
         // How it asked for mouse reports to be spelled.
         Terminal::MouseEncoding => Json::str(match p.screen().mouse_protocol_encoding() {

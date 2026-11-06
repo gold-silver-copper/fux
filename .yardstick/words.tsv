@@ -1,0 +1,41 @@
+type	type	cli
+press	press	cli
+line	line	cli
+assert-kind	assert-kind	cli
+info	information	cli
+all-history	all-history	cli
+observed	observed	cli
+shows	shows	cli
+quiet	quiet	cli
+until-ended	until-ended	cli
+grows	grows	cli
+edit-history	edit-history	cli
+ls	list-session	cli
+chooser-row	chooser-row	cli
+listing	listing	cli
+dump-text	dump-text	cli
+dump-id	-	replay now consumes a recipe and maps its old identities to new handles
+dump-first	dump-first	cli
+dump-cwd	dump-directory	cli
+dump-warnings	dump-warnings	cli
+dump-name	-	replay now consumes a recipe and maps its old identities to new handles
+dump-create	-	replay now consumes a recipe and maps its old identities to new handles
+dump-recipe	dump-recipe	cli
+dump	dump	cli
+events	events	cli
+me-focused	me-focused	cli
+outer	outer	cli
+inner	inner	cli
+rename-prompt	rename-prompt	cli
+confirm-close	confirm-close	cli
+chooser-find	chooser-find	cli
+chooser-container-row	chooser-container-row	cli
+chooser-index	chooser-index	cli
+chooser-selected	chooser-selected	cli
+chooser-siblings	chooser-siblings	cli
+chooser-count	chooser-count	cli
+chooser-path	chooser-path	cli
+chooser-tree	chooser-tree	cli
+choose-among	choose-among	cli
+choose-move	choose-move	cli
+choose-pane	choose-pane	cli

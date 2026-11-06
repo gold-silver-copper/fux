@@ -1,589 +1,77 @@
-# The fux cookbook
+# fux recipes in grift
 
-Short recipes for what agents and people do with fux. Each is a heading,
-what it's for, and a block to copy. The `sh` blocks run as they stand, top
-to bottom, each in a shell of its own with `set -e -o pipefail`, against
-the server `FUX_SOCKET` names: the second recipe makes the shell named
-`shell` that later ones type into, and the last closes everything they made. A command expected to fail says
-the exit status it expects, `|| [ $? -eq N ]`. A test runs every recipe,
-so a recipe here is one this fux runs.
+These examples use an already selected private server through `FUX_SOCKET`.
 
-**The boundary:** the shell composes `fux` commands, fuxth does what must
-happen inside one request or one key binding, and ordinary programs do
-everything else.
-
-fux has no files to read or write; the `fux` command is the same idea
-spelled as commands, and a file is your own redirect:
-
-| As a file, it would be | With fux |
-| --- | --- |
-| `cat screen` | `fux %2 capture` |
-| `echo X > input` | `fux %2 str X line` |
-| `tail -f events` | `fux all str '' events` |
-| `cat events >> FILE` | `fux all str '' events >> FILE` |
-
-## Pick a server
-
-`FUX_SOCKET` names the server every `fux` command talks to. `fux start`
-makes the socket's directory, only you allowed in (mode 0700), and
-refuses one anyone else may open. A server of your own keeps your panes
-apart from anyone else's; stop it with `kill` on its process, which macOS
-leaves out of `status`: there `lsof -t` names it from the socket.
+## A command and its actual exit status
 
 ```sh
-(
-  export FUX_SOCKET="$PWD/mine/fux.sock"
-  fux status > /dev/null 2>&1 || fux start
-  kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
-)
+fux '(define! p (new-tab (argument (argument (program (size (in (options) "batch") 80 24) "/bin/sh") "-c") "printf result=42; exit 7"))) (rename p "batch-process")'
+fux '(get (get (until-ended (pane "batch-process") 10) "program") "exited")'
+fux '(kill (workspace "batch"))'
 ```
 
-## A shell to type into
-
-A new tab in workspace `work` running `sh`, its pane named `shell`: the
-later recipes type POSIX `sh` into it, whatever your `$SHELL` is (leave
-out `str sh program` for that one). From outside fux a new tab needs a
-size; run inside a fux pane, it takes that pane's tab's.
+## Shell arguments remain strings
 
 ```sh
-fux opts str work in 80 24 size str sh program new-tab str shell rename
+fux '(define! p (new-tab (program (size (in (options) "quoted") 80 24) "/bin/sh"))) (rename p "quoted-shell")'
+fux '(line (pane "quoted-shell") (first (arguments)))' 'echo "parentheses (stay data)"'
+fux '(shows (pane "quoted-shell") "parentheses (stay data)" 10)'
+fux '(kill (workspace "quoted"))'
 ```
 
-## Run a program and wait for it to end
+## A repeating resize map
 
-Start it in a new tab, or in a split of a pane, and print its exit status.
+```grift
+(bind-key "C-b r l" (code! (lambda! () (move-border (focused (me)) "right" 1))))
+(label "grow right")
+(group "Resize")
+(repeat "C-b r")
+```
+
+## A prompt callback
+
+```grift
+(bind-key "C-b p" (code! (lambda! ()
+  (prompt (me) "command" "" (code! (lambda! (line-value)
+    (line (focused (me)) line-value)))))))
+(label "type a command")
+```
+
+
+## Read held capture data
 
 ```sh
-fux opts str work in 80 24 size str sh program str -c arg str 'sleep 1; exit 3' arg new-tab 60 until-ended str program get str exited get
-fux str shell pane str vertical axis str sh program str -c arg str 'exit 5' arg split 60 until-ended str program get str exited get
+fux '(get (datum (capture (pane 1))) "lines")'
 ```
 
-## Type a line, send keys
-
-`line` types a line and presses Enter; `send-keys` sends text and named
-keys (`fux key-names` lists the names).
+## Read several facts in one observation
 
 ```sh
-fux str shell pane str 'echo hello' line
-fux str shell pane str C-c key send-keys
-fux str shell pane str 'echo hello again' text str Enter key send-keys
+fux '(define! observed (information (pane 1))) (map (lambda! (p) (get p "columns")) (get observed "panes"))'
 ```
 
-## Wait for text on the screen
-
-Wait for a text only the output holds: the typed line shows `$((6*7))`,
-never `42`. `shows` prints the screen it matched. Its 30 seconds bound
-each wait for a change, not the whole: a screen that changes without the
-text keeps it waiting. For a deadline on the whole, use `timeout(1)`
-(below).
+## Handle a refusal by kind
 
 ```sh
-fux str shell pane str 'sleep 1; echo "built: $((6*7))"' line
-fux str shell pane str 'built: 42' 30 shows string
+fux '(catch-kind! (kill (pane 999)) no-pane failure (display "pane is gone\n"))'
 ```
 
-## Wait for a quiet screen
-
-`quiet` waits until nothing on the screen has changed for that many
-seconds, then prints it. Quiet is a fact about the screen, not proof the
-program is done.
+## Save a session as readable data
 
 ```sh
-fux str shell pane 2 quiet string
+fux '(dump (all))' > saved.grift
 ```
 
-## Paste a file
-
-The file's text goes to the program whole, as one paste (bracketed if the
-program asked for it), however long it is. A paste into an attached
-terminal arrives whole too.
+## Discover operations
 
 ```sh
-printf 'echo pasted\n' > lines.txt
-fux str shell pane input paste send-keys < lines.txt
+fux '(explain "split")'
+fux '(list-keys)'
 ```
 
-## Read the screen and the history
-
-As text: the screen, the last 100 lines of history and the screen, or all
-of it.
-
-```sh
-fux str shell pane capture
-fux str shell pane 100 history capture
-fux str shell pane all-history capture
-```
-
-As JSON, one object a line, for `jq` (`fux help json` says every field):
-
-```sh
-fux str shell pane capture json | jq -r '.version, .lines[-1]'
-fux ls | jq -r '.panes[] | [.id, .name // "", .program.exited // ""] | @tsv'
-```
-
-## What a pane runs, and where
-
-fux gives the pane's program's process (`pid`) and its terminal's
-foreground process group (`foreground_group`), in its `program` record;
-the OS says what they run. The
-group's leader may have exited while the rest of a pipeline runs on:
-then `ps -p` fails, the leader's command and directory are unknown, and
-`pgrep -g` still lists the group. Here a second pane, `piped`, runs a
-pipeline whose leader `true` exits at once.
-
-```sh
-fux opts str work in 80 24 size str sh program new-tab str piped rename > /dev/null
-fux str piped pane str '$' 30 shows > /dev/null
-fux str piped pane str 'true | sleep 300' line > /dev/null
-until G=$(fux str piped pane str program get str foreground_group get) &&
-  [ "$G" != "$(fux str piped pane str program get str pid get)" ] && ! kill -0 "$G" 2> /dev/null; do sleep 0.1; done
-```
-
-```sh
-for p in shell piped; do
-  G=$(fux str "$p" pane str program get str foreground_group get)
-  if ps -o comm=,args= -p "$G"; then
-    if [ "$(uname)" = Linux ]; then
-      tr '\0' '\n' < "/proc/$G/cmdline"
-      readlink "/proc/$G/cwd"
-    else
-      lsof -a -p "$G" -d cwd -Fn
-    fi
-  else
-    echo "$p: group $G's leader is gone"
-  fi
-  if [ "$(uname)" = Linux ]; then pgrep -a -g "$G"; else pgrep -lf -g "$G"; fi
-done
-fux str piped pane kill
-```
-
-## Follow events from a cursor
-
-`events` prints the journal's events, one JSON object a line, each with
-its `next` cursor, until the scope is gone or the server stops. Take a
-cursor before you act and you miss nothing in between; `head`, `jq` or
-`timeout` ends it. When its reader stops early, fux ends quietly with
-141, as `cat` does.
-
-```sh
-C=$(fux ls str cursor get)
-fux opts str work in 80 24 size str true program new-tab > /dev/null
-fux all str "$C" events | jq -nc 'first(inputs | select(.event == "exited"))' || [ $? -eq 141 ]
-```
-
-An empty cursor starts now; to go on after a stop, pass the last line's
-`next`.
-
-## Read the screen, then follow what changes
-
-A capture holds `cursor`, the journal's cursor read with its screen:
-`events` from it starts reading the pane's journal entries after the
-capture, none from before (as from any cursor, entries evicted first are
-`missed`). A change only to the screen is no entry: it shows as a new
-version and in captures. Here the first event after the capture is the
-line typed after it.
-
-```sh
-C=$(fux str shell pane capture str cursor get)
-fux str shell pane str 'echo after' line
-E=$(fux str shell pane str "$C" events | jq -nr 'first(inputs) | .event') || [ $? -eq 141 ]
-[ "$E" = input ]
-```
-
-## Watch what changes on a screen
-
-`since` a version reads only the lines with a row changed after it, each
-after its row as `grep -n` writes lines; its JSON holds the rows as
-`changed_rows`, and the `version` to read from next. It suits a program
-that redraws in place. Where fux can't say which rows changed (they moved
-in a scroll or resize, or the program respawned) it fails `stale` (exit
-1): capture the pane whole and go on from its version. Here the program
-redraws its first row once it reads a line.
-
-```sh
-fux opts str work in 40 6 size str sh program str -c arg str 'stty -echo; printf "a\nb\nc"; read x; printf "\033[1;1HA"; exec sleep 60' arg new-tab str watched rename
-fux str watched pane str c 30 shows > /dev/null
-V=$(fux str watched pane capture version)
-fux str watched pane str x line
-fux str watched pane str A 30 shows > /dev/null
-[ "$(fux str watched pane str "$V" since capture)" = 0:A ]
-fux str watched pane str "$V" since capture json | jq -c '{changed_rows, version}'
-fux str watched pane str "$V" since capture || fux str watched pane capture
-fux str watched pane kill
-```
-
-## Keep a journal file
-
-The journal file is your redirect, written as long as the reader runs;
-read it with `jq`, `grep` or `tail -f`. Here the loop waits until the
-file holds the program's exit, failing if the reader ended (`kill -0`),
-then stops the reader.
-
-```sh
-C=$(fux ls str cursor get)
-fux all str "$C" events >> journal.ndjson &
-J=$!
-fux opts str work in 80 24 size str true program new-tab > /dev/null
-until grep -q '"exited"' journal.ndjson; do kill -0 "$J"; sleep 1; done
-kill "$J"
-```
-
-## Act only on the screen you saw
-
-`expect` sends keys only if the pane is still at the version you read;
-otherwise it sends nothing and fails `stale` (exit 1): read the screen
-again.
-
-```sh
-V=$(fux str shell pane capture version)
-fux str "$V" expect str 'echo yes' line || [ $? -eq 1 ]
-```
-
-## Stop a runaway with timeout
-
-fux sets no time limits of its own: `timeout(1)` bounds a fux command
-(exit 124 when it stops it), and a program in a pane.
-
-```sh
-timeout 2 fux str shell pane str 'never shown' 600 shows || [ $? -eq 124 ]
-fux opts str work in 80 24 size str timeout program str 2 arg str sleep arg str 600 arg new-tab 60 until-ended str program get str exited get
-```
-
-## Cap one pane's memory
-
-Each pane runs in a process of its own (`fux __pane`), its program's
-parent, which holds its terminal: its screen, its history and the input
-waiting for its program. fux sets no limit of its own; the system's caps
-that process, and one past its cap ends alone. Its pane reads
-`read_failed`, saying how its process ended, then its program's end; the
-server and every other pane go on. `prlimit` (Linux) caps one pane's
-address space:
-
-```sh
-P=$(ps -o ppid= -p "$(fux str shell pane str program get str pid get)" | tr -d ' ')
-prlimit --pid "$P" --as=$((2 << 30))
-```
-
-To cap a whole run, start its server in a scope of its own:
-`systemd-run --user --scope -p MemoryMax=4G -p OOMPolicy=continue fux
-start`. `OOMPolicy=continue` keeps the scope when the OOM killer ends a
-process in it, which is then the biggest, the pane that flooded, rather
-than every process in it.
-
-## Take a crashed server's panes back
-
-A server killed with `kill -9`, or by the OOM killer, ends alone: its
-panes' processes wait, with their programs, beside its socket. `fux start`
-on that socket takes them back, as they were: their ids, names, screens
-and programs. Its journal is new: a cursor from before is refused,
-saying what was lost.
-
-```sh
-(
-  export FUX_SOCKET="$PWD/crash/fux.sock"
-  fux start
-  fux opts str work in 80 24 size str sleep program str 600 arg new-tab str sleeper rename > /dev/null
-  P=$(fux str sleeper pane str program get str pid get)
-  kill -9 "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
-  while fux status > /dev/null 2>&1; do sleep 0.1; done
-  fux start
-  fux ls listing
-  [ "$(fux str sleeper pane str program get str pid get)" = "$P" ]
-  fux kill-server
-)
-```
-
-## A project with agent workspaces
-
-A workspace holds tabs and workspaces. `in` again names a workspace in the
-one before, made if it is not there, so each agent of a project gets a
-workspace of its own under it, and the bar shows the path, `work › agent1`.
-A word on the project covers the workspaces in it: its `events`, `panes`,
-`dump` and `kill` take in its agents, so a finished agent closes with one
-`kill`, and `move` puts a workspace in another, or with `all` at the top.
-
-```sh
-fux opts str work in str agent1 in 80 24 size str sh program new-tab > /dev/null
-fux opts str work in str agent2 in 80 24 size str sh program new-tab > /dev/null
-fux str work workspace panes len
-fux str agent2 workspace str parent get str name get
-fux str agent2 workspace kill
-```
-
-## An orchestrator's agents
-
-An agent that starts agents gives each level a workspace: the fleet, each
-orchestrator in it, and each of its tasks, where a task's implementer and
-reviewers get a tab apiece, so the bar shows `fleet › orch1 › task1`. A
-finished task closes with one `kill`, an orchestrator's `kill` stops all
-its tasks, and the fleet, left empty, closes with its last child. Names
-are one namespace on a server, so each task and agent has a name of its
-own.
-
-```sh
-fux opts str fleet in str orch1 in str task1 in 80 24 size str sh program new-tab str task1-impl rename
-fux opts str fleet in str orch1 in str task1 in 80 24 size str sh program new-tab str task1-review rename
-fux opts str fleet in str orch1 in str task2 in 80 24 size str sh program new-tab str task2-impl rename
-fux str task1-impl pane str 'echo implementing' line
-[ "$(fux str task1 workspace panes len)" -eq 2 ]
-[ "$(fux str orch1 workspace panes len)" -eq 3 ]
-fux str task1 workspace kill
-[ "$(fux str orch1 workspace panes len)" -eq 1 ]
-fux str orch1 workspace kill
-fux str fleet workspace || [ $? -eq 1 ]
-```
-
-## An editor beside switchable terminals
-
-`stack` puts a new pane on another's rectangle, as `split` puts one beside
-it: the two are children of a stack, and each client is shown one child
-of a stack, its own. Every child keeps its size, so choosing one resizes no
-program. `step` on a pane in a stack shows a client its next, previous or
-last child (`C-b o`, `C-b q`), and `show` any pane. A tab's `nodes` lists a
-stack as `["stack",[CHILD,…]]`, which `arrange` takes too.
-
-```sh
-fux opts str work in str code name 80 24 size str sh program new-tab str editor rename
-fux str editor pane str horizontal axis str sh program split str tests rename
-fux str tests pane str sh program stack str build rename
-fux str code tab str topology snapshot str tabs get first str nodes get json
-[ "$(fux str tests pane str cols get)" = "$(fux str build pane str cols get)" ]
-```
-
-## Save and restore a layout
-
-`dump` prints a fuxth program that makes the layout and its programs
-again (never what the processes held); `fux --file` runs it, here on a
-fresh server, its workspaces in the workspace its first argument names
-(made if it is not there), else at the top. Saving, cloning and moving a
-project are that one mechanism.
-
-```sh
-fux str work workspace dump > work.fux
-(
-  export FUX_SOCKET="$PWD/copy/fux.sock"
-  fux start
-  fux --file work.fux home
-  fux str work workspace str parent get str name get
-  kill "$(fux status str server_pid get 2>/dev/null || lsof -t "$FUX_SOCKET")"
-)
-```
-
-## Words from a recipe file
-
-Words only some programs want are recipe files, in a checkout of fux at
-`recipes/`, which a program loads with `require` (relative to the file
-or directory that names it) or runs with `fux --file`: `layouts.fux`'s
-presets arrange a tab's panes, and `confirm.fux`'s `confirm` asks before
-an action (the next recipe binds it).
-
-```sh
-fux str shell pane str horizontal axis str sh program split > /dev/null
-fux require recipes/layouts.fux str shell pane tab even-h
-```
-
-## Key bindings and config
-
-The config is fuxth that each terminal runs as it attaches;
-`fux list-keys` prints the bundled keys as config lines. `edit-history`
-opens the focused pane's history in this terminal's `$EDITOR` (else `vi`)
-at its last line, bundled on `C-b c`. A binding runs a code value,
-`code … end`, never a string; a word of the config's is defined before
-the binding that names it. A key maps to a binding or to a map of more
-keys: the prefix is a key that holds one, and `bind` takes keys from the
-root. This config moves the prefix, and every key after it, to `C-a`,
-binds `edit-history` on `C-a e` too, a word of its own on `C-a v`, and a
-map `C-a g` of its own that repeats, so `C-a g h h h` moves a border
-three cells.
-
-```fux
-# ~/.config/fux/config.fux
-str C-b str C-a move-keys
-str 'C-a e' code me edit-history end bind  str 'history in the editor' label
-define split-right me focused str horizontal axis split drop end
-str 'C-a v' code split-right end bind
-str 'C-a g h' code me focused str left 1 move-border end bind  str 'C-a g' repeat
-```
-
-Another program reads a client's keys, and the map it is in now, from
-that client itself, and its preferences. Here a client of no terminal
-says its id, and two of its keys, in the map `C-b` holds, and one
-preference are read from it.
-
-```sh
-fux opts 80 24 size attach > client.id &
-A=$!
-until [ -s client.id ]; do kill -0 "$A"; sleep 0.1; done
-fux str "$(cat client.id)" client keys | jq -c '.at, (.keymap[] | select(.key == "C-b") | .keymap[] | select(.key == "d" or .key == "r"))'
-fux str "$(cat client.id)" client preferences | jq -c 'select(.name == "bell")'
-kill "$A"
-```
-
-A config's `require` reads beside it: this one, beside a copy of fux's
-`recipes`, asks before `C-b X` terminates the focused pane's command.
-
-```fux
-# ~/.config/fux/config.fux
-require recipes/confirm.fux
-str 'C-b X' code me str 'terminate its command?' list list me focused end code str TERM signal drop end end confirm end bind
-```
-
-## The bar on a row of its own
-
-The bar takes no row by default: the panes have every row, the prefix
-draws the bar over the bottom one until it ends, and a bell or a
-program's notification shows in its corner for five seconds. This
-config gives the bar its own row below the panes again.
-
-```fux
-# ~/.config/fux/config.fux
-str bar list str bottom list str workspace str tabs end list str pane end false end set
-```
-
-## A word of your own
-
-`define … end` makes a word for one command line; `require` loads words
-from a file, relative to the file or directory that names it.
-
-```sh
-fux define screen-has swap capture string swap contains end str shell pane str 42 screen-has
-cat > words.fux <<'EOF'
-# pane text -- flag: whether the pane's screen shows the text
-define screen-has swap capture string swap contains end
-EOF
-fux require words.fux str shell pane str 42 screen-has
-```
-
-## Read the dictionary
-
-A program's dictionary is data: `word` gives a word's record, where it
-came from (`core`, `fux`, `library`, or `run` for the program's own), its
-effect, its documentation (all `fux help NAME` says of it), the words that
-made it as they were read (`native` for a word in Rust), and `codes`, what
-it can fail with as it runs (null where that is unknown, as for
-`execute`); `dictionary` gives every word's, in the order they were
-defined. `see` writes what made a word, and `words` every name. None of
-them asks the server.
-
-```sh
-fux str line word str definition get
-fux str capture word str documentation get
-fux str div word str codes get
-[ "$(fux define double 2 mul end str double word str provenance get)" = run ]
-fux dictionary | jq -r 'select(.provenance == "fux") | .name' | wc -l
-fux define double 2 mul end see double
-```
-
-## Run a fuxth program on its own
-
-`fuxth` runs a fuxth program without fux: a file, or the program on its
-stdin. It prints only what the program prints, then the values left, one
-a line; a failure says why on stderr and exits 1, and Ctrl-C exits 130.
-On a terminal with no file, `fuxth` is a REPL that prints the stack and
-`ok` after each line; `rlwrap fuxth` gives it line editing and history.
-
-```sh
-printf 'define square dup mul end\n7 square\n' > square.fux
-fuxth square.fux
-printf '3 4 add\n' | fuxth
-echo args > args.fux && fuxth args.fux one two
-echo '1 0 div' | fuxth || [ $? -eq 1 ]
-```
-
-## Keep data in cells
-
-fuxth's data space holds a value a cell. `variable` and `create` name
-cells, `store-next` and `allot` add them, `fetch` and `store` read and
-write one, and an address plus n is the cell n on. A defining word is
-`create`, then `does` for what the words it makes do.
-
-```sh
-fuxth <<'EOF'
-create squares 1 store-next 4 store-next 9 store-next
-squares 2 add fetch print
-variable count 0 count store 3 0 do 1 count add-store loop count fetch print
-define table create allot does swap add end
-3 table slots str hi 1 slots store 1 slots fetch print
-EOF
-fux 5 constant five five five mul
-```
-
-## Replace a word later
-
-Calls bind early: a word keeps the version of each word it was compiled
-against. A word `defer` makes is the exception: it runs the xt `is` gave
-it last, so a word compiled before it changes with it, and `action-of`
-gives that xt.
-
-```sh
-fuxth <<'EOF'
-defer greeting
-define greet greeting print end
-code str hello end is greeting greet
-code str goodbye end is greeting greet
-action-of greeting execute print
-EOF
-```
-
-## An outer interpreter in fuxth
-
-fuxth's own outer interpreter reads a word, finds it, and runs it, or
-compiles it while a definition is open unless it is immediate; a word that
-isn't one is a number. The same loop, written in fuxth from `next-word`,
-`find`, `immediate-word`, `compiling`, `execute`, `compile-call` and
-`literal`, reads the rest of its input itself, `define` and the immediate
-words included, until `next-word` finds none.
-
-```sh
-cat > interpret.fux <<'EOF'
-# s -- : run the word s names, or compile it into the definition open
-# unless it is immediate; else s is a number, given or compiled
-define interpret-word
-  dup find if
-    nip dup immediate-word compiling not or if execute else compile-call then
-  else
-    drop number compiling if postpone literal then
-  then
-end
-# -- : the rest of the input, a word at a time, to its end
-define interpret
-  begin str missing_token try next-word true catch drop false end while
-    interpret-word
-  end
-end
-EOF
-[ "$(echo 'include interpret.fux interpret define square dup mul end 7 square print' | fuxth)" = 49 ]
-printf '%s\n' 'include interpret.fux interpret' \
-  'define unless postpone not postpone if end immediate' \
-  'define check unless str no print then end' 'false check' > unless.fux
-[ "$(fuxth unless.fux)" = no ]
-```
-
-## Edit a file with fuxed
-
-fuxed is a small screen editor written in fuxth, in a checkout of fux at
-`fuxed/fuxed.fux`, and `fuxed/fuxed FILE` launches it on a terminal. The
-launcher leaves two policies to the OS: `umask 077`, so the files it makes
-are private from the start, and `pwd -P` and `readlink`, so FILE is
-resolved once and saving through a symlink replaces its target. Its keys and commands are in
-`fuxed/README.md`; M-x runs a line of fuxth in it, such as `str w first
-ctrl str save bind`. Off a terminal it reads its keys from stdin and the
-screen size from `LINES` and `COLUMNS`, so a file of keys edits a file:
-here, through a symlink, type, Enter, type, C-s to save and C-q to quit.
-
-```sh
-printf 'hello\015world\023\021' > keys
-ln -s notes.txt link.txt
-LINES=24 COLUMNS=80 fuxed/fuxed link.txt < keys > /dev/null
-[ "$(cat notes.txt)" = "$(printf 'hello\nworld')" ] && [ -L link.txt ]
-[ "$(ls -l notes.txt | cut -c1-10)" = -rw------- ]
-```
-
-## Clean up
-
-Close the workspace the recipes made, and with it their panes. A server
-stops when its last pane closes.
-
-```sh
-fux str work workspace kill
+## Set the client prefix
+
+```grift
+(move-keys "C-b" "C-a")
+(set "escape-delay-ms" 35)
 ```

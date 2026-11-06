@@ -36,8 +36,9 @@ mod testing {
     /// A code value of `words`, split at spaces, as `code … end` around
     /// them reads them: for tests, as no word turns text into code.
     pub fn code(words: &str) -> fux_wire::callback::Code {
-        let words = words.split_whitespace().map(String::from).collect();
-        fux_wire::callback::Code { words }
+        fux_wire::callback::Code {
+            source: words.to_owned(),
+        }
     }
 }
 
