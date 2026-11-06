@@ -119,7 +119,7 @@ Shot 'attached'
 PressTill "echo pane={%}FUX_PANE{%} > `"$marks\typed.txt`"{ENTER}" 'the typed command run' { Test-Path "$marks\typed.txt" }
 $typed = Get-Content "$marks\typed.txt" -Raw
 $typed
-if ($typed -notmatch 'pane=\d+:\d+') { Shot 'failed'; throw "typed outside a pane of fux's: $typed" }
+if ($typed -notmatch 'pane=%\d+:\d+') { Shot 'failed'; throw "typed outside a pane of fux's: $typed" }
 Shot 'typed'
 
 [void][Fux.Desktop]::MoveWindow($handle, 40, 40, 700, 420, $true)
