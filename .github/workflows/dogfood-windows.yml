@@ -39,7 +39,7 @@ jobs:
       - name: Each program's own tests
         timeout-minutes: 35
         run: |
-          set -uo pipefail
+          set +e
           export CARGO_TARGET_DIR="$PWD/target-dog"
           : > results.txt
           for dir in dogfood/*/; do
@@ -49,8 +49,8 @@ jobs:
             code=$?
             tail -25 "out-$name.txt" | cut -c1-180
             echo "::endgroup::"
-            passed=$(grep -E '^test result' "out-$name.txt" | sed -E 's/.* ([0-9]+) passed.*/\1/' | paste -sd+ | bc)
-            failed=$(grep -E '^test result' "out-$name.txt" | sed -E 's/.* ([0-9]+) failed.*/\1/' | paste -sd+ | bc)
+            passed=$(grep -E '^test result' "out-$name.txt" | awk '{p+=$4} END {print p+0}')
+            failed=$(grep -E '^test result' "out-$name.txt" | awk '{p+=$6} END {print p+0}')
             echo "RESULT $name exit=$code passed=${passed:-0} failed=${failed:-0}" | tee -a results.txt
           done
           cat results.txt
