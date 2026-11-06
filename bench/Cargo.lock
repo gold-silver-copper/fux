@@ -10,7 +10,7 @@ dependencies = [
  "fux-vt",
  "fux-wire",
  "fuxix",
- "fuxth",
+ "grift",
 ]
 
 [[package]]
@@ -22,7 +22,6 @@ dependencies = [
  "fux-vt",
  "fux-wire",
  "fuxix",
- "fuxth",
  "serde_json",
 ]
 
@@ -45,7 +44,6 @@ version = "0.37.0"
 dependencies = [
  "fux-vt",
  "fuxix",
- "fuxth-core",
 ]
 
 [[package]]
@@ -57,15 +55,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "fuxth"
-version = "0.8.0"
-dependencies = [
- "fuxth-core",
-]
-
-[[package]]
-name = "fuxth-core"
-version = "0.8.0"
+name = "grift"
+version = "2.0.0"
+source = "git+https://github.com/gold-silver-copper/grift?rev=8d4588f6cffc43d0061e023c6536f1e4bc9263fb#8d4588f6cffc43d0061e023c6536f1e4bc9263fb"
 
 [[package]]
 name = "itoa"

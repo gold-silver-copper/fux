@@ -22,7 +22,6 @@ fux-server = { path = "../fux-server", features = ["in-process"] }
 fux-vt = { path = "../fux-vt" }
 fux-wire = { path = "../fux-wire" }
 fuxix = { path = "../fuxix" }
-fuxth = { path = "../fuxth" }
 # Reads the corpus's manifests, and writes the results.
 serde_json = "1"
 
