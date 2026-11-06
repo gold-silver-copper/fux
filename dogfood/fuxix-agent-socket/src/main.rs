@@ -17,10 +17,10 @@ use fuxix::poll::{Entry, Events, Poll, PollFd};
 use fuxix::process::Signal;
 use fuxix::signal::Pipe;
 use std::collections::BTreeMap;
+use fuxix::io::Stream;
+use fuxix::socket::{Client as Dial, Listener};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -97,16 +97,19 @@ fn default_socket() -> Result<PathBuf, String> {
     if let Some(path) = var("FUXIX_AGENT_SOCK") {
         return Ok(PathBuf::from(path));
     }
-    let base = match var("XDG_RUNTIME_DIR") {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(var("HOME").ok_or("neither XDG_RUNTIME_DIR nor HOME is set")?).join(".cache"),
-    };
-    Ok(base.join("fuxix-agent").join("agent.sock"))
+    let base = var("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
+    Ok(PathBuf::from(base).join("fuxix-agent").join("agent.sock"))
+}
+
+/// The pipe `path` names, this user's alone.
+fn pipe(path: &Path) -> Result<String, String> {
+    let base = path.to_string_lossy().replace('\\', "/");
+    fuxix::socket::name(&format!("fuxix-agent-{base}")).map_err(|e| e.to_string())
 }
 
 /// Sends one request line and reads the one-line answer.
 fn ask(socket: &Path, request: &str) -> Result<String, String> {
-    let mut stream = UnixStream::connect(socket)
+    let mut stream = Dial::connect(&pipe(socket)?)
         .map_err(|e| format!("no agent at {}: {e}", socket.display()))?;
     stream
         .write_all(format!("{request}\n").as_bytes())
@@ -131,101 +134,46 @@ impl Drop for Secret {
     }
 }
 
-/// The socket this process bound: removed when dropped, if the file at
-/// the path is still the one it made.
+/// The lock beside the pipe's path, held while the agent runs.
 struct Bound {
     path: PathBuf,
-    inode: (u64, u64),
-    /// The lock beside the socket, held while the agent runs.
     _lock: File,
 }
 
-impl Drop for Bound {
-    fn drop(&mut self) {
-        if fs::symlink_metadata(&self.path).is_ok_and(|m| (m.dev(), m.ino()) == self.inode) {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
-/// Takes the socket's path: makes its directory (0700) if missing, takes
-/// the lock beside it, and removes a stale socket there. A live agent's
-/// socket, or a file that is not a socket of this user's, is refused.
-fn claim(path: &Path) -> Result<File, String> {
+/// Takes the path: a private folder if missing, the lock beside it, and the
+/// pipe's first instance, which a live agent's, or a squatter's, refuses.
+fn bind(path: &Path) -> Result<(Bound, Listener), String> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|e| format!("making {}: {e}", dir.display()))?;
+        match fuxix::file::private_dir(dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(format!("making {}: {e}", dir.display()));
+            }
+            _ => {}
+        }
     }
     let mut lock_path = path.as_os_str().to_owned();
     lock_path.push(".lock");
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(fuxix::file::NOFOLLOW)
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    let lock = fuxix::file::private_file(&mut options)
         .open(&lock_path)
         .map_err(|e| format!("opening {}: {e}", PathBuf::from(&lock_path).display()))?;
     lock.try_lock().map_err(|e| match e {
         fs::TryLockError::WouldBlock => format!("an agent is already running on {}", path.display()),
         fs::TryLockError::Error(e) => format!("locking: {e}"),
     })?;
-    match fs::symlink_metadata(path) {
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(lock),
-        Err(e) => return Err(format!("{}: {e}", path.display())),
-        Ok(meta) if !meta.file_type().is_socket() || meta.uid() != fuxix::process::geteuid() => {
-            return Err(format!(
-                "{} exists and is not a socket owned by you; not replacing it",
-                path.display()
-            ));
-        }
-        Ok(_) => {}
-    }
-    // With the lock held no agent owns it; still, something may listen.
-    let probe = fuxix::socket::stream().map_err(|e| format!("a socket: {e}"))?;
-    fuxix::io::set_nonblocking(&probe, true).map_err(|e| format!("a socket: {e}"))?;
-    match fuxix::socket::connect(&probe, path) {
-        Ok(()) | Err(Errno::AGAIN | Errno::INPROGRESS) => Err(format!(
-            "something is listening on {}; not replacing it",
-            path.display()
-        )),
-        Err(e) if io::Error::from(e).kind() == ErrorKind::ConnectionRefused => {
-            eprintln!("fuxix-agent-socket: removing stale socket {}", path.display());
-            fs::remove_file(path).map_err(|e| format!("removing stale {}: {e}", path.display()))?;
-            Ok(lock)
-        }
-        Err(e) => Err(format!("probing {}: {e}", path.display())),
-    }
-}
-
-/// Binds `path` 0600 and listens there.
-fn bind(path: &Path) -> Result<(Bound, UnixListener), String> {
-    let lock = claim(path)?;
-    let fd = fuxix::socket::stream().map_err(|e| format!("a socket: {e}"))?;
-    fuxix::socket::bind(&fd, path).map_err(|e| format!("binding {}: {e}", path.display()))?;
-    let meta = fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let bound = Bound {
-        path: path.to_owned(),
-        inode: (meta.dev(), meta.ino()),
-        _lock: lock,
-    };
-    // Before listening: no connection is accepted while the mode is the umask's.
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("chmod {}: {e}", path.display()))?;
-    fuxix::socket::listen(&fd, 16).map_err(|e| format!("listening: {e}"))?;
-    let listener = UnixListener::from(fd);
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("listening: {e}"))?;
-    Ok((bound, listener))
+    let listener = Listener::bind(&pipe(path)?).map_err(|e| format!("binding {}: {e}", path.display()))?;
+    Ok((
+        Bound {
+            path: path.to_owned(),
+            _lock: lock,
+        },
+        listener,
+    ))
 }
 
 struct Client {
-    stream: UnixStream,
+    stream: Stream,
     input: Vec<u8>,
     output: Vec<u8>,
     /// Close once `output` is written.
@@ -234,13 +182,10 @@ struct Client {
 }
 
 fn serve(path: &Path) -> Result<(), String> {
-    // No core dump, and no tracing or reading of its memory by this user's
-    // other processes: the secrets stay in this one.
-    fuxix::process::forbid_dumps().map_err(|e| format!("making the agent undumpable: {e}"))?;
     // Made first, so a TERM arriving while binding is not lost.
     let signals = Pipe::new(&[Signal::Term, Signal::Int, Signal::Hup])
         .map_err(|e| format!("catching signals: {e}"))?;
-    let (bound, listener) = bind(path)?;
+    let (bound, mut listener) = bind(path)?;
     eprintln!("fuxix-agent-socket: listening on {}", bound.path.display());
     let mut secrets: BTreeMap<String, Secret> = BTreeMap::new();
     let mut clients: Vec<Client> = Vec::new();
@@ -282,7 +227,7 @@ fn serve(path: &Path) -> Result<(), String> {
         }
         clients.retain(|c| !c.gone && !(c.closing && c.output.is_empty()));
         if incoming.intersects(Events::IN) {
-            accept(&listener, &mut clients);
+            accept(&mut listener, &mut clients);
         }
     };
     eprintln!(
@@ -299,23 +244,21 @@ fn serve(path: &Path) -> Result<(), String> {
 }
 
 /// Accepts every waiting connection whose peer is this user.
-fn accept(listener: &UnixListener, clients: &mut Vec<Client>) {
+fn accept(listener: &mut Listener, clients: &mut Vec<Client>) {
     loop {
-        let mut stream = match listener.accept() {
-            Ok((stream, _)) => stream,
-            Err(e) if e.kind() == ErrorKind::WouldBlock => return,
-            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+        let connection = match listener.accept() {
+            Ok(connection) => connection,
+            Err(Errno::AGAIN) => return,
             Err(e) => {
                 eprintln!("fuxix-agent-socket: accept: {e}");
                 return;
             }
         };
-        let ours = fuxix::process::geteuid();
-        match fuxix::socket::peer(&stream) {
-            Ok(peer) if peer.uid == ours => {}
+        let connected = connection.connected();
+        match connected.and_then(|at| fuxix::socket::peer(&connection, at)) {
+            Ok(peer) if peer.user.is_current() => {}
             Ok(peer) => {
-                let pid = peer.pid.map_or("?".to_owned(), |p| p.to_string());
-                eprintln!("fuxix-agent-socket: refused uid {} (pid {pid}); only uid {ours} may connect", peer.uid);
+                eprintln!("fuxix-agent-socket: refused {}", peer.user);
                 continue;
             }
             Err(e) => {
@@ -323,12 +266,15 @@ fn accept(listener: &UnixListener, clients: &mut Vec<Client>) {
                 continue;
             }
         }
+        let stream = match connection.stream() {
+            Ok(stream) => stream,
+            Err(e) => {
+                eprintln!("fuxix-agent-socket: a connection: {e}");
+                continue;
+            }
+        };
         if clients.len() >= MAX_CLIENTS {
-            let _ = stream.write_all(b"ERR busy\n");
-            continue;
-        }
-        if let Err(e) = stream.set_nonblocking(true) {
-            eprintln!("fuxix-agent-socket: a connection: {e}");
+            let _ = fuxix::io::write_what_fits(&stream, b"ERR busy\n");
             continue;
         }
         clients.push(Client {
@@ -345,14 +291,13 @@ fn accept(listener: &UnixListener, clients: &mut Vec<Client>) {
 fn read_requests(client: &mut Client, secrets: &mut BTreeMap<String, Secret>) {
     let mut buffer = [0u8; 4096];
     loop {
-        match client.stream.read(&mut buffer) {
+        match fuxix::io::read(&client.stream, &mut buffer) {
             Ok(0) => {
                 client.gone = true;
                 break;
             }
             Ok(n) => client.input.extend_from_slice(buffer.get(..n).unwrap_or_default()),
-            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(Errno::AGAIN) => break,
             Err(_) => {
                 client.gone = true;
                 break;
