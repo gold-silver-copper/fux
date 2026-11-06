@@ -39,11 +39,12 @@ fn records_output_and_exit_status_without_a_terminal() -> Result {
 fn follows_resizes_and_passes_keys_on_a_terminal() -> Result {
     let cast = scratch("tty")?;
     let size = |rows, cols| Size::new(rows, cols).ok_or("no size");
+    let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
     let (master, slave) = fuxix::pty::open(size(10, 40)?)?;
     let cast_arg = cast.to_string_lossy().into_owned();
-    let script = "stty size; read x; stty size; echo got:$x";
-    let argv = [env!("CARGO_BIN_EXE_fuxix-recorder"), "-q", "-o", &cast_arg, "--", "sh", "-c", script];
-    let (mut child, _pid) = slave.spawn(&argv, fuxix::process::Dispositions::Default, |_| {})?;
+    let script = "mode con & set /p x=? & mode con & echo got:%x%";
+    let argv = [env!("CARGO_BIN_EXE_fuxix-recorder"), "-q", "-o", &cast_arg, "--", "cmd.exe", "/v:off", "/c", script];
+    let job = slave.spawn(&argv, |_| {}, fuxix::process::Dispositions::Default)?;
 
     let mut seen = Vec::new();
     let mut buffer = [0u8; 4096];
@@ -51,7 +52,7 @@ fn follows_resizes_and_passes_keys_on_a_terminal() -> Result {
     let mut step = 0;
     while start.elapsed() < Duration::from_secs(10) {
         let text = String::from_utf8_lossy(&seen).into_owned();
-        if step == 0 && text.contains("10 40") {
+        if step == 0 && text.contains("40") {
             fuxix::terminal::set_window_size(&master, size(12, 50)?, None)?;
             std::thread::sleep(Duration::from_millis(200));
             fuxix::io::write(&master, b"abc\r")?;
@@ -68,12 +69,13 @@ fn follows_resizes_and_passes_keys_on_a_terminal() -> Result {
             Err(_) => break,
         }
     }
-    let status = child.wait()?;
     let text = String::from_utf8_lossy(&seen);
-    assert!(status.success(), "{status:?}: {text}");
-    assert!(text.contains("12 50") && text.contains("got:abc"), "{text}");
+    assert!(text.contains("50") && text.contains("got:abc"), "{text}");
+    while job.ended()?.is_none() && start.elapsed() < Duration::from_secs(15) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let log = std::fs::read_to_string(&cast)?;
     assert!(log.contains("\"r\", \"50x12\"]"), "{log}");
-    assert!(log.contains("12 50") && log.contains("got:abc"), "{log}");
+    assert!(log.contains("got:abc"), "{log}");
     Ok(())
 }

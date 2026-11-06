@@ -13,11 +13,11 @@
 use fuxix::Errno;
 use fuxix::io;
 use fuxix::poll::{Events, PollFd};
-use fuxix::process::{self, Dispositions, Pid, Signal, Status};
+use fuxix::process::{Dispositions, Job, Pid, Reach, Status};
 use fuxix::pty::Master;
 use fuxix::terminal::Size;
 use std::ffi::OsStr;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub mod script;
@@ -25,7 +25,7 @@ pub mod script;
 /// A program running on a PTY this driver holds the master of.
 pub struct Driver {
     master: Master,
-    child: Child,
+    job: Option<Job>,
     pid: Pid,
     output: Vec<u8>,
     /// The master read its end: every slave is closed.
@@ -71,11 +71,14 @@ impl Driver {
         cols: u16,
         setup: impl FnOnce(&mut Command),
     ) -> std::io::Result<Driver> {
+        // Windows' built-in ConPTY: nothing pinned is at this path.
+        let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
         let (master, slave) = fuxix::pty::open(size(rows, cols)?).map_err(std::io::Error::other)?;
-        let (child, pid) = slave.spawn(argv, Dispositions::Default, setup)?;
+        let job = slave.spawn(argv, setup, Dispositions::Default)?;
+        let pid = job.leader();
         Ok(Driver {
             master,
-            child,
+            job: Some(job),
             pid,
             output: Vec::new(),
             hung_up: false,
@@ -188,14 +191,15 @@ impl Driver {
     /// if that is not enough within a second, kills it. How it ended.
     pub fn finish(&mut self, limit: Duration) -> std::io::Result<Status> {
         let _ = self.settle(limit, limit)?;
-        for signal in [Signal::Hup, Signal::Kill] {
+        for last in [false, true] {
             if let Some(status) = self.reaped()? {
                 return Ok(status);
             }
-            // ESRCH: the group is gone already; the reap below says how.
-            match process::kill_group(self.pid, signal) {
-                Ok(()) | Err(Errno::SRCH) => {}
-                Err(error) => return Err(error.into()),
+            if let Some(job) = &self.job {
+                match last {
+                    false => drop(fuxix::pty::hang_up(&self.master, job)),
+                    true => drop(job.kill(Reach::Group)),
+                }
             }
             let _ = self.settle(Duration::from_secs(1), Duration::from_secs(1))?;
         }
@@ -215,7 +219,7 @@ impl Driver {
         if self.hung_up {
             return Ok(true);
         }
-        if self.status.is_none() && process::ended(self.pid)?.is_none() {
+        if self.status.is_none() && self.reaped()?.is_none() {
             return Ok(false);
         }
         // Exited; what it wrote before may still be in the PTY.
@@ -225,8 +229,10 @@ impl Driver {
 
     /// Reaps the program if it has ended.
     fn reaped(&mut self) -> std::io::Result<Option<Status>> {
-        if self.status.is_none() {
-            self.status = process::reap(self.pid)?;
+        if self.status.is_none()
+            && let Some(job) = &self.job
+        {
+            self.status = job.ended()?;
         }
         Ok(self.status)
     }
@@ -268,8 +274,10 @@ impl Driver {
 /// Killed and reaped, so no test leaves a program behind.
 impl Drop for Driver {
     fn drop(&mut self) {
-        if self.status.is_none() && process::kill_group(self.pid, Signal::Kill).is_ok() {
-            let _ = self.child.wait();
+        if self.status.is_none()
+            && let Some(job) = &self.job
+        {
+            let _ = job.kill(Reach::Group);
         }
     }
 }

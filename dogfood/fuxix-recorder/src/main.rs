@@ -6,7 +6,7 @@
 //! Usage: fuxix-recorder [-q] [-o FILE] [--] [COMMAND [ARGS...]]
 use fuxix::Errno;
 use fuxix::poll::{Events, PollFd};
-use fuxix::process::{Dispositions, Pid, Signal, Status};
+use fuxix::process::{Dispositions, Job, Signal, Status};
 use fuxix::terminal::{self, Size};
 use std::error::Error;
 use std::fs::File;
@@ -53,7 +53,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>> {
 
 /// The size stdin's terminal has, or 24 by 80 when it is none.
 fn outer_size() -> Result<(Size, Option<terminal::Pixels>)> {
-    terminal::window_size(std::io::stdin())
+    terminal::stdin_size()
         .or_else(|| Some((Size::new(24, 80)?, None)))
         .ok_or_else(|| "no terminal size".into())
 }
@@ -169,31 +169,31 @@ impl Cast {
 fn exit_code(status: Option<Status>) -> u8 {
     match status {
         Some(Status::Exited(code)) => u8::try_from(code & 0xff).unwrap_or(1),
-        Some(Status::Signalled { signal, .. }) => u8::try_from(128 + (signal & 0x7f)).unwrap_or(1),
         None => 1,
     }
 }
 
 fn run(args: Args) -> Result<u8> {
     let (size, pixels) = outer_size()?;
+    // Windows' built-in ConPTY: nothing pinned is at this path.
+    let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
     let (master, slave) = fuxix::pty::open(size)?;
     if pixels.is_some() {
         terminal::set_window_size(&master, size, pixels)?;
     }
     // Before the spawn, so that no SIGCHLD is missed.
     let signals = fuxix::signal::Pipe::new(&[Signal::Winch, Signal::Chld])?;
-    let (_child, pid) = slave
-        .spawn(&args.argv, Dispositions::Default, |_| {})
+    let job = slave
+        .spawn(&args.argv, |_| {}, Dispositions::Default)
         .map_err(|e| format!("{}: {e}", args.argv.join(" ")))?;
     let mut cast = Cast::create(&args.out, size, &args.argv)?;
     // Raw mode on stdin, if it is a terminal.
     let stdin = std::io::stdin();
-    let raw = terminal::attributes(&stdin)
-        .is_ok()
+    let raw = std::io::IsTerminal::is_terminal(&stdin)
         .then(|| terminal::Raw::enter(stdin))
         .transpose()?;
 
-    let status = pump(&master, &signals, pid, &mut cast)?;
+    let status = pump(&master, &signals, &job, &mut cast)?;
     drop(raw);
     cast.finish()?;
     if !args.quiet {
@@ -207,7 +207,7 @@ fn run(args: Args) -> Result<u8> {
 fn pump(
     master: &fuxix::pty::Master,
     signals: &fuxix::signal::Pipe,
-    pid: Pid,
+    job: &Job,
     cast: &mut Cast,
 ) -> Result<Option<Status>> {
     let stdin = std::io::stdin();
@@ -239,7 +239,7 @@ fn pump(
             while let Some(signal) = signals.next() {
                 match signal {
                     Signal::Winch => {
-                        if let Some((now, pixels)) = terminal::window_size(&stdin)
+                        if let Some((now, pixels)) = terminal::stdin_size()
                             && terminal::window_size(master).map(|(size, _)| size) != Some(now)
                         {
                             terminal::set_window_size(master, now, pixels)?;
@@ -248,9 +248,9 @@ fn pump(
                     }
                     _ => {
                         // Ended: what it wrote is all readable now.
-                        if fuxix::process::ended(pid)?.is_some() {
+                        if let Some(status) = job.ended()? {
                             while matches!(pass_output(master, &mut buffer, &mut stdout, cast)?, Some(n) if n > 0) {}
-                            return Ok(fuxix::process::reap(pid)?);
+                            return Ok(Some(status));
                         }
                     }
                 }
@@ -260,7 +260,7 @@ fn pump(
             && pass_output(master, &mut buffer, &mut stdout, cast)?.is_none()
         {
             // The slave is closed (Linux): every holder is gone.
-            return wait_for_end(signals, pid);
+            return wait_for_end(signals, job);
         }
         if from_master.intersects(Events::OUT) {
             let wrote = fuxix::io::write_what_fits(master, &to_child)?;
@@ -306,9 +306,9 @@ fn pass_output(
 }
 
 /// Reaps `pid`, which has closed its terminal, once it ends.
-fn wait_for_end(signals: &fuxix::signal::Pipe, pid: Pid) -> Result<Option<Status>> {
+fn wait_for_end(signals: &fuxix::signal::Pipe, job: &Job) -> Result<Option<Status>> {
     loop {
-        if let Some(status) = fuxix::process::reap(pid)? {
+        if let Some(status) = job.ended()? {
             return Ok(Some(status));
         }
         match fuxix::poll::poll(&mut [PollFd::new(signals.reader(), Events::IN)], None) {
