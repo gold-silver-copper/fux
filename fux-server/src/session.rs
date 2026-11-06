@@ -3841,6 +3841,9 @@ pub(crate) mod testing {
             .map_err(|e| e.to_string())?
             .preferences
             .journal_entries;
+        // Windows' built-in ConPTY: a folder with no pinned one.
+        #[cfg(windows)]
+        let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
         let mut session = Session::new("/nonexistent/fux.sock".into(), false, run, journal);
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
         let initial = fux_wire::command::InitialWorkspace {

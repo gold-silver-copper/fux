@@ -64,16 +64,16 @@ fn a_batch_program_over_a_pipe_prints_only_its_output_and_fails_nonzero() -> Out
     let program = "define square dup mul end\nstr hello print 7 square str 'two words'\n";
     std::fs::write(dir.join("square.fux"), program).map_err(e)?;
     // A file, a file on stdin and a pipe are the same program.
-    let piped = std::process::Command::new("sh")
-        .args(["-c", &format!("cat square.fux | {FUXTH}")])
-        .current_dir(&dir)
-        .output()
-        .map_err(e)?;
-    for ran in [
-        run(&dir, &["square.fux"], "")?,
-        run(&dir, &[], program)?,
-        piped,
-    ] {
+    let mut ways = vec![run(&dir, &["square.fux"], "")?, run(&dir, &[], program)?];
+    if cfg!(unix) {
+        let piped = std::process::Command::new("sh")
+            .args(["-c", &format!("cat square.fux | {FUXTH}")])
+            .current_dir(&dir)
+            .output()
+            .map_err(e)?;
+        ways.push(piped);
+    }
+    for ran in ways {
         assert_eq!(text(&ran.stdout), "hello\n49\ntwo words\n");
         assert_eq!(text(&ran.stderr), "");
         assert!(ran.status.success(), "{:?}", ran.status);

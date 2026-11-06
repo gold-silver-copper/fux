@@ -45,6 +45,10 @@ function Waited($what, $test, $seconds = 40) {
 # screen) and a terminal nobody asked for.
 Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
+# And the Start menu, which ending it leaves open.
+[Fux.Desktop]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero)
+[Fux.Desktop]::keybd_event(0x1B, 0, 2, [UIntPtr]::Zero)
+Start-Sleep 1
 
 $dir = Join-Path $Out 'home'
 New-Item -ItemType Directory -Force $dir | Out-Null
@@ -84,7 +88,7 @@ function Front {
 }
 
 # Only ever into this window.
-function Type($keys) {
+function Press($keys) {
     Front
     [System.Windows.Forms.SendKeys]::SendWait($keys)
 }
@@ -93,23 +97,23 @@ function Type($keys) {
 Waited 'the ConPTY fetched' { Get-ChildItem $dir -Recurse -Filter OpenConsole.exe -ErrorAction SilentlyContinue } 90
 Start-Sleep 5
 Shot 'attached'
-Type "echo typed-in-a-pane> `"$marks\typed.txt`"{ENTER}"
+Press "echo typed-in-a-pane> `"$marks\typed.txt`"{ENTER}"
 Waited 'the typed command to run' { Test-Path "$marks\typed.txt" }
 Get-Content "$marks\typed.txt"
 Shot 'typed'
 
 [void][Fux.Desktop]::MoveWindow($handle, 40, 40, 700, 420, $true)
 Start-Sleep 2
-Type "mode con> `"$marks\mode.txt`"{ENTER}"
+Press "mode con> `"$marks\mode.txt`"{ENTER}"
 Waited 'the pane to say its size' { (Test-Path "$marks\mode.txt") -and ((Get-Content "$marks\mode.txt" -Raw) -match 'Columns') }
 Get-Content "$marks\mode.txt" | Select-String 'Lines|Columns'
 Shot 'resized'
 
-Type '^bd'
+Press '^bd'
 Waited 'the detach' { Test-Path "$marks\after.txt" }
 Start-Sleep 1
 Shot 'detached'
-Type "echo prompt-back> `"$marks\prompt.txt`"{ENTER}"
+Press "echo prompt-back> `"$marks\prompt.txt`"{ENTER}"
 Waited 'the prompt back after the detach' { Test-Path "$marks\prompt.txt" }
 Get-Content "$marks\prompt.txt"
 Shot 'prompt'
