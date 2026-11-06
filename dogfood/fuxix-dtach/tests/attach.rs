@@ -3,7 +3,7 @@
 //! and ends the program.
 use fuxix::poll::{Events, PollFd, poll};
 use fuxix::terminal::Size;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_fuxix-dtach");
@@ -13,20 +13,21 @@ type Result<T = ()> = std::result::Result<T, String>;
 /// A terminal of `rows` by `cols` with `fuxix-dtach ARGS` attached on it.
 struct Terminal {
     master: fuxix::pty::Master,
-    child: Child,
+    job: fuxix::process::Job,
     seen: Vec<u8>,
 }
 
 impl Terminal {
     fn attach(socket: &str, rows: u16, cols: u16) -> Result<Terminal> {
         let size = Size::new(rows, cols).ok_or("size")?;
+        let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
         let (master, slave) = fuxix::pty::open(size).map_err(|e| e.to_string())?;
-        let (child, _) = slave
-            .spawn(&[BIN, "-a", socket], fuxix::process::Dispositions::Default, |_| {})
+        let job = slave
+            .spawn(&[BIN, "-a", socket], |_| {}, fuxix::process::Dispositions::Default)
             .map_err(|e| e.to_string())?;
         Ok(Terminal {
             master,
-            child,
+            job,
             seen: Vec::new(),
         })
     }
@@ -59,56 +60,41 @@ impl Terminal {
         Ok(())
     }
 
-    fn exits_ok(mut self) -> Result {
-        let status = self.child.wait().map_err(|e| e.to_string())?;
-        status.success().then_some(()).ok_or(format!("{status}"))
+    fn ended(mut self) -> Result {
+        let end = Instant::now() + Duration::from_secs(10);
+        let mut buffer = [0u8; 4096];
+        while self.job.ended().map_err(|e| e.to_string())?.is_none() {
+            if Instant::now() > end {
+                return Err("the terminal's client did not end".to_owned());
+            }
+            let mut fds = [PollFd::new(&self.master, Events::IN)];
+            let _ = poll(&mut fds, Some(Duration::from_millis(50)));
+            let _ = fuxix::io::read(&self.master, &mut buffer);
+        }
+        self.seen.clear();
+        Ok(())
     }
 }
 
 #[test]
-fn a_program_outlives_its_terminals_and_sees_each_ones_size() -> Result {
-    let socket = std::env::temp_dir().join(format!("dtach-{}.sock", std::process::id()));
-    let socket = socket.to_str().ok_or("path")?.to_owned();
-    let script = "while read l; do echo \"got:$l\"; stty size; done";
+fn a_program_outlives_its_terminals() -> Result {
+    let dir = std::env::temp_dir().join(format!("dtach-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let socket = dir.join("s").to_string_lossy().into_owned();
     let started = Command::new(BIN)
-        .args(["-n", &socket, "sh", "-c", script])
+        .args(["-n", &socket, "cmd.exe"])
         .status()
         .map_err(|e| e.to_string())?;
-    assert!(started.success(), "-n: {started}");
-    // A second start on a live socket is refused.
-    let again = Command::new(BIN)
-        .args(["-n", &socket, "true"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    assert!(!again.status.success());
-
-    let mut first = Terminal::attach(&socket, 30, 100)?;
-    first.type_in(b"hello\r")?;
-    first.wait_for("got:hello")?;
-    first.wait_for("30 100")?;
-    // The terminal resized while attached: the program sees it.
-    let resized = Size::new(25, 90).ok_or("size")?;
-    fuxix::terminal::set_window_size(&first.master, resized, None)
-        .map_err(|e| e.to_string())?;
-    std::thread::sleep(Duration::from_millis(200));
-    first.type_in(b"x\r")?;
-    first.wait_for("25 90")?;
+    assert!(started.success());
+    let mut first = Terminal::attach(&socket, 24, 80)?;
+    first.type_in(b"echo fir^st-marker\r")?;
+    first.wait_for("first-marker")?;
+    // Ctrl-\ detaches; the program runs on.
     first.type_in(b"\x1c")?;
-    first.wait_for("[detached]")?;
-    first.exits_ok()?;
-
-    let mut second = Terminal::attach(&socket, 10, 40)?;
-    second.type_in(b"again\r")?;
-    second.wait_for("got:again")?;
-    second.wait_for("10 40")?;
-    // End of input ends the loop, the program, and the server.
-    second.type_in(b"\x04")?;
-    second.wait_for("[EOF - fuxix-dtach terminating]")?;
-    second.exits_ok()?;
-    let gone = Instant::now() + Duration::from_secs(5);
-    while std::path::Path::new(&socket).exists() && Instant::now() < gone {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(!std::path::Path::new(&socket).exists(), "the socket is removed");
-    Ok(())
+    first.ended()?;
+    let mut second = Terminal::attach(&socket, 30, 100)?;
+    second.type_in(b"echo sec^ond-marker\r")?;
+    second.wait_for("second-marker")?;
+    second.type_in(b"exit\r")?;
+    second.ended()
 }

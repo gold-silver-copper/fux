@@ -13,12 +13,13 @@
 //! output as it is.
 
 use fuxix::poll::{Events, Poll, PollFd};
-use fuxix::process::{Dispositions, Pid, Signal};
+use fuxix::io::Stream;
+use fuxix::process::{Dispositions, Job, Signal};
+use fuxix::socket::{Client as Dial, Listener};
 use fuxix::terminal::{self, Size};
 use fuxix::{Errno, pty, signal, socket};
 use std::io::{self, BufRead, Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::windows::io::AsHandle;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -100,45 +101,41 @@ fn parse_key(key: &str) -> Result<Option<u8>, String> {
 /// Starts the background process serving `socket_path`, running `command`,
 /// and waits until it listens.
 fn start(socket_path: &Path, command: &[String]) -> Result<(), String> {
-    if UnixStream::connect(socket_path).is_ok() {
+    if Dial::connect(&pipe(socket_path)?).is_ok() {
         return Err(format!("{}: a program is attached there already", socket_path.display()));
     }
-    // A socket no one listens on is one a crashed server left.
-    if let Ok(meta) = std::fs::symlink_metadata(socket_path) {
-        use std::os::unix::fs::FileTypeExt;
-        if !meta.file_type().is_socket() {
-            return Err(format!("{}: exists and is no socket", socket_path.display()));
-        }
-        std::fs::remove_file(socket_path).map_err(|e| format!("{}: {e}", socket_path.display()))?;
-    }
     // The program starts at the size of the terminal it is started from.
-    let (rows, cols) = terminal::window_size(io::stdin())
+    let (rows, cols) = terminal::stdin_size()
         .map_or((24, 80), |(s, _)| (s.rows.get(), s.cols.get()));
     let exe = std::env::current_exe().map_err(|e| format!("finding this program: {e}"))?;
-    let mut serve = std::process::Command::new(exe);
-    serve
-        .arg(SERVE)
-        .arg(socket_path)
-        .arg(rows.to_string())
-        .arg(cols.to_string())
-        .args(command)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    // A daemon: a session of its own, holding none of this terminal.
-    fuxix::process::lead_session(&mut serve, false, Dispositions::Default);
-    let mut child = serve.spawn().map_err(|e| format!("starting the server: {e}"))?;
+    let (rows, cols) = (rows.to_string(), cols.to_string());
+    let mut args: Vec<&std::ffi::OsStr> = vec![
+        SERVE.as_ref(),
+        socket_path.as_os_str(),
+        rows.as_ref(),
+        cols.as_ref(),
+    ];
+    args.extend(command.iter().map(std::ffi::OsStr::new));
+    let (out, theirs) = io::pipe().map_err(|e| format!("a pipe: {e}"))?;
+    // A daemon: detached, holding none of this terminal.
+    fuxix::process::start(&exe, &args, [None, Some(theirs.as_handle()), None])
+        .map_err(|e| format!("starting the server: {e}"))?;
+    drop(theirs);
     let mut said = String::new();
-    if let Some(stdout) = child.stdout.take() {
-        io::BufReader::new(stdout)
-            .read_line(&mut said)
-            .map_err(|e| format!("reading the server: {e}"))?;
-    }
+    io::BufReader::new(out)
+        .read_line(&mut said)
+        .map_err(|e| format!("reading the server: {e}"))?;
     match said.trim_end() {
         READY => Ok(()),
         "" => Err("the server exited before it listened".to_owned()),
         why => Err(why.to_owned()),
     }
+}
+
+/// The pipe `path` names, this user's alone.
+fn pipe(path: &Path) -> Result<String, String> {
+    let base = path.to_string_lossy().replace('\\', "/");
+    socket::name(&format!("fuxix-dtach-{base}")).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------- serve
@@ -157,12 +154,10 @@ fn serve_main(args: &[String]) -> Result<(), String> {
         Ok(server) => {
             let _ = writeln!(stdout, "{READY}").and_then(|()| stdout.flush());
             // The starter's pipe closes, and nothing later opened is fd 1.
-            if let Ok(null) = std::fs::File::open("/dev/null") {
+            if let Ok(null) = std::fs::File::open("NUL") {
                 let _ = fuxix::io::redirect_stdout(&null);
             }
-            let served = server.serve();
-            let _ = std::fs::remove_file(socket_path);
-            served
+            server.serve()
         }
         Err(why) => {
             let _ = writeln!(stdout, "{why}").and_then(|()| stdout.flush());
@@ -172,9 +167,9 @@ fn serve_main(args: &[String]) -> Result<(), String> {
 }
 
 struct Server {
-    listener: UnixListener,
+    listener: Listener,
     master: pty::Master,
-    pid: Pid,
+    job: Job,
     /// The program's end (CHLD), and the server's TERM or HUP, which
     /// hang the program up.
     signals: signal::Pipe,
@@ -184,7 +179,7 @@ struct Server {
 }
 
 struct Client {
-    stream: UnixStream,
+    stream: Stream,
     /// Packets read but not yet whole.
     read: Vec<u8>,
     /// Output it has not taken yet.
@@ -195,29 +190,19 @@ struct Client {
 
 /// Binds the socket, private to this user, and starts the program.
 fn listen(socket_path: &Path, initial: Size, command: &[String]) -> Result<Server, String> {
-    let at = |what: &str| {
-        let shown = socket_path.display().to_string();
-        let what = what.to_owned();
-        move |e: Errno| format!("{shown}: {what}: {e}")
-    };
-    let fd = socket::stream().map_err(at("socket"))?;
-    socket::bind(&fd, socket_path).map_err(at("bind"))?;
-    // Private before anyone may connect: whoever attaches types into it.
-    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("{}: {e}", socket_path.display()))?;
-    socket::listen(&fd, 16).map_err(at("listen"))?;
-    let listener = UnixListener::from(fd);
-    listener.set_nonblocking(true).map_err(|e| format!("socket: {e}"))?;
+    let listener = Listener::bind(&pipe(socket_path)?)
+        .map_err(|e| format!("{}: bind: {e}", socket_path.display()))?;
     let signals = signal::Pipe::new(&[Signal::Chld, Signal::Term, Signal::Hup])
         .map_err(|e| format!("signals: {e}"))?;
+    let _ = pty::load(Path::new("no-pinned-conpty"));
     let (master, slave) = pty::open(initial).map_err(|e| format!("a PTY: {e}"))?;
-    let (_child, pid) = slave
-        .spawn(command, Dispositions::Default, |_| {})
+    let job = slave
+        .spawn(command, |_| {}, Dispositions::Default)
         .map_err(|e| format!("{}: {e}", command.first().map_or("", String::as_str)))?;
     Ok(Server {
         listener,
         master,
-        pid,
+        job,
         signals,
         clients: Vec::new(),
         to_program: Vec::new(),
@@ -278,12 +263,10 @@ impl Server {
                 }
             }
             if stopped {
-                // As a closed terminal does: the program's session is its pid.
-                let _ = fuxix::process::kill_group(self.pid, Signal::Hup);
+                let _ = pty::hang_up(&self.master, &self.job);
             }
             if ended {
-                // Another stop or end of its; `reap` ignores stops.
-                if !matches!(fuxix::process::reap(self.pid), Ok(None)) {
+                if !matches!(self.job.ended(), Ok(None)) {
                     self.relay_output(&mut buffer);
                     self.flush_clients();
                     return Ok(());
@@ -343,11 +326,14 @@ impl Server {
     }
 
     fn accept(&mut self) {
-        while let Ok((stream, _)) = self.listener.accept() {
-            // Only this user may attach: the socket's mode says so, and
-            // the peer's credentials make sure.
-            let ours = socket::peer(&stream).is_ok_and(|p| p.uid == fuxix::process::geteuid());
-            if ours && stream.set_nonblocking(true).is_ok() {
+        while let Ok(connection) = self.listener.accept() {
+            // Only this user may attach: the pipe's descriptor says so, and
+            // the peer's token makes sure.
+            let ours = connection
+                .connected()
+                .and_then(|at| socket::peer(&connection, at))
+                .is_ok_and(|peer| peer.user.is_current());
+            if ours && let Ok(stream) = connection.stream() {
                 self.clients.push(Client {
                     stream,
                     read: Vec::new(),
@@ -370,11 +356,10 @@ impl Server {
             return true;
         }
         loop {
-            match client.stream.read(buffer) {
+            match fuxix::io::read(&client.stream, buffer) {
                 Ok(0) => return false,
                 Ok(n) => client.read.extend_from_slice(buffer.get(..n).unwrap_or_default()),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(Errno::AGAIN) => break,
                 Err(_) => return false,
             }
         }
@@ -407,22 +392,22 @@ impl Server {
             return;
         };
         let _ = terminal::set_window_size(&self.master, new, None);
-        // The kernel tells a change of size alone; an attach at the same
-        // size wants a redraw too.
-        if let Ok(Some(group)) = terminal::foreground_group(&self.master) {
-            let _ = fuxix::process::kill_group(group, Signal::Winch);
-        }
     }
 
     /// Gives each client what it is owed, waiting a little at most: the
     /// program has ended, and its last words should arrive.
     fn flush_clients(&mut self) {
-        for client in &mut self.clients {
-            let _ = client.stream.set_nonblocking(false);
-            let _ = client
-                .stream
-                .set_write_timeout(Some(std::time::Duration::from_secs(1)));
-            let _ = client.stream.write_all(&client.unsent);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while self.clients.iter().any(|c| !c.unsent.is_empty()) && std::time::Instant::now() < end {
+            for client in &mut self.clients {
+                client.send();
+            }
+            let mut fds: Vec<PollFd<'_>> = self
+                .clients
+                .iter()
+                .map(|c| PollFd::new(&c.stream, Events::OUT))
+                .collect();
+            let _ = fuxix::poll::poll(&mut fds, Some(std::time::Duration::from_millis(20)));
         }
     }
 }
@@ -431,11 +416,10 @@ impl Client {
     /// Writes what it can of `unsent`: false if the client has gone.
     fn send(&mut self) -> bool {
         while !self.unsent.is_empty() {
-            match self.stream.write(&self.unsent) {
+            match fuxix::io::write(&self.stream, &self.unsent) {
                 Ok(0) => return false,
                 Ok(n) => drop(self.unsent.drain(..n.min(self.unsent.len()))),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return true,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(Errno::AGAIN) => return true,
                 Err(_) => return false,
             }
         }
@@ -456,7 +440,7 @@ fn packets(kind: u8, bytes: &[u8]) -> Vec<u8> {
 }
 
 fn size_packet() -> Option<Vec<u8>> {
-    let (now, _) = terminal::window_size(io::stdin())?;
+    let (now, _) = terminal::stdin_size()?;
     let mut payload = now.rows.get().to_be_bytes().to_vec();
     payload.extend_from_slice(&now.cols.get().to_be_bytes());
     Some(packets(RESIZE, &payload))
@@ -470,10 +454,8 @@ enum Ended {
 }
 
 fn attach(socket_path: &Path, detach: Option<u8>) -> Result<(), String> {
-    let fd = socket::stream().map_err(|e| format!("socket: {e}"))?;
-    socket::connect(&fd, socket_path)
+    let mut stream = Dial::connect(&pipe(socket_path)?)
         .map_err(|e| format!("{}: nothing to attach to: {e}", socket_path.display()))?;
-    let mut stream = UnixStream::from(fd);
     let signals = signal::Pipe::new(&[Signal::Winch, Signal::Hup, Signal::Term])
         .map_err(|e| format!("signals: {e}"))?;
     let ended = {
@@ -495,7 +477,7 @@ fn attach(socket_path: &Path, detach: Option<u8>) -> Result<(), String> {
 }
 
 fn relay(
-    stream: &mut UnixStream,
+    stream: &mut Dial,
     signals: &signal::Pipe,
     detach: Option<u8>,
 ) -> Result<Ended, String> {
