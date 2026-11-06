@@ -276,6 +276,21 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
             .ok(&["(listing (list-session))"])?
             .contains("%1 acted")
     );
+    // However long what took effect, the bar shows the cause and its line.
+    client.keys(&format!("{PREFIX}e"))?;
+    client.wait_for("Enter accept")?;
+    let long = "n".repeat(90);
+    client.keys(&format!(
+        "(sequence! (rename (pane \"%1\") \"{long}\") (rename (pane \"%1\") \"acted\") (raise (error (quote! fail) \"boom\")) #inert)\r"
+    ))?;
+    bar_has(&mut client, "boom")?;
+    bar_has(&mut client, ":1")?;
+    // A word left uncalled does nothing, which is refused, as a command
+    // line refuses it.
+    client.keys(&format!("{PREFIX}e"))?;
+    client.wait_for("Enter accept")?;
+    client.keys("status\r")?;
+    bar_has(&mut client, "call it, as (status)")?;
     server.ok(&["(sequence! (rename (pane 1) \"left\") #inert)"])?;
     // The focused program exited, so it has no readable nearby cwd.
     server.exits("%2")?;

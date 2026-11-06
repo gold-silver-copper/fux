@@ -3,8 +3,9 @@ A file of grift runs with `fux --file FILE`, or as a script (SHEBANG).
 A file is read whole before it runs: one whose later form doesn't read runs
 none of its forms.
 
-A failure prints nothing more on stdout: `fux: KIND: MESSAGE` on stderr, each
-action that already took effect after it, as `fux: already took effect: (CALL)`.
+A failure prints nothing more on stdout: `fux: KIND: MESSAGE (FILE:LINE)` on
+stderr, each action that already took effect after it, as `fux: already took
+effect: (CALL)`, then the forms it happened in, each cut short.
 A program isn't undone: what ran before its failure stays done. Exit statuses:
   0    done, or what (exit N) gave
   1    refused: anything else that failed

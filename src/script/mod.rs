@@ -486,6 +486,8 @@ pub struct Failed {
     pub kind: Option<String>,
     pub message: String,
     pub place: Option<String>,
+    /// The forms it happened in, a line each, the innermost first.
+    pub trace: Vec<String>,
     pub actions: Vec<String>,
 }
 
@@ -497,70 +499,59 @@ impl Failed {
             kind: None,
             message: message.into(),
             place: None,
+            trace: Vec::new(),
             actions: Vec::new(),
         }
     }
 
-    /// For a notice's one line: the steps that had taken effect, which a
-    /// long trace after the cause would push off it, then the cause before
-    /// its source.
+    /// For a notice's one line: what stderr says, its message short enough
+    /// to leave its place on a bar.
     pub fn notice(&self) -> String {
-        let message = match &self.place {
-            Some(place) => format!("{} ({place})", self.message),
-            None => self.message.clone(),
-        };
-        let mut shown = self.clone();
-        shown.message = message;
-        shown.place = None;
-        if !self.actions.is_empty() {
-            shown.message = format!(
-                "already took effect: {}; {}",
-                self.actions.join(", "),
-                shown.message
-            );
+        const MOST: usize = 80;
+        let mut short = self.clone();
+        if let Some((end, _)) = self.message.char_indices().nth(MOST) {
+            short.message.truncate(end);
+            short.message.push('…');
         }
-        shown.to_string()
-    }
-
-    /// Each step that had taken effect, a line each, as stderr says it.
-    fn taken(&self) -> impl Iterator<Item = String> + '_ {
-        self.actions
-            .iter()
-            .map(|step| format!("already took effect: {step}"))
-    }
-
-    /// The source followed by the cause, for command-line diagnostics.
-    fn located(&self) -> String {
-        match &self.place {
-            Some(place) => format!("{place}: {}", self.message),
-            None => self.message.clone(),
-        }
+        short.to_string().replace("\nfux: ", " · ")
     }
 }
 
 impl std::error::Error for Failed {}
 
 impl std::fmt::Display for Failed {
-    /// One line, as `fux: CODE: MESSAGE` is read: a message of several (a
-    /// program's last lines, a path holding a line end) has its lines
-    /// trimmed and joined with `\n`, any other control character or line
-    /// separator escaped.
+    /// As `fux: KIND: MESSAGE (PLACE)` is read, its cause first, as nothing
+    /// after it may push that off a notice; then the steps that had taken
+    /// effect (D-25), which a trace mustn't push off either; a `fux: ` line each.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let escaped = |c: char| match c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-            true => c.escape_default().to_string(),
-            false => c.to_string(),
-        };
-        let lines: Vec<String> = (self.located().lines().map(str::trim))
-            .filter(|l| !l.is_empty())
-            .map(|line| line.chars().map(escaped).collect())
-            .collect();
-        write!(
-            f,
-            "{}: {}",
-            self.kind.as_deref().unwrap_or(self.code.name()),
-            lines.join("\\n")
-        )
+        let kind = self.kind.as_deref().unwrap_or(self.code.name());
+        write!(f, "{kind}: {}", one_line(&self.message))?;
+        if let Some(place) = &self.place {
+            write!(f, " ({})", one_line(place))?;
+        }
+        for step in &self.actions {
+            write!(f, "\nfux: already took effect: {step}")?;
+        }
+        for form in &self.trace {
+            write!(f, "\nfux: {}", one_line(form))?;
+        }
+        Ok(())
     }
+}
+
+/// `text` on one line: a message of several (a program's last lines, a path
+/// holding a line end) has its lines trimmed and joined with `\n`, any other
+/// control character or line separator escaped.
+fn one_line(text: &str) -> String {
+    let escaped = |c: char| match c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+        true => c.escape_default().to_string(),
+        false => c.to_string(),
+    };
+    let lines: Vec<String> = (text.lines().map(str::trim))
+        .filter(|l| !l.is_empty())
+        .map(|line| line.chars().map(escaped).collect())
+        .collect();
+    lines.join("\\n")
 }
 
 impl From<fux_wire::code::Error> for Failed {
@@ -1451,9 +1442,6 @@ pub fn main(
     let result = main_program(args, argv, out);
     if let Err(failure) = &result {
         let _ = writeln!(io::stderr(), "fux: {failure}");
-        for step in failure.taken() {
-            let _ = writeln!(io::stderr(), "fux: {step}");
-        }
     }
     result
 }
@@ -1582,47 +1570,41 @@ fn main_program(
     }
     result
 }
+/// Words of a native field's name and those of its public spelling.
+const FIELD_WORDS: [(&str, &str); 9] = [
+    ("cols", "columns"),
+    ("col", "column"),
+    ("len", "length"),
+    ("pid", "process-id"),
+    ("cwd", "directory"),
+    ("argv", "arguments"),
+    ("tty", "terminal"),
+    ("seq", "sequence"),
+    ("app", "application"),
+];
+
 /// Public record names follow grift's spelling; native wire names stay private.
 /// The grift field name corresponding to a native observation field.
 pub fn field_name(name: &str) -> String {
     if name == "alt_screen" {
         return "alternate-screen".into();
     }
-    name.split('_')
-        .map(|word| match word {
-            "cols" => "columns",
-            "col" => "column",
-            "len" => "length",
-            "pid" => "process-id",
-            "cwd" => "directory",
-            "argv" => "arguments",
-            "tty" => "terminal",
-            "seq" => "sequence",
-            "app" => "application",
-            word => word,
-        })
-        .collect::<Vec<_>>()
-        .join("-")
+    let word = |word| FIELD_WORDS.iter().find(|(native, _)| *native == word);
+    let words = name
+        .split('_')
+        .map(|w| word(w).map_or(w, |(_, public)| public));
+    words.collect::<Vec<_>>().join("-")
 }
 fn native_field(name: &str) -> String {
     if name == "alternate-screen" {
         return "alt_screen".into();
     }
-    name.replace("process-id", "pid")
+    let word = |word| FIELD_WORDS.iter().find(|(_, public)| *public == word);
+    let name = name.replace("process-id", "pid");
+    let words = name
         .split('-')
-        .map(|word| match word {
-            "columns" => "cols",
-            "column" => "col",
-            "length" => "len",
-            "directory" => "cwd",
-            "arguments" => "argv",
-            "terminal" => "tty",
-            "sequence" => "seq",
-            "application" => "app",
-            word => word,
-        })
-        .collect::<Vec<_>>()
-        .join("_")
+        .map(|w| word(w).map_or(w, |(native, _)| native));
+    words.collect::<Vec<_>>().join("_")
 }
 
 /// A session asked in-process, and programs run against one held reply:

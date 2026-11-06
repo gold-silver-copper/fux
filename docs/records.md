@@ -463,9 +463,11 @@ and origin, with explicit source; it never runs on the server.
 
 ## Failures
 
-A failure is one line on stderr, `fux: KIND: VALUES in FORM at FILE:LINE`, each enclosing form after
-it as `from FORM at FILE:LINE`, then a line for each step that had taken effect before it, `fux:
-already took effect: (rename ...)`. Its exit status is 2 for a mistake in the program itself
+A failure's first line on stderr is its cause, `fux: KIND: VALUES (FILE:LINE)`. After it comes a line
+for each step that had taken effect, `fux: already took effect: (rename ...)`, then the forms it
+happened in, `fux: in FORM` and `fux: from FORM at FILE:LINE`: at most eight, each cut short, as its
+values are. A client's bar says the same on one line, joined by ` · `, as far as it
+fits. Its exit status is 2 for a mistake in the program itself
 (`usage`, `type-error`, `arity-error`, `unbound-symbol`, `read-error`, `parse-error`), a wait's own
 (above), else 1. Every native kind (`fux-wire/src/code.rs` says what each means):
 
@@ -473,8 +475,8 @@ already took effect: (rename ...)`. Its exit status is 2 for a mistake in the pr
 - what a command names: `no-pane`, `no-tab`, `no-workspace`, `no-client`, `no-target`, `stray-pane`,
   `no-field`, `nothing-there`, `name-taken`, `bad-value`, `usage`;
 - what a command meets: `not-running`, `still-running`, `not-run`, `only-shell`, `stale`, `no-marks`,
-  `start`, `size`, `mouse`, `signal`, `not-headless`, `own-server`, `people-attached`, and
-  `indeterminate`, a pane's own process that ended before it said whether it did what it was asked:
+  `start`, `size`, `mouse`, `signal`, `not-headless`, `own-server`, `people-attached`,
+  `journal-loss`, and `indeterminate`, a pane's own process that ended before it said whether it did what it was asked:
   it may have;
 - how a wait ends: `timeout` (124), `closed` (4);
 - a program: `cancelled`, `not-here`, `not-config`, `config`, `bad-binding`, `read`, `unset-variable`,
@@ -483,8 +485,8 @@ already took effect: (rename ...)`. Its exit status is 2 for a mistake in the pr
   `parse-error`, `contract-error`, `bad-name`, `too-long`, `unused`, `out-of-memory`, `ids-exhausted`,
   `fail`.
 
-The libraries raise three kinds of their own, each exit 1: `ended-before-text` (`shows`, on a program
-that ended without the text), `respawned-during-wait` (`grows`) and `journal-loss` (`events`). A
+The libraries raise two kinds of their own, each exit 1: `ended-before-text` (`shows`, on a program
+that ended without the text) and `respawned-during-wait` (`grows`). A
 program may raise any kind: `(raise (error (quote! my-kind) 1 2))`.
 
 fux sets no limits of its own: memory, time and steps are the user's and the OS's to bound (`ulimit`,

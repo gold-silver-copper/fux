@@ -3470,7 +3470,7 @@ impl Session {
 
     /// A pane's state, as `ls json` has it.
     fn field(&self, target: AnyRef, field: &str) -> Result<Body, Error> {
-        let no_field = || fail(Code::NoField, format!("{target} has no field {field:?}"));
+        let no_field = || fail(Code::NoField, format!("{target} has no such field"));
         if let AnyRef::Pane(id) = target {
             return self.observed_field(id, field)?.ok_or_else(no_field);
         }
@@ -8720,7 +8720,7 @@ mod tests {
             ),
         ] {
             let shown = s.focused(c);
-            output_as(&mut s, from, &format!("{source} drop"))?;
+            output_as(&mut s, from, &format!("{source} #inert"))?;
             let made = *s.parts.panes().keys().max().ok_or("a pane")?;
             let pane = s.pane(made)?;
             assert_eq!((pane.size().cols(), pane.size().rows()), size, "{source}");
@@ -9195,7 +9195,7 @@ mod tests {
             let why = failed(&mut s, source);
             assert!(
                 (why.starts_with("arity-error:") || why.starts_with("type-error:"))
-                    && why.contains(" at key:1"),
+                    && why.contains("(key:1)"),
                 "{source}: {why}"
             );
         }

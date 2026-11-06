@@ -1251,7 +1251,11 @@ fn seen(lines: &[String], most: usize) -> Vec<Seen> {
 
 /// The code of the last `fux: CODE: …` line, if any.
 fn code(err: &str) -> Option<String> {
-    let line = err.lines().rev().find_map(|l| l.strip_prefix("fux: "))?;
+    // After its cause a failure lists what took effect and where it was.
+    let told = ["in ", "from ", "already took effect:"];
+    let line = (err.lines().rev())
+        .filter_map(|l| l.strip_prefix("fux: "))
+        .find(|l| !told.iter().any(|start| l.starts_with(start)))?;
     Some(line.split_once(':')?.0.to_owned())
 }
 

@@ -282,6 +282,30 @@ fn a_bad_config_is_reported() -> Outcome {
         failed.to_string().contains("config.grift:2") && failed.to_string().contains("frobnicate"),
         "{failed}"
     );
+    // A bare name, or a line of another language pasted in, has its place
+    // too, though grift keeps none for a name alone.
+    for (text, name) in [
+        ("(set \"bell\" #false)\n\nnosuchname\n", "config.grift:3"),
+        (
+            "(set \"bell\" #false)\nstr F9 code me focused zoom end bind\n",
+            "config.grift:2",
+        ),
+    ] {
+        std::fs::write(&config, text).map_err(e)?;
+        let failed = fux::script::run_file(&config)
+            .err()
+            .ok_or("a bare name ran")?;
+        assert!(failed.to_string().contains(name), "{failed}");
+    }
+    // `me` is no client here, and doesn't say this is a command line.
+    std::fs::write(&config, "(me)\n").map_err(e)?;
+    let failed = fux::script::run_file(&config).err().ok_or("(me) ran")?;
+    assert!(
+        !failed
+            .to_string()
+            .contains("this runs from the command line"),
+        "{failed}"
+    );
     // A failed config's settings are thrown away, so none took effect.
     std::fs::write(&config, "(set \"titles\" #true)\n(panes (all))\n").map_err(e)?;
     let failed = fux::script::run_file(&config)

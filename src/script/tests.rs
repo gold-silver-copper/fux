@@ -601,6 +601,13 @@ fn a_batch_left_that_missed_entries_is_refused() -> TestResult {
         };
         assert!(record.is_batch());
         assert_eq!(record.printed_events().is_err(), missed > 0);
+        // One loss, one kind, however the batch came to be refused.
+        assert!(
+            record
+                .printed_events()
+                .err()
+                .is_none_or(|failure| failure.code.name() == "journal-loss")
+        );
         if missed == 0 {
             assert!(result.is_ok());
         } else {
@@ -987,7 +994,7 @@ fn a_callback_fails_at_the_line_it_was_written() -> TestResult {
         .err()
         .ok_or("the callback ran")?;
     assert!(failed.message.contains("nosuch"), "{failed}");
-    assert!(failed.message.contains("at test:4"), "{failed}");
+    assert!(failed.to_string().contains("test:4"), "{failed}");
     Ok(())
 }
 
@@ -1038,8 +1045,8 @@ fn a_failure_in_a_library_names_the_users_line() -> TestResult {
     let failed = evaluate(source, None, &mut NoRequests, &mut Vec::new())
         .err()
         .ok_or("the library took it")?;
-    assert!(failed.message.contains("at test:3"), "{failed}");
-    assert!(!failed.message.contains("library.grift"), "{failed}");
+    assert!(failed.to_string().contains("test:3"), "{failed}");
+    assert!(!failed.to_string().contains("library.grift"), "{failed}");
     Ok(())
 }
 

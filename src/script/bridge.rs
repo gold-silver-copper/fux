@@ -82,45 +82,116 @@ fn failure<T>(g: &mut Grift<T>, f: Failure) -> Error {
     g.error(f.code.name(), &[value])
 }
 pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
-    let mut message = String::new();
-    let _ = (|| -> std::fmt::Result {
-        message.push_str(g.symbol_name(&e.kind).unwrap_or("fail"));
-        for value in &e.values {
-            message.push(' ');
-            g.write(value, &mut message).map_err(|_| std::fmt::Error)?;
-        }
-        let shown = e.trace().iter().filter(|form| {
-            !matches!(g.position(form), Ok(Some((source, _)))
-                if BOOKS.iter().any(|(name, _)| *name == source))
-        });
-        for (i, form) in shown.enumerate() {
-            use std::fmt::Write;
-            // Grift names the source of text that didn't read as a string, the
-            // line being the second of the parse error's values.
-            if let (Ok(Some(source)), Some(G::Integer(line))) = (g.as_str(form), e.values.get(1)) {
-                write!(&mut message, " at {source}:{line}")?;
-                continue;
-            }
-            message.push_str(if i == 0 { " in " } else { "\n  from " });
-            g.write(form, &mut message).map_err(|_| std::fmt::Error)?;
-            if let Ok(Some((source, line))) = g.position(form) {
-                write!(&mut message, " at {source}:{line}")?;
-            }
-        }
-        Ok(())
-    })();
+    /// The most of a failure's values shown, and of each form.
+    const VALUES: usize = 600;
+    const FORM: usize = 120;
+    /// The most forms a trace tells.
+    const FORMS: usize = 8;
     let kind = g.symbol_name(&e.kind).unwrap_or("fail");
     let mut failed = Failed::new(
         kind.parse().unwrap_or(Code::Fail),
-        message
-            .strip_prefix(kind)
-            .unwrap_or(&message)
-            .trim_start()
-            .to_owned(),
+        written(g, "", &e.values, VALUES).trim_start(),
     );
     failed.kind = Some(kind.to_owned());
+    let shown = e.trace().iter().filter(|form| {
+        !matches!(g.position(form), Ok(Some((source, _)))
+            if BOOKS.iter().any(|(name, _)| *name == source))
+    });
+    for form in shown {
+        // Grift names the source of text that didn't read as a string, the
+        // line being the second of the parse error's values.
+        if let (Ok(Some(source)), Some(G::Integer(line))) = (g.as_str(form), e.values.get(1)) {
+            failed.place = Some(format!("{source}:{line}"));
+            continue;
+        }
+        let at = g.position(form).ok().flatten();
+        let mut at = at.map(|(source, line)| format!("{source}:{line}"));
+        if failed.place.is_none() {
+            failed.place = at.take();
+        }
+        if failed.trace.len() < FORMS {
+            let word = if failed.trace.is_empty() {
+                "in"
+            } else {
+                "from"
+            };
+            let mut text = written(g, word, std::slice::from_ref(form), FORM);
+            if let Some(at) = at {
+                text = format!("{text} at {at}");
+            }
+            failed.trace.push(text);
+        }
+    }
     failed
 }
+
+/// As `failed`, of `text`, the program `name` as it was written: what fux
+/// put before it doesn't count in a column, and a name alone, of which grift
+/// keeps no position, is found by the first lines that read to hold it.
+fn failed_in<T>(g: &mut Grift<T>, e: Error, name: &str, text: &str) -> Failed {
+    let e = match g.is_kind(&e, "parse-error") {
+        Ok(true) => g.read_in(name, text).err().unwrap_or(e),
+        _ => e,
+    };
+    let bare = e.values.first().cloned();
+    let mut failed = failed(g, e);
+    if let (None, Some("unbound-symbol"), Some(G::Symbol(symbol))) =
+        (&failed.place, failed.kind.as_deref(), bare)
+    {
+        let word = g.symbol_name(&symbol).unwrap_or_default().to_owned();
+        let symbol = G::Symbol(symbol);
+        let ends = text.match_indices('\n').map(|(end, _)| end);
+        let line = ends.chain([text.len()]).enumerate().find(|(_, end)| {
+            let lines = text.get(..*end).unwrap_or_default();
+            lines.lines().last().is_some_and(|l| l.contains(&word))
+                && g.read(lines)
+                    .and_then(|forms| g.list_items(&forms))
+                    .is_ok_and(|forms| forms.contains(&symbol))
+        });
+        failed.place = Some(match line {
+            Some((line, _)) => format!("{name}:{}", line.saturating_add(1)),
+            None => name.to_owned(),
+        });
+    }
+    failed
+}
+
+/// Text that stops at `room` characters: what a failure shows of a value
+/// costs no more than that, however large the value.
+struct Cut {
+    text: String,
+    room: usize,
+}
+
+impl std::fmt::Write for Cut {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        for c in s.chars() {
+            let Some(room) = self.room.checked_sub(1) else {
+                self.text.push('…');
+                return Err(std::fmt::Error);
+            };
+            self.room = room;
+            self.text.push(c);
+        }
+        Ok(())
+    }
+}
+
+/// `start`, then `values` as data, each after a space, cut at `most`.
+fn written<T>(g: &Grift<T>, start: &str, values: &[G], most: usize) -> String {
+    use std::fmt::Write;
+    let mut out = Cut {
+        text: start.to_owned(),
+        room: most,
+    };
+    for value in values {
+        if out.write_char(' ').is_err() || g.write(value, &mut out).is_err() {
+            break;
+        }
+    }
+    out.text
+}
+
 fn check<A: Asks + ?Sized>(
     g: &mut Interpreter<'_, '_, A>,
     state: &mut Runtime<'_, '_, A>,
@@ -363,16 +434,7 @@ fn field_of<T>(g: &mut Grift<T>, record: &G, field: &G) -> Result<Option<G>, Err
 /// values as data, cut short past what a line of a notice shows.
 fn call_text<T>(g: &Grift<T>, name: &str, args: &[G]) -> String {
     const MOST: usize = 200;
-    let mut text = format!("({name}");
-    for arg in args {
-        text.push(' ');
-        if g.write(arg, &mut text).is_err() || text.len() > MOST {
-            break;
-        }
-    }
-    if text.len() > MOST {
-        text = text.chars().take(MOST).chain(['…']).collect();
-    }
+    let mut text = written(g, &format!("({name}"), args, MOST);
     text.push(')');
     text
 }
@@ -887,7 +949,7 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
     }
     state.host.file = machine.path.clone();
     let program = place(g, PROGRAM).map_err(|e| failed(g, e))?;
-    let source = if machine.callback {
+    let text = if machine.callback {
         let mut args = Vec::new();
         for arg in machine.args.as_deref().unwrap_or_default() {
             let v = callback::value(arg)?;
@@ -898,22 +960,16 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
         g.bind(&program, &G::Symbol(name), args)
             .map_err(|e| failed(g, e))?;
         on_its_line(
-            &format!(
-                "(native-check-stop) (apply {} callback-arguments)",
-                machine.source
-            ),
+            &format!("(apply {} callback-arguments)", machine.source),
             machine.line,
         )
+    } else if machine.source.starts_with("#!") {
+        machine.source.replacen("#!", ";", 1)
     } else {
-        format!(
-            "(native-check-stop) {}",
-            if machine.source.starts_with("#!") {
-                machine.source.replacen("#!", ";", 1)
-            } else {
-                machine.source.clone()
-            }
-        )
+        machine.source.clone()
     };
+    // Inside the run: grift drops a stop that comes between runs.
+    let source = format!("(native-check-stop) {text}");
     let result = g.evaluate_in(state, &program, &machine.name, &source);
     if let Some(stop) = state.stop
         && let Ok(mut held) = stop.interrupt.lock()
@@ -922,9 +978,10 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
     }
     match result {
         Ok(G::Inert) => Ok(Vec::new()),
-        // `fux status` names a word and calls nothing, which would look done.
+        // `fux status`, or `status` at the prompt, names a word and calls
+        // nothing, which would look done.
         Ok(G::Applicative(_) | G::Operative(_) | G::Primitive(_) | G::Host(_))
-            if state.host.cli =>
+            if !machine.callback =>
         {
             let name = machine.source.trim();
             let why = match name.contains(char::is_whitespace) {
@@ -953,7 +1010,7 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
         },
         Err(e) if state.exiting && g.is_kind(&e, "interrupted").unwrap_or(false) => Ok(Vec::new()),
         Err(e) => {
-            let mut f = failed(g, e);
+            let mut f = failed_in(g, e, &machine.name, &text);
             f.actions = state.host.actions.clone();
             Err(f)
         }

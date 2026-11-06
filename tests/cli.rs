@@ -182,9 +182,61 @@ fn send_keys_and_signal() -> Outcome {
 /// a wait's failure keeps its status, its stdout empty; what is left on the
 /// stack is printed, a value a line, bottom first; `json` turns an answer
 /// into JSON.
+/// A failure says its kind, place and cause on its first line, each form
+/// after it on a line of its own and cut short, however long the program:
+/// a restore refused prints no saved session.
+#[test]
+fn a_failure_says_its_cause_first_and_stays_short() -> Outcome {
+    let server = Server::start("")?;
+    let nested = server.fux(&[
+        "(define! f (lambda! (x) (first x)))\n(define! g (lambda! (x) (sequence! (f x) 2)))\n(g 1)",
+    ])?;
+    let lines: Vec<&str> = nested.stderr.lines().collect();
+    assert!(
+        lines.len() == 4
+            && lines.first().is_some_and(
+                |l| l.starts_with("fux: type-error: ") && l.ends_with("(command line:1)")
+            )
+            && lines.get(1).is_some_and(|l| l.contains("(first x)"))
+            && lines
+                .get(3)
+                .is_some_and(|l| l.contains("from (g 1) at command line:3"))
+            && !nested.stderr.contains(r"\n"),
+        "{}",
+        nested.stderr
+    );
+    let long = "x".repeat(100_000);
+    let big = server.fux(&[&format!("(raise (error (quote! fail) \"{long}\"))")])?;
+    assert!(big.stderr.len() < 1_000, "{} bytes", big.stderr.len());
+    server.ok(&["(sequence! (rename (new-tab (name (size (in (options) \"w\") 80 24) \"code\")) \"ed\") #inert)"])?;
+    let saved = server.dir.join("saved.grift");
+    std::fs::write(&saved, server.ok(&["(dump (all))"])?).map_err(e)?;
+    let refused = server.fux(&["--file", &saved.display().to_string()])?;
+    let first = refused.stderr.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with("fux: name-taken: ")
+            && first.contains("saved.grift:")
+            && first.contains("already named code")
+            && refused.stderr.len() < 1_000,
+        "{}",
+        refused.stderr
+    );
+    Ok(())
+}
+
 #[test]
 fn errors_statuses_and_what_is_left() -> Outcome {
     let server = Server::start("")?;
+    // Text that doesn't read is placed as it was written.
+    let unread = server.fux(&[")"])?;
+    assert!(
+        unread.stderr.contains("unmatched-parenthesis 1 1"),
+        "{}",
+        unread.stderr
+    );
+    // Asked for a field it lacks, a pane names the field as it was asked.
+    let field = server.fux(&["(get (pane 1) \"directory\")"])?;
+    assert!(!field.stderr.contains("cwd"), "{}", field.stderr);
     let typed = server.fux(&["(pane (list 3))"])?;
     assert_eq!(typed.status, 2);
     assert!(
