@@ -1145,7 +1145,7 @@ mod tests {
             };
             names.insert(name.replace('_', "-"));
         }
-        let docs = include_str!("../../docs/data.md");
+        let docs = include_str!("../../docs/records.md");
         let table = |anchor: &str| -> Result<BTreeSet<String>, String> {
             let rows = docs
                 .split_once(anchor)
