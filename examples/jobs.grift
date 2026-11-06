@@ -1,5 +1,9 @@
-; Start three programs before waiting for them; sum their exit statuses.
+; Three programs at once, each exiting with its own status; once all have
+; exited, the sum of their statuses. `fux --file examples/jobs.grift` prints 6.
 ; expect: 6
+; n -> answer: a program that exits with status n; new-tab answers at once,
+; with its pane and version, so the next starts at once.
 (define! job (lambda! (n) (new-tab (argument (argument (argument (program (size (in (options) "agent") 80 24) "sh") "-c") "sleep 0.2; exit \"$0\"") (integer-to-string n)))))
 (define! jobs (map job (list 1 2 3)))
+; until-ended checks first, so a job that already ended counts at once.
 (fold add 0 (map (lambda! (job) (get (get (until-ended job 60) "program") "exited")) jobs))
