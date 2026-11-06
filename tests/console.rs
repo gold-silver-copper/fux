@@ -383,9 +383,7 @@ mod windows {
         modes_back(&place, "detach")
     }
 
-    /// Keys as a terminal sends them, each reaching the pane exact; what
-    /// ConPTY has no record for (focus) is logged, not asserted, where the
-    /// host drops it.
+    /// Keys as a terminal sends them, each reaching the pane exact.
     fn keys() -> Outcome {
         let place = Place::new("keys")?;
         let _stops = Stops(&place);
@@ -417,10 +415,9 @@ mod windows {
         let paste: String = std::iter::repeat_n("0123456789abcdef", 4096).collect();
         console.write(format!("\x1b[200~{paste}\x1b[201~").as_bytes())?;
         console.until("a paste's last byte", |_| pane_count(&place) > paste.len())?;
+        // A pane that asked for focus reports, as a terminal gives them.
         console.write(b"\x1b[O\x1b[I")?;
-        let focus = console.until("focus", |_| pane_got(&place, b"\x1b[I"));
-        say!("focus report: {focus:?}");
-        Ok(())
+        console.until("the focus report", |_| pane_got(&place, b"\x1b[I"))
     }
 
     fn resize() -> Outcome {
@@ -633,6 +630,7 @@ mod windows {
         let Ok(winch) = fuxix::signal::Pipe::new(&[Signal::Winch]) else {
             return ExitCode::FAILURE;
         };
+        let _ = fuxix::io::write(&stdout, b"\x1b[?1004h");
         note("pane", "ready");
         let mut buffer = [0u8; 4096];
         loop {

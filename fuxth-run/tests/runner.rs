@@ -1,14 +1,18 @@
 //! The `fuxth` runner, run as a program: over pipes, and on a terminal.
-// Unix alone for now: it drives a pty, signals and FIFOs (WINDOWS.md, PR 8).
-#![cfg(unix)]
+#[cfg(unix)]
 use fuxix::poll::{Events, PollFd, poll};
+#[cfg(unix)]
 use fuxix::terminal::Size;
 use std::io::Write;
+#[cfg(unix)]
 use std::num::NonZeroU16;
+#[cfg(unix)]
 use std::os::fd::AsFd;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 type Outcome = Result<(), String>;
@@ -44,6 +48,7 @@ fn run(dir: &PathBuf, args: &[&str], stdin: &str) -> Result<Output, String> {
 }
 
 /// `wait` from now.
+#[cfg(unix)]
 fn after(wait: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(wait).unwrap_or(now)
@@ -104,6 +109,7 @@ fn a_batch_program_over_a_pipe_prints_only_its_output_and_fails_nonzero() -> Out
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn a_key_driven_program_over_a_pipe_saves_a_file() -> Outcome {
     let dir = dir("keys")?;
@@ -293,6 +299,7 @@ fn delete_file_removes_a_file_and_says_so_as_its_other_file_words_do() -> Outcom
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn ctrl_c_is_a_failure_try_catches_and_uncaught_exits_130() -> Outcome {
     let dir = dir("interrupt")?;
@@ -329,6 +336,7 @@ fn ctrl_c_is_a_failure_try_catches_and_uncaught_exits_130() -> Outcome {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
     let dir = dir("fifo")?;
@@ -398,12 +406,14 @@ fn ctrl_c_reaches_a_wait_on_a_fifo() -> Outcome {
 
 /// A program on a terminal of its own: what it writes is read, and keys
 /// typed into it.
+#[cfg(unix)]
 struct Terminal {
     master: fuxix::pty::Master,
     child: std::process::Child,
     seen: String,
 }
 
+#[cfg(unix)]
 impl Terminal {
     fn start(dir: &PathBuf, args: &[&str]) -> Result<Self, String> {
         let argv: Vec<&str> = std::iter::once(FUXTH).chain(args.iter().copied()).collect();
@@ -457,6 +467,7 @@ impl Terminal {
     }
 }
 
+#[cfg(unix)]
 impl Terminal {
     /// Its status once it ends, within 10 seconds. What it writes is read
     /// meanwhile: macOS has a program's exit wait until its terminal's
@@ -519,6 +530,7 @@ impl Terminal {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -526,6 +538,7 @@ impl Drop for Terminal {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn a_line_read_after_a_key_on_a_terminal_ends_at_enter() -> Outcome {
     let dir = dir("line")?;
@@ -544,6 +557,7 @@ fn a_line_read_after_a_key_on_a_terminal_ends_at_enter() -> Outcome {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn an_ending_signal_puts_the_terminal_back() -> Outcome {
     let dir = dir("ending")?;
@@ -561,6 +575,7 @@ fn an_ending_signal_puts_the_terminal_back() -> Outcome {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn an_ending_signal_ends_a_write_held_up_by_a_full_pipe() -> Outcome {
     let dir = dir("held")?;
@@ -593,6 +608,7 @@ fn an_ending_signal_ends_a_write_held_up_by_a_full_pipe() -> Outcome {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_errors() -> Outcome {
     let dir = dir("repl")?;
@@ -659,4 +675,71 @@ fn the_repl_on_a_terminal_prints_the_stack_and_keeps_the_dictionary_through_erro
     let status = repl.ended()?;
     assert!(status.success(), "{status:?}");
     Ok(())
+}
+
+/// On a console: a key's code, a key in key mode as its own bytes, a line
+/// the console edits and echoes, then Ctrl-C, still a signal in key mode,
+/// which ends a wait with 130. The console is Windows' built-in, as no
+/// ConPTY is at this folder.
+#[cfg(windows)]
+#[test]
+fn keys_a_line_and_ctrl_c_on_a_console() -> Outcome {
+    use fuxix::poll::{Events, PollFd};
+    use fuxix::process::{Dispositions, Status};
+    use std::time::{Duration, Instant};
+    let dir = dir("console")?;
+    let _ = fuxix::pty::load(&dir.join("no-conpty"));
+    let program = "read-key print read-key print 99 accept print read-key print";
+    std::fs::write(dir.join("keys.fux"), program).map_err(e)?;
+    let size = fuxix::terminal::Size::new(24, 80).ok_or("a size")?;
+    let (master, slave) = fuxix::pty::open(size).map_err(e)?;
+    let job = slave
+        .spawn(
+            &[FUXTH, "keys.fux"],
+            |command| {
+                command.current_dir(&dir);
+            },
+            Dispositions::Default,
+        )
+        .map_err(e)?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(45))
+        .ok_or("a deadline")?;
+    let steps: [(&str, &[u8]); 4] = [
+        ("", b"a"),
+        ("97", b"\x1b[A"),
+        ("1114112", b"typed line\r"),
+        ("typed line", b"\x03"),
+    ];
+    let mut seen = String::new();
+    let mut buffer = [0u8; 4096];
+    for (wanted, keys) in steps {
+        while !seen.contains(wanted) {
+            if Instant::now() > deadline {
+                return Err(format!("no {wanted:?} in {seen:?}"));
+            }
+            let mut fds = [PollFd::new(&master, Events::IN)];
+            fuxix::poll::poll(&mut fds, Some(Duration::from_millis(50))).map_err(e)?;
+            match fuxix::io::read(&master, &mut buffer) {
+                Ok(n) => seen.push_str(&text(buffer.get(..n).unwrap_or_default())),
+                Err(fuxix::Errno::AGAIN) => {}
+                Err(error) => return Err(e(error)),
+            }
+        }
+        // The key mode set, or the key would be the console's line.
+        std::thread::sleep(Duration::from_millis(300));
+        fuxix::io::write(&master, keys).map_err(e)?;
+    }
+    loop {
+        let mut fds = [PollFd::new(&master, Events::IN)];
+        fuxix::poll::poll(&mut fds, Some(Duration::from_millis(50))).map_err(e)?;
+        let _ = fuxix::io::read(&master, &mut buffer);
+        if let Some(status) = job.ended().map_err(e)? {
+            assert_eq!(status, Status::Exited(130), "{seen:?}");
+            return Ok(());
+        }
+        if Instant::now() > deadline {
+            return Err(format!("no end, Ctrl-C sent: {seen:?}"));
+        }
+    }
 }
