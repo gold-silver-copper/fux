@@ -414,7 +414,7 @@ mod windows {
         }
         console.until("the emoji painted back", |c| c.shows("😀"))?;
         // More than a read holds, whole: its tail waits for no next key.
-        let paste = "0123456789abcdef".repeat(4096);
+        let paste: String = std::iter::repeat_n("0123456789abcdef", 4096).collect();
         console.write(format!("\x1b[200~{paste}\x1b[201~").as_bytes())?;
         console.until("a paste's last byte", |_| pane_count(&place) > paste.len())?;
         console.write(b"\x1b[O\x1b[I")?;
@@ -606,6 +606,8 @@ mod windows {
 
     /// Stands for a person's shell: `fux`, between two looks at the console.
     fn shell() -> ExitCode {
+        // A shell lives through the Ctrl-Break that detaches what it runs.
+        let _lives = fuxix::signal::Pipe::new(&[Signal::Quit, Signal::Int]);
         note("shell", &format!("before {}", state()));
         let words = std::env::var(WORDS).unwrap_or_default();
         let status = Command::new(FUX)
