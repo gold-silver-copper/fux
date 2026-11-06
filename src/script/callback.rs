@@ -102,6 +102,13 @@ fn runs(v: &Data, of: &mut Option<fux_wire::command::Run>) -> Result<(), Failed>
                 runs(v, of)?;
             }
         }
+        // What reads as a handle in the receiver is one here.
+        Data::Symbol(name) => {
+            if let Some(handle) = super::bridge::from_handle_name(name) {
+                *of = super::same_run(*of, super::scope(&Value::App(handle)))
+                    .map_err(super::callback_failed)?;
+            }
+        }
         Data::Int(_)
         | Data::Bool(_)
         | Data::Text(_)
@@ -109,8 +116,7 @@ fn runs(v: &Data, of: &mut Option<fux_wire::command::Run>) -> Result<(), Failed>
         | Data::Null
         | Data::Code(_)
         | Data::Bytes(_)
-        | Data::FloatBits(_)
-        | Data::Symbol(_) => {}
+        | Data::FloatBits(_) => {}
     }
     Ok(())
 }

@@ -1060,11 +1060,9 @@ impl std::io::Write for Said {
     }
 }
 
-/// The interpreter a client's next job runs in, built for `config`.
-struct Prepared<'a, 'b, 'c> {
-    interpreter: Result<script::Interpreter<'a, 'b, script::AsClient<'c>>, script::Failed>,
-    config: Option<script::Config>,
-}
+/// The interpreter a client's next job runs in, or why none is.
+type Prepared<'a, 'b, 'c> =
+    Result<script::Interpreter<'a, 'b, script::AsClient<'c>>, script::Failed>;
 
 /// A worker's loop: runs each of `jobs` as client `me`, on the shared
 /// `state`. Each job has an interpreter nothing has run in, so a run's
@@ -1114,34 +1112,17 @@ fn work(
     let mut host = script::Host::job(job_context(), &mut draft, &mut out);
     let mut runtime = script::Runtime::new(&mut host, &mut asks, Some(stop));
     let mut defaults = None;
-    let mut next = Some(prepare(&mut runtime, state, &mut defaults));
+    let mut next = prepare(&mut runtime, state, &mut defaults);
     for (job, frames) in jobs {
         fence(frames);
         rebound.set(false);
         said.0.borrow_mut().clear();
-        let config = lock(state).config.clone();
-        let prepared = next
-            .take()
-            .filter(|prepared| match (&prepared.config, &config) {
-                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
-                (None, None) => true,
-                (Some(_), None) | (None, Some(_)) => false,
-            });
-        let prepared = prepared.unwrap_or_else(|| prepare(&mut runtime, state, &mut defaults));
-        let mut ran = run_job(
-            prepared,
-            &mut runtime,
-            state,
-            &job,
-            stop,
-            job_context(),
-            &said,
-        );
+        let mut ran = run_job(next, &mut runtime, state, &job, stop, job_context(), &said);
         ran.rebound = rebound.get();
         if !done(ran) {
             break;
         }
-        next = Some(prepare(&mut runtime, state, &mut defaults));
+        next = prepare(&mut runtime, state, &mut defaults);
     }
 }
 
@@ -1153,22 +1134,16 @@ fn prepare<'a, 'b, 'c>(
     defaults: &mut Option<ClientState>,
 ) -> Prepared<'a, 'b, 'c> {
     let config = lock(state).config.clone();
-    let interpreter = (|| {
-        let mut g = script::interpreter(runtime)?;
-        script::load_libraries(&mut g, runtime)?;
-        if let Some(config) = &config {
-            let defaults = match defaults {
-                Some(defaults) => defaults,
-                None => defaults.insert(script::default_state()?),
-            };
-            script::replay_config(&mut g, runtime, config, defaults)?;
-        }
-        Ok(g)
-    })();
-    Prepared {
-        interpreter,
-        config,
+    let mut g = script::interpreter(runtime)?;
+    script::load_libraries(&mut g, runtime)?;
+    if let Some(config) = &config {
+        let defaults = match defaults {
+            Some(defaults) => defaults,
+            None => defaults.insert(script::default_state()?),
+        };
+        script::replay_config(&mut g, runtime, config, defaults)?;
     }
+    Ok(g)
 }
 
 /// Runs a key's or a screen's program in `prepared`. Each checkpoint
@@ -1198,7 +1173,7 @@ fn run_job<'a, 'b, 'c>(
             )?);
             return Ok(Vec::new());
         }
-        let mut g = prepared.interpreter?;
+        let mut g = prepared?;
         let machine = job.machine(None, Some(stop))?;
         let values = script::evaluate_job(&mut g, runtime, &machine)?;
         script::refuse_unfinished(&values, runtime.host)?;
@@ -2255,7 +2230,8 @@ mod tests {
             &stop,
             &mut |p| updates.push(p),
         );
-        assert!(ran.notice.is_some());
+        let said = ran.notice.map(|(text, _)| text).unwrap_or_default();
+        assert!(said.contains("already took effect"), "{said}");
         assert!(updates.last().is_some_and(|p| !p.titles));
         assert!(!lock(&state).preferences.titles);
         Ok(())

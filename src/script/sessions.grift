@@ -68,15 +68,17 @@
   ; Check names before launching anything; top workspaces can be joined.
   (define! existing (session-data (snapshot (all) "topology")))
   (define! held (append (get existing "workspaces") (get existing "tabs") (get existing "panes")))
-  (for-each (lambda! (item)
+  (define! refuse-taken (lambda! (held) (lambda! (item)
     (let! ((name-value (get item "name")))
       (when! (and!? (not? (same? name-value none)) (member? name-value (map (lambda! (v) (get v "name")) held)))
         (let! ((holder (first (filter (lambda! (v) (same? (get v "name") name-value)) held)))
                (id (get holder "id"))
                (what (conditional! ((same? (byte-substring id 0 1) "%") "pane") ((same? (byte-substring id 0 1) "@") "tab") (#true "workspace"))))
-          (raise (error (quote! name-taken) (string-append id ", a " what ", already named " name-value)))))))
-    (append (get recipe "tabs") panes-in
-      (filter (lambda! (w) (not? (same? (get w "parent") none))) workspaces)))
+          (raise (error (quote! name-taken) (string-append id ", a " what ", already named " name-value)))))))))
+  (for-each (refuse-taken held) (append (get recipe "tabs") panes-in
+    (filter (lambda! (w) (not? (same? (get w "parent") none))) workspaces)))
+  (for-each (refuse-taken (append (get existing "tabs") (get existing "panes")))
+    (filter (lambda! (w) (same? (get w "parent") none)) workspaces))
   (for-each (lambda! (tab-record)
     (define! nodes (get tab-record "nodes"))
     (define! first-id (dump-first nodes 0))
@@ -99,7 +101,6 @@
   #inert))
 
 ; A held observation rendered as a hierarchy, without further remote reads.
-(define! append-map (lambda! (function values) (apply append (map function values))))
 (define! listing (lambda! (snapshot-value)
   (define! workspaces (get snapshot-value "workspaces"))
   (define! tabs-in (get snapshot-value "tabs"))

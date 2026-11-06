@@ -197,7 +197,7 @@ fn read_source<A: Asks + ?Sized>(
         .host
         .files
         .read(&file)
-        .map_err(|e| failure(g, Failure::new(Code::Require, e)))?;
+        .map_err(|e| failure(g, Failure::new(Code::Require, format!("{name}: {e}"))))?;
     let forms = g.read_in(&name, &source)?;
     state.host.files.required.push(file.clone());
     state.host.files.loading.push(file.clone());
@@ -245,6 +245,12 @@ fn kind<A: Asks + ?Sized>(
     }
     if let Some(held) = held_kind(g, v)? {
         return g.string(&held);
+    }
+    if matches!(v, G::Pair(_))
+        && let Ok(items) = g.list_items(v)
+        && fields(g, &items)?.is_some()
+    {
+        return g.string("record");
     }
     let v = from_grift(g, v)?;
     let name = match &v {
@@ -435,7 +441,7 @@ pub(super) fn request<A: Asks + ?Sized>(
         let id = format!("{prefix}{number}")
             .parse::<AnyRef>()
             .map_err(|()| g.error("range-error", args))?;
-        return to_grift(g, &Value::App(handle(id, None)));
+        return to_grift(g, &Value::App(handle(id, state.host.context.of)));
     }
 
     if matches!(
@@ -493,10 +499,16 @@ pub(super) fn request<A: Asks + ?Sized>(
                 ));
             }
             if let Some(draft) = state.host.state.as_deref_mut() {
+                let pending = draft.changed();
                 state
                     .asks
                     .checkpoint(draft, state.host.context.clone())
                     .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+                if pending {
+                    state
+                        .host
+                        .took("(this client's settings and keys)".to_owned());
+                }
             }
             let mut context = state.host.context.clone();
             context.client = client.or(context.client);
@@ -520,7 +532,7 @@ pub(super) fn request<A: Asks + ?Sized>(
                 return Err(g.error(code.name(), &values));
             }
             if acts(&asked.request) {
-                state.host.actions.push(call_text(g, name, args));
+                state.host.took(call_text(g, name, args));
             }
             out = answered(reply).map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
         }
@@ -567,7 +579,7 @@ pub(super) fn request<A: Asks + ?Sized>(
                 .local(&what, state.host.state.as_deref_mut(), state.host.out)
                 .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
             if matches!(what, Local::Start | Local::Attach { .. }) {
-                state.host.actions.push(call_text(g, name, args));
+                state.host.took(call_text(g, name, args));
             }
             if matches!(what, Local::Shell(Shell::Exit(_))) {
                 runtime_exit(g, state);
@@ -789,8 +801,8 @@ library_words! {
        "chooser-count" "chooser-path" "chooser-tree" "choose-among" "choose-move" "choose-pane"
        "edit-history" "batch-events";
     1: "native-data?" "session-data" "dump-text" "dump-recipe" "dump" "dump-first" "dump-directory"
-       "dump-warnings" "session-find" "restore-create-options" "restore-session" "append-map"
-       "listing" "events";
+       "dump-warnings" "session-find" "restore-create-options" "restore-session" "listing"
+       "events";
 }
 
 /// A new interpreter: fux's words and prelude, its libraries not loaded.
@@ -845,6 +857,7 @@ pub fn replay_config<'a, 'b, A: Asks + ?Sized>(
     config: &Config,
     defaults: &ClientState,
 ) -> Result<(), Failed> {
+    let program = place(g, PROGRAM).map_err(|e| failed(g, e))?;
     let previous = state.host.state.as_deref().cloned();
     if let Some(draft) = state.host.state.as_deref_mut() {
         *draft = defaults.draft();
@@ -857,9 +870,9 @@ pub fn replay_config<'a, 'b, A: Asks + ?Sized>(
     let file = std::mem::replace(&mut state.host.file, config.path.clone());
     state.configuring = true;
     state.replaying = true;
-    // A stop is for a run: the worker builds while none is under way.
+    // A stop is for a run: what it would stop here is the next job's build,
+    // which that job's own check then answers.
     let stop = state.stop.take();
-    let program = place(g, PROGRAM).map_err(|e| failed(g, e))?;
     let loaded = g.evaluate_in(state, &program, &config.name, &config.text);
     state.stop = stop;
     state.host.context = context;
@@ -922,9 +935,20 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
     }
     match result {
         Ok(G::Inert) => Ok(Vec::new()),
+        // `fux status` names a word and calls nothing, which would look done.
+        Ok(G::Applicative(_) | G::Operative(_) | G::Primitive(_) | G::Host(_))
+            if state.host.cli =>
+        {
+            let name = machine.source.trim();
+            let why = format!("{name} is a word: call it, as ({name})");
+            Err(Failed::new(Code::Usage, why))
+        }
         Ok(v) => match output_value(g, &v) {
-            // A list's items, each said alone.
-            Ok(Value::Printed(_)) if g.list_items(&v).is_ok() => {
+            // A list's items, each said alone; a record's fields are one value.
+            Ok(Value::Printed(_))
+                if g.list_items(&v)
+                    .is_ok_and(|items| matches!(fields(g, &items), Ok(None))) =>
+            {
                 let items = g.list_items(&v).map_err(|e| failed(g, e))?;
                 let values = items
                     .iter()
@@ -1001,7 +1025,7 @@ pub(super) fn handle_name(app: &Fux, out: &mut dyn std::fmt::Write) -> std::fmt:
 
 /// The value the symbol `name` is, if `handle_name` writes it: `%3:RUN`
 /// with its run, and a bare `%3` as a person may type it (D-26).
-pub(super) fn from_handle_name(name: &str) -> Option<Fux> {
+pub(crate) fn from_handle_name(name: &str) -> Option<Fux> {
     if name == "%all" {
         return Some(Fux::All);
     }
@@ -1099,6 +1123,44 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
     })
 }
 
+/// `form` as text, each combination on the line it was written on after
+/// `line`, so a failure deep in a binding names the config's own line.
+fn write_form<T>(
+    g: &mut Grift<T>,
+    form: &G,
+    out: &mut String,
+    line: &mut u32,
+    depth: u8,
+) -> Result<(), Error> {
+    let items = match (form, depth.checked_sub(1)) {
+        (G::Pair(_), Some(_)) => g.list_items(form).ok(),
+        _ => None,
+    };
+    let Some(items) = items else {
+        return g
+            .write(form, out)
+            .map_err(|_| g.error("bad-value", std::slice::from_ref(form)));
+    };
+    if let Some((_, at)) = g.position(form)?
+        && at > *line
+    {
+        out.extend(std::iter::repeat_n(
+            '\n',
+            usize::try_from(at.saturating_sub(*line)).unwrap_or(0),
+        ));
+        *line = at;
+    }
+    out.push('(');
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        write_form(g, item, out, line, depth.saturating_sub(1))?;
+    }
+    out.push(')');
+    Ok(())
+}
+
 /// `source` on `line` of its file, as a failure in it then names that line.
 fn on_its_line(source: &str, line: u32) -> String {
     let lines = usize::try_from(line.saturating_sub(1)).unwrap_or(0);
@@ -1143,6 +1205,15 @@ fn fields<T>(g: &Grift<T>, items: &[G]) -> Result<Option<Vec<(String, G)>>, Erro
     Ok((!fields.is_empty()).then_some(fields))
 }
 
+/// The server run `fields` say they are of.
+fn run_of<T>(g: &Grift<T>, fields: &[(String, G)]) -> Result<Option<Run>, Error> {
+    let run = fields.iter().find(|(name, _)| name == RUN);
+    match run {
+        Some((_, value)) => Ok(g.as_str(value)?.and_then(|text| text.parse().ok())),
+        None => Ok(None),
+    }
+}
+
 fn from_grift<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
     from_grift_at(g, v, fux_wire::callback::DEPTH.saturating_add(1))
 }
@@ -1174,8 +1245,8 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
             match (head.as_str(), items.as_slice()) {
                 (CODE, [_, form]) => {
                     let mut source = String::new();
-                    g.write(form, &mut source)
-                        .map_err(|_| g.error("bad-value", std::slice::from_ref(form)))?;
+                    let first = g.position(form)?.map_or(0, |(_, line)| line);
+                    write_form(g, form, &mut source, &mut { first }, depth)?;
                     let place = g.position(form)?.map(|(file, line)| {
                         let file = file.to_owned();
                         Box::new(fux_wire::callback::Place { file, line })
@@ -1216,21 +1287,17 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                     words::replayed(subject, replayed).map_err(|f| failure(g, f))?
                 }
                 _ => match fields(g, &items)? {
-                    Some(fields) => {
-                        let mut run = None;
+                    Some(fields) if held_kind(g, v)?.is_some() || run_of(g, &fields)?.is_some() => {
+                        let run = run_of(g, &fields)?;
                         let mut out = Vec::with_capacity(fields.len());
                         for (name, value) in fields {
-                            if name == RUN
-                                && let Some(text) = g.as_str(&value)?
-                                && let Ok(found) = text.parse()
-                            {
-                                run = Some(found);
-                            }
                             out.push((name, from_grift_at(g, &value, depth)?));
                         }
                         record::from_fields(out, run).map_err(|f| failure(g, f))?
                     }
-                    None => Value::List(Rc::new(List::new(
+                    // A list stays a list, whatever it looks like: only a
+                    // server's answer or what holds a run is a record.
+                    Some(_) | None => Value::List(Rc::new(List::new(
                         items
                             .iter()
                             .map(|v| from_grift_at(g, v, depth))

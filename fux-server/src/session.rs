@@ -9778,6 +9778,23 @@ mod tests {
         Ok(())
     }
 
+    /// A restore whose top workspace is named as a pane here is refused
+    /// before anything is made.
+    #[test]
+    fn a_restore_refuses_a_taken_name_before_it_makes_anything() -> TestResult {
+        let mut s = started()?;
+        run(&mut s, "(new-tab (size (in (options) \"alpha\") 80 24))")?;
+        run(&mut s, "(new-tab (size (in (options) \"beta\") 80 24))")?;
+        let dump = s.dump_recipe(None)?;
+        let mut other = started()?;
+        run(&mut other, "(rename (pane 1) \"beta\")")?;
+        let before = other.parts.panes().len();
+        let refused = run(&mut other, &dump).err().unwrap_or_default();
+        assert!(refused.contains("name-taken"), "{refused}");
+        assert_eq!(other.parts.panes().len(), before);
+        Ok(())
+    }
+
     #[test]
     fn dumps_preserve_tab_sizing_independently_of_client_views() -> TestResult {
         let (mut s, c) = attached(11, 40)?;

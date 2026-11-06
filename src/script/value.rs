@@ -134,8 +134,23 @@ impl Value<Fux> {
                 out.write_str(")")
             }
             Self::App(Fux::Record(r)) => r.write(out),
-            Self::App(Fux::Code(code)) => out.write_str(&code.text()),
-            Self::App(Fux::Opts(_)) => out.write_str("(request!)"),
+            Self::App(Fux::Code(code)) => write!(out, "(code! {})", code.text()),
+            Self::App(Fux::Opts(opts)) => {
+                out.write_str("(request! ")?;
+                match &opts.subject {
+                    Some(subject) => subject.write_data(out)?,
+                    None => out.write_str("none")?,
+                }
+                for (option, arguments) in &opts.steps {
+                    write!(out, " ({option}")?;
+                    for argument in arguments {
+                        out.write_char(' ')?;
+                        argument.write_data(out)?;
+                    }
+                    out.write_char(')')?;
+                }
+                out.write_char(')')
+            }
             Self::App(v) => super::bridge::handle_name(v, out),
         }
     }

@@ -108,8 +108,15 @@ fn final_output_streams_a_large_string_without_copying_it() -> TestResult {
 }
 #[test]
 fn version_text_from_another_run_is_read_without_asking() -> TestResult {
-    let source = "(version \"%1:0.7.0.0.0:1-1\")";
-    let values = testing::evaluate(source, None, &mut NoRequests, &mut Vec::new())?;
+    // A key's program runs on its server's run; the version is another's.
+    let context = Context {
+        of: Some("2-0".parse().map_err(|()| "a run")?),
+        ..Context::default()
+    };
+    let mut machine = Machine::source("key", "(version \"%1:0.7.0.0.0:1-1\")");
+    let mut out = Vec::new();
+    let mut host = Host::new(context, None, &mut out);
+    let values = run(&mut machine, &mut host, &mut NoRequests, None)?;
     assert_eq!(values, [Value::str("%1:0.7.0.0.0:1-1")]);
     Ok(())
 }
@@ -568,10 +575,22 @@ fn a_batch_left_that_missed_entries_is_refused() -> TestResult {
         let mut out = Vec::new();
         let result = held_reply(
             r#"(batch-events (next-events (all) "" 0))"#,
-            Body::Events(Box::new(batch)).into(),
+            Body::Events(Box::new(batch.clone())).into(),
             &mut out,
         );
         assert!(out.is_empty());
+        // Left at a program's end, a batch prints its events alone, and one
+        // that missed entries is refused (D-93).
+        let held = held_reply(
+            r#"(next-events (all) "" 0)"#,
+            Body::Events(Box::new(batch)).into(),
+            &mut out,
+        )?;
+        let [Value::App(Fux::Record(record))] = held.as_slice() else {
+            return Err("no batch".into());
+        };
+        assert!(record.is_batch());
+        assert_eq!(record.printed_events().is_err(), missed > 0);
         if missed == 0 {
             assert!(result.is_ok());
         } else {
@@ -945,7 +964,7 @@ fn the_library_words_are_what_the_libraries_define() {
 /// name that wasn't there.
 #[test]
 fn a_callback_fails_at_the_line_it_was_written() -> TestResult {
-    let source = "\n\n(code! (lambda! () (nosuch)))";
+    let source = "\n\n(code! (lambda! ()\n  (nosuch)))";
     let values = evaluate(source, None, &mut NoRequests, &mut Vec::new())?;
     let [Value::App(Fux::Code(code))] = values.as_slice() else {
         return Err("no code value".into());
@@ -960,7 +979,7 @@ fn a_callback_fails_at_the_line_it_was_written() -> TestResult {
         .err()
         .ok_or("the callback ran")?;
     assert!(failed.message.contains("nosuch"), "{failed}");
-    assert!(failed.message.contains("at test:3"), "{failed}");
+    assert!(failed.message.contains("at test:4"), "{failed}");
     Ok(())
 }
 
@@ -1014,4 +1033,74 @@ fn a_failure_in_a_library_names_the_users_line() -> TestResult {
     assert!(failed.message.contains("at test:3"), "{failed}");
     assert!(!failed.message.contains("library.grift"), "{failed}");
     Ok(())
+}
+
+/// A server's answer a program typed names another run's pane, or a version
+/// of one: the run check sees through the record to it.
+#[test]
+fn a_typed_answer_of_another_run_is_refused() -> TestResult {
+    struct Counted(usize);
+    impl Asks for Counted {
+        fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+            self.0 = self.0.saturating_add(1);
+            Ok(Body::Empty.into())
+        }
+    }
+    for value in [
+        r#"((kind "answer") (pane %3:3-4))"#,
+        r#"((kind "answer") (pane %3:3-4) (run "5-6"))"#,
+        r#"((kind "answer") (version "%3:0.0.0.0.0:3-4"))"#,
+    ] {
+        let context = Context {
+            of: Some("5-6".parse().map_err(|()| "a run")?),
+            ..Context::default()
+        };
+        let mut out = Vec::new();
+        let mut host = Host::new(context, None, &mut out);
+        let mut asks = Counted(0);
+        let mut machine = Machine::source("key", &format!("(kill (quote! {value}))"));
+        let failed = run(&mut machine, &mut host, &mut asks, None)
+            .err()
+            .ok_or("another run's pane got through")?;
+        assert!(failed.message.contains("different server runs"), "{failed}");
+        assert_eq!(asks.0, 0, "{value}");
+    }
+    Ok(())
+}
+
+/// A list stays a list though it looks like a record, and what a program
+/// leaves prints as data that reads back whole.
+#[test]
+fn lists_and_left_values_keep_what_they_are() -> TestResult {
+    let source = r#"(list (quote! (x 1)) (axis (pane 3) "horizontal"))"#;
+    let source = format!("(data-text {source})");
+    let values = evaluate(&source, None, &mut NoRequests, &mut Vec::new())?;
+    let said: Vec<String> = values.iter().filter_map(|v| v.text().ok()).collect();
+    assert!(said.concat().contains("(x 1)"), "{said:?}");
+    let source = r#"(list (list (quote! handler) (code! (lambda! () #inert)))
+        (list (quote! pending) (axis (pane 3) "horizontal")) (list (quote! run) "1-2"))"#;
+    let values = evaluate(source, None, &mut NoRequests, &mut Vec::new())?;
+    let [value] = values.as_slice() else {
+        return Err("one value".into());
+    };
+    let text = value.text().map_err(|f| f.message)?;
+    assert!(text.contains("(code! (lambda! () #inert))"), "{text}");
+    assert!(text.contains(r#"(axis "horizontal"))"#), "{text}");
+    Ok(())
+}
+
+/// Reading a request repeats its words' checks: an extra value is refused
+/// there, as it is in the call.
+#[test]
+fn a_request_read_back_takes_what_its_words_take() {
+    for source in [
+        r#"(kind (quote! (request! none (name "kept" "discarded"))))"#,
+        r#"(name (options) "kept" "discarded")"#,
+    ] {
+        let failed = evaluate(source, None, &mut NoRequests, &mut Vec::new());
+        assert!(
+            failed.is_err_and(|f| f.kind.as_deref() == Some("arity-error")),
+            "{source}"
+        );
+    }
 }

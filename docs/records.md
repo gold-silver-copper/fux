@@ -348,7 +348,7 @@ workspace's panes answers each that changed, the first failing status naming the
 
 ## `next-events` and `events`
 
-`(next-events SCOPE CURSOR SECONDS)` returns one immutable record, which prints whole:
+`(next-events SCOPE CURSOR SECONDS)` returns one immutable record. Left at a program's end it prints its events alone, a line each, and a batch that missed entries is refused; read in a program it is the whole record:
 
 ```text
 ((events (((event "bell") (pane %3:RUN) (tab @2:RUN) (workspace w+2:RUN)

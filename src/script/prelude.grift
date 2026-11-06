@@ -13,6 +13,8 @@
 (define! bind! (lambda! (chord caption heading body)
   (bind-key chord body) (label caption) (group heading)))
 (define! print (lambda! (value) (display value "\n")))
+; Here, not in a library: it calls what it's given, whose recursion stays in grift.
+(define! append-map (lambda! (function values) (apply append (map function values))))
 (define! type (lambda! (target text-value) (send-keys (text target text-value))))
 (define! press (lambda! (target key-name) (send-keys (key target key-name))))
 (define! line (lambda! (target text-value) (send-keys (key (text target text-value) "Enter"))))

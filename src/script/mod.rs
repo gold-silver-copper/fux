@@ -140,6 +140,21 @@ impl Fux {
     }
 }
 
+/// The run `value` is of, checked: a server's answer names its pane and
+/// version too, which must agree, as a program may have typed it.
+fn checked_scope(value: &Value<Fux>) -> Result<Option<Run>, Failure> {
+    let mut run = scope(value);
+    if let Value::App(Fux::Record(record)) = value
+        && record.is_held()
+    {
+        if let Ok(pane) = record.get("pane") {
+            run = same_run(run, scope(&pane))?;
+        }
+        run = same_run(run, record.version().map(|version| version.run))?;
+    }
+    Ok(run)
+}
+
 /// The server run a value was returned by, retained through request options.
 fn scope(value: &Value<Fux>) -> Option<Run> {
     match value {
@@ -419,6 +434,17 @@ impl<'a> Host<'a> {
         self.files = source::Files::sealed();
         self.file = None;
         self.actions.clear();
+    }
+
+    /// `call` took effect: told if a later step fails, as many as a notice
+    /// can say.
+    fn took(&mut self, call: String) {
+        const MOST: usize = 64;
+        match self.actions.len() {
+            count if count < MOST => self.actions.push(call),
+            MOST => self.actions.push("and more, not listed".to_owned()),
+            _ => {}
+        }
     }
 
     /// The candidate state, for a client's worker.
@@ -1432,6 +1458,9 @@ fn main_program(
             let text = read_text("stdin", io::stdin())?;
             (Machine::source("stdin", &text), Given::Stdin, Some(text))
         }
+        [flag] if flag == "--file" => {
+            return Err(Failed::new(Code::Usage, "--file needs a FILE"));
+        }
         [flag, file, rest @ ..] if flag == "--file" => {
             let path =
                 source::identity(file.as_ref()).map_err(|e| read_failed(file, &e.to_string()))?;
@@ -1505,6 +1534,11 @@ fn main_program(
                         }
                     }
                     Value::Str(text) if text.is_empty() => {}
+                    Value::App(Fux::Record(record)) if record.is_batch() => {
+                        for event in record.printed_events().map_err(callback_failed)? {
+                            writeln!(host.out, "{}", value::Text(&event)).map_err(output_failed)?;
+                        }
+                    }
                     Value::App(Fux::Record(record)) if record.says_nothing() => {}
                     Value::Int(_)
                     | Value::Float(_)

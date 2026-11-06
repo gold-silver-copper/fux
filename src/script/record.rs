@@ -68,6 +68,24 @@ impl Record {
         }
         Ok(())
     }
+    /// Whether it is a `next-events` batch.
+    pub(super) fn is_batch(&self) -> bool {
+        ["events", "first", "next", "missed", "status"]
+            .iter()
+            .all(|name| self.fields.iter().any(|(key, _)| key == name))
+    }
+    /// What the command line prints of a batch: its events alone; one that
+    /// missed entries is refused, as the reader must resnapshot (D-93).
+    pub(super) fn printed_events(&self) -> Result<Vec<V>, Failure> {
+        if let Ok(Value::Int(missed @ 1..)) = self.get("missed") {
+            let why = format!("{missed} journal entries missed; resnapshot before continuing");
+            return Err(Failure::new(Code::Fail, why));
+        }
+        let Value::List(events) = self.get("events")? else {
+            return Ok(Vec::new());
+        };
+        Ok(events.items().to_vec())
+    }
     /// A capture of no lines says nothing printed.
     pub(super) fn says_nothing(&self) -> bool {
         self.is_held()
@@ -313,7 +331,10 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
         ("reason", reason),
     ];
     let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
-    let record = Record { fields, of: None };
+    let record = Record {
+        fields,
+        of: Some(run),
+    };
     Ok(Value::App(Fux::Record(Rc::new(record))))
 }
 

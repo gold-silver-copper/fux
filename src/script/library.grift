@@ -18,9 +18,10 @@
         (raise (error (quote! ended-before-text) needle))
         (shows (capture (wait (timeout (changed (get seen "version")) seconds))) needle seconds))))))
 (define! quiet (lambda! (value seconds)
-  (let! ((seen (observed value)))
-    (catch-kind! (quiet (capture (wait (timeout (changed (get seen "version")) seconds))) seconds)
-      timeout failure seen))))
+  (let! ((seen (observed value))
+         (later (catch-kind! (capture (wait (timeout (changed (get seen "version")) seconds)))
+           timeout failure #false)))
+    (if! (same? later #false) seen (quiet later seconds)))))
 (define! until-ended (lambda! (value seconds)
   (let! ((seen (observed value)))
     (if! (same? (get seen "ended") 1) seen
@@ -132,5 +133,6 @@
 ; The strict projection used when an event stream must not skip lost entries.
 (define! batch-events (lambda! (batch)
   (when! (greater-than? (get batch "missed") 0)
-    (raise (error (quote! journal-loss) (get batch "missed") batch)))
+    (raise (error (quote! journal-loss)
+      (string-append (integer-to-string (get batch "missed")) " journal entries missed; resnapshot before continuing"))))
   (get batch "events")))

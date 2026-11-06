@@ -243,10 +243,11 @@ jobs:
       - name: Packaging
         # fux depends on the fux-vt beside it, so the two are packaged
         # together: `-p fux` alone fails whenever fux needs a fux-vt that is
-        # not yet on crates.io.
+        # not yet on crates.io. fux itself waits for grift 2 there: its git
+        # pin has no version to publish against.
         run: |
           set -euo pipefail
-          cargo publish --dry-run --workspace --locked 2>&1 | tee "$CI_LOGS/package.log"
+          cargo publish --dry-run --workspace --exclude fux --locked 2>&1 | tee "$CI_LOGS/package.log"
 
       - name: Whitespace in the committed range
         if: runner.os == 'Linux'
@@ -343,7 +344,7 @@ jobs:
           echo "02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee  $package" | sha256sum --check
           echo "FUXIX_CONPTY_PACKAGE=$package" >> "$GITHUB_ENV"
 
-      - name: fux-vt, grift, fuxix, fux-wire, fux-server and fux
+      - name: fux-vt, fuxix, fux-wire, fux-server and fux
         run: |
           set -euo pipefail
           packages=(-p fux-vt -p fux-vt-peak -p fuxix -p fux-wire)

@@ -1103,7 +1103,7 @@ fn respawn_keeps_a_given_name_matching_the_old_program() -> Outcome {
 fn a_pane_gets_the_fux_running_it() -> Outcome {
     let server = Server::start("")?;
     let want = format!("WANT={}", fux());
-    let script = "PATH=/nonexistent; \"$FUX\" here capture >/dev/null && [ \"$FUX\" -ef \"$WANT\" ] && echo same";
+    let script = "PATH=/nonexistent; \"$FUX\" '(capture (here))' >/dev/null && [ \"$FUX\" -ef \"$WANT\" ] && echo same";
     let pane = id(&server.ok(&launch(&[], &["env", &want, "/bin/sh", "-c", script]))?);
     server.exits(&pane)?;
     let capture = server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(&pane))])?;

@@ -370,7 +370,7 @@ words! {
         Clients Keymap "keys" "client -- record" raises(Type asks) "the client's keys, as it answers: at, the keys it has typed into the map it is in; keymap, its keys from the root, each one that runs a binding (kind binding: key, code, label, group) or holds a map of more (kind map: key, repeat, keymap), at any depth; list and line, its screens' keys (key, action or code, label). Each code is a code value of its words, which reading compiles nothing of: execute compiles them in this program's dictionary, as a callback's are, and runs them, failing there for a word it lacks; a callback or bind takes it as it came" "fux '(sequence! (define! value-195 (keys (client \"c1\"))) \"keymap\" (data-text (first (get value-195 \"keymap\"))))'" [];
         Clients Preferences "preferences" "client -- list" raises(Type asks) "each of the client's preferences, as it answers: its name, its value as set takes it, and its type" "fux '(data-text (preferences (client \"c1\")))'" [];
         Server Start "start" "--" raises(NotHere asks) "start the server in the background, if none answers" "fux '(sequence! (start) #inert)'" [];
-        Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux status || fux start" [];
+        Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux '(status)' || fux '(start)'" [];
         Server KillServer "kill-server" "--" raises(asks) "stop the server: not from its own panes, nor with people attached" "FUX_SOCKET=$PWD/test.sock fux kill-server" [];
         Config AttachDefaults "attach-defaults" "attachable --" raises(Type Unused Config NotConfig) "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "(sequence! (attach-defaults (name (options) \"main\")) #inert)" [Either: In Name];
         Config Set "set" "setting new --" raises(Type Config NotConfig) "a preference for this client only: `fux '(explain \"set\")'` lists their effects" "fux '(sequence! (set \"history-bytes\" 16777216) #inert)'" [];
@@ -385,7 +385,7 @@ words! {
         Config KeyNames "key-names" "--" raises(Output) "the names keys go by" "fux '(sequence! (key-names) #inert)'" [];
         Help Help "help" "--" raises(Output) "the words, under their headings" "fux '(sequence! (help) #inert)'" [];
         Help Word "word" "word -- record" raises(Type UnknownWord) "the dictionary's record of the word named so now: its name, provenance (core, fux, library, or run for this program's own), effect, documentation (all help says of it), definition (its words as read, or native) and codes (what it can fail with as it runs, or null where unknown)" "fux '(sequence! (define! value-241 (word \"dup\")) \"definition\" (get value-241 \"definition\"))'" [];
-        Help Dictionary "dictionary" "-- list" raises() "a record of each word in this program's dictionary now, as word gives it, in the order they were defined" "fux '(map (lambda! (entry) (get entry \"name\")) (dictionary))'" [];
+        Help Dictionary "dictionary" "-- list" raises() "a record of each word in this program's dictionary now, as word gives it, sorted by name" "fux '(map (lambda! (entry) (get entry \"name\")) (dictionary))'" [];
         Help Explain "explain" "word --" raises(Type UnknownWord Output) "one operation at length; data describes printed data and errors; agents is the first screen of the agent guide; guide prints it whole" "fux '(sequence! (explain \"capture\") #inert)'" [];
     }
     Opt {
@@ -790,7 +790,11 @@ pub(super) fn replayed(
     subject: Option<Value<Fux>>,
     steps: Vec<(Opt, Vec<Value<Fux>>)>,
 ) -> Result<Value<Fux>, Failure> {
-    let mut run = subject.as_ref().and_then(super::scope);
+    let mut run = subject
+        .as_ref()
+        .map(super::checked_scope)
+        .transpose()?
+        .flatten();
     let mut built = match subject {
         Some(subject) => Value::App(Fux::Opts(modifying(subject)?)),
         None => Value::App(Fux::Opts(std::rc::Rc::default())),
@@ -807,10 +811,14 @@ pub(super) fn replayed(
                     format!("too few values: {}", Word::Opt(opt).row().effect),
                 )
             })?;
-            run = super::same_run(run, super::scope(&value))?;
+            run = super::same_run(run, super::checked_scope(&value)?)?;
             Ok(value)
         };
         built = Value::App(Fux::Opts(modify(opt, &mut next)?));
+        if given.next().is_some() {
+            let why = format!("too many values: {}", Word::Opt(opt).row().effect);
+            return Err(fail(Code::StackUnderflow, why));
+        }
     }
     if let Value::App(Fux::Opts(opts)) = &mut built {
         let version = match opts.on {
@@ -851,9 +859,23 @@ const MICE: [(&str, Mouse); 8] = [
 fn directory(value: &Value<Fux>) -> Result<std::path::PathBuf, Failure> {
     let bytes = match value {
         Value::Bytes(bytes) => (**bytes).clone(),
-        Value::App(Fux::Record(place)) => {
-            let text = string(&place.get("text")?)?;
-            if string(&place.get("encoding")?)? == "utf8" {
+        Value::List(place) => {
+            let field = |name: &str| {
+                let found = place.items().iter().find_map(|entry| {
+                    let Value::List(entry) = entry else {
+                        return None;
+                    };
+                    let [Value::Symbol(key), value] = entry.items() else {
+                        return None;
+                    };
+                    (**key == name).then_some(value)
+                });
+                found
+                    .ok_or_else(|| wrong("a directory", value))
+                    .and_then(string)
+            };
+            let text = field("text")?;
+            if field("encoding")? == "utf8" {
                 return Ok(text.into());
             }
             let digit = |c: u8| {
@@ -880,7 +902,6 @@ fn directory(value: &Value<Fux>) -> Result<std::path::PathBuf, Failure> {
         | Value::Int(_)
         | Value::Bool(_)
         | Value::Str(_)
-        | Value::List(_)
         | Value::App(_)) => return Ok(string(other)?.into()),
     };
     path_of_bytes(bytes)
@@ -1347,7 +1368,7 @@ impl Host<'_> {
                     format!("too few values: {}", word.row().effect),
                 )
             })?;
-            of = super::same_run(of, super::scope(&value))?;
+            of = super::same_run(of, super::checked_scope(&value)?)?;
             taken = Some((taken.map_or(0, |(i, _)| i.saturating_add(1)), value.kind()));
             Ok(value)
         };

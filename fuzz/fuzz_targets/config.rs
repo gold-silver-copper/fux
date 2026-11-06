@@ -356,6 +356,7 @@ fn compiled(code: &str) -> Option<fux_wire::callback::Code> {
     let (_, reads) = CODES.iter().find(|(c, _)| *c == code)?;
     reads.then(|| fux_wire::callback::Code {
         source: lambda(code),
+        ..Default::default()
     })
 }
 

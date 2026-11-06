@@ -443,7 +443,7 @@ fn taken_back_with_its_spare_stopped(full: bool) -> Outcome {
     }
     // Asked with a bound: a client of the old socket would wait for good.
     let taken = server.ok(&["(sequence! (start) #inert)"]).and_then(|_| {
-        let status = within(server, 30, &["status"])?;
+        let status = within(server, 30, &["(status)"])?;
         match status.status {
             0 => layout(server),
             _ => Err(format!("no server took the run back: {}", status.stderr)),

@@ -767,7 +767,7 @@ fn a_started_server_is_an_action() -> Outcome {
 #[test]
 fn a_batch_left_prints_its_events() -> Outcome {
     let server = Server::start("")?;
-    let idle = server.fux(&["(get (next-events (all) \"\" 0) \"events\")"])?;
+    let idle = server.fux(&["(next-events (all) \"\" 0)"])?;
     assert_eq!((idle.status, idle.stdout.as_str()), (0, ""));
     let cursor = server.ok(&["(get (next-events (all) \"\" 0) \"next\")"])?;
     server.ok(&["(rename (pane 1) \"told\")"])?;
@@ -775,14 +775,14 @@ fn a_batch_left_prints_its_events() -> Outcome {
         "(next-events (all) {} 0)",
         fux::script::quoted(cursor.trim())
     );
-    let events = server.ok(&[&format!("(get {read} \"events\")")])?;
+    let events = server.ok(&[&read])?;
     assert_eq!(events.lines().count(), 1);
     assert_eq!(
         read_data(&events, "(field data (quote! event))")?,
         "renamed"
     );
     assert!(!read_data(&events, "(field data (quote! next))")?.is_empty());
-    let whole = server.ok(&[&read])?;
+    let whole = server.ok(&[&format!("(data-text {read})")])?;
     assert_eq!(
         read_data(&whole, "(length (field data (quote! events)))")?,
         "1"
