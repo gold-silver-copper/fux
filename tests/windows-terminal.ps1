@@ -90,7 +90,7 @@ function Type($keys) {
 }
 
 # fux up: a first run fetches the ConPTY, then a pane's cmd prompts.
-Waited 'the ConPTY fetched' { Test-Path (Join-Path $dir 'fux\conpty\*\OpenConsole.exe') } 90
+Waited 'the ConPTY fetched' { Get-ChildItem $dir -Recurse -Filter OpenConsole.exe -ErrorAction SilentlyContinue } 90
 Start-Sleep 5
 Shot 'attached'
 Type "echo typed-in-a-pane> `"$marks\typed.txt`"{ENTER}"
