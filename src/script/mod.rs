@@ -442,8 +442,11 @@ impl<'a> Host<'a> {
             return;
         }
         // The first and the latest, and how many went between: a run that
-        // acts without end keeps a list of this size.
-        self.skipped = self.skipped.saturating_add(1);
+        // acts without end keeps a list of this size. The first time, two
+        // steps go to make room; after that one, and the old count with it.
+        self.skipped = self
+            .skipped
+            .saturating_add(if self.skipped == 0 { 2 } else { 1 });
         let first = self.actions.iter().take(EACH_END).cloned();
         let between = format!("and {} more", self.skipped);
         let latest = self
