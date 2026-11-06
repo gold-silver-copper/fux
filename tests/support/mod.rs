@@ -1279,5 +1279,11 @@ pub fn read_data(text: &str, query: &str) -> Result<String, String> {
     reader
         .write(&result, &mut text)
         .map_err(|_| "printing result")?;
+    // A handle as a person reads it, without the run it carries.
+    if matches!(result, grift::Value::Symbol(_))
+        && let Some((id, _)) = text.split_once(':')
+    {
+        return Ok(id.trim_start_matches('w').to_owned());
+    }
     Ok(text)
 }

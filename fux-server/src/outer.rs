@@ -685,13 +685,13 @@ mod tests {
         };
         s.input(c, b"\x1b[6;20;10t\x1b[?62c");
         s.out(PaneId::of(1), b"idle from now");
-        assert!(cell(&mut s)?.contains("((height 20) (width 10))"));
+        assert!(cell(&mut s)?.contains("((width 10) (height 20))"));
         let _ = sent(&mut s, c);
         s.terminal_resized(c);
         assert_eq!(sent(&mut s, c), [CELL_QUERY.to_vec()]);
-        assert!(cell(&mut s)?.contains("((height 20) (width 10))"));
+        assert!(cell(&mut s)?.contains("((width 10) (height 20))"));
         s.input(c, b"\x1b[6;24;12t");
-        assert!(cell(&mut s)?.contains("((height 24) (width 12))"));
+        assert!(cell(&mut s)?.contains("((width 12) (height 24))"));
         Ok(())
     }
 
@@ -762,7 +762,7 @@ mod tests {
         let cell = |s: &mut Session| {
             crate::session::testing::output(s, "(get (capture (pane 1)) \"cell\")")
         };
-        let told = |w: u16, h: u16| format!("((height {h}) (width {w}))");
+        let told = |w: u16, h: u16| format!("((width {w}) (height {h}))");
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         s.input(d, b"\x1b[6;24;12t\x1b[?62;4;22c");

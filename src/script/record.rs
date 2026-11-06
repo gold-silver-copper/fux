@@ -34,6 +34,50 @@ impl Record {
                 )
             })
     }
+    /// Its kind and how a person says it, if the server's answer it is
+    /// holds one: a record of no kind is a plain record.
+    pub(super) fn held_kind(&self) -> Option<(&'static str, &'static str)> {
+        let kind = self.fields.iter().find(|(key, _)| key == "kind")?;
+        let Value::Str(kind) = &kind.1 else {
+            return None;
+        };
+        HELD.iter()
+            .copied()
+            .find(|(name, _)| name == &kind.as_str())
+    }
+    pub(super) fn is_held(&self) -> bool {
+        self.held_kind().is_some()
+    }
+    /// The version it holds, for `changed`, `expect` and a wait.
+    pub(super) fn version(&self) -> Option<fux_wire::command::Version> {
+        match self.get("version") {
+            Ok(Value::Str(version)) => version.parse().ok(),
+            _ => None,
+        }
+    }
+    /// A held answer's text: what it was told as, else its lines.
+    pub(super) fn write_held(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        if let Ok(Value::Str(text)) = self.get("text") {
+            return out.write_str(&text);
+        }
+        let Ok(Value::List(lines)) = self.get("lines") else {
+            return Ok(());
+        };
+        for (i, line) in lines.items().iter().enumerate() {
+            if i > 0 {
+                out.write_char('\n')?;
+            }
+            if let Value::Str(line) = line {
+                out.write_str(line)?;
+            }
+        }
+        Ok(())
+    }
+    /// A capture of no lines says nothing printed.
+    pub(super) fn says_nothing(&self) -> bool {
+        self.is_held()
+            && matches!(self.get("lines"), Ok(Value::List(lines)) if lines.items().is_empty())
+    }
     pub(super) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         out.write_str("(")?;
         for (i, (key, value)) in self.fields.iter().enumerate() {
@@ -44,9 +88,26 @@ impl Record {
             value.write_data(out)?;
             out.write_str(")")?;
         }
+        if let Some(run) = self
+            .of
+            .filter(|_| !self.fields.iter().any(|(k, _)| k == "run"))
+        {
+            if !self.fields.is_empty() {
+                out.write_str(" ")?;
+            }
+            write!(out, "(run \"{run}\")")?;
+        }
         out.write_str(")")
     }
 }
+
+/// The kinds a server's answer is, and how each is said.
+const HELD: [(&str, &str); 4] = [
+    ("answer", "an action's answer"),
+    ("closed-answer", "a closed pane's answer"),
+    ("capture", "a capture"),
+    ("client-capture", "a client's capture"),
+];
 
 fn fail() -> Failure {
     Failure::new(Code::TooLong, "record nests deeper than a record may")
@@ -485,59 +546,73 @@ pub(super) fn answer_field(
     }
 }
 
-/// Expose retained results as ordinary records without resolving their sources.
-pub(super) fn datum(value: &V) -> Result<V, Failure> {
-    match value {
-        Value::App(Fux::Opts(_)) => Err(Failure::new(
-            Code::Unused,
-            "act on the request before reading its data",
-        )),
-        Value::List(items) => Builder.list(items.items(), |_, item| datum(item)),
-        Value::App(Fux::Answer(answer, run)) => {
-            if let super::Answer::Panes(answers) = &**answer {
-                return Builder.list(answers, |_, answer| {
-                    datum(&Value::App(Fux::Answer(
-                        Rc::new(super::Answer::Pane(answer.clone())),
-                        *run,
-                    )))
-                });
-            }
-            let mut fields = Vec::new();
-            let mut add = |name: &str| -> Result<(), Failure> {
-                match answer_field(answer, *run, name) {
-                    Ok(value) => fields.push((name.to_owned(), value)),
-                    Err(error) if error.code == Code::NoField => (),
-                    Err(error) => return Err(error),
-                }
-                Ok(())
-            };
-            match &**answer {
-                super::Answer::Pane(_) => {
-                    for (_, name) in AnswerField::ALL {
-                        add(name)?;
-                    }
-                }
-                super::Answer::Capture(capture) => {
-                    for (_, name) in CapturedField::ALL {
-                        add(name)?;
-                    }
-                    if let fux_wire::answer::Of::Pane { pane, read, .. } = &capture.of {
-                        for (name, _) in pane.fields() {
-                            add(name)?;
-                        }
-                        for (name, _) in read {
-                            add(name)?;
-                        }
-                    }
-                    for (_, name) in CaptureField::ALL {
-                        add(name)?;
-                    }
-                }
-                super::Answer::Panes(_) => (),
-            }
-            Builder.finish(fields, *run)
+/// A server's answer as the record a program holds: its `kind`, and each
+/// field it has; the text it says, where that isn't its lines.
+pub(super) fn datum(answer: &super::Answer, run: Option<Run>) -> Result<V, Failure> {
+    if let super::Answer::Panes(answers) = answer {
+        return Builder.list(answers, |_, answer| {
+            datum(&super::Answer::Pane(answer.clone()), run)
+        });
+    }
+    let mut fields = vec![("kind".to_owned(), Value::str(answer.names().0))];
+    let mut add = |name: &str| -> Result<(), Failure> {
+        match answer_field(answer, run, name) {
+            Ok(value) => fields.push((name.to_owned(), value)),
+            Err(error) if error.code == Code::NoField => (),
+            Err(error) => return Err(error),
         }
-        value => Ok(value.clone()),
+        Ok(())
+    };
+    match answer {
+        super::Answer::Pane(pane) => {
+            for (_, name) in AnswerField::ALL {
+                add(name)?;
+            }
+            let mut text = String::new();
+            pane.write_text(&mut text)
+                .map_err(|_| Failure::new(Code::Output, "the text could not be written"))?;
+            fields.push(("text".to_owned(), Value::str(text)));
+        }
+        super::Answer::Capture(capture) => {
+            for (_, name) in CapturedField::ALL {
+                add(name)?;
+            }
+            if let fux_wire::answer::Of::Pane { pane, read, .. } = &capture.of {
+                for (name, _) in pane.fields() {
+                    add(name)?;
+                }
+                for (name, _) in read {
+                    add(name)?;
+                }
+            }
+            for (_, name) in CaptureField::ALL {
+                add(name)?;
+            }
+            if capture.styled || capture.changed_rows.is_some() {
+                let mut text = String::new();
+                capture
+                    .write_text(&mut text)
+                    .map_err(|_| Failure::new(Code::Output, "the text could not be written"))?;
+                fields.push(("text".to_owned(), Value::str(text)));
+            }
+        }
+        super::Answer::Panes(_) => (),
+    }
+    Builder.finish(fields, run)
+}
+
+/// `value` as plain data: a held answer's fields, no more its text.
+pub(super) fn plain(value: V) -> V {
+    match value {
+        Value::App(Fux::Record(record)) if record.is_held() => {
+            let fields = (record.fields.iter())
+                .filter(|(key, _)| key != "kind" && key != "text")
+                .cloned()
+                .collect();
+            let of = record.of;
+            Value::App(Fux::Record(Rc::new(Record { fields, of })))
+        }
+        value => value,
     }
 }
 
@@ -750,76 +825,4 @@ mod tests {
         };
         assert!(within.first().is_some_and(|v| from_json(v).is_ok()));
     }
-}
-
-/// Write retained native data with temporary storage bounded by one captured row.
-pub(super) fn write_data(value: &V, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-    let Value::App(Fux::Answer(answer, run)) = value else {
-        return value.write_data(out);
-    };
-    let super::Answer::Capture(capture) = &**answer else {
-        return datum(value).map_err(|_| std::fmt::Error)?.write_data(out);
-    };
-    struct Escaped<'a>(&'a mut dyn std::fmt::Write);
-    impl std::fmt::Write for Escaped<'_> {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            super::value::write_escaped(text, self.0)
-        }
-    }
-    out.write_char('(')?;
-    let mut started = false;
-    let mut field = |name: &str, value: V| -> std::fmt::Result {
-        if std::mem::replace(&mut started, true) {
-            out.write_char(' ')?;
-        }
-        write!(out, "({} ", super::field_name(name))?;
-        value.write_data(out)?;
-        out.write_char(')')
-    };
-    let mut names: Vec<_> = CapturedField::ALL.iter().map(|(_, name)| *name).collect();
-    if let fux_wire::answer::Of::Pane { pane, read, .. } = &capture.of {
-        names.extend(pane.fields().map(|(name, _)| name));
-        names.extend(read.iter().map(|(name, _)| name.as_str()));
-    }
-    names.push("screen_cursor");
-    for name in names {
-        match answer_field(answer, *run, name) {
-            Ok(value) => field(name, value)?,
-            Err(error) if error.code == Code::NoField => (),
-            Err(_) => return Err(std::fmt::Error),
-        }
-    }
-    out.write_str(" (lines (")?;
-    for (i, line) in capture.lines.iter().enumerate() {
-        if i > 0 {
-            out.write_char(' ')?;
-        }
-        out.write_char('"')?;
-        capture.write_line(&mut Escaped(out), line, false, &mut Vec::new())?;
-        out.write_char('"')?;
-    }
-    out.write_str("))")?;
-    if let Some(rows) = &capture.changed_rows {
-        out.write_str(" (changed-rows (")?;
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                out.write_char(' ')?;
-            }
-            write!(out, "{row}")?;
-        }
-        out.write_str("))")?;
-    }
-    if capture.styled {
-        out.write_str(" (styles (")?;
-        for (i, line) in capture.lines.iter().enumerate() {
-            if i > 0 {
-                out.write_char(' ')?;
-            }
-            styles(&mut Builder, capture, line)
-                .map_err(|_| std::fmt::Error)?
-                .write_data(out)?;
-        }
-        out.write_str("))")?;
-    }
-    out.write_char(')')
 }

@@ -594,10 +594,11 @@ fn as_pane(value: &Value<Fux>) -> Option<PaneId> {
     if let Value::App(Fux::Pane(p, _)) = value {
         return Some(*p);
     }
-    if let Value::App(Fux::Answer(answer, _)) = value
-        && let super::Answer::Pane(answer) = &**answer
+    if let Value::App(Fux::Record(record)) = value
+        && matches!(record.held_kind(), Some(("answer" | "closed-answer", _)))
+        && let Ok(Value::App(Fux::Pane(p, _))) = record.get("pane")
     {
-        return Some(answer.pane());
+        return Some(p);
     }
     None
 }
@@ -707,11 +708,12 @@ fn on(value: &Value<Fux>) -> Result<On, Failure> {
 /// between is missed.
 fn held(value: &Value<Fux>) -> Option<fux_wire::command::Version> {
     match value {
-        Value::App(Fux::Answer(answer, _)) => match &**answer {
-            super::Answer::Pane(answer) => answer.version(),
-            // A capture's is for `expect` and `changed` alone (`version`).
-            super::Answer::Panes(_) | super::Answer::Capture(_) => None,
-        },
+        // A capture's is for `expect` and `changed` alone (`version`).
+        Value::App(Fux::Record(record))
+            if matches!(record.held_kind(), Some(("answer" | "closed-answer", _))) =>
+        {
+            record.version()
+        }
         Value::Printed(_)
         | Value::Float(_)
         | Value::Symbol(_)
@@ -733,8 +735,8 @@ const EXPECTED: &str = "takes no request expect made: only send-keys checks a ve
 fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
     let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
     let text: &str = match value {
-        Value::App(Fux::Answer(answer, _)) => {
-            return answer.version().ok_or_else(|| wrong(wanted, value));
+        Value::App(Fux::Record(record)) if record.is_held() => {
+            return record.version().ok_or_else(|| wrong(wanted, value));
         }
         Value::Str(text) => text,
         other @ (Value::Printed(_)
@@ -776,10 +778,49 @@ fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
             std::rc::Rc::new(Opts {
                 on: Some(on),
+                subject: Some(other),
                 ..Opts::default()
             })
         }
     };
+    Ok(built)
+}
+
+/// The request or options `steps` make of `subject`, as grift data says
+/// them: each option as it ran, so what it checked is checked again.
+pub(super) fn replayed(
+    subject: Option<Value<Fux>>,
+    steps: Vec<(Opt, Vec<Value<Fux>>)>,
+) -> Result<Value<Fux>, Failure> {
+    let mut run = subject.as_ref().and_then(super::scope);
+    let mut built = match subject {
+        Some(subject) => Value::App(Fux::Opts(modifying(subject)?)),
+        None => Value::App(Fux::Opts(std::rc::Rc::default())),
+    };
+    for (opt, arguments) in steps {
+        let mut given = std::iter::once(built.clone()).chain(arguments);
+        if matches!(opt, Opt::Changed | Opt::Expect) {
+            given.next();
+        }
+        let mut next = || {
+            let value = given.next().ok_or_else(|| {
+                fail(
+                    Raise::StackUnderflow,
+                    format!("too few values: {}", Word::Opt(opt).row().effect),
+                )
+            })?;
+            run = super::same_run(run, super::scope(&value))?;
+            Ok(value)
+        };
+        built = Value::App(Fux::Opts(modify(opt, &mut next)?));
+    }
+    if let Value::App(Fux::Opts(opts)) = &mut built {
+        let version = match opts.on {
+            Some(On::Version(v) | On::Changed(v) | On::Seen(v)) => Some(v.run),
+            _ => None,
+        };
+        std::rc::Rc::make_mut(opts).of = super::same_run(run, version)?;
+    }
     Ok(built)
 }
 
@@ -830,6 +871,23 @@ fn modify(
         ));
     }
     built.given.push(opt);
+    let mut arguments = Vec::new();
+    let mut taken = || {
+        let value = next()?;
+        arguments.push(value.clone());
+        Ok(value)
+    };
+    apply(opt, &mut built, &mut taken)?;
+    built.steps.push((opt, arguments));
+    Ok(std::rc::Rc::new(built))
+}
+
+/// `opt`, its values from `next`, on `built`.
+fn apply(
+    opt: Opt,
+    built: &mut Opts,
+    next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
+) -> Result<(), Failure> {
     match opt {
         Opt::Changed => built.on = Some(On::Changed(version(&next()?)?)),
         Opt::Expect => built.on = Some(On::Seen(version(&next()?)?)),
@@ -885,7 +943,7 @@ fn modify(
             if shell {
                 let program = read::<Program>(&next()?, Raise::BadValue)?;
                 built.argv = program.into_argv();
-                return Ok(std::rc::Rc::new(built));
+                return Ok(());
             }
             built.argv.push(string(&next()?)?);
         }
@@ -913,7 +971,7 @@ fn modify(
             built.inputs.push(Input::Key(press));
         }
     }
-    Ok(std::rc::Rc::new(built))
+    Ok(())
 }
 
 /// The options `shared` holds, owned: moved out when nothing else holds
@@ -1515,11 +1573,19 @@ impl Host<'_> {
             ),
             Act::DataText => {
                 let mut text = String::new();
-                super::record::write_data(&next()?, &mut text)
+                (next()?)
+                    .write_data(&mut text)
                     .map_err(|_| fail(Raise::Output, "writing data"))?;
                 now(out, Value::str(text))
             }
-            Act::Datum => now(out, super::record::datum(&next()?)?),
+            Act::Datum => {
+                let value = next()?;
+                if matches!(value, Value::App(Fux::Opts(_))) {
+                    let why = "act on the request before reading its data";
+                    return Err(Failure::new(Code::Unused, why));
+                }
+                now(out, super::record::plain(value))
+            }
             Act::Capture => {
                 let value = next()?;
                 if let Value::App(Fux::Client(c, _)) = value {
@@ -1550,7 +1616,7 @@ impl Host<'_> {
                 let value = next()?;
                 // A live field's handle, checked before the field is taken.
                 let live = match &value {
-                    Value::App(Fux::Record(_) | Fux::Answer(..)) => None,
+                    Value::App(Fux::Record(_)) => None,
                     value @ (Value::Printed(_)
                     | Value::Float(_)
                     | Value::Symbol(_)
@@ -1572,10 +1638,6 @@ impl Host<'_> {
                 }
                 match value {
                     Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
-                    Value::App(Fux::Answer(answer, run)) => now(
-                        out,
-                        super::record::answer_field(&answer, run, &super::native_field(&field))?,
-                    ),
                     other @ (Value::Printed(_)
                     | Value::Float(_)
                     | Value::Symbol(_)
@@ -2250,7 +2312,7 @@ mod tests {
             super::super::Answer::Pane(fux_wire::answer::PaneAnswer::Closed(version.pane)),
             super::super::Answer::Capture(Box::new(capture)),
         ] {
-            let value = Value::App(Fux::Answer(Rc::new(answer), Some(version.run)));
+            let value = answer.in_run(Some(version.run))?;
             let refused = super::version(&value).err().map(|f| f.code);
             assert_eq!(refused, Some(Code::Type), "{}", value.kind());
         }
@@ -2321,24 +2383,17 @@ mod tests {
             Some(On::Changed(version)),
             Some(On::Seen(version)),
         ];
-        let mut targets = vec![
-            pane,
-            tab,
-            workspace,
-            client,
-            Fux::Answer(
-                Rc::new(super::super::Answer::Pane(
-                    fux_wire::answer::PaneAnswer::Acted(version),
-                )),
-                Some(version.run),
-            ),
-            Fux::Answer(
-                Rc::new(super::super::Answer::Pane(
-                    fux_wire::answer::PaneAnswer::Closed(version.pane),
-                )),
-                Some(version.run),
-            ),
-        ];
+        let mut targets = vec![pane, tab, workspace, client];
+        for answer in [
+            fux_wire::answer::PaneAnswer::Acted(version),
+            fux_wire::answer::PaneAnswer::Closed(version.pane),
+        ] {
+            if let Value::App(answer) =
+                super::super::Answer::Pane(answer).in_run(Some(version.run))?
+            {
+                targets.push(answer);
+            }
+        }
         targets.extend(on.map(|on| {
             Fux::Opts(std::rc::Rc::new(Opts {
                 on,

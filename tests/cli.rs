@@ -525,7 +525,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
     );
     assert_eq!(
         server.ok(&[r#"(print (all)) (display (data-text (list (all))) "\n")"#])?,
-        "all\n(\"all\")\n"
+        "all\n(%all)\n"
     );
     let keys = server.ok(&["(list-keys)"])?;
     assert!(

@@ -1,6 +1,6 @@
 //! Grift evaluates policy; native calls marshal into the existing request vocabulary.
 use super::*;
-use fux_wire::wire::{Reader, Sink, Wire};
+use fux_wire::command::Percent;
 use grift::{Error, Grift, Value as G};
 
 #[derive(Clone, Debug)]
@@ -80,7 +80,7 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
         message.push_str(g.symbol_name(&e.kind).unwrap_or("fail"));
         for value in &e.values {
             message.push(' ');
-            write_data(g, value, &mut message)?;
+            g.write(value, &mut message).map_err(|_| std::fmt::Error)?;
         }
         let shown = e.trace().iter().filter(|form| {
             !matches!(g.position(form), Ok(Some((source, _)))
@@ -133,11 +133,10 @@ fn output<A: Asks + ?Sized>(
     for argument in args {
         let result = if let Some(text) = g.as_str(argument)? {
             state.host.out.write_all(text.as_bytes())
-        } else if native_data(g, argument)? {
-            let value = from_grift(g, argument)?;
-            write!(state.host.out, "{}", super::value::Text(&value))
         } else {
-            write!(state.host.out, "{}", DataText { g, value: argument })
+            let mut text = String::new();
+            write_display(g, argument, &mut text)?;
+            state.host.out.write_all(text.as_bytes())
         };
         result.map_err(|error| failure(g, Failure::new(Code::Output, error.to_string())))?;
     }
@@ -148,16 +147,6 @@ fn output<A: Asks + ?Sized>(
         .map_err(|error| failure(g, Failure::new(Code::Output, error.to_string())))?;
     Ok(G::Inert)
 }
-struct DataText<'g, T> {
-    g: &'g Grift<T>,
-    value: &'g G,
-}
-impl<T> std::fmt::Display for DataText<'_, T> {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write_data(self.g, self.value, out)
-    }
-}
-
 fn data_text<A: Asks + ?Sized>(
     g: &mut Interpreter<'_, '_, A>,
     _: &mut Runtime<'_, '_, A>,
@@ -167,7 +156,8 @@ fn data_text<A: Asks + ?Sized>(
         return Err(g.error("arity-error", args));
     };
     let mut text = String::new();
-    write_data(g, value, &mut text).map_err(|_| g.error("output", args))?;
+    g.write(value, &mut text)
+        .map_err(|_| g.error("output", args))?;
     g.string(&text)
 }
 fn read_source<A: Asks + ?Sized>(
@@ -274,7 +264,12 @@ fn field_of<T>(g: &mut Grift<T>, record: &G, field: &G) -> Result<Option<G>, Err
             }
         };
     }
-    if native_data(g, record)? || !matches!(record, G::Pair(_)) {
+    if !matches!(record, G::Pair(_)) {
+        return Ok(None);
+    }
+    if let Some((G::Symbol(head), _)) = g.as_pair(record)?
+        && [CODE, REQUEST].contains(&g.symbol_name(&head)?)
+    {
         return Ok(None);
     }
     for entry in g.list_items(record)? {
@@ -359,6 +354,14 @@ pub(super) fn request<A: Asks + ?Sized>(
         word,
         Word::Act(Act::Pane | Act::Tab | Act::Workspace | Act::Client)
     ) {
+        // An id as fux prints it, its run in it, is that handle (D-26).
+        if let Some(Value::Str(s)) = values.first()
+            && s.contains(':')
+            && let Some(found) = from_handle_name(s).or_else(|| from_handle_name(&format!("w{s}")))
+            && scope(&Value::App(found.clone())).is_some()
+        {
+            return to_grift(g, &Value::App(found));
+        }
         if let Some(Value::Int(n)) = values.first() {
             let prefix = match word {
                 Word::Act(Act::Pane) => "%",
@@ -521,7 +524,7 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> R
         let Some(v) = g.lookup(&program, &name)? else {
             continue;
         };
-        let record = g.context(None)?;
+        let mut record = Vec::new();
         let standard = g.lookup(&words, &name)?.as_ref() == Some(&v);
         let native = if standard { Word::named(&text) } else { None };
         let row = native.map(|word| word.row());
@@ -567,7 +570,7 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> R
                 Some(value) => g.string(&value)?,
                 None => G::Symbol(g.symbol("none")?),
             };
-            g.bind(&record, &G::Symbol(key), value)?;
+            record.push(g.list(&[G::Symbol(key), value])?);
         }
         let codes = match native {
             Some(word) => {
@@ -581,8 +584,8 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> R
             None => G::Symbol(g.symbol("none")?),
         };
         let key = g.symbol("codes")?;
-        g.bind(&record, &G::Symbol(key), codes)?;
-        entries.push(record);
+        record.push(g.list(&[G::Symbol(key), codes])?);
+        entries.push(g.list(&record)?);
     }
     if wanted.is_some() {
         entries.pop().ok_or_else(|| g.error("unbound-symbol", args))
@@ -819,21 +822,20 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
     }
     match result {
         Ok(G::Inert) => Ok(Vec::new()),
-        Ok(v) => {
-            if !native_data(g, &v).unwrap_or(false)
-                && let Ok(items) = g.list_items(&v)
-            {
-                let mut values = Vec::with_capacity(items.len());
-                for item in items {
-                    values.push(output_value(g, &item).map_err(|e| failed(g, e))?);
-                }
+        Ok(v) => match output_value(g, &v) {
+            // A list's items, each said alone.
+            Ok(Value::Printed(_)) if g.list_items(&v).is_ok() => {
+                let items = g.list_items(&v).map_err(|e| failed(g, e))?;
+                let values = items
+                    .iter()
+                    .map(|item| output_value(g, item))
+                    .collect::<Result<_, _>>()
+                    .map_err(|e| failed(g, e))?;
                 Ok(vec![Value::List(Rc::new(List::new(values)))])
-            } else {
-                output_value(g, &v)
-                    .map(|v| vec![v])
-                    .map_err(|e| failed(g, e))
             }
-        }
+            Ok(value) => Ok(vec![value]),
+            Err(e) => Err(failed(g, e)),
+        },
         Err(e) if state.exiting && g.is_kind(&e, "interrupted").unwrap_or(false) => Ok(Vec::new()),
         Err(e) => {
             let mut f = failed(g, e);
@@ -872,8 +874,76 @@ pub(super) fn run(
     evaluate_job(&mut g, &mut state, machine)
 }
 
-// Typed native values are inert data. Bytes carry checked wire encodings for
-// options and observations; records remain contexts with ordinary grift fields.
+/// The symbol a handle is as grift data, its server run in it: `%3:RUN`,
+/// `@3:RUN`, `w+3:RUN`, `c3:RUN` (`c3:` and `w+3:` with no run, as `+3` reads
+/// as a number and `c3` is any symbol); `%all`; a share, `percent:30`.
+pub(super) fn handle_name(app: &Fux, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+    let run = |out: &mut dyn std::fmt::Write, run: &Option<Run>| match run {
+        Some(run) => write!(out, ":{run}"),
+        None => Ok(()),
+    };
+    match app {
+        Fux::Pane(p, r) => {
+            write!(out, "{p}")?;
+            run(out, r)
+        }
+        Fux::Tab(t, r) => {
+            write!(out, "{t}")?;
+            run(out, r)
+        }
+        Fux::Workspace(w, r) => {
+            write!(out, "w{w}")?;
+            match r {
+                Some(_) => run(out, r),
+                None => out.write_char(':'),
+            }
+        }
+        Fux::Client(c, r) => {
+            write!(out, "{c}")?;
+            match r {
+                Some(_) => run(out, r),
+                None => out.write_char(':'),
+            }
+        }
+        Fux::All => out.write_str("%all"),
+        Fux::Extent(Extent::Percent(n)) => write!(out, "percent:{}", n.get()),
+        Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
+        Fux::Null => out.write_str("none"),
+        Fux::Record(_) | Fux::Opts(_) | Fux::Code(_) => Ok(()),
+    }
+}
+
+/// The value the symbol `name` is, if `handle_name` writes it: `%3:RUN`
+/// with its run, and a bare `%3` as a person may type it (D-26).
+pub(super) fn from_handle_name(name: &str) -> Option<Fux> {
+    if name == "%all" {
+        return Some(Fux::All);
+    }
+    if let Some(share) = name.strip_prefix("percent:") {
+        return Some(Fux::Extent(Extent::Percent(Percent::new(
+            share.parse().ok()?,
+        )?)));
+    }
+    let (id, run) = match name.split_once(':') {
+        Some((id, "")) => (id, None),
+        Some((id, run)) => (id, Some(run.parse().ok()?)),
+        None => (name, None),
+    };
+    if id.starts_with('c') {
+        // Any symbol may be `c3`: a client's has its `:`.
+        name.contains(':').then_some(())?;
+        return Some(Fux::Client(id.parse().ok()?, run));
+    }
+    let id = id.strip_prefix('w').unwrap_or(id);
+    id.starts_with(['%', '@', '+'])
+        .then(|| id.parse().ok().map(|id| handle(id, run)))
+        .flatten()
+}
+
+/// fux's values as grift data, which reads back as it: a handle a symbol, a
+/// record a list of `(field value)`, a request `(request! SUBJECT (OPTION
+/// ARGUMENT…)…)`, a code value `(code! FORM)`. A value of a server's keeps
+/// its run; nothing here is encoded, as a person reads it back.
 fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
     Ok(match v {
         Value::Printed(text) => g.string(text)?,
@@ -891,7 +961,6 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
                 .collect::<Result<Vec<_>, _>>()?;
             g.list(&items)?
         }
-        Value::App(Fux::Null) => G::Symbol(g.symbol("none")?),
         Value::App(Fux::Code(code)) => {
             let forms = g.read(&code.source)?;
             let form = g
@@ -899,31 +968,84 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
                 .into_iter()
                 .next()
                 .ok_or_else(|| g.error("parse-error", &[]))?;
-            let tag = g.symbol("code")?;
+            let tag = g.symbol(CODE)?;
             g.list(&[G::Symbol(tag), form])?
         }
         Value::App(Fux::Record(r)) => {
-            let context = g.context(None)?;
+            let mut items = Vec::with_capacity(r.fields.len().saturating_add(1));
             for (k, v) in &r.fields {
                 let key = g.symbol(k)?;
                 let value = to_grift(g, v)?;
-                g.bind(&context, &G::Symbol(key), value)?;
+                items.push(g.list(&[G::Symbol(key), value])?);
             }
-            if let Some(run) = r.of {
-                let key = g.symbol("observation-run")?;
+            if let Some(run) = r.of.filter(|_| !r.fields.iter().any(|(k, _)| k == RUN)) {
+                let key = g.symbol(RUN)?;
                 let value = g.string(&run.to_string())?;
-                g.bind(&context, &G::Symbol(key), value)?;
+                items.push(g.list(&[G::Symbol(key), value])?);
             }
-            context
+            g.list(&items)?
         }
+        Value::App(Fux::Opts(opts)) => {
+            let tag = g.symbol(REQUEST)?;
+            let subject = match &opts.subject {
+                Some(subject) => to_grift(g, subject)?,
+                None => G::Symbol(g.symbol("none")?),
+            };
+            let mut items = vec![G::Symbol(tag), subject];
+            for (option, arguments) in &opts.steps {
+                let mut step = vec![G::Symbol(g.symbol(Word::Opt(*option).row().name)?)];
+                for argument in arguments {
+                    step.push(to_grift(g, argument)?);
+                }
+                items.push(g.list(&step)?);
+            }
+            g.list(&items)?
+        }
+        Value::App(Fux::Extent(Extent::Cells(n))) => G::Integer(i64::from(*n)),
         Value::App(app) => {
-            let bytes = encode_app(app);
-            let data = g.bytes(&bytes)?;
-            let tag = g.symbol("native-value")?;
-            g.list(&[G::Symbol(tag), data])?
+            let mut name = String::new();
+            handle_name(app, &mut name).map_err(|_| g.error("output", &[]))?;
+            G::Symbol(g.symbol(&name)?)
         }
     })
 }
+
+/// The head of a code value, a request and the field a run goes in.
+const CODE: &str = "code!";
+const REQUEST: &str = "request!";
+const RUN: &str = "run";
+
+/// The field `item` is: a name, not a handle's, and one value.
+fn field<T>(g: &Grift<T>, item: &G) -> Result<Option<(String, G)>, Error> {
+    let Some((G::Symbol(key), rest)) = g.as_pair(item)? else {
+        return Ok(None);
+    };
+    let Some((value, G::EmptyList)) = g.as_pair(&rest)? else {
+        return Ok(None);
+    };
+    let key = g.symbol_name(&key)?;
+    Ok(
+        (from_handle_name(key).is_none() && ![CODE, REQUEST].contains(&key))
+            .then(|| (key.to_owned(), value)),
+    )
+}
+
+/// `items`' fields, if they are a record's: each a field, no name twice.
+fn fields<T>(g: &Grift<T>, items: &[G]) -> Result<Option<Vec<(String, G)>>, Error> {
+    let mut fields = Vec::with_capacity(items.len());
+    let mut seen = std::collections::HashSet::new();
+    for item in items {
+        let Some((key, value)) = field(g, item)? else {
+            return Ok(None);
+        };
+        if !seen.insert(key.clone()) {
+            return Ok(None);
+        }
+        fields.push((key, value));
+    }
+    Ok((!fields.is_empty()).then_some(fields))
+}
+
 fn from_grift<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
     from_grift_at(g, v, fux_wire::callback::DEPTH.saturating_add(1))
 }
@@ -938,341 +1060,127 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
         G::String(_) => Value::str(g.as_string(v)?.unwrap_or_default()),
         G::Bytes(_) => Value::Bytes(Rc::new(g.as_bytes(v)?.unwrap_or_default().to_vec())),
         G::EmptyList => Value::List(Rc::new(List::new(Vec::new()))),
-        G::Symbol(s) if g.symbol_name(s)? == "none" => Value::App(Fux::Null),
-        G::Symbol(s) => Value::Symbol(Rc::new(g.symbol_name(s)?.to_owned())),
+        G::Symbol(s) => {
+            let name = g.symbol_name(s)?;
+            match (name, from_handle_name(name)) {
+                ("none", _) => Value::App(Fux::Null),
+                (_, Some(handle)) => Value::App(handle),
+                (name, None) => Value::Symbol(Rc::new(name.to_owned())),
+            }
+        }
         G::Pair(_) => {
             let items = g.list_items(v)?;
-            match items.as_slice() {
-                [G::Symbol(tag), data] if g.symbol_name(tag)? == "native-value" => {
-                    let Some(bytes) = g.as_bytes(data)? else {
-                        return Err(g.error("type-error", &[data.clone()]));
-                    };
-                    let app = decode_app(bytes)
-                        .map_err(|e| failure(g, Failure::new(Code::BadValue, e.to_string())))?;
-                    Value::App(app)
-                }
-                [G::Symbol(tag), form] if g.symbol_name(tag)? == "code" => {
+            let head = match items.first() {
+                Some(G::Symbol(head)) => g.symbol_name(head)?.to_owned(),
+                _ => String::new(),
+            };
+            match (head.as_str(), items.as_slice()) {
+                (CODE, [_, form]) => {
                     let mut source = String::new();
                     g.write(form, &mut source)
                         .map_err(|_| g.error("bad-value", &[form.clone()]))?;
                     Value::App(Fux::Code(Rc::new(fux_wire::callback::Code { source })))
                 }
-                _ => Value::List(Rc::new(List::new(
-                    items
-                        .iter()
-                        .map(|v| from_grift_at(g, v, depth))
-                        .collect::<Result<_, _>>()?,
-                ))),
+                (REQUEST, [_, subject, steps @ ..]) => {
+                    let subject = match from_grift_at(g, subject, depth)? {
+                        Value::App(Fux::Null) => None,
+                        subject => Some(subject),
+                    };
+                    let mut replayed = Vec::with_capacity(steps.len());
+                    for step in steps {
+                        let items = g.list_items(step)?;
+                        let Some((G::Symbol(name), arguments)) = items.split_first() else {
+                            return Err(g.error("bad-value", &[step.clone()]));
+                        };
+                        let Some(Word::Opt(option)) = Word::named(g.symbol_name(name)?) else {
+                            return Err(g.error("bad-value", &[step.clone()]));
+                        };
+                        let arguments = arguments
+                            .iter()
+                            .map(|v| from_grift_at(g, v, depth))
+                            .collect::<Result<_, _>>()?;
+                        replayed.push((option, arguments));
+                    }
+                    words::replayed(subject, replayed).map_err(|f| failure(g, f))?
+                }
+                _ => match fields(g, &items)? {
+                    Some(fields) => {
+                        let mut run = None;
+                        let mut out = Vec::with_capacity(fields.len());
+                        for (name, value) in fields {
+                            if name == RUN
+                                && let Some(text) = g.as_str(&value)?
+                                && let Ok(found) = text.parse()
+                            {
+                                run = Some(found);
+                            }
+                            out.push((name, from_grift_at(g, &value, depth)?));
+                        }
+                        record::from_fields(out, run).map_err(|f| failure(g, f))?
+                    }
+                    None => Value::List(Rc::new(List::new(
+                        items
+                            .iter()
+                            .map(|v| from_grift_at(g, v, depth))
+                            .collect::<Result<_, _>>()?,
+                    ))),
+                },
             }
         }
+        // What grift made one of: an error's fields.
         G::Context(_) => {
             let mut fields = Vec::new();
-            let mut run = None;
             for key in g.names(v)? {
                 let name = g.symbol_name(&key)?.to_owned();
-                let Some(value) = g.lookup(v, &key)? else {
-                    continue;
-                };
-                if name == "observation-run" {
-                    run = g.as_str(&value)?.and_then(|s| s.parse().ok());
-                } else {
+                if let Some(value) = g.lookup(v, &key)? {
                     fields.push((name, from_grift_at(g, &value, depth)?));
                 }
             }
-            record::from_fields(fields, run).map_err(|f| failure(g, f))?
+            record::from_fields(fields, None).map_err(|f| failure(g, f))?
         }
         _ => return Err(g.error("type-error", &[v.clone()])),
     })
 }
-fn encode_app(v: &Fux) -> Vec<u8> {
-    let mut out = Vec::new();
-    match v {
-        Fux::Null => 0u8.put(&mut out),
-        Fux::All => 1u8.put(&mut out),
-        Fux::Pane(p, r) => {
-            2u8.put(&mut out);
-            p.put(&mut out);
-            r.put(&mut out)
-        }
-        Fux::Tab(p, r) => {
-            3u8.put(&mut out);
-            p.put(&mut out);
-            r.put(&mut out)
-        }
-        Fux::Workspace(p, r) => {
-            4u8.put(&mut out);
-            p.put(&mut out);
-            r.put(&mut out)
-        }
-        Fux::Client(p, r) => {
-            5u8.put(&mut out);
-            p.put(&mut out);
-            r.put(&mut out)
-        }
-        Fux::Opts(opts) => {
-            6u8.put(&mut out);
-            opts.put(&mut out)
-        }
-        Fux::Extent(e) => {
-            7u8.put(&mut out);
-            e.put(&mut out)
-        }
-        Fux::Answer(a, run) => match &**a {
-            Answer::Pane(p) => {
-                8u8.put(&mut out);
-                run.put(&mut out);
-                p.put(&mut out)
+
+/// `v` as `display` says it: a string or a held answer as its text, a handle
+/// as its id, anything else as data.
+fn write_display<T>(g: &mut Grift<T>, v: &G, out: &mut String) -> Result<(), Error> {
+    let shown = match v {
+        G::Symbol(_) | G::Pair(_) => match from_grift(g, v) {
+            Ok(Value::App(Fux::Record(record))) if record.is_held() => {
+                Some(Value::App(Fux::Record(record)))
             }
-            Answer::Panes(ps) => {
-                9u8.put(&mut out);
-                run.put(&mut out);
-                ps.put(&mut out)
-            }
-            Answer::Capture(c) => {
-                10u8.put(&mut out);
-                run.put(&mut out);
-                c.put(&mut out)
-            }
+            Ok(Value::App(
+                app @ (Fux::Pane(..)
+                | Fux::Tab(..)
+                | Fux::Workspace(..)
+                | Fux::Client(..)
+                | Fux::All),
+            )) => Some(Value::App(app)),
+            Ok(_) | Err(_) => None,
         },
-        Fux::Record(_) | Fux::Code(_) => {}
+        _ => None,
     };
-    out
-}
-fn decode_app(bytes: &[u8]) -> Result<Fux, fux_wire::wire::Error> {
-    let mut r = Reader::new(bytes);
-    let tag = u8::get(&mut r)?;
-    Ok(match tag {
-        0 => Fux::Null,
-        1 => Fux::All,
-        2 => Fux::Pane(Wire::get(&mut r)?, Wire::get(&mut r)?),
-        3 => Fux::Tab(Wire::get(&mut r)?, Wire::get(&mut r)?),
-        4 => Fux::Workspace(Wire::get(&mut r)?, Wire::get(&mut r)?),
-        5 => Fux::Client(Wire::get(&mut r)?, Wire::get(&mut r)?),
-        6 => Fux::Opts(Rc::new(Wire::get(&mut r)?)),
-        7 => Fux::Extent(Wire::get(&mut r)?),
-        8..=10 => {
-            let run = Wire::get(&mut r)?;
-            let a = match tag {
-                8 => Answer::Pane(Wire::get(&mut r)?),
-                9 => Answer::Panes(Wire::get(&mut r)?),
-                _ => Answer::Capture(Wire::get(&mut r)?),
-            };
-            Fux::Answer(Rc::new(a), run)
-        }
-        _ => return Err(fux_wire::wire::Error::Bad("native value")),
-    })
-}
-
-impl Wire for Opts {
-    fn put(&self, out: &mut impl Sink) {
-        self.on.put(out);
-        self.of.put(out);
-        self.name.put(out);
-        self.size.put(out);
-        self.cwd.put(out);
-        self.argv.put(out);
-        self.shell.put(out);
-        self.history_bytes.put(out);
-        self.reflow.put(out);
-        self.alternate_scroll_lines.put(out);
-        self.picture_bytes.put(out);
-        self.program_clipboard.put(out);
-        self.axis.put(out);
-        self.shares.put(out);
-        self.place.put(out);
-        self.kill.put(out);
-        self.watch.put(out);
-        self.timeout.put(out);
-        self.view.put(out);
-        self.history.put(out);
-        self.inputs.put(out);
-        self.given.put(out);
+    match shown {
+        Some(value) => value.write_text(out).map_err(|f| failure(g, f)),
+        None => g.write(v, out).map_err(|_| g.error("output", &[])),
     }
-    fn get(r: &mut Reader<'_>) -> Result<Self, fux_wire::wire::Error> {
-        Ok(Self {
-            on: Wire::get(r)?,
-            of: Wire::get(r)?,
-            name: Wire::get(r)?,
-            size: Wire::get(r)?,
-            cwd: Wire::get(r)?,
-            argv: Wire::get(r)?,
-            shell: Wire::get(r)?,
-            history_bytes: Wire::get(r)?,
-            reflow: Wire::get(r)?,
-            alternate_scroll_lines: Wire::get(r)?,
-            picture_bytes: Wire::get(r)?,
-            program_clipboard: Wire::get(r)?,
-            axis: Wire::get(r)?,
-            shares: Wire::get(r)?,
-            place: Wire::get(r)?,
-            kill: Wire::get(r)?,
-            watch: Wire::get(r)?,
-            timeout: Wire::get(r)?,
-            view: Wire::get(r)?,
-            history: Wire::get(r)?,
-            inputs: Wire::get(r)?,
-            given: Wire::get(r)?,
-        })
-    }
-}
-impl Wire for On {
-    fn put(&self, out: &mut impl Sink) {
-        match self {
-            Self::Target(v) => {
-                0u8.put(out);
-                v.put(out)
-            }
-            Self::Client(v) => {
-                1u8.put(out);
-                v.put(out)
-            }
-            Self::Version(v) => {
-                2u8.put(out);
-                v.put(out)
-            }
-            Self::Changed(v) => {
-                3u8.put(out);
-                v.put(out)
-            }
-            Self::Seen(v) => {
-                4u8.put(out);
-                v.put(out)
-            }
-        }
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, fux_wire::wire::Error> {
-        Ok(match u8::get(r)? {
-            0 => Self::Target(Wire::get(r)?),
-            1 => Self::Client(Wire::get(r)?),
-            2 => Self::Version(Wire::get(r)?),
-            3 => Self::Changed(Wire::get(r)?),
-            4 => Self::Seen(Wire::get(r)?),
-            _ => return Err(fux_wire::wire::Error::Bad("request subject")),
-        })
-    }
-}
-impl Wire for Opt {
-    fn put(&self, out: &mut impl Sink) {
-        let n = Self::ALL
-            .iter()
-            .position(|v| v == self)
-            .and_then(|n| u8::try_from(n).ok())
-            .unwrap_or(u8::MAX);
-        n.put(out)
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, fux_wire::wire::Error> {
-        let n = u8::get(r)?;
-        Self::ALL
-            .get(usize::from(n))
-            .copied()
-            .ok_or(fux_wire::wire::Error::Bad("option"))
-    }
-}
-
-fn native_data<T>(g: &Grift<T>, v: &G) -> Result<bool, Error> {
-    let Some((G::Symbol(tag), _)) = g.as_pair(v)? else {
-        return Ok(false);
-    };
-    Ok(matches!(g.symbol_name(&tag)?, "native-value" | "code"))
-}
-/// Walk data with an explicit stack, including a record's field values.
-fn write_data<T>(g: &Grift<T>, value: &G, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-    enum Part {
-        Value(G),
-        Text(&'static str),
-        Name(String),
-        LeaveContext,
-    }
-    let mut todo = vec![Part::Value(value.clone())];
-    let mut contexts: Vec<G> = Vec::new();
-    while let Some(part) = todo.pop() {
-        match part {
-            Part::LeaveContext => {
-                contexts.pop();
-            }
-            Part::Text(text) => out.write_str(text)?,
-            Part::Name(name) => out.write_str(&name)?,
-            Part::Value(v) => match &v {
-                G::Context(_) => {
-                    if contexts.contains(&v) {
-                        g.write(&v, out).map_err(|_| std::fmt::Error)?;
-                        continue;
-                    }
-                    contexts.push(v.clone());
-                    todo.push(Part::LeaveContext);
-                    let names = g.names(&v).map_err(|_| std::fmt::Error)?;
-                    out.write_str("(")?;
-                    todo.push(Part::Text(")"));
-                    let mut fields = Vec::new();
-                    for name in names {
-                        let text = g
-                            .symbol_name(&name)
-                            .map_err(|_| std::fmt::Error)?
-                            .to_owned();
-                        if text == "observation-run" {
-                            continue;
-                        }
-                        let value = g
-                            .lookup(&v, &name)
-                            .map_err(|_| std::fmt::Error)?
-                            .ok_or(std::fmt::Error)?;
-                        fields.push((text, value));
-                    }
-                    for (i, (name, value)) in fields.into_iter().enumerate().rev() {
-                        todo.push(Part::Text(")"));
-                        todo.push(Part::Value(value));
-                        todo.push(Part::Text(" "));
-                        todo.push(Part::Name(name));
-                        todo.push(Part::Text(if i == 0 { "(" } else { " (" }));
-                    }
-                }
-                G::Pair(_) => {
-                    let items = match g.list_items(&v) {
-                        Ok(items) => items,
-                        Err(_) => {
-                            g.write(&v, out).map_err(|_| std::fmt::Error)?;
-                            continue;
-                        }
-                    };
-                    if let [G::Symbol(tag), data] = items.as_slice()
-                        && g.symbol_name(tag).map_err(|_| std::fmt::Error)? == "native-value"
-                        && let Some(bytes) = g.as_bytes(data).map_err(|_| std::fmt::Error)?
-                    {
-                        let app = decode_app(bytes).map_err(|_| std::fmt::Error)?;
-                        if matches!(app, Fux::Answer(..)) {
-                            record::write_data(&Value::App(app), out)?;
-                        } else {
-                            let text = Value::App(app).text().map_err(|_| std::fmt::Error)?;
-                            out.write_str(&super::quoted(&text))?;
-                        }
-                    } else {
-                        out.write_str("(")?;
-                        todo.push(Part::Text(")"));
-                        for (i, item) in items.into_iter().enumerate().rev() {
-                            todo.push(Part::Value(item));
-                            if i > 0 {
-                                todo.push(Part::Text(" "));
-                            }
-                        }
-                    }
-                }
-                _ => g.write(&v, out).map_err(|_| std::fmt::Error)?,
-            },
-        }
-    }
-    Ok(())
 }
 
 fn output_value<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
     if matches!(
         v,
         G::Integer(_) | G::Boolean(_) | G::String(_) | G::Float(_) | G::Bytes(_) | G::Symbol(_)
-    ) || native_data(g, v)?
-    {
+    ) {
         return from_grift(g, v);
     }
+    if matches!(v, G::Pair(_))
+        && let Ok(value @ Value::App(_)) = from_grift(g, v)
+    {
+        return Ok(value);
+    }
     let mut text = String::new();
-    write_data(g, v, &mut text).map_err(|_| g.error("output", &[]))?;
+    g.write(v, &mut text).map_err(|_| g.error("output", &[]))?;
     Ok(Value::Printed(Rc::new(text)))
 }
 

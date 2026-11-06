@@ -80,6 +80,22 @@ impl Value<Fux> {
         let result = match self {
             Self::Str(s) | Self::Symbol(s) | Self::Printed(s) => out.write_str(s),
             Self::App(v) => return v.write_text(out),
+            // A tab's or workspace's answers, a line each.
+            Self::List(xs)
+                if !xs.items().is_empty()
+                    && xs.items().iter().all(
+                        |v| matches!(v, Self::App(Fux::Record(record)) if record.is_held()),
+                    ) =>
+            {
+                for (i, v) in xs.items().iter().enumerate() {
+                    if i > 0 {
+                        out.write_char('\n')
+                            .map_err(|_| Failure::new(Code::Output, "writing value"))?;
+                    }
+                    v.write_text(out)?;
+                }
+                Ok(())
+            }
             _ => self.write_data(out),
         };
         result.map_err(|_| Failure::new(Code::Output, "writing value"))
@@ -93,7 +109,7 @@ impl Value<Fux> {
             Self::Float(n) => write!(out, "{n:?}"),
             Self::Int(n) => write!(out, "{n}"),
             Self::Bool(b) => write!(out, "#{b}"),
-            Self::Str(s) => write_quoted(s, out),
+            Self::Str(s) => grift::write_string(s, out),
             Self::Symbol(s) => out.write_str(s),
             Self::List(xs) => {
                 out.write_str("(")?;
@@ -116,35 +132,17 @@ impl Value<Fux> {
                 out.write_str(")")
             }
             Self::App(Fux::Record(r)) => r.write(out),
-            Self::App(Fux::Null) => out.write_str("none"),
-            Self::App(v) => v.write_text(out).map_err(|_| std::fmt::Error),
+            Self::App(Fux::Code(code)) => out.write_str(&code.text()),
+            Self::App(Fux::Opts(_)) => out.write_str("(request!)"),
+            Self::App(v) => super::bridge::handle_name(v, out),
         }
     }
 }
 
-pub(super) fn write_escaped(text: &str, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-    for character in text.chars() {
-        match character {
-            '"' => out.write_str("\\\"")?,
-            '\\' => out.write_str("\\\\")?,
-            '\n' => out.write_str("\\n")?,
-            '\r' => out.write_str("\\r")?,
-            '\t' => out.write_str("\\t")?,
-            c if c.is_control() => write!(out, "\\x{:x};", u32::from(c))?,
-            c => out.write_char(c)?,
-        }
-    }
-    Ok(())
-}
-fn write_quoted(text: &str, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-    out.write_char('"')?;
-    write_escaped(text, out)?;
-    out.write_char('"')
-}
 /// One grift string literal, also used by generated config lines.
 pub fn quoted(text: &str) -> String {
     let mut out = String::new();
-    let _ = write_quoted(text, &mut out);
+    let _ = grift::write_string(text, &mut out);
     out
 }
 

@@ -8124,7 +8124,7 @@ mod tests {
             "(data-text (sequence! (define! variables-3459 (context)) (bind variables-3459 (quote! sent) (send-keys (text (expect (capture (pane 1))) \"x\"))) \"timeout\" (quiet (element-at (catch-kind! (list (wait (timeout (evaluate (quote! sent) variables-3459) 0))) timeout failure-3472 (sequence! \"value\" (list (second (get failure-3472 \"values\"))))) 0) 0)))",
         )?;
         assert!(
-            json.contains("(id %1)") && json.contains("(version \"%1:"),
+            json.contains("(id %1:") && json.contains("(version \"%1:"),
             "{json}"
         );
         Ok(())
@@ -8139,17 +8139,15 @@ mod tests {
             "(catch-kind! (wait (changed \"{}\")) closed failure (second (get failure \"values\")))",
             version.trim()
         );
-        assert_eq!(
-            output(
-                &mut s,
-                &format!(
-                    "(data-text {})",
-                    crate::test_reference(&format!("{caught}"))
-                )
-            )?
-            .trim(),
-            "((pane %2) (status 4))"
-        );
+        let data = output(
+            &mut s,
+            &format!(
+                "(data-text {})",
+                crate::test_reference(&format!("{caught}"))
+            ),
+        )?;
+        assert_eq!(crate::test_data(&data, "(field data (quote! pane))")?, "%2");
+        assert_eq!(crate::test_data(&data, "(field data (quote! status))")?, "4");
         assert_eq!(
             output(&mut s, &format!("(kind {caught})"))?.trim(),
             "closed-answer"
@@ -8471,7 +8469,7 @@ mod tests {
         assert!(output(&mut s, "(pane \"cat\")").is_err());
         assert_eq!(output(&mut s, "\"%1\"")?, "%1\n");
         let json = output(&mut s, "(data-text (capture (pane 1)))")?;
-        assert!(json.starts_with("((id %1)"), "{json}");
+        assert!(json.contains("(id %1:"), "{json}");
         Ok(())
     }
 
@@ -9176,7 +9174,7 @@ mod tests {
             &mut s,
             &format!("(data-text {})", crate::test_reference(&format!("{act}"))),
         )?;
-        assert!(alone.starts_with("((pane %1) (version "), "{alone}");
+        assert!(alone.starts_with("((kind \"answer\") (pane %1:"), "{alone}");
         let listed = output(&mut s, &format!("(data-text (list {act}))"))?;
         assert_eq!(listed, format!("({})\n", alone.trim_end()));
         Ok(())

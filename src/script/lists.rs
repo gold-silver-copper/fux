@@ -69,49 +69,10 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
             line(&format!("{path}{which}"), &names);
             r.fields.clone()
         }
-        Value::App(Fux::Answer(answer, run)) => {
-            let fields: Vec<(String, Value<Fux>)> = held(answer)
-                .into_iter()
-                .filter_map(|name| {
-                    let value = record::answer_field(answer, *run, &name).ok()?;
-                    Some((name, value))
-                })
-                .collect();
-            let names_owned: Vec<_> = fields
-                .iter()
-                .map(|(name, _)| super::field_name(name))
-                .collect();
-            let names: Vec<&str> = names_owned.iter().map(String::as_str).collect();
-            line(path, &names);
-            fields
-        }
         _ => return,
     };
     for (key, value) in &fields {
         records(&format!("{path}.{key}"), value, out);
-    }
-}
-
-/// The fields `get` may read of a held answer or capture: its kind's
-/// tables, then a captured pane's state's.
-#[cfg(unix)]
-fn held(answer: &super::Answer) -> Vec<String> {
-    use record::{AnswerField, CaptureField, CapturedField};
-    fn names<T>(all: &[(T, &str)]) -> Vec<String> {
-        all.iter().map(|(_, name)| (*name).to_owned()).collect()
-    }
-    match answer {
-        super::Answer::Pane(_) => names(AnswerField::ALL),
-        super::Answer::Capture(c) => {
-            let mut fields: Vec<String> = names(CaptureField::ALL);
-            fields.extend(names(CapturedField::ALL));
-            if let fux_wire::answer::Of::Pane { pane, read, .. } = &c.of {
-                fields.extend(pane.fields().map(|(name, _)| name.to_owned()));
-                fields.extend(read.iter().map(|(name, _)| name.clone()));
-            }
-            fields
-        }
-        super::Answer::Panes(_) => Vec::new(),
     }
 }
 
@@ -253,7 +214,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
             },
         ),
     ] {
-        let value = super::Answer::Pane(answer).in_run(Some(run));
+        let value = super::Answer::Pane(answer).in_run(Some(run))?;
         records(path, &value, &mut lines);
     }
     let socket = fux_server::socket::checked("/nonexistent/fux.sock", "test")?;

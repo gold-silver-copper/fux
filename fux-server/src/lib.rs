@@ -193,5 +193,11 @@ fn test_data(text: &str, query: &str) -> Result<String, String> {
     }
     let mut out = String::new();
     g.write(&value, &mut out).map_err(|_| "data output")?;
+    // A handle as a person reads it, without the run it carries.
+    if matches!(value, grift::Value::Symbol(_))
+        && let Some((id, _)) = out.split_once(':')
+    {
+        return Ok(id.trim_start_matches('w').to_owned());
+    }
     Ok(out)
 }

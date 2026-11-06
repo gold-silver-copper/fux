@@ -1,7 +1,7 @@
 ; The names every program sees: what must evaluate in its caller, kept small,
 ; as every command line pays for it. The libraries load on first use.
 (define! none (quote! none))
-(define! code! (vau! (expression) #ignore (list (quote! code) expression)))
+(define! code! (vau! (expression) #ignore (list (quote! code!) expression)))
 (define! load-forms (lambda! (path caller once)
   (let! ((loaded (read-source path once)))
     (when! (not? (empty-list? loaded))
@@ -17,6 +17,6 @@
 (define! execute! (vau! (code-value . arguments) caller
   (let! ((code-value (evaluate code-value caller))
          (values (map (lambda! (argument) (evaluate argument caller)) arguments)))
-    (if! (and!? (pair? code-value) (same? (first code-value) (quote! code)))
+    (if! (and!? (pair? code-value) (same? (first code-value) (quote! code!)))
       (apply (evaluate (second code-value) caller) values)
       (raise (error (quote! type-error) code-value))))))

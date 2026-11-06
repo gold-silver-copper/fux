@@ -80,8 +80,6 @@ pub enum Fux {
     Opts(Rc<Opts>),
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
-    /// What the server said: a capture or a wait's outcome.
-    Answer(Rc<Answer>, Option<Run>),
     /// A code value another client sent, as its words: `execute` compiles
     /// them in this program's dictionary, then runs them (`Ask::Code`).
     Code(Rc<Sent>),
@@ -91,8 +89,10 @@ pub type Sent = fux_wire::callback::Code;
 
 impl Fux {
     fn kind(&self) -> &'static str {
-        if let Fux::Answer(answer, _) = self {
-            return answer.names().1;
+        if let Fux::Record(record) = self
+            && let Some(said) = record.held_kind().map(|(_, said)| said)
+        {
+            return said;
         }
         let kind = words::KINDS.iter().find(|(name, ..)| *name == self.name());
         kind.map_or("a value of fux's", |(_, said, _)| said)
@@ -101,7 +101,7 @@ impl Fux {
     fn name(&self) -> &'static str {
         match self {
             Fux::Null => "none",
-            Fux::Record(_) => "record",
+            Fux::Record(record) => record.held_kind().map_or("record", |(name, _)| name),
             Fux::Pane(_, _) => "pane",
             Fux::Tab(_, _) => "tab",
             Fux::Workspace(_, _) => "workspace",
@@ -117,7 +117,6 @@ impl Fux {
                 Some(On::Seen(_)) => "expected-request",
             },
             Fux::Extent(_) => "size",
-            Fux::Answer(answer, _) => answer.names().0,
             Fux::Code(_) => "code",
         }
     }
@@ -125,12 +124,12 @@ impl Fux {
     fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         match self {
             Fux::Null => out.write_str("none"),
+            Fux::Record(r) if r.is_held() => r.write_held(out),
             Fux::Record(r) => r.write(out),
             Fux::Pane(p, _) => write!(out, "{p}"),
             Fux::Tab(t, _) => write!(out, "{t}"),
             Fux::Workspace(w, _) => write!(out, "{w}"),
             Fux::Client(c, _) => write!(out, "{c}"),
-            Fux::Answer(answer, _) => answer.write_text(out),
             Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
             Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
             Fux::All => write!(out, "all"),
@@ -145,12 +144,9 @@ impl Fux {
 fn scope(value: &Value<Fux>) -> Option<Run> {
     match value {
         Value::App(
-            Fux::Pane(_, run)
-            | Fux::Tab(_, run)
-            | Fux::Workspace(_, run)
-            | Fux::Client(_, run)
-            | Fux::Answer(_, run),
+            Fux::Pane(_, run) | Fux::Tab(_, run) | Fux::Workspace(_, run) | Fux::Client(_, run),
         ) => *run,
+        Value::App(Fux::Record(record)) => record.of,
         Value::App(Fux::Opts(opts)) => opts.of,
         Value::Printed(_)
         | Value::Float(_)
@@ -206,6 +202,10 @@ pub struct Opts {
     /// The words given, for the word they go on to refuse any it would not
     /// use.
     pub given: Vec<words::Opt>,
+    /// What it goes on, as it was given, and what it was built with: its
+    /// grift data, which `words::replayed` makes it again from.
+    pub subject: Option<Value<Fux>>,
+    pub steps: Vec<(words::Opt, Vec<Value<Fux>>)>,
 }
 
 impl Opts {
@@ -283,48 +283,8 @@ impl Answer {
         }
     }
 
-    fn write_text(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        match self {
-            Answer::Pane(answer) => answer.write_text(out),
-            Answer::Panes(answers) => {
-                for (i, answer) in answers.iter().enumerate() {
-                    if i > 0 {
-                        out.write_char('\n')?;
-                    }
-                    answer.write_text(out)?;
-                }
-                Ok(())
-            }
-            Answer::Capture(captured) => captured.write_text(out),
-        }
-    }
-
-    /// It says nothing printed: a capture of no lines, no pane's answers.
-    /// A capture of one blank line says that line.
-    fn is_empty(&self) -> bool {
-        match self {
-            Answer::Capture(captured) => captured.lines.is_empty(),
-            Answer::Panes(answers) => answers.is_empty(),
-            Answer::Pane(_) => false,
-        }
-    }
-
-    /// The version it holds: a pane's answer's, which a wait on it waits
-    /// from; or a pane's capture's, its pane's as it was read, which
-    /// `expect` sends at and `changed` waits from.
-    pub fn version(&self) -> Option<Version> {
-        match self {
-            Answer::Pane(answer) => answer.version(),
-            Answer::Capture(captured) => match captured.of {
-                fux_wire::answer::Of::Pane { ref pane, .. } => Some(pane.version),
-                fux_wire::answer::Of::Client { .. } => None,
-            },
-            Answer::Panes(_) => None,
-        }
-    }
-
-    fn in_run(self, run: Option<Run>) -> Value<Fux> {
-        Value::App(Fux::Answer(Rc::new(self), run))
+    fn in_run(self, run: Option<Run>) -> Result<Value<Fux>, Failure> {
+        record::datum(&self, run)
     }
 }
 
@@ -1021,10 +981,16 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
     let run = reply.run;
     let body = match reply.response {
         Response::Answered(PaneResults::One(answer)) => {
-            return Ok(vec![Answer::Pane(answer).in_run(run)]);
+            return Ok(vec![
+                Answer::Pane(answer).in_run(run).map_err(callback_failed)?,
+            ]);
         }
         Response::Answered(PaneResults::Many(answers)) => {
-            return Ok(vec![Answer::Panes(answers).in_run(run)]);
+            return Ok(vec![
+                Answer::Panes(answers)
+                    .in_run(run)
+                    .map_err(callback_failed)?,
+            ]);
         }
         Response::Returned(body) => body,
         Response::Failed { .. } => return Ok(Vec::new()),
@@ -1041,7 +1007,9 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
         Body::Empty => return Ok(Vec::new()),
         Body::Found(id) => Value::App(handle(id, run)),
         Body::Handles(ids) => handles(ids)?,
-        Body::Capture(captured) => Answer::Capture(captured).in_run(run),
+        Body::Capture(captured) => Answer::Capture(captured)
+            .in_run(run)
+            .map_err(callback_failed)?,
         Body::Snapshot(snapshot) => {
             record::snapshot(*snapshot).map_err(|e| Failed::new(Code::of(e.code), e.message))?
         }
@@ -1469,7 +1437,7 @@ fn main_program(
                         }
                     }
                     Value::Str(text) if text.is_empty() => {}
-                    Value::App(Fux::Answer(answer, _)) if answer.is_empty() => {}
+                    Value::App(Fux::Record(record)) if record.says_nothing() => {}
                     _ => writeln!(host.out, "{}", value::Text(v)).map_err(output_failed)?,
                 }
             }
@@ -1654,12 +1622,49 @@ pub mod testing {
             event
                 .fields
                 .retain(|(key, _)| !without.iter().any(|name| super::field_name(name) == *key));
-            event
-                .write(&mut lines)
-                .map_err(|_| not_a("an event's text"))?;
+            bare(
+                &Value::App(super::Fux::Record(super::Rc::new(event))),
+                &mut lines,
+            )
+            .map_err(|_| not_a("an event's text"))?;
             lines.push('\n');
         }
         Ok(lines)
+    }
+
+    /// `value` as data, its handles as a person reads them: a test's lines
+    /// don't hold the run of the session that made them.
+    fn bare(value: &super::Value<super::Fux>, out: &mut String) -> std::fmt::Result {
+        use super::{Fux, Value};
+        use std::fmt::Write;
+        match value {
+            Value::App(Fux::Record(record)) => {
+                out.write_char('(')?;
+                for (i, (key, value)) in record.fields.iter().enumerate() {
+                    if i > 0 {
+                        out.write_char(' ')?;
+                    }
+                    write!(out, "({key} ")?;
+                    bare(value, out)?;
+                    out.write_char(')')?;
+                }
+                out.write_char(')')
+            }
+            Value::List(items) => {
+                out.write_char('(')?;
+                for (i, item) in items.items().iter().enumerate() {
+                    if i > 0 {
+                        out.write_char(' ')?;
+                    }
+                    bare(item, out)?;
+                }
+                out.write_char(')')
+            }
+            Value::App(
+                app @ (Fux::Pane(..) | Fux::Tab(..) | Fux::Workspace(..) | Fux::Client(..)),
+            ) => app.write_text(out).map_err(|_| std::fmt::Error),
+            other => other.write_data(out),
+        }
     }
 }
 

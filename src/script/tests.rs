@@ -469,7 +469,7 @@ fn default_styled_capture_json_is_printed_whole() -> TestResult {
         &mut out,
     )?;
     assert!(out.len() > 20 << 20, "{}", out.len());
-    assert!(out.starts_with(b"((id %1)") && out.ends_with(b")\n"));
+    assert!(out.starts_with(b"((kind \"capture\") (id %1") && out.ends_with(b")\n"));
     Ok(())
 }
 
@@ -521,13 +521,17 @@ fn pane_outcomes_determine_the_reply_status() -> Result<(), Box<dyn std::error::
         );
         let values = crate::script::answered(decoded.clone()).map_err(|f| f.to_string())?;
         let value = values.first().ok_or("answer")?;
-        if let Value::App(Fux::Answer(_, run)) = value {
-            assert_eq!(*run, Some(version.run));
+        match value {
+            // Each answer keeps its run; no answers hold none.
+            Value::List(items) => {
+                for item in items.items() {
+                    assert_eq!(scope(item), Some(version.run));
+                }
+            }
+            value => assert_eq!(scope(value), Some(version.run)),
         }
-        let data = record::datum(value)
-            .map_err(|f| f.message)?
-            .text()
-            .map_err(|f| f.message)?;
+        let mut data = String::new();
+        value.write_data(&mut data)?;
         assert_eq!(data.contains("(status 124)"), has_timeout(&decoded));
         if let End::Failed { message, .. } = decoded.end() {
             assert!(!message.is_empty());
