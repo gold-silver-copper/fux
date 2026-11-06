@@ -273,7 +273,7 @@ pub const KINDS: [(&str, &str, Option<&str>); 21] = [
     ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
     ("record", "a record", None), ("none", "none", None),
     ("code", "a code value another client sent, as its words, which execute compiles here", None),
-    ("options", "options (from options, for new-tab, attach and attach-defaults; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("options", "options (from options, for new-tab, attach and attach-defaults; a pane's words take theirs on the pane: `(capture (all-history (pane 2)))`)", Some("nothing takes these options")),
     ("pane-request", "a pane request", Some("nothing acts on this request")),
     ("tab-request", "a tab request", Some("nothing acts on this request")),
     ("workspace-request", "a workspace request", Some("nothing acts on this request")),
@@ -375,10 +375,10 @@ words! {
         Config AttachDefaults "attach-defaults" "attachable --" raises(Type Unused Config NotConfig) "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "(sequence! (attach-defaults (name (options) \"main\")) #inert)" [Either: In Name];
         Config Set "set" "setting new --" raises(Type Config NotConfig) "a preference for this client only: `fux '(explain \"set\")'` lists their effects" "fux '(sequence! (set \"history-bytes\" 16777216) #inert)'" [];
         Reading Version "version" "pane-or-seen -- string" raises(Type asks) "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux '(version (capture (pane 3)))'" [];
-        Shell Args "arguments" "-- list" raises() "the strings after fux --file FILE (none for any other program)" "fux '(length (arguments))'" [];
+        Shell Args "arguments" "-- list" raises() "the strings after the program on its command line, or after fux --file FILE (none for a key or a config)" "fux '(length (arguments))'" [];
         Shell Input "input" "-- string" raises(Read NotHere) "the rest of stdin, as UTF-8 text; not when the program came from stdin" "printf 'text\\n' | fux '(string-byte-length (input))'" [];
         Shell ReadFile "read-file" "path -- string" raises(Type Read NotHere) "a file's text, as UTF-8" "fux '(length (string-split (read-file \"notes.txt\") \"\\n\"))'" [];
-        Shell Getenv "environment-variable" "name -- string" raises(Type UnsetVar NotHere) "an environment variable's value; one not set fails unset_var" "fux '(environment-variable \"HOME\")'" [];
+        Shell Getenv "environment-variable" "name -- string" raises(Type UnsetVar NotHere) "an environment variable's value; one not set fails unset-variable" "fux '(environment-variable \"HOME\")'" [];
         Shell Warn "warn" "value --" raises(Output NotHere) "print a value on stderr, a line" "fux '(sequence! (warn \"no tests found\") (exit 2) #inert)'" [];
         Shell Exit "exit" "n --" raises(Type Range NotHere) "end the program now, what is left printed, with exit status n, 0 to 255" "fux '(sequence! (warn \"no tests found\") (exit 2) #inert)'" [];
         Config ListKeys "list-keys" "--" raises(Config Output) "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux '(sequence! (list-keys) #inert)'" [];
@@ -419,14 +419,14 @@ words! {
         Reading Marks "marks" "pane-builder -- pane-builder" raises(Type Unused) "capture: what only styling tells, as text: highlighted (reverse video, or a background colour) as ⟦this⟧, and rendered faint (SGR 2) as ⟨this⟩" "fux '(capture (marks (pane 3)))'";
         Reading MainScreen "main-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: what was printed before a program took the screen" "fux '(capture (main-screen (pane 3)))'";
         Reading AltScreen "alternate-screen" "pane-builder -- pane-builder" raises(Type Unused) "capture: the full screen a program drew last" "fux '(capture (alternate-screen (pane 3)))'";
-        Reading LastOutput "last-output" "pane-builder -- pane-builder" raises(Type Unused) "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux '(capture (last-output (pane 3)))'";
+        Reading LastOutput "last-output" "pane-builder -- pane-builder" raises(Type Unused) "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no-marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most" "fux '(capture (last-output (pane 3)))'";
         Reading Rows "rows" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to, clipped to available rows; joined lines touched whole (with wrapped, those rows alone)" "fux '(capture (rows (pane 3) 0 4))'";
         Reading Cols "columns" "pane-builder from to -- pane-builder" raises(Type Unused Range) "capture: half-open from..to columns, clipped to available cells" "fux '(capture (columns (pane 3) 0 40))'";
         Reading Since "since" "pane-builder seen -- pane-builder" raises(Type Unused) "capture: only the lines with a row changed since this version of the pane (a capture's, or as changed takes it), each after its row as rows counts it (3:text; data: changed-rows); fails stale where fux can't say which rows changed: rows moved since (a scroll, resize, reset, switch of screens or change to history), the program respawned, or it was read mid-repeat (REP)" "V=$(fux '(version (capture (pane 3)))'); fux '(capture (since (pane 3) (first (arguments))))' \"$V\"";
     }
     Screen {
         Clients Choose "choose" "client title list list list callback --" raises(Type TooLong NotHere asks) "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux '(sequence! (choose (client \"c1\") \"hosts\" (list (list \"host\" \"Host\")) () (list 0) (code! (lambda! (argument-467 argument-468) #inert))) #inert)'";
-        Clients Prompt "prompt" "client name text callback --" raises(Type TooLong NotHere asks) "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux '(sequence! (prompt (client \"c1\") \"rename tab\" \"logs\" (code! (lambda! (argument-478) (sequence! (rename (tab 2) argument-478) #inert)))) #inert)'";
+        Clients Prompt "prompt" "client name text callback --" raises(Type TooLong NotHere asks) "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line its argument" "fux '(sequence! (prompt (client \"c1\") \"rename tab\" \"logs\" (code! (lambda! (argument-478) (sequence! (rename (tab 2) argument-478) #inert)))) #inert)'";
         Clients CommandPrompt "command-prompt" "client --" raises(Type NotHere asks) "a prompt for grift" "fux '(sequence! (command-prompt (client \"c1\")) #inert)'";
     }
     Keys {

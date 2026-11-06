@@ -3,6 +3,7 @@ use crate::script::Word;
 pub const AGENTS: &str = include_str!("../docs/agents.md");
 pub const DATA: &str = include_str!("../docs/data.md");
 pub const COOKBOOK: &str = include_str!("../docs/cookbook.md");
+pub const RECORDS: &str = include_str!("../docs/records.md");
 pub fn overview() -> String {
     let mut text = String::from(
         "fux: a terminal multiplexer configured and driven in grift\n\nusage: fux '(operation arguments...)' STRING...\n       fux --file FILE STRING...\n       fux -\n       fux                 attach this terminal\n\nA command line is one quoted grift program. Following shell arguments are strings\nfrom (arguments). Records print as grift data; ask for fields with (get record \"field\").\nExample: fux '(split (axis (pane 3) \"horizontal\"))'\nExample: fux '(line (pane 3) \"ls -l\")'\n\nOperations:\n",
@@ -54,6 +55,18 @@ operation: `fux '(explain \"split\")'`; recipes: `fux '(explain \"cookbook\")'`.
     )
 }
 
+/// Every setting `set` takes, what each takes and does, and the bundled
+/// values.
+fn settings(out: &mut String) {
+    out.push_str("\nThe settings:\n");
+    for [name, takes, about] in crate::client_state::table() {
+        let about = about.split_whitespace().collect::<Vec<_>>().join(" ");
+        out.push_str(&format!("  {name}: {takes}\n      {about}\n"));
+    }
+    out.push_str("\nBundled initialization (client-defaults.grift):\n");
+    out.push_str(crate::script::DEFAULTS);
+}
+
 /// What `explain` says of a name that is neither a word nor a topic: the
 /// topics, as the guide's headings name them.
 pub fn unknown(name: &str) -> String {
@@ -61,12 +74,14 @@ pub fn unknown(name: &str) -> String {
         .filter_map(|section| section.split_once(':').map(|(topic, _)| topic))
         .collect();
     let topics = topics.join(" ");
-    format!("no operation or topic {name:?}; the topics: agents {topics} guide cookbook data")
+    format!(
+        "no operation or topic {name:?}; the topics: agents {topics} guide cookbook data records"
+    )
 }
 pub fn explain(name: &str) -> Option<String> {
     if let Some(word) = Word::named(name) {
         let row = word.row();
-        return Some(format!(
+        let mut text = format!(
             "{}\n{}\nArguments: {}\nExample: {}\n",
             row.name,
             row.about,
@@ -74,7 +89,11 @@ pub fn explain(name: &str) -> Option<String> {
                 .split_once("--")
                 .map_or(row.effect, |(args, _)| args.trim()),
             row.example
-        ));
+        );
+        if name == "set" {
+            settings(&mut text);
+        }
+        return Some(text);
     }
     if let Ok(docs) = crate::script::docs()
         && let Some(doc) = docs.iter().find(|doc| doc.name == name)
@@ -99,6 +118,7 @@ fn guide(name: &str) -> Option<String> {
         "guide" => return Some(AGENTS.to_owned()),
         "cookbook" => return Some(COOKBOOK.to_owned()),
         "data" => return Some(DATA.to_owned()),
+        "records" => return Some(RECORDS.to_owned()),
         _ => {}
     }
     let heading = format!("\n## {name}:");
@@ -128,6 +148,13 @@ mod tests {
         let help = overview();
         assert!(help.contains("already took effect"));
         assert!(help.contains("runs\nnone of its forms"));
+    }
+    #[test]
+    fn set_lists_every_setting() {
+        let set = explain("set").unwrap_or_default();
+        for [name, ..] in crate::client_state::table() {
+            assert!(set.contains(&format!("\n  {name}:")), "{name}");
+        }
     }
     #[test]
     fn the_agent_page_fits_in_100_lines() {

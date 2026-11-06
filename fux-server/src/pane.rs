@@ -496,7 +496,7 @@ impl Losses {
     pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
         let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
-        let pictures = "`fux help json` says why one may not be";
+        let pictures = "`fux '(explain \"records\")'` says why one may not be";
         let (copies, memory) = ("copies (OSC 52) not made", "each lost only what it was for");
         let Losses {
             copies_cut: c,
@@ -938,7 +938,7 @@ wired!(struct End { ended, left });
 
 /// What is said of a pane where no shell command was ever marked.
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
-                            `fux help shells` says how to turn marks on";
+                            `fux '(explain \"shells\")'` says how to turn marks on";
 
 impl Pane {
     pub fn history_bytes(&self) -> usize {

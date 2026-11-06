@@ -31,7 +31,7 @@ fn words_list_is_current() -> Result<(), String> {
     names.sort();
     lines.extend(names);
     let head = format!(
-        "Every word a fux program may use, with its stack effect as `fux help WORD` \
+        "Every word a fux program may use, with what it takes and gives as `(explain \"WORD\")` \
          shows it. Generated: FUX_BLESS=1 {TEST}"
     );
     check("words.txt", &file(&head, lines), TEST)
