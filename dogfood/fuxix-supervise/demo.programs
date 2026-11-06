@@ -1,0 +1,6 @@
+# name   command
+tick     sh -c 'while :; do echo tick; sleep 0.4; done'
+flaky    sh -c 'sleep 0.2; exit 7'
+crasher  sh -c 'kill -SEGV $$'
+orphans  sh -c '(sleep 0.3; echo orphan done) & exit 0'
+missing  /no/such/program

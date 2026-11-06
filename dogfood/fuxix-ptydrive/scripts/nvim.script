@@ -1,0 +1,7 @@
+# Open a file in nvim, page down, search, and quit.
+settle 300 5000
+key ctrl-f
+settle 200
+type /fn \r
+settle 200
+type :q!\r

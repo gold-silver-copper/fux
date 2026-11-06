@@ -1,0 +1,5 @@
+fg 2 0 default
+cell 22 0 "[No Name] [+] "
+cell 1 7 x
+mode bracketed-paste off
+title vim

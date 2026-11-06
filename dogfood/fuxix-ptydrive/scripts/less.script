@@ -1,0 +1,9 @@
+# Page through a file in less, resize it, and quit.
+settle 200
+key down down pgdn
+settle 100
+resize 10x40
+settle 200
+type /root\r
+settle 100
+type q

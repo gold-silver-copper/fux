@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vt-wasm-term</title>
+<style>
+  body { margin: 0; padding: 16px; background: #0b0b0e; color: #ccc; font: 14px system-ui, sans-serif; }
+  #bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  #screen { --line: 1.25em; position: relative; display: inline-block; font: 14px/var(--line) ui-monospace, "DejaVu Sans Mono", monospace; padding: 6px; border-radius: 4px; }
+  .row { height: var(--line); white-space: pre; }
+  .row span { display: inline-block; height: var(--line); vertical-align: top; }
+  .cursor { position: absolute; width: 1ch; height: var(--line); margin: 6px; outline: 1px solid #e0e0e0; background: rgba(224,224,224,0.35); pointer-events: none; }
+  #status { color: #888; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <label>Recording (.cast or raw output) <input type="file" id="file"></label>
+  <label>Speed <select id="speed"><option>1</option><option>2</option><option>8</option><option value="0">instant</option></select></label>
+  <span id="status">loading module...</span>
+</div>
+<div id="screen"></div>
+<script type="module">
+import { load, Term, parseRecording, paint } from "./term.js";
+
+const screen = document.getElementById("screen");
+const status = document.getElementById("status");
+const params = new URLSearchParams(location.search);
+const wasm = await load(await (await fetch(params.get("wasm") || "vt_wasm_term.wasm")).arrayBuffer());
+let playing = 0;
+
+async function play(bytes) {
+  const run = ++playing;
+  const rec = parseRecording(bytes);
+  const term = new Term(wasm, rec.rows || Number(params.get("rows") || 24), rec.cols || Number(params.get("cols") || 80));
+  const speed = Number(params.get("instant") ? 0 : document.getElementById("speed").value);
+  const start = performance.now();
+  let frames = 0;
+  for (const [t, data] of rec.events) {
+    if (speed > 0) {
+      const wait = start + (t * 1000) / speed - performance.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    }
+    if (run !== playing) return;
+    term.feed(data);
+    if (speed > 0) { paint(screen, term.render()); frames++; }
+  }
+  paint(screen, term.render());
+  frames++;
+  document.title = term.title || "vt-wasm-term";
+  status.textContent = `${rec.events.length} chunk(s), ${frames} frame(s), ${term.replies} reply byte(s) not sent anywhere`;
+  document.body.dataset.done = "1";
+}
+
+document.getElementById("file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (file) play(new Uint8Array(await file.arrayBuffer()));
+});
+
+const src = params.get("src");
+if (src) play(new Uint8Array(await (await fetch(src)).arrayBuffer()));
+else {
+  status.textContent = "choose a recording";
+  play(new TextEncoder().encode("\x1b]2;vt-wasm-term\x07\x1b[1;32mvt-wasm-term\x1b[0m: fux-vt in WebAssembly\r\n\x1b[38;5;208mchoose a recording\x1b[0m above \x1b[7m(.cast or raw)\x1b[0m 界\r\n"));
+}
+</script>
+</body>
+</html>

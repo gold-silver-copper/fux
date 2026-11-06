@@ -1,0 +1,16 @@
+[package]
+name = "vt-rec-search"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+fux-vt = { path = "../../fux-vt" }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+
+[workspace]

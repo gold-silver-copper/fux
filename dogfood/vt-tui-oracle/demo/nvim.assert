@@ -1,0 +1,8 @@
+# nvim --clean, 24x80, two lines set and the cursor on 世
+cell 0 0 hello
+cell 1 0 wide: 世界
+cell 2 0 ~
+cursor 1 6
+mode ?1049 on
+mode ShowCursor on
+title oracle-demo

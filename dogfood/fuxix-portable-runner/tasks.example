@@ -1,0 +1,10 @@
+# NAME      TIMEOUT  MODE  COMMAND...
+version     10s      pipe  cargo --version
+size        5s       pty   stty size
+isatty      5s       pipe  sh -c 'test -t 1 && echo tty || echo "not a tty"; echo to-stderr >&2'
+fails       5s       pipe  sh -c 'echo about to fail; exit 7'
+stubborn    1s       pipe  sh -c 'trap "" TERM; sh -c "trap \"\" TERM; sleep 4001" & setsid sleep 4002 & echo spawned; sleep 4003'
+leaves      5s       pipe  sh -c 'sleep 4004 & echo left one behind'
+segv        5s       pipe  sh -c 'kill -SEGV $$'
+top         3s       pty   top -b -n 1 -w 80
+missing     5s       pipe  /no/such/program

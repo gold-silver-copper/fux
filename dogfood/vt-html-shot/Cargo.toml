@@ -1,0 +1,15 @@
+[package]
+name = "vt-html-shot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fux-vt = { path = "../../fux-vt" }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+
+[workspace]

@@ -1,0 +1,15 @@
+[package]
+name = "vt-esc-lint"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fux-vt = { path = "../../fux-vt" }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+
+[workspace]
