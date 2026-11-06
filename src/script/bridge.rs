@@ -429,20 +429,6 @@ pub(super) fn request<A: Asks + ?Sized>(
         .iter()
         .map(|v| from_grift(g, v))
         .collect::<Result<Vec<_>, _>>()?;
-    if matches!(word, Word::Act(Act::Pane | Act::Tab | Act::Workspace))
-        && let [Value::Int(number)] = values.as_slice()
-    {
-        let prefix = match word {
-            Word::Act(Act::Pane) => "%",
-            Word::Act(Act::Tab) => "@",
-            Word::Opt(_) | Word::Screen(_) | Word::Keys(_) | Word::Act(_) => "+",
-        };
-        let id = format!("{prefix}{number}")
-            .parse::<AnyRef>()
-            .map_err(|()| g.error("range-error", args))?;
-        return to_grift(g, &Value::App(handle(id, state.host.context.of)));
-    }
-
     if matches!(
         word,
         Word::Act(Act::Pane | Act::Tab | Act::Workspace | Act::Client)

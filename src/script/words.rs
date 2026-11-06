@@ -2626,8 +2626,11 @@ mod tests {
     impl crate::script::Asks for Recorder {
         fn ask(
             &mut self,
-            _: &fux_wire::protocol::Asked,
+            asked: &fux_wire::protocol::Asked,
         ) -> Result<fux_wire::protocol::Reply, crate::script::Failed> {
+            if let Some(found) = crate::script::testing::found(asked) {
+                return Ok(found);
+            }
             self.0 = self.0.saturating_add(1);
             Err(crate::script::Failed::new(
                 Code::Client,

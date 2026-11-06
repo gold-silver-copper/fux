@@ -1904,6 +1904,19 @@ mod tests {
         );
         assert!(matches!(
             asked.request,
+            Request::Do(Command::Resolve { .. })
+        ));
+        let reply = Reply {
+            run: asked.after.map(|f| f.run),
+            ..fux_wire::protocol::Body::Found(fux_wire::command::AnyRef::Pane("%1".parse()?)).into()
+        };
+        let bytes = fux_wire::wire::encode(&reply);
+        send(&mut peer, &ToCommand::Part(bytes.into()))?;
+        send(&mut peer, &ToCommand::PartsEnd)?;
+        let next: Asked = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("send-keys")?;
+        assert_eq!(next.after, asked.after);
+        assert!(matches!(
+            next.request,
             Request::Do(Command::SendKeys { .. })
         ));
         drop(peer);

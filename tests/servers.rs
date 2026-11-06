@@ -422,6 +422,19 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
             out.stderr
         );
     }
+    // A typed number is found by the server: it must exist, and what prints
+    // carries the server's run (D-26).
+    let out = server.fux(&["(pane 999)"])?;
+    assert_eq!(out.status, 1);
+    assert!(out.stderr.starts_with("fux: no-pane: "), "{}", out.stderr);
+    let kept = r#"(first (panes (workspace "keep")))"#;
+    let number = server.ok(&[kept])?;
+    let number = number.trim().trim_start_matches('%');
+    let number = number.split(':').next().unwrap_or_default();
+    assert_eq!(
+        server.ok(&[&format!("(data-text (pane {number}))")])?,
+        server.ok(&[&format!("(data-text {kept})")])?
+    );
     Ok(())
 }
 

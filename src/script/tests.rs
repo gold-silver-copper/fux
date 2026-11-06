@@ -2,8 +2,8 @@ use super::*;
 use crate::TestResult;
 struct NoRequests;
 impl Asks for NoRequests {
-    fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
-        Err(Failed::new(Code::Client, "unexpected request"))
+    fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+        testing::found(asked).ok_or_else(|| Failed::new(Code::Client, "unexpected request"))
     }
 }
 #[test]
@@ -887,11 +887,9 @@ fn layout_scalar_refusals_do_not_copy_retained_strings() -> TestResult {
         peak: usize,
     }
     impl Asks for Scalars {
-        fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
-            Err(Failed::new(
-                Code::Client,
-                "invalid scalars submitted a request",
-            ))
+        fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+            testing::found(asked)
+                .ok_or_else(|| Failed::new(Code::Client, "invalid scalars submitted a request"))
         }
         fn local(
             &mut self,
@@ -1040,7 +1038,10 @@ fn a_failure_in_a_library_names_the_users_line() -> TestResult {
 fn a_typed_answer_of_another_run_is_refused() -> TestResult {
     struct Counted(usize);
     impl Asks for Counted {
-        fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+        fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+            if let Some(found) = testing::found(asked) {
+                return Ok(found);
+            }
             self.0 = self.0.saturating_add(1);
             Ok(Body::Empty.into())
         }
@@ -1090,26 +1091,28 @@ fn a_typed_answer_of_another_run_is_refused() -> TestResult {
 fn a_long_run_tells_its_first_and_latest_steps() -> TestResult {
     struct Done;
     impl Asks for Done {
-        fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
-            Ok(Body::Empty.into())
+        fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+            Ok(testing::found(asked).unwrap_or_else(|| Body::Empty.into()))
         }
     }
-    let renames: String = (1..=100)
-        .map(|n| format!("(rename (pane 1) \"n{n}\")"))
-        .collect();
-    let mut out = Vec::new();
-    let mut host = Host::new(Context::default(), None, &mut out);
-    let mut machine = Machine::source("test", &format!("{renames} (nosuch)"));
-    let failed = run(&mut machine, &mut host, &mut Done, None)
-        .err()
-        .ok_or("nosuch ran")?;
-    let said = failed.actions.join("\n");
-    assert!(
-        said.contains(r#""n1")"#) && said.contains(r#""n100")"#),
-        "{said}"
-    );
-    assert!(said.contains("and 35 more"), "{said}");
-    assert!(failed.actions.len() <= 66, "{said}");
+    for steps in [66, 100] {
+        let renames: String = (1..=steps)
+            .map(|n| format!("(rename (pane 1) \"n{n}\")"))
+            .collect();
+        let mut out = Vec::new();
+        let mut host = Host::new(Context::default(), None, &mut out);
+        let mut machine = Machine::source("test", &format!("{renames} (nosuch)"));
+        let failed = run(&mut machine, &mut host, &mut Done, None)
+            .err()
+            .ok_or("nosuch ran")?;
+        let said = failed.actions.join("\n");
+        let latest = format!("\"n{steps}\")");
+        assert!(said.contains(r#""n1")"#) && said.contains(&latest), "{said}");
+        // What it keeps and what it says went are every step.
+        let gone = steps + 1 - failed.actions.len();
+        assert!(said.contains(&format!("and {gone} more")), "{said}");
+        assert!(failed.actions.len() <= 66, "{said}");
+    }
     Ok(())
 }
 

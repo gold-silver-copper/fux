@@ -1619,6 +1619,17 @@ fn native_field(name: &str) -> String {
 /// for the tests (fux-server's among them) and the fuzz targets.
 #[cfg(any(test, feature = "in-process"))]
 pub mod testing {
+    /// A server's answer to looking up an id, for a fake server: that id.
+    #[cfg(test)]
+    pub fn found(asked: &fux_wire::protocol::Asked) -> Option<fux_wire::protocol::Reply> {
+        use fux_wire::command::{Command, Request};
+        let Request::Do(Command::Resolve { text, .. }) = &asked.request else {
+            return None;
+        };
+        let id = text.parse().ok()?;
+        Some(fux_wire::protocol::Body::Found(id).into())
+    }
+
     /// A session, as what a program's requests go to (`Session::answer`).
     pub struct InProcess<'s>(pub &'s mut fux_server::session::Session);
 
