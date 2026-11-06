@@ -236,8 +236,8 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   that owner's, SYSTEM's and Administrators' (who can't be kept out) and an inherit-only
   `CREATOR OWNER`. The socket's folder and `PATH.panes\` pass it before a record or `exe` there is
   read or run; fux's own folder passes it before a ConPTY is loaded from it.
-- **A client's checks are PR 8's:** `check_client_socket`, `listened` and `owned` exist only on
-  Unix. On Windows `fuxix::socket::connect` already refuses a pipe of another user or owner; a
+- **A client's checks were PR 8's** (written since; `listened` stays Unix's): before it, `check_client_socket`,
+  `listened` and `owned` existed only on Unix. On Windows `fuxix::socket::connect` already refuses a pipe of another user or owner; a
   client must not read `Errno::AGAIN` (every instance busy) as "a server runs": a squatter with
   busy instances gives it too. The server's `.lock` and `.server` record are what says one runs.
 - **Starting a server:** a client starts `fux __serve SOCKET ENTRIES` and reads `READY` on its

@@ -114,8 +114,12 @@ function PressTill($keys, $what, $test) {
 Waited 'the ConPTY fetched' { Get-ChildItem $dir -Recurse -Filter OpenConsole.exe -ErrorAction SilentlyContinue } 90
 Start-Sleep 5
 Shot 'attached'
-PressTill "echo typed-in-a-pane> `"$marks\typed.txt`"{ENTER}" 'the typed command run' { Test-Path "$marks\typed.txt" }
-Get-Content "$marks\typed.txt"
+# FUX_PANE is set only in a pane of fux's: the bare cmd behind it, were fux
+# gone, leaves it unexpanded. The space keeps a last digit off the `>`.
+PressTill "echo pane={%}FUX_PANE{%} > `"$marks\typed.txt`"{ENTER}" 'the typed command run' { Test-Path "$marks\typed.txt" }
+$typed = Get-Content "$marks\typed.txt" -Raw
+$typed
+if ($typed -notmatch 'pane=\d+:\d+') { Shot 'failed'; throw "typed outside a pane of fux's: $typed" }
 Shot 'typed'
 
 [void][Fux.Desktop]::MoveWindow($handle, 40, 40, 700, 420, $true)
@@ -124,6 +128,7 @@ PressTill "mode con> `"$marks\mode.txt`"{ENTER}" 'the size in the pane' { (Test-
 Get-Content "$marks\mode.txt" | Select-String 'Lines|Columns'
 Shot 'resized'
 
+if (Test-Path "$marks\after.txt") { Shot 'failed'; throw 'fux ended before its detach' }
 Press '^bd'
 Waited 'the detach' { Test-Path "$marks\after.txt" }
 Start-Sleep 1

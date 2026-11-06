@@ -548,8 +548,8 @@ read-file`. `X warn` prints on stderr:
   || fux start`. One `fux` command talks to one server; join two with a
   pipe: `fux %1 capture | FUX_SOCKET="$XDG_RUNTIME_DIR/fux/b.sock" fux %1
   input paste send-keys`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
-  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `.sock` files:
-  `status` each.
+  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`; on Windows `%LOCALAPPDATA%\fux`) are its
+  `.sock` files, on Windows the `.server` records beside the pipes they name: `status` each.
 
   ```sh
   for s in "${XDG_RUNTIME_DIR-$TMPDIR}"/fux/*.sock; do FUX_SOCKET=$s fux status; done
@@ -585,7 +585,7 @@ read-file`. `X warn` prints on stderr:
   choose; `fux start && fux --file FILE` makes them again on a fresh server,
   never its processes' state. That is another server run: versions from
   before it are refused.
-- fux is controlled through its Unix socket alone: a sandbox that denies
+- fux is controlled through its Unix socket (on Windows, its named pipe) alone: a sandbox that denies
   `connect` to it (Codex's denies every `connect`) cannot drive fux. Run
   fux commands outside such a sandbox, or allow the socket.
 - `@2 attach` shows that tab's first pane (its zoomed one, if zoomed); `%3 attach` focuses that pane.
