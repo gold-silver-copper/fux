@@ -43,11 +43,13 @@ impl From<fux_wire::code::Error> for Failure {
         Self::new(e.code(), e.to_string())
     }
 }
+#[cfg(test)]
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.code, self.message)
     }
 }
+#[cfg(test)]
 impl std::error::Error for Failure {}
 pub enum Done<A> {
     Now,
