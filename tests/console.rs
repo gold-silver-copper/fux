@@ -89,7 +89,8 @@ mod windows {
     }
 
     fn driver() -> ExitCode {
-        let conpty = Path::new(env!("CARGO_TARGET_TMPDIR")).join("console-conpty");
+        let run = std::process::id();
+        let conpty = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("console-conpty-{run}"));
         if let Err(why) = package_in(&conpty).and_then(|()| {
             pty::fetch(&conpty).map_err(text)?;
             pty::load(&conpty).map_err(text)
@@ -138,8 +139,10 @@ mod windows {
 
     impl Place {
         fn new(name: &str) -> Result<Place, String> {
-            let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("console-{name}"));
-            let _ = std::fs::remove_dir_all(&dir);
+            // Of this run alone: another user's run can't be cleared away,
+            // and its logs would read as this one's.
+            let run = std::process::id();
+            let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("console-{name}-{run}"));
             std::fs::create_dir_all(dir.join("appdata").join("fux")).map_err(text)?;
             let folder = fux_server::socket::folder().map_err(text)?;
             let home = dir.join(folder);
