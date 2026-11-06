@@ -535,7 +535,7 @@ fn start(
             }
             if programs.len() > 1 {
                 let show = format!(
-                    r#"(show (client (get (first (get (list-session) "clients")) "id")) (pane "{last}"))"#
+                    r#"(show (get (first (get (list-session) "clients")) "id") (pane "{last}"))"#
                 );
                 session.command(place, &[&show])?;
             }
