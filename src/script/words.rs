@@ -2542,11 +2542,9 @@ mod tests {
         ] {
             cases.push(("type", format!("str c1 client {suffix}")));
         }
-        let layouts = concat!(
-            "require ",
-            env!("CARGO_MANIFEST_DIR"),
-            "/recipes/layouts.fux"
-        );
+        // In a bare word `\\` escapes: Windows' path goes with `/`.
+        let root = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
+        let layouts = format!("require {root}/recipes/layouts.fux");
         for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
             for target in ["1", "%1", "+1", "all", "str tab", "str c1 client"] {
                 cases.push(("fail", format!("{layouts} {target} {recipe}")));

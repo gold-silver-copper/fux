@@ -180,6 +180,8 @@ programs built on the libraries (below) are the acceptance test for the whole po
   peer. The root `tests/*.rs` stay Unix's whole: `tests/support` drives a client over a nonblocking
   `UnixStream`, holds a `Slave::spawn`'s `Child`, asks `ps`, and every test scripts `/bin/sh`.
   `tests/windows.rs` and `tests/console.rs` stand in for them on Windows.
+- **A bare word's `\` escapes in fuxth,** on Windows as on Unix: `C:\work` in a `.fux` file or a
+  command line is `C:work`. Quote a Windows path (`'C:\work'`), or write it with `/`.
 - **`fux` must not link `user32`:** Windows' documentation says such a process isn't sent logoff or
   shutdown events (from the docs, not tested). Nothing here does.
 - **Restoring on a panic can't come first:** `LEAVE` needs VT processing still on, or a console without

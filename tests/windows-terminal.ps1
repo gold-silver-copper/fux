@@ -41,9 +41,9 @@ function Waited($what, $test, $seconds = 40) {
     throw "no $what in $seconds s"
 }
 
-# What holds the foreground on a first logon (the arm image's privacy
-# screen) and a terminal nobody asked for.
-Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# What holds the foreground on a first logon: the arm image's privacy
+# screen, and its WSL prompt, which also opens later (see `PressTill`).
+Get-Process WWAHost, wsl, wslhost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 # And the Start menu, which ending it leaves open.
 [Fux.Desktop]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero)
@@ -93,19 +93,34 @@ function Press($keys) {
     [System.Windows.Forms.SendKeys]::SendWait($keys)
 }
 
+# Types `keys` till `test` holds: a window of the image's own can open and
+# take the keyboard between the two.
+function PressTill($keys, $what, $test) {
+    foreach ($try in 1..4) {
+        Get-Process wsl, wslhost -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Press $keys
+        $until = (Get-Date).AddSeconds(8)
+        while ((Get-Date) -lt $until) {
+            if (& $test) { return }
+            Start-Sleep -Milliseconds 250
+        }
+        "typing again: no $what"
+    }
+    Shot 'failed'
+    throw "no $what"
+}
+
 # fux up: a first run fetches the ConPTY, then a pane's cmd prompts.
 Waited 'the ConPTY fetched' { Get-ChildItem $dir -Recurse -Filter OpenConsole.exe -ErrorAction SilentlyContinue } 90
 Start-Sleep 5
 Shot 'attached'
-Press "echo typed-in-a-pane> `"$marks\typed.txt`"{ENTER}"
-Waited 'the typed command to run' { Test-Path "$marks\typed.txt" }
+PressTill "echo typed-in-a-pane> `"$marks\typed.txt`"{ENTER}" 'the typed command run' { Test-Path "$marks\typed.txt" }
 Get-Content "$marks\typed.txt"
 Shot 'typed'
 
 [void][Fux.Desktop]::MoveWindow($handle, 40, 40, 700, 420, $true)
 Start-Sleep 2
-Press "mode con> `"$marks\mode.txt`"{ENTER}"
-Waited 'the pane to say its size' { (Test-Path "$marks\mode.txt") -and ((Get-Content "$marks\mode.txt" -Raw) -match 'Columns') }
+PressTill "mode con> `"$marks\mode.txt`"{ENTER}" 'the size in the pane' { (Test-Path "$marks\mode.txt") -and ((Get-Content "$marks\mode.txt" -Raw) -match 'Columns') }
 Get-Content "$marks\mode.txt" | Select-String 'Lines|Columns'
 Shot 'resized'
 
@@ -113,8 +128,7 @@ Press '^bd'
 Waited 'the detach' { Test-Path "$marks\after.txt" }
 Start-Sleep 1
 Shot 'detached'
-Press "echo prompt-back> `"$marks\prompt.txt`"{ENTER}"
-Waited 'the prompt back after the detach' { Test-Path "$marks\prompt.txt" }
+PressTill "echo prompt-back> `"$marks\prompt.txt`"{ENTER}" 'the prompt back' { Test-Path "$marks\prompt.txt" }
 Get-Content "$marks\prompt.txt"
 Shot 'prompt'
 Get-Process WindowsTerminal -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq $window.Id } | Stop-Process -Force
