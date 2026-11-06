@@ -19,7 +19,7 @@ use fux_wire::code::{Error, Raise, fail};
 use fux_wire::command::{self, Input, Mouse, Run, Version};
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId};
-use fuxix::process::Job;
+use fuxix::process::{Delivery, Job, Reach, Scan};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -94,6 +94,11 @@ pub struct Host {
     /// A program whose exit is told, its terminal still read till it is
     /// empty or closed (`read_left`); then its pane is frozen (D-90).
     leftover: Option<Child>,
+    /// Till when an ended program's last output may still be coming
+    /// (`fuxix::pty::SETTLE`): its terminal found empty till then is
+    /// waited on, not done with, and past then is done with, written to
+    /// or not.
+    settling: Option<Instant>,
     dying: Vec<Dying>,
     /// Programs killed and not yet reaped.
     killed: Vec<Job>,
@@ -104,6 +109,9 @@ pub struct Host {
     shown: bool,
     /// Its facts, title, counts and size as last sent its server.
     sent_facts: Option<Facts>,
+    /// The program whose handle its server was last offered a copy of
+    /// (`offer`, Windows, D-134).
+    offered: Option<fuxix::process::Identity>,
     /// Something happened since its server was last sent its facts.
     dirty: bool,
     /// Counts what happened to it, so that a connection watching its
@@ -195,6 +203,8 @@ impl Host {
             closed: None,
             shown: false,
             sent_facts: None,
+            offered: None,
+            settling: None,
             dirty: true,
             revision: 0,
             whole: 0,
@@ -400,7 +410,7 @@ impl Host {
         if let Some(mut child) = taken.or_else(|| self.leftover.take()) {
             if exiting.is_none() {
                 child.leader.closed();
-                child.leader.hang_up();
+                child.hang_up();
             }
             match exiting.is_none() || draining {
                 true => old = Some(child),
@@ -489,7 +499,7 @@ impl Host {
             if closed {
                 child.leader.closed();
             }
-            child.leader.hang_up();
+            child.hang_up();
             let deadline = crate::after(now, GRACE);
             self.dying.push(Dying { child, deadline });
         }
@@ -558,6 +568,8 @@ impl Host {
         // since too. Its terminal is read on after its exit is told, a turn
         // at a time, till it is empty or closed (D-90).
         if pane.exiting.is_none() {
+            let settle = fuxix::pty::SETTLE;
+            self.settling = (!settle.is_zero()).then(|| crate::after(now, settle));
             let mut pane = self.pane_mut();
             pane.exiting(ended);
             pane.drain(true);
@@ -611,11 +623,12 @@ impl Host {
     /// ends, or is respawned over (`Replacement::old`); the rest on its
     /// next turns (`fire`), till its terminal is empty or closed. One that
     /// goes on writing there is read for as long as it does, a turn at a
-    /// time. `empty_ends`: whether a turn that finds it empty ends that;
+    /// time, or till `settling` ends, which bounds it on Windows, where a
+    /// console's close waits on this. `empty_ends`: whether a turn that finds it empty ends that;
     /// the read at an exit's first word does not, as the pane's own read
     /// may have just emptied it.
     fn read_left(&mut self, empty_ends: bool, now: Instant) {
-        self.read_left_with(empty_ends, |fd, bytes| fuxix::io::read(fd, bytes), now);
+        self.read_left_with(empty_ends, read_master, now);
     }
 
     /// `read_left`, reading its terminal with `read`. A read that fails is
@@ -652,8 +665,9 @@ impl Host {
             self.output(&left, now);
         }
         match drain {
-            Drain::More => return,
-            Drain::Empty if !empty_ends => return,
+            Drain::More if self.settling.is_none_or(|at| now < at) => return,
+            Drain::More => {}
+            Drain::Empty if !empty_ends || self.settling.is_some_and(|at| now < at) => return,
             Drain::Empty | Drain::Closed => {}
             Drain::Failed(error) => {
                 let mut pane = self.pane_mut();
@@ -664,6 +678,7 @@ impl Host {
             }
         }
         self.pane_mut().drain(false);
+        self.settling = None;
         if let Some(r) = &mut self.respawning
             && let Some(child) = r.old.take()
         {
@@ -676,6 +691,22 @@ impl Host {
                 deadline: now,
             });
         }
+    }
+
+    /// The terminal whose last output is awaited (`settling`), nothing
+    /// read waiting: polled, so that what comes, or its close, is read as
+    /// it comes, not when the time is up.
+    fn settling(&self) -> Option<&Child> {
+        self.settling
+            .filter(|_| self.pane.draining && !self.pane.has_unread())?;
+        let old = self.respawning.as_ref().and_then(|r| r.old.as_ref());
+        (old.or(self.leftover.as_ref())).or_else(|| self.pane.process().child())
+    }
+
+    /// Its output, awaited (`settling`), came or closed.
+    fn settled(&mut self, now: Instant) {
+        self.read_left(true, now);
+        self.after_turn(now);
     }
 
     /// Output from its program.
@@ -758,7 +789,8 @@ impl Host {
         let respawn = self.respawning.is_some();
         let frame = (self.pane.frame_deadline().filter(|_| !respawn)).map(|at| (at, Timer::Frame));
         let unread = (self.pane.unread_due()).or(self.respawning.as_ref().map(|r| r.since));
-        let unread = unread.map(|at| (at, Timer::Unread));
+        let settling = self.settling().and(self.settling);
+        let unread = settling.or(unread).map(|at| (at, Timer::Unread));
         let grace = (self.dying.iter().map(|d| d.deadline).min()).map(|at| (at, Timer::Grace));
         [frame, unread, grace].into_iter().flatten()
     }
@@ -1144,6 +1176,61 @@ impl Host {
         if let Some(status) = pane.process().exit_status() {
             return Err(ended(target, status));
         }
+        let shell = !matches!(pane.runs, Runs::Explicit(_));
+        let version = self.version();
+        match fuxix::process::delivery(signal, shell) {
+            Delivery::Group => self.signal_group(signal)?,
+            // Written as keys after what was typed before them.
+            Delivery::Keys(keys) => {
+                (self.pane_mut()).push_with(|_, out| out.extend_from_slice(keys))
+            }
+            Delivery::Attached => {
+                let child = self.pane.process().child();
+                let sent = child.map(|child| child.leader.kill_as(Reach::Attached));
+                let sent = sent.ok_or_else(|| {
+                    fail(Raise::OnlyShell, format!("nothing is running in {target}"))
+                })?;
+                // A console that could not be read is no proof the shell
+                // is alone there.
+                if let Scan::Failed(errno) = sent.scan {
+                    let why = format!("{target}: its console's processes can't be listed: {errno}");
+                    return Err(fail(Raise::Signal, why));
+                }
+                let refused: Vec<String> = (sent.failed.iter())
+                    .filter(|(_, errno)| *errno != fuxix::Errno::SRCH)
+                    .map(|(pid, errno)| format!("{pid}: {errno}"))
+                    .collect();
+                if !refused.is_empty() {
+                    let why = format!("ending its processes: {}", refused.join(", "));
+                    return Err(fail(Raise::Signal, why));
+                }
+                if sent.scan == Scan::Complete && sent.found == 0 {
+                    let message = format!("nothing is running in {target} but its shell");
+                    return Err(fail(Raise::OnlyShell, message));
+                }
+            }
+            Delivery::Job => {
+                let child = self.pane.process().child();
+                let sent = child.map(|child| child.leader.kill_as(Reach::Session));
+                if let Some((_, errno)) = sent.and_then(|sent| sent.failed.into_iter().next()) {
+                    return Err(fail(Raise::Signal, format!("ending its job: {errno}")));
+                }
+            }
+            Delivery::Unsupported => {
+                let why = format!("SIG{} has no counterpart on this system", signal.name());
+                return Err(fail(Raise::Signal, why));
+            }
+        }
+        self.pane_mut().tell_signalled(signal);
+        Ok(Answered::Acted(version))
+    }
+
+    /// Sends `signal` to the foreground group of its terminal, as Unix does:
+    /// the shell's job, or the program it was started with; never the shell
+    /// of a pane that runs one.
+    fn signal_group(&mut self, signal: fuxix::process::Signal) -> Result<(), Error> {
+        let pane = &self.pane;
+        let target = pane.id();
         let program = match (&pane.runs, pane.process().child()) {
             (Runs::Explicit(_), Some(child)) => Some(child.leader.pid()),
             _ => None,
@@ -1157,11 +1244,8 @@ impl Host {
             let message = format!("nothing is running in {target} but its shell");
             fail(Raise::OnlyShell, message)
         })?;
-        let version = self.version();
         fuxix::process::kill_group(group, signal)
-            .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))?;
-        self.pane_mut().tell_signalled(signal);
-        Ok(Answered::Acted(version))
+            .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))
     }
 
     /// A capture of its screen, `history` rows before it, as `view` asks:
@@ -1248,7 +1332,24 @@ impl Host {
         self.awaiting.clear();
         self.held.clear();
         self.sent_facts = None;
+        self.offered = None;
         self.changed();
+    }
+
+    /// Its program's handle, for its server to copy (D-134), if it has a
+    /// program its server was not offered yet: Windows' alone, as a Unix
+    /// server adopts its panes' orphans instead.
+    pub fn offer(&mut self) -> Option<crate::link::Offered> {
+        // A respawn's as soon as it runs, not once what the old one left
+        // is read: a crash till then ends it too.
+        let new = self.respawning.as_ref().and_then(|r| r.process.child());
+        let child = new.or_else(|| self.pane.process().child())?;
+        let offer = child.leader.offer()?;
+        if self.offered == Some(offer.program) {
+            return None;
+        }
+        self.offered = Some(offer.program);
+        Some(crate::link::Offered::from(offer))
     }
 
     /// What it says of itself as a server takes it back.
@@ -1347,7 +1448,7 @@ impl Host {
         if self.sent_facts.as_ref() == Some(&now) {
             return None;
         }
-        let pid = (pane.process().child()).map(|c| c.leader.pid().as_raw());
+        let pid = (pane.process().child()).map(|c| c.leader.pid().as_i32());
         let update = Update {
             counts: now.2,
             title: now.1.clone(),
@@ -1423,11 +1524,16 @@ impl Host {
 
 /// What the tests and the tools look at, and do, in a host held in their
 /// process (`Session::host_mut`).
-#[cfg(any(test, feature = "in-process"))]
+#[cfg(any(all(test, unix), feature = "in-process"))]
 impl Host {
     /// Whether a respawn is under way.
     pub fn respawning(&self) -> bool {
         self.respawning.is_some()
+    }
+    /// Its ended program's last output is awaited till `at`.
+    #[cfg(all(test, unix))]
+    pub(crate) fn settle_till(&mut self, at: Instant) {
+        self.settling = Some(at);
     }
     /// Whether a program whose exit is told is still read.
     pub fn leftover(&self) -> bool {
@@ -1444,24 +1550,24 @@ impl Host {
         }
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         self.pane_mut().set_process(process)
     }
     /// Starts real programs from now on, told `socket`, or none.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn starts(&mut self, socket: Option<PathBuf>) {
         self.socket = socket;
     }
     /// The program a respawn under way started, and its fresh pane's
     /// history budget.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn replacement(&self) -> Option<(Option<&Child>, usize)> {
         let r = self.respawning.as_ref()?;
         Some((r.process.child(), r.fresh.history_bytes()))
     }
     /// The program a respawn under way respawns over is `old`.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn respawned_over(&mut self, old: Child) {
         if let Some(r) = &mut self.respawning {
             r.old = Some(old);
@@ -1469,7 +1575,7 @@ impl Host {
     }
     /// A respawn under way over `old`, into `fresh`, its grace over: as
     /// one over a program that ignores the hangup.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn respawning_over(&mut self, fresh: Pane, old: Child, now: Instant) {
         if let Process::Reading(child) = self.set_process(Process::Respawning) {
             self.dying.push(Dying {
@@ -1489,7 +1595,7 @@ impl Host {
         });
     }
     /// The programs it started and has not reaped.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn children(&self) -> Vec<Pid> {
         (self.pane.process().child().into_iter())
             .chain(
@@ -1686,7 +1792,10 @@ struct Peer {
 /// what reaches its socket: a connection's process showing its screen, or,
 /// its server gone without closing it (a crash), a server of its run taking
 /// it back (D-124), one at a time.
-pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
+pub fn serve(
+    mut listener: crate::socket::PaneListener,
+    socket: Option<PathBuf>,
+) -> Result<(), String> {
     use crate::link::{End, FromSide, Read, ToSide};
     use fuxix::poll::{Events, PollFd};
     if let Err(errno) = fuxix::process::adopt_orphans() {
@@ -1694,15 +1803,8 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
     }
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| format!("the signal pipe: {e}"))?;
-    let socket = (listener.local_addr().ok())
-        .and_then(|address| address.as_pathname().map(std::path::Path::to_owned));
-    // Listened on again, by it: one that reaches it is told its pid, not
-    // the server's that made the socket (`SO_PEERCRED`).
-    fuxix::socket::listen(&listener, 16).map_err(|e| format!("its socket: {e}"))?;
-    let (stream, _) = listener.accept().map_err(|e| format!("its server: {e}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("its socket: {e}"))?;
+    crate::socket::load_terminals();
+    let stream = crate::socket::pane_first(&mut listener)?;
     let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
     // A server gone before its first word started nothing: it ends, and
     // the next server finds it gone.
@@ -1725,6 +1827,9 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
     // Facts sent and not yet taken: its first, which its server waits for
     // as it starts it.
     let mut waiting = false;
+    if let Some(offer) = host.offer() {
+        end.send(&FromPane::Offer(offer));
+    }
     if let Some(first) = host.update() {
         end.send(&FromPane::Update(Box::new(first)));
         waiting = true;
@@ -1781,6 +1886,9 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             for report in std::mem::take(&mut reports) {
                 end.send(&report);
             }
+            if let Some(offer) = host.offer() {
+                end.send(&FromPane::Offer(offer));
+            }
             if !waiting
                 && due
                 && let Some(update) = host.update()
@@ -1833,7 +1941,10 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             .map(|end| fds.push(PollFd::new(&end.stream, writes(!end.out.is_empty()))));
         let reaped = fds.push(PollFd::new(children.reader(), Events::IN));
         let reached = fds.push(PollFd::new(&listener, Events::IN));
-        let program = reading.map(|child| fds.push(PollFd::new(&child.master, writes(host.input))));
+        let settling = host.settling();
+        let program = (reading
+            .map(|child| fds.push(PollFd::new(&child.master, writes(host.input)))))
+        .or_else(|| settling.map(|child| fds.push(PollFd::new(&child.master, Events::IN))));
         let peered: Vec<_> = (peers.iter())
             .map(|peer| {
                 fds.push(PollFd::new(
@@ -1884,22 +1995,26 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
             host.reap(now);
         }
         if !reached.is_empty() {
-            while let Ok((stream, _)) = listener.accept() {
-                let ours = fuxix::socket::peer(&stream).is_ok_and(|peer| peer.user.is_current());
+            while let Ok(reached) = crate::socket::accept(&mut listener) {
+                let ours = crate::socket::peer(&reached).is_ok_and(|peer| peer.user.is_current());
                 if ours
                     && host.closed.is_none()
-                    && let Ok(end) = End::new(stream)
+                    && let Ok(end) = crate::socket::serve(reached).and_then(End::new)
                 {
                     peers.push(Peer { end, side: None });
                 }
             }
         }
         if !program.is_empty() {
-            if program.intersects(Events::OUT) {
-                host.write_input();
-            }
-            if program.intersects(Events::IN | Events::HUP | Events::ERR) {
-                read_program(&mut host, &mut buffer, &mut clock, now);
+            if host.settling().is_some() {
+                host.settled(now);
+            } else {
+                if program.intersects(Events::OUT) {
+                    host.write_input();
+                }
+                if program.intersects(Events::IN | Events::HUP | Events::ERR) {
+                    read_program(&mut host, &mut buffer, &mut clock, now);
+                }
             }
         }
         // What reached it: each peer's words, in order, then its end.
@@ -1988,6 +2103,11 @@ pub fn serve(listener: std::os::unix::net::UnixListener) -> Result<(), String> {
     }
 }
 
+/// Reads what `master`'s terminal holds into `bytes`.
+fn read_master(master: &fuxix::pty::Master, bytes: &mut [u8]) -> Result<usize, fuxix::Errno> {
+    fuxix::io::read(master, bytes)
+}
+
 /// Reads its program's terminal, `READ` at most, into its screen.
 fn read_program(host: &mut Host, buffer: &mut [u8], clock: &mut Clock, now: Instant) {
     let mut total = 0usize;
@@ -2021,7 +2141,7 @@ fn read_program(host: &mut Host, buffer: &mut [u8], clock: &mut Clock, now: Inst
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     type TestResult = Result<(), Box<dyn std::error::Error>>;

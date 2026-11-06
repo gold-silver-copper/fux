@@ -444,6 +444,8 @@ mod windows {
         shell.read_until(deadline, |out| contains(out, b">"))?;
         let exe = std::env::current_exe().map_err(text)?;
         shell.write(format!("start /b \"\" \"{}\"\r", exe.display()).as_bytes())?;
+        // Its child is started, so no kill lands in the middle of that.
+        shell.read_until(deadline, |out| contains(out, b"ready"))?;
         let on_console = loop {
             let attached = shell.job.attached();
             let members = shell.job.members();
@@ -469,7 +471,17 @@ mod windows {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let members = shell.job.members();
+        // The job's list catches up with a process's end a moment after the
+        // console's does (master f31d365fe's CI saw both still listed):
+        // what it settles to, by the deadline, is what is checked.
+        let members = loop {
+            let members = shell.job.members();
+            let settled = members.pids.len() == 1 && members.pids != on_console.pids;
+            if settled || Instant::now() > deadline {
+                break members;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
         if members.pids.len() != 1 || members.pids == on_console.pids {
             return Err(format!("after kill(Attached), members {members:?}"));
         }

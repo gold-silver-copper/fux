@@ -35,7 +35,6 @@ compile_error!("fuxix supports Linux, Android, macOS and Windows");
 
 mod allocation;
 mod errno;
-#[cfg(unix)]
 pub mod file;
 pub mod io;
 pub mod poll;

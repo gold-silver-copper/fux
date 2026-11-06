@@ -1,10 +1,15 @@
 //! Processes on Windows: their IDs, a child's end told as `Chld`, and a
 //! pseudo console's program in its job object ([`Job`]).
-use super::{Reach, Scan, Sent, Status, TREE_MAX, Tree};
+use super::{Identity, Offer, Reach, Scan, Sent, Status, TREE_MAX, Tree};
 use crate::errno::{Errno, Result};
 use std::fmt;
 use std::num::NonZeroU32;
 use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
+
+mod children;
+mod cwd;
+pub use children::*;
+pub use cwd::cwd_observed;
 
 /// A process ID: a nonzero `DWORD`. 0 is the System Idle Process, which
 /// fux never names.
@@ -25,6 +30,27 @@ impl Pid {
 
     pub fn as_raw(self) -> u32 {
         self.0.get()
+    }
+
+    /// `raw`, a pid as a `u32` holds one, as a process ID if it is one.
+    pub fn from_u32(raw: u32) -> Option<Pid> {
+        Pid::from_raw(raw)
+    }
+
+    /// It as a `u32`, Windows' own type for it.
+    pub fn as_u32(self) -> u32 {
+        self.0.get()
+    }
+
+    /// `raw`, a pid as fux's own messages carry one (an `i32`, the same
+    /// 32 bits).
+    pub fn from_i32(raw: i32) -> Option<Pid> {
+        Pid::from_raw(raw.cast_unsigned())
+    }
+
+    /// It as fux's own messages carry a pid: the same 32 bits as an `i32`.
+    pub fn as_i32(self) -> i32 {
+        self.0.get().cast_signed()
     }
 }
 
@@ -66,7 +92,7 @@ pub fn watch(process: impl AsHandle) -> Result<Watch> {
         RegisterWaitForSingleObject(
             &mut wait,
             process.as_raw_handle(),
-            Some(ended),
+            Some(watched_ended),
             std::ptr::null(),
             INFINITE,
             WT_EXECUTEONLYONCE | WT_EXECUTEINWAITTHREAD,
@@ -82,7 +108,7 @@ pub fn watch(process: impl AsHandle) -> Result<Watch> {
 }
 
 /// What the thread pool runs when a watched child ends.
-unsafe extern "system" fn ended(_: *mut core::ffi::c_void, _: bool) {
+unsafe extern "system" fn watched_ended(_: *mut core::ffi::c_void, _: bool) {
     // A wake that can't be posted has nobody to tell.
     let _ = crate::signal::tell(super::Signal::Chld);
 }
@@ -115,6 +141,14 @@ pub struct Job {
     process: OwnedHandle,
     job: OwnedHandle,
     leader: Pid,
+    /// Its leader's end, told as `Chld`, as Unix tells a child's.
+    _watch: Watch,
+}
+
+impl fmt::Debug for Watch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Watch")
+    }
 }
 
 /// A new job object for one program: breakaway allowed, no kill-on-close.
@@ -150,12 +184,16 @@ pub(crate) fn job_object() -> std::io::Result<OwnedHandle> {
 }
 
 impl Job {
-    pub(crate) fn new(process: OwnedHandle, job: OwnedHandle, leader: Pid) -> Job {
-        Job {
+    /// The job `job` that `leader`, whose handle is `process`, leads,
+    /// its leader's end told as `Chld` from now on.
+    pub(crate) fn new(process: OwnedHandle, job: OwnedHandle, leader: Pid) -> Result<Job> {
+        let watch = watch(&process)?;
+        Ok(Job {
             process,
             job,
             leader,
-        }
+            _watch: watch,
+        })
     }
 
     /// Its leader's pid.
@@ -240,12 +278,14 @@ impl Job {
             },
             Reach::Attached => {
                 let attached = self.attached();
+                let found = attached.pids.len();
                 let failed = (attached.pids.into_iter())
                     .filter_map(|pid| Some((pid, self.terminate_member(pid).err()?)))
                     .collect();
                 return Sent {
                     scan: attached.scan,
                     failed,
+                    found,
                 };
             }
         };
@@ -256,6 +296,7 @@ impl Job {
                 .map(|errno| (self.leader, errno))
                 .into_iter()
                 .collect(),
+            found: 0,
         }
     }
 
@@ -416,6 +457,63 @@ fn terminate(process: &OwnedHandle) -> Result<()> {
 /// is taken as handled, so none ends this process.
 unsafe extern "system" fn swallow(_: u32) -> windows_sys::core::BOOL {
     1
+}
+
+/// Who `process`, a handle with `PROCESS_QUERY_LIMITED_INFORMATION`, is.
+pub(crate) fn identity_of(process: &OwnedHandle) -> std::io::Result<Identity> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetProcessId, GetProcessTimes};
+    // SAFETY: the handle is open; it touches no memory.
+    let pid = Pid::from_raw(unsafe { GetProcessId(process.as_raw_handle()) })
+        .ok_or_else(std::io::Error::last_os_error)?;
+    let [mut made, mut ended, mut kernel, mut user] = [FILETIME::default(); 4];
+    // SAFETY: the handle is open for querying; each time is written once.
+    let got = unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &mut made,
+            &mut ended,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if got == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let created = u64::from(made.dwHighDateTime) << 32 | u64::from(made.dwLowDateTime);
+    Ok(Identity { pid, created })
+}
+
+impl Job {
+    /// What this process offers another of its leader, to [`adopt`] a
+    /// copy of its handle: who it is, and the handle's value here, which
+    /// stays its own while this job lives.
+    /// `None` only if its handle or identity can't be read.
+    pub fn offer(&self) -> Option<Offer> {
+        Some(Offer {
+            program: identity_of(&self.process).ok()?,
+            handle: u64::try_from(self.process.as_raw_handle().addr()).ok()?,
+        })
+    }
+}
+
+/// Windows has no sessions: no process has one to name.
+pub fn session(_pid: Pid) -> Option<Pid> {
+    None
+}
+
+/// How fux's signals reach a pane's programs on Windows (D-136), which has
+/// no signals: a key on the console, the console's processes ended, the
+/// job ended, or refused.
+pub fn delivery(signal: super::Signal, shell: bool) -> super::Delivery {
+    use super::{Delivery, Signal};
+    match (signal, shell) {
+        (Signal::Int, _) => Delivery::Keys(b"\x03"),
+        (Signal::Quit, _) | (Signal::Term, true) => Delivery::Keys(crate::pty::BREAK),
+        (Signal::Kill, true) => Delivery::Attached,
+        (Signal::Term | Signal::Kill, false) => Delivery::Job,
+        _ => Delivery::Unsupported,
+    }
 }
 
 /// Its leader's process handle: to [`watch`] it.

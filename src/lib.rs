@@ -6,22 +6,32 @@
 //! and the `fux` binary, which also runs the server (`fux __serve`). The
 //! server is `fux-server`, and what the two say to each other is
 //! `fux-wire`.
+// The client is Unix's till the next step of the Windows port (WINDOWS.md,
+// PR 8): on Windows the binary runs the server's own processes alone.
+#[cfg(unix)]
 pub mod client;
+#[cfg(unix)]
 pub mod client_state;
+#[cfg(unix)]
 mod help;
+#[cfg(unix)]
 pub mod keymap;
+#[cfg(unix)]
 pub mod screens;
+#[cfg(unix)]
 pub mod script;
 
 use fux_server::{server, socket};
-use fux_wire::{code, command, json::Json, protocol};
+use fux_wire::{code, command};
+#[cfg(unix)]
+use fux_wire::{json::Json, protocol};
 use std::io::Write;
 use std::process::ExitCode;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod testing {
     /// A code value of `words`, split at spaces, as `code … end` around
     /// them reads them: for tests, as no word turns text into code.
@@ -38,8 +48,46 @@ static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
 
 /// The command line of the `fux` binary: no words attaches; `-` runs the
 /// fuxth on stdin; `--file FILE ARGS…` runs a file; any other words are a
-/// fuxth program.
+/// fuxth program. On Windows, for now, only the server's own processes
+/// run (`__serve`, `__pane`, `__conn taken`).
 pub fn main() -> ExitCode {
+    if let Some(status) = internal() {
+        return status;
+    }
+    client()
+}
+
+/// The server's own processes, when the words name one.
+fn internal() -> Option<ExitCode> {
+    let args: Option<Vec<String>> = (std::env::args_os().skip(1))
+        .map(|a| a.into_string().ok())
+        .collect();
+    let args = args?;
+    let (first, rest) = args.split_first()?;
+    match (first.as_str(), rest) {
+        (SERVE, rest) => Some(serve(rest)),
+        (fux_server::link::PANE, rest) => Some(pane(rest)),
+        #[cfg(unix)]
+        (fux_server::link::CONN, []) => Some(conn(false)),
+        (fux_server::link::CONN, [taken]) if taken == fux_server::link::TAKEN => Some(conn(true)),
+        _ => None,
+    }
+}
+
+/// fux's client is not on Windows yet (WINDOWS.md, PR 8): said once.
+#[cfg(windows)]
+fn client() -> ExitCode {
+    let _ = writeln!(
+        std::io::stderr(),
+        "fux: on Windows only fux's server runs yet (fux __serve SOCKET ENTRIES); \
+         its client comes next"
+    );
+    ExitCode::from(code::Code::Usage.status().get())
+}
+
+/// The client: a fuxth program, or attaching.
+#[cfg(unix)]
+fn client() -> ExitCode {
     let argv: Vec<_> = std::env::args_os().collect();
     // Words are text: an argument that is not is refused, not mangled.
     let args: Result<Vec<String>, _> = (argv.iter().skip(1))
@@ -49,17 +97,6 @@ pub fn main() -> ExitCode {
         let why = format!("an argument is not text: {}", arg.display());
         script::Failed::new(code::Code::Usage, why)
     });
-    if let Ok(args) = &args {
-        match args.split_first().map(|(a, rest)| (a.as_str(), rest)) {
-            Some((SERVE, rest)) => return serve(rest),
-            Some((fux_server::link::PANE, [])) => return pane(),
-            Some((fux_server::link::CONN, [])) => return conn(false),
-            Some((fux_server::link::CONN, [taken])) if taken == fux_server::link::TAKEN => {
-                return conn(true);
-            }
-            _ => {}
-        }
-    }
     let ran = match args {
         // It tells its own failure.
         Ok(args) => script::main(&args, Some(argv), &mut std::io::stdout()),
@@ -110,16 +147,11 @@ fn serve(args: &[String]) -> ExitCode {
 }
 
 /// A pane's own process, started by its server (`link::Link::start`), its
-/// socket listening on stdin.
-fn pane() -> ExitCode {
-    use std::os::fd::AsFd;
-    let listener = std::io::stdin()
-        .as_fd()
-        .try_clone_to_owned()
-        .map(std::os::unix::net::UnixListener::from);
-    let served = listener
-        .map_err(|e| format!("its socket: {e}"))
-        .and_then(fux_server::host::serve);
+/// socket listening on stdin (on Windows, the socket's path in `args`,
+/// which names the pipe it makes).
+fn pane(args: &[String]) -> ExitCode {
+    let served = socket::pane_listener(args)
+        .and_then(|(listener, socket)| fux_server::host::serve(listener, socket));
     match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -133,13 +165,11 @@ fn pane() -> ExitCode {
 /// on stdin, and on stdout the server's socket, where it takes its client
 /// (`server::Conn::spare`), or, `taken`, a client the server took itself.
 fn conn(taken: bool) -> ExitCode {
-    use std::os::fd::AsFd;
-    let server = std::io::stdin().as_fd().try_clone_to_owned();
-    let out = std::io::stdout().as_fd().try_clone_to_owned();
-    let served = match (out, server) {
-        (Ok(client), Ok(server)) if taken => fux_server::conn::taken(client.into(), server.into()),
-        (Ok(listener), Ok(server)) => fux_server::conn::wait(listener.into(), server.into()),
-        (Err(e), _) | (_, Err(e)) => Err(format!("its sockets: {e}")),
+    let served = match taken {
+        true => socket::taken_stdio()
+            .map_err(|e| format!("its sockets: {e}"))
+            .and_then(|(client, server)| fux_server::conn::taken(client, server)),
+        false => waiting(),
     };
     match served {
         Ok(()) => ExitCode::SUCCESS,
@@ -150,9 +180,29 @@ fn conn(taken: bool) -> ExitCode {
     }
 }
 
+/// A connection's process started before its client came, which takes
+/// it at the server's socket on its stdout: Unix's alone (no spare on
+/// Windows, `Server::keep_spare`).
+#[cfg(unix)]
+fn waiting() -> Result<(), String> {
+    use std::os::fd::AsFd;
+    let server = std::io::stdin().as_fd().try_clone_to_owned();
+    let out = std::io::stdout().as_fd().try_clone_to_owned();
+    match (out, server) {
+        (Ok(listener), Ok(server)) => fux_server::conn::wait(listener.into(), server.into()),
+        (Err(e), _) | (_, Err(e)) => Err(format!("its sockets: {e}")),
+    }
+}
+
+#[cfg(windows)]
+fn waiting() -> Result<(), String> {
+    Err("Windows starts no connection's process before its client".to_owned())
+}
+
 /// `fux status`: the server that answers on `socket`, its process where
 /// the system says it, and whether it is one this fux can drive; with
 /// none, why not.
+#[cfg(unix)]
 pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> Result<Json, String> {
     let path = socket.path().display().to_string();
     let ours = env!("CARGO_PKG_VERSION");

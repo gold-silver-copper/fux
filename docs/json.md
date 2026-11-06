@@ -151,7 +151,8 @@ metadata queries. Recipe adds `cwd` last, where the pane's program is
 now, which `dump` starts a shell in: null when unknown,
 `{status: known, path: ...}`, or `{status: failed, operation: cwd, errno:
 N}`. OS text uses `{encoding: utf8, text: ...}` or `{encoding: hex,
-text: ...}` for exact non-UTF-8 bytes. Replay launches new processes;
+text: ...}` for exact non-UTF-8 bytes: a Unix path's bytes, and on Windows
+a path's WTF-8 bytes (UTF-8, with a lone surrogate as its three bytes). Replay launches new processes;
 these are launch inputs, not saved process memory. The snapshot's
 `cursor` is its panes' journal cursor.
 

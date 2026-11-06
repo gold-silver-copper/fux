@@ -233,6 +233,10 @@ fn granted_master() -> Result<OwnedFd, Error> {
 #[cfg(target_os = "macos")]
 const ALLOCATE_TRIES: u32 = 4;
 
+/// How long a terminal's last output may still be coming after its
+/// program's end: none on Unix, where what it wrote is there as it exits.
+pub const SETTLE: std::time::Duration = std::time::Duration::ZERO;
+
 /// How long `grantpt` may take before it is taken to be the kernel's endless
 /// restart. It changes a node's owner and mode, which takes microseconds.
 #[cfg(target_os = "macos")]
@@ -424,6 +428,13 @@ fn path(buffer: &[libc::c_char]) -> PathBuf {
         .map(|c| u8::from_ne_bytes(c.to_ne_bytes()))
         .collect();
     PathBuf::from(OsStr::from_bytes(&bytes))
+}
+
+/// Hangs up what runs on `master`'s terminal: SIGHUP to `job`'s group and
+/// every other process in its session. On Windows the pseudo console is
+/// closed instead (there are no signals).
+pub fn hang_up(_master: &Master, job: &crate::process::Job) -> crate::process::Sent {
+    job.signal(crate::process::Signal::Hup, crate::process::Reach::Session)
 }
 
 #[cfg(test)]

@@ -244,7 +244,7 @@ jobs:
         run: |
           set -euo pipefail
           df -T "${TMPDIR:-$HOME}" 2>/dev/null || df "${TMPDIR:-$HOME}"
-          cargo test -p fux-server --locked --lib socket::tests::cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused -- --exact --nocapture
+          cargo test -p fux-server --locked --lib socket::endpoint::tests::cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused -- --exact --nocapture
 
       - name: Packaging
         # fux depends on the fux-vt beside it, so the two are packaged
@@ -349,18 +349,30 @@ jobs:
           echo "02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee  $package" | sha256sum --check
           echo "FUXIX_CONPTY_PACKAGE=$package" >> "$GITHUB_ENV"
 
-      - name: fux-vt, fuxth, fuxix and fux-wire
+      - name: fux-vt, fuxth, fuxix, fux-wire, fux-server and fux
         run: |
           set -euo pipefail
           packages=(-p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth -p fuxix -p fux-wire)
-          cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
+          cargo clippy "${packages[@]}" -p fux-server -p fux --all-targets --locked -- -D warnings
           cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings
           cargo test "${packages[@]}" --locked -- --skip another_user_is_refused
+
+      # fux's server (WINDOWS.md, PR 7), real fux driven over its pipe by
+      # a small wire client, with what each found in the log: a server
+      # killed outright and a new one driving its live panes (S3's
+      # probe), and D-136's signals. The ConPTY is CI's cached package.
+      - name: fux's server
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          cargo test -p fux --test windows --locked -- --nocapture --test-threads 1
+          tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe|ping" || true
 
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured
       # in the log: a flood both ways with signals, no lost wake-up, an idle
       # loop's CPU, a 1 ms timeout's lateness, a child's exit as Chld.
       - name: fuxix event loop probes
+        if: ${{ !cancelled() }}
         timeout-minutes: 5
         run: |
           set -euo pipefail
@@ -373,6 +385,7 @@ jobs:
       # running (only logged: an OpenConsole of the last test may still be
       # exiting).
       - name: fuxix ConPTY
+        if: ${{ !cancelled() }}
         timeout-minutes: 4
         run: |
           set -euo pipefail
@@ -385,6 +398,7 @@ jobs:
       # standard second user refused. That user is
       # made here, with a masked password only this step sees.
       - name: fuxix named pipes
+        if: ${{ !cancelled() }}
         timeout-minutes: 5
         shell: pwsh
         run: |

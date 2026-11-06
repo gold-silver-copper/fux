@@ -456,6 +456,51 @@ fn a_watched_childs_exit_comes_as_chld_after_its_output() -> Outcome {
 /// A stream dropped with a write in flight closes once that write lands,
 /// though nothing polls again: its reader gets every byte, then the end.
 #[test]
+fn a_watched_stream_learns_its_end_past_the_bytes_it_holds() -> Outcome {
+    let _turn = turn();
+    let (ours, theirs) = pipe().map_err(text)?;
+    let sent = bytes(5, 150_000);
+    let deadline = after(Duration::from_secs(20))?;
+    let mut written = 0usize;
+    while let Some(rest) = sent.get(written..).filter(|rest| !rest.is_empty()) {
+        if Instant::now() > deadline {
+            return Err(format!(
+                "{written} bytes written: a watched stream took no more"
+            ));
+        }
+        let mut fds = [
+            PollFd::new(&ours, Events::WATCH),
+            PollFd::new(&theirs, Events::OUT),
+        ];
+        fuxix::poll::poll(&mut fds, Some(Duration::from_secs(5))).map_err(text)?;
+        written = written.saturating_add(write_what_fits(&theirs, rest).map_err(text)?);
+    }
+    drop(theirs);
+    let mut fds = [PollFd::new(&ours, Events::WATCH)];
+    fuxix::poll::poll(&mut fds, Some(Duration::from_secs(10))).map_err(text)?;
+    let told = fds.first().map_or(Events::NONE, PollFd::revents);
+    if !told.intersects(Events::HUP) {
+        return Err(format!("its end was not told: {told:?}"));
+    }
+    let mut got = Vec::new();
+    let mut buffer = vec![0u8; 65536];
+    loop {
+        match read(&ours, &mut buffer).map_err(text)? {
+            0 => break,
+            n => got.extend_from_slice(buffer.get(..n).unwrap_or_default()),
+        }
+    }
+    if got != sent {
+        return Err(format!(
+            "{} of {} bytes, or out of order",
+            got.len(),
+            sent.len()
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn a_dropped_streams_last_write_and_end_arrive_with_no_poll() -> Outcome {
     let _turn = turn();
     let (ours, theirs) = pipe_for_child().map_err(text)?;

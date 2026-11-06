@@ -7,7 +7,8 @@
 use crate::errno::{Errno, Result};
 use crate::poll::{Events, KEY_IO, Source, sealed::Sealed};
 use std::cell::UnsafeCell;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::collections::VecDeque;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use windows_sys::Win32::Foundation::{
@@ -37,6 +38,13 @@ const BUFFER: usize = 64 * 1024;
 /// call gives up: a writer writing nothing over and over can't hold a
 /// poll from its timeout.
 const EMPTY_READS: usize = 16;
+
+/// How much a stream only watched for its end ([`Events::WATCH`]) keeps of
+/// what it reads, to read on to that end. A peer that wrote past it and
+/// more than its pipe holds is read no further until it is read: that end
+/// is told then, as a peer blocked on a full Unix socket has not ended.
+/// With the read buffer's own bytes, a stream holds 256 KiB at most.
+const AHEAD: usize = 3 * BUFFER;
 
 /// A byte stream on Windows: one end of a pipe fuxix made ([`pipe`],
 /// [`pipe_for_child`]), to wait on with [`crate::poll`] and read and write
@@ -97,6 +105,9 @@ struct State {
     /// written: `start..end` of the buffer.
     start: usize,
     end: usize,
+    /// A read's bytes before those, set aside while the stream was only
+    /// watched for its end ([`Op::set_aside`]).
+    ahead: VecDeque<u8>,
     /// Why it stopped: the error a call ended with, a read's end among
     /// them. Told by every later call.
     failed: Option<Errno>,
@@ -224,6 +235,21 @@ impl Op {
         got == 0 && errno.is_none()
     }
 
+    /// Moves what a finished read left aside, if it fits in [`AHEAD`], so
+    /// that the next read can look for the end behind it: whether it did.
+    fn set_aside(&self, state: &mut State) -> bool {
+        let (start, end) = (state.start, state.end);
+        let held = state.ahead.len().saturating_add(end.saturating_sub(start));
+        if state.pending || state.failed.is_some() || start >= end || held > AHEAD {
+            return false;
+        }
+        let mut ahead = std::mem::take(&mut state.ahead);
+        ahead.extend(self.bytes(state).get(start..end).unwrap_or_default());
+        state.ahead = ahead;
+        (state.start, state.end) = (0, 0);
+        true
+    }
+
     /// Writes `start..end` of the buffer: at once as far as the pipe takes
     /// it, then one call left in flight, holding `handle`.
     fn write(self: &Arc<Self>, handle: &Arc<OwnedHandle>, state: &mut State) {
@@ -325,25 +351,40 @@ impl Stream {
 }
 
 impl Sealed for Stream {
+    /// Keeps a read in flight for `IN`, and for [`Events::WATCH`] too: a
+    /// poll that wants no bytes yet still learns that the other end went,
+    /// which only a read that ends tells. What such a poll's reads bring
+    /// is set aside, [`AHEAD`] at most, for the read that follows; a read
+    /// that finishes at once queues no packet, so it goes on here.
     fn arm(&self, interest: Events) {
-        if interest.intersects(Events::IN) {
-            let mut state = lock(&self.read);
+        if !interest.intersects(Events::IN | Events::HUP) {
+            return;
+        }
+        let mut state = lock(&self.read);
+        loop {
             if !state.pending && state.start >= state.end && state.failed.is_none() {
                 self.read.read(&self.handle, &mut state);
             }
+            if interest.intersects(Events::IN) || !self.read.set_aside(&mut state) {
+                break;
+            }
         }
+        drop(state);
     }
 
     fn ready(&self, interest: Events) -> Events {
         let mut ready = Events::NONE;
         let read = lock(&self.read);
-        let buffered = read.start < read.end;
-        if interest.intersects(Events::IN) && (buffered || read.failed.is_some()) {
+        let buffered = read.start < read.end || !read.ahead.is_empty();
+        let reads = interest.intersects(Events::IN);
+        if reads && (buffered || read.failed.is_some()) {
             ready |= Events::IN;
         }
+        // Asked for no bytes, its end is told past those it holds, as
+        // Unix's `poll` tells it past those a socket holds.
         match read.failed {
-            Some(errno) if !buffered && errno.is_end() => ready |= Events::HUP,
-            Some(_) if !buffered => ready |= Events::ERR,
+            Some(errno) if !(reads && buffered) && errno.is_end() => ready |= Events::HUP,
+            Some(_) if !(reads && buffered) => ready |= Events::ERR,
             Some(_) | None => {}
         }
         drop(read);
@@ -448,6 +489,17 @@ pub fn read(source: &(impl Source + ?Sized), buffer: &mut [u8]) -> Result<usize>
     if !state.pending && state.start >= state.end && state.failed.is_none() {
         op.read(&stream.handle, &mut state);
     }
+    if !state.ahead.is_empty() {
+        let mut taken = 0usize;
+        for to in buffer.iter_mut() {
+            let Some(from) = state.ahead.pop_front() else {
+                break;
+            };
+            *to = from;
+            taken = taken.saturating_add(1);
+        }
+        return Ok(taken);
+    }
     if state.start < state.end {
         let (start, end) = (state.start, state.end);
         let read = op.bytes(&mut state).get(start..end).unwrap_or_default();
@@ -536,6 +588,25 @@ pub fn pipe_for_child() -> Result<(Stream, OwnedHandle)> {
     Ok((Stream::new(ours)?, theirs))
 }
 
+/// A pipe whose other end is overlapped too, for a child that waits on
+/// it with fuxix as this process does: it makes the handle it inherits a
+/// [`Stream`] of its own (`Stream::try_from`).
+pub fn pipe_for_fuxix_child() -> Result<(Stream, OwnedHandle)> {
+    let (ours, theirs) = named(FILE_FLAG_OVERLAPPED)?;
+    Ok((Stream::new(ours)?, theirs))
+}
+
+impl TryFrom<OwnedHandle> for Stream {
+    type Error = Errno;
+
+    /// `handle`, opened overlapped and bound to no completion port (one
+    /// this process inherited, [`pipe_for_fuxix_child`]'s), as a stream
+    /// of this process's.
+    fn try_from(handle: OwnedHandle) -> Result<Stream> {
+        Stream::new(handle)
+    }
+}
+
 /// A new named pipe's two ends, as std makes its own: one instance, local
 /// clients only, under a name unique to this process. Ours is overlapped;
 /// theirs is opened with `flags`. A name some other process holds already
@@ -594,4 +665,28 @@ fn named(flags: u32) -> Result<(OwnedHandle, OwnedHandle)> {
         // SAFETY: `raw` was just opened, and nothing else owns it.
         return Ok((ours, unsafe { OwnedHandle::from_raw_handle(raw) }));
     }
+}
+
+/// Points this process's standard output at a copy of `to`, closing what
+/// it was, as Unix's `dup2` onto 1 does: a server done with the pipe its
+/// starter reads points it at `NUL`, so that pipe breaks.
+pub fn redirect_stdout(to: impl std::os::windows::io::AsHandle) -> Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, SetStdHandle};
+    let copy = (to.as_handle().try_clone_to_owned())
+        .map_err(|error| Errno::from_io_error(&error).unwrap_or_else(Errno::last))?;
+    // SAFETY: it takes a number and touches no memory.
+    let old = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    // SAFETY: the handle is open; from now on it is the process's stdout,
+    // which std looks up at each write and never closes.
+    if unsafe { SetStdHandle(STD_OUTPUT_HANDLE, copy.as_raw_handle()) } == 0 {
+        return Err(Errno::last());
+    }
+    let _ = copy.into_raw_handle();
+    if !old.is_null() && old != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        // SAFETY: the old stdout, no longer the process's, was inherited
+        // and is closed once, here.
+        unsafe { CloseHandle(old) };
+    }
+    Ok(())
 }

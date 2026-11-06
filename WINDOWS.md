@@ -144,6 +144,71 @@ programs built on the libraries (below) are the acceptance test for the whole po
   4 MiB + 1 MiB both ways through one pipe with 500 signals, exact; 2000 raises from 4 threads, each
   seen; a child's 1 MiB and its `Chld`.
 
+## What PR 8 builds on (found in PR 7)
+- **fux-server's OS seam is one module switch**, `socket.rs` with `socket/unix.rs` (today's code,
+  moved) and `socket/windows.rs`: where a server is found and kept private, and how fux's own
+  processes are started and linked (`connect`, `accept`, `peer`, `launch_conn`, `start_pane`,
+  `pane_listener`, `pane_first`, `reach_named`, `taken_stdio`, `run_pinned`, `keep_executable`,
+  `prepare_terminals`). The rest of fux-server is shared; its unit tests are `cfg(all(test, unix))`
+  because they drive sessions through fux's fuxth (`fux::script`), which is Unix-only until PR 8.
+- **Who a pipe's server is:** `GetNamedPipeServerProcessId` names the process that made the pipe's
+  *first* instance, even on a later instance another process made (CI run 42117571201, both
+  images), not the instance's maker as PR 5's notes say. So a pipe that must name a process after
+  its maker dies is first made by that process: a pane binds its own pipe and says so on its stdout
+  (`socket::start_pane`), never one its server made and handed over.
+- **The client is not built on Windows**: `src/client.rs`, `script`, `screens`, `keymap`,
+  `client_state` and `help` are `cfg(unix)`; the binary runs `__serve`, `__pane PATH` and
+  `__conn taken`, and refuses anything else once. PR 8 removes those gates. The root `tests/*.rs`
+  (they drive the client) are `#![cfg(unix)]` but `tests/windows.rs`, a small wire client.
+- **Names on Windows:** the socket path names a pipe, `\\.\pipe\fux-<path, \ as />-<SID>[-elevated]`
+  (`socket::pipe_name`); no file is at the path. Beside it: `.starting` and `.lock` (opened with no
+  delete sharing), `.server` (the server's pid and creation time, D-138), and `PATH.panes\`, where
+  each pane has an empty marker file `N` naming its pipe. The default socket is
+  `%LOCALAPPDATA%\fux\server.sock`, and `%LOCALAPPDATA%\fux-elevated\server.sock` for an elevated
+  process (D-137): one shared folder can't work, as each mode needs the folder owned by its own
+  default owner, which for a split-token administrator are the user and the Administrators group. The
+  pinned ConPTY is `conpty` in the same folder.
+- **Private folders:** `fuxix::file::private_dir` grants only the token's default owner, so an
+  elevated folder is closed to the same user's normal processes. `fuxix::file::is_private_dir` is
+  Unix's 0700 check: real (no reparse point), owned by the default owner, and no allowing entry but
+  that owner's, SYSTEM's and Administrators' (who can't be kept out) and an inherit-only
+  `CREATOR OWNER`. The socket's folder and `PATH.panes\` pass it before a record or `exe` there is
+  read or run; fux's own folder passes it before a ConPTY is loaded from it.
+- **A client's checks are PR 8's:** `check_client_socket`, `listened` and `owned` exist only on
+  Unix. On Windows `fuxix::socket::connect` already refuses a pipe of another user or owner; a
+  client must not read `Errno::AGAIN` (every instance busy) as "a server runs": a squatter with
+  busy instances gives it too. The server's `.lock` and `.server` record are what says one runs.
+- **Starting a server:** a client starts `fux __serve SOCKET ENTRIES` and reads `READY` on its
+  stdout. A server whose run is recorded starts the run's pinned copy (`run_pinned`: started with
+  the same three handles, then this process exits 0, before taking any lock) and the copy writes
+  `READY`. Notices before `READY` go to the server's log (`notice: ...`): the built-in ConPTY's
+  losses, and a launcher job that binds the run (`process::job_fate`, D-135). PR 8's client should
+  print them.
+- **No spare connection process on Windows** (`keep_spare` is Linux's): the server takes every
+  client and starts `fux __conn taken` with the client's instance on stdout and its link on stdin
+  (`io::pipe_for_fuxix_child`, both overlapped), handed through a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
+  of exactly those handles (`process::start`).
+- **D-134:** a pane process sends `FromPane::Offer` (its program's pid, creation time and handle
+  value) before each new program's facts and again to a server taking it back; the server copies
+  the handle from the pane process (the pid it started, or the greeting's, checked against the
+  pipe's maker) and checks pid and creation time (`process::adopt`). The program is not held
+  suspended until then: a pane process that dies in the milliseconds before its server copies the
+  handle leaves that program unreaped by the server (it gets the console's close event).
+- **Signals:** `process::delivery(signal, shell)` is the D-136 table (Unix: always `Group`), used in
+  `host.rs`. "Killed" is not on the wire: an end by fux's kill is `Exited(KILLED)`.
+- **Reads stay armed:** the server's held links and `__conn`'s unread clients are polled for
+  `Events::WATCH`: on Unix nothing (exactly as before; `HUP` would not do, as macOS's `poll` watches a
+  descriptor asked for it and not one asked for nothing), on Windows `HUP | ERR`, which keeps a read
+  in flight and sets what it reads aside (256 KiB at most, the read buffer included), so the peer's end is told past
+  bytes not yet taken. `__conn` then reads its client to the end and sends `Shut`. A peer that filled
+  the bound and its pipe before it ended is seen only once it is read. On Windows `Events::NONE` tells
+  nothing at all, so a loop done with a stream doesn't spin on its end.
+- **The end rule:** after `Chld` a pane keeps polling its master (`fuxix::pty::SETTLE`, 100 ms; none
+  on Unix) until the pipe breaks; with the built-in ConPTY, which doesn't break it, the time running
+  out ends the drain and dropping the master closes the console.
+- **Not done here:** console close/logoff handlers that wait for the loop (a detached server has no
+  console; a hand-typed one stops as a crash would, and is taken back); the suspended start above.
+
 ## What PR 7 builds on (found in PR 5)
 - `fuxix::socket` is one module on both OSes. Its `Peer { user, pid }` and `User` are shared names:
   a uid on Unix, a SID plus "token elevated" on Windows (D-137: elevation, not the integrity level,
@@ -189,8 +254,8 @@ programs built on the libraries (below) are the acceptance test for the whole po
   `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of exactly the handed instance (portable-pty's
   `src/win/procthreadattr.rs`), so nothing else made inheritable meanwhile leaks into the child.
 - A source polled with `Events::NONE` never arms a read, so a stream's `HUP` and `ERR` (learned only
-  from a read or write that ends) are never told for it. PR 7's server must poll every connection
-  for `IN` (or keep a write in flight) to learn that its client went.
+  from a read or write that ends) are never told for it. PR 7 polls what it doesn't read for
+  `Events::WATCH`.
 - A stream dropped with its read in flight cancels that read, but the read's 64 KiB buffer is freed
   only when some later poll takes the cancelled read's packet. A server that drops many streams and
   stops polling holds that memory until it polls again.
@@ -214,7 +279,8 @@ programs built on the libraries (below) are the acceptance test for the whole po
   - End rule: call `ReleasePseudoConsole` right after spawning, read until the pipe breaks (1–5 ms after the
     program exits), then `GetExitCodeProcess`. The built-in ConPTY of older Windows 11 has no
     `ReleasePseudoConsole`, and its pipe breaks only when the console is closed: the pane process (PR 7)
-    also watches the program's process, and on its end drains for a bounded time and closes the console.
+    also watches the program's process, and on its end drains for a bounded time (`pty::SETTLE`, written
+    to or not: a program left writing doesn't hold the close off) and closes the console.
   - The bundled ConPTY sends `ESC[1t ESC[c ESC[?1004h ESC[?9001h` first and `ESC[?1004l ESC[?9001l` last:
     don't report those modes as the program's. fux-vt must answer DA1 and cursor-position queries quickly:
     an unanswered `ESC[6n` after a resize blocks the program for about 500 ms.

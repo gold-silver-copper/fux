@@ -12,6 +12,7 @@
 //! let go.
 use crate::link::{Drawn, End, Expect, FromConn, FromSide, Making, Read, ToConn, ToPane, ToSide};
 use crate::render::{Grid, Scene, Sixels, Visible};
+use crate::socket::Stream;
 use fux_vt::bytes::ByteQueue;
 use fux_wire::answer::PaneResults;
 use fux_wire::command::{Input, Run};
@@ -20,7 +21,6 @@ use fux_wire::protocol::{
     Asked, Attach, AttachedFrame, Decoder, Frame, Hello, Response, ToAttached,
 };
 use std::collections::BTreeMap;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -94,7 +94,7 @@ impl Side {
     /// Pane `id` of run `run`, at its socket in `panes`: asked to send its
     /// screen. One that can't be reached shows blank.
     fn reach(panes: &std::path::Path, run: Run, id: PaneId) -> Side {
-        let end = UnixStream::connect(panes.join(id.number().to_string()))
+        let end = crate::socket::connect(&panes.join(id.number().to_string()))
             .ok()
             .and_then(|stream| End::new(stream).ok())
             .map(|mut end| {
@@ -313,7 +313,7 @@ fn client_socket(panes: &std::path::Path, client: ClientId) -> PathBuf {
 
 /// What listens at `socket`, reached, its first word said.
 fn reach(socket: &std::path::Path, run: Run) -> Option<End> {
-    let stream = UnixStream::connect(socket).ok()?;
+    let stream = crate::socket::connect(socket).ok()?;
     let mut end = End::new(stream).ok()?;
     end.send(&ToPane::Join { run });
     Some(end)
@@ -323,7 +323,7 @@ fn reach(socket: &std::path::Path, run: Run) -> Option<End> {
 /// send its client (`ToConn::Keys`): its socket, removed as it ends, and
 /// those reaching it, each once it has said its first word (`Join`).
 struct Listening {
-    listener: std::os::unix::net::UnixListener,
+    listener: crate::socket::Listener,
     path: PathBuf,
     peers: Vec<(End, bool)>,
 }
@@ -338,9 +338,7 @@ impl Listening {
     /// Listens as client `client`'s connection, in `panes`.
     fn at(panes: &std::path::Path, client: ClientId) -> Option<Listening> {
         let path = client_socket(panes, client);
-        let _ = std::fs::remove_file(&path);
-        let listener = std::os::unix::net::UnixListener::bind(&path).ok()?;
-        listener.set_nonblocking(true).ok()?;
+        let listener = crate::socket::listen_at(&path).ok()?;
         Some(Listening {
             listener,
             path,
@@ -358,9 +356,9 @@ impl Listening {
         bodies: &mut BTreeMap<u64, Vec<Input>>,
     ) {
         if ready.first().copied().unwrap_or(false) {
-            while let Ok((stream, _)) = self.listener.accept() {
-                let ours = fuxix::socket::peer(&stream).is_ok_and(|peer| peer.user.is_current());
-                if let (true, Ok(end)) = (ours, End::new(stream)) {
+            while let Ok(reached) = crate::socket::accept(&mut self.listener) {
+                let ours = crate::socket::peer(&reached).is_ok_and(|peer| peer.user.is_current());
+                if let (true, Ok(end)) = (ours, crate::socket::serve(reached).and_then(End::new)) {
                     self.peers.push((end, false));
                 }
             }
@@ -782,7 +780,8 @@ impl Composer {
 /// `/dev/null`, tells its server it took a client, and serves it (`serve`),
 /// its server on `server`. It never listens itself, so a client is still
 /// told the server's pid (`SO_PEERCRED`). Its server gone first, it ends.
-pub fn wait(listener: std::os::unix::net::UnixListener, server: UnixStream) -> Result<(), String> {
+#[cfg(unix)]
+pub fn wait(listener: std::os::unix::net::UnixListener, server: Stream) -> Result<(), String> {
     use fuxix::poll::{Events, PollFd};
     let mut link = End::new(server).map_err(|e| format!("its server: {e}"))?;
     let mut buffer = [0u8; 4096];
@@ -845,7 +844,7 @@ pub fn wait(listener: std::os::unix::net::UnixListener, server: UnixStream) -> R
 
 /// A connection's process for a client its server took itself (`fux __conn
 /// taken`): its client on `client`, its server on `server`.
-pub fn taken(client: UnixStream, server: UnixStream) -> Result<(), String> {
+pub fn taken(client: Stream, server: Stream) -> Result<(), String> {
     let link = End::new(server).map_err(|e| format!("its server: {e}"))?;
     serve(client, link, Vec::new())
 }
@@ -853,11 +852,9 @@ pub fn taken(client: UnixStream, server: UnixStream) -> Result<(), String> {
 /// The loop of a client's connection's own process: its client on
 /// `client`, its server on `link`, which said `said` before, until either
 /// goes.
-pub fn serve(client: UnixStream, mut link: End, said: Vec<ToConn>) -> Result<(), String> {
+pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), String> {
     use fuxix::poll::{Events, PollFd};
-    client
-        .set_nonblocking(true)
-        .map_err(|e| format!("its client: {e}"))?;
+    crate::socket::nonblocking(&client).map_err(|e| format!("its client: {e}"))?;
     let mut decoder = Decoder::default();
     let mut out = ByteQueue::default();
     let mut composer = Composer::new(Instant::now());
@@ -972,7 +969,12 @@ pub fn serve(client: UnixStream, mut link: End, said: Vec<ToConn>) -> Result<(),
             false => wake.map(|at| at.saturating_duration_since(now)),
         };
         let mut fds = poll.list();
-        let mut theirs = Events::NONE;
+        // Not read, its client is watched for its end (`Events::WATCH`), till
+        // that is seen: then nothing more is to be heard of it.
+        let mut theirs = match ended {
+            true => Events::NONE,
+            false => Events::WATCH,
+        };
         if reads {
             theirs |= Events::IN;
         }
@@ -1021,7 +1023,10 @@ pub fn serve(client: UnixStream, mut link: End, said: Vec<ToConn>) -> Result<(),
         }
         let ready: Vec<Events> = fds.revents().collect();
         let now = Instant::now();
-        if reads && ready.first().is_some_and(|f| !f.is_empty()) {
+        // A client seen to end is read to that end whatever its stage, so
+        // that its server is told (`Shut`).
+        let client_ready = ready.first().copied().unwrap_or(Events::NONE);
+        if reads && !client_ready.is_empty() || client_ready.intersects(Events::WATCH) {
             let mut read = 0usize;
             while read < READ {
                 match fuxix::io::read(&client, &mut buffer) {
@@ -1172,7 +1177,7 @@ pub fn serve(client: UnixStream, mut link: End, said: Vec<ToConn>) -> Result<(),
 
 /// Writes what waits for its client, as far as the client takes it now:
 /// false once the client is gone.
-fn write(client: &UnixStream, out: &mut ByteQueue) -> bool {
+fn write(client: &Stream, out: &mut ByteQueue) -> bool {
     while !out.is_empty() {
         match fuxix::io::write(client, out.as_slice()) {
             Ok(0) | Err(fuxix::Errno::AGAIN) => break,
@@ -1184,7 +1189,7 @@ fn write(client: &UnixStream, out: &mut ByteQueue) -> bool {
     true
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::{Composer, Screen};
     use fux_vt::bytes::ByteQueue;
@@ -1263,6 +1268,7 @@ mod tests {
 
     /// What its server said before it went is passed on, though its end
     /// comes in the same read: a reply sent as the server dies arrives.
+    #[cfg(unix)]
     #[test]
     fn what_its_server_said_before_its_end_is_passed_on() -> Result<(), String> {
         use crate::link::{End, ToConn};

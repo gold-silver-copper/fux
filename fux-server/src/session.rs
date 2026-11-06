@@ -294,9 +294,9 @@ pub struct Session {
     changes: u64,
     /// In tests, each client's keys as its own client would read them
     /// (`Session::input`), and the keymap every client and run shares.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) test_keys: BTreeMap<ClientId, testing::Keys>,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) test_keymap: fux::client_state::Draft,
 }
 
@@ -400,9 +400,9 @@ impl Session {
             ids: Ids::default(),
             asked: 0,
             changes: 0,
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             test_keys: BTreeMap::new(),
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             test_keymap: fux::client_state::Draft::default(),
         }
     }
@@ -780,6 +780,12 @@ impl Session {
     /// its copy, and the views showing it are painted again. A pane closed
     /// tells nothing more but its answers.
     fn told(&mut self, id: PaneId, report: FromPane, now: Instant) {
+        // Its program's handle is copied whatever its copy's state: a pane
+        // begun before its copy is made, or closing, still runs it.
+        if let FromPane::Offer(offered) = report {
+            self.adopt(id, offered);
+            return;
+        }
         if let FromPane::Answer { ask, mut answer } = report {
             // A capture is the pane's own facts as it answered, after all it
             // told before: its counts are the copy's, unless it is behind;
@@ -901,6 +907,33 @@ impl Session {
             }
             FromPane::Refused { client, why } => self.notify_to(client, why, true),
             FromPane::Retired(token) => self.retired.push((id, token)),
+            FromPane::Offer(_) => {}
+        }
+    }
+
+    /// Takes a copy of pane `id`'s program's handle from its process, as
+    /// it `offered` it (Windows, D-134): its program is the server's to end
+    /// and reap should that process crash. The pane's process is the one
+    /// the server started, or the one a takeover's greeting named, checked
+    /// against the pipe's maker (`Link::take`); the copy, against the
+    /// program's pid and creation time. One not taken is logged: the
+    /// program then ends unreaped if its pane's process crashes.
+    fn adopt(&mut self, id: PaneId, offered: crate::link::Offered) {
+        let Some(Link::Remote(remote)) = self.links.get_mut(&id) else {
+            return;
+        };
+        let Some(offer) = offered.offer() else {
+            return;
+        };
+        match fuxix::process::adopt(remote.pid, offer) {
+            Ok(()) => {
+                if let Some(old) = remote.adopted.replace(offer.program.pid)
+                    && old != offer.program.pid
+                {
+                    fuxix::process::release(old);
+                }
+            }
+            Err(error) => log!("{id}: its program's handle could not be copied: {error}"),
         }
     }
 
@@ -1023,6 +1056,7 @@ impl Session {
                 fuxix::process::Status::Exited(code) => {
                     format!("its pane's own process exited with status {code}")
                 }
+                #[cfg(unix)]
                 fuxix::process::Status::Signalled { signal, .. } => {
                     format!("its pane's own process was killed by signal {signal}")
                 }
@@ -1043,7 +1077,18 @@ impl Session {
     /// orphans), else none; then the role rule. Every question it was
     /// asked and did not answer is `indeterminate`: it may have done it.
     fn pane_lost(&mut self, id: PaneId, how: &str, now: Instant) {
-        self.links.remove(&id);
+        let link = self.links.remove(&id);
+        // The copy of a program's handle it holds is let go, unless that
+        // program still runs, to be reaped below.
+        let running = (self.parts.panes().get(&id))
+            .filter(|pane| pane.exit_status().is_none())
+            .and_then(|pane| pane.pid());
+        if let Some(Link::Remote(remote)) = link
+            && let Some(adopted) = remote.adopted
+            && running != Some(adopted)
+        {
+            fuxix::process::release(adopted);
+        }
         let unanswered: Vec<u64> = (self.asks.iter())
             .filter(|(_, pane)| **pane == id)
             .map(|(ask, _)| *ask)
@@ -1611,7 +1656,14 @@ impl Session {
                 Link::Local(host) => host.finished(),
             });
         self.ending = ending;
-        for (id, _) in done {
+        for (id, link) in done {
+            // Its program ended with it: its handle's copy is let go.
+            if let Link::Remote(Remote {
+                adopted: Some(pid), ..
+            }) = link
+            {
+                fuxix::process::release(pid);
+            }
             let left: Vec<u64> = (self.asks.iter())
                 .filter(|(_, pane)| **pane == id)
                 .map(|(ask, _)| *ask)
@@ -1626,7 +1678,7 @@ impl Session {
 
     /// A client attaches, viewing `workspace` or the first one (the tests'
     /// terminal client).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn attach(
         &mut self,
         rows: u16,
@@ -1731,15 +1783,13 @@ impl Session {
         // them may have gone). A headless client shows on no terminal, so on
         // none.
         let client = attach.ancestry.first();
-        let session =
-            client.and_then(|pid| fuxix::process::Pid::from_raw(i32::try_from(*pid).ok()?));
+        let session = client.and_then(|pid| fuxix::process::Pid::from_u32(*pid));
         let session = session.and_then(fuxix::process::session);
         let leads = |pane: &Pane| {
             let Some(leader) = pane.pid() else {
                 return false;
             };
-            let descends =
-                u32::try_from(leader.as_raw()).is_ok_and(|pid| attach.ancestry.contains(&pid));
+            let descends = attach.ancestry.contains(&leader.as_u32());
             !attach.headless && (descends || session == Some(leader))
         };
         let runs_in = self.parts.panes().iter().find(|(_, pane)| leads(pane));
@@ -2392,7 +2442,7 @@ impl Session {
 
     /// Output from pane `id`'s program, as a pane held here reads it: for
     /// the tests and the tools.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn output(&mut self, id: PaneId, bytes: &[u8], now: Instant) {
         if let Some(Link::Local(host)) = self.links.get_mut(&id) {
             host.output(bytes, now);
@@ -2403,7 +2453,7 @@ impl Session {
 
     /// Pane `id`, held here, to change as the tests and the tools do; what
     /// it then tells is taken in.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn host_mut<T>(
         &mut self,
         id: PaneId,
@@ -2421,7 +2471,7 @@ impl Session {
 
     /// Each pane held here, changed with `change`, as the tools change them;
     /// what each then tells is taken in.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn each_host_mut(&mut self, mut change: impl FnMut(&mut crate::host::Host), now: Instant) {
         let ids: Vec<PaneId> = self.links.keys().copied().collect();
         for id in ids {
@@ -2430,7 +2480,7 @@ impl Session {
     }
 
     /// Pane `id`'s program, held here, ended so: as the tools end one.
-    #[cfg(any(test, feature = "in-process"))]
+    #[cfg(any(all(test, unix), feature = "in-process"))]
     pub fn exited(&mut self, id: PaneId, ended: Ended, now: Instant) {
         self.host_mut(id, |host| host.exited(ended, now), now);
     }
@@ -3556,7 +3606,7 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
 
 /// A session itself, as what a program's requests go to, for the tests
 /// and the fuzz targets (`fux::script::testing::InProcess`).
-#[cfg(any(test, feature = "in-process"))]
+#[cfg(any(all(test, unix), feature = "in-process"))]
 impl Session {
     /// A program's request, answered in-process: begun at once, and a wait
     /// answered at its limit, there being no programs to wait on, once what
@@ -3623,7 +3673,7 @@ impl Session {
 
 /// What the other modules' tests share: a session, a client attached,
 /// and a command line run in it.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) mod testing {
     pub(crate) type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -4120,7 +4170,7 @@ pub(crate) mod testing {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use crate::session::testing::TestResult;
     /// `rows` by `cols`.
@@ -6875,6 +6925,40 @@ mod tests {
         Ok(())
     }
 
+    /// An ended program's terminal found empty before its last output
+    /// can have come (`fuxix::pty::SETTLE`) is waited on, its next turn due
+    /// when that time is up; then, or as it closes, it is done with.
+    #[test]
+    fn a_terminal_found_empty_is_waited_on_till_it_settles() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "opts str agent in 80 24 size str /bin/true program new-tab",
+        )?;
+        let id = PaneId::of(2);
+        run(&mut s, "%2 respawn")?;
+        let argv = ["/bin/sh", "-c", "trap '' HUP; exec sleep 60"].map(str::to_owned);
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
+        let pid = child.leader.pid();
+        give(&mut s, id, Process::Reading(child))?;
+        s.end_program(id, Ended::Exited(0));
+        let now = Instant::now();
+        let at = crate::after(now, Duration::from_secs(5));
+        host(&mut s, id, |h| h.settle_till(at))?;
+        let empty = |_: &fuxix::pty::Master, _: &mut [u8]| Err(fuxix::Errno::AGAIN);
+        host(&mut s, id, |h| h.read_left_with(true, empty, now))?;
+        let waited = host(&mut s, id, |h| h.leftover())?;
+        let due = host(&mut s, id, |h| h.timer())?;
+        host(&mut s, id, |h| h.read_left_with(true, empty, at))?;
+        let drained = !host(&mut s, id, |h| h.leftover())?;
+        let _ = fuxix::process::kill_group(pid, fuxix::process::Signal::Kill);
+        reap(&mut s);
+        assert!(waited, "done with before its time was up");
+        assert_eq!(due, Some((at, crate::host::Timer::Unread)));
+        assert!(drained, "still waited on after its time was up");
+        Ok(())
+    }
+
     /// A drain's read that fails, of the terminal an exited program left a
     /// writer on, is journaled with its errno, from that program's
     /// generation; the pane stays as its exit left it.
@@ -9336,7 +9420,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod journal_tests {
     use super::*;
     use crate::journal::Reader;

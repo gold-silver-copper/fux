@@ -1,5 +1,7 @@
 //! Milestone 3: splits, focus (next, previous, last, directional), resizes,
 //! zoom, and the bar.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use support::*;
 

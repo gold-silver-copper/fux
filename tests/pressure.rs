@@ -1,5 +1,7 @@
 //! A server under pressure: out of descriptors, or with a pane whose
 //! program is not reading.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;

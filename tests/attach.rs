@@ -1,5 +1,7 @@
 //! Milestone 2: one pane. Attach, detach and reattach, resize, and
 //! `capture`.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 mod support;
 use std::os::fd::AsFd;
 use support::*;

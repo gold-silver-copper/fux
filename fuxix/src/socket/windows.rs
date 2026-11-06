@@ -98,6 +98,12 @@ impl User {
         *CURRENT.get_or_init(|| User::of(this))
     }
 
+    /// Whether its token is elevated: an elevated fux keeps its own
+    /// default socket, lock and record (D-137).
+    pub fn elevated(&self) -> bool {
+        self.elevated
+    }
+
     /// Whether it is this process's user: the same SID, elevated or not
     /// alike. A process whose own user can't be read has none.
     pub fn is_current(&self) -> bool {
@@ -135,19 +141,23 @@ impl User {
 
     /// The SID, as Windows writes it: "S-1-5-21-…".
     fn sid(&self) -> String {
-        let bytes = self.sid.get(..usize::from(self.len)).unwrap_or_default();
-        let revision = bytes.first().copied().unwrap_or(0);
-        let authority = (bytes.iter().skip(2).take(6)).fold(0u64, |n, b| n << 8 | u64::from(*b));
-        let mut text = format!("S-{revision}-{authority}");
-        let (parts, _) = bytes.get(8..).unwrap_or_default().as_chunks::<4>();
-        for part in parts {
-            text.push_str(&format!("-{}", u32::from_le_bytes(*part)));
-        }
-        text
+        sid_text(self.sid.get(..usize::from(self.len)).unwrap_or_default())
     }
 }
 
 /// The token of the process `process` is a handle to, for querying.
+/// A SID's bytes as Windows writes them.
+fn sid_text(bytes: &[u8]) -> String {
+    let revision = bytes.first().copied().unwrap_or(0);
+    let authority = (bytes.iter().skip(2).take(6)).fold(0u64, |n, b| n << 8 | u64::from(*b));
+    let mut text = format!("S-{revision}-{authority}");
+    let (parts, _) = bytes.get(8..).unwrap_or_default().as_chunks::<4>();
+    for part in parts {
+        text.push_str(&format!("-{}", u32::from_le_bytes(*part)));
+    }
+    text
+}
+
 fn token(process: HANDLE) -> Result<OwnedHandle> {
     let mut raw: HANDLE = std::ptr::null_mut();
     // SAFETY: `process` is open, and `raw` is written once on success.
@@ -224,8 +234,8 @@ pub fn name(base: &str) -> Result<String> {
 }
 
 /// The process at the other end of `pipe`, a named pipe's end: its
-/// client's, on the server's end; its server's, the process that made the
-/// instance, on a client's. `connected` is a moment this end is known to
+/// client's, on the server's end; its server's on a client's: the process
+/// that made the pipe's first instance, whatever made the one reached. `connected` is a moment this end is known to
 /// have been connected at, the earliest known: a [`Connection`]'s
 /// ([`Connection::connected`]), or on a client's end, when [`connect`]
 /// opened it. The peer's process must have been made by then: one made
@@ -335,12 +345,16 @@ fn created(process: HANDLE) -> Result<SystemTime> {
 /// user (`TokenUser`): an elevated admin's objects are owned by the
 /// Administrators group, and our own server's were made with our token.
 fn owned_by_us(pipe: &OwnedHandle) -> Result<bool> {
-    static OWNER: OnceLock<Result<([u8; SID], u8)>> = OnceLock::new();
-    let ours = *OWNER.get_or_init(|| {
-        // SAFETY: takes nothing; the pseudo-handle needs no closing.
-        sid(&token(unsafe { GetCurrentProcess() })?, TokenOwner)
-    });
-    let (ours, _) = ours?;
+    owned_as_ours(pipe, SE_KERNEL_OBJECT)
+}
+
+/// Whether `object`, a handle of kind `kind` opened with `READ_CONTROL`,
+/// is owned by this process's token's default owner ([`owned_by_us`]).
+pub(crate) fn owned_as_ours(
+    object: &OwnedHandle,
+    kind: windows_sys::Win32::Security::Authorization::SE_OBJECT_TYPE,
+) -> Result<bool> {
+    let (ours, _) = default_owner()?;
     let mut owner: PSID = std::ptr::null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     // SAFETY: the handle is open, with `READ_CONTROL` (in `GENERIC_READ`);
@@ -348,8 +362,8 @@ fn owned_by_us(pipe: &OwnedHandle) -> Result<bool> {
     // the descriptor, which `Security` frees.
     let got = unsafe {
         GetSecurityInfo(
-            pipe.as_raw_handle(),
-            SE_KERNEL_OBJECT,
+            object.as_raw_handle(),
+            kind,
             OWNER_SECURITY_INFORMATION,
             &mut owner,
             std::ptr::null_mut(),
@@ -367,6 +381,94 @@ fn owned_by_us(pipe: &OwnedHandle) -> Result<bool> {
     let same = unsafe { EqualSid(owner, ours.as_ptr().cast_mut().cast()) } != 0;
     drop(descriptor);
     Ok(same)
+}
+
+/// This process's token's default owner: its user, or for an elevated
+/// administrator the Administrators group, which the same user's normal
+/// processes don't hold (D-137).
+fn default_owner() -> Result<([u8; SID], u8)> {
+    static OWNER: OnceLock<Result<([u8; SID], u8)>> = OnceLock::new();
+    *OWNER.get_or_init(|| {
+        // SAFETY: takes nothing; the pseudo-handle needs no closing.
+        sid(&token(unsafe { GetCurrentProcess() })?, TokenOwner)
+    })
+}
+
+/// Whether the folder `object`, opened with `READ_CONTROL`, lets in no one
+/// but this process's default owner, and the system and its administrators,
+/// who can't be kept out: Unix's mode 0700. A folder with no list lets in
+/// all; an entry of a kind not known is taken to let its holder in, and
+/// `CREATOR OWNER` only names who makes what is in it. Who is refused
+/// access is no matter.
+pub(crate) fn only_ours(object: &OwnedHandle) -> Result<bool> {
+    use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, GetAce, INHERIT_ONLY_ACE,
+        IsWellKnownSid, WinBuiltinAdministratorsSid, WinCreatorOwnerSid, WinLocalSystemSid,
+    };
+    const ALLOWED: u8 = 0;
+    const DENIED: u8 = 1;
+    let (ours, _) = default_owner()?;
+    let mut list: *mut ACL = std::ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: the handle is open, with `READ_CONTROL`; `list` and
+    // `descriptor` are written once, `list` pointing into the descriptor,
+    // which `Security` frees.
+    let got = unsafe {
+        GetSecurityInfo(
+            object.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut list,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if got != ERROR_SUCCESS {
+        return Err(Errno::from_code(got));
+    }
+    let descriptor = Security(descriptor);
+    if list.is_null() {
+        return Ok(false);
+    }
+    // SAFETY: `list` points into `descriptor`, alive, and is not null.
+    let count = unsafe { (*list).AceCount };
+    for index in 0..u32::from(count) {
+        let mut entry: *mut core::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: `index` is below the list's count; `entry` is written
+        // with a pointer into the list.
+        if unsafe { GetAce(list, index, &mut entry) } == 0 {
+            return Err(Errno::last());
+        }
+        let entry = entry.cast::<ACCESS_ALLOWED_ACE>().cast_const();
+        // SAFETY: every entry starts with a header, here and whole.
+        let header = unsafe { (*entry).Header };
+        match header.AceType {
+            DENIED => continue,
+            ALLOWED => {}
+            _ => return Ok(false),
+        }
+        // SAFETY: an allowing entry's SID starts at `SidStart`, inside the
+        // list; nothing writes through it, as `PSID`'s type would allow.
+        let holder: PSID = unsafe { std::ptr::addr_of!((*entry).SidStart) }
+            .cast_mut()
+            .cast();
+        // SAFETY: `holder` is a whole SID in the list.
+        let is = |kind| unsafe { IsWellKnownSid(holder, kind) } != 0;
+        // SAFETY: as above, and `ours` is a whole SID, as `sid` checked its
+        // length.
+        let own = unsafe { EqualSid(holder, ours.as_ptr().cast_mut().cast()) } != 0;
+        let trusted = own || is(WinLocalSystemSid) || is(WinBuiltinAdministratorsSid);
+        let inherited_only = u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0;
+        let creator = inherited_only && is(WinCreatorOwnerSid);
+        if !trusted && !creator {
+            return Ok(false);
+        }
+    }
+    drop(descriptor);
+    Ok(true)
 }
 
 /// Opens the pipe `name` (NUL-ended), waiting up to `BUSY` ms in all for an
@@ -418,7 +520,7 @@ fn open(name: &[u16]) -> Result<OwnedHandle> {
 
 /// A security descriptor that lets this process's user in, and no one
 /// else, from `LocalAlloc`.
-struct Security(PSECURITY_DESCRIPTOR);
+pub(crate) struct Security(PSECURITY_DESCRIPTOR);
 
 // SAFETY: memory the process owns, read by the kernel only during calls.
 unsafe impl Send for Security {}
@@ -426,8 +528,23 @@ unsafe impl Send for Security {}
 unsafe impl Sync for Security {}
 
 impl Security {
+    /// A descriptor for a folder whose files are to be private too: only
+    /// this process's default owner is let in, so a folder of an elevated
+    /// process's is closed to the same user's normal ones (D-137).
+    pub(crate) fn private_folder() -> Result<Security> {
+        let (owner, len) = default_owner()?;
+        let owner = owner.get(..usize::from(len)).unwrap_or_default();
+        Security::only(&format!("D:P(A;OICI;GA;;;{})", sid_text(owner)))
+    }
+
+    /// A descriptor letting only this process's user in, protected from
+    /// what the object's parent would pass on.
     fn owner_only() -> Result<Security> {
-        let sddl = format!("D:P(A;;GA;;;{})", User::current()?.sid());
+        Security::only(&format!("D:P(A;;GA;;;{})", User::current()?.sid()))
+    }
+
+    /// The descriptor `sddl` says.
+    fn only(sddl: &str) -> Result<Security> {
         let wide: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
         let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         // SAFETY: `wide` is NUL-ended; `descriptor` is written once, with
@@ -443,6 +560,18 @@ impl Security {
         match made {
             0 => Err(Errno::last()),
             _ => Ok(Security(descriptor)),
+        }
+    }
+}
+
+impl Security {
+    /// Attributes for a call that makes an object with this descriptor,
+    /// not inherited; alive while `self` is.
+    pub(crate) fn attributes(&self) -> SECURITY_ATTRIBUTES {
+        SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(0),
+            lpSecurityDescriptor: self.0,
+            bInheritHandle: 0,
         }
     }
 }

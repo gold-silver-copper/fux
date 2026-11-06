@@ -1,26 +1,17 @@
-//! Where the server's socket lives, and the rules that keep it private.
-//!
-//! - The path is `FUX_SOCKET`, else `server.sock` in fux's directory:
-//!   fux's directory is `$XDG_RUNTIME_DIR/fux` whenever that is
-//!   set (even empty, which is refused), else `$TMPDIR/fux`.
-//! - Its directory is owned by the user, mode 0700; the directories above
-//!   it are not checked (`private_directory`). The socket is mode 0600, set
-//!   before `listen`.
-//! - A lock file beside the socket makes one server its only owner.
-//! - A leftover socket is replaced only when nothing answers on it.
-//! - At exit the socket is removed only if it is still the one this server
-//!   bound. On Linux an `O_PATH` descriptor keeps its inode allocated so the
-//!   number cannot be reused by a replacement.
-//! - Every accepted peer must run as the server's own user.
-use fuxix::process::geteuid;
-use std::fs::{self, DirBuilder, File, OpenOptions};
+//! Where the server is found, and the rules that keep it private. What
+//! is the same on every OS is here: the path a server is known by
+//! (`FUX_SOCKET`, else `server.sock` in fux's directory), its checks, and
+//! who may connect. How an OS finds a server at that path, keeps it
+//! private, and links fux's own processes is in `socket/unix.rs` (a Unix
+//! domain socket at the path) and `socket/windows.rs` (a named pipe the
+//! path names).
 use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_NAME: &str = "server.sock";
+#[cfg_attr(unix, path = "socket/unix.rs")]
+#[cfg_attr(windows, path = "socket/windows.rs")]
+mod endpoint;
+pub use endpoint::*;
 
 /// Why a socket path is refused, or its directory, or the socket itself.
 #[derive(Debug)]
@@ -62,12 +53,12 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// An I/O error about `path`.
-fn io<'a>(path: &'a Path) -> impl FnOnce(io::Error) -> Error + 'a {
+pub(crate) fn io<'a>(path: &'a Path) -> impl FnOnce(io::Error) -> Error + 'a {
     failed("", path)
 }
 
 /// An error about `path`, while `doing` what the message begins with.
-fn failed<'a, E: Into<io::Error>>(
+pub(crate) fn failed<'a, E: Into<io::Error>>(
     doing: &'static str,
     path: &'a Path,
 ) -> impl FnOnce(E) -> Error + 'a {
@@ -119,7 +110,7 @@ pub fn socket_path(socket: Option<&Path>) -> Result<SocketPath, Error> {
             let value = value.into_string().map_err(|_| not_utf8("FUX_SOCKET"))?;
             checked(&value, "FUX_SOCKET")
         }
-        None => in_directory(DEFAULT_NAME),
+        None => in_directory("server.sock"),
     }
 }
 
@@ -135,23 +126,19 @@ pub fn start_hint(path: &Path) -> String {
     format!("`FUX_SOCKET={path} fux start` starts one")
 }
 
-/// fux's directory: under `XDG_RUNTIME_DIR` whenever it is set, else
-/// `TMPDIR`.
+/// fux's directory: under the first of `BASES` that is set (Unix:
+/// `XDG_RUNTIME_DIR`, else `TMPDIR`; Windows: `LOCALAPPDATA`).
 pub fn directory() -> Result<PathBuf, Error> {
-    for base in ["XDG_RUNTIME_DIR", "TMPDIR"] {
+    for base in BASES {
         if let Some(value) = std::env::var_os(base) {
             let value = value.into_string().map_err(|_| not_utf8(base))?;
             return base_directory(base, &value);
         }
     }
-    Err(Error::Refused(
-        "no socket location: neither XDG_RUNTIME_DIR nor TMPDIR is set; \
-         set FUX_SOCKET to an absolute socket path"
-            .to_owned(),
-    ))
+    Err(Error::Refused(NO_BASE.to_owned()))
 }
 
-fn not_utf8(variable: &str) -> Error {
+pub(crate) fn not_utf8(variable: &str) -> Error {
     Error::Refused(format!("{variable} is not valid UTF-8"))
 }
 
@@ -161,7 +148,7 @@ fn in_directory(name: &str) -> Result<SocketPath, Error> {
     checked(path, "the socket's directory")
 }
 
-fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
+pub(crate) fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
     if value.is_empty() {
         return Err(Error::Refused(format!(
             "{base} is set but empty; set it to a directory or set FUX_SOCKET"
@@ -172,7 +159,7 @@ fn base_directory(base: &'static str, value: &str) -> Result<PathBuf, Error> {
             "{base} is {value:?}, not an absolute path; fix it or set FUX_SOCKET"
         )));
     }
-    Ok(Path::new(value).join("fux"))
+    Ok(Path::new(value).join(folder()?))
 }
 
 pub fn checked(value: impl AsRef<Path>, from: &'static str) -> Result<SocketPath, Error> {
@@ -183,7 +170,7 @@ pub fn checked(value: impl AsRef<Path>, from: &'static str) -> Result<SocketPath
             "{from} is empty; it must be an absolute socket path"
         ));
     }
-    if path.as_os_str().as_bytes().contains(&0) {
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
         return refused(format!("{from} contains a NUL byte"));
     }
     if !path.is_absolute() {
@@ -198,180 +185,8 @@ pub fn checked(value: impl AsRef<Path>, from: &'static str) -> Result<SocketPath
             "{from} is {path:?}; it must name a socket file in a directory below /"
         ));
     };
-    let limit = fuxix::socket::max_path_len();
-    if path.as_os_str().len() > limit {
-        return refused(format!(
-            "the socket path is {} bytes, longer than the {limit}-byte limit for a Unix \
-             domain socket on this platform (from {from}): {}",
-            path.as_os_str().len(),
-            path.display()
-        ));
-    }
+    check_length(&path, from)?;
     Ok(SocketPath { path, directory })
-}
-
-/// The directory holding the socket must be ours, mode 0700. The
-/// directories above it are not checked: inside a sandbox's user namespace
-/// root's show as another uid (65534), and what keeps a connection private
-/// is that each side checks the other's user (the server its clients', a
-/// client its server's), whoever could rename what lies above. `create`
-/// makes it when it is missing (as a server does, or a client about to
-/// start one); nothing that already exists is modified.
-pub fn private_directory(socket: &SocketPath, create: bool) -> Result<(), Error> {
-    let directory = socket.directory();
-    let euid = geteuid();
-    if create {
-        match DirBuilder::new().mode(0o700).create(directory) {
-            // Set explicitly: the umask must not decide who reaches the socket.
-            Ok(()) => fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
-                .map_err(io(directory))?,
-            // Whatever is there (a symbolic link too) is checked below.
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(failed("creating ", directory)(error)),
-        }
-    }
-    let meta = fs::symlink_metadata(directory).map_err(io(directory))?;
-    let mode = meta.permissions().mode();
-    if meta.file_type().is_symlink() {
-        return Err(Error::Refused(format!(
-            "{} is a symbolic link; the socket directory must be a real directory",
-            directory.display()
-        )));
-    }
-    if !meta.is_dir() || meta.uid() != euid || mode & 0o077 != 0 {
-        return Err(Error::Refused(format!(
-            "{} must be a directory owned by you (uid {euid}) with mode 0700; it is {} \
-             with mode {:04o} owned by uid {}. fux does not change it",
-            directory.display(),
-            if meta.is_dir() {
-                "a directory"
-            } else {
-                "not a directory"
-            },
-            mode & 0o7777,
-            meta.uid(),
-        )));
-    }
-    Ok(())
-}
-
-/// A client refuses a socket that is not in a private directory of its own
-/// user, or not a socket of its own user.
-pub fn check_client_socket(socket: &SocketPath) -> Result<(), Error> {
-    let path = socket.path();
-    let meta = match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(Error::NoServer(path.to_owned()));
-        }
-        Err(error) => return Err(io(path)(error)),
-        Ok(meta) => meta,
-    };
-    private_directory(socket, false)?;
-    if !meta.file_type().is_socket() || meta.uid() != geteuid() {
-        return Err(Error::Refused(format!(
-            "{} is not a socket owned by you; refusing to connect",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn identity(meta: &fs::Metadata) -> (u64, u64) {
-    (meta.dev(), meta.ino())
-}
-
-/// A socket file's identity, held so that it keeps meaning that file.
-struct Pinned {
-    identity: (u64, u64),
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    _inode: File,
-}
-
-impl Pinned {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn new(path: &Path) -> io::Result<Self> {
-        let inode = fuxix::file::pin(path)?;
-        let meta = inode.metadata()?;
-        Ok(Self {
-            identity: identity(&meta),
-            _inode: inode,
-        })
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    fn new(path: &Path) -> io::Result<Self> {
-        fs::symlink_metadata(path).map(|meta| Self {
-            identity: identity(&meta),
-        })
-    }
-
-    fn still_at(&self, path: &Path) -> bool {
-        fs::symlink_metadata(path).is_ok_and(|meta| identity(&meta) == self.identity)
-    }
-}
-
-/// The lock that makes this server its only owner, and the socket it bound.
-/// Dropping it removes the socket if it is still the one this server bound.
-pub struct Endpoint {
-    path: PathBuf,
-    socket: Pinned,
-    _lock: File,
-}
-
-impl Drop for Endpoint {
-    fn drop(&mut self) {
-        if self.socket.still_at(&self.path) {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
-/// Whether a server listens on `path`, without waiting: a nonblocking
-/// connect answers at once. A listener with a full backlog refuses with
-/// `EAGAIN`, and counts as alive. One whose maker, as the system names it
-/// (`SO_PEERCRED`: the process that listened), is gone is no server's: a
-/// crashed server's socket, still held by a process of its own that has
-/// yet to see it go (its connection's, waiting for a client, `conn::wait`,
-/// which never listens itself).
-pub fn listened(path: &Path) -> bool {
-    let Ok(fd) = fuxix::socket::stream() else {
-        return false;
-    };
-    if fuxix::io::set_nonblocking(&fd, true).is_err() {
-        return false;
-    }
-    match fuxix::socket::connect(&fd, path) {
-        Ok(()) => !fuxix::socket::peer(&fd)
-            .ok()
-            .and_then(|peer| peer.pid)
-            .is_some_and(gone),
-        Err(fuxix::Errno::AGAIN | fuxix::Errno::INPROGRESS) => true,
-        Err(_) => false,
-    }
-}
-
-/// Whether a server answers on `socket`: something listens there
-/// (`listened`), and it is not a crashed server's, held by a process of its
-/// with a backlog full or not.
-pub fn owned(socket: &SocketPath) -> bool {
-    listened(socket.path()) && !crashed(socket.path())
-}
-
-/// Whether the run on the socket at `path` lost its server: its record is
-/// left, which a stop removes, and no server holds the socket's lock, asked
-/// as a starting server does, once none is starting there.
-fn crashed(path: &Path) -> bool {
-    if !panes(path).join("run").exists() {
-        return false;
-    }
-    let Ok((starting, _)) = lock_file(path, ".starting") else {
-        return false;
-    };
-    starting.lock().is_ok()
-        && matches!(
-            lock_file(path, ".lock").map(|(lock, _)| lock.try_lock()),
-            Ok(Ok(()))
-        )
 }
 
 /// Why a client whose peer is `peer` (`fuxix::socket::peer`) is refused,
@@ -388,337 +203,5 @@ pub fn stranger(peer: fuxix::Result<fuxix::socket::Peer>) -> Option<String> {
         (Err(error), _) => Some(format!(
             "refused a connection whose peer could not be identified: {error}"
         )),
-    }
-}
-
-/// Whether process `pid` is gone: it has no session, or, on Linux, it is a
-/// zombie, whose descriptors are closed.
-fn gone(pid: fuxix::process::Pid) -> bool {
-    let zombie = || {
-        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-        (stat.rsplit_once(") ")).is_some_and(|(_, rest)| rest.starts_with(['Z', 'X']))
-    };
-    fuxix::process::session(pid).is_none() || cfg!(target_os = "linux") && zombie()
-}
-
-/// The lock file beside the socket at `path`, its name ending `end`, made
-/// if it is not there, and its path.
-fn lock_file(path: &Path, end: &str) -> Result<(File, PathBuf), Error> {
-    let mut lock_path = path.as_os_str().to_owned();
-    lock_path.push(end);
-    let lock_path = PathBuf::from(lock_path);
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        // std opens close-on-exec.
-        .custom_flags(fuxix::file::NOFOLLOW)
-        .open(&lock_path)
-        .map_err(io(&lock_path))?;
-    Ok((lock, lock_path))
-}
-
-/// Takes ownership of `path`, binds it and listens there. Refuses a live
-/// server's socket and anything that is not a socket; replaces only a
-/// socket proven stale.
-pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Error> {
-    let path = socket.path();
-    private_directory(socket, true)?;
-    // One server starts at a time, held here till the one before it
-    // listens or fails (this returns, or it exits): one refused below is
-    // refused once the socket answers, which its client then finds
-    // (`client::start_server`).
-    let (starting, starting_path) = lock_file(path, ".starting")?;
-    starting
-        .lock()
-        .map_err(failed("locking ", &starting_path))?;
-    let (lock, lock_path) = lock_file(path, ".lock")?;
-    lock.try_lock().map_err(|error| match error {
-        fs::TryLockError::WouldBlock => Error::Refused(format!(
-            "another fux server is already using {}",
-            path.display()
-        )),
-        fs::TryLockError::Error(error) => failed("locking ", &lock_path)(error),
-    })?;
-    // Pinned before the probe, so the file found dead is the one removed.
-    let stale = Pinned::new(path);
-    match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(io(path)(error)),
-        Ok(meta) if !meta.file_type().is_socket() || meta.uid() != geteuid() => {
-            return Err(Error::Refused(format!(
-                "{} exists and is not a socket owned by you; fux will not replace it",
-                path.display()
-            )));
-        }
-        // With the lock held, one that listens is no live fux server's,
-        // but still refused, unless its run's record is left: then it is a
-        // crashed one's, held by a process of its (`listened`, full or not).
-        Ok(_) if listened(path) && !panes(path).join("run").exists() => {
-            return Err(Error::Refused(format!(
-                "another fux server is already listening on {}",
-                path.display()
-            )));
-        }
-        // No answer, or a crashed server's socket a process of its still
-        // holds: with the lock held, no server owns it.
-        Ok(_) => {
-            if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
-                fs::remove_file(path).map_err(failed("removing stale socket ", path))?;
-            }
-        }
-    }
-    let fd = fuxix::socket::stream().map_err(failed("a socket for ", path))?;
-    fuxix::socket::bind(&fd, path).map_err(failed("binding ", path))?;
-    let endpoint = Endpoint {
-        path: path.to_owned(),
-        socket: Pinned::new(path).map_err(io(path))?,
-        _lock: lock,
-    };
-    // From here a failure drops `endpoint`, which removes the socket. The mode
-    // is set before `listen`, so no connection is accepted on an open socket.
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io(path))?;
-    fuxix::socket::listen(&fd, 128).map_err(failed("listening on ", path))?;
-    Ok((endpoint, UnixListener::from(fd)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::net::UnixStream;
-
-    /// Whether a file exists at `path` at all, a link not followed.
-    fn exists(path: &Path) -> bool {
-        fs::symlink_metadata(path).is_ok()
-    }
-
-    fn bind(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
-        bind_socket(&checked(path, "test")?)
-    }
-
-    fn scratch(name: &str) -> std::io::Result<PathBuf> {
-        Ok(fuxix::file::scratch()?.join(format!("fux-socket-{name}-{}", std::process::id())))
-    }
-
-    #[test]
-    fn paths_are_checked_for_shape_and_length() {
-        assert!(checked("", "X").is_err());
-        assert!(checked("relative/s.sock", "X").is_err());
-        assert!(checked("/", "X").is_err());
-        assert!(checked("/s.sock", "X").is_err());
-        let long: String = "/d/"
-            .chars()
-            .chain(std::iter::repeat_n('a', fuxix::socket::max_path_len()))
-            .collect();
-        let too_long = checked(&long, "X");
-        assert!(too_long.is_err_and(|e| e.to_string().contains("limit")));
-        assert!(checked("/tmp/fux/s.sock", "X").is_ok());
-        assert!(base_directory("TMPDIR", "").is_err());
-        assert!(base_directory("TMPDIR", "rel").is_err());
-        assert_eq!(
-            base_directory("TMPDIR", "/t").ok(),
-            Some(PathBuf::from("/t/fux"))
-        );
-        let message = |r: Result<SocketPath, Error>| r.err().map(|e| e.to_string());
-        for (result, expected) in [
-            (
-                checked("", "X"),
-                "X is empty; it must be an absolute socket path",
-            ),
-            (checked("a\0b", "X"), "X contains a NUL byte"),
-            (
-                checked("relative/s.sock", "X"),
-                "X is \"relative/s.sock\"; it must be an absolute path",
-            ),
-            (
-                checked("/s", "X"),
-                "X is \"/s\"; it must name a socket file in a directory below /",
-            ),
-            (
-                base_directory("TMPDIR", "").and_then(|d| checked(&d, "X")),
-                "TMPDIR is set but empty; set it to a directory or set FUX_SOCKET",
-            ),
-            (
-                base_directory("TMPDIR", "rel").and_then(|d| checked(&d, "X")),
-                "TMPDIR is \"rel\", not an absolute path; fix it or set FUX_SOCKET",
-            ),
-        ] {
-            assert_eq!(message(result).as_deref(), Some(expected));
-        }
-        // No server at a socket chosen by its path: what starts that one.
-        assert!(
-            Error::NoServer(PathBuf::from("/x/y/absent.sock"))
-                .to_string()
-                .ends_with("`FUX_SOCKET=/x/y/absent.sock fux start` starts one")
-        );
-        // A path with a blank is quoted, so the command can be pasted.
-        assert!(
-            Error::NoServer(PathBuf::from("/x/my dir/absent.sock"))
-                .to_string()
-                .ends_with("`FUX_SOCKET='/x/my dir/absent.sock' fux start` starts one")
-        );
-        // As is one a shell would read otherwise: `;`, a quote.
-        assert!(
-            Error::NoServer(PathBuf::from("/x/a;b'c.sock"))
-                .to_string()
-                .ends_with(r"`FUX_SOCKET='/x/a;b'\''c.sock' fux start` starts one")
-        );
-    }
-
-    #[test]
-    fn bind_is_private_single_owner_and_cleans_up_only_its_own_socket()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = scratch("bind")?;
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-        let path = root.join("fux").join("s.sock");
-        let (endpoint, listener) = bind(&path)?;
-        let mode = |p: &Path| fs::metadata(p).map(|m| m.permissions().mode() & 0o777).ok();
-        assert_eq!(mode(&path), Some(0o600));
-        assert_eq!(mode(&root.join("fux")), Some(0o700));
-        // A second server on the same path is refused while the first lives.
-        let second = bind(&path);
-        assert_eq!(
-            second.err().map(|e| e.to_string()),
-            Some(format!(
-                "another fux server is already using {}",
-                path.display()
-            ))
-        );
-        // A client connects, and its peer is this user.
-        let client = UnixStream::connect(&path).map_err(|e| e.to_string())?;
-        let (served, _) = listener.accept().map_err(|e| e.to_string())?;
-        assert!(fuxix::socket::peer(&served).is_ok_and(|p| p.user.is_current()));
-        drop((client, served, listener, endpoint));
-        assert!(!exists(&path), "the socket is removed at exit");
-        // A stale socket (nothing listening) is replaced, even one whose
-        // connect is refused (mode 0000).
-        let stale = UnixListener::bind(&path).map_err(|e| e.to_string())?;
-        drop(stale);
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).map_err(|e| e.to_string())?;
-        let (endpoint, _listener) = bind(&path)?;
-        // A replacement bound by someone else at the same path is left alone.
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
-        let replacement = UnixListener::bind(&path).map_err(|e| e.to_string())?;
-        drop(endpoint);
-        assert!(
-            exists(&path),
-            "another program's socket survives our cleanup"
-        );
-        // A socket something listens on, though it holds no lock, is never
-        // taken over.
-        assert!(bind(&path).is_err_and(|e| e.to_string().contains("already listening")));
-        assert!(exists(&path), "the live socket is kept");
-        drop(replacement);
-        let _ = fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    fn inode(path: &Path) -> Result<u64, String> {
-        fs::symlink_metadata(path)
-            .map(|m| m.ino())
-            .map_err(|e| format!("{}: {e}", path.display()))
-    }
-
-    /// Whether the filesystem under `dir` gives a freed inode number to
-    /// the next file it makes, as ext4 does and APFS does not.
-    fn reuses_inode_numbers(dir: &Path) -> Result<bool, String> {
-        let probe = dir.join("probe.sock");
-        for _ in 0..5 {
-            let first = UnixListener::bind(&probe).map_err(|e| e.to_string())?;
-            let number = inode(&probe)?;
-            drop(first);
-            fs::remove_file(&probe).map_err(|e| e.to_string())?;
-            let second = UnixListener::bind(&probe).map_err(|e| e.to_string())?;
-            let again = inode(&probe)?;
-            drop(second);
-            fs::remove_file(&probe).map_err(|e| e.to_string())?;
-            if number == again {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// A socket that replaces fux's own after fux's listener closed keeps
-    /// its place when fux's endpoint is dropped, and a stale socket's pin
-    /// tells a replacement from the file it pinned, even where the
-    /// replacement gets the freed inode number.
-    /// The test says whether its filesystem reuses numbers, since only
-    /// there does it test anything a plain identity check would not.
-    #[test]
-    fn cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = scratch("reuse")?;
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("fux")).map_err(|e| e.to_string())?;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-        fs::set_permissions(root.join("fux"), fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
-        let reuse = reuses_inode_numbers(&root.join("fux"))?;
-        eprintln!(
-            "inode numbers under {} are {}",
-            root.display(),
-            if reuse {
-                "reused: the guarantee is exercised"
-            } else {
-                "not reused: the guarantee holds here without the pin"
-            }
-        );
-        let path = root.join("fux").join("s.sock");
-        // At exit: fux's listener closes, someone replaces the socket, then
-        // fux's endpoint is dropped.
-        let (endpoint, listener) = bind(&path)?;
-        let ours = inode(&path)?;
-        drop(listener);
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
-        let replacement = UnixListener::bind(&path).map_err(|e| e.to_string())?;
-        let theirs = inode(&path)?;
-        eprintln!("fux's socket was inode {ours}, the replacement's {theirs}");
-        drop(endpoint);
-        assert!(exists(&path), "the replacement survives fux's cleanup");
-        drop(replacement);
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
-        // Binding: a stale socket is pinned, then replaced before it could be
-        // removed. The pin must not mistake the replacement for it.
-        drop(UnixListener::bind(&path).map_err(|e| e.to_string())?);
-        let pin = Pinned::new(&path).map_err(|e| e.to_string())?;
-        fs::remove_file(&path).map_err(|e| e.to_string())?;
-        let replacement = UnixListener::bind(&path).map_err(|e| e.to_string())?;
-        assert!(
-            !pin.still_at(&path),
-            "the pin took a replacement for the stale socket"
-        );
-        drop(replacement);
-        let _ = fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn a_shared_directory_is_refused() -> Result<(), Box<dyn std::error::Error>> {
-        let root = scratch("shared")?;
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("fux")).map_err(|e| e.to_string())?;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-        fs::set_permissions(root.join("fux"), fs::Permissions::from_mode(0o755))
-            .map_err(|e| e.to_string())?;
-        let error = bind(&root.join("fux").join("s.sock"));
-        let error = error.err().map(|e| e.to_string()).unwrap_or_default();
-        assert!(
-            error.contains("mode 0700") && error.contains("mode 0755"),
-            "{error}"
-        );
-        // A client is refused there too.
-        let socket = root.join("fux").join("s.sock");
-        std::os::unix::net::UnixListener::bind(&socket)?;
-        let socket = checked(&socket, "socket")?;
-        let error = check_client_socket(&socket).err().map(|e| e.to_string());
-        let error = error.unwrap_or_default();
-        assert!(error.contains("mode 0755"), "{error}");
-        let _ = fs::remove_dir_all(&root);
-        Ok(())
     }
 }

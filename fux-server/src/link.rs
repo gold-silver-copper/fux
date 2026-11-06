@@ -10,6 +10,7 @@
 //! typed at a client, and asks it what only it can do (`Ask`).
 use crate::journal::Told;
 use crate::pane::Said;
+use crate::socket::Stream;
 use fux_vt::bytes::ByteQueue;
 use fux_vt::keys::Keystroke;
 use fux_vt::keys::colour::Scheme;
@@ -25,7 +26,6 @@ use fux_wire::id::{ClientId, PaneId};
 use fux_wire::inspect::Facts;
 use fux_wire::protocol::{Decoder, Frame};
 use fux_wire::wire::{Reader, Wire};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 /// What a pane starts as: its id in its server's run, the program it runs
@@ -398,6 +398,44 @@ pub enum FromPane {
     /// Body or held capture `0` is used up: taken by what waited for it,
     /// or fetched. Its asker's connection holds it no more.
     Retired(u64),
+    /// Its program's handle, for its server to copy (D-134): sent on
+    /// Windows alone, before the facts naming a new program, and again to
+    /// a server that takes it back.
+    Offer(Offered),
+}
+
+/// A pane's program as its process offers its server a copy of its
+/// handle: who the program is (its pid and creation time) and the
+/// handle's value in the pane's process (`fuxix::process::Offer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Offered {
+    pub pid: i32,
+    pub created: u64,
+    pub handle: u64,
+}
+wired!(struct Offered { pid, created, handle });
+
+impl From<fuxix::process::Offer> for Offered {
+    fn from(offer: fuxix::process::Offer) -> Offered {
+        Offered {
+            pid: offer.program.pid.as_i32(),
+            created: offer.program.created,
+            handle: offer.handle,
+        }
+    }
+}
+
+impl Offered {
+    /// It as fuxix takes it; none if its pid is none.
+    pub fn offer(self) -> Option<fuxix::process::Offer> {
+        Some(fuxix::process::Offer {
+            program: fuxix::process::Identity {
+                pid: fuxix::process::Pid::from_i32(self.pid)?,
+                created: self.created,
+            },
+            handle: self.handle,
+        })
+    }
 }
 wired!(FromPane {
     Begun(b),
@@ -410,6 +448,7 @@ wired!(FromPane {
     Refused { client, why },
     Answer { ask, answer },
     Retired(t),
+    Offer(o),
 });
 
 /// A message in one frame, as `Frame` has it.
@@ -451,7 +490,7 @@ impl<T: Wire> Frame<'_> for Sending<'_, T> {
 /// One end of a link: its socket, what came that is not yet taken, and
 /// what is to go that the socket did not take yet.
 pub struct End {
-    pub stream: UnixStream,
+    pub stream: Stream,
     decoder: Decoder,
     pub out: ByteQueue,
 }
@@ -467,8 +506,8 @@ pub enum Read {
 
 impl End {
     /// `stream`, read and written without waiting.
-    pub fn new(stream: UnixStream) -> std::io::Result<End> {
-        stream.set_nonblocking(true)?;
+    pub fn new(stream: Stream) -> std::io::Result<End> {
+        crate::socket::nonblocking(&stream)?;
         Ok(End {
             stream,
             decoder: Decoder::default(),
@@ -534,7 +573,7 @@ impl End {
 
     /// The messages queued to go, as the other end will read them: for the
     /// tests.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn queued<T: Wire>(&self) -> Vec<T> {
         let mut decoder = Decoder::default();
         decoder.push(self.out.as_slice());
@@ -606,6 +645,9 @@ pub struct Remote {
     /// Its link took none of what was last written to it: its process reads
     /// nothing (stopped, say). What would go to it waits upstream then.
     pub stalled: bool,
+    /// The program whose handle the server copied from it (Windows,
+    /// D-134), till another takes its place or the pane ends.
+    pub adopted: Option<fuxix::process::Pid>,
 }
 
 impl Remote {
@@ -679,41 +721,7 @@ impl Link {
         socket: &std::path::Path,
         begin: Begin,
     ) -> Result<Link, String> {
-        let at = |doing: &str| {
-            let socket = socket.display().to_string();
-            let doing = doing.to_owned();
-            move |e: std::io::Error| format!("{doing} {socket}: {e}")
-        };
-        // One a process still listens at is a pane's, whatever the record
-        // says: never let go as debris. One no one does was left by a pane
-        // that ended.
-        if UnixStream::connect(socket).is_ok() {
-            return Err(format!(
-                "a pane's process listens at {} already",
-                socket.display()
-            ));
-        }
-        let _ = std::fs::remove_file(socket);
-        let listener =
-            std::os::unix::net::UnixListener::bind(socket).map_err(at("binding its socket"))?;
-        std::fs::set_permissions(socket, std::os::unix::fs::PermissionsExt::from_mode(0o600))
-            .map_err(at("its socket"))?;
-        let mut command = std::process::Command::new(exe);
-        command
-            .arg(PANE)
-            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
-                listener,
-            )))
-            .stdout(std::process::Stdio::null());
-        fuxix::process::lead_session(&mut command, false, fuxix::process::Dispositions::Default);
-        let child = command
-            .spawn()
-            .map_err(|e| format!("starting its process, {}: {e}", exe.display()))?;
-        let pid = fuxix::process::Pid::of(&child);
-        // fux reaps it by its pid; std never waits on a dropped child.
-        drop(child);
-        let pid = pid.ok_or("its process has no pid")?;
-        let stream = UnixStream::connect(socket).map_err(at("reaching its process at"))?;
+        let (pid, stream) = crate::socket::start_pane(exe, socket)?;
         let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
         end.send(&ToPane::Begin(Box::new(begin)));
         if let Err(error) = end.flush_all() {
@@ -729,6 +737,7 @@ impl Link {
             first: Vec::new(),
             later: Vec::new(),
             stalled: false,
+            adopted: None,
         };
         match began.map_err(|e| format!("its process: {e}"))? {
             Some(FromPane::Begun(None)) => {
@@ -749,7 +758,12 @@ impl Link {
     /// no process listens for is gone; one that answers but can't be taken
     /// is not (`Untaken`).
     pub fn take(socket: &std::path::Path, run: Run) -> Result<(Link, Greeting), Untaken> {
-        let stream = UnixStream::connect(socket).map_err(|e| Untaken::Gone(e.to_string()))?;
+        let stream =
+            crate::socket::connect(socket).map_err(|e| match crate::socket::none_listens(&e) {
+                true => Untaken::Gone(e.to_string()),
+                false => Untaken::Unknown(format!("reaching it: {e}")),
+            })?;
+        let maker = crate::socket::listener_pid(&stream);
         let unknown = |why: String| Untaken::Unknown(why);
         let mut end = End::new(stream).map_err(|e| unknown(format!("its link: {e}")))?;
         end.send(&ToPane::Take { run });
@@ -767,8 +781,15 @@ impl Link {
                 greeting.protocol
             )));
         }
-        let pid = fuxix::process::Pid::from_raw(greeting.pid)
+        let pid = fuxix::process::Pid::from_i32(greeting.pid)
             .ok_or_else(|| unknown(format!("its greeting names pid {}", greeting.pid)))?;
+        // Where the system names the process that listens, the greeting
+        // must name that one: the pid a takeover adopts a program from.
+        if maker.is_some_and(|maker| maker != pid) {
+            return Err(unknown(format!(
+                "its greeting names pid {pid}, and the system another"
+            )));
+        }
         let mut remote = Remote {
             end,
             pid,
@@ -778,6 +799,7 @@ impl Link {
             first: Vec::new(),
             later: Vec::new(),
             stalled: false,
+            adopted: None,
         };
         remote.first = first(&mut remote.end).map_err(unknown)?;
         Ok((Link::Remote(remote), *greeting))
@@ -786,9 +808,9 @@ impl Link {
     /// The pid of the pane process waiting at `socket`, as the system says
     /// (`SO_PEERCRED`), else as it says itself; none if none answers.
     pub fn who(socket: &std::path::Path) -> Option<i32> {
-        let stream = UnixStream::connect(socket).ok()?;
-        if let Some(pid) = fuxix::socket::peer(&stream).ok().and_then(|peer| peer.pid) {
-            return Some(pid.as_raw());
+        let (pid, stream) = crate::socket::reach_named(socket)?;
+        if let Some(pid) = pid {
+            return Some(pid.as_i32());
         }
         let mut end = End::new(stream).ok()?;
         end.send(&ToPane::Who);

@@ -23,7 +23,7 @@ use std::io::{ErrorKind, Write};
 use std::mem;
 use std::ops::ControlFlow;
 
-use std::os::unix::net::{UnixListener, UnixStream};
+use crate::socket::{Accepted, Listener, Stream};
 
 use std::time::{Duration, Instant};
 
@@ -56,7 +56,7 @@ const ACCEPT_REST: Duration = Duration::from_millis(100);
 /// moment it stops, its listener closes and the socket is gone, and a
 /// client finds no server rather than one that never answers.
 struct Listening {
-    listener: UnixListener,
+    listener: Listener,
     /// Holds the lock; removes the socket once dropped, after the listener
     /// closes.
     _endpoint: Endpoint,
@@ -66,7 +66,7 @@ impl Listening {
     /// The socket at `socket` bound and listened on.
     fn open(socket: &SocketPath) -> Result<Listening, Error> {
         let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
-        listener.set_nonblocking(true).map_err(Error::Setup)?;
+        crate::socket::listening(&listener).map_err(Error::Setup)?;
         Ok(Listening {
             listener,
             _endpoint: endpoint,
@@ -239,7 +239,7 @@ impl Attached {
 
 impl Conn {
     /// A connection whose process is linked on `link`.
-    fn new(link: UnixStream) -> std::io::Result<Conn> {
+    fn new(link: Stream) -> std::io::Result<Conn> {
         Ok(Conn {
             link: crate::link::End::new(link)?,
             decoder: Decoder::default(),
@@ -260,35 +260,23 @@ impl Conn {
     /// socket, `listener`, on its stdout, where it takes its client itself
     /// (`conn::wait`). A command's connection is then served at once, with
     /// no process to start first.
-    fn spare(listener: &UnixListener, exe: &std::path::Path) -> std::io::Result<Conn> {
-        Conn::launch(exe, listener.try_clone()?.into(), &[])
+    fn spare(listener: &Listener, exe: &std::path::Path) -> std::io::Result<Conn> {
+        Conn::launch(exe, crate::socket::spare(listener)?, &[])
     }
 
     /// Starts the process of a connection the server accepted itself on
     /// `stream`, from `exe`: `fux __conn taken`, its client on stdout.
-    fn start(stream: UnixStream, exe: &std::path::Path) -> std::io::Result<Conn> {
-        Conn::launch(exe, stream.into(), &[crate::link::TAKEN])
+    fn start(stream: Accepted, exe: &std::path::Path) -> std::io::Result<Conn> {
+        Conn::launch(exe, crate::socket::hand(stream), &[crate::link::TAKEN])
     }
 
     /// `fux __conn` with `words`, its link on stdin and `out` on stdout.
     fn launch(
         exe: &std::path::Path,
-        out: std::os::fd::OwnedFd,
+        out: crate::socket::Handed,
         words: &[&str],
     ) -> std::io::Result<Conn> {
-        let (ours, theirs) = UnixStream::pair()?;
-        let child = std::process::Command::new(exe)
-            .arg(crate::link::CONN)
-            .args(words)
-            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
-                theirs,
-            )))
-            .stdout(std::process::Stdio::from(out))
-            .spawn()?;
-        // Reaped as the server's other children are (`reap`); std never
-        // waits on a dropped child.
-        drop(child);
-        Conn::new(ours)
+        Conn::new(crate::socket::launch_conn(exe, words, out)?)
     }
 
     /// Whether all it sent its client was taken.
@@ -638,15 +626,10 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
             );
             return Err(Error::Refused(stranded(&panes, &why)));
         }
+        // Before any lock is taken: the pinned fux takes them itself.
         true if std::env::current_exe().ok().as_deref() != Some(exe.as_path()) => {
-            use std::os::unix::process::CommandExt;
-            let error = std::process::Command::new(&exe)
-                .args(std::env::args_os().skip(1))
-                .exec();
-            return Err(Error::Refused(format!(
-                "running {}: {error}",
-                exe.display()
-            )));
+            return crate::socket::run_pinned(&exe)
+                .map_err(|error| Error::Refused(format!("running {}: {error}", exe.display())));
         }
         true => {}
         false if !waiting(&panes).is_empty() => {
@@ -657,6 +640,18 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
             return Err(Error::Refused(stranded(&panes, &why)));
         }
         false => {}
+    }
+    // The run's own fux, from here on: what it says, it says once.
+    if let Some(notice) = crate::socket::prepare_terminals() {
+        log!("notice: {notice}");
+    }
+    // Said once: a job that keeps its processes in ends this run with it
+    // (D-135). Unix has no jobs.
+    if fuxix::process::job_fate() == fuxix::process::Fate::Bound {
+        log!(
+            "notice: this run ends with the terminal or launcher that started it: \
+             its job ends its processes and lets none leave"
+        );
     }
     let mut session = Session::new(socket.path().to_owned(), true, run, journal);
     session.exe = Some(exe.clone());
@@ -706,23 +701,13 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
 /// strands it (D-124 (7)). A link to this fux where one can be made, else a
 /// copy of it.
 fn pin(panes: &std::path::Path, exe: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
     // What a run that stopped, or never began, left there is no one's.
     match fs::remove_dir_all(panes) {
         Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
         Ok(()) | Err(_) => {}
     }
-    fs::DirBuilder::new().mode(0o700).create(panes)?;
-    let running = std::env::current_exe()?;
-    if fs::hard_link(&running, exe).is_ok() {
-        return Ok(());
-    }
-    // The running binary itself, though the file was replaced since.
-    let source = match std::path::Path::new("/proc/self/exe").exists() {
-        true => std::path::PathBuf::from("/proc/self/exe"),
-        false => running,
-    };
-    fs::copy(source, exe).map(drop)
+    fuxix::file::private_dir(panes)?;
+    crate::socket::keep_executable(exe)
 }
 
 /// The pane processes waiting at `panes` for a server, by their sockets'
@@ -738,7 +723,7 @@ fn waiting(panes: &std::path::Path) -> Vec<(String, Option<fuxix::process::Pid>)
             continue;
         }
         if let Some(pid) = crate::link::Link::who(&entry.path()) {
-            waiting.push((name, fuxix::process::Pid::from_raw(pid)));
+            waiting.push((name, fuxix::process::Pid::from_i32(pid)));
         }
     }
     waiting
@@ -767,13 +752,14 @@ fn stranded(panes: &std::path::Path, why: &str) -> String {
 fn ready() {
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(READY).and_then(|()| stdout.flush());
-    match fs::File::open("/dev/null") {
-        Ok(null) => {
-            if let Err(errno) = fuxix::io::redirect_stdout(&null) {
-                log!("stdout to /dev/null: {errno}");
+    let null = crate::socket::NULL;
+    match fs::File::open(null) {
+        Ok(file) => {
+            if let Err(errno) = fuxix::io::redirect_stdout(&file) {
+                log!("stdout to {null}: {errno}");
             }
         }
-        Err(error) => log!("/dev/null: {error}"),
+        Err(error) => log!("{null}: {error}"),
     }
 }
 
@@ -822,11 +808,11 @@ impl Server {
                     Slot::Listener => self.accept(now),
                     Slot::Spare => self.spare_heard(now),
                     Slot::Children => {
-                        crate::drain(self.children.reader());
+                        crate::take_signals(&self.children);
                         self.reap(now);
                     }
                     Slot::Stops => {
-                        crate::drain(self.stops.reader());
+                        crate::take_signals(&self.stops);
                         self.stop("stopped by a signal".into(), Actor::Server, now);
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags, now),
@@ -921,6 +907,9 @@ impl Server {
                     let _ = fuxix::process::kill(orphan.pid, fuxix::process::Signal::Kill);
                     orphan.deadline = after(now, STOP_WAIT);
                 }
+                // One that ended already told it before it was an orphan: no
+                // more news comes of it, so it is looked for here.
+                self.reap(now);
             }
             Wake::Listen => {
                 if let Phase::Serving { resting, .. } = &mut self.phase {
@@ -1034,8 +1023,9 @@ impl Server {
             // Its process's link is read, what its client sent and whether
             // the client took what it was sent, but while what its client
             // types waits for a pane (`Server::held`).
+            // Held, it is watched for its end alone (`PollFlags::WATCH`).
             let mut flags = match held.get(i).copied().unwrap_or(false) {
-                true => PollFlags::NONE,
+                true => PollFlags::WATCH,
                 false => PollFlags::IN,
             };
             if !conn.out.is_empty() || !conn.link.out.is_empty() {
@@ -1240,11 +1230,11 @@ impl Server {
     fn accept(&mut self, now: Instant) {
         let mut refusing = false;
         for _ in 0..ACCEPTS {
-            let Phase::Serving { listening, .. } = &self.phase else {
+            let Phase::Serving { listening, .. } = &mut self.phase else {
                 return;
             };
-            let stream = match listening.listener.accept() {
-                Ok((stream, _)) => stream,
+            let stream = match crate::socket::accept(&mut listening.listener) {
+                Ok(stream) => stream,
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 // A peer that gave up before it was accepted: the next may
                 // be fine.
@@ -1260,7 +1250,7 @@ impl Server {
                 // listener, readable still, rests.
                 Err(e) => return self.rest(&format!("accept: {e}"), now),
             };
-            if let Some(why) = crate::socket::stranger(fuxix::socket::peer(&stream)) {
+            if let Some(why) = crate::socket::stranger(crate::socket::peer(&stream)) {
                 log!("{why}");
                 continue;
             }
@@ -1811,9 +1801,11 @@ impl Server {
     }
 }
 
-#[cfg(test)]
+// They drive the server over Unix sockets and `/bin/sh`.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::os::unix::net::{UnixListener, UnixStream};
 
     #[test]
     fn delivery_departures_answer_event_reads_in_the_same_turn()

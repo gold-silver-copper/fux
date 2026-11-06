@@ -30,6 +30,27 @@ impl Pid {
     pub fn as_raw(self) -> i32 {
         self.0.get()
     }
+
+    /// `raw`, a pid as a `u32` holds one (std's, a client's ancestry), as
+    /// a process ID if it is one.
+    pub fn from_u32(raw: u32) -> Option<Pid> {
+        i32::try_from(raw).ok().and_then(Pid::from_raw)
+    }
+
+    /// It as a `u32`, as std gives a pid.
+    pub fn as_u32(self) -> u32 {
+        self.0.get().cast_unsigned()
+    }
+
+    /// `raw`, a pid as fux's own messages carry one (an `i32`).
+    pub fn from_i32(raw: i32) -> Option<Pid> {
+        Pid::from_raw(raw)
+    }
+
+    /// It as fux's own messages carry a pid.
+    pub fn as_i32(self) -> i32 {
+        self.0.get()
+    }
 }
 
 impl fmt::Display for Pid {
@@ -110,6 +131,27 @@ pub fn lead_session(
     // sigemptyset, sigaction and sigprocmask; setsid; ioctl. It allocates
     // nothing, takes no lock, and its errors are numbers.
     unsafe { command.pre_exec(lead) };
+}
+
+/// How `signal` reaches a pane's programs: on Unix always as a signal to
+/// its foreground group, a shell's pane or not.
+pub fn delivery(_signal: Signal, _shell: bool) -> super::Delivery {
+    super::Delivery::Group
+}
+
+/// A program's handle offered for another process to keep (D-134) is
+/// Windows' alone: on Unix a server adopts its panes' orphans instead
+/// ([`adopt_orphans`]), so nothing is to take, and this does nothing.
+pub fn adopt(_from: Pid, _offer: super::Offer) -> Result<()> {
+    Ok(())
+}
+
+/// Nothing is adopted on Unix ([`adopt`]): nothing to let go.
+pub fn release(_pid: Pid) {}
+
+/// Unix has no jobs: what this process starts is free of them.
+pub fn job_fate() -> super::Fate {
+    super::Fate::Free
 }
 
 /// The session of `pid`. `None` if there is none to name: the process is
@@ -468,17 +510,26 @@ impl Job {
     pub fn signal(&self, signal: Signal, reach: Reach) -> Sent {
         let others = match reach {
             Reach::Group => Tree::default(),
-            Reach::Session => self.members(),
+            Reach::Session | Reach::Attached => self.members(),
         };
-        let group = kill_group(self.0, signal)
-            .err()
+        let group = (reach != Reach::Attached)
+            .then(|| kill_group(self.0, signal).err())
+            .flatten()
             .map(|errno| (self.0, errno));
+        let found = others.pids.len();
         let each =
             (others.pids.into_iter()).filter_map(|pid| Some((pid, kill(pid, signal).err()?)));
         Sent {
             scan: others.scan,
             failed: group.into_iter().chain(each).collect(),
+            found,
         }
+    }
+
+    /// Nothing to offer another process of its leader on Unix: a server
+    /// adopts its panes' orphans instead ([`adopt_orphans`]).
+    pub fn offer(&self) -> Option<super::Offer> {
+        None
     }
 
     /// Kills it as far as `reach` says: [`Job::signal`] with

@@ -27,6 +27,15 @@ impl Errno {
     /// reads nothing, as Unix's `EBADF` says of a write-only descriptor.
     pub(crate) const BADF: Self =
         Self::from_code(windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE);
+    /// A call interrupted (`WSAEINTR`): no fuxix call on Windows is, so
+    /// this is never told; named so that code retrying on it reads alike.
+    pub const INTR: Self = Self(10004);
+    /// An I/O error (`ERROR_IO_DEVICE`): what Unix says of a terminal no
+    /// program holds; a pseudo console's end is a read of 0 here instead.
+    pub const IO: Self = Self::from_code(windows_sys::Win32::Foundation::ERROR_IO_DEVICE);
+    /// Not done on Windows (`ERROR_CALL_NOT_IMPLEMENTED`).
+    pub const NOSYS: Self =
+        Self::from_code(windows_sys::Win32::Foundation::ERROR_CALL_NOT_IMPLEMENTED);
     /// The resource is busy: another thread is polling (one at a time).
     pub(crate) const BUSY: Self = Self(windows_sys::Win32::Foundation::ERROR_BUSY.cast_signed());
 
@@ -52,6 +61,19 @@ impl Errno {
     /// the same 32 bits read as `i32`.
     pub(crate) const fn from_code(code: u32) -> Self {
         Self(code.cast_signed())
+    }
+
+    /// The system's description and code, its bytes admitted under
+    /// `budget` before they are kept.
+    pub fn message<A: crate::Allocation>(
+        self,
+        budget: &mut A,
+    ) -> std::result::Result<String, A::Error> {
+        let text = self.to_string();
+        let mut kept = Vec::new();
+        budget.reserve(&mut kept, text.len())?;
+        kept.extend_from_slice(text.as_bytes());
+        Ok(String::from_utf8(kept).unwrap_or(text))
     }
 
     /// The code behind an I/O error, if it came from the system.

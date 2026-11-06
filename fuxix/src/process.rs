@@ -21,7 +21,7 @@ pub use windows::*;
 /// `libc::SIGTERM`. Windows numbers no signal, so there a signal has no
 /// number at all.
 macro_rules! signals {
-    ($(#[$doc:meta])* $($variant:ident $name:literal $raw:ident,)*) => {
+    ($(#[$doc:meta])* $($variant:ident $name:literal $raw:ident $linux:literal,)*) => {
         $(#[$doc])*
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
         pub enum Signal {
@@ -49,6 +49,15 @@ macro_rules! signals {
                 }
             }
 
+            /// Its number as Linux has it: what a record says of it on
+            /// Windows, which has no signal numbers.
+            #[cfg(windows)]
+            pub fn raw(self) -> i32 {
+                match self {
+                    $(Signal::$variant => $linux,)*
+                }
+            }
+
             /// Its name without `SIG`: `TERM`.
             pub fn name(self) -> &'static str {
                 match self {
@@ -68,34 +77,34 @@ signals! {
     /// it: those a program may die of on its own, which fux names when it
     /// tells a death. Every OS has the whole set, as `fux signal` names
     /// them on the wire; what Windows does with each is fux-server's.
-    Hup "HUP" SIGHUP,
-    Int "INT" SIGINT,
-    Term "TERM" SIGTERM,
-    Kill "KILL" SIGKILL,
-    Stop "STOP" SIGSTOP,
-    Tstp "TSTP" SIGTSTP,
-    Cont "CONT" SIGCONT,
-    Winch "WINCH" SIGWINCH,
-    Quit "QUIT" SIGQUIT,
-    Usr1 "USR1" SIGUSR1,
-    Usr2 "USR2" SIGUSR2,
-    Ill "ILL" SIGILL,
-    Abrt "ABRT" SIGABRT,
-    Fpe "FPE" SIGFPE,
-    Segv "SEGV" SIGSEGV,
-    Pipe "PIPE" SIGPIPE,
-    Alrm "ALRM" SIGALRM,
-    Bus "BUS" SIGBUS,
-    Trap "TRAP" SIGTRAP,
-    Sys "SYS" SIGSYS,
-    Xcpu "XCPU" SIGXCPU,
-    Xfsz "XFSZ" SIGXFSZ,
-    Vtalrm "VTALRM" SIGVTALRM,
-    Prof "PROF" SIGPROF,
-    Ttin "TTIN" SIGTTIN,
-    Ttou "TTOU" SIGTTOU,
-    Urg "URG" SIGURG,
-    Chld "CHLD" SIGCHLD,
+    Hup "HUP" SIGHUP 1,
+    Int "INT" SIGINT 2,
+    Term "TERM" SIGTERM 15,
+    Kill "KILL" SIGKILL 9,
+    Stop "STOP" SIGSTOP 19,
+    Tstp "TSTP" SIGTSTP 20,
+    Cont "CONT" SIGCONT 18,
+    Winch "WINCH" SIGWINCH 28,
+    Quit "QUIT" SIGQUIT 3,
+    Usr1 "USR1" SIGUSR1 10,
+    Usr2 "USR2" SIGUSR2 12,
+    Ill "ILL" SIGILL 4,
+    Abrt "ABRT" SIGABRT 6,
+    Fpe "FPE" SIGFPE 8,
+    Segv "SEGV" SIGSEGV 11,
+    Pipe "PIPE" SIGPIPE 13,
+    Alrm "ALRM" SIGALRM 14,
+    Bus "BUS" SIGBUS 7,
+    Trap "TRAP" SIGTRAP 5,
+    Sys "SYS" SIGSYS 31,
+    Xcpu "XCPU" SIGXCPU 24,
+    Xfsz "XFSZ" SIGXFSZ 25,
+    Vtalrm "VTALRM" SIGVTALRM 26,
+    Prof "PROF" SIGPROF 27,
+    Ttin "TTIN" SIGTTIN 21,
+    Ttou "TTOU" SIGTTOU 22,
+    Urg "URG" SIGURG 23,
+    Chld "CHLD" SIGCHLD 17,
 }
 
 /// How a process ended.
@@ -154,6 +163,56 @@ pub enum Scan {
     Failed(Errno),
 }
 
+/// Who a process is: its pid, and when it was made, in its own clock's counts
+/// (Windows: 100 ns counts since 1601). A pid is reused once its process is
+/// gone and every handle to it closed; the two together are never.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub pid: Pid,
+    pub created: u64,
+}
+
+/// What a process offers another of the program it started: who the
+/// program is, and the value of its handle to it in the offering process,
+/// which the other copies (`adopt` (Windows only)). Its numbers are what crosses
+/// between the two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Offer {
+    pub program: Identity,
+    pub handle: u64,
+}
+
+/// How a signal reaches a pane's programs ([`delivery`]): on Unix always
+/// as a signal to its foreground group; on Windows (D-136) as one of the
+/// others.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Delivery {
+    /// Sent to the foreground process group, as Unix sends it.
+    Group,
+    /// Written to the terminal as these keys, after what was typed before.
+    Keys(&'static [u8]),
+    /// Every process on the console but the shell is ended
+    /// (`Job::kill` with `Reach::Attached`).
+    Attached,
+    /// The pane's job is ended (`Job::kill` with `Reach::Session`).
+    Job,
+    /// It has no counterpart here: refused.
+    Unsupported,
+}
+
+/// What a job this process is in lets the processes it starts do
+/// ([`job_fate`]): on Unix, which has no jobs, always `Free`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fate {
+    /// In no job: what it starts outlives whatever started it.
+    Free,
+    /// In a job its children may leave, as fux's starts do (D-135).
+    Leaves,
+    /// In a job its children may not leave: they end as the job does,
+    /// when the terminal or launcher that made it ends.
+    Bound,
+}
+
 /// Which of a [`Job`]'s processes a signal or [`Job::kill`] reaches.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Reach {
@@ -164,10 +223,11 @@ pub enum Reach {
     /// Its group and every other process in its session ([`Job::members`]).
     /// On Windows, every process in its job object.
     Session,
-    /// Windows: every process on its pseudo console but the leader, that
-    /// is in its job ([`Job::attached`]): what a shell runs, while the
-    /// shell lives on (D-136's KILL of a shell pane).
-    #[cfg(windows)]
+    /// Every process but the leader: on Windows each on its pseudo
+    /// console that is in its job (`Job::attached`), what a shell runs,
+    /// while the shell lives on (D-136's KILL of a shell pane); on Unix
+    /// each of [`Job::members`], which fux never asks for (D-136 is
+    /// Windows').
     Attached,
 }
 
@@ -179,4 +239,8 @@ pub enum Reach {
 pub struct Sent {
     pub scan: Scan,
     pub failed: Vec<(Pid, Errno)>,
+    /// How many processes the scan found and each was sent to, one by one
+    /// (beside a group, or a job object ended whole): 0 with a complete
+    /// scan says none was there but what the reach left out.
+    pub found: usize,
 }

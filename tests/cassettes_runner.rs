@@ -1,5 +1,7 @@
 //! The cassette runner's own tests: what it refuses, bounds and reports,
 //! on made-up observations and a fux that never answers.
+// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+#![cfg(unix)]
 #[expect(
     dead_code,
     reason = "the replaying entry point is tests/cassettes.rs's"

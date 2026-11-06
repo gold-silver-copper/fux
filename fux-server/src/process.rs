@@ -2,7 +2,7 @@
 //! it and its session are ended.
 use fux_wire::answer::Ended;
 pub use fuxix::process::Pid;
-use fuxix::process::{Job, Reach, Scan, Signal};
+use fuxix::process::{Job, Reach, Scan, Sent};
 use fuxix::pty::Master;
 use std::path::Path;
 
@@ -41,7 +41,7 @@ pub fn spawn(
     if let Some(pixels) = pixels(size, cell) {
         let _ = fuxix::terminal::set_window_size(&master, size.nonzero().into(), Some(pixels));
     }
-    let (child, job) = slave
+    let started = slave
         .spawn(
             argv,
             |command| {
@@ -64,13 +64,25 @@ pub fn spawn(
             fuxix::process::Dispositions::Default,
         )
         .map_err(|source| format!("starting {program} in {cwd:?}: {source}"))?;
-    // The std handle is dropped without waiting: fux reaps the pid itself, and
-    // std never waits on a dropped child.
-    drop(child);
+    let job = started_job(started);
     Ok(Child {
         leader: Leader { job, closed: false },
         master,
     })
+}
+
+/// The job a start gave: on Unix with std's handle, dropped without
+/// waiting (fux reaps the pid itself, and std never waits on a dropped
+/// child); on Windows alone (D-139).
+#[cfg(unix)]
+fn started_job((child, job): (std::process::Child, Job)) -> Job {
+    drop(child);
+    job
+}
+
+#[cfg(windows)]
+fn started_job(job: Job) -> Job {
+    job
 }
 
 /// A terminal of `size` in pixels, as `cell` makes it: unknown without a
@@ -95,6 +107,11 @@ impl Leader {
         self.job.leader()
     }
 
+    /// Its handle, for the server to copy (D-134): Windows' alone.
+    pub fn offer(&self) -> Option<fuxix::process::Offer> {
+        self.job.offer()
+    }
+
     /// Its pane is closed by fux, not ended by itself: its whole session
     /// goes when it is finished.
     pub fn closed(&mut self) {
@@ -112,36 +129,27 @@ impl Leader {
         }
     }
 
-    /// Signals its process group and every other process in its session.
-    /// A background job started by dash sits in its own group, out of reach
-    /// of the group signal, but stays in the session, as an orphan does
-    /// ([`Job::members`]).
-    pub fn hang_up(&self) {
-        self.signal(Signal::Hup, Reach::Session);
-    }
-
-    /// Signals as far as `reach` says. What it may have missed goes to the
-    /// server's log: a scan for them that did not finish, and each signal
-    /// the system refused (one to a process gone already is no loss).
-    fn signal(&self, signal: Signal, reach: Reach) {
-        let sent = self.job.signal(signal, reach);
+    /// Logs what a hang-up or kill `what` may have missed: a scan for its
+    /// processes that did not finish, and each the system refused (one to
+    /// a process gone already is no loss).
+    fn missed(&self, what: &str, sent: Sent) {
         let refused: Vec<String> = (sent.failed.into_iter())
             .filter(|(_, errno)| *errno != fuxix::Errno::SRCH)
             .map(|(pid, errno)| format!("{pid}: {errno}"))
             .collect();
-        let (name, session) = (signal.name(), self.pid());
+        let session = self.pid();
         match sent.scan {
             Scan::Complete => {}
             Scan::Truncated => log!(
-                "SIG{name} to session {session}: the scan of processes was cut short, the rest not found"
+                "{what} to session {session}: the scan of processes was cut short, the rest not found"
             ),
             Scan::Failed(errno) => {
-                log!("SIG{name} to session {session}: processes not all found: {errno}")
+                log!("{what} to session {session}: processes not all found: {errno}")
             }
         }
         if !refused.is_empty() {
             let refused = refused.join(", ");
-            log!("SIG{name} to session {session} refused: {refused}");
+            log!("{what} to session {session} refused: {refused}");
         }
     }
 
@@ -167,7 +175,25 @@ impl Leader {
         } else {
             Reach::Group
         };
-        self.signal(Signal::Kill, reach);
+        self.missed("SIGKILL", self.job.kill(reach));
+    }
+
+    /// Ends what `reach` says with fux's own kill (D-136's KILL and TERM
+    /// on Windows): what was missed, for its caller to judge.
+    pub fn kill_as(&self, reach: Reach) -> Sent {
+        self.job.kill(reach)
+    }
+}
+
+impl Child {
+    /// Hangs its program up: on Unix SIGHUP to its process group and every
+    /// other process in its session (a background job started by dash sits
+    /// in its own group, out of reach of the group signal, but stays in the
+    /// session, as an orphan does, `Job::members`); on Windows its pseudo
+    /// console is closed, so each program on it gets the close event.
+    pub fn hang_up(&self) {
+        let sent = fuxix::pty::hang_up(&self.master, &self.leader.job);
+        self.leader.missed("SIGHUP", sent);
     }
 }
 
@@ -177,7 +203,7 @@ pub fn reaped(job: Job) -> Option<Job> {
     job.reap().err()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

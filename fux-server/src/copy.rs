@@ -348,7 +348,7 @@ impl Copy {
     pub(crate) fn update(&mut self, update: Update) {
         self.counts = update.counts;
         self.title = update.title;
-        self.pid = update.pid.and_then(fuxix::process::Pid::from_raw);
+        self.pid = update.pid.and_then(fuxix::process::Pid::from_i32);
         self.facts = update.facts;
         self.size = update.size;
     }
