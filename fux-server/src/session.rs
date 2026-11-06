@@ -4186,9 +4186,11 @@ mod tests {
     };
     use super::*;
     use crate::pane::{Left, Process};
+    #[cfg(unix)]
     use crate::process;
     use fux_wire::code::Code;
     use std::num::NonZeroU32;
+    #[cfg(unix)]
     use std::time::Duration;
 
     /// Pane `id`'s host, held here, changed by `change`: what it tells
@@ -4207,6 +4209,7 @@ mod tests {
     }
 
     /// Kills and reaps every program the panes wait to end.
+    #[cfg(unix)]
     fn reap(s: &mut Session) {
         let ids: Vec<PaneId> = s.links.keys().copied().collect();
         for id in ids {
@@ -4221,6 +4224,7 @@ mod tests {
 
     /// Gives pane `id` `process`, as a test's pane runs a child of the
     /// test's: the session starts none.
+    #[cfg(unix)]
     fn give(s: &mut Session, id: PaneId, process: crate::pane::Process) -> Result<(), String> {
         host(s, id, |h| drop(h.set_process(process)))
     }
@@ -5109,6 +5113,7 @@ mod tests {
     }
 
     /// The layout presets' recipe file, loaded.
+    #[cfg(unix)]
     const LAYOUTS: &str = concat!(
         "require ",
         env!("CARGO_MANIFEST_DIR"),
@@ -5118,6 +5123,8 @@ mod tests {
     /// `arrange` is checked on the tab's effective size: its own while no
     /// client shows it, else the smallest screen of those that size it,
     /// leaving watchers out, while every pane fits there.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn arrange_is_checked_on_the_effective_size_watchers_left_out() -> TestResult {
         let mut s = started()?;
@@ -5151,6 +5158,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn layout_presets_keep_membership_and_their_stated_shares() -> TestResult {
         let mut s = started()?;
@@ -5209,6 +5218,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn layout_presets_submit_one_observations_revision_without_retry() -> TestResult {
         struct Guarded<'s> {
@@ -5381,6 +5392,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn an_unknown_nearby_directory_refuses_creation() -> TestResult {
         let (mut s, client) = attached(24, 80)?;
@@ -5492,6 +5505,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn an_ended_pane_asks_for_no_reports_and_refuses_keys() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -5769,6 +5784,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_new_tab_takes_the_screen_of_the_callers_tab() -> TestResult {
         let (mut s, _small) = attached(24, 80)?;
@@ -5801,6 +5818,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_split_elsewhere_leaves_the_splitters_zoom() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -6244,6 +6263,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_pane_closed_while_respawning_abandons_it() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -6298,6 +6319,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn what_a_program_respawned_over_left_is_read_past_its_grace() -> TestResult {
         let mut s = started()?;
@@ -6344,6 +6367,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn input_is_refused_while_respawning() -> TestResult {
         for (kill, exiting) in [(true, None), (false, Some(Ended::Exited(0)))] {
@@ -6433,6 +6458,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_respawned_program_that_ends_first_is_told_exited() -> TestResult {
         let mut s = started()?;
@@ -6496,6 +6523,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_program_starts_in_the_cell_of_the_terminal_drawing_it() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -6523,6 +6552,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_tab_its_client_follows_starts_in_its_terminals_cell() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -6543,6 +6574,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_resize_and_a_new_cell_size_a_panes_terminal_once() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -6571,6 +6604,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_tab_with_no_host_tells_its_programs_no_cell() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -6622,6 +6657,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn input_an_ended_program_never_read_is_told() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -6735,6 +6772,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_pane_respawned_twice_in_its_grace_kills_both() -> TestResult {
         let mut s = started()?;
@@ -6782,6 +6821,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn exit_waits_for_the_last_screen_including_held_frames() -> TestResult {
         for (held, budgeted) in [(false, true), (true, false), (true, true)] {
@@ -6856,6 +6897,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_program_whose_terminal_is_written_on_still_exits() -> TestResult {
         // A large screen, where each ED is spent as 40,000 cells.
@@ -6931,6 +6974,8 @@ mod tests {
     /// An ended program's terminal found empty before its last output
     /// can have come (`fuxix::pty::SETTLE`) is waited on, its next turn due
     /// when that time is up; then, or as it closes, it is done with.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_terminal_found_empty_is_waited_on_till_it_settles() -> TestResult {
         let mut s = started()?;
@@ -6965,6 +7010,8 @@ mod tests {
     /// A drain's read that fails, of the terminal an exited program left a
     /// writer on, is journaled with its errno, from that program's
     /// generation; the pane stays as its exit left it.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_failed_read_of_a_terminal_left_behind_is_journaled() -> TestResult {
         let mut s = started()?;
@@ -7011,6 +7058,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn an_empty_read_at_the_exit_leaves_the_next_turn_to_say_it_is_drained() -> TestResult {
         let mut s = started()?;
@@ -7371,6 +7420,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_tab_no_client_shows_is_sized_as_on_a_clients_screen() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
@@ -8116,6 +8167,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn new_tab_follows_sizes_and_lives_as_its_caller_asks() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -9168,6 +9221,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_pane_starts_at_the_size_its_screens_give_it() -> TestResult {
         let mut s = started()?;
@@ -9197,6 +9252,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_screen_with_no_room_sizes_no_pane() -> TestResult {
         let mut s = started()?;

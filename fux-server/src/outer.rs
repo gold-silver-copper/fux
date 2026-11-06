@@ -682,6 +682,8 @@ mod tests {
     /// its terminal in pixels at once, which signals it (SIGWINCH), not at
     /// its next output; and a refused cell is told once, not again at
     /// each asking, the program told it has none.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_new_cell_is_told_at_once_and_a_refused_one_once() -> Outcome {
         let (mut s, c) = session()?;
