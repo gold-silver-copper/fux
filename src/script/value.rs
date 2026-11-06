@@ -12,7 +12,6 @@ pub enum Value<A = Fux> {
     List(Rc<List<A>>),
     App(A),
     Bytes(Rc<Vec<u8>>),
-    Printed(Rc<String>),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct List<A> {
@@ -68,7 +67,6 @@ impl Value<Fux> {
             Self::List(_) => "list",
             Self::App(v) => v.kind(),
             Self::Bytes(_) => "bytes",
-            Self::Printed(_) => "grift value",
         }
     }
     pub fn text(&self) -> Result<String, Failure> {
@@ -78,7 +76,7 @@ impl Value<Fux> {
     }
     pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
         let result = match self {
-            Self::Str(s) | Self::Symbol(s) | Self::Printed(s) => out.write_str(s),
+            Self::Str(s) | Self::Symbol(s) => out.write_str(s),
             Self::App(v) => return v.write_text(out),
             // A tab's or workspace's answers, a line each.
             Self::List(xs)
@@ -104,7 +102,6 @@ impl Value<Fux> {
     }
     pub fn write_data(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
         match self {
-            Self::Printed(text) => out.write_str(text),
             Self::Float(n) if n.is_nan() => out.write_str("#not-a-number"),
             Self::Float(n) if *n == f64::INFINITY => out.write_str("#infinity"),
             Self::Float(n) if *n == f64::NEG_INFINITY => out.write_str("#-infinity"),

@@ -163,8 +163,7 @@ fn scope(value: &Value<Fux>) -> Option<Run> {
         ) => *run,
         Value::App(Fux::Record(record)) => record.of,
         Value::App(Fux::Opts(opts)) => opts.of,
-        Value::Printed(_)
-        | Value::Float(_)
+        Value::Float(_)
         | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
@@ -315,12 +314,6 @@ pub enum Ask {
     /// Something the client itself does that takes over (attaching), or
     /// talks to no server (`status`).
     Local(Local),
-    /// The program's own names' records: the word a name names
-    /// (`word`), or every word (`dictionary`).
-    Dictionary(Option<String>),
-    /// A code value another client sent (`Fux::Code`), `execute`d: made
-    /// in the program's context, then run.
-    Code(Rc<Sent>),
 }
 
 /// The keys of a binding just made.
@@ -1405,8 +1398,7 @@ pub fn refuse_unfinished(values: &[Value<Fux>], host: &Host<'_>) -> Result<(), F
             | value @ Value::Str(_)
             | value @ Value::Symbol(_)
             | value @ Value::App(_)
-            | value @ Value::Bytes(_)
-            | value @ Value::Printed(_) => std::slice::from_ref(value),
+            | value @ Value::Bytes(_) => std::slice::from_ref(value),
         };
         for item in items {
             if let Value::App(Fux::Opts(options)) = item {
@@ -1546,8 +1538,7 @@ fn main_program(
                     | Value::Str(_)
                     | Value::Symbol(_)
                     | Value::App(_)
-                    | Value::Bytes(_)
-                    | Value::Printed(_) => {
+                    | Value::Bytes(_) => {
                         writeln!(host.out, "{}", value::Text(v)).map_err(output_failed)?
                     }
                 }
@@ -1780,8 +1771,7 @@ pub mod testing {
             | other @ Value::Str(_)
             | other @ Value::Symbol(_)
             | other @ Value::App(_)
-            | other @ Value::Bytes(_)
-            | other @ Value::Printed(_) => other.write_data(out),
+            | other @ Value::Bytes(_) => other.write_data(out),
         }
     }
 }

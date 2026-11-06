@@ -637,8 +637,7 @@ pub(super) fn plain(value: V) -> V {
         | value @ Value::Symbol(_)
         | value @ Value::List(_)
         | value @ Value::App(_)
-        | value @ Value::Bytes(_)
-        | value @ Value::Printed(_) => value,
+        | value @ Value::Bytes(_) => value,
     }
 }
 

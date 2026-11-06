@@ -540,8 +540,7 @@ fn pane_outcomes_determine_the_reply_status() -> Result<(), Box<dyn std::error::
             | value @ Value::Str(_)
             | value @ Value::Symbol(_)
             | value @ Value::App(_)
-            | value @ Value::Bytes(_)
-            | value @ Value::Printed(_) => assert_eq!(scope(value), Some(version.run)),
+            | value @ Value::Bytes(_) => assert_eq!(scope(value), Some(version.run)),
         }
         let mut data = String::new();
         value.write_data(&mut data)?;

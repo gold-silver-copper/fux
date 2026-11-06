@@ -523,11 +523,9 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
         Value::Str(_) | Value::Symbol(_) => string(value),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
-        other @ (Value::Printed(_)
-        | Value::Float(_)
-        | Value::Bytes(_)
-        | Value::List(_)
-        | Value::App(_)) => Err(wrong("a string, a number or a boolean", other)),
+        other @ (Value::Float(_) | Value::Bytes(_) | Value::List(_) | Value::App(_)) => {
+            Err(wrong("a string, a number or a boolean", other))
+        }
     }
 }
 
@@ -637,8 +635,7 @@ fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
 fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
     match value {
         Value::App(Fux::All) => Ok(None),
-        value @ (Value::Printed(_)
-        | Value::Float(_)
+        value @ (Value::Float(_)
         | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
@@ -712,8 +709,7 @@ fn held(value: &Value<Fux>) -> Option<fux_wire::command::Version> {
         {
             record.version()
         }
-        Value::Printed(_)
-        | Value::Float(_)
+        Value::Float(_)
         | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
@@ -737,8 +733,7 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
             return record.version().ok_or_else(|| wrong(wanted, value));
         }
         Value::Str(text) => text,
-        other @ (Value::Printed(_)
-        | Value::Float(_)
+        other @ (Value::Float(_)
         | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
@@ -763,8 +758,7 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
 fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
     let built = match value {
         Value::App(Fux::Opts(built)) => built,
-        other @ (Value::Printed(_)
-        | Value::Float(_)
+        other @ (Value::Float(_)
         | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
@@ -896,8 +890,7 @@ fn directory(value: &Value<Fux>) -> Result<std::path::PathBuf, Failure> {
                 .filter(|_| odd.is_empty())
                 .ok_or_else(|| fail(Code::BadValue, format!("{text:?}: no directory's hex")))?
         }
-        other @ (Value::Printed(_)
-        | Value::Float(_)
+        other @ (Value::Float(_)
         | Value::Symbol(_)
         | Value::Int(_)
         | Value::Bool(_)
@@ -1094,8 +1087,7 @@ fn span(
 fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
     let mut built = match value {
         Value::App(Fux::Opts(built)) => owned(built),
-        other @ (Value::Printed(_)
-        | Value::Float(_)
+        other @ (Value::Float(_)
         | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
@@ -1141,8 +1133,7 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
             unused(word, &built)?;
             Ok(owned(built))
         }
-        other @ (Value::Printed(_)
-        | Value::Float(_)
+        other @ (Value::Float(_)
         | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Int(_)
@@ -1240,8 +1231,7 @@ fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Do
     let extent = match next()? {
         Value::App(Fux::Extent(e)) => e,
         v @ Value::Int(_) => Extent::Cells(within(&v, CELL)?),
-        other @ (Value::Printed(_)
-        | Value::Float(_)
+        other @ (Value::Float(_)
         | Value::Symbol(_)
         | Value::Bytes(_)
         | Value::Bool(_)
@@ -1286,8 +1276,7 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
             }
             resolve(text.to_owned(), kind)
         }
-        other @ (Value::Printed(_)
-        | Value::Float(_)
+        other @ (Value::Float(_)
         | Value::Bytes(_)
         | Value::Int(_)
         | Value::Bool(_)
@@ -1396,8 +1385,7 @@ impl Host<'_> {
                 ) => {
                     *run = super::same_run(*run, of)?;
                 }
-                Value::Printed(_)
-                | Value::Float(_)
+                Value::Float(_)
                 | Value::Symbol(_)
                 | Value::Bytes(_)
                 | Value::Int(_)
@@ -1663,13 +1651,6 @@ impl Host<'_> {
                     self.actions.iter().map(Value::str).collect(),
                 ))),
             ),
-            Act::DataText => {
-                let mut text = String::new();
-                (next()?)
-                    .write_data(&mut text)
-                    .map_err(|_| fail(Code::Output, "writing data"))?;
-                now(out, Value::str(text))
-            }
             Act::Datum => {
                 let value = next()?;
                 if matches!(value, Value::App(Fux::Opts(_))) {
@@ -1709,8 +1690,7 @@ impl Host<'_> {
                 // A live field's handle, checked before the field is taken.
                 let live = match &value {
                     Value::App(Fux::Record(_)) => None,
-                    value @ (Value::Printed(_)
-                    | Value::Float(_)
+                    value @ (Value::Float(_)
                     | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
@@ -1730,8 +1710,7 @@ impl Host<'_> {
                 }
                 match value {
                     Value::App(Fux::Record(record)) => now(out, record.get(&field)?),
-                    other @ (Value::Printed(_)
-                    | Value::Float(_)
+                    other @ (Value::Float(_)
                     | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
@@ -1775,8 +1754,7 @@ impl Host<'_> {
                 // Checked before the size is taken.
                 let sized = match next()? {
                     Value::App(Fux::Client(c, _)) => Err(c),
-                    value @ (Value::Printed(_)
-                    | Value::Float(_)
+                    value @ (Value::Float(_)
                     | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
@@ -1912,8 +1890,7 @@ impl Host<'_> {
                             fail(Code::BadValue, why)
                         })?)
                     }
-                    value @ (Value::Printed(_)
-                    | Value::Float(_)
+                    value @ (Value::Float(_)
                     | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
@@ -1933,8 +1910,7 @@ impl Host<'_> {
                 let value = next()?;
                 let with = match value {
                     Value::Str(_) => SwapWith::Toward(direction(&value)?),
-                    value @ (Value::Printed(_)
-                    | Value::Float(_)
+                    value @ (Value::Float(_)
                     | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
@@ -2080,8 +2056,8 @@ impl Host<'_> {
             Act::KeyNames => self.show(&format!("{}\n", fux_vt::keys::all_names().join(" "))),
             // -------------------------------------------------------- help
             Act::Help => self.show(&help::overview()),
-            Act::Word => Ok(Done::Later(Ask::Dictionary(Some(string(&next()?)?)))),
-            Act::Dictionary => Ok(Done::Later(Ask::Dictionary(None))),
+            // grift's own: `bridge` answers them, as they read any value.
+            Act::DataText | Act::Word | Act::Dictionary => Ok(Done::Now),
             Act::Explain => {
                 let word = string(&next()?)?;
                 let text = help::explain(&word)
@@ -2136,8 +2112,7 @@ impl Host<'_> {
                             "title is text or [text,subject handle]",
                         )),
                     })?,
-                    Value::Printed(_)
-                    | Value::Float(_)
+                    Value::Float(_)
                     | Value::Symbol(_)
                     | Value::Bytes(_)
                     | Value::Int(_)
@@ -2251,8 +2226,7 @@ impl Host<'_> {
                     "a callback is (code! (lambda! (...) ...)) or [captured arguments,(code! (lambda! (...) ...))]",
                 )),
             })?,
-            Value::Printed(_)
-            | Value::Float(_)
+            Value::Float(_)
             | Value::Symbol(_)
             | Value::Bytes(_)
             | Value::Int(_)

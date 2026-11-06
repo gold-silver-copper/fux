@@ -3900,8 +3900,7 @@ pub(crate) mod testing {
                 | value @ fux::script::Value::Str(_)
                 | value @ fux::script::Value::Symbol(_)
                 | value @ fux::script::Value::App(_)
-                | value @ fux::script::Value::Bytes(_)
-                | value @ fux::script::Value::Printed(_) => std::slice::from_ref(value),
+                | value @ fux::script::Value::Bytes(_) => std::slice::from_ref(value),
             };
             for value in values {
                 text.push_str(&value.text().map_err(|f| f.message)?);

@@ -52,7 +52,7 @@ fn within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
                 .collect::<Result<_, Failure>>()?,
         },
         Value::App(Fux::Code(c)) => Data::Code((**c).clone()),
-        Value::App(_) | Value::Printed(_) => {
+        Value::App(_) => {
             return Err(Failure::new(
                 fux_wire::code::Code::BadValue,
                 "callback arguments must be immutable data",

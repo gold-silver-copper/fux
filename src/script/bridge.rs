@@ -261,8 +261,7 @@ fn kind<A: Asks + ?Sized>(
         | Value::Str(_)
         | Value::Symbol(_)
         | Value::List(_)
-        | Value::Bytes(_)
-        | Value::Printed(_) => v.kind(),
+        | Value::Bytes(_) => v.kind(),
     };
     g.string(name)
 }
@@ -585,9 +584,6 @@ pub(super) fn request<A: Asks + ?Sized>(
                 runtime_exit(g, state);
                 return Err(g.error("interrupted", &[]));
             }
-        }
-        Done::Later(Ask::Dictionary(_) | Ask::Code(_)) => {
-            return Err(g.error("unbound-symbol", args));
         }
     }
     match out.as_slice() {
@@ -945,9 +941,10 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
         }
         Ok(v) => match output_value(g, &v) {
             // A list's items, each said alone; a record's fields are one value.
-            Ok(Value::Printed(_))
-                if g.list_items(&v)
-                    .is_ok_and(|items| matches!(fields(g, &items), Ok(None))) =>
+            Ok(Value::Str(_))
+                if matches!(v, G::Pair(_) | G::EmptyList)
+                    && g.list_items(&v)
+                        .is_ok_and(|items| matches!(fields(g, &items), Ok(None))) =>
             {
                 let items = g.list_items(&v).map_err(|e| failed(g, e))?;
                 let values = items
@@ -1056,7 +1053,6 @@ pub(crate) fn from_handle_name(name: &str) -> Option<Fux> {
 /// its run; nothing here is encoded, as a person reads it back.
 fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
     Ok(match v {
-        Value::Printed(text) => g.string(text)?,
         Value::Float(n) => G::Float(*n),
         Value::Int(n) => G::Integer(*n),
         Value::Bool(b) => G::Boolean(*b),
@@ -1266,8 +1262,7 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                         | subject @ Value::Symbol(_)
                         | subject @ Value::List(_)
                         | subject @ Value::App(_)
-                        | subject @ Value::Bytes(_)
-                        | subject @ Value::Printed(_) => Some(subject),
+                        | subject @ Value::Bytes(_) => Some(subject),
                     };
                     let mut replayed = Vec::with_capacity(steps.len());
                     for step in steps {
@@ -1377,7 +1372,7 @@ fn output_value<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
     }
     let mut text = String::new();
     g.write(v, &mut text).map_err(|_| g.error("output", &[]))?;
-    Ok(Value::Printed(Rc::new(text)))
+    Ok(Value::str(text))
 }
 
 fn runtime_exit<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, state: &mut Runtime<'_, '_, A>) {
