@@ -84,8 +84,8 @@ fn two_programs_side_by_side() {
 
 #[test]
 fn keys_go_to_the_focused_pane() {
-    let echo = "set /p x=? & echo typed:!x! & ping -n 30 127.0.0.1 > NUL";
-    let (left, right) = (format!("cmd /v:on /c \"{echo}\""), "ping -n 30 127.0.0.1 > NUL".to_owned());
+    let left = "set /p x=? & call echo typed:%^x% & ping -n 30 127.0.0.1 > NUL".to_owned();
+    let right = "ping -n 30 127.0.0.1 > NUL".to_owned();
     let mut run = Run::start(10, 41, &[&left, &right]);
     run.until("a prompt", |p| p.screen().window().row(0).is_some_and(|r| r.text().contains('?')));
     run.keys(b"hello\r");

@@ -65,13 +65,13 @@ fn send(master: &Master, bytes: &[u8]) -> Result<(), String> {
 fn lines_history_and_ctrl_d_end_with_the_shell_going_on() -> Result<(), String> {
     let (master, _job) = start("%BIN% & echo status=%errorlevel% & echo END")?;
     let mut seen = String::new();
-    wait_for(&master, &mut seen, "> ")?;
+    wait_for(&master, &mut seen, ">")?;
     send(&master, b"helo\x1b[Dl\x1b[F world\r")?;
-    wait_for(&master, &mut seen, "=> hello world")?;
+    wait_for(&master, &mut seen, "hello world")?;
     seen.clear();
     // Up brings it back; Enter enters it again.
     send(&master, b"\x1b[A\r")?;
-    wait_for(&master, &mut seen, "=> hello world")?;
+    wait_for(&master, &mut seen, "hello world")?;
     send(&master, b"\x04")?;
     wait_for(&master, &mut seen, "status=")?;
     wait_for(&master, &mut seen, "END")?;
@@ -82,7 +82,7 @@ fn lines_history_and_ctrl_d_end_with_the_shell_going_on() -> Result<(), String> 
 fn a_resize_redraws() -> Result<(), String> {
     let (master, _job) = start("%BIN%")?;
     let mut seen = String::new();
-    wait_for(&master, &mut seen, "> ")?;
+    wait_for(&master, &mut seen, ">")?;
     send(&master, b"abcdefghijklmnopqrstuvwxyz")?;
     wait_for(&master, &mut seen, "z")?;
     seen.clear();

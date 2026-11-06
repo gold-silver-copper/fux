@@ -5,13 +5,13 @@
 //!     fuxix-shareshell serve SOCKET [--size ROWSxCOLS] [-- PROGRAM ARGS...]
 //!     fuxix-shareshell attach SOCKET        (detach with Ctrl-])
 use fuxix::poll::{Events, Poll, PollFd};
-use fuxix::process::{Dispositions, Pid, Signal, Status};
+use fuxix::io::Stream;
+use fuxix::process::{Dispositions, Job, Signal, Status};
+use fuxix::socket::{Client as Dial, Listener};
 use fuxix::terminal::Size;
 use fuxix::{Errno, io, pty, signal, socket, terminal};
 use std::collections::VecDeque;
-use std::io::{ErrorKind, Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -46,7 +46,7 @@ fn usage() -> String {
 
 /// One attached client: its socket, and the output it has yet to take.
 struct Client {
-    stream: UnixStream,
+    stream: Stream,
     pending: VecDeque<u8>,
 }
 
@@ -80,29 +80,33 @@ fn serve(args: &[String]) -> Result<ExitCode, String> {
         _ => return Err(usage()),
     };
     let size = size
-        .or_else(|| terminal::window_size(std::io::stdin()).map(|(s, _)| s))
+        .or_else(|| terminal::stdin_size().map(|(s, _)| s))
         .or_else(|| Size::new(24, 80))
         .ok_or("no size")?;
     let program: Vec<String> = if program.is_empty() {
-        vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())]
+        vec![std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())]
     } else {
         program.to_vec()
     };
 
-    let listener = listen(&path)?;
-    // From here on the socket file is ours to remove, however we leave.
-    let _remove = RemoveOnDrop(path.clone());
+    let mut listener = listen(&path)?;
     let signals = signal::Pipe::new(&[Signal::Chld, Signal::Term, Signal::Int, Signal::Hup])
         .map_err(|e| format!("signal pipe: {e}"))?;
+    let _ = pty::load(Path::new("no-pinned-conpty"));
     let (master, slave) = pty::open(size).map_err(|e| format!("opening a PTY: {e}"))?;
-    let (_child, pid) = slave
-        .spawn(&program, Dispositions::Default, |c| {
-            c.env("SHARESHELL", &path);
-        })
+    let job = slave
+        .spawn(
+            &program,
+            |c| {
+                c.env("SHARESHELL", &path);
+            },
+            Dispositions::Default,
+        )
         .map_err(|e| format!("starting {}: {e}", program.join(" ")))?;
     eprintln!(
-        "fuxix-shareshell: {} (pid {pid}) on {}, {}x{}",
+        "fuxix-shareshell: {} (pid {}) on {}, {}x{}",
         program.join(" "),
+        job.leader(),
         path.display(),
         size.rows,
         size.cols
@@ -115,47 +119,23 @@ fn serve(args: &[String]) -> Result<ExitCode, String> {
         clients: Vec::new(),
         ring: Ring::default(),
     };
-    let status = server.run(&listener, &signals, pid)?;
-    let note = match status {
-        Status::Exited(code) => format!("\r\n[shareshell: {} exited {code}]\r\n", program.join(" ")),
-        Status::Signalled { signal, .. } => {
-            let name = Signal::from_raw(signal).map_or("?", Signal::name);
-            format!("\r\n[shareshell: {} killed by SIG{name}]\r\n", program.join(" "))
-        }
-    };
+    let status = server.run(&mut listener, &signals, &job)?;
+    let Status::Exited(code) = status;
+    let note = format!("\r\n[shareshell: {} exited {code}]\r\n", program.join(" "));
     server.broadcast(note.as_bytes());
     server.flush_blocking();
-    Ok(match status {
-        Status::Exited(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
-        Status::Signalled { .. } => ExitCode::from(1),
-    })
+    Ok(ExitCode::from(u8::try_from(code & 0xff).unwrap_or(1)))
 }
 
-/// A listening socket at `path` that only this user may connect to: its
-/// mode is set between bind and listen, so no other user ever can.
-fn listen(path: &Path) -> Result<UnixListener, String> {
-    let fd = socket::stream().map_err(|e| format!("socket: {e}"))?;
-    socket::bind(&fd, path).map_err(|e| format!("binding {}: {e}", path.display()))?;
-    let cleanup = |e: String| {
-        let _ = std::fs::remove_file(path);
-        e
-    };
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| cleanup(format!("chmod {}: {e}", path.display())))?;
-    socket::listen(&fd, 16).map_err(|e| cleanup(format!("listen: {e}")))?;
-    let listener = UnixListener::from(fd);
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| cleanup(format!("nonblocking: {e}")))?;
-    Ok(listener)
+/// The pipe `path` names, this user's alone.
+fn pipe(path: &Path) -> Result<String, String> {
+    let base = path.to_string_lossy().replace('\\', "/");
+    socket::name(&format!("fuxix-shareshell-{base}")).map_err(|e| e.to_string())
 }
 
-struct RemoveOnDrop(PathBuf);
-
-impl Drop for RemoveOnDrop {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
+/// A pipe `path` names that only this user may connect to.
+fn listen(path: &Path) -> Result<Listener, String> {
+    Listener::bind(&pipe(path)?).map_err(|e| format!("binding {}: {e}", path.display()))
 }
 
 struct Server {
@@ -170,14 +150,14 @@ struct Server {
 
 impl Server {
     /// Serves until the program ends; how it ended.
-    fn run(&mut self, listener: &UnixListener, signals: &signal::Pipe, pid: Pid) -> Result<Status, String> {
+    fn run(&mut self, listener: &mut Listener, signals: &signal::Pipe, job: &Job) -> Result<Status, String> {
         let mut poll = Poll::default();
         let mut buf = vec![0u8; 16 * 1024];
         loop {
             let (signalled, listen, pty, clients) = {
                 let mut list = poll.list();
                 let signalled = list.push(PollFd::new(signals.reader(), Events::IN));
-                let listen = list.push(PollFd::new(listener, Events::IN));
+                let listen = list.push(PollFd::new(&*listener, Events::IN));
                 // Once the shell's side has closed the master reports HUP
                 // unasked, so it is left out rather than waited on for nothing.
                 let pty = self.master_open.then(|| {
@@ -215,11 +195,8 @@ impl Server {
                     if signal != Signal::Chld {
                         // Asked to stop: hang the shell up as a closed terminal
                         // would, and serve on until it has gone.
-                        let _ = fuxix::process::kill_group(pid, Signal::Hup);
-                    } else if let Some(status) =
-                        // A stop of the shell is reported too; then nothing is reaped.
-                        fuxix::process::reap(pid).map_err(|e| format!("reap: {e}"))?
-                    {
+                        let _ = pty::hang_up(&self.master, job);
+                    } else if let Some(status) = job.ended().map_err(|e| format!("reap: {e}"))? {
                         self.drain_master(&mut buf);
                         return Ok(status);
                     }
@@ -287,11 +264,10 @@ impl Server {
         }
         if events.intersects(Events::IN | Events::HUP | Events::ERR) {
             loop {
-                match client.stream.read(buf) {
+                match io::read(&client.stream, buf) {
                     Ok(0) => return false,
                     Ok(n) => self.to_pty.extend_from_slice(buf.get(..n).unwrap_or_default()),
-                    Err(e) if e.kind() == ErrorKind::Interrupted => {}
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    Err(Errno::AGAIN) => break,
                     Err(_) => return false,
                 }
             }
@@ -300,19 +276,20 @@ impl Server {
         true
     }
 
-    fn accept(&mut self, listener: &UnixListener) {
+    fn accept(&mut self, listener: &mut Listener) {
         loop {
-            let stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                Err(_) => return,
+            let Ok(connection) = listener.accept() else {
+                return;
             };
-            // The socket's mode already keeps other users out; the kernel's
-            // word on who connected is checked as well.
-            let ours = socket::peer(&stream).is_ok_and(|p| p.uid == fuxix::process::geteuid());
-            if !ours || stream.set_nonblocking(true).is_err() {
+            // The pipe's descriptor already keeps other users out; its
+            // peer's token is checked as well.
+            let ours = connection
+                .connected()
+                .and_then(|at| socket::peer(&connection, at))
+                .is_ok_and(|peer| peer.user.is_current());
+            let Some(stream) = ours.then(|| connection.stream().ok()).flatten() else {
                 continue;
-            }
+            };
             let mut client = Client { stream, pending: self.ring.0.clone() };
             if flush(&mut client) {
                 self.clients.push(client);
@@ -323,11 +300,17 @@ impl Server {
 
     /// Gives every client what it is owed, waiting up to a second in all.
     fn flush_blocking(&mut self) {
-        for client in &mut self.clients {
-            let _ = client.stream.set_nonblocking(false);
-            let _ = client.stream.set_write_timeout(Some(std::time::Duration::from_secs(1)));
-            let (a, b) = client.pending.as_slices();
-            let _ = client.stream.write_all(a).and_then(|()| client.stream.write_all(b));
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while self.clients.iter().any(|c| !c.pending.is_empty()) && std::time::Instant::now() < end {
+            for client in &mut self.clients {
+                flush(client);
+            }
+            let mut fds: Vec<PollFd<'_>> = self
+                .clients
+                .iter()
+                .map(|c| PollFd::new(&c.stream, Events::OUT))
+                .collect();
+            let _ = fuxix::poll::poll(&mut fds, Some(std::time::Duration::from_millis(20)));
         }
     }
 }
@@ -336,11 +319,10 @@ impl Server {
 fn flush(client: &mut Client) -> bool {
     while !client.pending.is_empty() {
         let (front, _) = client.pending.as_slices();
-        match client.stream.write(front) {
+        match io::write(&client.stream, front) {
             Ok(0) => return false,
             Ok(n) => drop(client.pending.drain(..n)),
-            Err(e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) if e.kind() == ErrorKind::WouldBlock => return true,
+            Err(Errno::AGAIN) => return true,
             Err(_) => return false,
         }
     }
@@ -349,10 +331,9 @@ fn flush(client: &mut Client) -> bool {
 
 fn attach(path: &Path) -> Result<ExitCode, String> {
     let mut stream =
-        UnixStream::connect(path).map_err(|e| format!("connecting to {}: {e}", path.display()))?;
+        Dial::connect(&pipe(path)?).map_err(|e| format!("connecting to {}: {e}", path.display()))?;
     let stdin = std::io::stdin();
-    let raw = terminal::attributes(&stdin)
-        .is_ok()
+    let raw = std::io::IsTerminal::is_terminal(&stdin)
         .then(|| terminal::Raw::enter(std::io::stdin()))
         .transpose()
         .map_err(|e| format!("raw mode: {e}"))?;
@@ -384,7 +365,6 @@ fn attach(path: &Path) -> Result<ExitCode, String> {
                         .and_then(|()| stdout.flush())
                         .map_err(|e| format!("stdout: {e}"))?;
                 }
-                Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(e) => return Err(format!("reading the server: {e}")),
             }
         }
@@ -393,7 +373,6 @@ fn attach(path: &Path) -> Result<ExitCode, String> {
                 Ok(0) => {
                     // Input ended (a pipe): send no more, read to the end.
                     stdin_open = false;
-                    let _ = stream.shutdown(std::net::Shutdown::Write);
                 }
                 Ok(n) => {
                     let bytes = buf.get(..n).unwrap_or_default();

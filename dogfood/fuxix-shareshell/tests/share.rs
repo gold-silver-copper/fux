@@ -3,8 +3,7 @@
 //! and goes when the shell exits.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing, reason = "a test")]
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
+use fuxix::socket::Client as UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -20,17 +19,27 @@ fn start(path: &Path) -> Child {
     let child = Command::new(env!("CARGO_BIN_EXE_fuxix-shareshell"))
         .args(["serve"])
         .arg(path)
-        .args(["--size", "24x80", "--", "/bin/sh"])
-        .env("PS1", "$ ")
+        .args(["--size", "24x80", "--", "cmd.exe"])
         .stdin(Stdio::null())
         .spawn()
         .unwrap();
-    let start = Instant::now();
-    while !path.exists() {
-        assert!(start.elapsed() < Duration::from_secs(5), "no socket");
-        std::thread::sleep(Duration::from_millis(10));
-    }
     child
+}
+
+/// The pipe the server at `path` listens on, once it does.
+fn connect(path: &Path) -> UnixStream {
+    let base = path.to_string_lossy().replace('\\', "/");
+    let name = fuxix::socket::name(&format!("fuxix-shareshell-{base}")).unwrap();
+    let start = Instant::now();
+    loop {
+        match UnixStream::connect(&name) {
+            Ok(stream) => return stream,
+            Err(_) if start.elapsed() < Duration::from_secs(5) => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("no pipe: {e}"),
+        }
+    }
 }
 
 /// Reads from `stream` until what it read contains `want`.
@@ -58,26 +67,20 @@ fn read_until(stream: &mut UnixStream, want: &str) -> String {
 fn clients_share_one_shell_and_late_joiners_are_replayed() {
     let path = socket_path("share");
     let mut server = start(&path);
-    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o600, "the socket is the user's alone");
-
-    let mut a = UnixStream::connect(&path).unwrap();
-    let mut b = UnixStream::connect(&path).unwrap();
-    // The product is printed only by the shell, never echoed as typed.
-    a.write_all(b"echo from-a-$((6*7))\n").unwrap();
-    read_until(&mut a, "from-a-42");
-    read_until(&mut b, "from-a-42");
-    b.write_all(b"echo from-b-$((7*8))\n").unwrap();
-    read_until(&mut a, "from-b-56");
-    read_until(&mut b, "from-b-56");
-
-    let mut late = UnixStream::connect(&path).unwrap();
-    let replay = read_until(&mut late, "from-b-56");
-    assert!(replay.contains("from-a-42"), "replayed: {replay:?}");
-
-    late.write_all(b"exit 3\n").unwrap();
+    let mut a = connect(&path);
+    let mut b = connect(&path);
+    // The carets go as cmd reads the line, so what is typed never matches.
+    a.write_all(b"echo from^-a\r").unwrap();
+    read_until(&mut a, "from-a");
+    read_until(&mut b, "from-a");
+    b.write_all(b"echo from^-b\r").unwrap();
+    read_until(&mut a, "from-b");
+    read_until(&mut b, "from-b");
+    let mut late = connect(&path);
+    let replay = read_until(&mut late, "from-b");
+    assert!(replay.contains("from-a"), "replayed: {replay:?}");
+    late.write_all(b"exit 3\r").unwrap();
     read_until(&mut a, "exited 3]");
     let status = server.wait().unwrap();
     assert_eq!(status.code(), Some(3));
-    assert!(!path.exists(), "the socket is removed");
 }
