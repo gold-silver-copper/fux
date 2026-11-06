@@ -1,8 +1,11 @@
 //! `docs/words.txt` and `docs/records.txt`, written from fux's word table
 //! and the libraries' definitions, and from records the record builders
 //! make; a test fails while a list is stale (`fux_wire::lists`).
-use super::{Fux, Word, record};
+use super::Word;
+#[cfg(unix)]
+use super::{Fux, record};
 use fux_wire::lists::{check, file};
+#[cfg(unix)]
 use fuxth::Value;
 
 const TEST: &str = "cargo test -p fux --lib lists";
