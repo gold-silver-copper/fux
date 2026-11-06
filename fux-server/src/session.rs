@@ -8646,11 +8646,13 @@ mod tests {
         assert!(
             output(
                 &mut s,
-                "(sequence! (define! value-3888 (pane 1)) \"idle_ms\" (get value-3888 \"idle-ms\"))"
+                "(get (pane 1) \"idle-ms\")"
             )
             .is_err()
         );
-        assert!(!output(&mut s, "(capture (pane 1))")?.contains("idle_ms"));
+        let record = output(&mut s, "(data-text (capture (pane 1)))")?;
+        assert!(record.contains("(kind \"capture\")"), "{record}");
+        assert!(!record.contains("idle-ms"), "{record}");
         let held = output(
             &mut s,
             "(sequence! (define! variables-3896 (context)) (bind variables-3896 (quote! action) (send-keys (text (pane 1) \"x\"))) (bind variables-3896 (quote! sample) (capture (pane 1))) (kill (pane 1)) (list (version (evaluate (quote! action) variables-3896)) (version (evaluate (quote! sample) variables-3896))))",

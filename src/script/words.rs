@@ -2666,24 +2666,90 @@ mod tests {
     }
     #[test]
     fn a_wrong_operand_fails_its_word_as_it_runs_before_it_asks() -> TestResult {
-        for (expression, code) in [
-            ("(zoom 3)", Code::Type),
+        let version = r#""%2:0.0.0.0.0:48211-1867a3f9c2b8e7d6""#;
+        let mut cases = vec![
+            (Code::Type, "(zoom 3)".to_owned()),
             (
-                r#"(new-tab (in (timeout (options) 1) "work"))"#,
                 Code::Unused,
+                r#"(new-tab (in (timeout (options) 1) "work"))"#.to_owned(),
             ),
-            (r#"(information (client "c1"))"#, Code::Type),
-            (r#"(all-history (changed "%1:0.0.0.0.0:1-1"))"#, Code::Type),
-        ] {
-            let (failed, asked, text) = offline(&format!("(print \"before\") {expression}"))?;
-            assert_eq!(
-                failed.map(|failure| failure.code),
-                Some(code),
-                "{expression}"
-            );
-            assert_eq!(asked, 0, "{expression}");
-            assert_eq!(text, "before\n");
+            (Code::Type, r#"(information (client "c1"))"#.to_owned()),
+            (Code::Type, format!("(all-history (changed {version}))")),
+            (Code::Type, "(version (tab 1))".to_owned()),
+            (
+                Code::Type,
+                r#"(resize-pane (axis (pane 1) "horizontal") 30 "horizontal")"#.to_owned(),
+            ),
+            (
+                Code::Type,
+                r#"(send-mouse (axis (pane 1) "horizontal") "click" 0 0)"#.to_owned(),
+            ),
+            (Code::Type, r#"(wait (timeout (client "c1") 0))"#.to_owned()),
+            (Code::Type, r#"(kill "x")"#.to_owned()),
+            (Code::Type, r#"(split (axis "nope" "horizontal"))"#.to_owned()),
+            (Code::Unused, format!("(wait (timeout (expect {version}) 0))")),
+            (
+                Code::Unused,
+                format!(r#"(send-keys (text (changed {version}) "x"))"#),
+            ),
+            (
+                Code::Type,
+                format!(r#"(next-events (changed {version}) "" 0)"#),
+            ),
+            (Code::Type, r#"(information "nope")"#.to_owned()),
+            (Code::Type, "(dump 1)".to_owned()),
+            (Code::Type, r#"(dump (client "c1"))"#.to_owned()),
+            // An element of a list of the wrong kind is a list it refuses.
+            (
+                Code::BadValue,
+                "(shell-program (options) (list 1))".to_owned(),
+            ),
+        ];
+        // all-history's guard, whatever comes after it.
+        for target in ["(options)", "(tab 1)", "(workspace 1)", r#"(client "c1")"#, "1"] {
+            cases.push((Code::Type, format!("(all-history {target})")));
         }
+        for call in [
+            "(capture (all))",
+            "(wait (all))",
+            r#"(send-keys (text (all) "x"))"#,
+            "(resize (all) 80 24)",
+            "(attach (all))",
+            r#"(rename (all) "x")"#,
+        ] {
+            cases.push((Code::Type, call.to_owned()));
+        }
+        for call in ["(full C)", "(rows C 0 1)", "(main-screen C)"] {
+            let call = call.replace('C', r#"(client "c1")"#);
+            cases.push((Code::Type, format!("(capture {call})")));
+        }
+        let root = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
+        let layouts = format!(r#"(require! "{root}/recipes/layouts.grift")"#);
+        for recipe in ["even-h", "even-v", "main-h", "main-v", "tiled"] {
+            for target in [
+                "1",
+                "(pane 1)",
+                "(workspace 1)",
+                "(all)",
+                r#""tab""#,
+                r#"(client "c1")"#,
+            ] {
+                cases.push((Code::Type, format!("{layouts} ({recipe} {target})")));
+            }
+        }
+        let mut wrong = Vec::new();
+        for (code, expression) in cases {
+            let program = format!(r#"(print "before") {expression} (print "after")"#);
+            let (failed, asked, text) = offline(&program)?;
+            if failed.as_ref().map(|failure| failure.code) != Some(code)
+                || asked != 0
+                || text != "before\n"
+            {
+                let failed = failed.map(|f| f.to_string()).unwrap_or_default();
+                wrong.push(format!("{expression}: {failed}, {asked} asked, printed {text:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         Ok(())
     }
     #[test]

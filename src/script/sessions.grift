@@ -13,7 +13,8 @@
       (apply string-append (map dump-warnings (get recipe "panes")))
       "(restore-session (quote! " (value-to-string (session-data recipe)) "))\n")
     (raise (error (quote! type-error) "dump needs a recipe observation" recipe)))))
-(define! dump (lambda! (scope) (dump-recipe (snapshot scope "recipe"))))
+(define! dump (lambda! (scope)
+  (dump-recipe (snapshot (assert-kind scope "pane tab workspace answer closed-answer all" "a pane, tab, workspace or all") "recipe"))))
 (define! dump-first (lambda! (nodes index)
   (let! ((node (element-at nodes index)))
     (if! (string? node) node
