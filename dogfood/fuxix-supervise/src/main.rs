@@ -187,7 +187,7 @@ fn split(line: &str) -> Result<Vec<String>, String> {
 }
 
 fn supervise(mut programs: Vec<Program>, settings: &Settings, log: &Log) -> Result<(), Errno> {
-    let signals = Pipe::new(&[Signal::Term, Signal::Int, Signal::Chld])?;
+    let signals = Pipe::new(&[Signal::Term, Signal::Int, Signal::Quit, Signal::Chld])?;
     if let Err(errno) = process::adopt_orphans() {
         log!(log, "supervisor: orphans go to init, not here: {errno}");
     }
@@ -255,11 +255,13 @@ fn start(program: &mut Program, now: Instant, settings: &Settings, log: &Log) {
         program.state = State::Ended;
         return;
     };
-    let mut command = Command::new(exe);
-    command.args(args).stdin(Stdio::null());
-    process::lead_session(&mut command, false, process::Dispositions::Inherited);
-    // std never waits on a dropped child: it is reaped below, by its pid.
-    let pid = command.spawn().map(|child| Pid::of(&child));
+    // fuxix's start takes a path and no search: `where`'s first answer.
+    let path = find(exe);
+    let args: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
+    let log_handle = std::io::stderr();
+    use std::os::windows::io::AsHandle;
+    let stdio = [None, Some(log_handle.as_handle()), Some(log_handle.as_handle())];
+    let pid = process::start(&path, &args, stdio).map(|started| Some(started.pid));
     match pid {
         Ok(Some(pid)) => {
             log!(log, "{}: started pid {pid}", program.name);
@@ -331,15 +333,20 @@ fn reap(programs: &mut [Program], now: Instant, settings: &Settings, stopping: b
     }
 }
 
+/// `name`, as `where` finds it on `PATH`.
+fn find(name: &str) -> std::path::PathBuf {
+    let found = Command::new("where.exe").arg(name).output();
+    let found = found.map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
+    let first = found.ok().and_then(|text| text.lines().next().map(str::to_owned));
+    first.unwrap_or_else(|| name.to_owned()).into()
+}
+
 /// How a process ended, for the log.
 fn died(status: Status) -> String {
-    match status {
-        Status::Exited(code) => format!("exited with status {code}"),
-        Status::Signalled { signal, core_dumped } => {
-            let name = Signal::from_raw(signal).map_or("an unnamed signal", Signal::name);
-            let core = if core_dumped { ", dumping core" } else { "" };
-            format!("killed by SIG{name} ({signal}){core}")
-        }
+    let Status::Exited(code) = status;
+    match code == process::KILLED {
+        true => "killed by the supervisor".to_owned(),
+        false => format!("exited with status {code}"),
     }
 }
 
@@ -347,10 +354,7 @@ fn died(status: Status) -> String {
 /// macOS `process::tree` lists every process on the system, as orphans go
 /// to launchd: none are taken for ours there.
 fn descendants() -> Vec<Pid> {
-    #[cfg(target_os = "linux")]
-    return process::tree().pids;
-    #[cfg(not(target_os = "linux"))]
-    return Vec::new();
+    Vec::new()
 }
 
 /// Sends `signal` to each running program's process group, then to each
@@ -365,9 +369,8 @@ fn signal_all(programs: &[Program], signal: Signal, log: &Log) {
     }
     for program in programs {
         if let State::Running { pid, .. } = program.state {
-            // The group is gone once all it held exited; its leader may
-            // still be waiting to be reaped, and needs no signal then.
-            match process::kill_group(pid, signal) {
+            // Windows has one way to end a process from outside.
+            match process::kill(pid, Signal::Kill) {
                 Ok(()) | Err(Errno::SRCH) => {}
                 Err(errno) => log!(log, "{}: SIG{} not sent: {errno}", program.name, signal.name()),
             }
