@@ -2,7 +2,7 @@
 //! inputs go to both, and everything each gives back is compared: layouts,
 //! frames, terminal screens, decoded input, words, and fuxix's
 //! calls. Sessions, command lines and config files are not: since the
-//! command line and the config became fuxth, and keys moved to clients,
+//! command line and the config became programs, and keys moved to clients,
 //! the baseline's and the current ones take different inputs. For a change meant to leave
 //! behaviour as it was; any difference is reported with what led to it.
 mod input;

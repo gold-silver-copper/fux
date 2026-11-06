@@ -11,13 +11,12 @@ ASAN_OPTIONS=quarantine_size_mb=16 cargo +nightly fuzz run session --fuzz-dir fu
   -dict=fuzz/session.dict -max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -timeout=25
 ```
 
-- `TARGET` is `protocol`, `paint`, `layout`, `config`, `session`,
-  `fuxth_tokens`, `fuxth_run` or `fuxth_pause`. The
+- `TARGET` is `protocol`, `paint`, `layout`, `config` or `session`. The
   terminal-input decoder's target, `keys`, is fux-vt's (`fux-vt/fuzz`).
 - `-timeout=25` makes a hang fail within the run (libFuzzer's default is
   1200 s).
 - `config` and `session` take a dictionary: `-dict=fuzz/config.dict`,
-  `-dict=fuzz/session.dict`; the fuxth targets take `-dict=fuzz/fuxth.dict`.
+  `-dict=fuzz/session.dict`.
 - `session` needs `ASAN_OPTIONS=quarantine_size_mb=16`: it frees millions
   of small allocations, and with the default 256 MB quarantine RSS passes
   1 GB within minutes. A smaller quarantine only shortens how long a freed
@@ -73,21 +72,19 @@ splits, then `resize`. After every placement:
 **`config`**: one client's keys, from the default keymap. Lines are
 config statements (a leading `0xff`: `bind`, `unbind`, `unbind-all`,
 `move-keys`, `label`, `group` or `repeat`, written
-as fuxth, compiled with `script::compile` and run as a config is, against
+as grift, and run as a config is, against
 the `Keymap`), keys typed (a leading `0xfe`: through `keymap::Held::press`,
 as a client that types or only watches), or
-any other text, as fuxth source (`fuxth::token::source`, `compile`, then
-run as a config for a bounded number of steps up to its first request for
-the server; words that read files are not run). After every line:
+any other text, as grift source (`script::compile`, then run as a config
+for a bounded time up to its first request for the server; programs that
+read files are not run). After every line:
 - a failing statement changes nothing;
 - a small model of the statements, written from the README's rules (a
   key is a binding or a map, never both; no Escape in a map; a map whose
-  last key goes goes too; moved keys go whole or not at all; code compiled
-  as it is bound), accepts the same ones and holds the same bindings,
+  last key goes goes too; moved keys go whole or not at all; code kept
+  as it read), accepts the same ones and holds the same bindings,
   labels, groups and maps that repeat;
-- source's tokens, quoted as native hints and list-keys quote words, split back to
-  the same tokens; a program that does not compile fails with status 1
-  and a code;
+- a program that fails says a code, with a status other than 0;
 - after a change to the keymap: no empty map, no Escape in a map, no key
   bound twice in one, and every map's column shows;
 - a key runs only a program that is bound, and that compiles; with
@@ -97,7 +94,7 @@ the server; words that read files are not run). After every line:
   the keymap changed under them).
 
 **`session`**: clients typing into a whole `Session` with no processes
-while fuxth programs arrive from the side. Each client reads its keys as
+while grift programs arrive from the side. Each client reads its keys as
 its client does: by the screen it has open (`screens::Screen`: a
 chooser or prompt), else through its bindings
 (`keymap::Held`, one keymap the clients share). It sends the session its
@@ -109,8 +106,8 @@ client types (whole or in pieces), the Escape deadline, resizes, one to
 three clients attaching and detaching, a fixed list of programs (tabs,
 splits, overlays for a client, `bind`/`unbind`, `move-keys`, `set`, `detach`,
 `send-keys` to panes and clients and more), pane output, a
-shell exiting. Waits are not waited on, and words that read files are not
-run. After each, the target does what the server does (settles, acts on
+shell exiting. Waits are not waited on, and typed programs that read files or may not end
+are not run. After each, the target does what the server does (settles, acts on
 the outbox, takes queued pane input), then checks:
 - every pane is in exactly one tab's layout, every view's screen composes,
   and every attached client has keys;
@@ -122,25 +119,6 @@ the outbox, takes queued pane input), then checks:
 - a second session given every byte one at a time ends with the same `ls`,
   modes, notices, screens, client configuration, keymap and
   clients' keys and screens.
-
-**`fuxth_tokens`**: fuxth source, any bytes, split into tokens.
-- Splitting never panics; every token's line, and an error's, is a line of
-  the source, and tokens come in the order of their lines.
-- Each token, single-quoted, reads back as itself.
-
-**`fuxth_run`**: fuxth source, compiled after the prelude with two host
-words (`fuzz_targets/fuxth_host.rs`: `ask` suspends for its answer, `maybe`
-gives a value only sometimes), and run to its end within its limits.
-- Compiling and running never panic, and every error is at a line of the
-  source or the prelude.
-- A program the checker lets through never sees its host give more or fewer
-  values than the vocabulary says (`contract`).
-
-**`fuxth_pause`**: a byte picking a budget of steps, then source as
-`fuxth_run` takes it.
-- Run in one go, and run that many steps at a time (resumed after each pause
-  and each suspension), it ends the same: the same values, or the same error
-  at the same place.
 
 ## Corpus
 

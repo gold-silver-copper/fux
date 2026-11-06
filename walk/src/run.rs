@@ -78,10 +78,9 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
                     .map_err(|e| fail(at, "typing", format!("{client}: {e}")))?;
             }
         }
-        Step::Cli(args) => {
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        Step::Cli(program) => {
             fixture
-                .fux(&args)
+                .fux(&[program])
                 .map_err(|e| fail(at, "the server answers", e))?;
         }
         Step::Resize { client, rows, cols } => {
@@ -129,7 +128,7 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
             let deadline = after(wait);
             while Instant::now() < deadline {
                 let shown = fixture
-                    .fux(&["str", pane, "pane", "500", "history", "capture"])
+                    .fux(&[&format!(r#"(capture (history (pane "{pane}") 500))"#)])
                     .map(|o| o.stdout.contains(&marker))
                     .unwrap_or(false);
                 if shown {
@@ -162,14 +161,17 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
         Step::Config(config) => {
             let text = match config {
                 Config::Valid => CONFIG_VALID.to_owned(),
-                Config::Invalid => format!("{CONFIG_VALID}str C-Left code nonsense end bind\n"),
-                Config::PrefixA => format!("{CONFIG_VALID}str C-b str C-a move-keys\n"),
+                Config::Invalid => format!("{CONFIG_VALID}(bind-key \"C-Left\" nonsense)\n"),
+                Config::PrefixA => format!("{CONFIG_VALID}(move-keys \"C-b\" \"C-a\")\n"),
                 Config::PrefixB => {
-                    format!("{CONFIG_VALID}str C-b str C-a move-keys str C-a str C-b move-keys\n")
+                    format!(
+                        "{CONFIG_VALID}(move-keys \"C-b\" \"C-a\")\n(move-keys \"C-a\" \"C-b\")\n"
+                    )
                 }
             };
             std::fs::write(&fixture.config, text)
                 .map_err(|e| fail(at, "writing the configuration", e.to_string()))?;
+            fixture.config_fails = *config == Config::Invalid;
         }
         Step::TooBig => {
             let before = fixture
@@ -399,7 +401,7 @@ impl Checker {
             let mut captured: Vec<String>;
             loop {
                 let out = fixture
-                    .fux(&["str", &id, "client", "capture"])
+                    .fux(&[&format!(r#"(capture (client "{id}"))"#)])
                     .map_err(|e| fail(at, "the server answers", e))?;
                 if out.status != 0 {
                     // It went while we looked.
@@ -479,6 +481,7 @@ impl Checker {
         let view = world.clients.iter().find(|c| &c.id == id);
         let bar = rows.last().cloned().unwrap_or_default();
         if let Some(view) = view
+            && client.bar
             && client.cols >= 60
             && !bar.starts_with(" /")
             && !bar.starts_with(" ?")

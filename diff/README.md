@@ -49,9 +49,9 @@ area differed, 2 for a bad argument.
 Not covered: the server's connection handling in `server.rs` (the walk,
 `walk/`, and the integration tests cover it), and performance (see
 `bench/`: `fux-bench --against REF` counts fux-vt's instructions against
-any commit, in paired rounds). Nor, since fuxth, whole sessions, command
-lines, or config files: areas for them,
-now that the baseline (0.31.0) has fuxth too, are still to be written.
+any commit, in paired rounds). Nor whole sessions, command lines, or config
+files: the baseline (0.31.0) speaks fuxth and this tree grift, so they take
+different inputs.
 
 ### The baseline
 

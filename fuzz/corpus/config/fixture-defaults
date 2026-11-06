@@ -1,44 +1,78 @@
-unbind-all
-str 'C-b h' code me me focused str left step end bind str 'focus left' label str 'Focus' group
-str 'C-b j' code me me focused str down step end bind str 'focus down' label str 'Focus' group
-str 'C-b k' code me me focused str up step end bind str 'focus up' label str 'Focus' group
-str 'C-b l' code me me focused str right step end bind str 'focus right' label str 'Focus' group
-str 'C-b o' code me me focused str next step end bind str 'next pane' label str 'Focus' group
-str 'C-b q' code me me focused str last step end bind str 'last pane' label str 'Focus' group
-str 'C-b v' code me focused str horizontal axis split drop end bind str 'split side by side' label str 'Panes' group
-str 'C-b s' code me focused str vertical axis split drop end bind str 'split stacked' label str 'Panes' group
-str 'C-b x' code me me focused confirm-close end bind str 'close pane' label str 'Panes' group
-str 'C-b z' code me focused zoom end bind str 'zoom or restore' label str 'Panes' group
-str 'C-b a r' code me me focused rename-prompt end bind str 'rename pane' label str 'Pane actions' group
-str 'C-b r h' code me focused str left 1 move-border end bind str 'shrink or grow left' label str 'Resize' group
-str 'C-b r j' code me focused str down 1 move-border end bind str 'shrink or grow down' label str 'Resize' group
-str 'C-b r k' code me focused str up 1 move-border end bind str 'shrink or grow up' label str 'Resize' group
-str 'C-b r l' code me focused str right 1 move-border end bind str 'shrink or grow right' label str 'Resize' group
-str 'C-b m h' code me focused str left move end bind str 'move left' label str 'Move' group
-str 'C-b m j' code me focused str down move end bind str 'move down' label str 'Move' group
-str 'C-b m k' code me focused str up move end bind str 'move up' label str 'Move' group
-str 'C-b m l' code me focused str right move end bind str 'move right' label str 'Move' group
-str 'C-b n' code me me focused tab str next step end bind str 'next tab' label str 'Tabs' group
-str 'C-b b' code me me focused tab str previous step end bind str 'previous tab' label str 'Tabs' group
-str 'C-b t n' code opts new-tab drop end bind str 'new tab' label str 'Tabs' group
-str 'C-b t h' code me me focused tab str previous step end bind str 'previous tab' label str 'Tabs' group
-str 'C-b t l' code me me focused tab str next step end bind str 'next tab' label str 'Tabs' group
-str 'C-b t g' code me me focused tab choose-among end bind str 'choose a tab' label str 'Tabs' group
-str 'C-b t r' code me me focused tab rename-prompt end bind str 'rename tab' label str 'Tabs' group
-str 'C-b t x' code me me focused tab confirm-close end bind str 'close tab' label str 'Tabs' group
-str 'C-b t m h' code me focused tab str previous reorder end bind str 'move tab earlier' label str 'Reorder' group
-str 'C-b t m l' code me focused tab str next reorder end bind str 'move tab later' label str 'Reorder' group
-str 'C-b w n' code opts str new-workspace in new-tab drop end bind str 'new workspace' label str 'Workspaces' group
-str 'C-b w h' code me me focused workspace str previous step end bind str 'previous workspace' label str 'Workspaces' group
-str 'C-b w l' code me me focused workspace str next step end bind str 'next workspace' label str 'Workspaces' group
-str 'C-b w g' code me me focused workspace choose-among end bind str 'choose a workspace' label str 'Workspaces' group
-str 'C-b w r' code me me focused workspace rename-prompt end bind str 'rename workspace' label str 'Workspaces' group
-str 'C-b w x' code me me focused workspace confirm-close end bind str 'close workspace' label str 'Workspaces' group
-str 'C-b w m h' code me focused workspace str previous reorder end bind str 'move workspace earlier' label str 'Reorder' group
-str 'C-b w m l' code me focused workspace str next reorder end bind str 'move workspace later' label str 'Reorder' group
-str 'C-b e' code me command-prompt end bind str 'command prompt' label str 'Session' group
-str 'C-b d' code me detach end bind str 'detach' label str 'Session' group
-str 'C-b r' repeat
-str 'C-b m' repeat
-str 'C-b t m' repeat
-str 'C-b w m' repeat
+; The bundled keys, as client configuration.
+(bind-key "C-b v" (code! (lambda! () (split (axis (focused (me)) "horizontal")) #inert))) (label "split side by side") (group "Panes")
+(bind-key "C-b s" (code! (lambda! () (split (axis (focused (me)) "vertical")) #inert))) (label "split stacked") (group "Panes")
+(bind-key "C-b x" (code! (lambda! () (confirm-close (me) (focused (me))) #inert))) (label "close pane") (group "Panes")
+(bind-key "C-b z" (code! (lambda! () (zoom (focused (me))) #inert))) (label "zoom or restore") (group "Panes")
+(bind-key "C-b c" (code! (lambda! () (edit-history (me)) #inert))) (label "history in the editor") (group "Panes")
+(bind-key "C-b h" (code! (lambda! () (step (me) (focused (me)) "left") #inert))) (label "focus left") (group "Focus")
+(bind-key "C-b j" (code! (lambda! () (step (me) (focused (me)) "down") #inert))) (label "focus down") (group "Focus")
+(bind-key "C-b k" (code! (lambda! () (step (me) (focused (me)) "up") #inert))) (label "focus up") (group "Focus")
+(bind-key "C-b l" (code! (lambda! () (step (me) (focused (me)) "right") #inert))) (label "focus right") (group "Focus")
+(bind-key "C-b o" (code! (lambda! () (step (me) (focused (me)) "next") #inert))) (label "next pane") (group "Focus")
+(bind-key "C-b q" (code! (lambda! () (step (me) (focused (me)) "last") #inert))) (label "last pane") (group "Focus")
+(bind-key "C-b n" (code! (lambda! () (step (me) (tab (focused (me))) "next") #inert))) (label "next tab") (group "Tabs")
+(bind-key "C-b b" (code! (lambda! () (step (me) (tab (focused (me))) "previous") #inert))) (label "previous tab") (group "Tabs")
+(bind-key "C-b t n" (code! (lambda! () (new-tab (options)) #inert))) (label "new tab") (group "Tabs")
+(bind-key "C-b t h" (code! (lambda! () (step (me) (tab (focused (me))) "previous") #inert))) (label "previous tab") (group "Tabs")
+(bind-key "C-b t l" (code! (lambda! () (step (me) (tab (focused (me))) "next") #inert))) (label "next tab") (group "Tabs")
+(bind-key "C-b t g" (code! (lambda! () (choose-among (me) (tab (focused (me)))) #inert))) (label "choose a tab") (group "Tabs")
+(bind-key "C-b t r" (code! (lambda! () (rename-prompt (me) (tab (focused (me)))) #inert))) (label "rename tab") (group "Tabs")
+(bind-key "C-b t x" (code! (lambda! () (confirm-close (me) (tab (focused (me)))) #inert))) (label "close tab") (group "Tabs")
+(bind-key "C-b t m h" (code! (lambda! () (reorder (tab (focused (me))) "previous") #inert))) (label "move tab earlier") (group "Reorder")
+(bind-key "C-b t m l" (code! (lambda! () (reorder (tab (focused (me))) "next") #inert))) (label "move tab later") (group "Reorder")
+(bind-key "C-b w n" (code! (lambda! () (new-tab (in (options) "new-workspace")) #inert))) (label "new workspace") (group "Workspaces")
+(bind-key "C-b w h" (code! (lambda! () (step (me) (workspace (focused (me))) "previous") #inert))) (label "previous workspace") (group "Workspaces")
+(bind-key "C-b w l" (code! (lambda! () (step (me) (workspace (focused (me))) "next") #inert))) (label "next workspace") (group "Workspaces")
+(bind-key "C-b w j" (code! (lambda! () (show (me) (inner (focused (me)))) #inert))) (label "into a workspace in it") (group "Workspaces")
+(bind-key "C-b w k" (code! (lambda! () (outer (me) (focused (me))) #inert))) (label "out of the workspace") (group "Workspaces")
+(bind-key "C-b w g" (code! (lambda! () (choose-among (me) (workspace (focused (me)))) #inert))) (label "choose a workspace") (group "Workspaces")
+(bind-key "C-b w r" (code! (lambda! () (rename-prompt (me) (workspace (focused (me)))) #inert))) (label "rename workspace") (group "Workspaces")
+(bind-key "C-b w x" (code! (lambda! () (confirm-close (me) (workspace (focused (me)))) #inert))) (label "close workspace") (group "Workspaces")
+(bind-key "C-b w m h" (code! (lambda! () (reorder (workspace (focused (me))) "previous") #inert))) (label "move workspace earlier") (group "Reorder")
+(bind-key "C-b w m l" (code! (lambda! () (reorder (workspace (focused (me))) "next") #inert))) (label "move workspace later") (group "Reorder")
+(bind-key "C-b e" (code! (lambda! () (command-prompt (me)) #inert))) (label "command prompt") (group "Session")
+(bind-key "C-b d" (code! (lambda! () (detach (me)) #inert))) (label "detach") (group "Session")
+(bind-key "C-b r h" (code! (lambda! () (move-border (focused (me)) "left" 1) #inert))) (label "shrink or grow left") (group "Resize")
+(bind-key "C-b r j" (code! (lambda! () (move-border (focused (me)) "down" 1) #inert))) (label "shrink or grow down") (group "Resize")
+(bind-key "C-b r k" (code! (lambda! () (move-border (focused (me)) "up" 1) #inert))) (label "shrink or grow up") (group "Resize")
+(bind-key "C-b r l" (code! (lambda! () (move-border (focused (me)) "right" 1) #inert))) (label "shrink or grow right") (group "Resize")
+(bind-key "C-b a r" (code! (lambda! () (rename-prompt (me) (focused (me))) #inert))) (label "rename pane") (group "Pane actions")
+(bind-key "C-b a x" (code! (lambda! () (confirm-close (me) (focused (me))) #inert))) (label "close pane") (group "Pane actions")
+(bind-key "C-b a k" (code! (lambda! () (signal (focused (me)) "TERM") #inert))) (label "terminate the running command") (group "Pane actions")
+(bind-key "C-b a s" (code! (lambda! () (choose-pane (me) (focused (me))) #inert))) (label "swap with…") (group "Pane actions")
+(bind-key "C-b a t" (code! (lambda! () (choose-move (me) (focused (me)) (tab (focused (me)))) #inert))) (label "move to tab…") (group "Pane actions")
+(bind-key "C-b a n" (code! (lambda! () (move (focused (me)) "new-tab") #inert))) (label "move to a new tab") (group "Pane actions")
+(bind-key "C-b a w" (code! (lambda! () (choose-move (me) (focused (me)) (workspace (focused (me)))) #inert))) (label "move to workspace…") (group "Pane actions")
+(bind-key "C-b a W" (code! (lambda! () (move (focused (me)) "new-workspace") #inert))) (label "move to a new workspace") (group "Pane actions")
+(bind-key "C-b a m h" (code! (lambda! () (reorder (focused (me)) "previous") #inert))) (label "move pane earlier") (group "Reorder")
+(bind-key "C-b a m l" (code! (lambda! () (reorder (focused (me)) "next") #inert))) (label "move pane later") (group "Reorder")
+(bind-key "C-b m h" (code! (lambda! () (move (focused (me)) "left") #inert))) (label "move left") (group "Move")
+(bind-key "C-b m j" (code! (lambda! () (move (focused (me)) "down") #inert))) (label "move down") (group "Move")
+(bind-key "C-b m k" (code! (lambda! () (move (focused (me)) "up") #inert))) (label "move up") (group "Move")
+(bind-key "C-b m l" (code! (lambda! () (move (focused (me)) "right") #inert))) (label "move right") (group "Move")
+(repeat "C-b t m")
+(repeat "C-b w m")
+(repeat "C-b r")
+(repeat "C-b a m")
+(repeat "C-b m")
+(bind-in "list" "Enter" "choose") (label "select")
+(bind-in "list" "y" "choose") (label "select")
+(bind-in "list" "q" "cancel") (label "cancel")
+(bind-in "list" "n" "cancel") (label "cancel")
+(bind-in "list" "j" "down")
+(bind-in "list" "k" "up")
+(bind-in "list" "Down" "down")
+(bind-in "list" "Up" "up")
+(bind-in "list" "PageDown" "page-down")
+(bind-in "list" "PageUp" "page-up")
+(bind-in "list" "Home" "first")
+(bind-in "list" "End" "last")
+(bind-in "line" "Enter" "submit") (label "accept")
+(bind-in "line" "Left" "left")
+(bind-in "line" "Right" "right")
+(bind-in "line" "Home" "home")
+(bind-in "line" "End" "end")
+(bind-in "line" "Backspace" "backspace")
+(bind-in "line" "Delete" "delete")
+(bind-action "r" (code! (lambda! (client target) (rename-prompt client target)))) (label "rename")
+(bind-action "x" (code! (lambda! (client target) (confirm-close client target)))) (label "close")

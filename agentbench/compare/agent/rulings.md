@@ -18,7 +18,7 @@ Written before the first review; applied the same way to every batch, every set,
 - Starting with a wrong command, reading the error, and fixing it: learning, not a workaround.
 - Capturing the screen or scrollback once the program has shown what is needed, and extracting a value from it with ordinary text tools (grep, sed, awk, a few lines of Python) when the task is about that text.
 - Several small calls where one would do: inefficiency is measured (calls, time), not graded.
-- Using the tool's scripting (fuxth words, tmux command sequences) to loop over panes.
+- Using the tool's scripting (grift programs, tmux command sequences) to loop over panes.
 
 ## Workarounds (hack)
 

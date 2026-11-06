@@ -851,7 +851,7 @@ fn quoted(text: &str) -> String {
 /// under `fuxix::file::scratch`, as fux's own tests start one
 /// (`tests/support/mod.rs`); never the user's. Its panes run a script that
 /// runs `argv`, given as the server's `SHELL`: `fux __serve SOCKET ENTRIES` takes no
-/// config, and a client's `config.fux` (`str shell … set`) reaches only the
+/// config, and a client's `config.grift` (`(set "shell" …)`) reaches only the
 /// panes made after it runs, never the first, which the server starts as
 /// it starts (`Session::start`), with the default shell.
 fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
@@ -937,7 +937,7 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
         .with(fux_vt::Feature::Events);
     let mut parser = fux_vt::Parser::with_options(crate::vt_size(rows, COLS)?, 0, terminal)
         .map_err(|e| format!("fux-vt: {e}"))?;
-    let attach = vec![fux.display().to_string(), "attach".to_owned()];
+    let attach = vec![fux.display().to_string()];
     let (mut master, mut client) = launch(
         &attach,
         rows,

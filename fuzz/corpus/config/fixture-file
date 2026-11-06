@@ -1,15 +1,9 @@
-# comment
-str shell list str /bin/sh end set
-str C-b str C-a move-keys
-
-str 'C-a g n' code opts new-tab drop end bind str Tools group # trailing
-str 'C-a y l' code me focused str right 1 move-border end bind str Grow group
-str 'C-a y' repeat
-str M-t code me focused zoom end bind str 'zoom it' label
-str C-a code me focused zoom end bind
-str Nope str C-a move-keys
-str 'C-a g' code me focused zoom end bind
-str 'C-a t n m' unbind
-define split-wide me focused str horizontal axis split drop end
-begin 1 until
-unbind-all
+; comment
+(set "shell" (list "/bin/sh"))
+(set "history-bytes" 16777216)
+(move-keys "C-b" "C-a")
+(bind-key "C-a y" (code! (lambda! () (split (axis (focused (me)) "horizontal")) #inert)))
+(label "split right")
+(group "Panes")
+(repeat "C-a")
+(unbind "C-a y")
