@@ -336,7 +336,6 @@ impl Run {
             context: context.clone(),
             opened: None,
             on_commit: Some(&mut publish),
-            stop: None,
         };
         let ended = run(&mut machine, &mut host, &mut asks, None).and_then(|stack| {
             fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
@@ -499,7 +498,7 @@ impl Run {
                     of: Some(self.s.run),
                     ..Default::default()
                 };
-                match fux::script::admit(open, Some(&self.keymap.draft()), &context, None) {
+                match fux::script::admit(open, Some(&self.keymap.draft()), &context) {
                     Ok(screen) => self.open(client, screen),
                     Err(failed) => {
                         self.s.acts(

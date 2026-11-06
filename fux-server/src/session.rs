@@ -3946,7 +3946,6 @@ pub(crate) mod testing {
             context: context.clone(),
             opened: None,
             on_commit: None,
-            stop: None,
         };
         let ended = fux::script::run(&mut machine, &mut host, &mut asks, None).and_then(|stack| {
             fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
@@ -3974,7 +3973,7 @@ pub(crate) mod testing {
                         of: Some(session.run),
                         ..Default::default()
                     };
-                    match fux::script::admit(open, Some(&session.test_keymap), &context, None) {
+                    match fux::script::admit(open, Some(&session.test_keymap), &context) {
                         Ok(screen) => session.open_screen(client, screen),
                         Err(failed) => {
                             session.notify_to(client, failed.notice(), true);
@@ -7693,7 +7692,6 @@ mod tests {
                 context: context.clone(),
                 opened: None,
                 on_commit: Some(&mut publish),
-                stop: None,
             };
             let tokens = Ok::<String, fux::script::Failed>((code).to_owned())?;
             let mut machine = fux::script::compile(&tokens)?;

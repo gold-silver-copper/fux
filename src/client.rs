@@ -1107,7 +1107,6 @@ fn work(
         context: job_context(),
         opened: None,
         on_commit: Some(&mut publish),
-        stop: Some(stop),
     };
     let mut draft = Default::default();
     let said = Said::default();
@@ -1168,12 +1167,7 @@ fn run_job<'a, 'b, 'c>(
         stop.check()?;
         if let Some(open) = &job.screen {
             let draft = runtime.host.draft().map(|draft| &*draft);
-            runtime.asks.opened = Some(crate::script::admit(
-                open.clone(),
-                draft,
-                &context,
-                Some(stop),
-            )?);
+            runtime.asks.opened = Some(crate::script::admit(open.clone(), draft, &context)?);
             return Ok(Vec::new());
         }
         let mut g = prepared?;
@@ -1192,8 +1186,13 @@ fn run_job<'a, 'b, 'c>(
     }
     let opened = result.is_ok().then(|| runtime.asks.opened.take()).flatten();
     let notice = match result {
-        // Stopped as asked (the prefix, then Esc): no failure of its own.
-        Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
+        // Stopped as asked (the prefix, then Esc): no failure of its own, but
+        // what took effect, its cleanups' steps among them, is told (D-25).
+        Err(failed) if stop.stopped() => {
+            let steps = failed.actions.iter();
+            let told = steps.map(|step| format!(" · already took effect: {step}"));
+            Some((format!("stopped{}", told.collect::<String>()), false))
+        }
         Err(failed) => Some((failed.notice(), true)),
         Ok(stack) => said_notice(
             String::from_utf8_lossy(&said.0.borrow()).into_owned(),

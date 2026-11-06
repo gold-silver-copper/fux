@@ -1382,7 +1382,6 @@ mod tests {
                 context: context.clone(),
                 opened: None,
                 on_commit: None,
-                stop: None,
             };
             // In a client's dictionary, as a key's program is.
             let mut machine = fux::screens::Job::from(code.to_owned())

@@ -922,3 +922,44 @@ fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
     asks.ask(&ls).map_err(|f| f.to_string())?;
     Ok(())
 }
+
+/// A stop that comes as a request is asked ends that request, though it would
+/// wait: no stream was held for the stop to shut. The cleanup's request, after
+/// it, is asked, and listed with what took effect.
+#[test]
+fn a_stop_ends_the_wait_it_beat_and_asks_the_cleanup() -> Outcome {
+    use fux::script::{Asks, Failed, Host, Machine, Server as Asking, Stop, run};
+    use fux_wire::{
+        command::Request,
+        protocol::{Asked, Reply},
+    };
+    struct Late(Asking, Stop);
+    impl Asks for Late {
+        fn ask(&mut self, asked: &Asked) -> Result<Reply, Failed> {
+            if matches!(asked.request, Request::Wait(_)) {
+                self.1.stop();
+            }
+            self.0.ask(asked)
+        }
+    }
+    let server = Server::start("")?;
+    server.type_line("%1", "sleep 100")?;
+    let stop = Stop::default();
+    let mut asks = Late(
+        Asking::stoppable(server.socket.clone(), stop.clone()),
+        stop.clone(),
+    );
+    let mut machine = Machine::source(
+        "late",
+        r#"(finally! (sequence! (wait (timeout (pane 1) 600)) (rename (pane 1) "went-on"))
+             (rename (pane 1) "cleaned"))"#,
+    );
+    let mut out = Vec::new();
+    let mut host = Host::new(Default::default(), None, &mut out);
+    let failed = run(&mut machine, &mut host, &mut asks, Some(&stop));
+    let failed = failed.err().ok_or("a stopped run ended well")?;
+    assert_eq!(failed.actions.len(), 1, "{failed}");
+    assert!(failed.actions.iter().all(|step| step.contains("cleaned")));
+    assert!(server.ok(&["(list-session)"])?.contains("cleaned"));
+    Ok(())
+}

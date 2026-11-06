@@ -1256,6 +1256,62 @@ fn a_stopped_compilation_leaves_the_next_key_running() -> Outcome {
     terminal.wait_for("next-ok")
 }
 
+/// The prefix, then Esc, ends a program's body at once, a wait at the server
+/// too, and no more of it runs; its cleanup then runs as on any failure, a
+/// binding's or a prompt's, its requests answered and listed. A second ends
+/// a cleanup that won't finish, however it is held up.
+#[test]
+fn a_stop_runs_cleanups_and_a_second_ends_them() -> Outcome {
+    let keys = r#"(define! spin (lambda! () (spin)))
+(define! blocked (lambda! () (wait (timeout (focused (me)) 600))))
+(define! mark (lambda! (word) (send-keys (text (focused (me)) word))))
+(bind-key "F5" (code! (lambda! () (finally! (sequence! (spin) (mark "went-on")) (mark "key-loop")))))
+(bind-key "F6" (code! (lambda! () (finally! (sequence! (blocked) (mark "went-on")) (mark "key-wait")))))
+(bind-key "F7" (code! (lambda! () (finally! (spin) (spin)))))
+(bind-key "F8" (code! (lambda! () (finally! (spin) (blocked) (mark "went-on")))))"#;
+    let server = Server::start(keys)?;
+    let mut terminal = Terminal::attach(&server, 12, 140, &[])?;
+    terminal.wait_for("$")?;
+    terminal.type_bytes(b"echo sleep''ing; sleep 100\r")?;
+    terminal.wait_for("sleeping")?;
+    let prompt = |body: &str, word: &str| {
+        format!("\x02e(finally! (sequence! ({body}) (mark \"went-on\")) (mark \"{word}\"))\r")
+    };
+    for (start, word) in [
+        ("\x1b[15~".to_owned(), "key-loop"),
+        ("\x1b[17~".to_owned(), "key-wait"),
+        (prompt("spin", "prompt-loop"), "prompt-loop"),
+        (prompt("blocked", "prompt-wait"), "prompt-wait"),
+    ] {
+        terminal.type_bytes(start.as_bytes())?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        terminal.type_bytes(b"\x02\x1b")?;
+        // On the bar, in the effect list, and in the pane, by the terminal's echo.
+        terminal.wait_for(&format!("(text \"{word}\")"))?;
+        terminal.wait_for(&format!("{word}\n"))?;
+    }
+    // On the screen now: what `wait_for` also reads holds the earlier stops.
+    let shows = |terminal: &mut Terminal, what: &str| {
+        eventually(what, || {
+            terminal.pump();
+            Ok(terminal.text().contains(what))
+        })
+    };
+    for start in ["\x1b[18~", "\x1b[19~"] {
+        terminal.type_bytes(start.as_bytes())?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        terminal.type_bytes(b"\x02\x1b")?;
+        shows(&mut terminal, "stopping…")?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!terminal.text().contains("stopped"), "{}", terminal.text());
+        terminal.type_bytes(b"\x02\x1b")?;
+        shows(&mut terminal, "stopped")?;
+    }
+    assert!(!terminal.text().contains("went-on"), "{}", terminal.text());
+    terminal.type_bytes(b"\x02e(mark \"next-ok\")\r")?;
+    terminal.wait_for("next-ok")
+}
+
 /// Commands from the command line are not ended by signals either, when
 /// one arrives while they wait for the server.
 #[test]

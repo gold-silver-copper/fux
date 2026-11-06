@@ -135,11 +135,7 @@ pub fn admit(
     mut open: Open,
     _state: Option<&crate::client_state::Draft>,
     context: &fux_wire::protocol::Context,
-    stop: Option<&super::Stop>,
 ) -> Result<crate::screens::Screen, Failed> {
-    if let Some(stop) = stop {
-        stop.check()?;
-    }
     let check = |action: &fux_wire::callback::Callback| {
         let mut of = context.of;
         for arg in &action.args {
@@ -271,7 +267,6 @@ mod tests {
             context: context.clone(),
             opened: None,
             on_commit: None,
-            stop: None,
         };
         let mut host = Host::job(context, &mut state, &mut out);
         crate::script::run(&mut machine, &mut host, &mut asks, None)?;
@@ -348,7 +343,6 @@ mod tests {
                 list(payload.clone(), "(lambda! (#ignore #ignore) #inert)"),
                 None,
                 &context,
-                None
             )
             .is_ok()
         );
@@ -362,7 +356,6 @@ mod tests {
                 list(payload.clone(), "(lambda! (#ignore #ignore) #inert)"),
                 None,
                 &stale,
-                None
             )
             .is_err()
         );
@@ -389,7 +382,6 @@ mod tests {
                 list(nested.clone(), "(lambda! (#ignore #ignore) #inert)"),
                 None,
                 &context,
-                None
             )
             .is_ok()
         );
@@ -398,7 +390,6 @@ mod tests {
                 list(nested.clone(), "(lambda! (#ignore #ignore) #inert)"),
                 None,
                 &stale,
-                None
             )
             .is_err()
         );
@@ -414,7 +405,6 @@ mod tests {
                     of: None,
                     ..context
                 },
-                None
             )
             .is_err()
         );
@@ -437,12 +427,12 @@ mod tests {
                 Some("3-4".parse().map_err(|()| "run")?),
             ),
         });
-        assert!(admit(spec, None, &context, None).is_err());
+        assert!(admit(spec, None, &context).is_err());
         assert!(data(&Value::App(Fux::Opts(std::rc::Rc::new(Default::default())))).is_err());
         // Code in a payload is read at open, as the action's own is.
         let unread = Data::List(vec![Data::Code(crate::testing::code("(lambda!"))]);
         let spec = list(unread, "(lambda! (#ignore #ignore) #inert)");
-        assert!(admit(spec, None, &context, None).is_err());
+        assert!(admit(spec, None, &context).is_err());
         Ok(())
     }
     #[test]
@@ -462,9 +452,9 @@ mod tests {
                 }),
             })
         };
-        assert!(admit(prompt(vec![pane("1-2")?]), None, &context, None).is_ok());
+        assert!(admit(prompt(vec![pane("1-2")?]), None, &context).is_ok());
         for args in [vec![pane("3-4")?], vec![Data::List(vec![pane("3-4")?])]] {
-            let refused = admit(prompt(args), None, &context, None).err();
+            let refused = admit(prompt(args), None, &context).err();
             assert!(refused.is_some_and(|e| e.message.contains("different server runs")));
         }
         Ok(())
@@ -521,7 +511,6 @@ mod tests {
             ),
             None,
             &context,
-            None,
         )?
         else {
             return Err("list".into());
@@ -564,7 +553,7 @@ mod tests {
             ),
             (Data::Int(1), "(lambda! (#ignore #ignore) (options))"),
         ] {
-            assert!(admit(list(payload.clone(), source), None, &context, None).is_ok());
+            assert!(admit(list(payload.clone(), source), None, &context).is_ok());
             let job = Job::call(&crate::testing::code(source).into(), [Data::Null, payload]);
             assert!(run(&job).is_err(), "{source}");
         }

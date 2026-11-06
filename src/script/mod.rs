@@ -567,8 +567,8 @@ pub struct Server {
     requests: Option<client::Requests>,
     /// This job's source fence, kept on every request and across retries.
     pub after: Option<std::rc::Rc<std::cell::Cell<fux_wire::protocol::Fence>>>,
-    /// What stops a run from another thread, if one may.
-    stop: Option<Stop>,
+    /// What stops a run from another thread: nothing does, unless `stoppable`.
+    stop: Stop,
     /// Whether a server of another protocol is followed.
     follow: Follow,
     /// A command line's: set once its stdout's reader is gone.
@@ -636,11 +636,17 @@ impl Write for Watched<'_> {
 }
 
 /// What stops a run from another thread (the prefix then Esc, for a key's
-/// program): a flag it looks at between steps and before each request, and
-/// the connection of the request under way, if one is, which it shuts down.
+/// program): grift's interrupter, which ends the body at its next step and
+/// runs its cleanups, and the connection of the request under way, if one
+/// is, which it shuts down. Each stop does both, so a second ends a cleanup
+/// that won't finish. A cleanup's requests are asked: a request is refused
+/// only for a stop the program has not heard of.
 #[derive(Clone, Default)]
 pub struct Stop {
+    /// Whether this job is stopped, whatever its cleanups then do.
     flag: Arc<AtomicBool>,
+    /// A stop came since a request last looked (`Stop::news`).
+    unheard: Arc<AtomicBool>,
     stream: Arc<Mutex<Option<fux_server::socket::Client>>>,
     interrupt: Arc<Mutex<Option<grift::Interrupter>>>,
 }
@@ -654,6 +660,9 @@ impl Stop {
         {
             let _ = stop.stop();
         }
+        // After the interrupter, so what reads this finds grift told; before
+        // the stream, so a request held too late to be shut reads it.
+        self.unheard.store(true, Ordering::SeqCst);
         if let Some(stream) = self.stream.lock().ok().and_then(|mut s| s.take()) {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
@@ -670,11 +679,23 @@ impl Stop {
     /// Ready for the next run.
     pub fn reset(&self) {
         self.flag.store(false, Ordering::SeqCst);
+        self.unheard.store(false, Ordering::SeqCst);
     }
 
     /// Whether the run is to stop.
     pub fn stopped(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Whether a stop came since this last said so: the caller is to give
+    /// grift a step, which ends the run if grift has yet to act on it.
+    pub(crate) fn news(&self) -> bool {
+        self.unheard.swap(false, Ordering::SeqCst)
+    }
+
+    /// Whether a stop came that `Stop::news` has not told of.
+    fn unheard(&self) -> bool {
+        self.unheard.load(Ordering::SeqCst)
     }
 
     /// Refuse a cancelled job before it takes another step.
@@ -699,7 +720,7 @@ impl Server {
     /// The server on `socket`, whose runs `stop` can stop.
     pub fn stoppable(socket: std::path::PathBuf, stop: Stop) -> Server {
         Server {
-            stop: Some(stop),
+            stop,
             ..Server::new(socket)
         }
     }
@@ -800,21 +821,17 @@ impl Asks for Server {
         };
         // Held while it asks, so a stop ends a request that waits; a stop
         // that came first is seen once it is held, so none is missed.
-        if let Some(stop) = &self.stop {
-            stop.hold(requests.stopper());
-        }
-        let reply = match self.stop.as_ref().is_some_and(Stop::stopped) {
+        self.stop.hold(requests.stopper());
+        let reply = match self.stop.unheard() {
             true => Err(cancelled()),
             false => (requests.ask(asked, self.out.as_deref())).map_err(client_failed),
         };
-        // Let go of before the flag is read: a stop from then on cannot
+        // Let go of before a stop is looked for: one from then on cannot
         // shut what is kept.
-        if let Some(stop) = &self.stop {
-            stop.hold(None);
-        }
+        self.stop.hold(None);
         // A failed request's connection is not asked again, nor one a stop
         // may have shut, however the request ended.
-        if reply.is_err() || self.stop.as_ref().is_some_and(Stop::stopped) {
+        if reply.is_err() || self.stop.unheard() {
             self.requests = None;
         }
         reply
@@ -951,8 +968,6 @@ pub struct AsClient<'a> {
     pub context: Context,
     pub opened: Option<crate::screens::Screen>,
     pub on_commit: Option<&'a mut dyn FnMut(&ClientState)>,
-    /// What stops reading a screen's code values as it opens.
-    pub stop: Option<&'a Stop>,
 }
 
 impl Asks for AsClient<'_> {
@@ -973,7 +988,7 @@ impl Asks for AsClient<'_> {
     ) -> Result<Vec<Value<Fux>>, Failed> {
         match what {
             Local::Open(open) => {
-                let screen = admit(open.clone(), state.as_deref(), &self.context, self.stop)?;
+                let screen = admit(open.clone(), state.as_deref(), &self.context)?;
                 self.opened = Some(screen);
                 Ok(Vec::new())
             }

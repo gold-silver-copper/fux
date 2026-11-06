@@ -505,7 +505,11 @@ failure of KIND: `(catch-kind! (wait (timeout a 5)) timeout failure ...)`.
 whose fields `get` reads: `kind`, `values` (a message, then what it carries,
 such as a failed wait's answer) and `trace`, the forms it came through;
 `(raise failure)` raises it again, and `(finally! EXPRESSION CLEANUP...)`
-always cleans up. A failure it does not name goes on, its status kept. An
+always cleans up: after a failure, and after a stop (the prefix, then Esc),
+when the cleanup's requests still reach the server and what they did is
+listed. A second stop ends a cleanup that won't finish, and a process killed
+outright, as a signal ends a command line, cleans up nothing. A failure it
+does not name goes on, its status kept. An
 action leaves its answer: printed, it is the lines above; given to an
 operation that wants a pane, it is its pane (an action's or wait's on a tab
 or workspace is a list of answers, which no such operation takes, however

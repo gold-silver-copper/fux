@@ -434,13 +434,17 @@ fn call_text<T>(g: &Grift<T>, name: &str, args: &[G]) -> String {
 }
 
 /// One word of fux's vocabulary, called from grift.
-pub(super) fn request<A: Asks + ?Sized>(
-    g: &mut Interpreter<'_, '_, A>,
-    state: &mut Runtime<'_, '_, A>,
+pub(super) fn request<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
     word: Word,
     args: &[G],
 ) -> Result<G, Error> {
-    check(g, state, &[])?;
+    // A stop that came as this word began ends the run at a step of grift's;
+    // one grift has acted on makes this a cleanup's word, which runs.
+    if state.stop.is_some_and(Stop::news) {
+        g.evaluate(state, "#inert")?;
+    }
     let name = word.row().name;
     let takes = word
         .row()
