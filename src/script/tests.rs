@@ -910,3 +910,19 @@ fn layout_scalar_refusals_do_not_copy_retained_strings() -> TestResult {
     );
     Ok(())
 }
+
+/// Every name a library defines has the word that loads it, and none is
+/// left over: `LIBRARY_WORDS` is the libraries' own definitions.
+#[test]
+fn the_library_words_are_what_the_libraries_define() {
+    let mut defined: Vec<&str> = [LIBRARY, include_str!("sessions.grift")]
+        .iter()
+        .flat_map(|text| text.lines())
+        .filter_map(|line| line.strip_prefix("(define! "))
+        .filter_map(|rest| rest.split([' ', '(']).next())
+        .collect();
+    let mut words = bridge::LIBRARY_WORDS.to_vec();
+    defined.sort_unstable();
+    words.sort_unstable();
+    assert_eq!(defined, words);
+}

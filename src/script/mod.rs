@@ -4,8 +4,9 @@
 //! does what one asks, and goes on with what it answers, as typed values
 //! (a pane's handle, a capture), never text to be read back.
 //!
-//! Every run is fresh: its own interpreter and context, the bundled library's
-//! words first (`library.grift`).
+//! Every run has an interpreter nothing else ran in. A command line builds
+//! one; a client's worker builds the next after each job, off the key's path
+//! (`client::Keyboard`), so nothing a run left behind reaches the next.
 mod callback;
 mod docs;
 pub use docs::{Doc, docs};
@@ -32,7 +33,10 @@ use fux_wire::layout::Axis;
 use fux_wire::protocol::{Asked, Body, Context, End, Reply, Response};
 mod bridge;
 mod value;
-pub use bridge::{Machine, callback_machine, compile};
+pub use bridge::{
+    Interpreter, Machine, Runtime, callback_machine, compile, evaluate_job, interpreter,
+    load_libraries, replay_config,
+};
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -439,6 +443,25 @@ impl<'a> Host<'a> {
             files: source::Files::sealed(),
             ..Self::new(context, Some(state), out)
         }
+    }
+
+    /// Ready for a client's next job, as `Host::job` makes a host: its
+    /// client state `draft`, as `context`.
+    pub(crate) fn next_job(&mut self, draft: Draft, context: Context) {
+        if let Some(state) = self.state.as_deref_mut() {
+            *state = draft;
+        }
+        self.context = context;
+        self.last_bound = None;
+        self.held = false;
+        self.files = source::Files::sealed();
+        self.file = None;
+        self.actions.clear();
+    }
+
+    /// The candidate state, for a client's worker.
+    pub(crate) fn draft(&mut self) -> Option<&mut Draft> {
+        self.state.as_deref_mut()
     }
 
     /// Ordinary CLI commands need no keys or preference initialization.
@@ -1176,17 +1199,10 @@ pub fn default_state() -> Result<ClientState, Failed> {
     let mut draft = Draft::default();
     let windows = cfg!(windows).then_some(("windows.grift", WINDOWS_DEFAULTS));
     let bundled = [("client-defaults.grift", DEFAULTS), ("keys.grift", KEYS)];
-    for (name, text) in bundled.into_iter().chain(windows) {
-        let mut machine = Machine::source(name, text);
-        let mut sink = io::sink();
-        let mut host = Host::new(Context::default(), Some(&mut draft), &mut sink);
-        run(
-            &mut machine,
-            &mut host,
-            &mut ConfigOnly { diagnostics: true },
-            None,
-        )?;
-    }
+    let bundled: Vec<_> = bundled.into_iter().chain(windows).collect();
+    let mut sink = io::sink();
+    let mut host = Host::new(Context::default(), Some(&mut draft), &mut sink);
+    bridge::run_sources(&bundled, &mut host, &mut ConfigOnly { diagnostics: true })?;
     draft.finish().map_err(|why| Failed::new(Code::Config, why))
 }
 /// The config file, a grift program a typing terminal runs as it attaches:
@@ -1319,7 +1335,13 @@ pub fn run(
     stop: Option<&Stop>,
 ) -> Result<Vec<Value<Fux>>, Failed> {
     let values = bridge::run(machine, host, asks, stop)?;
-    for value in &values {
+    refuse_unfinished(&values, host)?;
+    Ok(values)
+}
+
+/// A request left unasked at a program's end did nothing, which it says.
+pub fn refuse_unfinished(values: &[Value<Fux>], host: &Host<'_>) -> Result<(), Failed> {
+    for value in values {
         let items = match value {
             Value::List(items) => items.items(),
             value => std::slice::from_ref(value),
@@ -1338,7 +1360,7 @@ pub fn run(
             }
         }
     }
-    Ok(values)
+    Ok(())
 }
 /// One quoted grift program; every following shell argument stays a string.
 pub fn main(

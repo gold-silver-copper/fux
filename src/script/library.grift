@@ -1,17 +1,4 @@
-(define! none (quote! none))
-; fux policy. Native operations keep the fuxth words' meanings and take positional arguments.
-(define! code! (vau! (expression) #ignore (list (quote! code) expression)))
-(define! load-forms (lambda! (path caller once)
-  (let! ((loaded (read-source path once)))
-    (when! (not? (empty-list? loaded))
-      (finally! (for-each (lambda! (form) (evaluate form caller)) (first loaded))
-        (finish-source))))))
-(define! include! (vau! (path) caller (load-forms (evaluate path caller) caller #false)))
-(define! require! (vau! (path) caller (load-forms (evaluate path caller) caller #true)))
-(define! print (lambda! (value) (display value "\n")))
-(define! type (lambda! (target text-value) (send-keys (text target text-value))))
-(define! press (lambda! (target key-name) (send-keys (key target key-name))))
-(define! line (lambda! (target text-value) (send-keys (key (text target text-value) "Enter"))))
+; fux policy, loaded the first time one of its words is called.
 (define! assert-kind (lambda! (value kinds about)
   (if! (member? (kind value) (string-split kinds " ")) value
        (raise (error (quote! type-error) about value)))))
@@ -142,14 +129,6 @@
          (builder (argument (argument builder "sh") "-c")))
     (split (argument builder "printf '\\033]2;history\\007'; file=$(mktemp) && \"${FUX:-fux}\" '(capture (all-history (pane (first (arguments)))))' \"$FUX_TARGET\" >\"$file\" && $EDITOR \"+$(wc -l <\"$file\")\" \"$file\" || read -r answer; rm -f \"$file\"; \"${FUX:-fux}\" '(kill (here))'"))
     #inert)))
-; Execute an explicit code form in the receiving caller's dictionary.
-(define! execute! (vau! (code-value . arguments) caller
-  (let! ((code-value (evaluate code-value caller))
-         (values (map (lambda! (argument) (evaluate argument caller)) arguments)))
-    (if! (and!? (pair? code-value) (same? (first code-value) (quote! code)))
-      (apply (evaluate (second code-value) caller) values)
-      (raise (error (quote! type-error) code-value))))))
-
 ; The strict projection used when an event stream must not skip lost entries.
 (define! batch-events (lambda! (batch)
   (when! (greater-than? (get batch "missed") 0)

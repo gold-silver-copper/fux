@@ -105,6 +105,19 @@ macro_rules! words {
         }
 
         impl Word {
+            /// Each word's name and the host function grift calls it by.
+            pub(super) fn host_functions<'a, 'b, A: super::Asks + ?Sized>(
+            ) -> Vec<(&'static str, grift::HostFunction<super::bridge::Runtime<'a, 'b, A>>)> {
+                vec![
+                    $($(($name, |g, state, args| {
+                        super::bridge::request(g, state, Word::$family($family::$variant), args)
+                    }),)*)*
+                    $(($a_name, |g, state, args| {
+                        super::bridge::request(g, state, Word::Act(Act::$act), args)
+                    }),)*
+                ]
+            }
+
             pub const ALL: &[Word] = &[
                 $($(Word::$family($family::$variant),)*)*
                 $(Word::Act(Act::$act),)*
@@ -1188,13 +1201,10 @@ fn order(client: ClientId, action: ClientAction) -> Result<Done<Ask>, Failure> {
 impl Host<'_> {
     pub(super) fn call(
         &mut self,
-        id: usize,
+        word: Word,
         args: Vec<Value<Fux>>,
         out: &mut Vec<Value<Fux>>,
     ) -> Result<Done<Ask>, Failure> {
-        let Some(&word) = Word::ALL.get(id) else {
-            return Err(Failure::new(Code::Contract, "no word of fux's has this id"));
-        };
         let mut of = self.context.of;
         let mut args = args.into_iter();
         // The place in the effect and the kind of the value taken last.

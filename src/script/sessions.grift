@@ -1,15 +1,6 @@
 ; Saved sessions are one readable grift program over an inert recipe observation.
 (define! native-data? (lambda! (value)
   (and!? (pair? value) (same? (first value) (quote! native-value)))))
-(define! native-get get)
-(define! get (lambda! (value field)
-  (if! (context? value)
-    (catch-kind! (evaluate (string-to-symbol field) value) unbound-symbol failure
-      (raise (error (quote! no-field) field)))
-    (if! (and!? (pair? value) (not? (native-data? value)))
-      (let! ((entry (find-association (string-to-symbol field) value)))
-        (if! (empty-list? entry) (raise (error (quote! no-field) field)) (second entry)))
-      (native-get value field)))))
 (define! session-data (lambda! (value)
   (conditional!
     ((context? value) (map (lambda! (entry) (list (first entry) (session-data (second entry)))) (bindings value)))

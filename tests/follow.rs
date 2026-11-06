@@ -313,7 +313,8 @@ mod unix {
         // that answers in another protocol is told of, not followed.
         for word in ["require", "include"] {
             let program = format!("({word}! \"/dev/stdin\")");
-            let ran = against_another_protocol("pipe-read", &[&program], "(list-session)\n", &[], 1)?;
+            let ran =
+                against_another_protocol("pipe-read", &[&program], "(list-session)\n", &[], 1)?;
             check(
                 ran.status == Some(1)
                     && ran.stdout.is_empty()

@@ -47,16 +47,30 @@ pub fn callback_machine(
         ..Machine::source("key", &source)
     })
 }
-struct Runtime<'a, 'b> {
-    host: &'a mut Host<'b>,
-    asks: &'a mut dyn Asks,
+/// What a run's host functions reach. `A` is where its requests go.
+pub struct Runtime<'a, 'b, A: Asks + ?Sized> {
+    pub(crate) host: &'a mut Host<'b>,
+    pub(crate) asks: &'a mut A,
     stop: Option<&'a Stop>,
     configuring: bool,
+    /// Replaying a config already told: what it warns of was said then.
+    replaying: bool,
     exiting: bool,
-    library: Option<grift::Kept>,
 }
-type Interpreter<'a, 'b> = Grift<Runtime<'a, 'b>>;
-fn failure(g: &mut Interpreter<'_, '_>, f: Failure) -> Error {
+impl<'a, 'b, A: Asks + ?Sized> Runtime<'a, 'b, A> {
+    pub fn new(host: &'a mut Host<'b>, asks: &'a mut A, stop: Option<&'a Stop>) -> Self {
+        Self {
+            host,
+            asks,
+            stop,
+            configuring: false,
+            replaying: false,
+            exiting: false,
+        }
+    }
+}
+pub type Interpreter<'a, 'b, A> = Grift<Runtime<'a, 'b, A>>;
+fn failure<T>(g: &mut Grift<T>, f: Failure) -> Error {
     let value = g.string(&f.message).unwrap_or(G::Inert);
     g.error(f.code.name(), &[value])
 }
@@ -68,7 +82,11 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
             message.push(' ');
             write_data(g, value, &mut message)?;
         }
-        for (i, form) in e.trace().iter().enumerate() {
+        let shown = e.trace().iter().filter(|form| {
+            !matches!(g.position(form), Ok(Some((source, _)))
+                if BOOKS.iter().any(|(name, _)| *name == source))
+        });
+        for (i, form) in shown.enumerate() {
             use std::fmt::Write;
             // Grift names the source of text that didn't read as a string, the
             // line being the second of the parse error's values.
@@ -96,16 +114,20 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
     failed.kind = Some(kind.to_owned());
     failed
 }
-fn check(g: &mut Interpreter<'_, '_>, state: &mut Runtime<'_, '_>, _: &[G]) -> Result<G, Error> {
+fn check<A: Asks + ?Sized>(
+    g: &mut Interpreter<'_, '_, A>,
+    state: &mut Runtime<'_, '_, A>,
+    _: &[G],
+) -> Result<G, Error> {
     if let Some(stop) = state.stop {
         stop.check()
             .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
     }
     Ok(G::Inert)
 }
-fn output(
-    g: &mut Interpreter<'_, '_>,
-    state: &mut Runtime<'_, '_>,
+fn output<A: Asks + ?Sized>(
+    g: &mut Interpreter<'_, '_, A>,
+    state: &mut Runtime<'_, '_, A>,
     args: &[G],
 ) -> Result<G, Error> {
     for argument in args {
@@ -126,17 +148,21 @@ fn output(
         .map_err(|error| failure(g, Failure::new(Code::Output, error.to_string())))?;
     Ok(G::Inert)
 }
-struct DataText<'g, 'a, 'b> {
-    g: &'g Interpreter<'a, 'b>,
+struct DataText<'g, T> {
+    g: &'g Grift<T>,
     value: &'g G,
 }
-impl std::fmt::Display for DataText<'_, '_, '_> {
+impl<T> std::fmt::Display for DataText<'_, T> {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write_data(self.g, self.value, out)
     }
 }
 
-fn data_text(g: &mut Interpreter<'_, '_>, _: &mut Runtime<'_, '_>, args: &[G]) -> Result<G, Error> {
+fn data_text<A: Asks + ?Sized>(
+    g: &mut Interpreter<'_, '_, A>,
+    _: &mut Runtime<'_, '_, A>,
+    args: &[G],
+) -> Result<G, Error> {
     let [value] = args else {
         return Err(g.error("arity-error", args));
     };
@@ -144,9 +170,9 @@ fn data_text(g: &mut Interpreter<'_, '_>, _: &mut Runtime<'_, '_>, args: &[G]) -
     write_data(g, value, &mut text).map_err(|_| g.error("output", args))?;
     g.string(&text)
 }
-fn read_source(
-    g: &mut Interpreter<'_, '_>,
-    state: &mut Runtime<'_, '_>,
+fn read_source<A: Asks + ?Sized>(
+    g: &mut Interpreter<'_, '_, A>,
+    state: &mut Runtime<'_, '_, A>,
     args: &[G],
 ) -> Result<G, Error> {
     let [path, once] = args else {
@@ -181,9 +207,9 @@ fn read_source(
     state.host.files.parents.push(state.host.file.replace(file));
     g.list(&[forms])
 }
-fn finish_source(
-    g: &mut Interpreter<'_, '_>,
-    state: &mut Runtime<'_, '_>,
+fn finish_source<A: Asks + ?Sized>(
+    g: &mut Interpreter<'_, '_, A>,
+    state: &mut Runtime<'_, '_, A>,
     args: &[G],
 ) -> Result<G, Error> {
     if !args.is_empty() {
@@ -194,49 +220,84 @@ fn finish_source(
     Ok(G::Inert)
 }
 
-fn request(
-    g: &mut Interpreter<'_, '_>,
-    state: &mut Runtime<'_, '_>,
+fn kind<A: Asks + ?Sized>(
+    g: &mut Interpreter<'_, '_, A>,
+    _: &mut Runtime<'_, '_, A>,
+    args: &[G],
+) -> Result<G, Error> {
+    let [v] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let kind = match v {
+        G::Context(_) => Some("context"),
+        G::Operative(_) | G::Primitive(_) => Some("operative"),
+        G::Applicative(_) | G::Host(_) => Some("applicative"),
+        G::Inert => Some("inert"),
+        G::Ignore => Some("ignore"),
+        _ => None,
+    };
+    if let Some(kind) = kind {
+        return g.string(kind);
+    }
+    let v = from_grift(g, v)?;
+    let name = match &v {
+        Value::App(a) => a.name(),
+        _ => v.kind(),
+    };
+    g.string(name)
+}
+fn text_of<A: Asks + ?Sized>(
+    g: &mut Interpreter<'_, '_, A>,
+    _: &mut Runtime<'_, '_, A>,
+    args: &[G],
+) -> Result<G, Error> {
+    let [v] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let v = from_grift(g, v)?;
+    let text = v.text().map_err(|f| failure(g, f))?;
+    g.string(&text)
+}
+
+/// `get` of a value that is a record: its field, no server asked.
+fn field_of<T>(g: &mut Grift<T>, record: &G, field: &G) -> Result<Option<G>, Error> {
+    let Some(field_name) = g.as_string(field)? else {
+        return Ok(None);
+    };
+    let name = g.symbol(&field_name)?;
+    if matches!(record, G::Context(_)) {
+        return match g.names(record)?.contains(&name) {
+            true => g.lookup(record, &name),
+            false => {
+                let about = g.string(&field_name)?;
+                Err(g.error("no-field", &[about]))
+            }
+        };
+    }
+    if native_data(g, record)? || !matches!(record, G::Pair(_)) {
+        return Ok(None);
+    }
+    for entry in g.list_items(record)? {
+        if let Some((G::Symbol(key), rest)) = g.as_pair(&entry)?
+            && key == name
+            && let Some((value, _)) = g.as_pair(&rest)?
+        {
+            return Ok(Some(value));
+        }
+    }
+    let about = g.string(&field_name)?;
+    Err(g.error("no-field", &[about]))
+}
+
+/// One word of fux's vocabulary, called from grift.
+pub(super) fn request<A: Asks + ?Sized>(
+    g: &mut Interpreter<'_, '_, A>,
+    state: &mut Runtime<'_, '_, A>,
+    word: Word,
     args: &[G],
 ) -> Result<G, Error> {
     check(g, state, &[])?;
-    let Some((G::Symbol(name), args)) = args.split_first() else {
-        return Err(g.error("type-error", args));
-    };
-    let name = g.symbol_name(name)?.to_owned();
-    if name == "kind" {
-        let [v] = args else {
-            return Err(g.error("arity-error", args));
-        };
-        let kind = match v {
-            G::Context(_) => Some("context"),
-            G::Operative(_) => Some("operative"),
-            G::Applicative(_) => Some("applicative"),
-            G::Inert => Some("inert"),
-            G::Ignore => Some("ignore"),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            return g.string(kind);
-        }
-        let v = from_grift(g, v)?;
-        let name = match &v {
-            Value::App(a) => a.name(),
-            _ => v.kind(),
-        };
-        return g.string(name);
-    }
-    if name == "string" {
-        let [v] = args else {
-            return Err(g.error("arity-error", args));
-        };
-        let v = from_grift(g, v)?;
-        let text = v.text().map_err(|f| failure(g, f))?;
-        return g.string(&text);
-    }
-    let Some(word) = Word::named(&name) else {
-        return Err(g.error("unbound-symbol", args));
-    };
+    let name = word.row().name;
     let takes = word
         .row()
         .effect
@@ -246,7 +307,13 @@ fn request(
         return Err(g.error("arity-error", args));
     }
     if matches!(word, Word::Act(Act::Word | Act::Dictionary)) {
-        return dictionary(g, state, args);
+        return dictionary(g, args);
+    }
+    if matches!(word, Word::Act(Act::Get))
+        && let [record, field] = args
+        && let Some(found) = field_of(g, record, field)?
+    {
+        return Ok(found);
     }
     // Reject bounded scalars while they are borrowed; a retained string can be large.
     if matches!(word, Word::Act(Act::Arrange))
@@ -312,12 +379,8 @@ fn request(
             }
         }
     }
-    let id = Word::ALL
-        .iter()
-        .position(|w| *w == word)
-        .ok_or_else(|| g.error("unbound-symbol", args))?;
     let mut out = Vec::new();
-    let done = match state.host.call(id, values, &mut out) {
+    let done = match state.host.call(word, values, &mut out) {
         Ok(done) => done,
         Err(failed) => {
             let mut values = vec![g.string(&failed.message)?];
@@ -366,7 +429,7 @@ fn request(
                 return Err(g.error(code.name(), &values));
             }
             if acts(&asked.request) {
-                state.host.actions.push(name.clone());
+                state.host.actions.push(name.to_owned());
             }
             out = answered(reply).map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
         }
@@ -376,6 +439,9 @@ fn request(
                     .host
                     .prepare()
                     .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+            }
+            if state.replaying && matches!(what, Local::Shell(Shell::Warn(_))) {
+                return Ok(G::Inert);
             }
             if state.configuring
                 && !matches!(
@@ -401,7 +467,7 @@ fn request(
                 .local(&what, state.host.state.as_deref_mut(), state.host.out)
                 .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
             if matches!(what, Local::Start | Local::Attach { .. }) {
-                state.host.actions.push(name.clone());
+                state.host.actions.push(name.to_owned());
             }
             if matches!(what, Local::Shell(Shell::Exit(_))) {
                 runtime_exit(g, state);
@@ -424,21 +490,23 @@ fn request(
         }
     }
 }
-fn dictionary(
-    g: &mut Interpreter<'_, '_>,
-    state: &Runtime<'_, '_>,
-    args: &[G],
-) -> Result<G, Error> {
-    let top = g.top_level();
+fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> Result<G, Error> {
+    let program = place(g, PROGRAM)?;
+    let words = place(g, WORDS)?;
     let mut entries = Vec::new();
     let wanted = match args {
         [] => None,
         [v] => g.as_string(v)?,
         _ => return Err(g.error("arity-error", args)),
     };
-    let mut names = g.names(&top)?;
-    if let Some(library) = &state.library {
-        names.extend(g.names(&g.kept(library)?)?);
+    let built_in = g.symbol("built-in-names")?;
+    let built_in = g.lookup(&words, &built_in)?.unwrap_or(G::EmptyList);
+    let mut names = g.names(&program)?;
+    names.extend(g.names(&words)?);
+    for name in g.list_items(&built_in)? {
+        if let G::Symbol(name) = name {
+            names.push(name);
+        }
     }
     let mut names = names
         .into_iter()
@@ -450,20 +518,11 @@ fn dictionary(
         if wanted.as_ref().is_some_and(|n| n != &text) {
             continue;
         }
-        let Some(v) = g.lookup(&top, &name)? else {
+        let Some(v) = g.lookup(&program, &name)? else {
             continue;
         };
         let record = g.context(None)?;
-        let original = state
-            .library
-            .as_ref()
-            .map(|kept| g.kept(kept))
-            .transpose()?;
-        let original = match original {
-            Some(context) => g.lookup(&context, &name)?,
-            None => None,
-        };
-        let standard = original.as_ref() == Some(&v);
+        let standard = g.lookup(&words, &name)?.as_ref() == Some(&v);
         let native = if standard { Word::named(&text) } else { None };
         let row = native.map(|word| word.row());
         let doc = if standard {
@@ -531,122 +590,213 @@ fn dictionary(
         g.list(&entries)
     }
 }
-pub(super) fn run(
-    machine: &mut Machine,
-    host: &mut Host<'_>,
-    asks: &mut dyn Asks,
-    stop: Option<&Stop>,
-) -> Result<Vec<Value<Fux>>, Failed> {
-    let mut g = Grift::new().map_err(|_| Failed::new(Code::Memory, "initializing grift"))?;
-    for (name, function) in [
-        (
-            "native-request",
-            request as grift::HostFunction<Runtime<'_, '_>>,
-        ),
-        ("display", output),
-        ("data-text", data_text),
-        ("read-source", read_source),
-        ("finish-source", finish_source),
-        ("native-check-stop", check),
-    ] {
-        let f = g.host_function(name, function).map_err(|e| failed(&g, e))?;
-        g.define(name, f).map_err(|e| failed(&g, e))?;
-    }
-    let mut runtime = Runtime {
-        host,
-        asks,
-        stop,
-        configuring: false,
-        exiting: false,
-        library: None,
-    };
-    let mut definitions = String::new();
-    for word in Word::ALL {
-        let name = word.row().name;
-        if name == "data-text" {
-            continue;
-        }
-        definitions.push_str(&format!(
-            "(define! {name} (lambda! args (apply native-request (pair (quote! {name}) args))))\n"
-        ));
-    }
-    definitions.push_str("(define! kind (lambda! (v) (native-request (quote! kind) v)))\n(define! string (lambda! (v) (native-request (quote! string) v)))\n");
+
+/// Where a program's names live, each a context of its own: `WORDS`, fux's
+/// words and prelude, a child of grift's built-in names; `PROGRAM`, a child
+/// of it, where programs and configs define things; each `BOOKS` library,
+/// another child, so nothing a program defines changes what a library
+/// calls. The host binds them at grift's own top level, which no program
+/// reaches.
+const WORDS: &str = "words";
+const PROGRAM: &str = "program";
+
+/// The libraries, loaded the first time a word of theirs is called: each
+/// its source's name, its text and the words it gives.
+const BOOKS: [(&str, &str); 2] = [
+    ("library.grift", super::LIBRARY),
+    ("sessions.grift", include_str!("sessions.grift")),
+];
+
+fn place<T>(g: &mut Grift<T>, name: &str) -> Result<G, Error> {
     let top = g.top_level();
-    g.evaluate_in(&mut runtime, &top, "native operations", &definitions)
-        .map_err(|e| failed(&g, e))?;
-    g.evaluate_in(&mut runtime, &top, "library.grift", LIBRARY)
-        .map_err(|e| failed(&g, e))?;
-    g.evaluate_in(
-        &mut runtime,
-        &top,
-        "sessions.grift",
-        include_str!("sessions.grift"),
-    )
-    .map_err(|e| failed(&g, e))?;
-    let baseline = g.context(None).map_err(|e| failed(&g, e))?;
-    // Grift publishes its standard names as data; the host owns the only child
-    // context used for programs. Save both sets before user code can shadow them.
-    let built_in_names = g.symbol("built-in-names").map_err(|e| failed(&g, e))?;
-    let built_in_names = g
-        .lookup(&top, &built_in_names)
-        .map_err(|e| failed(&g, e))?
-        .ok_or_else(|| Failed::new(Code::UnknownWord, "built-in-names"))?;
-    let mut names = g.list_items(&built_in_names).map_err(|e| failed(&g, e))?;
-    names.extend(
-        g.names(&top)
-            .map_err(|e| failed(&g, e))?
+    let symbol = g.symbol(name)?;
+    g.lookup(&top, &symbol)?
+        .ok_or_else(|| g.error("unbound-symbol", &[G::Symbol(symbol)]))
+}
+
+/// The context of library `book`, which is evaluated here the first time.
+fn book<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
+    book: usize,
+) -> Result<G, Error> {
+    let Some(&(name, text)) = BOOKS.get(book) else {
+        return Err(g.error("unbound-symbol", &[]));
+    };
+    let top = g.top_level();
+    let symbol = g.symbol(name)?;
+    if let Some(found) = g.lookup(&top, &symbol)? {
+        return Ok(found);
+    }
+    let words = place(g, WORDS)?;
+    let context = g.context(Some(&words))?;
+    g.bind(&top, &G::Symbol(symbol), context.clone())?;
+    g.evaluate_in(state, &context, name, text)?;
+    Ok(context)
+}
+
+/// Calls `name` of a library, not the word in `WORDS` that leads here.
+fn library<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
+    index: usize,
+    name: &str,
+    args: &[G],
+) -> Result<G, Error> {
+    let context = book(g, state, index)?;
+    let symbol = g.symbol(name)?;
+    let found = match g.names(&context)?.contains(&symbol) {
+        true => g.lookup(&context, &symbol)?,
+        false => None,
+    };
+    let Some(f) = found else {
+        return Err(g.error("unbound-symbol", &[G::Symbol(symbol)]));
+    };
+    g.call(state, &f, args)
+}
+
+macro_rules! host_functions {
+    ($($name:literal $function:path;)*) => {
+        fn host_functions<'a, 'b, A: Asks + ?Sized>() -> Vec<(&'static str, grift::HostFunction<Runtime<'a, 'b, A>>)> {
+            vec![$(($name, $function),)*]
+        }
+    };
+}
+host_functions! {
+    "display" output;
+    "data-text" data_text;
+    "read-source" read_source;
+    "finish-source" finish_source;
+    "native-check-stop" check;
+    "kind" kind;
+    "string" text_of;
+}
+
+macro_rules! library_words {
+    ($($index:literal: $($name:literal)*;)*) => {
+        /// Every word the libraries give.
+        #[cfg(test)]
+        pub(super) const LIBRARY_WORDS: &[&str] = &[$($($name,)*)*];
+        fn library_words<'a, 'b, A: Asks + ?Sized>() -> Vec<(&'static str, grift::HostFunction<Runtime<'a, 'b, A>>)> {
+            vec![$($(($name, |g, state, args| library(g, state, $index, $name, args)),)*)*]
+        }
+    };
+}
+library_words! {
+    0: "assert-kind" "information" "all-history" "observed" "shows" "quiet" "until-ended" "grows"
+       "list-session" "me-focused" "outer" "inner" "rename-prompt" "confirm-close" "chooser-row"
+       "chooser-find" "chooser-container-row" "chooser-index" "chooser-selected" "chooser-siblings"
+       "chooser-count" "chooser-path" "chooser-tree" "choose-among" "choose-move" "choose-pane"
+       "edit-history" "batch-events";
+    1: "native-data?" "session-data" "dump-text" "dump-recipe" "dump" "dump-first" "dump-directory"
+       "dump-warnings" "session-find" "restore-create-options" "restore-session" "append-map"
+       "listing" "events";
+}
+
+/// A new interpreter: fux's words and prelude, its libraries not loaded.
+pub fn interpreter<'a, 'b, A: Asks + ?Sized>(
+    state: &mut Runtime<'a, 'b, A>,
+) -> Result<Interpreter<'a, 'b, A>, Failed> {
+    let mut g = Grift::new().map_err(|_| Failed::new(Code::Memory, "initializing grift"))?;
+    let built = (|| {
+        let words = g.private_context()?;
+        // The host's own last: `kind`, `string` and `data-text` take any
+        // grift value, which a word's arguments can't be.
+        for (name, function) in Word::host_functions::<A>()
             .into_iter()
-            .map(G::Symbol),
-    );
-    for name in names {
-        let G::Symbol(name) = name else {
-            return Err(Failed::new(
-                Code::Type,
-                "built-in-names contains a non-symbol",
-            ));
-        };
-        if let Some(value) = g.lookup(&top, &name).map_err(|e| failed(&g, e))? {
-            g.bind(&baseline, &G::Symbol(name), value)
-                .map_err(|e| failed(&g, e))?;
+            .chain(library_words::<A>())
+            .chain(host_functions::<A>())
+        {
+            let function = g.host_function(name, function)?;
+            let name = g.symbol(name)?;
+            g.bind(&words, &G::Symbol(name), function)?;
         }
-    }
-    runtime.library = Some(g.keep(baseline).map_err(|e| failed(&g, e))?);
+        g.evaluate_in(
+            state,
+            &words,
+            "prelude.grift",
+            include_str!("prelude.grift"),
+        )?;
+        let program = g.context(Some(&words))?;
+        g.define(WORDS, words)?;
+        g.define(PROGRAM, program)
+    })();
+    built.map_err(|e| failed(&g, e))?;
     g.seal_library();
-    if let Some(config) = &machine.config {
-        let previous = runtime.host.state.as_deref().cloned();
-        if let Some(draft) = runtime.host.state.as_deref_mut() {
-            *draft = default_state()?.draft();
-        }
-        let context = std::mem::take(&mut runtime.host.context);
-        runtime.configuring = true;
-        runtime.host.files = source::Files::frozen(Arc::clone(config));
-        runtime.host.file = config.path.clone();
-        let loaded = g.evaluate_in(&mut runtime, &top, &config.name, &config.text);
-        runtime.host.context = context;
-        runtime.configuring = false;
-        runtime.host.files = source::Files::sealed();
-        runtime.host.file = None;
-        if let (Some(draft), Some(previous)) = (runtime.host.state.as_deref_mut(), previous) {
-            *draft = previous;
-        }
-        loaded.map_err(|e| failed(&g, e))?;
+    Ok(g)
+}
+
+/// Every library loaded, as a client's worker does ahead of its keys.
+pub fn load_libraries<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
+) -> Result<(), Failed> {
+    for index in 0..BOOKS.len() {
+        book(g, state, index).map_err(|e| failed(g, e))?;
     }
-    if let Some(stop) = stop {
+    Ok(())
+}
+
+/// Evaluates `config` in `g`, on a draft of `defaults` no one keeps: its
+/// definitions stay in `g`, and the client already has its state.
+pub fn replay_config<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
+    config: &Config,
+    defaults: &ClientState,
+) -> Result<(), Failed> {
+    let previous = state.host.state.as_deref().cloned();
+    if let Some(draft) = state.host.state.as_deref_mut() {
+        *draft = defaults.draft();
+    }
+    let context = std::mem::take(&mut state.host.context);
+    let files = std::mem::replace(
+        &mut state.host.files,
+        source::Files::frozen(Arc::clone(config)),
+    );
+    let file = std::mem::replace(&mut state.host.file, config.path.clone());
+    state.configuring = true;
+    state.replaying = true;
+    // A stop is for a run: the worker builds while none is under way.
+    let stop = state.stop.take();
+    let program = place(g, PROGRAM).map_err(|e| failed(g, e))?;
+    let loaded = g.evaluate_in(state, &program, &config.name, &config.text);
+    state.stop = stop;
+    state.host.context = context;
+    state.configuring = false;
+    state.replaying = false;
+    state.host.files = files;
+    state.host.file = file;
+    if let (Some(draft), Some(previous)) = (state.host.state.as_deref_mut(), previous) {
+        *draft = previous;
+    }
+    loaded.map(drop).map_err(|e| failed(g, e))
+}
+
+/// Runs `machine` in `g`, which nothing has run in but a config.
+pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
+    machine: &Machine,
+) -> Result<Vec<Value<Fux>>, Failed> {
+    if let Some(stop) = state.stop {
         stop.check()?;
         if let Ok(mut held) = stop.interrupt.lock() {
             *held = Some(g.interrupter());
         }
     }
-    runtime.host.file = machine.path.clone();
-    let program = if machine.callback {
+    state.host.file = machine.path.clone();
+    let program = place(g, PROGRAM).map_err(|e| failed(g, e))?;
+    let source = if machine.callback {
         let mut args = Vec::new();
         for arg in machine.args.as_deref().unwrap_or_default() {
             let v = callback::value(arg)?;
-            args.push(to_grift(&mut g, &v).map_err(|e| failed(&g, e))?);
+            args.push(to_grift(g, &v).map_err(|e| failed(g, e))?);
         }
-        let args = g.list(&args).map_err(|e| failed(&g, e))?;
-        g.define("callback-arguments", args)
-            .map_err(|e| failed(&g, e))?;
+        let args = g.list(&args).map_err(|e| failed(g, e))?;
+        let name = g.symbol("callback-arguments").map_err(|e| failed(g, e))?;
+        g.bind(&program, &G::Symbol(name), args)
+            .map_err(|e| failed(g, e))?;
         format!(
             "(native-check-stop) (apply {} callback-arguments)",
             machine.source
@@ -661,8 +811,8 @@ pub(super) fn run(
             }
         )
     };
-    let result = g.evaluate_in(&mut runtime, &top, &machine.name, &program);
-    if let Some(stop) = stop
+    let result = g.evaluate_in(state, &program, &machine.name, &source);
+    if let Some(stop) = state.stop
         && let Ok(mut held) = stop.interrupt.lock()
     {
         *held = None;
@@ -670,34 +820,61 @@ pub(super) fn run(
     match result {
         Ok(G::Inert) => Ok(Vec::new()),
         Ok(v) => {
-            if !native_data(&g, &v).unwrap_or(false)
+            if !native_data(g, &v).unwrap_or(false)
                 && let Ok(items) = g.list_items(&v)
             {
                 let mut values = Vec::with_capacity(items.len());
                 for item in items {
-                    values.push(output_value(&mut g, &item).map_err(|e| failed(&g, e))?);
+                    values.push(output_value(g, &item).map_err(|e| failed(g, e))?);
                 }
                 Ok(vec![Value::List(Rc::new(List::new(values)))])
             } else {
-                output_value(&mut g, &v)
+                output_value(g, &v)
                     .map(|v| vec![v])
-                    .map_err(|e| failed(&g, e))
+                    .map_err(|e| failed(g, e))
             }
         }
-        Err(e) if runtime.exiting && g.is_kind(&e, "interrupted").unwrap_or(false) => {
-            Ok(Vec::new())
-        }
+        Err(e) if state.exiting && g.is_kind(&e, "interrupted").unwrap_or(false) => Ok(Vec::new()),
         Err(e) => {
-            let mut f = failed(&g, e);
-            f.actions = runtime.host.actions.clone();
+            let mut f = failed(g, e);
+            f.actions = state.host.actions.clone();
             Err(f)
         }
     }
 }
 
+/// Evaluates bundled `sources` in order in one fresh interpreter.
+pub(super) fn run_sources(
+    sources: &[(&str, &str)],
+    host: &mut Host<'_>,
+    asks: &mut dyn Asks,
+) -> Result<(), Failed> {
+    let mut state = Runtime::new(host, asks, None);
+    let mut g = interpreter(&mut state)?;
+    for (name, text) in sources {
+        evaluate_job(&mut g, &mut state, &Machine::source(name, text))?;
+    }
+    Ok(())
+}
+
+/// Runs `machine` in a new interpreter.
+pub(super) fn run(
+    machine: &Machine,
+    host: &mut Host<'_>,
+    asks: &mut dyn Asks,
+    stop: Option<&Stop>,
+) -> Result<Vec<Value<Fux>>, Failed> {
+    let mut state = Runtime::new(host, asks, stop);
+    let mut g = interpreter(&mut state)?;
+    if let Some(config) = &machine.config {
+        replay_config(&mut g, &mut state, config, &default_state()?)?;
+    }
+    evaluate_job(&mut g, &mut state, machine)
+}
+
 // Typed native values are inert data. Bytes carry checked wire encodings for
 // options and observations; records remain contexts with ordinary grift fields.
-fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
+fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
     Ok(match v {
         Value::Printed(text) => g.string(text)?,
         Value::Float(n) => G::Float(*n),
@@ -747,10 +924,10 @@ fn to_grift(g: &mut Interpreter<'_, '_>, v: &Value<Fux>) -> Result<G, Error> {
         }
     })
 }
-fn from_grift(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error> {
+fn from_grift<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
     from_grift_at(g, v, fux_wire::callback::DEPTH.saturating_add(1))
 }
-fn from_grift_at(g: &mut Interpreter<'_, '_>, v: &G, depth: u8) -> Result<Value<Fux>, Error> {
+fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Error> {
     let Some(depth) = depth.checked_sub(1) else {
         return Err(g.error("too-long", &[v.clone()]));
     };
@@ -992,7 +1169,7 @@ impl Wire for Opt {
     }
 }
 
-fn native_data(g: &Interpreter<'_, '_>, v: &G) -> Result<bool, Error> {
+fn native_data<T>(g: &Grift<T>, v: &G) -> Result<bool, Error> {
     let Some((G::Symbol(tag), _)) = g.as_pair(v)? else {
         return Ok(false);
     };
@@ -1086,7 +1263,7 @@ fn write_data<T>(g: &Grift<T>, value: &G, out: &mut dyn std::fmt::Write) -> std:
     Ok(())
 }
 
-fn output_value(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error> {
+fn output_value<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
     if matches!(
         v,
         G::Integer(_) | G::Boolean(_) | G::String(_) | G::Float(_) | G::Bytes(_) | G::Symbol(_)
@@ -1099,7 +1276,7 @@ fn output_value(g: &mut Interpreter<'_, '_>, v: &G) -> Result<Value<Fux>, Error>
     Ok(Value::Printed(Rc::new(text)))
 }
 
-fn runtime_exit(g: &mut Interpreter<'_, '_>, state: &mut Runtime<'_, '_>) {
+fn runtime_exit<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, state: &mut Runtime<'_, '_, A>) {
     state.exiting = true;
     let mut stop = g.interrupter();
     let _ = stop.stop();

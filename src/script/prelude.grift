@@ -1,0 +1,22 @@
+; The names every program sees: what must evaluate in its caller, kept small,
+; as every command line pays for it. The libraries load on first use.
+(define! none (quote! none))
+(define! code! (vau! (expression) #ignore (list (quote! code) expression)))
+(define! load-forms (lambda! (path caller once)
+  (let! ((loaded (read-source path once)))
+    (when! (not? (empty-list? loaded))
+      (finally! (for-each (lambda! (form) (evaluate form caller)) (first loaded))
+        (finish-source))))))
+(define! include! (vau! (path) caller (load-forms (evaluate path caller) caller #false)))
+(define! require! (vau! (path) caller (load-forms (evaluate path caller) caller #true)))
+(define! print (lambda! (value) (display value "\n")))
+(define! type (lambda! (target text-value) (send-keys (text target text-value))))
+(define! press (lambda! (target key-name) (send-keys (key target key-name))))
+(define! line (lambda! (target text-value) (send-keys (key (text target text-value) "Enter"))))
+; Execute an explicit code form in the receiving caller's context.
+(define! execute! (vau! (code-value . arguments) caller
+  (let! ((code-value (evaluate code-value caller))
+         (values (map (lambda! (argument) (evaluate argument caller)) arguments)))
+    (if! (and!? (pair? code-value) (same? (first code-value) (quote! code)))
+      (apply (evaluate (second code-value) caller) values)
+      (raise (error (quote! type-error) code-value))))))

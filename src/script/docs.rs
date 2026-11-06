@@ -21,6 +21,7 @@ fn read() -> Result<Vec<Doc>, Failed> {
         Grift::new().map_err(|_| Failed::new(Code::Memory, "initializing help reader"))?;
     let mut docs = Vec::new();
     for (file, text) in [
+        ("prelude.grift", include_str!("prelude.grift")),
         ("library.grift", super::LIBRARY),
         ("sessions.grift", include_str!("sessions.grift")),
     ] {
