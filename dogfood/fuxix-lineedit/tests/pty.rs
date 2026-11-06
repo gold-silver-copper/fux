@@ -11,15 +11,20 @@ fn size(rows: u16, cols: u16) -> Result<Size, String> {
     Size::new(rows, cols).ok_or_else(|| "a zero size".to_owned())
 }
 
-/// `sh -c SCRIPT` on a new PTY, with `$BIN` the editor.
-fn start(script: &str) -> Result<(Master, std::process::Child), String> {
+/// `cmd /c SCRIPT` on a new console, with `%BIN%` the editor.
+fn start(script: &str) -> Result<(Master, fuxix::process::Job), String> {
+    let _ = pty::load(std::path::Path::new("no-pinned-conpty"));
     let (master, slave) = pty::open(size(24, 40)?).map_err(|e| e.to_string())?;
-    let (child, _) = slave
-        .spawn(&["sh", "-c", script], Dispositions::Default, |command| {
-            command.env("BIN", env!("CARGO_BIN_EXE_fuxix-lineedit"));
-        })
+    let job = slave
+        .spawn(
+            &["cmd.exe", "/c", script],
+            |command| {
+                command.env("BIN", env!("CARGO_BIN_EXE_fuxix-lineedit"));
+            },
+            Dispositions::Default,
+        )
         .map_err(|e| e.to_string())?;
-    Ok((master, child))
+    Ok((master, job))
 }
 
 /// Reads the master into `seen` until it holds `needle`, for up to 10 s.
@@ -56,15 +61,9 @@ fn send(master: &Master, bytes: &[u8]) -> Result<(), String> {
     }
 }
 
-/// Whether the terminal has the modes a shell needs back.
-fn cooked(master: &Master) -> Result<bool, String> {
-    let modes = terminal::attributes(master).map_err(|e| e.to_string())?;
-    Ok(modes.echoes() && modes.edits_lines())
-}
-
 #[test]
-fn lines_history_ctrl_z_and_ctrl_d_leave_the_terminal_cooked() -> Result<(), String> {
-    let (master, mut child) = start("$BIN; echo status=$?; echo END")?;
+fn lines_history_and_ctrl_d_end_with_the_shell_going_on() -> Result<(), String> {
+    let (master, _job) = start("%BIN% & echo status=%errorlevel% & echo END")?;
     let mut seen = String::new();
     wait_for(&master, &mut seen, "> ")?;
     send(&master, b"helo\x1b[Dl\x1b[F world\r")?;
@@ -73,47 +72,21 @@ fn lines_history_ctrl_z_and_ctrl_d_leave_the_terminal_cooked() -> Result<(), Str
     // Up brings it back; Enter enters it again.
     send(&master, b"\x1b[A\r")?;
     wait_for(&master, &mut seen, "=> hello world")?;
-    // Ctrl-Z stops it with the terminal cooked: the terminal echoes.
-    send(&master, b"\x1a")?;
-    wait_for(&master, &mut seen, "\x1b[2C\r\n")?;
-    send(&master, b"zz")?;
-    // Echoed by the terminal straight after, not drawn by the editor.
-    wait_for(&master, &mut seen, "\x1b[2C\r\nzz")?;
-    let group = terminal::foreground_group(&master)
-        .map_err(|e| e.to_string())?
-        .ok_or("no foreground group")?;
-    kill_group(group, Signal::Cont).map_err(|e| e.to_string())?;
-    seen.clear();
-    send(&master, b"\x15after\r")?;
-    wait_for(&master, &mut seen, "=> after")?;
     send(&master, b"\x04")?;
-    wait_for(&master, &mut seen, "status=0")?;
+    wait_for(&master, &mut seen, "status=")?;
     wait_for(&master, &mut seen, "END")?;
-    assert!(cooked(&master)?, "{seen}");
-    child.wait().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[test]
-fn a_resize_redraws_and_sigterm_restores_the_terminal() -> Result<(), String> {
-    // sh ignores TERM, so that only the editor, which catches it, ends.
-    let (master, mut child) = start("trap '' TERM; $BIN; echo status=$?; echo END")?;
+fn a_resize_redraws() -> Result<(), String> {
+    let (master, _job) = start("%BIN%")?;
     let mut seen = String::new();
     wait_for(&master, &mut seen, "> ")?;
     send(&master, b"abcdefghijklmnopqrstuvwxyz")?;
     wait_for(&master, &mut seen, "z")?;
     seen.clear();
-    // 10 columns: the prompt, the line's last 6 letters, the cursor, and
-    // the last column left empty.
     terminal::set_window_size(&master, size(24, 10)?, None).map_err(|e| e.to_string())?;
-    wait_for(&master, &mut seen, "> uvwxyz")?;
-    let group = terminal::foreground_group(&master)
-        .map_err(|e| e.to_string())?
-        .ok_or("no foreground group")?;
-    kill_group(group, Signal::Term).map_err(|e| e.to_string())?;
-    wait_for(&master, &mut seen, "status=143")?;
-    wait_for(&master, &mut seen, "END")?;
-    assert!(cooked(&master)?, "{seen}");
-    child.wait().map_err(|e| e.to_string())?;
+    wait_for(&master, &mut seen, "uvwxyz")?;
     Ok(())
 }

@@ -90,9 +90,10 @@ enum End {
 }
 
 fn main() -> ExitCode {
-    let result = args().and_then(|args| match terminal::attributes(std::io::stdin()) {
-        Ok(_) => edit_lines(&args),
-        Err(_) => plain_lines(&args),
+    fuxix::terminal::open_stdio();
+    let result = args().and_then(|args| match fuxix::terminal::on_one_terminal() {
+        true => edit_lines(&args),
+        false => plain_lines(&args),
     });
     match result {
         Ok(End::Done) => ExitCode::SUCCESS,
@@ -126,21 +127,13 @@ fn plain_lines(args: &Args) -> Result<End, String> {
 
 /// The terminal's width, read again for each draw.
 fn cols() -> u16 {
-    terminal::window_size(std::io::stdout()).map_or(80, |(size, _)| size.cols.get())
+    terminal::stdin_size().map_or(80, |(size, _)| size.cols.get())
 }
 
 fn write_out(bytes: &str) -> Result<(), String> {
     let mut out = std::io::stdout().lock();
     (out.write_all(bytes.as_bytes()).and_then(|()| out.flush()))
         .map_err(|e| format!("writing: {e}"))
-}
-
-/// This process.
-fn me() -> Result<Pid, String> {
-    i32::try_from(std::process::id())
-        .ok()
-        .and_then(Pid::from_raw)
-        .ok_or_else(|| "no pid".to_owned())
 }
 
 /// How long a lone ESC waits for the rest of a sequence.
@@ -151,7 +144,7 @@ fn edit_lines(args: &Args) -> Result<End, String> {
         fuxix::signal::Pipe::new(&[Signal::Winch, Signal::Term, Signal::Hup, Signal::Int])
             .map_err(|e| format!("signals: {e}"))?;
     let mut editor = Editor::with_history(load_history(args.history.as_deref())?);
-    let raw_mode = || Raw::enter_draining(std::io::stdin()).map_err(|e| format!("raw mode: {e}"));
+    let raw_mode = || Raw::enter(std::io::stdin()).map_err(|e| format!("raw mode: {e}"));
     let mut raw = Some(raw_mode()?);
     let mut pending: Vec<u8> = Vec::new();
     let mut buffer = [0u8; 1024];
@@ -221,12 +214,7 @@ fn edit_lines(args: &Args) -> Result<End, String> {
                 }
                 Action::ClearScreen => write_out("\x1b[H\x1b[2J")?,
                 Action::Suspend => {
-                    // Cooked before the line ends, so what is typed after it echoes.
-                    drop(raw.take());
-                    write_out("\n")?;
-                    kill(me()?, Signal::Stop).map_err(|e| format!("stopping: {e}"))?;
-                    // Running again: the terminal may have been changed meanwhile.
-                    raw = Some(raw_mode()?);
+                    // Windows has no stop: Ctrl-Z redraws the line.
                 }
             }
             write_out(&editor.render(&args.prompt, cols()))?;
