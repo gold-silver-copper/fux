@@ -83,9 +83,6 @@ impl Code {
     pub fn all() -> impl Iterator<Item = Code> {
         Self::ALL.iter().copied()
     }
-    pub fn of(code: Code) -> Code {
-        code
-    }
 }
 impl std::fmt::Display for Code {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -185,3 +182,30 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::Code;
+
+    /// Every code has a name of its own that reads back as it, and
+    /// docs/records.md's list of failures names each, and no other.
+    #[test]
+    fn every_code_has_its_own_name_and_the_docs_list_it() {
+        let docs = include_str!("../../docs/records.md");
+        let errors = docs.split("## Failures").nth(1).unwrap_or_default();
+        // The list: from its first item to the blank line after it.
+        let list = errors.split("\n- ").skip(1).collect::<Vec<_>>().join(" ");
+        let list = list.split("\n\n").next().unwrap_or_default();
+        // What is quoted: every other piece between backquotes.
+        let quoted = list.split('`').enumerate().filter(|(i, _)| i % 2 == 1);
+        let listed: std::collections::BTreeSet<&str> = quoted.map(|(_, name)| name).collect();
+        let mut names = std::collections::BTreeSet::new();
+        for (i, code) in Code::all().enumerate() {
+            assert_eq!(code.name().parse(), Ok(code), "{code:?}");
+            let named = Code::all().skip(i + 1).any(|c| c.name() == code.name());
+            assert!(!named, "{code:?} shares its name");
+            names.insert(code.name());
+        }
+        assert_eq!(listed, names, "docs/records.md's Failures and fux's codes");
+    }
+}

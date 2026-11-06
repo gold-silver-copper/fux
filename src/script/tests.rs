@@ -1126,6 +1126,20 @@ fn a_long_run_tells_its_first_and_latest_steps() -> TestResult {
     Ok(())
 }
 
+/// A kind fux has no code for is no failure of fux's: it is the program's,
+/// and keeps its name. One fux has is that code.
+#[test]
+fn an_unknown_kind_is_the_programs_failure() {
+    let raised = |kind: &str| {
+        let source = format!("(raise (error (quote! {kind})))");
+        evaluate(&source, None, &mut NoRequests, &mut Vec::new()).err()
+    };
+    let failed = raised("nosuch");
+    assert_eq!(failed.as_ref().map(|f| f.code), Some(Code::Fail));
+    assert_eq!(failed.and_then(|f| f.kind).as_deref(), Some("nosuch"));
+    assert_eq!(raised("closed").map(|f| f.code), Some(Code::Closed));
+}
+
 /// A list stays a list though it looks like a record, and what a program
 /// leaves prints as data that reads back whole.
 #[test]

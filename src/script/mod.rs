@@ -1053,13 +1053,13 @@ pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
             .in_run(run)
             .map_err(callback_failed)?,
         Body::Snapshot(snapshot) => {
-            record::snapshot(*snapshot).map_err(|e| Failed::new(Code::of(e.code), e.message))?
+            record::snapshot(*snapshot).map_err(|e| Failed::new(e.code, e.message))?
         }
         Body::Events(batch) => {
-            record::events(*batch).map_err(|e| Failed::new(Code::of(e.code), e.message))?
+            record::events(*batch).map_err(|e| Failed::new(e.code, e.message))?
         }
         Body::Field(json) => {
-            record::pane_fact(&json, run).map_err(|e| Failed::new(Code::of(e.code), e.message))?
+            record::pane_fact(&json, run).map_err(|e| Failed::new(e.code, e.message))?
         }
         // Its code values kept as their words, which `execute` compiles.
         Body::Read(data) => callback::value(&data)?,
@@ -1136,7 +1136,7 @@ fn local(
                 creation.name = committed.attach.name.clone();
             }
             words::check_attach_creation(&creation, target.is_some(), *read_only)
-                .map_err(|why| Failed::new(Code::of(why.code), why.message))?;
+                .map_err(|why| Failed::new(why.code, why.message))?;
             // Watching or naming a run starts no replacement server.
             let (socket, notices) = match *read_only || of.is_some() {
                 true => (server.socket()?, Vec::new()),
@@ -1173,7 +1173,7 @@ fn local(
             let status =
                 crate::status(&socket, &probe).map_err(|why| Failed::new(Code::NoServer, why))?;
             return Ok(vec![
-                record::from_json(&status).map_err(|e| Failed::new(Code::of(e.code), e.message))?,
+                record::from_json(&status).map_err(|e| Failed::new(e.code, e.message))?,
             ]);
         }
     }
