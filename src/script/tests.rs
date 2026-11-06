@@ -142,8 +142,7 @@ fn only_the_command_line_asks_its_process() -> TestResult {
 fn the_default_keys_are_a_config_list_keys_prints() -> TestResult {
     let defaults = default_state()?;
     let source = defaults.keys.describe();
-    let path = std::env::temp_dir()
-        .join(format!("default-keys-{}.grift", std::process::id()));
+    let path = std::env::temp_dir().join(format!("default-keys-{}.grift", std::process::id()));
     std::fs::write(&path, &source)?;
     let state = run_file(&path);
     std::fs::remove_file(path)?;
@@ -962,4 +961,43 @@ fn a_callback_fails_at_the_line_it_was_written() -> TestResult {
     assert!(failed.message.contains("nosuch"), "{failed}");
     assert!(failed.message.contains("at test:3"), "{failed}");
     Ok(())
+}
+
+/// What a program prints reads back as the same values: a handle keeps its
+/// server run through `read-form`, and a stale one is still refused.
+#[test]
+fn printed_data_reads_back_with_its_run() -> TestResult {
+    let run: Run = "3-4".parse().map_err(|()| "run")?;
+    let source = format!(
+        "(define! held (quote! %3:{run}))
+         (define! text (data-text (list held (list (quote! id) held))))
+         (define! again (first (read-form text 0)))
+         (list (same? (first again) held) (string (first again)) text)"
+    );
+    let values = evaluate(&source, None, &mut NoRequests, &mut Vec::new())?;
+    let [Value::List(items)] = values.as_slice() else {
+        return Err("no list".into());
+    };
+    let said: Vec<String> = items.items().iter().filter_map(|v| v.text().ok()).collect();
+    assert_eq!(said.first().map(String::as_str), Some("#true"), "{said:?}");
+    assert_eq!(said.get(1).map(String::as_str), Some("%3"), "{said:?}");
+    assert!(said.get(2).is_some_and(|t| t.contains(":3-4")), "{said:?}");
+    // Held in a client of another server run, it is refused.
+    let other: Run = "5-6".parse().map_err(|()| "run")?;
+    let context = Context {
+        of: Some(other),
+        ..Context::default()
+    };
+    let mut out = Vec::new();
+    let mut host = Host::new(context, None, &mut out);
+    let mut machine = Machine::source("test", &format!("(zoom (quote! %3:{run}))"));
+    let failed = run_program(&mut machine, &mut host)
+        .err()
+        .ok_or("another run's handle got through")?;
+    assert!(failed.message.contains("different server runs"), "{failed}");
+    Ok(())
+}
+
+fn run_program(machine: &mut Machine, host: &mut Host<'_>) -> Result<Vec<Value<Fux>>, Failed> {
+    run(machine, host, &mut NoRequests, None)
 }

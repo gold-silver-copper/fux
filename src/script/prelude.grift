@@ -9,6 +9,9 @@
         (finish-source))))))
 (define! include! (vau! (path) caller (load-forms (evaluate path caller) caller #false)))
 (define! require! (vau! (path) caller (load-forms (evaluate path caller) caller #true)))
+; (bind! CHORD LABEL GROUP (code! BODY)): a binding, kept together in one form.
+(define! bind! (lambda! (chord caption heading body)
+  (bind-key chord body) (label caption) (group heading)))
 (define! print (lambda! (value) (display value "\n")))
 (define! type (lambda! (target text-value) (send-keys (text target text-value))))
 (define! press (lambda! (target key-name) (send-keys (key target key-name))))
