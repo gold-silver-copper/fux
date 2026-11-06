@@ -278,7 +278,9 @@ mod tests {
         }
         f.write("f1000.fux", "str last print")?;
         let printed = std::thread::Builder::new()
-            .stack_size(128 << 10)
+            // Windows' debug frames are larger: its stack still holds far
+            // fewer calls than the chain is long.
+            .stack_size(if cfg!(windows) { 512 << 10 } else { 128 << 10 })
             .spawn(move || run(&root).map_err(|e| e.to_string()))?
             .join()
             .map_err(|_| "reading overflowed its stack")??;
