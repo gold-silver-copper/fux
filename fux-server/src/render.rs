@@ -2586,6 +2586,8 @@ mod tests {
     /// whose rows are numbered from the start again: a grid composed
     /// again from its memo shows the new screen, not the rows of the old
     /// one that had the same numbers and versions.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_respawned_pane_is_composed_anew() -> Result<(), String> {
         let (mut s, c) = crate::session::testing::attached(6, 30)?;

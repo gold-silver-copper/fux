@@ -1623,6 +1623,13 @@ fn last_frames(
 mod tests {
     use super::*;
 
+    /// A socket no server is at, absolute on each OS.
+    const NOWHERE: &str = if cfg!(windows) {
+        r"C:\nowhere\fux\s.sock"
+    } else {
+        "/nowhere/fux/s.sock"
+    };
+
     fn new_keyboard(
         socket: &SocketPath,
         state: ClientState,
@@ -1639,7 +1646,7 @@ mod tests {
 
     fn keyboard(read_only: bool) -> Result<Keyboard, Box<dyn std::error::Error>> {
         new_keyboard(
-            &socket::checked("/nowhere/fux/s.sock", "test")?,
+            &socket::checked(NOWHERE, "test")?,
             script::default_state().map_err(|e| e.to_string())?,
             read_only,
         )
@@ -1692,7 +1699,7 @@ mod tests {
     #[test]
     fn decoder_timing_belongs_to_each_client_and_waits_for_idle()
     -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let socket = socket::checked(NOWHERE, "test")?;
         let mut a = script::default_state().map_err(|e| e.to_string())?;
         let b = a.clone();
         a.preferences.escape_delay = fux_wire::command::DecodeMillis::new(100).ok_or("delay")?;
@@ -1843,7 +1850,7 @@ mod tests {
     /// preceding acts still belong to the local transport.
     #[test]
     fn a_binding_emits_its_job_after_prior_keys() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let socket = socket::checked(NOWHERE, "test")?;
         let mut state = script::default_state().map_err(|e| e.to_string())?;
         state.keys.bind(
             &[KeyPress::char('y')],
@@ -2131,7 +2138,7 @@ mod tests {
     /// split them: the cancel is checked at each key, not at a read's end.
     #[test]
     fn a_stop_is_the_same_however_the_reads_split() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let socket = socket::checked(NOWHERE, "test")?;
         let mut state = script::default_state().map_err(|e| e.to_string())?;
         let forever = crate::keymap::Binding::new(crate::testing::code("begin false until"));
         state.keys.bind(&[KeyPress::char('y')], forever)?;

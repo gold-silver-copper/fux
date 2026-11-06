@@ -874,7 +874,7 @@ impl<'a> PaneMut<'a> {
         self.pane.input.advance(n);
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         self.pane.set_process(process)
     }
@@ -1707,7 +1707,7 @@ impl Pane {
     }
 
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         std::mem::replace(&mut self.process, process)
     }

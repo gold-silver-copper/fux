@@ -67,7 +67,8 @@ mod windows {
     /// The pinned ConPTY, as `tests/conpty.rs` gets it.
     fn load() -> Outcome {
         const PACKAGE: &str = "microsoft.windows.console.conpty.1.25.260930003.nupkg";
-        let folder = Path::new(env!("CARGO_TARGET_TMPDIR")).join("console-conpty");
+        let run = std::process::id();
+        let folder = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("conpty-{run}"));
         std::fs::create_dir_all(&folder).map_err(text)?;
         if let Some(package) = std::env::var_os("FUXIX_CONPTY_PACKAGE") {
             std::fs::copy(package, folder.join(PACKAGE)).map_err(text)?;
@@ -81,28 +82,25 @@ mod windows {
             say!("the ConPTY: {why}");
             return ExitCode::FAILURE;
         }
-        let mut failed = false;
-        for (name, test) in [
-            ("a_panic_puts_the_console_back", panic as fn() -> Outcome),
-            ("a_close_no_pipe_asked_for_puts_it_back", close),
-        ] {
-            let outcome = test();
-            match &outcome {
-                Ok(()) => say!("test {name} ... ok"),
-                Err(why) => say!("test {name} ... FAILED: {why}"),
+        let name = "what_ends_a_process_unasked_puts_the_console_back";
+        match panic().and_then(|()| close()) {
+            Ok(()) => {
+                say!("test {name} ... ok");
+                ExitCode::SUCCESS
             }
-            failed |= outcome.is_err();
-        }
-        match failed {
-            true => ExitCode::FAILURE,
-            false => ExitCode::SUCCESS,
+            Err(why) => {
+                say!("test {name} ... FAILED: {why}");
+                ExitCode::FAILURE
+            }
         }
     }
 
     fn log(name: &str) -> Result<PathBuf, String> {
-        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("console-{name}.log"));
-        let _ = std::fs::remove_file(&path);
-        Ok(path)
+        // Of this run alone: another user's can't be cleared away, and
+        // would read as this one's.
+        let run = std::process::id();
+        let path = format!("console-{name}-{run}.log");
+        Ok(Path::new(env!("CARGO_TARGET_TMPDIR")).join(path))
     }
 
     fn lines(path: &Path) -> Vec<String> {

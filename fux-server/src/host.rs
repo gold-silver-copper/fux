@@ -1531,7 +1531,7 @@ impl Host {
         self.respawning.is_some()
     }
     /// Its ended program's last output is awaited till `at`.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn settle_till(&mut self, at: Instant) {
         self.settling = Some(at);
     }
@@ -1550,7 +1550,7 @@ impl Host {
         }
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         self.pane_mut().set_process(process)
     }
@@ -1567,7 +1567,7 @@ impl Host {
         Some((r.process.child(), r.fresh.history_bytes()))
     }
     /// The program a respawn under way respawns over is `old`.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn respawned_over(&mut self, old: Child) {
         if let Some(r) = &mut self.respawning {
             r.old = Some(old);
@@ -1575,7 +1575,7 @@ impl Host {
     }
     /// A respawn under way over `old`, into `fresh`, its grace over: as
     /// one over a program that ignores the hangup.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn respawning_over(&mut self, fresh: Pane, old: Child, now: Instant) {
         if let Process::Reading(child) = self.set_process(Process::Respawning) {
             self.dying.push(Dying {
@@ -1595,7 +1595,7 @@ impl Host {
         });
     }
     /// The programs it started and has not reaped.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn children(&self) -> Vec<Pid> {
         (self.pane.process().child().into_iter())
             .chain(
@@ -2146,6 +2146,8 @@ mod tests {
     use super::*;
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn an_unknown_fux_path_is_not_taken_from_the_starter() -> TestResult {
         let launch = pane::Launch {

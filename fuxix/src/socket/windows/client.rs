@@ -371,7 +371,9 @@ impl State {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let state = self.lock();
+        let mut state = self.lock();
+        // Unregistered here: `read_done` closes before `state` drops.
+        state.wait = None;
         if state.pending {
             let mut got = 0u32;
             let handle = self.handle.as_raw_handle();
