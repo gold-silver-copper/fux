@@ -282,6 +282,13 @@ fn a_bad_config_is_reported() -> Outcome {
         failed.to_string().contains("config.grift:2") && failed.to_string().contains("frobnicate"),
         "{failed}"
     );
+    // A failed config's settings are thrown away, so none took effect.
+    std::fs::write(&config, "(set \"titles\" #true)\n(panes (all))\n").map_err(e)?;
+    let failed = fux::script::run_file(&config)
+        .err()
+        .ok_or("a config asked the server")?;
+    assert_eq!(failed.kind.as_deref(), Some("not-config"), "{failed}");
+    assert_eq!(failed.actions, Vec::<String>::new(), "{failed}");
     let later = r#"(move-keys "C-b" "C-a")
         (bind-key "C-a v" (code! (lambda! () (sr) #inert)))
         (define! sr (lambda! () (zoom (focused (me)))))"#;
