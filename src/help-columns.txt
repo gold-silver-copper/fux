@@ -1,0 +1,4 @@
+
+Each operation's column reads `takes -- gives`; a request must reach an action.
+wait and send-keys leave an answer for a pane, and answers for a tab or
+workspace (send-keys: or a client), which no word that wants a pane takes.

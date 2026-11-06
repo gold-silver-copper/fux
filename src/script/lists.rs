@@ -19,7 +19,7 @@ fn words_list_is_current() -> Result<(), String> {
     let docs = super::docs().map_err(|e| e.to_string())?;
     lines.extend(docs.iter().map(|d| format!("{} {}", d.name, d.parameters)));
     lines.push("## grift's standard names".to_owned());
-    lines.extend(super::language().map_err(|e| e.to_string())?.iter().cloned());
+    lines.extend(super::language().map_err(|e| format!("{e:?}"))?);
     lines.push("## what fux adds to the language".to_owned());
     lines.extend(super::HOST.iter().map(|(name, _)| (*name).to_owned()));
     let head = format!(

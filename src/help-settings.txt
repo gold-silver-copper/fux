@@ -1,0 +1,22 @@
+
+Shell, history-bytes, program-clipboard, reflow, alternate-scroll-lines and
+picture-bytes supply this client's future launches. Use (history-budget PANE
+BYTES) to change one pane. Bell, titles, terminal-clipboard, cell-placement,
+styles, bar, bar-slots and show-column affect only this client's view: supplied
+with attach, then updated after local commits before following requests.
+Escape-delay-ms and paste-timeout-ms change at an idle decoder boundary.
+Journal-entries sizes the journal of a server this client starts ((start), or
+an attach that finds none); a running server keeps its own. Setters and config
+evaluation send no requests.
+
+Styles rows: (role foreground background flags...); roles: bar tab keys notice
+error panel border border-focus. Colours: 0..255, default, #rrggbb. Flags: bold
+dim italic underline. A subset changes only its supplied roles.
+Bar: (top/bottom/off (left fields) (right fields) tab-numbers?). Fields:
+workspace tabs pane (slot 0..15); each once. Native notices, prefix/repeat/zoom
+hints and clipping remain authoritative. Off, the default, takes no row: the bar
+overlays the bottom pane row while a screen shows (the prefix's too), other
+feedback its corner; no PTY resizes. Bar-slots replaces all slots: (0..15 text)
+rows, each slot once, text with no controls. Text is inert. No paint-time
+programs or added timers. (set "show-column" #false) hides the body, retaining
+dispatch, Escape and feedback.

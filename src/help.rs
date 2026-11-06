@@ -7,44 +7,11 @@ pub const RECORDS: &str = include_str!("../docs/records.md");
 const LANGUAGE: &str = "https://github.com/gold-silver-copper/grift/blob/pure/docs/LANGUAGE.md";
 pub fn overview() -> String {
     let from_opts = crate::script::from_opts("and");
-    let mut text = format!(
-        "fux: a terminal multiplexer configured and driven in grift
-
-usage: fux '(operation arguments...)' STRING...
-       fux --file FILE STRING...
-       fux -
-       fux                 attach this terminal
-
-A command line is one quoted grift program. Following shell arguments are strings
-from (arguments). Records print as grift data; ask for fields with (get record \"field\").
-Example: fux '(split (axis (pane 3) \"horizontal\"))'
-Example: fux '(line (pane 3) \"ls -l\")'
-
-What an operation takes (options, keys, what to read) goes around the pane it
-acts on: `(send-keys (text (pane 2) \"y\"))`, `(capture (all-history (pane 2)))`;
-only {from_opts} start from (options):
-`(new-tab (argument (program (in (options) \"jobs\") \"make\") \"test\"))`. A new pane
-is laid out on a size given (`(size (options) 80 24)`), else the caller's own
-screen or tab (fux run in a pane): run from outside fux, a size must be given,
-as fux makes none up. An action answers at once, with its pane's version from
-before it acted (`%2:0.57.0.3.0:RUN`); `(wait (changed V))` waits in V's pane
-until its version differs from V, for as long as that takes unless
-`(wait (timeout (changed V) SECS))` bounds it, failing `timeout`.
-
-The language is grift. `(explain NAME)` says where each of its own names is
-described:
-",
-    );
-    let language = crate::script::language().unwrap_or_default();
-    text.push_str(&wrapped(language.iter().cloned(), "  ", 79));
-    text.push_str(
-        "
-
-Each operation's column reads `takes -- gives`; a request must reach an action.
-wait and send-keys leave an answer for a pane, and answers for a tab or
-workspace (send-keys: or a client), which no word that wants a pane takes.
-",
-    );
+    let mut text = include_str!("help-usage.txt").replace("FROM_OPTIONS", &from_opts);
+    for names in crate::script::language().unwrap_or_default().chunks(6) {
+        text.push_str(&format!("  {}\n", names.join(" ")));
+    }
+    text.push_str(include_str!("help-columns.txt"));
     for (name, said) in crate::script::NAMES {
         text.push_str(&format!("  {name}: {said}.\n"));
     }
@@ -56,8 +23,10 @@ workspace (send-keys: or a client), which no word that wants a pane takes.
             group = Some(row.group);
             text.push_str(&format!("\n{}:\n", row.group.name()));
         }
-        let (name, effect, about) = (row.name, row.effect, row.about);
-        text.push_str(&format!("  {name:<22} {effect:<28} {about}\n"));
+        text.push_str(&format!(
+            "  {:<22} {:<28} {}\n",
+            row.name, row.effect, row.about
+        ));
     }
     if let Ok(docs) = crate::script::docs() {
         text.push_str("\nLibrary operations:\n");
@@ -69,54 +38,11 @@ workspace (send-keys: or a client), which no word that wants a pane takes.
     text
 }
 
-/// `words` joined by blanks, in lines each begun with `start` and at most
-/// `width` columns long, the line end included.
-fn wrapped(words: impl Iterator<Item = String>, start: &str, width: usize) -> String {
-    let (mut out, mut line) = (String::new(), String::from(start));
-    for word in words {
-        if line.len() > start.len() {
-            if line.chars().count().saturating_add(word.chars().count()) >= width {
-                out.push_str(&line);
-                out.push('\n');
-                line = String::from(start);
-            } else {
-                line.push(' ');
-            }
-        }
-        line.push_str(&word);
-    }
-    out + &line
-}
-
 /// What holds for every program: how one fails, and where its server is.
 fn how_it_runs() -> String {
-    let shebang = crate::script::SHEBANG;
-    let socket = fux_server::socket::SOCKET_HELP;
-    format!(
-        "
-A file of grift runs with `fux --file FILE`, or as a script ({shebang}).
-A file is read whole before it runs: one whose later form doesn't read runs
-none of its forms.
-
-A failure prints nothing more on stdout: `fux: KIND: MESSAGE` on stderr, each
-action that already took effect after it, as `fux: already took effect: (CALL)`.
-A program isn't undone: what ran before its failure stays done. Exit statuses:
-  0    done, or what (exit N) gave
-  1    refused: anything else that failed
-  2    a mistake in the program
-  4    closed: the pane waited on closed
-  124  timeout: a wait's limit came first
-  141  stdout's reader went (a closed pipe), said nowhere
-
-The server: FUX_SOCKET's socket {socket} Nothing is saved on its own:
-`fux '(dump (all))' > FILE` saves the layouts and launches when you choose
-(never what a process held), and `fux '(start)'`, then `fux --file FILE`, makes
-them again on a fresh server.
-
-Driving programs from a script or an agent: `fux '(explain \"agents\")'`; one
-operation: `fux '(explain \"split\")'`; recipes: `fux '(explain \"cookbook\")'`.
-"
-    )
+    include_str!("help-running.txt")
+        .replace("SHEBANG", crate::script::SHEBANG)
+        .replace("SOCKET", fux_server::socket::SOCKET_HELP)
 }
 
 /// Every setting `set` takes, what each takes and does, and the bundled
@@ -127,29 +53,7 @@ fn settings(out: &mut String) {
         let about = about.split_whitespace().collect::<Vec<_>>().join(" ");
         out.push_str(&format!("  {name}: {takes}\n      {about}\n"));
     }
-    out.push_str("
-Shell, history-bytes, program-clipboard, reflow, alternate-scroll-lines and
-picture-bytes supply this client's future launches. Use (history-budget PANE
-BYTES) to change one pane. Bell, titles, terminal-clipboard, cell-placement,
-styles, bar, bar-slots and show-column affect only this client's view: supplied
-with attach, then updated after local commits before following requests.
-Escape-delay-ms and paste-timeout-ms change at an idle decoder boundary.
-Journal-entries sizes the journal of a server this client starts ((start), or
-an attach that finds none); a running server keeps its own. Setters and config
-evaluation send no requests.
-
-Styles rows: (role foreground background flags...); roles: bar tab keys notice
-error panel border border-focus. Colours: 0..255, default, #rrggbb. Flags: bold
-dim italic underline. A subset changes only its supplied roles.
-Bar: (top/bottom/off (left fields) (right fields) tab-numbers?). Fields:
-workspace tabs pane (slot 0..15); each once. Native notices, prefix/repeat/zoom
-hints and clipping remain authoritative. Off, the default, takes no row: the bar
-overlays the bottom pane row while a screen shows (the prefix's too), other
-feedback its corner; no PTY resizes. Bar-slots replaces all slots: (0..15 text)
-rows, each slot once, text with no controls. Text is inert. No paint-time
-programs or added timers. (set \"show-column\" #false) hides the body, retaining
-dispatch, Escape and feedback.
-");
+    out.push_str(include_str!("help-settings.txt"));
     out.push_str("\nBundled initialization (client-defaults.grift):\n");
     out.push_str(crate::script::DEFAULTS);
 }
@@ -217,9 +121,10 @@ fn language(name: &str) -> Option<String> {
         return Some(format!("{name}\n{about}\n"));
     }
     let names = crate::script::language().ok()?;
-    names.iter().any(|known| known == name).then(|| {
-        format!("{name}\nOne of grift's own names: {LANGUAGE} says what it does.\n")
-    })
+    names
+        .iter()
+        .any(|known| known == name)
+        .then(|| format!("{name}\nOne of grift's own names: {LANGUAGE} says what it does.\n"))
 }
 fn guide(name: &str) -> Option<String> {
     match name {
@@ -249,9 +154,9 @@ fn guide(name: &str) -> Option<String> {
 mod unbound;
 #[cfg(test)]
 mod tests {
+    use super::unbound::unbound;
     use super::*;
     use crate::script::{Act, Opt};
-    use super::unbound::unbound;
 
     /// The names any program sees: fux's, its libraries' and grift's.
     fn known(name: &str) -> bool {
@@ -295,7 +200,10 @@ mod tests {
             assert!(explain(&doc.name).is_some(), "{}", doc.name);
         }
         // Each word's options go on what it takes.
-        for (name, on) in [("send-keys", "around the pane"), ("new-tab", "around (options)")] {
+        for (name, on) in [
+            ("send-keys", "around the pane"),
+            ("new-tab", "around (options)"),
+        ] {
             let explained = explain(name).unwrap_or_default();
             assert!(explained.contains(&format!("options, {on}")), "{explained}");
         }

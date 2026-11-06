@@ -1,0 +1,25 @@
+fux: a terminal multiplexer configured and driven in grift
+
+usage: fux '(operation arguments...)' STRING...
+       fux --file FILE STRING...
+       fux -
+       fux                 attach this terminal
+
+A command line is one quoted grift program. Following shell arguments are strings
+from (arguments). Records print as grift data; ask for fields with (get record "field").
+Example: fux '(split (axis (pane 3) "horizontal"))'
+Example: fux '(line (pane 3) "ls -l")'
+
+What an operation takes (options, keys, what to read) goes around the pane it
+acts on: `(send-keys (text (pane 2) "y"))`, `(capture (all-history (pane 2)))`;
+only FROM_OPTIONS start from (options):
+`(new-tab (argument (program (in (options) "jobs") "make") "test"))`. A new pane
+is laid out on a size given (`(size (options) 80 24)`), else the caller's own
+screen or tab (fux run in a pane): run from outside fux, a size must be given,
+as fux makes none up. An action answers at once, with its pane's version from
+before it acted (`%2:0.57.0.3.0:RUN`); `(wait (changed V))` waits in V's pane
+until its version differs from V, for as long as that takes unless
+`(wait (timeout (changed V) SECS))` bounds it, failing `timeout`.
+
+The language is grift. `(explain NAME)` says where each of its own names is
+described:

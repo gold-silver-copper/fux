@@ -2686,8 +2686,14 @@ mod tests {
             ),
             (Code::Type, r#"(wait (timeout (client "c1") 0))"#.to_owned()),
             (Code::Type, r#"(kill "x")"#.to_owned()),
-            (Code::Type, r#"(split (axis "nope" "horizontal"))"#.to_owned()),
-            (Code::Unused, format!("(wait (timeout (expect {version}) 0))")),
+            (
+                Code::Type,
+                r#"(split (axis "nope" "horizontal"))"#.to_owned(),
+            ),
+            (
+                Code::Unused,
+                format!("(wait (timeout (expect {version}) 0))"),
+            ),
             (
                 Code::Unused,
                 format!(r#"(send-keys (text (changed {version}) "x"))"#),
@@ -2706,7 +2712,13 @@ mod tests {
             ),
         ];
         // all-history's guard, whatever comes after it.
-        for target in ["(options)", "(tab 1)", "(workspace 1)", r#"(client "c1")"#, "1"] {
+        for target in [
+            "(options)",
+            "(tab 1)",
+            "(workspace 1)",
+            r#"(client "c1")"#,
+            "1",
+        ] {
             cases.push((Code::Type, format!("(all-history {target})")));
         }
         for call in [
@@ -2746,7 +2758,9 @@ mod tests {
                 || text != "before\n"
             {
                 let failed = failed.map(|f| f.to_string()).unwrap_or_default();
-                wrong.push(format!("{expression}: {failed}, {asked} asked, printed {text:?}"));
+                wrong.push(format!(
+                    "{expression}: {failed}, {asked} asked, printed {text:?}"
+                ));
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));

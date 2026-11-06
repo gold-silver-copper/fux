@@ -1701,11 +1701,6 @@ impl Pane {
         end
     }
 
-    /// Its process, as it is closed.
-    pub fn into_process(self) -> Process {
-        self.process
-    }
-
     /// Gives it `process`, as a test's pane runs a child of the test's.
     #[cfg(all(test, unix))]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {

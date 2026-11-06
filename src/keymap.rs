@@ -12,8 +12,8 @@
 //! fresh, each time its keys are typed, the client itself its `me`. The default
 //! bindings are a config too, `script/keys.grift`, run on `Keymap::default`
 //! before the user's.
-use crate::script::quoted;
 use crate::screens::{Effect, HIDE};
+use crate::script::quoted;
 use fux_vt::keys::{Key, KeyPress, Keystroke, Modifiers};
 use fux_wire::act::ScreenAct;
 use fux_wire::act::{Act, Column, ColumnEntry, Edit, Hint, LineAct, ListAct, Move, Panel};

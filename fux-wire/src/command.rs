@@ -119,11 +119,6 @@ impl Program {
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.program.as_str()).chain(self.args.iter().map(String::as_str))
     }
-    /// How many words: the program and its arguments.
-    pub fn word_count(&self) -> usize {
-        self.args.len().saturating_add(1)
-    }
-
     pub fn program(&self) -> &str {
         &self.program
     }

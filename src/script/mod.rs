@@ -33,8 +33,8 @@ use fux_wire::layout::Axis;
 use fux_wire::protocol::{Asked, Body, Context, End, Reply, Response};
 mod bridge;
 mod value;
-pub use bridge::{HOST, 
-    Interpreter, Machine, Runtime, callback_machine, compile, evaluate_job, interpreter,
+pub use bridge::{
+    HOST, Interpreter, Machine, Runtime, callback_machine, compile, evaluate_job, interpreter,
     load_libraries, replay_config,
 };
 use std::io::{self, Read, Write};

@@ -1930,8 +1930,12 @@ impl Session {
         };
         let size = (own.or_else(tab)).and_then(|area| Size::new(area.h(), area.w()).ok());
         let why = "the caller has no screen that sizes panes and no tab, and no size was given";
-        (size.map(Fit::Clients))
-            .ok_or_else(|| fail(Code::Size, format!("{why}: give a size (`(size OPTIONS COLUMNS ROWS)`)")))
+        (size.map(Fit::Clients)).ok_or_else(|| {
+            fail(
+                Code::Size,
+                format!("{why}: give a size (`(size OPTIONS COLUMNS ROWS)`)"),
+            )
+        })
     }
 
     /// The clients showing tab `tab` that size it laid out as `root`.
@@ -8643,13 +8647,7 @@ mod tests {
             format!("{initial}\n")
         );
         assert!(output(&mut s, "(version \"1.2.3\")").is_err());
-        assert!(
-            output(
-                &mut s,
-                "(get (pane 1) \"idle-ms\")"
-            )
-            .is_err()
-        );
+        assert!(output(&mut s, "(get (pane 1) \"idle-ms\")").is_err());
         let record = output(&mut s, "(data-text (capture (pane 1)))")?;
         assert!(record.contains("(kind \"capture\")"), "{record}");
         assert!(!record.contains("idle-ms"), "{record}");

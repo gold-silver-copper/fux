@@ -17,23 +17,15 @@ pub fn docs() -> Result<&'static [Doc], Failed> {
         .map_err(Clone::clone)
 }
 /// Grift's own names, sorted, as it lists them.
-pub fn language() -> Result<&'static [String], Failed> {
-    static NAMES: OnceLock<Result<Vec<String>, Failed>> = OnceLock::new();
-    NAMES
-        .get_or_init(|| {
-            let unread = |_| Failed::new(Code::Fail, "reading grift's names");
-            let mut g: Grift = Grift::new().map_err(unread)?;
-            let names = g.evaluate(&mut (), "built-in-names").map_err(unread)?;
-            let names = g.list_items(&names).map_err(unread)?;
-            let symbols = names.iter().filter_map(|name| match name {
-                Value::Symbol(symbol) => g.symbol_name(symbol).ok().map(str::to_owned),
-                _ => None,
-            });
-            Ok(symbols.collect())
-        })
-        .as_ref()
-        .map(Vec::as_slice)
-        .map_err(Clone::clone)
+pub fn language() -> Result<Vec<String>, grift::Error> {
+    let mut g: Grift = Grift::new()?;
+    let names = g.evaluate(&mut (), "built-in-names")?;
+    let symbols = g.list_items(&names)?.into_iter();
+    let symbols = symbols.filter_map(|name| match name {
+        Value::Symbol(symbol) => Some(g.symbol_name(&symbol).map(str::to_owned)),
+        _ => None,
+    });
+    symbols.collect()
 }
 fn read() -> Result<Vec<Doc>, Failed> {
     let mut g: Grift =

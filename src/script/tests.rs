@@ -155,7 +155,8 @@ fn the_default_keys_are_a_config_list_keys_prints() -> TestResult {
     std::fs::remove_file(path)?;
     assert_eq!(state?.keys, defaults.keys);
     // Whatever a label holds, in a binding's or a screen's key.
-    let labels = "(bind-key \"F9\" (code! (lambda! () #inert))) (label \"\u{26a0}\u{fe0f} zap\u{ad}\")
+    let labels =
+        "(bind-key \"F9\" (code! (lambda! () #inert))) (label \"\u{26a0}\u{fe0f} zap\u{ad}\")
         (bind-action \"z\" (code! (lambda! (c p) #inert))) (label \"\u{200b}z\")";
     let path = std::env::temp_dir().join(format!("label-keys-{}.grift", std::process::id()));
     std::fs::write(&path, labels)?;
@@ -1117,7 +1118,10 @@ fn a_long_run_tells_its_first_and_latest_steps() -> TestResult {
             .ok_or("nosuch ran")?;
         let said = failed.actions.join("\n");
         let latest = format!("\"n{steps}\")");
-        assert!(said.contains(r#""n1")"#) && said.contains(&latest), "{said}");
+        assert!(
+            said.contains(r#""n1")"#) && said.contains(&latest),
+            "{said}"
+        );
         // What it keeps and what it says went are every step.
         let gone = steps + 1 - failed.actions.len();
         assert!(said.contains(&format!("and {gone} more")), "{said}");
