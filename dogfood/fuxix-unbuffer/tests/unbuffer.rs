@@ -5,10 +5,10 @@
     clippy::indexing_slicing,
     reason = "tests fail by panicking"
 )]
-use std::io::{Read, Write};
+
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+
+
 
 fn unbuffer() -> Command {
     Command::new(env!("CARGO_BIN_EXE_fuxix-unbuffer"))

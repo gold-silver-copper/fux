@@ -181,7 +181,7 @@ fn pump(master: &Master, job: &fuxix::process::Job, signals: &Pipe) -> Result<()
         }
         // Asked before the read: once it has ended, what the read finds up
         // to AGAIN is all it wrote.
-        let ended = matches!(fuxix::process::ended(pid), Ok(Some(_)));
+        let ended = matches!(job.ended(), Ok(Some(_)));
         if let Copied::Ended = copy(master, &mut out, &mut buffer)? {
             return Ok(());
         }
