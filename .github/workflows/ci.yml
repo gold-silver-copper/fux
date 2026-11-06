@@ -374,7 +374,7 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         run: |
-          set -uo pipefail
+          set +e
           cargo test -p fuxix --test console --locked -- --nocapture; console=$?
           cargo test -p fux --test console --locked -- --nocapture; client=$?
           tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe" || true
