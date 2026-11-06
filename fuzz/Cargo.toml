@@ -17,7 +17,6 @@ fux = { path = "..", features = ["in-process"] }
 fux-server = { path = "../fux-server" }
 fux-vt = { path = "../fux-vt" }
 fux-wire = { path = "../fux-wire" }
-fuxth = { path = "../fuxth" }
 
 [[bin]]
 name = "protocol"
@@ -50,27 +49,6 @@ bench = false
 [[bin]]
 name = "session"
 path = "fuzz_targets/session.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuxth_tokens"
-path = "fuzz_targets/fuxth_tokens.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuxth_run"
-path = "fuzz_targets/fuxth_run.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuxth_pause"
-path = "fuzz_targets/fuxth_pause.rs"
 test = false
 doc = false
 bench = false
