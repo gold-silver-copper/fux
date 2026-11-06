@@ -1,0 +1,31 @@
+; Layout presets: `(require! "recipes/layouts.grift")`, then `(even-h (tab 2))`.
+; `arrange` refuses one if the tab changed since its observation.
+; panes way alternate start -> nodes: balanced flat nodes with absolute child
+; indices from start; leaves share room by pane count.
+(define! layout-of (lambda! (panes way alternate start)
+  (define! n (length panes))
+  (if! (same? n 1) (list (first panes))
+    (let! ((a (divide n 2)) (b (subtract n a))
+           (next-way (if! alternate (if! (same? way "horizontal") "vertical" "horizontal") way)))
+      (append (list (list way a b (add start 1) (add start (multiply a 2))))
+        (layout-of (take panes a) next-way alternate (add start 1))
+        (layout-of (drop panes a) next-way alternate (add start (multiply a 2))))))))
+; panes way cross -> nodes: the first pane takes two shares, the rest one, evenly along cross.
+(define! main-of (lambda! (panes way cross)
+  (if! (same? (length panes) 1) (list (first panes))
+    (append (list (list way 2 1 1 2) (first panes)) (layout-of (rest panes) cross #false 2)))))
+; tab -> (tab revision panes): one topology observation's tab, revision and panes in tree order.
+(define! layout-current (lambda! (target)
+  (define! snapshot-value (snapshot (assert-kind target "tab" "a tab") "topology"))
+  (define! t (first (get snapshot-value "tabs")))
+  (list (get t "id") (get t "layout-revision") (map (lambda! (p) (get p "id")) (get snapshot-value "panes")))))
+; tab: its current panes side by side, with equal shares.
+(define! even-h (lambda! (target) (let! (((t revision panes) (layout-current target))) (arrange t revision (layout-of panes "horizontal" #false 0)))))
+; tab: its current panes above one another, with equal shares.
+(define! even-v (lambda! (target) (let! (((t revision panes) (layout-current target))) (arrange t revision (layout-of panes "vertical" #false 0)))))
+; tab: the first pane above an equal-share row, taking two shares against its one.
+(define! main-h (lambda! (target) (let! (((t revision panes) (layout-current target))) (arrange t revision (main-of panes "vertical" "horizontal")))))
+; tab: the first pane beside an equal-share column, taking two shares against its one.
+(define! main-v (lambda! (target) (let! (((t revision panes) (layout-current target))) (arrange t revision (main-of panes "horizontal" "vertical")))))
+; tab: its current panes in balanced tiles, alternating axes.
+(define! tiled (lambda! (target) (let! (((t revision panes) (layout-current target))) (arrange t revision (layout-of panes "horizontal" #true 0)))))

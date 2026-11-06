@@ -21,7 +21,11 @@ use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 76;
+pub const PROTOCOL: u32 = 78;
+
+/// The first protocol whose command line is grift: an older server's binary
+/// reads none.
+pub const GRIFT: u32 = 77;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -88,7 +92,7 @@ impl std::fmt::Display for Mismatch {
         };
         write!(
             f,
-            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on its process stops it and its panes (`fux status` gives its `server_pid`, where the system says it); a new server does not resume them",
+            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on its process stops it and its panes (`fux '(status)'` gives its `server-process-id`, where the system says it); a new server does not resume them",
         )
     }
 }
@@ -365,7 +369,7 @@ impl OneKind for Hello {
 
 wire! {
     /// An attaching client and its optional conditional first launch. A
-    /// headless one has no terminal (`opts COLS ROWS size attach`): nothing
+    /// headless one has no terminal (`(attach (size (options) COLUMNS ROWS))`): nothing
     /// but its end follows, and the server sizes it (`resize`).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Attach {

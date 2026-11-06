@@ -7,7 +7,7 @@ use fux_vt::{
     Attributes, CommandMark, Mark, Mode, MouseProtocolEncoding, MouseProtocolMode, Row, Screen,
 };
 use fux_wire::answer::{Captured, Line, Of, Run, highlighted};
-use fux_wire::code::{Raise, fail};
+use fux_wire::code::{Code, fail};
 use fux_wire::command::{CaptureView, Source, Version};
 use fux_wire::id::ClientId;
 use fux_wire::inspect::Terminal;
@@ -110,7 +110,7 @@ fn changed_since(
     pane: &Pane,
     since: Version,
 ) -> Result<impl Fn(&Row<'_>) -> bool + Copy, fux_wire::code::Error> {
-    let stale = |why: &str| fail(Raise::Stale, format!("{since}: {why}; capture it whole"));
+    let stale = |why: &str| fail(Code::Stale, format!("{since}: {why}; capture it whole"));
     if since.counts.respawns != pane.counts().respawns {
         return Err(stale("its program respawned since, on a new screen"));
     }
@@ -690,7 +690,7 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
         // It closed its terminal and runs on: nothing reads keys there
         // (the terminal hung up; Linux says so).
         Process::HungUp(_) => "hung_up",
-        Process::ReadFailed(..) => "read_failed",
+        Process::ReadFailed(..) => "read-failed",
         Process::Exited(_) => "ended",
         Process::Respawning => return Ok(Json::Null),
     };
@@ -716,7 +716,7 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
         ("state", Json::str(state)),
         ("exited", exited),
         ("signal", signal),
-        ("read_error", read_error.map_or(Json::Null, Json::str)),
+        ("read-error", read_error.map_or(Json::Null, Json::str)),
         ("input_unread", Json::count(pane.left.input)),
         (
             "foreground_group",
@@ -738,8 +738,8 @@ pub(crate) fn terminal(fact: Terminal, p: &Pane) -> Json {
             MouseProtocolMode::Press => Json::str("press"),
             MouseProtocolMode::PressRelease => Json::str("press_release"),
             MouseProtocolMode::Highlight => Json::str("highlight"),
-            MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
-            MouseProtocolMode::AnyMotion => Json::str("any_motion"),
+            MouseProtocolMode::ButtonMotion => Json::str("button-motion"),
+            MouseProtocolMode::AnyMotion => Json::str("any-motion"),
         },
         // How it asked for mouse reports to be spelled.
         Terminal::MouseEncoding => Json::str(match p.screen().mouse_protocol_encoding() {
@@ -1503,7 +1503,7 @@ mod tests {
     /// answered with rows that did not change; one from after reads on.
     #[test]
     fn since_refuses_rows_moved_where_no_mark_says() -> Result<(), Box<dyn std::error::Error>> {
-        let stale = fux_wire::code::Code::from(super::Raise::Stale);
+        let stale = fux_wire::code::Code::Stale;
         let mut pane = pane(5, 10, 1 << 20)?;
         let run = journal()?.run;
         pane.output(b"HEADER\r\na\r\nb\r\nc\r\nFOOTER");
@@ -1525,7 +1525,7 @@ mod tests {
     /// and one from before reads the row it drew.
     #[test]
     fn since_refuses_a_version_read_mid_repeat() -> Result<(), Box<dyn std::error::Error>> {
-        let stale = fux_wire::code::Code::from(super::Raise::Stale);
+        let stale = fux_wire::code::Code::Stale;
         let mut pane = pane(2, 4096, 0)?;
         let run = journal()?.run;
         let before = pane.version(run);

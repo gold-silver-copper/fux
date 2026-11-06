@@ -496,7 +496,7 @@ impl Losses {
     pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
         let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
-        let pictures = "`fux help json` says why one may not be";
+        let pictures = "`fux '(explain \"records\")'` says why one may not be";
         let (copies, memory) = ("copies (OSC 52) not made", "each lost only what it was for");
         let Losses {
             copies_cut: c,
@@ -938,7 +938,7 @@ wired!(struct End { ended, left });
 
 /// What is said of a pane where no shell command was ever marked.
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
-                            `fux help shells` says how to turn marks on";
+                            `fux '(explain \"shells\")'` says how to turn marks on";
 
 impl Pane {
     pub fn history_bytes(&self) -> usize {
@@ -1699,11 +1699,6 @@ impl Pane {
         };
         tell.tell(Told::Exited(end));
         end
-    }
-
-    /// Its process, as it is closed.
-    pub fn into_process(self) -> Process {
-        self.process
     }
 
     /// Gives it `process`, as a test's pane runs a child of the test's.
@@ -2553,14 +2548,14 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let output: &[u8] =
             b"\x1b]133;C\x07\x07x\x1b]133;D;1\x07\x1b]133;C\x07\x1b]2;t\x07\x1b]133;C\x07";
-        let at = r#""pane":"%1","tab":"@1","workspace":"+1""#;
-        let started = format!(r#"{{"event":"command_started",{at}}}"#);
+        let at = "(pane %1) (tab @1) (workspace +1)";
+        let started = format!("((event \"command-started\") {at})");
         let lines = [
             started.clone(),
-            format!(r#"{{"event":"bell",{at}}}"#),
-            format!(r#"{{"event":"done",{at},"status":1}}"#),
+            format!("((event \"bell\") {at})"),
+            format!("((event \"done\") {at} (status 1))"),
             started,
-            format!(r#"{{"event":"title",{at},"title":"t"}}"#),
+            format!("((event \"title\") {at} (title \"t\"))"),
         ];
         let expected = lines.map(|line| line + "\n").concat();
         for split in 0..=output.len() {

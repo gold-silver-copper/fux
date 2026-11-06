@@ -1,6 +1,6 @@
 //! A step of a walk, as it was taken: concrete ids and bytes, never the
 //! choices that produced it, so a trace replays the same steps whatever the
-//! seed. Each is one line of a trace, read as fuxth reads a file.
+//! seed. Each is one line of a trace: words, split as a shell splits them.
 use fux_wire::words;
 
 /// What a pane's program does of its own accord, through the fixture's
@@ -42,8 +42,8 @@ pub enum Stop {
 pub enum Step {
     /// Bytes typed into a real client's terminal.
     Keys { client: String, bytes: Vec<u8> },
-    /// A fuxth program from the command line, one word an argument.
-    Cli(Vec<String>),
+    /// A grift program from the command line.
+    Cli(String),
     /// A client's terminal resized.
     Resize {
         client: String,
@@ -101,6 +101,31 @@ fn unescape(word: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// The words of a trace line, as `words::quote` wrote them: whitespace
+/// between words; `'…'` and `"…"` as they are, side by side one word.
+fn split(line: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut quote = None;
+    for c in line.chars() {
+        match quote {
+            Some(open) if c == open => quote = None,
+            Some(_) => word.get_or_insert_default().push(c),
+            None if c == '\'' || c == '"' => {
+                word.get_or_insert_default();
+                quote = Some(c);
+            }
+            None if c.is_whitespace() => words.extend(word.take()),
+            None => word.get_or_insert_default().push(c),
+        }
+    }
+    if quote.is_some() {
+        return Err(format!("an open quote in {line:?}"));
+    }
+    words.extend(word);
+    Ok(words)
+}
+
 impl Step {
     /// The step as a trace line.
     pub fn line(&self) -> String {
@@ -108,10 +133,7 @@ impl Step {
             Step::Keys { client, bytes } => {
                 format!("keys {client} {}", words::quote(&escape(bytes)))
             }
-            Step::Cli(args) => {
-                let quoted: Vec<String> = args.iter().map(|w| words::quote(w)).collect();
-                format!("cli {}", quoted.join(" "))
-            }
+            Step::Cli(program) => format!("cli {}", words::quote(program)),
             Step::Resize { client, rows, cols } => format!("resize {client} {rows} {cols}"),
             Step::Attach { rows, cols } => format!("attach {rows} {cols}"),
             Step::Hangup { client } => format!("hangup {client}"),
@@ -150,15 +172,15 @@ impl Step {
 
     /// A trace line as a step.
     pub fn parse(line: &str) -> Result<Step, String> {
-        let tokens = fuxth::token::source("trace", line).map_err(|e| e.to_string())?;
-        let text: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
+        let tokens = split(line)?;
+        let text: Vec<&str> = tokens.iter().map(String::as_str).collect();
         let number = |w: &str| w.parse::<u16>().map_err(|e| format!("{w:?}: {e}"));
         Ok(match text.as_slice() {
             ["keys", client, bytes] => Step::Keys {
                 client: (*client).to_owned(),
                 bytes: unescape(bytes)?,
             },
-            ["cli", args @ ..] => Step::Cli(args.iter().map(|a| (*a).to_owned()).collect()),
+            ["cli", program] => Step::Cli((*program).to_owned()),
             ["resize", client, rows, cols] => Step::Resize {
                 client: (*client).to_owned(),
                 rows: number(rows)?,
@@ -225,7 +247,7 @@ mod tests {
                 client: "c1".to_owned(),
                 bytes: b"#x 'y'\\\x1b\r".to_vec(),
             },
-            Step::Cli(["str", "a b", "it's", "#c", ""].map(str::to_owned).to_vec()),
+            Step::Cli(r##"(rename (pane "%1") "it's #c")"##.to_owned()),
             Step::Child {
                 pane: "%1".to_owned(),
                 act: Act::Stty(24, 80),

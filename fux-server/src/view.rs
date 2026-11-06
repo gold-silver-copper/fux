@@ -54,7 +54,7 @@ impl Mode {
 pub enum ClientKind {
     /// A terminal, which says its size and sends keys.
     Terminal,
-    /// Nowhere a person sees (`opts COLS ROWS size attach`): its size is set by
+    /// Nowhere a person sees (`(attach (size (options) COLUMNS ROWS))`): its size is set by
     /// `resize`, and it sends no keys.
     Headless,
 }

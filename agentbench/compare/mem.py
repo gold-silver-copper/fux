@@ -7,7 +7,7 @@ with 60,000 lines of 80 characters, then the server's resident set is read.
 import os, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fuxwait import run, until_text  # noqa: E402
+from fuxwait import agent_tab, run, string, until_text  # noqa: E402
 
 D = os.path.join(os.environ.get("BENCH_DIR", os.path.expanduser("~/.cache/fux-bench")), "C", "mwork")
 
@@ -25,21 +25,13 @@ def measure(bin_):
     os.makedirs(d, mode=0o700)
     e = {k: v for k, v in os.environ.items() if k not in ("FUX_SOCKET", "FUX_PANE", "FUX_SERVER")}
     e.update(XDG_RUNTIME_DIR=d, FUX_SOCKET=os.path.join(d, "s"))
-    run(bin_, e, "start")
-    def server():
-        for p in os.listdir("/proc"):
-            try:
-                cmd = open(f"/proc/{p}/cmdline", "rb").read().split(b"\0")
-            except OSError:
-                continue
-            if b"__serve" in cmd and e["FUX_SOCKET"].encode() in cmd:
-                return int(p)
-    pid = server()
+    run(bin_, e, "(start)")
+    pid = int(run(bin_, e, '(get (status) "server-process-id")').stdout)
     base = rss(pid)
     fill = "python3 -c \"import sys\nfor i in range(60000): sys.stdout.write('%05d ' % i + 'x' * 73 + '\\n')\"; read x"
-    started = run(bin_, e, "str", "history-bytes", str(50000 * (24 + 8 * 79)), "set", "opts", "str", "agent", "in", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "new-tab")
+    started = run(bin_, e, agent_tab(["sh", "-c", fill], history=50000 * (24 + 8 * 79)))
     pane = until_text(bin_, e, started.stdout, "59999 ", 120)
-    kept = run(bin_, e, pane, "all-history", "capture").stdout.count("\n")
+    kept = run(bin_, e, f"(capture (all-history (pane {string(pane)})))").stdout.count("\n")
     time.sleep(1)
     full = rss(pid)
     print(f"  {os.path.basename(bin_)}: {kept} lines kept")

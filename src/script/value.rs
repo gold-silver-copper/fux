@@ -1,0 +1,170 @@
+//! Owned arguments at the native request boundary, never a language stack.
+use super::Fux;
+use fux_wire::code::Code;
+use std::rc::Rc;
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value<A = Fux> {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(Rc<String>),
+    Symbol(Rc<String>),
+    List(Rc<List<A>>),
+    App(A),
+    Bytes(Rc<Vec<u8>>),
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct List<A> {
+    values: Vec<Value<A>>,
+}
+impl<A> List<A> {
+    pub fn new(values: Vec<Value<A>>) -> Self {
+        Self { values }
+    }
+    pub fn items(&self) -> &[Value<A>] {
+        &self.values
+    }
+}
+#[derive(Clone, Debug)]
+pub struct Failure {
+    pub code: Code,
+    pub message: String,
+}
+impl Failure {
+    pub fn new(code: Code, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+impl From<fux_wire::code::Error> for Failure {
+    fn from(e: fux_wire::code::Error) -> Self {
+        Self::new(e.code(), e.to_string())
+    }
+}
+#[cfg(test)]
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+#[cfg(test)]
+impl std::error::Error for Failure {}
+pub enum Done<A> {
+    Now,
+    Later(A),
+}
+impl Value<Fux> {
+    pub fn str(text: impl Into<String>) -> Self {
+        Self::Str(Rc::new(text.into()))
+    }
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Int(_) => "integer",
+            Self::Float(_) => "float",
+            Self::Bool(_) => "boolean",
+            Self::Str(_) => "string",
+            Self::Symbol(_) => "symbol",
+            Self::List(_) => "list",
+            Self::App(v) => v.kind(),
+            Self::Bytes(_) => "bytes",
+        }
+    }
+    pub fn text(&self) -> Result<String, Failure> {
+        let mut out = String::new();
+        self.write_text(&mut out)?;
+        Ok(out)
+    }
+    pub fn write_text(&self, out: &mut dyn std::fmt::Write) -> Result<(), Failure> {
+        let result = match self {
+            Self::Str(s) | Self::Symbol(s) => out.write_str(s),
+            Self::App(v) => return v.write_text(out),
+            // A tab's or workspace's answers, a line each.
+            Self::List(xs)
+                if !xs.items().is_empty()
+                    && xs.items().iter().all(
+                        |v| matches!(v, Self::App(Fux::Record(record)) if record.is_held()),
+                    ) =>
+            {
+                for (i, v) in xs.items().iter().enumerate() {
+                    if i > 0 {
+                        out.write_char('\n')
+                            .map_err(|_| Failure::new(Code::Output, "writing value"))?;
+                    }
+                    v.write_text(out)?;
+                }
+                Ok(())
+            }
+            Self::Int(_) | Self::Float(_) | Self::Bool(_) | Self::List(_) | Self::Bytes(_) => {
+                self.write_data(out)
+            }
+        };
+        result.map_err(|_| Failure::new(Code::Output, "writing value"))
+    }
+    pub fn write_data(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        match self {
+            Self::Float(n) if n.is_nan() => out.write_str("#not-a-number"),
+            Self::Float(n) if *n == f64::INFINITY => out.write_str("#infinity"),
+            Self::Float(n) if *n == f64::NEG_INFINITY => out.write_str("#-infinity"),
+            Self::Float(n) => write!(out, "{n:?}"),
+            Self::Int(n) => write!(out, "{n}"),
+            Self::Bool(b) => write!(out, "#{b}"),
+            Self::Str(s) => grift::write_string(s, out),
+            Self::Symbol(s) => out.write_str(s),
+            Self::List(xs) => {
+                out.write_str("(")?;
+                for (i, v) in xs.items().iter().enumerate() {
+                    if i > 0 {
+                        out.write_str(" ")?;
+                    }
+                    v.write_data(out)?;
+                }
+                out.write_str(")")
+            }
+            Self::Bytes(b) => {
+                out.write_str("#bytes(")?;
+                for (i, v) in b.iter().enumerate() {
+                    if i > 0 {
+                        out.write_str(" ")?;
+                    }
+                    write!(out, "{v}")?;
+                }
+                out.write_str(")")
+            }
+            Self::App(Fux::Record(r)) => r.write(out),
+            Self::App(Fux::Code(code)) => write!(out, "(code! {})", code.text()),
+            Self::App(Fux::Opts(opts)) => {
+                out.write_str("(request! ")?;
+                match &opts.subject {
+                    Some(subject) => subject.write_data(out)?,
+                    None => out.write_str("none")?,
+                }
+                for (option, arguments) in &opts.steps {
+                    write!(out, " ({option}")?;
+                    for argument in arguments {
+                        out.write_char(' ')?;
+                        argument.write_data(out)?;
+                    }
+                    out.write_char(')')?;
+                }
+                out.write_char(')')
+            }
+            Self::App(v) => super::bridge::handle_name(v, out),
+        }
+    }
+}
+
+/// One grift string literal, also used by generated config lines.
+pub fn quoted(text: &str) -> String {
+    let mut out = String::new();
+    let _ = grift::write_string(text, &mut out);
+    out
+}
+
+pub(super) struct Text<'a>(pub &'a Value<Fux>);
+impl std::fmt::Display for Text<'_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.write_text(out).map_err(|_| std::fmt::Error)
+    }
+}

@@ -343,6 +343,14 @@ impl Requests {
         }
     }
 
+    /// Requests over `stream`, already greeted.
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(crate) fn over(stream: Client) -> Requests {
+        let decoder = Decoder::default();
+        Requests { stream, decoder }
+    }
+
     /// What stops it from another thread: shut down, the request under way
     /// ends as if the server had closed the connection.
     pub fn stopper(&self) -> Option<Client> {
@@ -466,6 +474,11 @@ fn followed(
         std::env::var_os(FOLLOWED).as_deref(),
         &socket::follower_id().to_string(),
     )?;
+    // A plain attach hands it no grift, and is how a server whose file was
+    // replaced is reached: that binary is only left at /proc/PID/exe.
+    if said.protocol < fux_wire::protocol::GRIFT && rerun.argv.len() > 1 {
+        return Err("it reads no grift, which this client speaks: stop it to go on".to_owned());
+    }
     let pid = server.ok_or("the system does not say which process the server is")?;
     let (exe, path, same) = socket::server_binary(pid)?;
     // Run again, it would meet the same server, and follow it again.
@@ -743,36 +756,50 @@ impl Keyboard {
             .name("keys".into())
             .spawn(move || {
                 let mut server = script::Server::stoppable(path, stops.clone());
-                for (job, frames) in todo {
-                    let after = std::rc::Rc::new(std::cell::Cell::new(fux_wire::protocol::Fence {
-                        run,
-                        client: me,
-                        frames,
-                    }));
-                    server.after = Some(after.clone());
-                    let mut present = |presentation| {
-                        let (sent, received) = std::sync::mpsc::sync_channel(1);
-                        if tell.send(Update::Presentation(presentation, sent)).is_err() {
-                            stops.stop();
-                            return;
-                        }
-                        poke.poke();
-                        // Receipt follows transmission, not mailbox consumption.
-                        // Dropping the keyboard drops the receipt sender too.
-                        match received.recv() {
-                            Ok(frames) => after.set(fux_wire::protocol::Fence {
-                                frames,
-                                ..after.get()
-                            }),
-                            Err(_) => stops.stop(),
-                        }
-                    };
-                    let ran = run_job(&mut server, (me, run), &shared, &job, &stops, &mut present);
-                    if tell.send(Update::Finished(ran)).is_err() {
-                        break;
+                let after = std::rc::Rc::new(std::cell::Cell::new(fux_wire::protocol::Fence {
+                    run,
+                    client: me,
+                    frames: 0,
+                }));
+                server.after = Some(after.clone());
+                let mut present = |presentation| {
+                    let (sent, received) = std::sync::mpsc::sync_channel(1);
+                    if tell.send(Update::Presentation(presentation, sent)).is_err() {
+                        stops.stop();
+                        return;
                     }
                     poke.poke();
-                }
+                    // Receipt follows transmission, not mailbox consumption.
+                    // Dropping the keyboard drops the receipt sender too.
+                    match received.recv() {
+                        Ok(frames) => after.set(fux_wire::protocol::Fence {
+                            frames,
+                            ..after.get()
+                        }),
+                        Err(_) => stops.stop(),
+                    }
+                };
+                let fence = |frames| {
+                    after.set(fux_wire::protocol::Fence {
+                        frames,
+                        ..after.get()
+                    })
+                };
+                let done = |ran| {
+                    let told = tell.send(Update::Finished(ran)).is_ok();
+                    poke.poke();
+                    told
+                };
+                work(
+                    &mut server,
+                    (me, run),
+                    &shared,
+                    &stops,
+                    &mut present,
+                    todo,
+                    fence,
+                    done,
+                );
             });
         spawned?;
         // A paste of any length is kept: the user's terminal and memory
@@ -1032,26 +1059,46 @@ fn decoded(input: fux_wire::command::Input) -> Vec<Input> {
     }
 }
 
-/// Runs a key's or a screen's program as client `me`, on the shared
-/// `state`. Each checkpoint commits whole; a failure discards pending changes.
-fn run_job(
+/// What a program printed, which a client's worker reads once it ended.
+#[derive(Clone, Default)]
+struct Said(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+impl std::io::Write for Said {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The interpreter a client's next job runs in, or why none is.
+type Prepared<'a, 'b, 'c> =
+    Result<script::Interpreter<'a, 'b, script::AsClient<'c>>, script::Failed>;
+
+/// A worker's loop: runs each of `jobs` as client `me`, on the shared
+/// `state`. Each job has an interpreter nothing has run in, so a run's
+/// definitions, its failure's leftovers and what it held go with it; the
+/// next is built once `done` has told of this one, off the next key's path.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the worker and its tests share this loop"
+)]
+fn work(
     server: &mut dyn script::Asks,
     me: (fux_wire::id::ClientId, fux_wire::command::Run),
     state: &Mutex<ClientState>,
-    job: &Job,
     stop: &script::Stop,
     present: &mut dyn FnMut(fux_wire::presentation::Presentation),
-) -> Ran {
-    let mut changed = lock(state).draft();
-    let config = changed.config.clone();
-    let mut out = Vec::new();
-    let mut context = context();
-    context.client = Some(me.0);
-    context.of = Some(me.1);
-    let mut rebound = false;
+    jobs: impl IntoIterator<Item = (Job, u64)>,
+    mut fence: impl FnMut(u64),
+    mut done: impl FnMut(Ran) -> bool,
+) {
+    let rebound = std::cell::Cell::new(false);
     let mut publish = |committed: &ClientState| {
         let mut live = lock(state);
-        rebound |= live.keys.modes != committed.keys.modes;
+        rebound.set(rebound.get() || live.keys.modes != committed.keys.modes);
         let changed = live.preferences.presentation() != committed.preferences.presentation();
         *live = committed.clone();
         drop(live);
@@ -1059,52 +1106,121 @@ fn run_job(
             present(committed.preferences.presentation());
         }
     };
+    let job_context = || {
+        let mut context = context();
+        context.client = Some(me.0);
+        context.of = Some(me.1);
+        context
+    };
     let mut asks = script::AsClient {
         asks: server,
-        context: context.clone(),
+        context: job_context(),
         opened: None,
         on_commit: Some(&mut publish),
-        stop: Some(stop),
     };
+    let mut draft = Default::default();
+    let said = Said::default();
+    let mut out = said.clone();
+    let mut host = script::Host::job(job_context(), &mut draft, &mut out);
+    let mut runtime = script::Runtime::new(&mut host, &mut asks, Some(stop));
+    let mut defaults = None;
+    let mut next = prepare(&mut runtime, state, &mut defaults);
+    for (job, frames) in jobs {
+        fence(frames);
+        rebound.set(false);
+        said.0.borrow_mut().clear();
+        let mut ran = run_job(next, &mut runtime, state, &job, stop, job_context(), &said);
+        ran.rebound = rebound.get();
+        if !done(ran) {
+            break;
+        }
+        next = prepare(&mut runtime, state, &mut defaults);
+    }
+}
+
+/// An interpreter for the next job: the libraries loaded, and the config's
+/// definitions evaluated in it.
+fn prepare<'a, 'b, 'c>(
+    runtime: &mut script::Runtime<'a, 'b, script::AsClient<'c>>,
+    state: &Mutex<ClientState>,
+    defaults: &mut Option<ClientState>,
+) -> Prepared<'a, 'b, 'c> {
+    let config = lock(state).config.clone();
+    let mut g = script::interpreter(runtime)?;
+    script::load_libraries(&mut g, runtime)?;
+    if let Some(config) = &config {
+        let defaults = match defaults {
+            Some(defaults) => defaults,
+            None => defaults.insert(script::default_state()?),
+        };
+        script::replay_config(&mut g, runtime, config, defaults)?;
+    }
+    Ok(g)
+}
+
+/// Runs a key's or a screen's program in `prepared`. Each checkpoint
+/// commits whole; a failure discards pending changes.
+fn run_job<'a, 'b, 'c>(
+    prepared: Prepared<'a, 'b, 'c>,
+    runtime: &mut script::Runtime<'a, 'b, script::AsClient<'c>>,
+    state: &Mutex<ClientState>,
+    job: &Job,
+    stop: &script::Stop,
+    context: fux_wire::protocol::Context,
+    said: &Said,
+) -> Ran {
+    let draft = lock(state).draft();
+    runtime.host.next_job(draft, context.clone());
+    runtime.asks.context = context.clone();
+    runtime.asks.opened = None;
     let mut result = (|| {
         stop.check()?;
         if let Some(open) = &job.screen {
-            asks.opened = Some(crate::script::admit(
-                open.clone(),
-                Some(&changed),
-                &context,
-                Some(stop),
-            )?);
+            let draft = runtime.host.draft().map(|draft| &*draft);
+            runtime.asks.opened = Some(crate::script::admit(open.clone(), draft, &context)?);
             return Ok(Vec::new());
         }
-        let mut machine = job.machine(config.as_ref(), Some(stop))?;
-        let mut host = script::Host::job(context.clone(), &mut changed, &mut out);
-        script::run(&mut machine, &mut host, &mut asks, Some(stop))
+        let mut g = prepared?;
+        let machine = job.machine(None, Some(stop))?;
+        let values = script::evaluate_job(&mut g, runtime, &machine)?;
+        script::refuse_unfinished(&values, runtime.host)?;
+        Ok(values)
     })();
+    #[cfg(test)]
+    stop.pause(script::Step::Ended);
     if result.is_ok()
-        && let Err(failed) = stop
-            .check()
-            .and_then(|()| script::Asks::commit(&mut asks, &mut changed, context))
+        && let Err(failed) = stop.check().and_then(|()| match runtime.host.draft() {
+            Some(draft) => script::Asks::commit(runtime.asks, draft, context),
+            None => Ok(()),
+        })
     {
         result = Err(failed);
     }
-    let opened = result.is_ok().then_some(asks.opened).flatten();
+    let opened = result.is_ok().then(|| runtime.asks.opened.take()).flatten();
     let notice = match result {
-        // Stopped as asked (the prefix, then Esc): no failure of its own.
-        Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
+        // Stopped as asked (the prefix, then Esc): no failure of its own, but
+        // what took effect, its cleanups' steps among them, is told (D-25).
+        Err(_) if stop.stopped() => {
+            let steps = runtime.host.actions.iter();
+            let told = steps.map(|step| format!(" · already took effect: {step}"));
+            Some((format!("stopped{}", told.collect::<String>()), false))
+        }
         Err(failed) => Some((failed.notice(), true)),
-        Ok(stack) => said(String::from_utf8_lossy(&out).into_owned(), &stack),
+        Ok(stack) => said_notice(
+            String::from_utf8_lossy(&said.0.borrow()).into_owned(),
+            &stack,
+        ),
     };
     Ran {
         notice,
         opened,
-        rebound,
+        rebound: false,
     }
 }
 
 /// The notice a program that ended makes: what it printed, then what it
 /// left, each line that is not blank.
-fn said(mut said: String, stack: &[fuxth::Value<script::Fux>]) -> Option<(String, bool)> {
+fn said_notice(mut said: String, stack: &[script::Value<script::Fux>]) -> Option<(String, bool)> {
     for value in stack {
         if let Err(failure) = value.write_text(&mut said) {
             return Some((failure.message, true));
@@ -1430,13 +1546,11 @@ fn attached(
             }
             frames = next_frame(frames)?;
         }
+        let mut runs = Vec::new();
         for out in std::mem::take(&mut acts) {
             let act = match out {
                 Dispatch::Run(job) => {
-                    keyboard
-                        .as_mut()
-                        .ok_or_else(|| Error::Failed("a program has no attached keyboard".into()))?
-                        .dispatch(job, frames)?;
+                    runs.push(job);
                     continue;
                 }
                 Dispatch::Fence => {
@@ -1458,6 +1572,15 @@ fn attached(
                 return ended;
             }
             frames = next_frame(frames)?;
+        }
+        // A job runs after every frame read with the keys that made it is
+        // answered: what the server sends after keys it sent here says they
+        // were taken, before what they do (a detach, say).
+        for job in runs {
+            keyboard
+                .as_mut()
+                .ok_or_else(|| Error::Failed("a program has no attached keyboard".into()))?
+                .dispatch(job, frames)?;
         }
         // The server's frames only while the terminal has room for them; a
         // hang-up is told all the same.
@@ -1736,7 +1859,7 @@ mod tests {
         let effects = admitted(
             &mut keyboard,
             Job::from(
-                "str terminal-clipboard false set str styles list list str bar 7 8 end end set str bar-slots list list 0 str inert end end set str show-column false set %1 str Enter key send-keys drop",
+                "(sequence! (define! variables-2 (context)) (define! value-3 \"terminal-clipboard\") (define! value-4 (set value-3 #false)) (define! value-5 \"styles\") (define! value-8 \"bar\") (define! value-9 (list value-8 7 8)) (define! value-10 (list value-9)) (define! value-11 (set value-5 value-10)) (define! value-12 \"bar-slots\") (define! value-15 \"inert\") (define! value-16 (list 0 value-15)) (define! value-17 (list value-16)) (define! value-18 (set value-12 value-17)) (define! value-19 \"show-column\") (define! value-20 (set value-19 #false)) (define! value-21 (pane 1)) (define! value-22 \"Enter\") (define! value-23 (key value-21 value-22)) (define! value-24 (send-keys value-23)) #inert)",
             ),
         );
         let [Dispatch::Run(job)] = effects.as_slice() else {
@@ -1821,7 +1944,9 @@ mod tests {
         let mut keyboard = keyboard(false)?;
         program(
             &mut keyboard,
-            Job::from("str titles true set %1 30 timeout wait"),
+            Job::from(
+                "(sequence! (define! variables-25 (context)) (define! value-26 \"titles\") (define! value-27 (set value-26 #true)) (define! value-28 (pane 1)) (define! value-29 (timeout value-28 30)) (define! value-30 (wait value-29)) value-30)",
+            ),
         );
         let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
         assert_ne!(fuxix::poll::poll(&mut wake, Some(ANSWER))?, 0);
@@ -1854,7 +1979,9 @@ mod tests {
         let mut state = script::default_state().map_err(|e| e.to_string())?;
         state.keys.bind(
             &[KeyPress::char('y')],
-            crate::keymap::Binding::new(crate::testing::code("str done")),
+            crate::keymap::Binding::new(crate::testing::code(
+                "(lambda! () (sequence! (define! variables-31 (context)) (define! value-32 \"done\") value-32))",
+            )),
         )?;
         let mut typed = vec![b'a'; 3000];
         typed.extend_from_slice(b"yx");
@@ -1886,8 +2013,8 @@ mod tests {
     #[test]
     fn a_completed_jobs_screen_precedes_the_next_job() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
-        let first = admitted(&mut keyboard, Job::from("me command-prompt str ready"));
-        assert!(admitted(&mut keyboard, Job::from("str next")).is_empty());
+        let first = admitted(&mut keyboard, Job::from("(command-prompt (me)) \"ready\""));
+        assert!(admitted(&mut keyboard, Job::from("(sequence! (define! variables-34 (context)) (define! value-35 \"next\") value-35)")).is_empty());
         assert!(transport(&mut keyboard, first).is_empty());
         let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
         assert_ne!(fuxix::poll::poll(&mut done, Some(ANSWER))?, 0);
@@ -1907,7 +2034,7 @@ mod tests {
     fn keys_wait_for_a_running_program_till_it_is_done() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         let now = Instant::now();
-        let run = Job::from("begin false until");
+        let run = Job::from("(let! ((spin (lambda! () (spin)))) (spin))");
         assert!(program(&mut keyboard, run).is_empty());
         assert!(
             bytes(&mut keyboard, b"x", now).is_empty(),
@@ -1931,7 +2058,13 @@ mod tests {
     fn stopping_cancels_queued_screen_openings_and_releases_keys()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
-        assert!(program(&mut keyboard, "me command-prompt begin false until".into()).is_empty());
+        assert!(
+            program(
+                &mut keyboard,
+                "(command-prompt (me)) (let! ((spin (lambda! () (spin)))) (spin))".into()
+            )
+            .is_empty()
+        );
         let queued = keyboard.frame(ToAttached::Open(fux_wire::callback::Open::Prompt(
             fux_wire::callback::Prompt {
                 title: ":".into(),
@@ -1979,6 +2112,133 @@ mod tests {
         Ok(acts)
     }
 
+    /// What `job` came to, alone on a worker.
+    fn one_job(
+        server: &mut dyn script::Asks,
+        me: (fux_wire::id::ClientId, fux_wire::command::Run),
+        state: &Mutex<ClientState>,
+        job: Job,
+        stop: &script::Stop,
+        present: &mut dyn FnMut(fux_wire::presentation::Presentation),
+    ) -> Ran {
+        let mut ended = None;
+        let done = |ran| {
+            ended = Some(ran);
+            false
+        };
+        work(server, me, state, stop, present, [(job, 0)], |_| {}, done);
+        ended.unwrap_or(Ran {
+            notice: None,
+            opened: None,
+            rebound: false,
+        })
+    }
+
+    /// What each job in turn came to on one worker.
+    fn jobs_on_a_worker(
+        state: &Mutex<ClientState>,
+        jobs: &[&str],
+    ) -> Result<Vec<Option<String>>, Box<dyn std::error::Error>> {
+        struct Refuse;
+        impl script::Asks for Refuse {
+            fn ask(&mut self, _: &Asked) -> Result<Reply, script::Failed> {
+                Err(script::Failed::new(Code::NotConfig, "operation refused"))
+            }
+        }
+        let me = (
+            fux_wire::id::ClientId::of(1),
+            fux_wire::command::Run::now().ok_or("clock")?,
+        );
+        let mut said = Vec::new();
+        let done = |ran: Ran| {
+            said.push(ran.notice.map(|(text, _)| text));
+            true
+        };
+        let stop = script::Stop::default();
+        let jobs = jobs.iter().map(|job| (Job::from(*job), 0));
+        work(
+            &mut Refuse,
+            me,
+            state,
+            &stop,
+            &mut |_| {},
+            jobs,
+            |_| {},
+            done,
+        );
+        Ok(said)
+    }
+
+    /// A stop too late for grift to act on, the run ended well, still tells
+    /// what took effect (D-25).
+    #[test]
+    fn a_stop_after_the_last_step_lists_it() -> Result<(), Box<dyn std::error::Error>> {
+        struct Answers;
+        impl script::Asks for Answers {
+            fn ask(&mut self, asked: &Asked) -> Result<Reply, script::Failed> {
+                let empty = || fux_wire::protocol::Body::Empty.into();
+                Ok(script::testing::found(asked).unwrap_or_else(empty))
+            }
+        }
+        let state = Mutex::new(script::default_state().map_err(|e| e.to_string())?);
+        let me = (
+            fux_wire::id::ClientId::of(1),
+            fux_wire::command::Run::now().ok_or("clock")?,
+        );
+        let late = std::sync::Arc::new(std::sync::OnceLock::<script::Stop>::new());
+        let stops = late.clone();
+        let stop = script::Stop::pausing(move |step| {
+            if let (script::Step::Ended, Some(stop)) = (step, stops.get()) {
+                stop.stop();
+            }
+        });
+        late.set(stop.clone()).map_err(|_| "set twice")?;
+        let job = r#"(rename (pane 1) "x")"#.into();
+        let ran = one_job(&mut Answers, me, &state, job, &stop, &mut |_| {});
+        let said = ran.notice.map(|(text, _)| text).unwrap_or_default();
+        assert!(
+            said.starts_with("stopped · already took effect: (rename"),
+            "{said}"
+        );
+        Ok(())
+    }
+
+    /// A job leaves nothing for the next on the same worker: not what it
+    /// defined, not what it put in a context its config holds, not what a
+    /// failure stopped it in the middle of.
+    #[test]
+    fn a_job_leaves_nothing_for_the_next() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("fux-isolated-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("config.grift");
+        std::fs::write(&path, "(define! store (context))\n")?;
+        let state = Mutex::new(script::run_file(&path).map_err(|e| e.to_string())?);
+        let said = jobs_on_a_worker(
+            &state,
+            &[
+                "(define! mine 1) (bind store (quote! left) 2) (print (names store))",
+                "(print (names store))",
+                "(print mine)",
+                "(bind store (quote! failed) 3) (first 1)",
+                "(print (names store))",
+            ],
+        )?;
+        std::fs::remove_dir_all(dir)?;
+        let said: Vec<String> = said.into_iter().map(Option::unwrap_or_default).collect();
+        assert_eq!(said.first().map(String::as_str), Some("(left)"), "{said:?}");
+        assert_eq!(said.get(1).map(String::as_str), Some("()"), "{said:?}");
+        assert!(
+            said.get(2).is_some_and(|s| s.contains("unbound-symbol")),
+            "{said:?}"
+        );
+        assert!(
+            said.get(3).is_some_and(|s| s.contains("type-error")),
+            "{said:?}"
+        );
+        assert_eq!(said.get(4).map(String::as_str), Some("()"), "{said:?}");
+        Ok(())
+    }
+
     #[test]
     fn presentation_commits_whole_and_survives_a_later_failure()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1995,8 +2255,8 @@ mod tests {
         );
         let stop = script::Stop::default();
         let mut updates = Vec::new();
-        let code = "str history-bytes 0 set str program-clipboard false set str terminal-clipboard false set str bell false set str titles true set";
-        let ran = run_job(&mut Refuse, me, &state, &code.into(), &stop, &mut |p| {
+        let code = "(sequence! (define! variables-37 (context)) (define! value-38 \"history-bytes\") (define! value-39 (set value-38 0)) (define! value-40 \"program-clipboard\") (define! value-41 (set value-40 #false)) (define! value-42 \"terminal-clipboard\") (define! value-43 (set value-42 #false)) (define! value-44 \"bell\") (define! value-45 (set value-44 #false)) (define! value-46 \"titles\") (define! value-47 (set value-46 #true)) #inert)";
+        let ran = one_job(&mut Refuse, me, &state, code.into(), &stop, &mut |p| {
             updates.push(p)
         });
         assert!(ran.notice.is_none());
@@ -2015,23 +2275,24 @@ mod tests {
         );
         updates.clear();
         let committed = lock(&state).clone();
-        let failed = "str titles false set str Nope unbind";
-        let ran = run_job(&mut Refuse, me, &state, &failed.into(), &stop, &mut |p| {
+        let failed = "(sequence! (define! variables-48 (context)) (define! value-49 \"titles\") (define! value-50 (set value-49 #false)) (define! value-51 \"Nope\") (define! value-52 (unbind value-51)) #inert)";
+        let ran = one_job(&mut Refuse, me, &state, failed.into(), &stop, &mut |p| {
             updates.push(p)
         });
         assert!(ran.notice.is_some());
         assert!(updates.is_empty());
         assert_eq!(*lock(&state), committed);
-        let checkpoint = "str titles false set %1 str horizontal axis split drop";
-        let ran = run_job(
+        let checkpoint = "(sequence! (define! variables-53 (context)) (define! value-54 \"titles\") (define! value-55 (set value-54 #false)) (define! value-56 (pane 1)) (define! value-57 \"horizontal\") (define! value-58 (axis value-56 value-57)) (define! value-59 (split value-58)) #inert)";
+        let ran = one_job(
             &mut Refuse,
             me,
             &state,
-            &checkpoint.into(),
+            checkpoint.into(),
             &stop,
             &mut |p| updates.push(p),
         );
-        assert!(ran.notice.is_some());
+        let said = ran.notice.map(|(text, _)| text).unwrap_or_default();
+        assert!(said.contains("already took effect"), "{said}");
         assert!(updates.last().is_some_and(|p| !p.titles));
         assert!(!lock(&state).preferences.titles);
         Ok(())
@@ -2041,9 +2302,9 @@ mod tests {
     fn queued_programs_commit_the_whole_local_state() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         for code in [
-            "str C-b str C-a move-keys str history-bytes 2 set",
-            "str F5 code ls end bind str titles true set",
-            "str F6 code ls end bind str history-bytes 0 set str bell false set str Nope unbind",
+            "(sequence! (define! variables-60 (context)) (define! value-61 \"C-b\") (define! value-62 \"C-a\") (define! value-63 (move-keys value-61 value-62)) (define! value-64 \"history-bytes\") (define! value-65 (set value-64 2)) #inert)",
+            "(sequence! (define! variables-66 (context)) (define! value-67 \"F5\") (define! value-70 (code! (lambda! () (sequence! (define! variables-68 (context)) (define! value-69 (list-session)) value-69)))) (define! value-71 (bind-key value-67 value-70)) (define! value-72 \"titles\") (define! value-73 (set value-72 #true)) #inert)",
+            "(sequence! (define! variables-74 (context)) (define! value-75 \"F6\") (define! value-78 (code! (lambda! () (sequence! (define! variables-76 (context)) (define! value-77 (list-session)) value-77)))) (define! value-79 (bind-key value-75 value-78)) (define! value-80 \"history-bytes\") (define! value-81 (set value-80 0)) (define! value-82 \"bell\") (define! value-83 (set value-82 #false)) (define! value-84 \"Nope\") (define! value-85 (unbind value-84)) #inert)",
         ] {
             assert!(program(&mut keyboard, Job::from(code)).is_empty());
         }
@@ -2075,10 +2336,20 @@ mod tests {
             action: None,
         });
         keyboard.open(prompt.clone(), &mut Vec::new());
-        program(&mut keyboard, Job::from("str F5 code ls end bind"));
+        program(
+            &mut keyboard,
+            Job::from(
+                "(sequence! (define! variables-86 (context)) (define! value-87 \"F5\") (define! value-90 (code! (lambda! () (sequence! (define! variables-88 (context)) (define! value-89 (list-session)) value-89)))) (define! value-91 (bind-key value-87 value-90)) #inert)",
+            ),
+        );
         assert_eq!(all_ran(&mut keyboard)?, []);
         assert_eq!(keyboard.screen.screen, prompt);
-        program(&mut keyboard, Job::from("str line str F2 str home bind-in"));
+        program(
+            &mut keyboard,
+            Job::from(
+                "(sequence! (define! variables-92 (context)) (define! value-93 \"line\") (define! value-94 \"F2\") (define! value-95 \"home\") (define! value-96 (bind-in value-93 value-94 value-95)) #inert)",
+            ),
+        );
         let acts = all_ran(&mut keyboard)?;
         assert!(
             matches!(
@@ -2103,10 +2374,19 @@ mod tests {
     fn a_jobs_notice_survives_its_screen() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         let (mut session, client) = crate::script::testing::attached(24, 80)?;
-        for (suffix, failed) in [("str hello", false), ("str boom fail", true)] {
+        for (suffix, failed) in [
+            (
+                "(sequence! (define! variables-97 (context)) (define! value-98 \"hello\") value-98)",
+                false,
+            ),
+            (
+                "(sequence! (define! variables-99 (context)) (define! value-100 \"boom\") (define! value-101 (raise (error (quote! fail) value-100))) #inert)",
+                true,
+            ),
+        ] {
             program(
                 &mut keyboard,
-                Job::from(format!("me command-prompt {suffix}")),
+                Job::from(format!("(command-prompt (me)) {suffix}")),
             );
             let acts = all_ran(&mut keyboard)?;
             assert_eq!(
@@ -2125,7 +2405,7 @@ mod tests {
             }
         }
         keyboard.read_only = true;
-        program(&mut keyboard, Job::from("me command-prompt str hello"));
+        program(&mut keyboard, Job::from("(command-prompt (me)) \"hello\""));
         let acts = all_ran(&mut keyboard)?;
         assert!(
             matches!(acts.as_slice(), [Act::Notice { text, error: true }] if text.contains("watching only") && text.contains("hello"))
@@ -2140,7 +2420,9 @@ mod tests {
     fn a_stop_is_the_same_however_the_reads_split() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked(NOWHERE, "test")?;
         let mut state = script::default_state().map_err(|e| e.to_string())?;
-        let forever = crate::keymap::Binding::new(crate::testing::code("begin false until"));
+        let forever = crate::keymap::Binding::new(crate::testing::code(
+            "(lambda! () (let! ((spin (lambda! () (spin)))) (spin)))",
+        ));
         state.keys.bind(&[KeyPress::char('y')], forever)?;
         let typed = b"y\x02\x1b[27ux";
         for split in 0..=typed.len() {
@@ -2168,13 +2450,16 @@ mod tests {
     fn what_a_program_prints_is_its_notice() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         let line: String = std::iter::repeat_n('x', 1000).collect();
-        let code = format!("0 begin str {line} print 1 add 0 pick 1100 eq until drop");
+        let code = format!(
+            "(define! output-line {}) (define! repeat-output (lambda! (count) (when! (less-than? count 1100) (print output-line) (repeat-output (add count 1))))) (repeat-output 0)",
+            crate::script::quoted(&line)
+        );
         assert!(program(&mut keyboard, Job::from(code)).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let said = matches!(acts.as_slice(),
             [Act::Notice { text, error: false }] if text.matches('x').count() == 1_100_000);
         assert!(said, "{} acts", acts.len());
-        assert!(program(&mut keyboard, Job::from(format!("str {line}"))).is_empty());
+        assert!(program(&mut keyboard, Job::from(crate::script::quoted(&line))).is_empty());
         let acts = all_ran(&mut keyboard)?;
         let shown =
             matches!(acts.as_slice(), [Act::Notice { text, error: false }] if *text == line);

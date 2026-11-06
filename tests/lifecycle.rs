@@ -71,7 +71,7 @@ impl Bare {
         };
         let started = {
             let _guard = spawning()?;
-            bare.fux(&["start"])?
+            bare.fux(&["(sequence! (start) #inert)"])?
         };
         if !started.status.success() {
             return Err(String::from_utf8_lossy(&started.stderr).into_owned());
@@ -98,7 +98,7 @@ impl Bare {
 
 impl Drop for Bare {
     fn drop(&mut self) {
-        let _ = self.fux(&["kill-server"]);
+        let _ = self.fux(&["(sequence! (kill-server) #inert)"]);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -149,7 +149,12 @@ fn the_default_socket_is_under_xdg_runtime_dir_else_tmpdir() -> Outcome {
             "{}",
             expected.display()
         );
-        assert!(server.fux(&["kill-server"])?.status.success());
+        assert!(
+            server
+                .fux(&["(sequence! (kill-server) #inert)"])?
+                .status
+                .success()
+        );
         eventually("the socket to go", || Ok(!socket.exists()))?;
     }
     let _ = std::fs::remove_dir_all(&base);
@@ -191,7 +196,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
         let mut child = command.spawn().map_err(e)?;
         let capture = || {
             Command::new(FUX)
-                .args(["%1", "capture"])
+                .args(["(capture (pane 1))"])
                 .env("FUX_SOCKET", &socket)
                 .output()
                 .map_err(e)
@@ -201,16 +206,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
         eventually("the first shell made", || {
             let mut creating = Command::new(FUX);
             creating
-                .args([
-                    "opts",
-                    "str",
-                    "new-workspace",
-                    "in",
-                    "80",
-                    "24",
-                    "size",
-                    "new-tab",
-                ])
+                .args(["(new-tab (size (in (options) \"new-workspace\") 80 24))"])
                 .current_dir(&dir)
                 .env("FUX_SOCKET", &socket)
                 .env_remove("FUX_PANE")
@@ -230,16 +226,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
                     && String::from_utf8_lossy(&observed.stdout).contains('$'))
             })?;
             let typed = Command::new(FUX)
-                .args([
-                    "%1",
-                    "str",
-                    r#"printf '\nFUX-SHELL:%s\n' "$0""#,
-                    "text",
-                    "str",
-                    "Enter",
-                    "key",
-                    "send-keys",
-                ])
+                .args(["(send-keys (key (text (pane 1) \"printf '\\\\nFUX-SHELL:%s\\\\n' \\\"$0\\\"\") \"Enter\"))"])
                 .env("FUX_SOCKET", &socket)
                 .output()
                 .map_err(e)?;
@@ -270,7 +257,7 @@ fn a_pane_runs_the_clients_shell_else_bin_sh() -> Outcome {
 #[test]
 fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     // Little history, so the memory measured is what waits for the client.
-    let server = Server::start("str history-bytes 160000 set")?;
+    let server = Server::start("(sequence! (set \"history-bytes\" 160000) #inert)")?;
     let pid = server.pid().ok_or("the server's pid")?;
     let mut client = server.attach(60, 200)?;
     client.wait_for("$")?;
@@ -283,11 +270,11 @@ fn a_client_that_stops_reading_catches_up_when_it_reads_again() -> Outcome {
     // Not read for three seconds.
     std::thread::sleep(Duration::from_secs(3));
     let memory = resident_mib(pid)?;
-    server.ok(&["str", "%1", "pane", "str", "C-c", "press"])?;
+    server.ok(&["(press (pane \"%1\") \"C-c\")"])?;
     server.type_line("%1", "echo caught-up")?;
     eventually("the client to show what the server composes for it", || {
         client.pump()?;
-        let composed = server.ok(&["str", "c1", "client", "capture"])?;
+        let composed = server.ok(&["(capture (client \"c1\"))"])?;
         Ok(composed.contains("caught-up") && client.text().trim_end() == composed.trim_end())
     })?;
     // What was waiting for it stayed bounded: one frame.

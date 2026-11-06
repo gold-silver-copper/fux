@@ -3,18 +3,16 @@
 //! - A line starting with 0xff is a config statement: its next byte picks
 //!   `bind`, `unbind`, `unbind-all`, `move-keys`, `label`, `group` or
 //!   `repeat`, and each byte after picks a word for its next slot. It is
-//!   written as fuxth, and run as a config is.
+//!   written as grift, and run as a config is.
 //! - A line starting with 0xfe is keys typed at the client: its next byte
 //!   says whether the client only watches (its top bit), and each byte
 //!   after picks a key for `Held::press`.
-//! - Any other line is fuxth source: split into tokens, and run
-//!   as a config for a bounded number of steps, up to its first request
-//!   for the server.
+//! - Any other line is grift source: run as a config for a bounded time,
+//!   up to its first request for the server.
 use fux::keymap::{Binding, Entry, Held, Keymap, Map};
 use fux::screens::Effect;
-use fux::script::{Bound, Fux, Host};
+use fux::script::{Asks, Bound, Failed, Host, Machine, Stop};
 use fux_vt::keys::{KeyPress, Keystroke};
-use fuxth::{Machine, Outcome};
 use libfuzzer_sys::fuzz_target;
 
 /// Keys for bindings, one or several from the root: letters in both
@@ -69,23 +67,23 @@ const KEYS: &[&str] = &[
     "C-b C-b",
     "C-b t",
 ];
-/// Code to bind, written between `code` and `end`, and whether it
-/// compiles there: words the config's dictionary has, and some it does
-/// not, or that close or comment out the `end`.
+/// Code to bind, written in a `lambda!` as a config writes it, and whether
+/// it reads there: names are looked up when it runs, so only text that
+/// closes the form early or leaves it open does not.
 const CODES: &[(&str, bool)] = &[
-    ("me focused zoom", true),
-    ("opts new-tab drop", true),
-    ("me focused str right 1 move-border", true),
-    ("me str next focus", true),
+    ("(zoom (focused (me)))", true),
+    ("(new-tab (options))", true),
+    (r#"(move-border (focused (me)) "right" 1)"#, true),
+    (r#"(step (me) (focused (me)) "next")"#, true),
     ("", true),
-    ("str 'a b' drop", true),
-    ("1 if me focused zoom then", true),
-    ("# only a comment", false),
-    ("'unclosed", false),
-    ("nope-no-word", false),
-    ("define x me focused zoom end x", false),
-    ("if", false),
-    ("end", false),
+    (r#""a b""#, true),
+    ("(if! #true (zoom (focused (me))) #inert)", true),
+    ("; only a comment", false),
+    ("\"unclosed", false),
+    ("nope-no-word", true),
+    ("(define! x (zoom (focused (me)))) x", true),
+    ("(if!", false),
+    (")", false),
 ];
 /// Labels and groups.
 const TEXTS: &[&str] = &[
@@ -97,26 +95,14 @@ const PRESSES: &[&str] = &[
     "C-b", "C-a", "Escape", "Enter", "Up", "Down", "PageUp", "PageDown", "Home", "End", "t", "w",
     "r", "m", "h", "l", "n", "g", "y", "z", "x", "d", "e", "G", "M-t", "F5", "Left", "1", "é", "a",
 ];
-/// How many steps a free program may take: enough for any config, few
+/// How long a free program may take: enough for any config, little
 /// enough for a loop to end.
-const BUDGET: u64 = 20_000;
+const BOUND: std::time::Duration = std::time::Duration::from_secs(1);
+/// What makes a free program read a file, or wait for its input.
+const READS: &[&str] = &["include", "require", "read", "input"];
 
 fn pick<'a>(list: &[&'a str], b: u8) -> &'a str {
     list[usize::from(b) % list.len()]
-}
-
-/// A word as fuxth reads it back: bare if nothing in it is special, else
-/// in single quotes, as native hints and list-keys quote words.
-fn quote(word: &str) -> String {
-    let bare = !word.is_empty()
-        && !word.starts_with('#')
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
-    match bare {
-        true => word.to_owned(),
-        false => format!("'{}'", word.replace('\'', "'\\''")),
-    }
 }
 
 /// A config statement, picked: the word, and the strings it takes.
@@ -153,16 +139,20 @@ impl Statement {
     }
 
     /// The statement as a config file writes it.
-    fn fuxth(&self) -> String {
-        let str = |s: &str| format!("str {}", quote(s));
+    fn grift(&self) -> String {
+        let str = fux::script::quoted;
         match self {
-            Statement::Bind { keys, code } => format!("{} code {code} end bind", str(keys)),
-            Statement::Unbind(keys) => format!("{} unbind", str(keys)),
-            Statement::UnbindAll => "unbind-all".to_owned(),
-            Statement::MoveKeys { from, to } => format!("{} {} move-keys", str(from), str(to)),
-            Statement::Label(text) => format!("{} label", str(text)),
-            Statement::Group(text) => format!("{} group", str(text)),
-            Statement::Repeat(keys) => format!("{} repeat", str(keys)),
+            Statement::Bind { keys, code } => {
+                format!("(bind-key {} (code! {}))", str(keys), lambda(code))
+            }
+            Statement::Unbind(keys) => format!("(unbind {})", str(keys)),
+            Statement::UnbindAll => "(unbind-all)".to_owned(),
+            Statement::MoveKeys { from, to } => {
+                format!("(move-keys {} {})", str(from), str(to))
+            }
+            Statement::Label(text) => format!("(label {})", str(text)),
+            Statement::Group(text) => format!("(group {})", str(text)),
+            Statement::Repeat(keys) => format!("(repeat {})", str(keys)),
         }
     }
 }
@@ -219,8 +209,7 @@ impl Models {
     fn apply(&mut self, statement: &Statement) -> bool {
         match statement {
             Statement::Bind { keys, code } => {
-                // The code is compiled as it is bound, from the words
-                // between code and end.
+                // The code is kept as it read.
                 let Some(code) = compiled(code) else {
                     return false;
                 };
@@ -354,14 +343,21 @@ impl Models {
     }
 }
 
-/// The code value `code … end` makes of `code`, if it compiles.
+/// `code` as a binding's function.
+fn lambda(code: &str) -> String {
+    match code {
+        "" => "(lambda! () #inert)".to_owned(),
+        code => format!("(lambda! () {code} #inert)"),
+    }
+}
+
+/// The code value `code!` makes of `code`, if it reads.
 fn compiled(code: &str) -> Option<fux_wire::callback::Code> {
-    let (_, compiles) = CODES.iter().find(|(c, _)| *c == code)?;
-    let tokens = fuxth::token::source("binding", code)
-        .ok()
-        .filter(|_| *compiles)?;
-    let words = tokens.iter().map(|t| t.text.to_string()).collect();
-    Some(fux_wire::callback::Code { words })
+    let (_, reads) = CODES.iter().find(|(c, _)| *c == code)?;
+    reads.then(|| fux_wire::callback::Code {
+        source: lambda(code),
+        ..Default::default()
+    })
 }
 
 /// The rules every keymap keeps that its types do not: no empty map held
@@ -406,11 +402,20 @@ fn defaults() -> &'static Keymap {
     &default_state().keys
 }
 
-/// Runs `machine` as a config against `keymap`, for at most `BUDGET`
-/// steps, until it ends, fails, or asks the server something (there is
-/// none). Whether it ran to its end, and the binding it made last.
+/// What refuses every request: there is no server.
+struct NoServer;
+
+impl Asks for NoServer {
+    fn ask(&mut self, _: &fux_wire::protocol::Asked) -> Result<fux_wire::protocol::Reply, Failed> {
+        Err(Failed::new(fux_wire::code::Code::Fail, "no server"))
+    }
+}
+
+/// Runs `machine` as a config against `keymap`, for at most `BOUND`, until
+/// it ends, fails, or asks the server something (there is none). Whether it
+/// ran to its end, and the binding it made last.
 fn run_config(
-    machine: &mut Machine<Fux>,
+    machine: &mut Machine,
     keymap: &mut Keymap,
     last: Option<Bound>,
 ) -> (bool, Option<Bound>) {
@@ -423,10 +428,25 @@ fn run_config(
         &mut out,
     );
     host.last_bound = last;
-    let finished = matches!(machine.run(&mut host, BUDGET), Ok(Outcome::Finished));
+    let stop = Stop::default();
+    let (ended, ending) = std::sync::mpsc::channel::<()>();
+    let watch = stop.clone();
+    let watcher = std::thread::spawn(move || {
+        if ending.recv_timeout(BOUND).is_err() {
+            watch.stop();
+        }
+    });
+    let ran = fux::script::run(machine, &mut host, &mut NoServer, Some(&stop));
+    let _ = ended.send(());
+    watcher.join().expect("the watcher ends");
+    if let Err(failed) = &ran {
+        // A mistake in the program, or a refusal.
+        assert!(failed.code.status().get() != 0, "{failed}");
+        assert!(!failed.code.name().is_empty(), "{failed}");
+    }
     let last = host.last_bound.clone();
     *keymap = state.keys;
-    (finished, last)
+    (ran.is_ok(), last)
 }
 
 /// The keys of the client, as its own: the keymap, what its keys are in
@@ -457,7 +477,8 @@ impl Client {
                     panic!("{program:?} runs but is no code value");
                 };
                 assert!(
-                    codes.contains(&code) || (read_only && code.words == ["me", "detach"]),
+                    codes.contains(&code)
+                        || (read_only && code.source == "(lambda! () (detach (me)))"),
                     "{code:?} runs but is not bound"
                 );
             }
@@ -512,10 +533,8 @@ fuzz_target!(|data: &[u8]| {
                     continue;
                 };
                 let statement = Statement::picked(kind, picks);
-                let text = statement.fuxth();
-                let tokens = fuxth::token::source("config", &text);
-                let tokens = tokens.unwrap_or_else(|e| panic!("{text:?}: {e}"));
-                let compiled = fux::script::compile(&tokens);
+                let text = statement.grift();
+                let compiled = fux::script::compile(&text);
                 let mut machine = compiled.unwrap_or_else(|e| panic!("{text:?}: {e}"));
                 let last = models.last.clone();
                 let (accepted, last) = run_config(&mut machine, &mut client.keymap, last);
@@ -548,26 +567,11 @@ fuzz_target!(|data: &[u8]| {
             }
             _ => {
                 let text = String::from_utf8_lossy(line);
-                let Ok(tokens) = fuxth::token::source("fuzz", &text) else {
+                if READS.iter().any(|word| text.contains(word)) {
                     continue;
-                };
-                // Written as native hints and list-keys write words, they read back.
-                let texts: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
-                let quoted: Vec<String> = texts.iter().map(|t| quote(t)).collect();
-                let again = fuxth::token::source("again", &quoted.join(" "));
-                let again = again.unwrap_or_else(|e| panic!("{quoted:?}: {e}"));
-                let again: Vec<&str> = again.iter().map(|t| &*t.text).collect();
-                assert_eq!(again, texts, "{text:?}");
-                let mut machine = match fux::script::compile(&tokens) {
-                    Ok(machine) => machine,
-                    Err(failed) => {
-                        // A mistake in the program (2), or a refusal (1).
-                        let status = failed.code.status().get();
-                        assert!(matches!(status, 1 | 2), "{text:?}: {failed}");
-                        assert!(!failed.code.name().is_empty(), "{text:?}: {failed}");
-                        continue;
-                    }
-                };
+                }
+                let compiled = fux::script::compile(&text);
+                let mut machine = compiled.unwrap_or_else(|e| panic!("{text:?}: {e}"));
                 let last = models.last.clone();
                 let (_, last) = run_config(&mut machine, &mut client.keymap, last);
                 models = Models::of(&client.keymap, last);

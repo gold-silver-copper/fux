@@ -1,8 +1,8 @@
 //! fux: a terminal multiplexer. One server holds workspaces, tabs and split
-//! panes; `fux` shows them in a terminal; `fux WORDS…`, a fuxth program,
+//! panes; `fux` shows them in a terminal; `fux '(PROGRAM)'`, a grift program,
 //! drives them.
 //!
-//! This crate is the client: the terminal it shows, fux's fuxth vocabulary,
+//! This crate is the client: the terminal it shows, fux's grift words,
 //! and the `fux` binary, which also runs the server (`fux __serve`). The
 //! server is `fux-server`, and what the two say to each other is
 //! `fux-wire`.
@@ -26,8 +26,10 @@ mod testing {
     /// A code value of `words`, split at spaces, as `code … end` around
     /// them reads them: for tests, as no word turns text into code.
     pub fn code(words: &str) -> fux_wire::callback::Code {
-        let words = words.split_whitespace().map(String::from).collect();
-        fux_wire::callback::Code { words }
+        fux_wire::callback::Code {
+            source: words.to_owned(),
+            ..Default::default()
+        }
     }
 }
 
@@ -37,8 +39,8 @@ mod testing {
 static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
 
 /// The command line of the `fux` binary: no words attaches; `-` runs the
-/// fuxth on stdin; `--file FILE ARGS…` runs a file; any other words are a
-/// fuxth program.
+/// grift on stdin; `--file FILE ARGS…` runs a file; any other argument is a
+/// grift program.
 pub fn main() -> ExitCode {
     if let Some(status) = internal() {
         return status;
@@ -62,7 +64,7 @@ fn internal() -> Option<ExitCode> {
     }
 }
 
-/// The client: a fuxth program, or attaching.
+/// The client: a grift program, or attaching.
 fn client() -> ExitCode {
     fuxix::terminal::open_stdio();
     let argv: Vec<_> = std::env::args_os().collect();

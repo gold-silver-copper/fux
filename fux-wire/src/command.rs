@@ -1,5 +1,5 @@
 //! The requests a client sends the server: typed actions, each built by
-//! fuxth words in a client (its `script`) and carried whole over the
+//! grift words in a client (its `script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::Axis;
@@ -119,11 +119,6 @@ impl Program {
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.program.as_str()).chain(self.args.iter().map(String::as_str))
     }
-    /// How many words: the program and its arguments.
-    pub fn word_count(&self) -> usize {
-        self.args.len().saturating_add(1)
-    }
-
     pub fn program(&self) -> &str {
         &self.program
     }
@@ -300,7 +295,7 @@ pub fn size(rows: impl Into<i64>, cols: impl Into<i64>) -> Result<(u16, u16), cr
 
 /// A size a client's screen, and so a tab, may be: at least 1 row and
 /// column, and a grid fux-vt can make. Every size a request gives is one,
-/// so each size the server holds is one a dump writes (`COLS ROWS size`)
+/// so each size the server holds is one a dump writes (`(size OPTIONS COLUMNS ROWS)`)
 /// and makes again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Screen(fux_vt::Size);
@@ -317,7 +312,7 @@ impl Screen {
             .filter(|size| fux_vt::fits(*size));
         size.map(Screen).ok_or_else(|| {
             crate::code::fail(
-                crate::code::Raise::Size,
+                crate::code::Code::Size,
                 format!("{cols} columns by {rows} rows: no screen is that size"),
             )
         })
@@ -910,7 +905,7 @@ wire! {
             target: Option<AnyRef>,
             members: Members,
         },
-        /// A command on one client's screen: the client named (`str c1 client`), or the one
+        /// A command on one client's screen: the client named (`(client "c1")`), or the one
         /// whose key, chooser or prompt ran it.
         Client {
             client: Option<ClientId>,

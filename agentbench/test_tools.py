@@ -59,89 +59,51 @@ class Tools(unittest.TestCase):
                         self.assertTrue(driver.stopped)
                         reap.assert_called_once()
 
-    def test_published_journal_recipe_saves_cursor_before_launch_and_refuses_loss(self):
-        namespace = {"__name__": "test_recipe"}
-        exec(published.block("**First recorded exit across jobs:**", "python"), namespace)
-        for event in ({"event": "exited", "pane": "%1"},
-                      {"event": "exited", "pane": "%2"},
-                      {"event": "exited", "pane": "%3"},
-                      {"event": "missed", "count": 1}):
-            calls = []
-
-            def fux(*words):
-                calls.append(words)
-                if words == ("ls", "json"):
-                    return '{"cursor":"0:RUN"}'
-                if words[-1] == "new-tab":
-                    return f"%{sum(c[-1] == 'new-tab' for c in calls)}:0:RUN"
-                if "next-events" in words:
-                    return json.dumps({"events": [] if event["event"] == "missed" else [event],
-                                       "missed": event.get("count", 0),
-                                       "next": "1:RUN", "status": "continuing"})
-                return ""
-
-            with self.subTest(event=event):
-                if event["event"] == "missed":
-                    with self.assertRaisesRegex(RuntimeError, "first exit is unknown"):
-                        namespace["first_exit"](fux)
-                else:
-                    receipt = namespace["first_exit"](fux)
-                    self.assertEqual(receipt["first"], event)
-                    self.assertEqual(receipt["cursor"], "0:RUN")
-                    self.assertEqual(receipt["panes"], {"%1": "a", "%2": "b", "%3": "c"})
-                self.assertEqual(calls[0], ("ls", "json"))
-                self.assertEqual(calls[4], ("all", "str", "0:RUN", "5", "next-events", "json"))
-                self.assertEqual(calls[-3:], [("str", f"%{n}", "pane", "kill") for n in (1, 2, 3)])
-
-    def test_published_recipe_waits_past_a_batch_timeout(self):
-        namespace = {"__name__": "test_recipe"}
-        exec(published.block("**First recorded exit across jobs:**", "python"), namespace)
-        batches = iter([
-            {"events": [], "next": "0:RUN", "missed": 0, "status": "timeout"},
-            {"events": [{"event": "exited", "pane": "%1"}], "next": "1:RUN", "missed": 0, "status": "continuing"},
-        ])
-        launched = []
-        def fux(*words):
-            if words == ("ls", "json"): return '{"cursor":"0:RUN"}'
-            if words[-1] == "new-tab":
-                launched.append(words)
-                return f"%{len(launched)}:0:RUN"
-            if "next-events" in words: return json.dumps(next(batches))
-            return ""
-        self.assertEqual(namespace["first_exit"](fux)["first"]["pane"], "%1")
+    def test_grift_data_reads_back_as_records_lists_and_atoms(self):
+        data = drivers.read_data(
+            '((id %1:RUN) (text "a\\"b\\n\\x1b;") (exited none) (rows 24) '
+            '(alive #true) (ratio 0.5) (panes ()) (args ("x" "y")))')
+        self.assertEqual(data, {"id": "%1:RUN", "text": 'a"b\n\x1b', "exited": None, "rows": 24,
+                                "alive": True, "ratio": 0.5, "panes": [], "args": ["x", "y"]})
+        self.assertEqual(drivers.short(data["id"]), "%1")
+        self.assertEqual(drivers.read_data(drivers.string('a"b\\c')), 'a"b\\c')
+        for text in ("", "(1", "1 2"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                drivers.read_data(text)
 
     def test_first_exit_driver_waits_past_a_batch_timeout(self):
         driver = drivers.Fux.__new__(drivers.Fux)
         batches = iter([
-            {"events": [], "next": "0:RUN", "missed": 0, "status": "timeout"},
-            {"events": [{"event": "exited", "pane": "%1"}], "next": "1:RUN", "missed": 0, "status": "continuing"},
+            '((events ()) (next "0:RUN") (missed 0) (status "timeout"))',
+            '((events (((event "exited") (pane %1:RUN)))) (next "1:RUN") (missed 0) '
+            '(status "continuing"))',
         ])
         calls = []
-        def fux(*words, **kwargs):
-            calls.append((words, kwargs["timeout"]))
-            return SimpleNamespace(stdout=json.dumps(next(batches)))
+        def fux(program, **kwargs):
+            calls.append((program, kwargs["timeout"]))
+            return SimpleNamespace(stdout=next(batches))
         driver.fux = fux
         with patch.object(drivers.time, "monotonic", side_effect=[0, 0, 5]):
             self.assertEqual(driver.wait_first_exit({"a": "%1"}, "0:RUN", timeout=15), "a")
-        self.assertEqual([call[0][2] for call in calls], ["0:RUN", "0:RUN"])
+        self.assertEqual([call[0] for call in calls], ['(data-text (next-events (all) "0:RUN" 5))'] * 2)
         self.assertEqual([call[1] for call in calls], [15, 10])
 
     def test_first_exit_driver_continues_from_filtered_batch_prefixes(self):
         driver = drivers.Fux.__new__(drivers.Fux)
         batches = iter([
-            {"events": [], "next": "256:RUN", "missed": 0, "status": "continuing"},
-            {"events": [{"event": "exited", "pane": "%1"}], "next": "257:RUN",
-             "missed": 0, "status": "continuing"},
+            '((events ()) (next "256:RUN") (missed 0) (status "continuing"))',
+            '((events (((event "exited") (pane %1:RUN)))) (next "257:RUN") (missed 0) '
+            '(status "continuing"))',
         ])
         calls = []
 
-        def fux(*words, **kwargs):
-            calls.append(words)
-            return SimpleNamespace(stdout=json.dumps(next(batches)))
+        def fux(program, **kwargs):
+            calls.append(program)
+            return SimpleNamespace(stdout=next(batches))
 
         driver.fux = fux
         self.assertEqual(driver.wait_first_exit({"a": "%1"}, "0:RUN"), "a")
-        self.assertEqual([call[2] for call in calls], ["0:RUN", "256:RUN"])
+        self.assertEqual(calls, ['(data-text (next-events (all) "0:RUN" 5))', '(data-text (next-events (all) "256:RUN" 5))'])
 
     def test_published_tasks_are_scripted_fux_only_and_count_in_reports(self):
         tasks = run.tasks()
@@ -164,10 +126,8 @@ class Tools(unittest.TestCase):
         self.assertIn("| **all** | **3/4**", report.scripted_table(results, "guide"))
 
     def test_published_first_exit_uses_an_independent_prelaunch_cursor(self):
-        receipt = {"cursor": "9:RUN", "panes": {"%1": "a", "%2": "b"},
-                   "first": {"event": "exited", "pane": "%1"}}
+        receipt = '("9:RUN" ("%1:RUN" "%2:RUN") ((event "exited") (pane %1:RUN)))'
         with tempfile.TemporaryDirectory() as work:
-            (Path(work) / "fux-calls").write_text(".\n" * 8)
             calls = []
 
             def cursor():
@@ -176,12 +136,12 @@ class Tools(unittest.TestCase):
 
             def script(*args, **kwargs):
                 calls.append("recipe")
-                return SimpleNamespace(stdout=json.dumps(receipt))
+                return SimpleNamespace(stdout=receipt)
 
-            driver = SimpleNamespace(name="fux", work=work, calls=0,
+            driver = SimpleNamespace(name="fux", work=work, bin="fux",
                                      spawn=lambda *a: "%0", kill=lambda *a: None,
                                      events_cursor=cursor, run=script)
-            for recorded in ("a", "b"):
+            for recorded in ("%1", "%2"):
                 with self.subTest(recorded=recorded):
                     calls.clear()
 
@@ -190,7 +150,7 @@ class Tools(unittest.TestCase):
                         return recorded
 
                     driver.wait_first_exit = replay
-                    if recorded == "a":
+                    if recorded == "%1":
                         self.assertEqual(published.first_exit(driver, {}, ""), "recorded")
                     else:
                         with self.assertRaisesRegex(RuntimeError, "differs from"):
@@ -199,34 +159,29 @@ class Tools(unittest.TestCase):
 
     def test_title_lookup_uses_one_topology_observation(self):
         driver = drivers.Fux.__new__(drivers.Fux)
-        reply = SimpleNamespace(stdout=json.dumps({"panes": [
-            {"id": "%1", "title": "other"}, {"id": "%2", "title": "ledger"}]}))
+        reply = SimpleNamespace(stdout='((panes (((id %1:RUN) (title "other")) '
+                                       '((id %2:RUN) (title "ledger")))))')
         with patch.object(driver, "fux", return_value=reply) as ask:
             self.assertEqual(driver.find_title("ledger"), "%2")
             ask.assert_called_once()
 
     def test_coverage_requires_words_and_reports_missing_native_and_library_names(self):
-        help_text = ("Words:\n  capture              pane -- capture\n"
-                     "  signal               pane -- answer\n"
-                     "  choose-workspace-for client pane -- x\n"
-                     "\nThe libraries (`fux help WORD` says each):\n  quiet\n"
-                     "\n\nThe server: socket\n")
-        known = guide_check.words_of_fux(help_text)
-        self.assertIn("choose-workspace-for", known)
+        dictionary = ("capture fux\nsignal fux\nchoose-workspace-for fux\n"
+                      "quiet library\nfirst core\n")
+        known = guide_check.words_of_fux(dictionary)
+        self.assertEqual(known, {"capture", "signal", "choose-workspace-for", "quiet"})
         source = ('class Fux(Driver):\n'
                   '    def read(self, state):\n'
-                  '        self.fux(*["capture"], "quiet", "choose-workspace-for")\n'
-                  '        return state["signal"]\n')
+                  '        self.fux("(capture (quiet (first (choose-workspace-for))))")\n'
+                  '        return state["(signal"]\n')
         used = guide_check.driver_words(source, known)
         self.assertEqual(used, {"capture", "quiet", "choose-workspace-for"})
         self.assertEqual(guide_check.missing_words(used, "capture quiet choose-workspace-for"), [])
         self.assertEqual(guide_check.missing_words(used, "capture quiet"), ["choose-workspace-for"])
         self.assertEqual(guide_check.missing_words(used, "captured quietly"),
                          ["capture", "choose-workspace-for", "quiet"])
-        for text in ("", help_text.replace("  quiet", ""),
-                     help_text.replace("  ", "")):
-            with self.subTest(text=text), self.assertRaises(ValueError):
-                guide_check.words_of_fux(text)
+        with self.assertRaises(ValueError):
+            guide_check.words_of_fux("first core\n")
         with self.assertRaises(ValueError):
             guide_check.driver_words("class Fux(Driver): pass", known)
 

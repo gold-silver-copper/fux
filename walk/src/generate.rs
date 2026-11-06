@@ -1,6 +1,6 @@
 //! Choosing the next step from the live state. Choices are small random
-//! indices resolved against `ls json` when the step is made, and the step
-//! records what they resolved to. Commands are fuxth programs.
+//! indices resolved against the session's listing when the step is made, and the step
+//! records what they resolved to. Commands are grift programs.
 use crate::rng::Rng;
 use crate::step::{Act, Config, Step, Stop};
 use crate::world::World;
@@ -83,17 +83,17 @@ const OVERLAY: &[&str] = &[
 /// Letters, to whatever has the keys: a pane, or a screen's keys.
 const LETTERS: &[u8] = b"hjklwbaeudtzfrnpvsxoyq";
 
-/// Lines typed into the command prompt, fuxth the client runs as its
+/// Lines typed into the command prompt, grift the client runs as its
 /// own, some of it wrong.
 const PROMPT: &[&str] = &[
-    "me focused str horizontal axis split drop\r",
-    "me focused zoom\r",
-    "ls\r",
-    "me me focused tab str next step\r",
+    "(split (axis (focused (me)) \"horizontal\"))\r",
+    "(zoom (focused (me)))\r",
+    "(list-session)\r",
+    "(step (me) (tab (focused (me))) \"next\")\r",
     "nonsense\r",
-    "str %99 pane kill\r",
-    "me me focused tab rename-prompt\r",
-    "str 'C-b g l' code me focused str right 1 move-border end bind str 'C-b g' repeat\r",
+    "(kill (pane \"%99\"))\r",
+    "(rename-prompt (me) (tab (focused (me))))\r",
+    "(bind-key \"C-b g l\" (code! (lambda! () (move-border (focused (me)) \"right\" 1) #inert))) (repeat \"C-b g\")\r",
 ];
 
 /// Sizes a client's terminal is resized to: tiny, one row, one column,
@@ -110,10 +110,6 @@ const SIZES: &[(u16, u16)] = &[
     (60, 200),
 ];
 
-fn words(text: &str) -> Vec<String> {
-    text.split(' ').map(str::to_owned).collect()
-}
-
 /// The next step.
 pub fn step(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> Step {
     let panes: Vec<&str> = world.panes().map(|p| p.id.as_str()).collect();
@@ -121,7 +117,7 @@ pub fn step(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> 
     // there are fewer than two panes, the walk makes one first.
     if panes.len() < 2 {
         let pane = panes.first().copied().unwrap_or("%1");
-        return Step::Cli(words(&format!("str {pane} pane str horizontal axis split")));
+        return Step::Cli(format!(r#"(split (axis (pane "{pane}") "horizontal"))"#));
     }
     if clients.is_empty() {
         return Step::Attach { rows: 24, cols: 80 };
@@ -238,7 +234,7 @@ fn keys(rng: &mut Rng, prefix: u8) -> Vec<u8> {
 
 /// A command line from the whole vocabulary, targets taken from the
 /// state, some of them wrong.
-fn cli(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> Vec<String> {
+fn cli(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> String {
     let pane = |rng: &mut Rng| -> String {
         let panes: Vec<&str> = world.panes().map(|p| p.id.as_str()).collect();
         if rng.chance(5) {
@@ -289,131 +285,159 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> Vec<S
     let panes = world.panes().count();
     let tabs = world.tabs().count();
     let spaces = world.workspaces.len();
-    let line = match rng.below(40) {
+    match rng.below(40) {
         0 => format!(
-            "opts 80 23 size str {} workspace in new-tab",
+            r#"(new-tab (in (size (options) 80 23) (workspace "{}")))"#,
             workspace(rng)
         ),
         1 => format!(
-            "opts 80 23 size str {} workspace in str t{} name new-tab",
+            r#"(new-tab (name (in (size (options) 80 23) (workspace "{}")) "t{}"))"#,
             workspace(rng),
             rng.below(9)
         ),
-        2 => format!("opts 80 23 size str w{} in new-tab", rng.below(9)),
-        3 => format!("str {} pane str horizontal axis split", pane(rng)),
+        2 => format!(
+            r#"(new-tab (in (size (options) 80 23) "w{}"))"#,
+            rng.below(9)
+        ),
+        3 => format!(r#"(split (axis (pane "{}") "horizontal"))"#, pane(rng)),
         4 => format!(
-            "str {} pane str horizontal axis {} program-clipboard split",
+            r#"(split (program-clipboard (axis (pane "{}") "horizontal") #{}))"#,
             pane(rng),
             rng.chance(50)
         ),
         5 => format!(
-            "str {} pane str vertical axis str echo program str split-typed arg split",
+            r#"(split (argument (program (axis (pane "{}") "vertical") "echo") "split-typed"))"#,
             pane(rng)
         ),
-        6 if panes > 2 => format!("str {} pane kill", pane(rng)),
-        7 if tabs > 1 && panes > 2 => format!("str {} tab kill", tab(rng)),
-        8 if spaces > 1 && panes > 2 => format!("str {} workspace kill", workspace(rng)),
-        9 => format!("str {} pane str renamed-{} rename", pane(rng), rng.below(9)),
-        10 => format!("str {} tab str tab-{} rename", tab(rng), rng.below(9)),
+        6 if panes > 2 => format!(r#"(kill (pane "{}"))"#, pane(rng)),
+        7 if tabs > 1 && panes > 2 => format!(r#"(kill (tab "{}"))"#, tab(rng)),
+        8 if spaces > 1 && panes > 2 => format!(r#"(kill (workspace "{}"))"#, workspace(rng)),
+        9 => format!(
+            r#"(rename (pane "{}") "renamed-{}")"#,
+            pane(rng),
+            rng.below(9)
+        ),
+        10 => format!(r#"(rename (tab "{}") "tab-{}")"#, tab(rng), rng.below(9)),
         11 => format!(
-            "str {} pane {} move",
+            r#"(move (pane "{}") {})"#,
             pane(rng),
             match rng.below(4) {
-                0 => format!("str {} tab", tab(rng)),
-                1 => format!("str {} workspace", workspace(rng)),
-                2 => "str new-tab".into(),
-                _ => "str new-workspace".into(),
+                0 => format!(r#"(tab "{}")"#, tab(rng)),
+                1 => format!(r#"(workspace "{}")"#, workspace(rng)),
+                2 => r#""new-tab""#.into(),
+                _ => r#""new-workspace""#.into(),
             }
         ),
-        12 => format!("str {} pane str {} move", pane(rng), direction(rng)),
-        13 => format!("str {} pane str {} pane swap-with", pane(rng), pane(rng)),
-        14 => format!("str {} pane str {} swap-with", pane(rng), direction(rng)),
+        12 => format!(r#"(move (pane "{}") "{}")"#, pane(rng), direction(rng)),
+        13 => format!(
+            r#"(swap-with (pane "{}") (pane "{}"))"#,
+            pane(rng),
+            pane(rng)
+        ),
+        14 => format!(r#"(swap-with (pane "{}") "{}")"#, pane(rng), direction(rng)),
         15 => format!(
-            "str {} pane str {} {} move-border",
+            r#"(move-border (pane "{}") "{}" {})"#,
             pane(rng),
             direction(rng),
             rng.below(6)
         ),
         16 => format!(
-            "str {} {} str {} reorder",
+            r#"(reorder ({} "{}") "{}")"#,
+            kind(rng),
             match rng.below(3) {
                 0 => pane(rng),
                 1 => tab(rng),
                 _ => workspace(rng),
             },
-            kind(rng),
             if rng.chance(50) { "next" } else { "previous" }
         ),
-        17 => format!("str {} client str {} pane show", client(rng), pane(rng)),
-        18 => format!(
-            "str {} client dup focused str {} step",
+        17 => format!(
+            r#"(show (client "{}") (pane "{}"))"#,
             client(rng),
-            rng.pick(&["next", "previous", "last", "left", "right", "up", "down"])
-                .copied()
-                .unwrap_or("next")
+            pane(rng)
         ),
-        19 => format!("str {} client str {} tab show", client(rng), tab(rng)),
-        20 => format!(
-            "str {} client dup focused tab str {} step",
-            client(rng),
-            rng.pick(&["next", "previous", "last"])
-                .copied()
-                .unwrap_or("next")
-        ),
+        18 => {
+            let client = client(rng);
+            format!(
+                r#"(step (client "{client}") (focused (client "{client}")) "{}")"#,
+                rng.pick(&["next", "previous", "last", "left", "right", "up", "down"])
+                    .copied()
+                    .unwrap_or("next")
+            )
+        }
+        19 => format!(r#"(show (client "{}") (tab "{}"))"#, client(rng), tab(rng)),
+        20 => {
+            let client = client(rng);
+            format!(
+                r#"(step (client "{client}") (tab (focused (client "{client}"))) "{}")"#,
+                rng.pick(&["next", "previous", "last"])
+                    .copied()
+                    .unwrap_or("next")
+            )
+        }
         21 => format!(
-            "str {} client str {} workspace show",
+            r#"(show (client "{}") (workspace "{}"))"#,
             client(rng),
             workspace(rng)
         ),
-        22 => format!("str {} pane zoom", pane(rng)),
+        22 => format!(r#"(zoom (pane "{}"))"#, pane(rng)),
         // The prefix sent to a client is taken as typed there: it opens
         // the column if it is that client's prefix.
         23 => match rng.below(4) {
-            0 => format!("str {} client str C-b key send-keys", client(rng)),
-            1 => format!("str {} client command-prompt", client(rng)),
+            0 => format!(r#"(send-keys (key (client "{}") "C-b"))"#, client(rng)),
+            1 => format!(r#"(command-prompt (client "{}"))"#, client(rng)),
             // A tab's or workspace's chooser, as its key opens it.
             n => {
                 let (client, prefix) = prefixed(rng);
                 let map = if n == 2 { "t" } else { "w" };
-                format!("str {client} client str {prefix} key str {map}g text send-keys")
+                format!(r#"(send-keys (text (key (client "{client}") "{prefix}") "{map}g"))"#)
             }
         },
-        24 => format!("str {} client dup focused {} menu", client(rng), kind(rng)),
+        24 => {
+            let client = client(rng);
+            let focused = format!(r#"(focused (client "{client}"))"#);
+            let target = match kind(rng) {
+                "pane" => focused,
+                kind => format!("({kind} {focused})"),
+            };
+            format!(r#"(choose-among (client "{client}") {target})"#)
+        }
         // The pane's, tab's or workspace's rename prompt, then its close
         // confirmation, as their keys open them.
         n @ (25 | 26) => {
             let (client, prefix) = prefixed(rng);
             let key = if n == 25 { "r" } else { "x" };
             format!(
-                "str {client} client str {prefix} key str {}{key} text send-keys",
+                r#"(send-keys (text (key (client "{client}") "{prefix}") "{}{key}"))"#,
                 map(rng)
             )
         }
         27 => match rng.below(2) {
-            0 => format!("str {} pane 0 history-budget", pane(rng)),
-            _ => format!("str {} pane 100000 history-budget", pane(rng)),
+            0 => format!(r#"(history-budget (pane "{}") 0)"#, pane(rng)),
+            _ => format!(r#"(history-budget (pane "{}") 100000)"#, pane(rng)),
         },
-        28 => "all dump".into(),
+        28 => "(dump (all))".into(),
         29 => format!(
-            "str {} pane str typed-by-send-keys text send-keys",
+            r#"(send-keys (text (pane "{}") "typed-by-send-keys"))"#,
             pane(rng)
         ),
-        30 => format!("str {} pane str Enter key send-keys", pane(rng)),
-        31 => format!("str {} pane 20 history capture", pane(rng)),
-        32 => "ls".into(),
-        33 => "list-keys".into(),
-        34 => format!("str {} pane str pasted paste send-keys", pane(rng)),
-        35 => format!("str {} pane all-history capture", pane(rng)),
-        36 => format!("str {} pane str TERM signal", pane(rng)),
-        37 if clients.len() > 1 => format!("str {} client detach", client(rng)),
-        38 => format!("str {} client capture", client(rng)),
-        _ => format!(
-            "str {} client dup focused workspace str {} step",
-            client(rng),
-            rng.pick(&["next", "previous", "last"])
-                .copied()
-                .unwrap_or("next")
-        ),
-    };
-    words(&line)
+        30 => format!(r#"(send-keys (key (pane "{}") "Enter"))"#, pane(rng)),
+        31 => format!(r#"(capture (history (pane "{}") 20))"#, pane(rng)),
+        32 => "(list-session)".into(),
+        33 => "(list-keys)".into(),
+        34 => format!(r#"(send-keys (paste (pane "{}") "pasted"))"#, pane(rng)),
+        35 => format!(r#"(capture (all-history (pane "{}")))"#, pane(rng)),
+        36 => format!(r#"(signal (pane "{}") "TERM")"#, pane(rng)),
+        37 if clients.len() > 1 => format!(r#"(detach (client "{}"))"#, client(rng)),
+        38 => format!(r#"(capture (client "{}"))"#, client(rng)),
+        _ => {
+            let client = client(rng);
+            format!(
+                r#"(step (client "{client}") (workspace (focused (client "{client}"))) "{}")"#,
+                rng.pick(&["next", "previous", "last"])
+                    .copied()
+                    .unwrap_or("next")
+            )
+        }
+    }
 }

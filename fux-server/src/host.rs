@@ -15,7 +15,7 @@ use crate::process::{self, Child, Pid};
 use crate::render::Grid;
 use fux_vt::Size;
 use fux_wire::answer::{self, Ended};
-use fux_wire::code::{Error, Raise, fail};
+use fux_wire::code::{Code, Error, fail};
 use fux_wire::command::{self, Input, Mouse, Run, Version};
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId};
@@ -362,17 +362,17 @@ impl Host {
         let Runs::Explicit(launch) = &pane.runs else {
             let message =
                 format!("{id} runs a shell; respawn restarts a program a pane was started with");
-            return Err(fail(Raise::NotRun, message));
+            return Err(fail(Code::NotRun, message));
         };
         if self.respawning.is_some() {
             let message =
                 format!("{id} is respawning already: what its program left is still being read");
-            return Err(fail(Raise::StillRunning, message));
+            return Err(fail(Code::StillRunning, message));
         }
         // One whose exit waits on what it left has ended.
         if pane.process().child().is_some() && pane.exiting.is_none() && !kill {
             let message = format!("the program in {id} still runs; `kill-first` ends it first");
-            return Err(fail(Raise::StillRunning, message));
+            return Err(fail(Code::StillRunning, message));
         }
         let mut launch = launch.clone();
         if let Some(argv) = argv {
@@ -383,7 +383,7 @@ impl Host {
         let size = (pane.size(), graphics.cell());
         let respawns = pane.respawns.checked_add(1).ok_or_else(|| {
             fail(
-                Raise::IdsExhausted,
+                Code::IdsExhausted,
                 format!("{id}'s program generations exhausted"),
             )
         })?;
@@ -392,7 +392,7 @@ impl Host {
         // nothing can then leave running.
         let runs = Runs::Explicit(launch.clone());
         let mut fresh = Pane::new(id, None, runs, size.0, pane.options(), now)
-            .map_err(|e| fail(Raise::Start, e.to_string()))?;
+            .map_err(|e| fail(Code::Start, e.to_string()))?;
         fresh.respawns = respawns;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(self.hosting.colours(), self.hosting.palette(), graphics);
@@ -1053,11 +1053,11 @@ impl Host {
                     "{seen}: {} never had these counts; it is at {}",
                     seen.pane, now.counts
                 );
-                return Err(fail(Raise::BadValue, why));
+                return Err(fail(Code::BadValue, why));
             }
             if now != seen {
                 let why = format!("{} changed since {seen}: it is at {now}", seen.pane);
-                return Err(fail(Raise::Stale, why));
+                return Err(fail(Code::Stale, why));
             }
         }
         if let Some(refused) = refuses_input(&self.pane) {
@@ -1091,7 +1091,7 @@ impl Host {
                 rows.saturating_sub(1),
                 cols.saturating_sub(1)
             );
-            return Err(fail(Raise::Mouse, message));
+            return Err(fail(Code::Mouse, message));
         }
         let event = |action| fux_vt::keys::mouse::MouseEvent {
             action,
@@ -1129,7 +1129,7 @@ impl Host {
             let message = format!(
                 "the program in {pane} asked for X10 mouse reports: presses alone, no releases or wheel"
             );
-            return Err(fail(Raise::Mouse, message));
+            return Err(fail(Code::Mouse, message));
         }
         let mut report = Vec::new();
         for event in events {
@@ -1156,7 +1156,7 @@ impl Host {
                     "the mouse encoding the program in {pane} asked for cannot say row {row}, column {col}"
                 ),
             };
-            return Err(fail(Raise::Mouse, message));
+            return Err(fail(Code::Mouse, message));
         }
         let version = p.version(run);
         p.send_mouse(&report, held);
@@ -1171,7 +1171,7 @@ impl Host {
         let target = pane.id();
         if let Process::Respawning = pane.process() {
             let message = format!("{target} is respawning: no program is its own till it is done");
-            return Err(fail(Raise::StillRunning, message));
+            return Err(fail(Code::StillRunning, message));
         }
         if let Some(status) = pane.process().exit_status() {
             return Err(ended(target, status));
@@ -1188,13 +1188,13 @@ impl Host {
                 let child = self.pane.process().child();
                 let sent = child.map(|child| child.leader.kill_as(Reach::Attached));
                 let sent = sent.ok_or_else(|| {
-                    fail(Raise::OnlyShell, format!("nothing is running in {target}"))
+                    fail(Code::OnlyShell, format!("nothing is running in {target}"))
                 })?;
                 // A console that could not be read is no proof the shell
                 // is alone there.
                 if let Scan::Failed(errno) = sent.scan {
                     let why = format!("{target}: its console's processes can't be listed: {errno}");
-                    return Err(fail(Raise::Signal, why));
+                    return Err(fail(Code::Signal, why));
                 }
                 let refused: Vec<String> = (sent.failed.iter())
                     .filter(|(_, errno)| *errno != fuxix::Errno::SRCH)
@@ -1202,23 +1202,23 @@ impl Host {
                     .collect();
                 if !refused.is_empty() {
                     let why = format!("ending its processes: {}", refused.join(", "));
-                    return Err(fail(Raise::Signal, why));
+                    return Err(fail(Code::Signal, why));
                 }
                 if sent.scan == Scan::Complete && sent.found == 0 {
                     let message = format!("nothing is running in {target} but its shell");
-                    return Err(fail(Raise::OnlyShell, message));
+                    return Err(fail(Code::OnlyShell, message));
                 }
             }
             Delivery::Job => {
                 let child = self.pane.process().child();
                 let sent = child.map(|child| child.leader.kill_as(Reach::Session));
                 if let Some((_, errno)) = sent.and_then(|sent| sent.failed.into_iter().next()) {
-                    return Err(fail(Raise::Signal, format!("ending its job: {errno}")));
+                    return Err(fail(Code::Signal, format!("ending its job: {errno}")));
                 }
             }
             Delivery::Unsupported => {
                 let why = format!("SIG{} has no counterpart on this system", signal.name());
-                return Err(fail(Raise::Signal, why));
+                return Err(fail(Code::Signal, why));
             }
         }
         self.pane_mut().tell_signalled(signal);
@@ -1238,14 +1238,14 @@ impl Host {
         let job = pane.process().job().map_err(|errno| {
             let why =
                 format!("{target}: its terminal does not say what runs in its foreground: {errno}");
-            fail(Raise::Signal, why)
+            fail(Code::Signal, why)
         })?;
         let group = job.or(program).ok_or_else(|| {
             let message = format!("nothing is running in {target} but its shell");
-            fail(Raise::OnlyShell, message)
+            fail(Code::OnlyShell, message)
         })?;
         fuxix::process::kill_group(group, signal)
-            .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))
+            .map_err(|e| fail(Code::Signal, format!("sending the signal: {e}")))
     }
 
     /// A capture of its screen, `history` rows before it, as `view` asks:
@@ -1262,21 +1262,18 @@ impl Host {
         if let Some(since) = view.since {
             if since.run != self.run || since.pane != target {
                 let why = format!("{since} is not a version of {target} in this run");
-                return Err(fail(Raise::BadValue, why));
+                return Err(fail(Code::BadValue, why));
             }
             if !pane.counts().had(since.counts) {
                 let why = format!(
                     "{since}: {target} never had these counts; it is at {}",
                     pane.counts()
                 );
-                return Err(fail(Raise::BadValue, why));
+                return Err(fail(Code::BadValue, why));
             }
         }
         if view.source == command::Source::LastOutput && !pane.marked() {
-            return Err(fail(
-                Raise::NoMarks,
-                format!("{target}: {}", pane::UNMARKED),
-            ));
+            return Err(fail(Code::NoMarks, format!("{target}: {}", pane::UNMARKED)));
         }
         let observed = self.observed(tab)?;
         let cursor = fux_wire::events::Cursor {
@@ -1658,7 +1655,7 @@ fn spawn(
         None => &["FUX"],
     };
     let child = process::spawn(&launch.argv.argv(), &launch.cwd, (&vars, unset), size)
-        .map_err(|m| fail(Raise::Start, m))?;
+        .map_err(|m| fail(Code::Start, m))?;
     Ok(Some(child))
 }
 
@@ -1672,7 +1669,7 @@ pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
         Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
         Process::ReadFailed(_, error) => {
             return Some(fail(
-                Raise::NotRunning,
+                Code::NotRunning,
                 format!("{}: reading program terminal failed: {error}", pane.id()),
             ));
         }
@@ -1682,7 +1679,7 @@ pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
         Process::Exited(status) => return Some(ended(pane.id(), *status)),
         Process::Absent | Process::Reading(_) => return None,
     };
-    Some(fail(Raise::NotRunning, format!("{}: {why}", pane.id())))
+    Some(fail(Code::NotRunning, format!("{}: {why}", pane.id())))
 }
 
 /// `pane`'s program has ended, with `status`: it takes no input.
@@ -1692,7 +1689,7 @@ pub(crate) fn ended(pane: PaneId, status: Ended) -> Error {
         Ended::Signalled(_) => "was ",
     };
     let told = format!("the program in {pane} {was}{}", answer::told(status));
-    fail(Raise::NotRunning, told)
+    fail(Code::NotRunning, told)
 }
 
 /// `inputs` as `p`'s program takes them: keys and pastes encoded as it

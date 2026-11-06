@@ -1,6 +1,6 @@
 [workspace]
-members = ["fux-wire", "fux-server", "fux-vt", "fux-vt/peak", "fuxix", "fuxth", "fuxth/core", "fuxth-run"]
-exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench"]
+members = ["fux-wire", "fux-server", "fux-vt", "fux-vt/peak", "fuxix"]
+exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench", "archived/fuxth", "archived/fuxth-run", "archived/fuxed"]
 resolver = "3"
 
 # fux's three crates share one release: the server tells it to programs
@@ -19,7 +19,7 @@ repository = "https://github.com/gold-silver-copper/fux"
 readme = "README.md"
 keywords = ["terminal", "multiplexer", "pty", "tmux"]
 categories = ["command-line-utilities"]
-include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.md", "/docs/cookbook.md", "/recipes/**", "/LICENSE"]
+include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/data.md", "/docs/cookbook.md", "/docs/records.md", "/recipes/**", "/LICENSE"]
 
 [features]
 # `script::testing`: a session asked in-process as the tests ask it
@@ -32,7 +32,7 @@ fux-server = { path = "fux-server", version = "0.37.0" }
 fux-vt = { path = "fux-vt", version = "0.16.0" }
 fux-wire = { path = "fux-wire", version = "0.37.0" }
 fuxix = { path = "fuxix", version = "0.9.0" }
-fuxth = { path = "fuxth", version = "0.8.0" }
+grift = { git = "https://github.com/gold-silver-copper/grift", rev = "8d4588f6cffc43d0061e023c6536f1e4bc9263fb" }
 
 [dev-dependencies]
 fux-server = { path = "fux-server", features = ["in-process"] }

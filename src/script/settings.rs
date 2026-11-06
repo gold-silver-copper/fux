@@ -1,8 +1,8 @@
-//! Checked fuxth values for local preferences and request options.
+//! Checked values for local preferences and request options.
 use super::Fux;
+use super::Value;
 use fux_wire::callback::Data;
 use fux_wire::command::{Number, Program};
-use fuxth::Value;
 
 /// A local setting's type, read once as `set` is given it, and written
 /// back as `set` takes it.
@@ -84,14 +84,13 @@ fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), Un
     let words = || {
         list.items().iter().filter_map(|item| match item {
             Value::Str(s) => Some(&***s),
-            Value::Int(_)
+            Value::Float(_)
+            | Value::Symbol(_)
+            | Value::Bytes(_)
+            | Value::Int(_)
             | Value::Bool(_)
             | Value::List(_)
-            | Value::App(_)
-            | Value::Xt(_)
-            | Value::Mark(_)
-            | Value::Failure(_)
-            | Value::Addr(_) => None,
+            | Value::App(_) => None,
         })
     };
     if let Some(item) = list.items().iter().find(|i| !matches!(i, Value::Str(_))) {
@@ -125,11 +124,11 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
 /// `true` or `false`.
 impl Reads for bool {
     fn takes() -> String {
-        "true or false".to_owned()
+        "#true or #false".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<bool, Unread> {
         let Value::Bool(b) = value else {
-            return Err(wrong("true or false", value));
+            return Err(wrong("#true or #false", value));
         };
         Ok(*b)
     }
@@ -199,13 +198,12 @@ fn colour(value: &Value<Fux>) -> Result<fux_vt::Color, Unread> {
             let [_, r, g, b] = rgb.to_be_bytes();
             Ok(Color::Rgb(fux_vt::Rgb { r, g, b }))
         }
-        Value::Bool(_)
+        Value::Float(_)
+        | Value::Symbol(_)
+        | Value::Bytes(_)
+        | Value::Bool(_)
         | Value::List(_)
-        | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_) => Err(wrong("a colour: 0 to 255, default, or #rrggbb", value)),
+        | Value::App(_) => Err(wrong("a colour: 0 to 255, default, or #rrggbb", value)),
     }
 }
 /// A colour as `colour` reads it.
@@ -346,13 +344,12 @@ impl Reads for fux_wire::presentation::Bar {
                                 u8::try_from(int(index)?).map_err(|_| "a bar slot is 0 to 15")?;
                             Ok(Field::Slot(id))
                         }
-                        Value::Int(_)
+                        Value::Float(_)
+                        | Value::Symbol(_)
+                        | Value::Bytes(_)
+                        | Value::Int(_)
                         | Value::Bool(_)
-                        | Value::App(_)
-                        | Value::Xt(_)
-                        | Value::Mark(_)
-                        | Value::Failure(_)
-                        | Value::Addr(_) => {
+                        | Value::App(_) => {
                             Err("a bar field is a name or [slot 0..15]".to_owned().into())
                         }
                     })

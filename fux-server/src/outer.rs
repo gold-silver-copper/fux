@@ -566,13 +566,16 @@ mod tests {
         let theirs = "\x1b]11;rgb:1111/2222/3333\x07\x1b]4;1;rgb:1111/2222/3333\x07";
         assert_eq!(ask(&mut s, 1), theirs);
         // A workspace c1 neither shows nor typed into: no terminal's.
-        run(&mut s, "opts 80 24 size str other in new-tab")?;
+        run(&mut s, "(new-tab (in (size (options) 80 24) \"other\"))")?;
         assert_eq!(ask(&mut s, 2), "");
         s.out(PaneId::of(2), b"\x1b]11;#445566\x07");
         assert_eq!(ask(&mut s, 2), "\x1b]11;rgb:4444/5555/6666\x07");
         // c1 typed into %1's tab and went to another: it answers no more.
         s.input(c, b"x");
-        run(&mut s, "str c1 client str other workspace show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (workspace \"other\")) #inert)",
+        )?;
         assert_eq!(ask(&mut s, 1), "");
         Ok(())
     }
@@ -594,9 +597,21 @@ mod tests {
         // c typed here and shows another tab; d shows this one with no cell.
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         s.input(c, b"x");
-        run(&mut s, "opts 80 24 size str +1 workspace in new-tab")?;
-        run(&mut s, "str c1 client str @2 tab show")?;
-        run(&mut s, &format!("str {d} client str @1 tab show"))?;
+        run(
+            &mut s,
+            "(new-tab (in (size (options) 80 24) (workspace \"+1\")))",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@2\")) #inert)",
+        )?;
+        run(
+            &mut s,
+            &format!(
+                "(sequence! (show (client {}) (tab \"@1\")) #inert)",
+                fux::script::quoted(&format!("{d}"))
+            ),
+        )?;
         assert_eq!(cell(&mut s), None);
         s.input(d, b"\x1b[6;16;8t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
@@ -665,16 +680,18 @@ mod tests {
     #[test]
     fn a_resized_terminals_cell_is_the_last_it_said_till_it_answers() -> Outcome {
         let (mut s, c) = session()?;
-        let cell = |s: &mut Session| crate::session::testing::output(s, "%1 capture json");
+        let cell = |s: &mut Session| {
+            crate::session::testing::output(s, "(get (capture (pane 1)) \"cell\")")
+        };
         s.input(c, b"\x1b[6;20;10t\x1b[?62c");
         s.out(PaneId::of(1), b"idle from now");
-        assert!(cell(&mut s)?.contains(r#""cell":{"width":10,"height":20}"#));
+        assert!(cell(&mut s)?.contains("((width 10) (height 20))"));
         let _ = sent(&mut s, c);
         s.terminal_resized(c);
         assert_eq!(sent(&mut s, c), [CELL_QUERY.to_vec()]);
-        assert!(cell(&mut s)?.contains(r#""cell":{"width":10,"height":20}"#));
+        assert!(cell(&mut s)?.contains("((width 10) (height 20))"));
         s.input(c, b"\x1b[6;24;12t");
-        assert!(cell(&mut s)?.contains(r#""cell":{"width":12,"height":24}"#));
+        assert!(cell(&mut s)?.contains("((width 12) (height 24))"));
         Ok(())
     }
 
@@ -742,8 +759,10 @@ mod tests {
     #[test]
     fn a_pane_is_told_the_cell_of_its_host_now() -> Outcome {
         let (mut s, c) = session()?;
-        let cell = |s: &mut Session| crate::session::testing::output(s, "%1 capture json");
-        let told = |w: u16, h: u16| format!(r#""cell":{{"width":{w},"height":{h}}}"#);
+        let cell = |s: &mut Session| {
+            crate::session::testing::output(s, "(get (capture (pane 1)) \"cell\")")
+        };
+        let told = |w: u16, h: u16| format!("((width {w}) (height {h}))");
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         s.input(d, b"\x1b[6;24;12t\x1b[?62;4;22c");
@@ -754,7 +773,7 @@ mod tests {
         s.detach_client(c);
         assert!(cell(&mut s)?.contains(&told(12, 24)));
         s.detach_client(d);
-        assert!(cell(&mut s)?.contains(r#""cell":null"#));
+        assert!(cell(&mut s)?.contains("none"));
         Ok(())
     }
 
@@ -771,8 +790,11 @@ mod tests {
         };
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         assert_eq!(refused(&mut s), Some(0));
-        run(&mut s, "opts 80 24 size str other in new-tab")?;
-        run(&mut s, "str c1 client str other workspace show")?;
+        run(&mut s, "(new-tab (in (size (options) 80 24) \"other\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (workspace \"other\")) #inert)",
+        )?;
         assert_eq!(refused(&mut s), Some(1));
         Ok(())
     }
@@ -786,20 +808,32 @@ mod tests {
         s.out(PaneId::of(1), b"\x1b[?2031h");
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
-        run(&mut s, "opts 80 24 size str other in new-tab")?;
-        run(&mut s, "str c1 client str other workspace show")?;
+        run(&mut s, "(new-tab (in (size (options) 80 24) \"other\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (workspace \"other\")) #inert)",
+        )?;
         s.input(c, b"\x1b[?997;2n");
         assert_eq!(answered(&mut s, 1), "");
-        run(&mut s, "str c1 client str +1 workspace show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (workspace \"+1\")) #inert)",
+        )?;
         assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");
         // Told: not again.
-        run(&mut s, "str c1 client str +1 workspace show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (workspace \"+1\")) #inert)",
+        )?;
         assert_eq!(answered(&mut s, 1), "");
         // One never told, as no terminal answered its query, is told once
         // one does.
         s.out(PaneId::of(2), b"\x1b[?2031h\x1b[?996n");
         assert_eq!(answered(&mut s, 2), "");
-        run(&mut s, "str c1 client str other workspace show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (workspace \"other\")) #inert)",
+        )?;
         assert_eq!(answered(&mut s, 2), "\x1b[?997;2n");
         Ok(())
     }
@@ -859,9 +893,12 @@ mod tests {
         // In a tab the client does not show: its tab is marked until shown.
         run(
             &mut s,
-            "opts 80 24 size str +1 workspace in str other name new-tab",
+            "(new-tab (name (in (size (options) 80 24) (workspace \"+1\")) \"other\"))",
         )?;
-        run(&mut s, "str c1 client str @2 tab show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@2\")) #inert)",
+        )?;
         s.settled();
         let _ = s.before_paint(c);
         past_the_gap(&mut s);
@@ -869,30 +906,51 @@ mod tests {
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         let bar = tab_label(&s, c);
         assert!(bar.contains(" %1! ") && bar.contains("bell in %1"), "{bar}");
-        run(&mut s, "str c1 client str @1 tab show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@1\")) #inert)",
+        )?;
         let _ = s.before_paint(c);
-        run(&mut s, "str c1 client str @2 tab show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@2\")) #inert)",
+        )?;
         let _ = s.before_paint(c);
         assert!(!tab_label(&s, c).contains('!'), "{}", tab_label(&s, c));
         // A client on another workspace is not rung.
-        run(&mut s, "str c1 client str @1 tab show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@1\")) #inert)",
+        )?;
         let _ = s.before_paint(c);
-        run(&mut s, "opts 80 24 size str elsewhere in new-tab")?;
+        run(
+            &mut s,
+            "(new-tab (in (size (options) 80 24) \"elsewhere\"))",
+        )?;
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
-        run(&mut s, "str c2 client str elsewhere workspace show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c2\") (workspace \"elsewhere\")) #inert)",
+        )?;
         let _ = sent(&mut s, d);
         past_the_gap(&mut s);
         s.out(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(sent(&mut s, d).is_empty());
         // Disabling bells clears pending marks; enabling does not restore them.
-        run(&mut s, "str c1 client str @2 tab show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@2\")) #inert)",
+        )?;
         past_the_gap(&mut s);
         s.out(PaneId::of(1), b"\x07");
         assert!(tab_label(&s, c).contains('!'));
         let _ = sent(&mut s, c);
         // Opposing preferences on the same workspace remain independent.
-        run(&mut s, "str c2 client str +1 workspace show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c2\") (workspace \"+1\")) #inert)",
+        )?;
         s.apply(
             c,
             vec![fux_wire::act::Act::Presentation(
@@ -928,14 +986,23 @@ mod tests {
     fn a_bell_in_a_workspace_inside_rings_and_marks_it_for_its_holders_clients() -> Outcome {
         let (mut s, c) = session()?;
         crate::session::testing::output_as(&mut s, Some(c), crate::session::testing::BAR_ROW)?;
-        run(&mut s, "opts 80 24 size +1 in str agent1 in new-tab")?;
+        run(
+            &mut s,
+            "(new-tab (in (in (size (options) 80 24) (workspace 1)) \"agent1\"))",
+        )?;
         let _ = (s.before_paint(c), sent(&mut s, c));
         s.out(PaneId::of(2), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         let bar = tab_label(&s, c);
         assert!(bar.contains(" agent1! "), "{bar}");
-        for shown in ["str agent1 workspace", "%1"] {
-            run(&mut s, &format!("str c1 client {shown} show"))?;
+        for shown in ["(workspace \"agent1\")", "%1"] {
+            run(
+                &mut s,
+                &format!(
+                    "(sequence! (show (client \"c1\") {}) #inert)",
+                    crate::test_reference(shown)
+                ),
+            )?;
             let _ = s.before_paint(c);
         }
         let bar = tab_label(&s, c);
@@ -946,9 +1013,15 @@ mod tests {
     #[test]
     fn a_notification_is_told_to_each_client_showing_its_workspace() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "opts 80 24 size str elsewhere in new-tab")?;
+        run(
+            &mut s,
+            "(new-tab (in (size (options) 80 24) \"elsewhere\"))",
+        )?;
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
-        run(&mut s, "str c2 client str elsewhere workspace show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c2\") (workspace \"elsewhere\")) #inert)",
+        )?;
         s.out(PaneId::of(1), b"\x1b]9;build done\x07");
         assert_eq!(notice(&s, c).as_deref(), Some("%1: build done"));
         assert_eq!(notice(&s, d), None);
@@ -963,8 +1036,11 @@ mod tests {
     #[test]
     fn a_bell_notice_shows_even_from_a_pane_hidden_by_zoom() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
-        run(&mut s, "%1 zoom")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+        )?;
+        run(&mut s, "(sequence! (zoom (pane 1)) #inert)")?;
         s.out(PaneId::of(2), b"\x07");
         assert_eq!(notice(&s, c).as_deref(), Some("bell in %1"));
         // Its tab is shown: no mark for it.
@@ -978,7 +1054,7 @@ mod tests {
         let (mut s, c) = session()?;
         run(
             &mut s,
-            "opts 80 24 size str +1 workspace in new-tab drop str c1 client str @2 tab show",
+            "(sequence! (new-tab (in (size (options) 80 24) (workspace \"+1\"))) (show (client \"c1\") (tab \"@2\")) #inert)",
         )?;
         let _ = sent(&mut s, c);
         s.out(PaneId::of(1), b"\x07\x1b]9;build done\x07");
@@ -1042,9 +1118,12 @@ mod tests {
         s.out(PaneId::of(1), b"\x1b]2;make\x07");
         assert_eq!(s.before_paint(c), b"\x1b]2;make\x1b\\");
         // A pane with no title: its tab's name.
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str c1 client str %2 pane show")?;
-        run(&mut s, "str @1 tab str notes rename")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%2\")) #inert)",
+        )?;
+        run(&mut s, "(sequence! (rename (tab \"@1\") \"notes\") #inert)")?;
         assert_eq!(s.before_paint(c), b"\x1b]2;notes\x1b\\");
         // Off again: the terminal's own title is restored, once, and saved
         // again for the client's leaving.

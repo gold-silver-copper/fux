@@ -1,4 +1,4 @@
-//! Bounded, inert data for the native painter. Policy values come from fuxth.
+//! Bounded, inert data for the native painter. Policy values come from grift.
 use crate::wire::{Error, Reader, Wire, wire};
 use fux_vt::{Attributes, Color};
 

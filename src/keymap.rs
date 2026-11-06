@@ -8,16 +8,16 @@
 //! while no keys are held: its prefix, `C-b`, is a key there that holds the
 //! map of fux's commands, and `C-b t` holds the tab commands in that one.
 //!
-//! A binding runs fuxth: its code value is compiled and run by the client,
+//! A binding runs grift: its code value is read and run by the client,
 //! fresh, each time its keys are typed, the client itself its `me`. The default
-//! bindings are a config too, `script/keys.fux`, run on `Keymap::default`
+//! bindings are a config too, `script/keys.grift`, run on `Keymap::default`
 //! before the user's.
 use crate::screens::{Effect, HIDE};
+use crate::script::quoted;
 use fux_vt::keys::{Key, KeyPress, Keystroke, Modifiers};
 use fux_wire::act::ScreenAct;
 use fux_wire::act::{Act, Column, ColumnEntry, Edit, Hint, LineAct, ListAct, Move, Panel};
 use fux_wire::callback::{Code, Data};
-use fux_wire::words::quote;
 
 /// What a key runs: a code value, what the column says it does, and the
 /// group the column lists it under.
@@ -42,13 +42,14 @@ impl Binding {
     /// The config line that binds `keys` to it: its label and group too,
     /// unless they are what `bind` gives.
     fn line(&self, keys: &str) -> String {
-        let mut line = format!("str {} code {} end bind", quote(keys), self.code.text());
+        let mut line = format!("(bind-key {} (code! {}))", quoted(keys), self.code.text());
         if self.label != self.code.text() {
-            line += &format!("  str {} label", quote(&self.label));
+            line += &format!(" (label {})", quoted(&self.label));
         }
         if self.group != OTHER_GROUP {
-            line += &format!("  str {} group", quote(&self.group));
+            line += &format!(" (group {})", quoted(&self.group));
         }
+
         line
     }
 }
@@ -240,7 +241,7 @@ pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
         .ok_or_else(|| "no keys given".to_owned())
 }
 
-/// A client's keymap and its screens' keys; empty until bundled fuxth
+/// A client's keymap and its screens' keys; empty until bundled grift
 /// supplies them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Keymap {
@@ -283,7 +284,7 @@ impl Keymap {
     }
 
     /// What `from` runs or holds, `to` does instead, and `from` nothing:
-    /// `str C-b str C-a move-keys` moves the prefix. All or nothing.
+    /// `(move-keys "C-b" "C-a")` moves the prefix. All or nothing.
     pub fn move_keys(&mut self, from: &[KeyPress], to: &[KeyPress]) -> Result<(), String> {
         if to.starts_with(from) {
             return Err(format!("{} is in {}", keys_text(to), keys_text(from)));
@@ -403,11 +404,11 @@ impl Keymap {
         });
         let repeats = all.iter().filter_map(|(keys, entry)| match entry {
             Entry::Map(map) if map.repeat => {
-                Some(format!("str {} repeat\n", quote(&keys_text(keys))))
+                Some(format!("(repeat {})\n", quoted(&keys_text(keys))))
             }
             Entry::Run(_) | Entry::Map(_) => None,
         });
-        std::iter::once("unbind-all\n".to_owned())
+        std::iter::once("(unbind-all)\n".to_owned())
             .chain(bound)
             .chain(repeats)
             .chain([self.modes.lines()])
@@ -599,8 +600,12 @@ impl Held {
     fn watching(&mut self, keymap: &Keymap, press: KeyPress) -> Vec<Effect> {
         let prefixed = matches!(std::mem::take(self), Held::Prefixed(_));
         if prefixed && press == KeyPress::char('d') {
-            let detach = ["me", "detach"].map(String::from).into();
-            return vec![Effect::Run(Code { words: detach }.into())];
+            let source = "(lambda! () (detach (me)))".to_owned();
+            let code = Code {
+                source,
+                ..Code::default()
+            };
+            return vec![Effect::Run(code.into())];
         }
         if !prefixed && keymap.leads(press) {
             *self = Held::Prefixed(press);
@@ -805,12 +810,18 @@ impl<A: Named> Bindable for Table<A> {
 
     fn lines(&self, modal: &str) -> String {
         let line = |(key, act, label): &(KeyPress, A, Option<String>)| {
-            let key = quote(&key.to_string());
-            let label = label.as_ref().map(|l| format!("  str {} label", quote(l)));
-            let label = label.unwrap_or_default();
+            let key = quoted(&key.to_string());
+            let label = label
+                .as_ref()
+                .map(|l| format!(" (label {})", quoted(l)))
+                .unwrap_or_default();
             match act.source() {
-                Some(code) => format!("str {key} code {} end bind-action{label}\n", code.text()),
-                None => format!("str {modal} str {key} str {} bind-in{label}\n", act.name()),
+                Some(code) => format!("(bind-action {key} (code! {})){label}\n", code.text()),
+                None => format!(
+                    "(bind-in {} {key} {}){label}\n",
+                    quoted(modal),
+                    quoted(act.name())
+                ),
             }
         };
         self.0.iter().map(line).collect()
@@ -958,7 +969,7 @@ mod tests {
             "Pane actions",
             "Move",
         ];
-        assert_eq!(groups, order, "in the order keys.fux binds them");
+        assert_eq!(groups, order, "in the order keys.grift binds them");
         assert_eq!(
             keymap.repeat_bar(&keys("C-b r")?).as_deref(),
             Some("RESIZE  h j k l · Esc")
@@ -977,7 +988,9 @@ mod tests {
             steps,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(crate::testing::code("me focused zoom").into())
+                Effect::Run(
+                    crate::testing::code("(lambda! () (zoom (focused (me))) #inert)").into()
+                )
             ]
         );
         assert_eq!(held, Held::Normal);
@@ -994,7 +1007,11 @@ mod tests {
     #[test]
     fn a_map_two_deep_repeats_until_escape() -> Result<(), String> {
         let mut keymap = defaults()?;
-        let zoom = || Binding::new(crate::testing::code("me focused zoom"));
+        let zoom = || {
+            Binding::new(crate::testing::code(
+                "(lambda! () (zoom (focused (me))) #inert)",
+            ))
+        };
         keymap.bind(&keys("C-b y u i")?, zoom())?;
         keymap.set_repeat(&keys("C-b y u")?)?;
         let mut held = Held::default();
@@ -1028,7 +1045,9 @@ mod tests {
         let steps = held.press(&keymap, stroke("d")?, true);
         assert_eq!(
             steps,
-            [Effect::Run(crate::testing::code("me detach").into())]
+            [Effect::Run(
+                crate::testing::code("(lambda! () (detach (me)))").into()
+            )]
         );
         Ok(())
     }
@@ -1039,7 +1058,7 @@ mod tests {
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
         let mut keymap = defaults()?;
-        let new_tab = || crate::testing::code("opts new-tab drop");
+        let new_tab = || crate::testing::code("(lambda! () (new-tab (options)) #inert)");
         keymap.bind(&keys("C-b y")?, Binding::new(new_tab()))?;
         let prefix = keys("C-b")?;
         let entries = keymap
@@ -1095,7 +1114,10 @@ mod tests {
             press("j")?,
             [
                 Effect::Screen(ScreenAct::Hide),
-                Effect::Run(crate::testing::code("me-focused str down step").into())
+                Effect::Run(
+                    crate::testing::code("(lambda! () (step (me) (focused (me)) \"down\") #inert)")
+                        .into()
+                )
             ]
         );
         Ok(())
@@ -1104,17 +1126,32 @@ mod tests {
     #[test]
     fn list_keys_shows_maps_their_repeats_and_keys_at_the_root() -> Result<(), String> {
         let mut keymap = Keymap::default();
-        let bind = |keymap: &mut Keymap, keys_text: &str, code: &str| {
-            keymap.bind(&keys(keys_text)?, Binding::new(crate::testing::code(code)))
+        let bind = |map: &mut Keymap, chord: &str, source: &str| {
+            map.bind(&keys(chord)?, Binding::new(crate::testing::code(source)))
         };
-        bind(&mut keymap, "C-b g n", "opts new-tab drop")?;
-        bind(&mut keymap, "C-b y l", "me focused str right 1 move-border")?;
+        bind(
+            &mut keymap,
+            "C-b g n",
+            "(lambda! () (new-tab (options)) #inert)",
+        )?;
+        bind(
+            &mut keymap,
+            "C-b y l",
+            "(lambda! () (move-border (focused (me)) \"right\" 1))",
+        )?;
         keymap.set_repeat(&keys("C-b y")?)?;
-        bind(&mut keymap, "M-t", "me focused zoom")?;
-        assert_eq!(
-            keymap.describe(),
-            "unbind-all\nstr 'C-b g n' code opts new-tab drop end bind\nstr 'C-b y l' code me focused str right 1 move-border end bind\nstr M-t code me focused zoom end bind\nstr 'C-b y' repeat\n"
-        );
+        bind(&mut keymap, "M-t", "(lambda! () (zoom (focused (me))))")?;
+        let source = keymap.describe();
+        for chord in ["C-b g n", "C-b y l", "M-t", "C-b y"] {
+            assert!(source.contains(chord));
+        }
+        let path = fuxix::file::scratch()
+            .map_err(|e| e.to_string())?
+            .join(format!("keys-{}.grift", std::process::id()));
+        std::fs::write(&path, &source).map_err(|e| e.to_string())?;
+        let state = crate::script::run_file(&path);
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        assert_eq!(state.map_err(|e| e.to_string())?.keys, keymap);
         Ok(())
     }
 
@@ -1123,7 +1160,11 @@ mod tests {
     #[test]
     fn keys_bind_as_deep_as_their_record_goes_on_the_wire() -> crate::TestResult {
         let mut keymap = Keymap::default();
-        let zoom = || Binding::new(crate::testing::code("me focused zoom"));
+        let zoom = || {
+            Binding::new(crate::testing::code(
+                "(lambda! () (zoom (focused (me))) #inert)",
+            ))
+        };
         keymap.bind(&vec![key("a")?; DEEPEST], zoom())?;
         let record = keymap.record(&[]);
         let bytes = fux_wire::wire::encode(&record);
@@ -1138,7 +1179,11 @@ mod tests {
     #[test]
     fn keys_bind_a_binding_or_a_map_and_move_whole() -> Result<(), String> {
         let mut keymap = defaults()?;
-        let zoom = || Binding::new(crate::testing::code("me focused zoom"));
+        let zoom = || {
+            Binding::new(crate::testing::code(
+                "(lambda! () (zoom (focused (me))) #inert)",
+            ))
+        };
         assert!(
             keymap.bind(&keys("C-b t")?, zoom()).is_err(),
             "t holds a map"

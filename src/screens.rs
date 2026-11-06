@@ -4,7 +4,7 @@
 //! in another mode's table. The server draws what the client describes
 //! (`ScreenAct::Show`).
 //!
-//! What a screen's entry does is fuxth, run as the client runs a binding.
+//! What a screen's entry does is grift, run as the client runs a binding.
 use crate::keymap::{Held, Keymap, Modes};
 use crate::script;
 use fux_vt::keys::decode::Input;
@@ -23,7 +23,7 @@ pub enum Screen {
 }
 
 /// What a key leads to, in a screen or through the bindings: an action for
-/// the server, or fuxth to run as the client.
+/// the server, or grift to run as the client.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Send(Act),
@@ -130,7 +130,7 @@ impl Display {
 }
 
 /// What a job runs: a line typed at the command prompt, read as a
-/// program is; or a code value, compiled in the client's dictionary and
+/// program is; or a code value, read by the client and
 /// run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Program {
@@ -139,7 +139,7 @@ pub enum Program {
 }
 
 /// An owned worker operation: a program with inert typed arguments,
-/// or a relayed screen awaiting the receiving dictionary's admission.
+/// or a relayed screen awaiting the receiving client's admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
     pub program: Program,
@@ -192,13 +192,13 @@ impl Job {
         }
     }
 
-    /// Its machine, ready to run: compiling its code values stops at
+    /// Its machine, ready to run: reading its code values stops at
     /// `stop`.
     pub fn machine(
         &self,
         config: Option<&script::Config>,
         stop: Option<&script::Stop>,
-    ) -> Result<fuxth::Machine<script::Fux>, script::Failed> {
+    ) -> Result<script::Machine, script::Failed> {
         script::callback_machine(config, &self.program, self.given.as_deref(), stop)
     }
 }
@@ -392,7 +392,7 @@ mod tests {
             current: Some(0),
             selected: 0,
             about: None,
-            action: crate::testing::code("2drop").into(),
+            action: crate::testing::code("(lambda! (client payload) #inert)").into(),
             client: Data::Int(0),
         })
     }
@@ -450,7 +450,7 @@ mod tests {
             [
                 Effect::Screen(ScreenAct::Hide),
                 Effect::Run(Job::call(
-                    &crate::testing::code("2drop").into(),
+                    &crate::testing::code("(lambda! (client payload) #inert)").into(),
                     [Data::Int(0), Data::Int(2)]
                 ))
             ]
@@ -462,7 +462,10 @@ mod tests {
             [
                 Effect::Screen(ScreenAct::Hide),
                 Effect::Run(Job::call(
-                    &crate::testing::code("confirm-close").into(),
+                    &crate::testing::code(
+                        "(lambda! (client target) (confirm-close client target))"
+                    )
+                    .into(),
                     [Data::Int(0), Data::Int(1)]
                 ))
             ]
@@ -492,7 +495,9 @@ mod tests {
         let mut screen = Screen::Prompt(Prompt {
             title: "rename".into(),
             line: Line::new(String::new()),
-            action: Some(crate::testing::code("%1 swap rename").into()),
+            action: Some(
+                crate::testing::code("(lambda! (name-value) (rename (pane 1) name-value))").into(),
+            ),
         });
         let modes = crate::script::default_state()
             .map(|state| state.keys)
@@ -501,7 +506,9 @@ mod tests {
         screen.paste(&modes, "it's -x' drop");
         let ran = key(&mut screen, "Enter")?;
         let job = Job {
-            program: Program::Code(crate::testing::code("%1 swap rename")),
+            program: Program::Code(crate::testing::code(
+                "(lambda! (name-value) (rename (pane 1) name-value))",
+            )),
             given: Some(vec![Data::Text("it's -x' drop".into())]),
             screen: None,
         };

@@ -151,18 +151,20 @@ fn output(command: &mut Command) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// A word quoted for `sh`.
-/// A program and its arguments as fuxth's options for `new-tab` and
-/// `split`: `str PROGRAM program str ARG arg`…
-fn program_words(program: &[String]) -> Vec<&str> {
-    let mut words = Vec::new();
-    for (i, word) in program.iter().enumerate() {
-        let kind = if i == 0 { "program" } else { "arg" };
-        words.extend(["str", word.as_str(), kind]);
-    }
-    words
+/// `options`, a grift expression, given a program and its arguments, as
+/// `new-tab` and `split` take them.
+fn with_program(options: String, program: &[String]) -> String {
+    let string = fux::script::quoted;
+    let Some((first, rest)) = program.split_first() else {
+        return options;
+    };
+    let run = format!("(program {options} {})", string(first));
+    rest.iter().fold(run, |options, word| {
+        format!("(argument {options} {})", string(word))
+    })
 }
 
+/// A word quoted for `sh`.
 fn quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
@@ -244,28 +246,12 @@ impl Session {
                 // `new-tab` makes a tab with a shell, or with the program
                 // given, at the size of the client's panes, as fux sizes no
                 // tab from a caller with no screen or tab.
-                let (cols, rows) = (COLS.to_string(), ROWS.to_string());
-                let history = HISTORY_BYTES.to_string();
-                let mut args = vec![
-                    "opts",
-                    &cols,
-                    &rows,
-                    "size",
-                    &history,
-                    "history-bytes",
-                    "str",
-                    "+1",
-                    "workspace",
-                    "in",
-                ];
-                if let Some([first, rest @ ..]) = program {
-                    args.extend(["str", first.as_str(), "program"]);
-                    for word in rest {
-                        args.extend(["str", word.as_str(), "arg"]);
-                    }
-                }
-                args.push("new-tab");
-                self.command(place, &args).map(drop)
+                let options = format!(
+                    r#"(history-bytes (in (size (options) {COLS} {ROWS}) (workspace "+1")) {HISTORY_BYTES})"#
+                );
+                let options = with_program(options, program.unwrap_or_default());
+                self.command(place, &[&format!("(new-tab {options})")])
+                    .map(drop)
             }
             Mux::Tmux => {
                 let mut args = vec!["new-window", "-d"];
@@ -447,14 +433,14 @@ fn start(
         }
         Mux::Fux => {
             let socket = dir.join("s");
-            // Where its client finds it: `$XDG_CONFIG_HOME/fux/config.fux`.
+            // Where its client finds it: `$XDG_CONFIG_HOME/fux/config.grift`.
             let config_home = dir.join("config");
-            let config = config_home.join("fux").join("config.fux");
+            let config = config_home.join("fux").join("config.grift");
             std::fs::create_dir_all(config_home.join("fux")).map_err(|e| e.to_string())?;
             std::fs::write(
                 &config,
                 format!(
-                    "str shell list str /bin/sh end set\nstr history-bytes {HISTORY_BYTES} set\n"
+                    "(set \"shell\" (list \"/bin/sh\"))\n(set \"history-bytes\" {HISTORY_BYTES})\n"
                 ),
             )
             .map_err(|e| e.to_string())?;
@@ -517,7 +503,7 @@ fn start(
             };
             // Attaching creates the first pane after the terminal is up.
             let deadline = Instant::now().checked_add(READY_WAIT).ok_or("a deadline")?;
-            while let Err(error) = session.command(place, &["str", "%1", "pane"]) {
+            while let Err(error) = session.command(place, &[r#"(pane "%1")"#]) {
                 if Instant::now() >= deadline {
                     return Err(format!("fux: the first pane did not appear: {error}"));
                 }
@@ -531,47 +517,27 @@ fn start(
             let mut last = String::from("%1");
             for (i, p) in programs.iter().enumerate() {
                 if i == 0 {
-                    let line = line(p);
-                    let args = [
-                        "str",
-                        "%1",
-                        "pane",
-                        "str",
-                        &line,
-                        "text",
-                        "str",
-                        "Enter",
-                        "key",
-                        "send-keys",
-                    ];
-                    session.command(place, &args)?;
+                    let line = fux::script::quoted(&line(p));
+                    session.command(place, &[&format!(r#"(line (pane "%1") {line})"#)])?;
                 } else {
-                    let history = HISTORY_BYTES.to_string();
-                    let mut args = vec![
-                        "str",
-                        "%1",
-                        "pane",
-                        "str",
-                        "horizontal",
-                        "axis",
-                        &history,
-                        "history-bytes",
-                    ];
-                    args.extend(program_words(p));
-                    args.extend(["split", "pane"]);
-                    let answer = session.command(place, &args)?;
+                    let options = format!(
+                        r#"(history-bytes (axis (pane "%1") "horizontal") {HISTORY_BYTES})"#
+                    );
+                    let options = with_program(options, p);
+                    let answer = session.command(place, &[&format!("(split {options})")])?;
+                    // Its version: `%2:0.0.0.0.0:RUN`.
                     last = Some(answer.trim())
+                        .and_then(|version| version.split(':').next())
                         .filter(|w| w.starts_with('%'))
                         .ok_or(format!("fux split: no pane in {answer:?}"))?
                         .to_owned();
                 }
             }
             if programs.len() > 1 {
-                let id = session.command(
-                    place,
-                    &["ls", "str", "clients", "get", "first", "str", "id", "get"],
-                )?;
-                session.command(place, &["str", id.trim(), "client", &last, "show"])?;
+                let show = format!(
+                    r#"(show (get (first (get (list-session) "clients")) "id") (pane "{last}"))"#
+                );
+                session.command(place, &[&show])?;
             }
             Ok(session)
         }

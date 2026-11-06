@@ -1,8 +1,0 @@
-# The shell on Windows: %COMSPEC%, else cmd.exe, which is always there.
-# SHELL is not read: Git Bash sets it to a POSIX path.
-str shell list
-  str unset_var try
-    str bad_value try str COMSPEC getenv catch str message get warn str cmd.exe end
-  catch drop str cmd.exe end
-  dup str '' eq if drop str cmd.exe then
-end set

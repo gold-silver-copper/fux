@@ -379,24 +379,6 @@ impl crate::wire::Wire for Snapshot {
     }
 }
 
-impl Snapshot {
-    pub fn node_count(&self) -> Option<usize> {
-        let entities = self
-            .workspaces
-            .len()
-            .checked_add(self.tabs.len())?
-            .checked_add(self.panes.len())?
-            .checked_add(self.clients.len())?;
-        let nodes = self
-            .tabs
-            .iter()
-            .try_fold(entities, |n, t| n.checked_add(t.nodes.len()))?;
-        self.workspaces
-            .iter()
-            .try_fold(nodes, |n, w| n.checked_add(w.children.len()))
-    }
-}
-
 #[cfg(any(test, feature = "testing"))]
 impl Snapshot {
     /// A closed schema also checks its cross references and flat topology.

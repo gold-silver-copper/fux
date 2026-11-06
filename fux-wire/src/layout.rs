@@ -131,7 +131,7 @@ wire! {
 pub fn admit_nodes(len: usize) -> Result<(), crate::code::Error> {
     match len {
         0 => Err(crate::code::fail(
-            crate::code::Raise::BadValue,
+            crate::code::Code::BadValue,
             "a layout needs a node",
         )),
         _ => Ok(()),
@@ -143,9 +143,9 @@ pub fn admit_nodes(len: usize) -> Result<(), crate::code::Error> {
 /// before it is walked, so it is no deeper than a tree of those panes that
 /// edits make; it is walked and built with stacks of its own.
 pub fn from_nodes(nodes: &[Node], panes: &[PaneId]) -> Result<Tree, crate::code::Error> {
-    use crate::code::{Raise, fail};
+    use crate::code::{Code, fail};
     admit_nodes(nodes.len())?;
-    let bad = |why: &str| fail(Raise::BadValue, why);
+    let bad = |why: &str| fail(Code::BadValue, why);
     let sorted = |mut leaves: Vec<PaneId>| {
         leaves.sort_unstable();
         leaves

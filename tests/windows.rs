@@ -476,7 +476,7 @@ fn signals_reach_what_d136_says() -> Outcome {
             let sent = signal(&socket, shell, Signal::Kill)?;
             match sent.as_ref().map(|(code, _)| code.as_str()) {
                 None => break,
-                Some("only_shell") if Instant::now() < deadline => {
+                Some("only-shell") if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 _ => return Err(format!("KILL with a job running: {sent:?}")),
@@ -487,7 +487,7 @@ fn signals_reach_what_d136_says() -> Outcome {
         loop {
             let alone = signal(&socket, shell, Signal::Kill)?;
             match alone.as_ref().map(|(code, _)| code.as_str()) {
-                Some("only_shell") => break,
+                Some("only-shell") => break,
                 None if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(100));
                 }

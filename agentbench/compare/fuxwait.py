@@ -1,7 +1,23 @@
-"""Waiting for a text in fux, as `fux help recipes` does: shared by
+"""Waiting for a text in fux, as the agents' guide does: shared by
 speed.py and mem.py."""
 import subprocess
 import time
+
+
+def string(text):
+    """`text` as a grift string."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def agent_tab(argv, history=None):
+    """The program that starts `argv` in a tab of workspace agent."""
+    options = '(size (in (options) "agent") 80 24)'
+    if history is not None:
+        options = f"(history-bytes {options} {history})"
+    options = f"(program {options} {string(argv[0])})"
+    for word in argv[1:]:
+        options = f"(argument {options} {string(word)})"
+    return f"(new-tab {options})"
 
 
 def run(bin_, e, *args):
@@ -16,11 +32,11 @@ def until_text(bin_, e, answer, text, secs=30):
     version = answer.split()[0]
     pane = version.split(":")[0]
     end = time.monotonic() + secs
-    while text not in run(bin_, e, pane, "all-history", "capture").stdout:
+    while text not in run(bin_, e, f"(capture (all-history (pane {string(pane)})))").stdout:
         left = int(end - time.monotonic())
         if left < 1 or version.split(":")[1].endswith(".1"):
             raise RuntimeError(f"{pane} never showed {text!r}, at {version}")
-        out = run(bin_, e, "str", version, "changed", str(left), "timeout", "wait")
+        out = run(bin_, e, f"(wait (timeout (changed {string(version)}) {left}))")
         if out.returncode != 0:
             raise RuntimeError(f"{pane}: {out.returncode} {out.stderr.strip()}")
         version = out.stdout.split()[0]

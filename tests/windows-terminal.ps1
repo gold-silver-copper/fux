@@ -138,5 +138,5 @@ Get-Content "$marks\prompt.txt"
 Shot 'prompt'
 Get-Process WindowsTerminal -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq $window.Id } | Stop-Process -Force
 $env:LOCALAPPDATA = $dir
-& $Fux kill-server
+& $Fux '(kill-server)'
 "real Windows Terminal: typed, resized, detached, prompt back"

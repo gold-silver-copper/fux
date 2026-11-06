@@ -42,8 +42,8 @@ REAL = {n: shutil.which(n) for n in ("tmux", "zellij", "herdr", "sleep")}
 TOOLS = ("fux", "tmux", "zellij", "herdr")
 
 LEARN = {
-    "fux": "fux, a terminal multiplexer. Learn it with `fux help agents` (start there), `fux help` "
-           "and `fux str WORD explain`. A private fux server is already "
+    "fux": "fux, a terminal multiplexer. Learn it with `fux '(explain \"agents\")'` (start there), `fux '(help)'` "
+           "and `fux '(explain \"WORD\")'`. A private fux server is already "
            "running for you: FUX_SOCKET points to it, and nothing in this environment reaches anyone "
            "else's session, so you may use any fux command, kill-server included.",
     "tmux": "tmux, a terminal multiplexer. Learn it with `man tmux` or `tmux list-commands`. A private tmux server is already "
@@ -374,7 +374,7 @@ def run_one(tool, fux_bin, ref, work):
     # name and its own docs/agents.md) is offered beside the built-in help.
     guide = os.path.join(H, "guides", os.path.basename(fux_bin) + ".md")
     if tool == "fux" and os.path.exists(guide):
-        learn = learn.replace("`fux str WORD explain`.", f"`fux str WORD explain`, and the guide at {guide}.")
+        learn = learn.replace("`fux '(explain \"WORD\")'`.", f"`fux '(explain \"WORD\")'`, and the guide at {guide}.")
     prompt = PROMPT.format(learn=learn, goal=goal_text(task, work), work=work)
     open(os.path.join(work, ".prompt.md"), "w").write(prompt)
     rec = {"id": task["id"], "tool": tool, "bin": tool,

@@ -364,7 +364,7 @@ mod tests {
     }
 
     /// A tab in the first workspace.
-    const NEW_TAB: &str = "opts 80 24 size str +1 workspace in new-tab";
+    const NEW_TAB: &str = "(new-tab (in (size (options) 80 24) (workspace \"+1\")))";
 
     /// What a client types into the pane it runs in (`View::runs_in`),
     /// a key or a paste, is refused with a notice and queued nowhere; into
@@ -602,7 +602,10 @@ mod tests {
     #[test]
     fn replacing_a_key_panel_ends_its_old_notice() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "%1 str horizontal axis split drop")?;
+        run(
+            &mut s,
+            "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
+        )?;
         s.input(c, b"\x02");
         let prefix = s.views.get(&c).ok_or("view")?.opening;
         s.input(c, b"r");
@@ -633,10 +636,18 @@ mod tests {
     fn a_rename_prompt_takes_any_name() -> Outcome {
         let (mut s, c) = session()?;
         for (open, name, read) in [
-            ("str c1 client str %1 pane rename-prompt", "-dev", "%1"),
-            ("str c1 client str @1 tab rename-prompt", "--", "@1"),
             (
-                "str c1 client str +1 workspace rename-prompt",
+                "(sequence! (rename-prompt (client \"c1\") (pane \"%1\")) #inert)",
+                "-dev",
+                "%1",
+            ),
+            (
+                "(sequence! (rename-prompt (client \"c1\") (tab \"@1\")) #inert)",
+                "--",
+                "@1",
+            ),
+            (
+                "(sequence! (rename-prompt (client \"c1\") (workspace \"+1\")) #inert)",
                 "x 'w' --",
                 "+1",
             ),
@@ -648,7 +659,7 @@ mod tests {
             s.input(c, b"\r");
             assert_eq!(notice(&s, c), "", "{open}");
             assert_eq!(mode(&s, c), "normal", "{open}");
-            let listed = output(&mut s, "ls listing")?;
+            let listed = output(&mut s, "(listing (list-session))")?;
             assert!(
                 listed.contains(&format!("{read} {name}")),
                 "{open}: {listed}"
@@ -662,12 +673,17 @@ mod tests {
     #[test]
     fn a_screens_keys_are_the_configs() -> Outcome {
         let (mut s, c) = session()?;
-        let config = "str list str q unbind-in  str list str n unbind-in  \
-                      str list str g str cancel bind-in  str done label";
+        let config = "(sequence! (unbind-in \"list\" \"q\") (unbind-in \"list\" \"n\") (bind-in \"list\" \"g\" \"cancel\") (label \"done\") #inert)";
         output_as(&mut s, Some(c), config)?;
         for (bad, said) in [
-            ("str list str Escape str first bind-in", "cannot be bound"),
-            ("str list str g str nowhere bind-in", "\"nowhere\" is not "),
+            (
+                "(sequence! (bind-in \"list\" \"Escape\" \"first\") #inert)",
+                "cannot be bound",
+            ),
+            (
+                "(sequence! (bind-in \"list\" \"g\" \"nowhere\") #inert)",
+                "is not up, down",
+            ),
         ] {
             let refused = output_as(&mut s, Some(c), bad).err().unwrap_or_default();
             assert!(refused.contains(said), "{refused}");
@@ -693,9 +709,9 @@ mod tests {
     /// The confirmation's recipe file, loaded.
     #[cfg(unix)]
     const CONFIRM: &str = concat!(
-        "require ",
+        "(require! \"",
         env!("CARGO_MANIFEST_DIR"),
-        "/../recipes/confirm.fux"
+        "/../recipes/confirm.grift\")"
     );
 
     /// A question's or a prompt's action is checked as it opens: one with
@@ -706,22 +722,33 @@ mod tests {
     fn an_action_is_checked_as_its_screen_opens() -> Outcome {
         let (mut s, c) = session()?;
         for (action, said) in [
-            ("str drop".to_owned(), "code … end"),
-            ("code nosuch end".to_owned(), "no such word"),
+            ("\"drop\"".to_owned(), "callback code"),
             (
-                "list empty code drop end code drop end end".to_owned(),
+                "(list () (code! (lambda! () #inert)) (code! (lambda! () #inert)))".to_owned(),
                 "a callback is",
             ),
         ] {
-            let open = format!("{CONFIRM} me str sure? {action} confirm");
+            let open = format!("{CONFIRM} (confirm (me) \"sure?\" {action})");
             let refused = output_as(&mut s, Some(c), &open).err().unwrap_or_default();
             assert!(refused.contains(said), "{refused}");
             assert_eq!(mode(&s, c), "normal");
         }
+        // Grift resolves a name when it runs: a screen opens on a callback
+        // naming nothing, and Enter says which name.
+        let open = format!("{CONFIRM} (confirm (me) \"late\" (code! (lambda! () (nosuch))))");
+        output_as(&mut s, Some(c), &open)?;
+        assert_eq!(mode(&s, c), "list late 0");
+        s.input(c, b"y");
+        let failed = notice(&s, c);
+        assert!(
+            failed.contains("unbound-symbol") && failed.contains("nosuch"),
+            "{failed}"
+        );
+        assert_eq!(mode(&s, c), "normal");
         // A prompt's start is a line as typing makes one: no line end.
-        let open = "me str t list str a 10 char str b end glue code drop end prompt";
+        let open = "(sequence! (prompt (me) \"t\" (apply string-append (list \"a\" (code-point-to-string 10) \"b\")) (code! (lambda! (argument-140) #inert))) #inert)";
         let refused = output_as(&mut s, Some(c), open).err().unwrap_or_default();
-        assert!(refused.contains("bad_value"), "{refused}");
+        assert!(refused.contains("bad-value"), "{refused}");
         assert_eq!(mode(&s, c), "normal");
         Ok(())
     }
@@ -735,8 +762,9 @@ mod tests {
     #[test]
     fn a_confirmation_runs_its_callback_by_y_or_enter_alone() -> Outcome {
         let (mut s, c) = session()?;
-        let ask =
-            &format!("{CONFIRM} me str sure? list list %1 end code str yes rename end end confirm");
+        let ask = &format!(
+            "{CONFIRM} (confirm (me) \"sure?\" (list (list (pane 1)) (code! (lambda! (p) (rename p \"yes\")))))"
+        );
         for key in ["n", "Escape", "r", "x"] {
             output_as(&mut s, Some(c), ask)?;
             assert_eq!(mode(&s, c), "list sure? 0");
@@ -747,15 +775,30 @@ mod tests {
             assert_eq!(mode(&s, c), "normal", "{key}: {}", notice(&s, c));
             if ["r", "x"].contains(&key) {
                 let said = notice(&s, c);
-                assert!(said.contains("not a boolean"), "{key}: {said}");
+                assert!(said.contains("not boolean"), "{key}: {said}");
             }
-            assert_eq!(output(&mut s, "%1 str name get")?, "null\n", "{key}");
+            assert_eq!(
+                output(
+                    &mut s,
+                    "(sequence! (define! value-148 (pane 1)) \"name\" (get value-148 \"name\"))"
+                )?,
+                "none\n",
+                "{key}"
+            );
         }
         for key in ["y", "\r"] {
-            run(&mut s, "%1 str no rename")?;
+            run(&mut s, "(sequence! (rename (pane 1) \"no\") #inert)")?;
             output_as(&mut s, Some(c), ask)?;
             s.input(c, key.as_bytes());
-            assert_eq!(output(&mut s, "%1 str name get")?, "yes\n", "{key:?}");
+            assert_eq!(
+                output(
+                    &mut s,
+                    "(sequence! (define! value-158 (pane 1)) \"name\" (get value-158 \"name\"))"
+                )?,
+                "yes\n",
+                "{key:?}: {}",
+                notice(&s, c)
+            );
         }
         Ok(())
     }
@@ -768,7 +811,10 @@ mod tests {
         for _ in 0..3 {
             run(&mut s, NEW_TAB)?;
         }
-        run(&mut s, "str c1 client dup focused tab choose-among")?;
+        run(
+            &mut s,
+            "(sequence! (define! value-164 (client \"c1\")) (choose-among value-164 (tab (focused value-164))) #inert)",
+        )?;
         s.input(c, b"\x1b[H");
         let shown = screen_text(&s, c)?;
         assert!(shown.contains("@1 %1"), "{shown}");
@@ -780,13 +826,19 @@ mod tests {
     fn list_and_confirm_keys_match_exact_case() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, NEW_TAB)?;
-        run(&mut s, "str c1 client dup focused tab choose-among")?;
+        run(
+            &mut s,
+            "(sequence! (define! value-175 (client \"c1\")) (choose-among value-175 (tab (focused value-175))) #inert)",
+        )?;
         s.input(c, b"\x1b[HJ");
         assert!(mode(&s, c).ends_with(" 0"));
         s.input(c, b"j");
         assert!(mode(&s, c).ends_with(" 1"));
         s.input(c, b"q");
-        run(&mut s, "str c1 client str @2 tab confirm-close")?;
+        run(
+            &mut s,
+            "(sequence! (confirm-close (client \"c1\") (tab \"@2\")) #inert)",
+        )?;
         s.input(c, b"Y");
         assert_eq!(tabs(&s), Some(2));
         s.input(c, b"y");
@@ -803,7 +855,10 @@ mod tests {
         for _ in 0..40 {
             run(&mut s, NEW_TAB)?;
         }
-        run(&mut s, "str c1 client dup focused tab choose-among")?;
+        run(
+            &mut s,
+            "(sequence! (define! value-189 (client \"c1\")) (choose-among value-189 (tab (focused value-189))) #inert)",
+        )?;
         s.input(c, b"\x1b[H");
         s.input(c, &downs(30));
         let Some(Mode::Panel(Panel::List(list))) = s.views.get(&c).map(|v| &v.mode) else {
@@ -822,17 +877,17 @@ mod tests {
     fn with_maps(s: &mut Session) -> Outcome {
         run(
             s,
-            "str 'C-b g n' code opts str / cwd new-tab drop end bind str 'new tab' label str Tabs group",
+            "(sequence! (bind-key \"C-b g n\" (code! (lambda! () (sequence! (new-tab (directory (options) \"/\")) #inert)))) (label \"new tab\") (group \"Tabs\") #inert)",
         )?;
         run(
             s,
-            "str 'C-b y l' code me focused str right 1 move-border end bind str Grow group",
+            "(sequence! (bind-key \"C-b y l\" (code! (lambda! () (sequence! (move-border (focused (me)) \"right\" 1) #inert)))) (group \"Grow\") #inert)",
         )?;
         run(
             s,
-            "str 'C-b y h' code me focused str left 1 move-border end bind str Grow group",
+            "(sequence! (bind-key \"C-b y h\" (code! (lambda! () (sequence! (move-border (focused (me)) \"left\" 1) #inert)))) (group \"Grow\") #inert)",
         )?;
-        run(s, "str 'C-b y' repeat")
+        run(s, "(sequence! (repeat \"C-b y\") #inert)")
     }
 
     /// A map's key opens it, its column headed by the keys so far; a key
@@ -881,8 +936,11 @@ mod tests {
     fn a_map_that_repeats_keeps_its_keys_until_enter_or_esc() -> Outcome {
         let (mut s, c) = session()?;
         with_maps(&mut s)?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str c1 client str %1 pane show")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%1\")) #inert)",
+        )?;
         let start = pane_width(&s, 1);
         s.input(c, b"\x02y");
         assert_eq!(mode(&s, c), "column y 0");
@@ -930,12 +988,15 @@ mod tests {
     #[test]
     fn a_repeat_mode_may_bind_enter() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str c1 client str %1 pane show")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%1\")) #inert)",
+        )?;
         let start = pane_width(&s, 1);
         run(
             &mut s,
-            "str 'C-b r Enter' code me focused str right 1 move-border end bind",
+            "(sequence! (bind-key \"C-b r Enter\" (code! (lambda! () (sequence! (move-border (focused (me)) \"right\" 1) #inert)))) #inert)",
         )?;
         s.input(c, &prefixed("r\r\r"));
         assert!(mode(&s, c).starts_with("repeat "), "{}", mode(&s, c));
@@ -947,7 +1008,7 @@ mod tests {
 
     /// The panes of the client's tab, left to right.
     fn pane_order(s: &mut Session) -> Result<Vec<String>, String> {
-        let ls = output(s, "ls listing")?;
+        let ls = output(s, "(listing (list-session))")?;
         Ok(ls
             .lines()
             .filter_map(|l| l.trim_start().split(' ').next())
@@ -959,9 +1020,12 @@ mod tests {
     #[test]
     fn move_mode_moves_a_pane_until_esc() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str %2 pane str horizontal axis split")?;
-        run(&mut s, "str c1 client str %3 pane show")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(&mut s, "(split (axis (pane \"%2\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%3\")) #inert)",
+        )?;
         assert_eq!(pane_order(&mut s)?, ["%1", "%2", "%3"]);
         s.input(c, &prefixed("mhh"));
         escape(&mut s, c);
@@ -975,13 +1039,16 @@ mod tests {
         let (mut s, c) = session()?;
         run(
             &mut s,
-            "opts 80 24 size str +1 workspace in str two name new-tab",
+            "(new-tab (name (in (size (options) 80 24) (workspace \"+1\")) \"two\"))",
         )?;
         run(
             &mut s,
-            "opts 80 24 size str +1 workspace in str three name new-tab",
+            "(new-tab (name (in (size (options) 80 24) (workspace \"+1\")) \"three\"))",
         )?;
-        run(&mut s, "str c1 client str @1 tab show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@1\")) #inert)",
+        )?;
         s.input(c, &prefixed("tmll"));
         assert_eq!(mode(&s, c), "repeat REORDER  h l · Esc");
         escape(&mut s, c);
@@ -1003,7 +1070,7 @@ mod tests {
         let (mut s, c) = session()?;
         run(
             &mut s,
-            "str 'C-b V' code opts str / cwd new-tab drop end bind",
+            "(sequence! (bind-key \"C-b V\" (code! (lambda! () (sequence! (new-tab (directory (options) \"/\")) #inert)))) #inert)",
         )?;
         s.input(c, &prefixed("V"));
         assert_eq!(tabs(&s), Some(2));
@@ -1031,7 +1098,7 @@ mod tests {
         escape(&mut s, c);
         run(
             &mut s,
-            "str 'C-b Up' code opts str / cwd new-tab drop end bind",
+            "(sequence! (bind-key \"C-b Up\" (code! (lambda! () (sequence! (new-tab (directory (options) \"/\")) #inert)))) #inert)",
         )?;
         s.input(c, &prefixed("\x1b[A"));
         assert_eq!(tabs(&s), Some(2));
@@ -1046,7 +1113,7 @@ mod tests {
         assert_eq!(queued_focused(&mut s, c), b"\x02");
         run(
             &mut s,
-            "str 'C-b C-b' code opts str / cwd new-tab drop end bind",
+            "(sequence! (bind-key \"C-b C-b\" (code! (lambda! () (sequence! (new-tab (directory (options) \"/\")) #inert)))) #inert)",
         )?;
         s.input(c, &[0x02, 0x02]);
         assert_eq!(tabs(&s), Some(3));
@@ -1055,7 +1122,10 @@ mod tests {
         for key in ["1", "F5", "M-n"] {
             run(
                 &mut s,
-                &format!("str 'C-b {key}' code opts str / cwd new-tab drop end bind"),
+                &format!(
+                    "(sequence! (bind-key {} (code! (lambda! () (sequence! (new-tab (directory (options) \"/\")) #inert)))) #inert)",
+                    fux::script::quoted(&format!("C-b {key}"))
+                ),
             )?;
         }
         s.input(c, &prefixed("1"));
@@ -1070,7 +1140,10 @@ mod tests {
     #[test]
     fn a_key_bound_without_the_prefix_runs_at_once_and_reaches_no_pane() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str M-t code opts str / cwd new-tab drop end bind")?;
+        run(
+            &mut s,
+            "(sequence! (bind-key \"M-t\" (code! (lambda! () (sequence! (new-tab (directory (options) \"/\")) #inert)))) #inert)",
+        )?;
         s.input(c, b"\x1bt");
         assert_eq!(tabs(&s), Some(2));
         assert!(queued_focused(&mut s, c).is_empty());
@@ -1089,12 +1162,21 @@ mod tests {
     /// 1 | (2 / 3), the client on %2.
     fn busy() -> Result<(Session, ClientId), String> {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str %2 pane str vertical axis split")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(&mut s, "(split (axis (pane \"%2\") \"vertical\"))")?;
         run(&mut s, NEW_TAB)?;
-        run(&mut s, "opts str new-workspace in 80 24 size new-tab")?;
-        run(&mut s, "opts +1 in str new-workspace in 80 24 size new-tab")?;
-        run(&mut s, "str c1 client str %2 pane show")?;
+        run(
+            &mut s,
+            "(new-tab (size (in (options) \"new-workspace\") 80 24))",
+        )?;
+        run(
+            &mut s,
+            "(new-tab (size (in (in (options) (workspace 1)) \"new-workspace\") 80 24))",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%2\")) #inert)",
+        )?;
         Ok((s, c))
     }
 
@@ -1105,7 +1187,7 @@ mod tests {
     fn state(s: &mut Session, c: ClientId) -> Result<String, String> {
         // Opening the prefix panel and leaving it are real journal events;
         // direct evaluation has a different history, with the same state.
-        let ls = output(s, "ls listing")?
+        let ls = output(s, "(listing (list-session))")?
             .lines()
             .filter(|line| !line.starts_with("cursor "))
             .collect::<Vec<_>>()
@@ -1124,12 +1206,18 @@ mod tests {
     #[test]
     fn into_a_workspace_and_out_again_is_a_round_trip() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "opts +1 in str agent1 in 80 24 size new-tab")?;
+        run(
+            &mut s,
+            "(new-tab (size (in (in (options) (workspace 1)) \"agent1\") 80 24))",
+        )?;
         let at = |s: &Session| s.place(c).map(|p| (p.ws, p.tab));
         let start = at(&s);
         s.input(c, &prefixed("wj"));
         let agent1 = (fux_wire::id::WsId::of(2), fux_wire::id::TabId::of(2));
         assert_eq!(at(&s), Some(agent1));
+        // Nothing is in this one.
+        s.input(c, &prefixed("wj"));
+        assert!(notice(&s, c).contains("none is in it"), "{}", notice(&s, c));
         s.input(c, &prefixed("wk"));
         assert_eq!(at(&s), start);
         Ok(())
@@ -1140,10 +1228,10 @@ mod tests {
     #[test]
     fn out_of_a_workspace_at_the_top_is_refused() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "opts str proj in 80 24 size new-tab")?;
+        run(&mut s, "(new-tab (size (in (options) \"proj\") 80 24))")?;
         run(
             &mut s,
-            "str c1 client str proj workspace show str c1 client %1 show",
+            "(sequence! (show (client \"c1\") (workspace \"proj\")) (show (client \"c1\") (pane 1)) #inert)",
         )?;
         let start = s.place(c).map(|p| (p.ws, p.tab));
         s.input(c, &prefixed("wk"));
@@ -1190,7 +1278,11 @@ mod tests {
                 typed.input(c, b"\r");
             }
             let (mut ran, d) = busy()?;
-            if let Err(error) = output_as(&mut ran, Some(d), &binding.code.text()) {
+            if let Err(error) = crate::session::testing::output_job(
+                &mut ran,
+                Some(d),
+                &fux::screens::Job::from(binding.code.clone()),
+            ) {
                 refused.push(keys.clone());
                 // Leaving a repeat mode clears what its keys said.
                 if !repeat {
@@ -1234,19 +1326,19 @@ mod tests {
             }
         }
         // A workspace that closed, or a pane to move to, opens none.
-        let gone = "opts str gone in str / cwd 80 24 size new-tab workspace let w w kill";
+        let gone = r#"(define! w (workspace (new-tab (size (directory (in (options) "gone") "/") 80 24)))) (kill w)"#;
         for (code, refused) in [
             (
-                format!("{gone} me w choose-among"),
+                format!("{gone} (choose-among (me) w)"),
                 "chooser target is absent",
             ),
             (
-                format!("{gone} me %2 w choose-move"),
+                format!("{gone} (choose-move (me) (pane 2) w)"),
                 "chooser target is absent",
             ),
             (
-                "me %2 %2 choose-move".to_owned(),
-                "takes a tab or workspace",
+                "(sequence! (choose-move (me) (pane 2) (pane 2)) #inert)".to_owned(),
+                "a tab or workspace",
             ),
         ] {
             let code = code.as_str();
@@ -1259,11 +1351,23 @@ mod tests {
             );
         }
         for (code, captures) in [
-            ("me me focused tab choose-among", 0),
-            ("me me focused workspace choose-among", 0),
-            ("me %2 %2 tab choose-move", 1),
-            ("me %2 %2 workspace choose-move", 1),
-            ("me %2 choose-pane", 1),
+            (
+                "(sequence! (choose-among (me) (tab (focused (me)))) #inert)",
+                0,
+            ),
+            (
+                "(sequence! (choose-among (me) (workspace (focused (me)))) #inert)",
+                0,
+            ),
+            (
+                "(sequence! (choose-move (me) (pane 2) (tab (pane 2))) #inert)",
+                1,
+            ),
+            (
+                "(sequence! (choose-move (me) (pane 2) (workspace (pane 2))) #inert)",
+                1,
+            ),
+            ("(sequence! (choose-pane (me) (pane 2)) #inert)", 1),
         ] {
             let (mut s, c) = busy()?;
             let context = fux_wire::protocol::Context {
@@ -1278,7 +1382,6 @@ mod tests {
                 context: context.clone(),
                 opened: None,
                 on_commit: None,
-                stop: None,
             };
             // In a client's dictionary, as a key's program is.
             let mut machine = fux::screens::Job::from(code.to_owned())
@@ -1300,7 +1403,7 @@ mod tests {
                     return Err(format!("{labels:?}"));
                 };
                 assert!(
-                    one.starts_with("* +1 ") && one.contains("1 workspace"),
+                    one.starts_with("* +1 ") && one.contains("(workspace 1)"),
                     "{labels:?}"
                 );
                 assert!(three.starts_with("    +3 "), "{labels:?}");
@@ -1336,28 +1439,33 @@ mod tests {
     fn chooser_callbacks_act_on_the_selected_destination() -> Outcome {
         for (open, keys, observe, expected) in [
             (
-                "me me focused tab choose-among",
+                "(sequence! (choose-among (me) (tab (focused (me)))) #inert)",
                 "j\r",
-                "me focused tab string",
+                "(string (tab (focused (me))))",
                 "@2\n",
             ),
             (
-                "me me focused workspace choose-among",
+                "(sequence! (choose-among (me) (workspace (focused (me)))) #inert)",
                 "j\r",
-                "me focused workspace string",
+                "(string (workspace (focused (me))))",
                 "+3\n",
             ),
-            ("me %2 %2 tab choose-move", "j\r", "%2 tab string", "@2\n"),
             (
-                "me %2 %2 workspace choose-move",
+                "(sequence! (choose-move (me) (pane 2) (tab (pane 2))) #inert)",
                 "j\r",
-                "%2 workspace string",
+                "(string (tab (pane 2)))",
+                "@2\n",
+            ),
+            (
+                "(sequence! (choose-move (me) (pane 2) (workspace (pane 2))) #inert)",
+                "j\r",
+                "(string (workspace (pane 2)))",
                 "+2\n",
             ),
             (
-                "me %2 choose-pane",
+                "(sequence! (choose-pane (me) (pane 2)) #inert)",
                 "\r",
-                "@1 panes each string print end",
+                "(sequence! (fold (lambda! (accumulator-580 item-576) (let! ((() accumulator-580)) (sequence! (print (string item-576)) (list)))) (list) (panes (tab 1))) #inert)",
                 "%2\n%1\n%3\n",
             ),
         ] {
@@ -1374,11 +1482,31 @@ mod tests {
     #[test]
     fn list_rename_and_close_callbacks_address_each_choosers_destination() -> Outcome {
         for (open, target, kind) in [
-            ("me me focused tab choose-among", "@1", "tab"),
-            ("me me focused workspace choose-among", "+1", "workspace"),
-            ("me %2 %2 tab choose-move", "@1", "tab"),
-            ("me %2 %2 workspace choose-move", "+1", "workspace"),
-            ("me %2 choose-pane", "%1", "pane"),
+            (
+                "(sequence! (choose-among (me) (tab (focused (me)))) #inert)",
+                "@1",
+                "tab",
+            ),
+            (
+                "(sequence! (choose-among (me) (workspace (focused (me)))) #inert)",
+                "+1",
+                "workspace",
+            ),
+            (
+                "(sequence! (choose-move (me) (pane 2) (tab (pane 2))) #inert)",
+                "@1",
+                "tab",
+            ),
+            (
+                "(sequence! (choose-move (me) (pane 2) (workspace (pane 2))) #inert)",
+                "+1",
+                "workspace",
+            ),
+            (
+                "(sequence! (choose-pane (me) (pane 2)) #inert)",
+                "%1",
+                "pane",
+            ),
         ] {
             let (mut s, c) = busy()?;
             output_as(&mut s, Some(c), open)?;
@@ -1390,11 +1518,24 @@ mod tests {
             s.input(c, &[0x7f; 16]);
             s.input(c, b"destination\r");
             assert_eq!(
-                output(&mut s, &format!("{target} str name get"))?,
+                output(
+                    &mut s,
+                    &format!(
+                        "(sequence! \"name\" (get {} \"name\"))",
+                        crate::test_reference(target)
+                    )
+                )?,
                 "destination\n",
                 "{open}"
             );
-            assert_eq!(output(&mut s, "%2 str name get")?, "null\n", "{open}");
+            assert_eq!(
+                output(
+                    &mut s,
+                    "(sequence! (define! value-622 (pane 2)) \"name\" (get value-622 \"name\"))"
+                )?,
+                "none\n",
+                "{open}"
+            );
             output_as(&mut s, Some(c), open)?;
             s.input(c, b"x");
             assert_eq!(
@@ -1405,7 +1546,14 @@ mod tests {
             );
             s.input(c, b"y");
             assert!(
-                output(&mut s, &format!("{target} str name get")).is_err(),
+                output(
+                    &mut s,
+                    &format!(
+                        "(sequence! \"name\" (get {} \"name\"))",
+                        crate::test_reference(target)
+                    )
+                )
+                .is_err(),
                 "{open}"
             );
         }
@@ -1417,21 +1565,21 @@ mod tests {
         let (mut s, c) = session()?;
         // A valid executable word is still not a native list action.
         for bad in [
-            "str list str R str confirm-close bind-in",
-            "str list str R str rename bind-in",
-            "str R str nosuch bind-action",
-            "str Escape code 2drop end bind-action",
+            "(sequence! (bind-in \"list\" \"R\" \"confirm-close\") #inert)",
+            "(sequence! (bind-in \"list\" \"R\" \"rename\") #inert)",
+            "(sequence! (bind-action \"R\" \"nosuch\") #inert)",
+            "(sequence! (bind-action \"Escape\" (code! (lambda! (argument-646 argument-647) #inert))) #inert)",
         ] {
             assert!(output_as(&mut s, Some(c), bad).is_err(), "{bad}");
         }
         output_as(
             &mut s,
             Some(c),
-            "str R code nip print end bind-action str test label",
+            "(sequence! (bind-action \"R\" (code! (lambda! (argument-654 argument-655) (sequence! (print argument-655) #inert)))) (label \"test\") #inert)",
         )?;
         run(
             &mut s,
-            "str c1 client str hosts list list str '%1 kill' str '%1 kill' end end list end list 0 end code nip print end choose",
+            "(sequence! (choose (client \"c1\") \"hosts\" (list (list \"%1 kill\" \"%1 kill\")) () (list 0) (code! (lambda! (argument-677 argument-678) (sequence! (print argument-678) #inert)))) #inert)",
         )?;
         s.input(c, b"R");
         assert!(notice(&s, c).contains("%1 kill"), "{}", notice(&s, c));
@@ -1443,28 +1591,18 @@ mod tests {
     fn chooser_selection_is_explicit_and_independent_of_the_current_marker() -> Outcome {
         let (mut s, c) = session()?;
         for (rows, current, selected, accepted) in [
-            ("list end", "list end", "list end", true),
-            ("list end", "list 0 end", "list end", false),
-            (
-                "list list 7 str seven end end",
-                "list end",
-                "list end",
-                false,
-            ),
-            (
-                "list list 7 str seven end end",
-                "list end",
-                "list -1 end",
-                false,
-            ),
-            (
-                "list list 7 str seven end end",
-                "list end",
-                "list 1 end",
-                false,
-            ),
+            ("()", "()", "()", true),
+            ("()", "(list 0)", "()", false),
+            ("(list (list 7 \"seven\"))", "()", "()", false),
+            ("(list (list 7 \"seven\"))", "()", "(list -1)", false),
+            ("(list (list 7 \"seven\"))", "()", "(list 1)", false),
         ] {
-            let code = format!("me str title {rows} {current} {selected} code 2drop end choose");
+            let code = format!(
+                "(sequence! (choose (me) \"title\" {} {} {} (code! (lambda! (argument-106 argument-107) #inert))) #inert)",
+                crate::test_reference(rows),
+                crate::test_reference(current),
+                crate::test_reference(selected)
+            );
             assert_eq!(
                 output_as(&mut s, Some(c), &code).is_ok(),
                 accepted,
@@ -1475,7 +1613,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "me str title list list 7 str seven end list 8 str eight end end list 1 end list 0 end code 2drop end choose",
+            "(sequence! (choose (me) \"title\" (list (list 7 \"seven\") (list 8 \"eight\")) (list 1) (list 0) (code! (lambda! (argument-772 argument-773) #inert))) #inert)",
         )?;
         let Screen::List(list) = screen(&s, c) else {
             return Err(mode(&s, c));
@@ -1489,12 +1627,16 @@ mod tests {
         let (mut s, c) = session()?;
         run(
             &mut s,
-            "@1 str shared rename opts 80 24 size str +1 workspace in new-tab drop",
+            "(sequence! (rename (tab 1) \"shared\") (new-tab (in (size (options) 80 24) (workspace \"+1\"))) #inert)",
         )?;
-        output_as(&mut s, Some(c), "me me focused tab choose-among")?;
+        output_as(
+            &mut s,
+            Some(c),
+            "(sequence! (choose-among (me) (tab (focused (me)))) #inert)",
+        )?;
         run(
             &mut s,
-            "@1 kill opts 80 24 size str +1 workspace in str shared name new-tab drop",
+            "(sequence! (kill (tab 1)) (new-tab (name (in (size (options) 80 24) (workspace \"+1\")) \"shared\")) #inert)",
         )?;
         assert!(matches!(screen(&s, c), Screen::List(_)));
         let before = s.place(c).ok_or("place")?.tab;
@@ -1517,8 +1659,11 @@ mod tests {
     #[test]
     fn a_mouse_report_reaches_the_focused_pane_in_its_cells() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str c1 client str %2 pane show")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%2\")) #inert)",
+        )?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         assert!(right.x() > 1 && right.y() == 0, "{right:?}");
         // Nothing asked: no reporting, and a report is dropped.
@@ -1540,8 +1685,11 @@ mod tests {
         s.input(c, press(right.x(), 0).as_bytes());
         assert_eq!(queued(&mut s, 2), [0x1b, b'[', b'M', 32, 33, 33]);
         // A pane below another: moved down too.
-        run(&mut s, "str %2 pane str vertical axis split")?;
-        run(&mut s, "str c1 client str %3 pane show")?;
+        run(&mut s, "(split (axis (pane \"%2\") \"vertical\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%3\")) #inert)",
+        )?;
         let below = rect_of(&s, c, 3).ok_or("no rect for %3")?;
         assert!(below.y() > 1, "{below:?}");
         s.out(PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
@@ -1581,9 +1729,12 @@ mod tests {
         let (mut s, c) = session()?;
         run(
             &mut s,
-            "opts str agent in 80 24 size str /bin/cat program new-tab",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
-        run(&mut s, "str c1 client str %2 pane show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%2\")) #inert)",
+        )?;
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
         for typed in [b"x".as_slice(), b"\x1b[200~z\x1b[201~"] {
             s.input(c, typed);
@@ -1598,8 +1749,11 @@ mod tests {
     #[test]
     fn a_drag_out_of_the_pane_is_kept_to_its_edge() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str c1 client str %2 pane show")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%2\")) #inert)",
+        )?;
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
         s.out(PaneId::of(2), b"\x1b[?1002h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1002));
@@ -1624,8 +1778,11 @@ mod tests {
     #[test]
     fn a_zoom_elsewhere_lets_go_of_a_button_held_in_the_focus() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str c1 client str %1 pane show")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%1\")) #inert)",
+        )?;
         for pane in [1, 2] {
             s.out(PaneId::of(pane), b"\x1b[?1002h\x1b[?1006h");
         }
@@ -1633,7 +1790,7 @@ mod tests {
         assert_eq!(queued(&mut s, 1), b"\x1b[<0;2;2M");
         // Another's zoom moves its focus: the drag and the release past
         // the bottom go to neither pane.
-        run(&mut s, "%2 zoom")?;
+        run(&mut s, "(sequence! (zoom (pane 2)) #inert)")?;
         s.input(c, b"\x1b[<32;1;200M\x1b[<0;1;200m");
         assert!(queued(&mut s, 1).is_empty() && queued(&mut s, 2).is_empty());
         Ok(())
@@ -1642,8 +1799,11 @@ mod tests {
     #[test]
     fn the_mouse_is_reported_only_while_no_screen_of_the_clients_is_open() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str c1 client str %2 pane show")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%2\")) #inert)",
+        )?;
         s.out(PaneId::of(2), b"\x1b[?1003h\x1b[?1006h");
         assert_eq!(asked_mouse_level(&s, c), Some(1003));
         let right = rect_of(&s, c, 2).ok_or("no rect for %2")?;
@@ -1662,12 +1822,15 @@ mod tests {
             assert_eq!(asked_mouse_level(&s, c), Some(1003), "{name:?}");
         }
         // Focus on a pane whose program did not ask: none.
-        run(&mut s, "str c1 client str %1 pane show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%1\")) #inert)",
+        )?;
         assert_eq!(asked_mouse_level(&s, c), Some(0));
         s.input(c, b"\x1b[<0;2;2M");
         assert!(queued(&mut s, 1).is_empty() && queued(&mut s, 2).is_empty());
         // Zoomed, the pane fills the screen, and its cells are the screen's.
-        run(&mut s, "%2 zoom")?;
+        run(&mut s, "(sequence! (zoom (pane 2)) #inert)")?;
         s.input(c, b"\x1b[<0;2;2M");
         assert_eq!(queued(&mut s, 2), b"\x1b[<0;2;2M");
         Ok(())
@@ -1678,11 +1841,14 @@ mod tests {
     #[test]
     fn a_list_whose_item_disappears_closes_and_never_retargets() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "str %1 pane str horizontal axis split")?;
-        run(&mut s, "str c1 client str %2 pane show")?;
+        run(&mut s, "(split (axis (pane \"%1\") \"horizontal\"))")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (pane \"%2\")) #inert)",
+        )?;
         s.input(c, b"\x02as");
         assert!(mode(&s, c).starts_with("list "), "{}", mode(&s, c));
-        run(&mut s, "str %2 pane kill")?;
+        run(&mut s, "(sequence! (kill (pane \"%2\")) #inert)")?;
         assert_eq!(mode(&s, c), "normal");
         assert_eq!(screen(&s, c), Screen::default());
         assert!(notice(&s, c).contains("%2 is gone"), "{}", notice(&s, c));
@@ -1695,17 +1861,29 @@ mod tests {
     #[test]
     fn an_overlay_holds_a_workspace_named_by_name_through_a_rename() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "+1 str main rename")?;
-        run(&mut s, "str c1 client str main workspace rename-prompt")?;
-        run(&mut s, "str main workspace str other rename")?;
+        run(&mut s, "(sequence! (rename (workspace 1) \"main\") #inert)")?;
+        run(
+            &mut s,
+            "(sequence! (rename-prompt (client \"c1\") (workspace \"main\")) #inert)",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (rename (workspace \"main\") \"other\") #inert)",
+        )?;
         assert_eq!(mode(&s, c), "prompt main|", "{}", notice(&s, c));
         s.input(c, b"\x7f\x7f\x7f\x7fnew\r");
         assert_eq!(
             s.parts.workspaces().first().and_then(|w| w.name()),
             Some("new")
         );
-        run(&mut s, "str c1 client str new workspace confirm-close")?;
-        run(&mut s, "str new workspace str again rename")?;
+        run(
+            &mut s,
+            "(sequence! (confirm-close (client \"c1\") (workspace \"new\")) #inert)",
+        )?;
+        run(
+            &mut s,
+            "(sequence! (rename (workspace \"new\") \"again\") #inert)",
+        )?;
         assert_eq!(mode(&s, c), "list close workspace +1 new? 0");
         s.input(c, b"y");
         assert!(
@@ -1722,9 +1900,12 @@ mod tests {
         let (mut s, c) = session()?;
         run(
             &mut s,
-            "opts 80 24 size str +1 workspace in str second name new-tab",
+            "(new-tab (name (in (size (options) 80 24) (workspace \"+1\")) \"second\"))",
         )?;
-        run(&mut s, "str c1 client str @2 tab show")?;
+        run(
+            &mut s,
+            "(sequence! (show (client \"c1\") (tab \"@2\")) #inert)",
+        )?;
         s.input(c, b"\x02tg");
         let Some(Mode::Panel(Panel::List(list))) = s.views.get(&c).map(|v| &v.mode) else {
             return Err(mode(&s, c));

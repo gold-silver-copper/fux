@@ -1,7 +1,7 @@
 #![no_main]
 //! Input: two bytes for the first client's size, then operations, each a
 //! tag byte and its arguments: bytes a client types, the Escape deadline,
-//! a resize, a client attaching or detaching, a fuxth program from the
+//! a resize, a client attaching or detaching, a grift program from the
 //! side, a pane's output, a pane's shell exiting. Two sessions run the
 //! same operations: one given each client's bytes as the input says, the
 //! other one byte at a time.
@@ -54,75 +54,75 @@ fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 /// clients are looking at, and the bindings and layers they are in.
 /// Seeds pick them by position, so a new one goes at the end.
 const SIDE: &[&str] = &[
-    "opts 80 23 size str +1 workspace in new-tab drop",
-    "opts 80 23 size str +1 workspace in str two name str htop program new-tab drop",
-    "opts 80 23 size str ws name new-workspace drop",
-    "str %1 pane str horizontal axis split drop",
-    "str %2 pane str vertical axis split drop",
-    "str %2 pane str horizontal axis split drop",
-    "str %3 pane str horizontal axis split drop",
-    "str %1 pane kill",
-    "str %2 pane kill",
-    "str @1 tab kill",
-    "str +2 workspace kill",
-    "str %1 pane str right move",
-    "str %2 pane str new-tab move",
-    "str %1 pane str %2 pane swap-with",
-    "str %1 pane str right 5 move-border",
-    "str @1 tab str renamed rename",
-    "str @1 tab str next reorder",
-    "%1 zoom",
-    "str c1 client str next focus",
-    "str c1 client str next step-tab",
-    "str c2 client str next step-workspace",
-    "str c1 client str C-b key send-keys",
-    "str c2 client str c2 client focused choose-pane",
-    "str c1 client choose-tab",
-    "str c1 client str c1 client focused tab confirm-close",
-    "str c2 client str c2 client focused workspace rename-prompt",
-    "str c1 client command-prompt",
-    "str 'C-b t' code me focused zoom end bind",
-    "str 'C-b t' unbind",
-    "str 'C-b r' unbind",
-    "str 'C-b t m' unbind",
-    "unbind-all",
-    "str 'g h' str 'me focused str left 1 move-border' bind repeat",
-    "str 't m j' str 'me focused zoom' bind str Grow group repeat",
-    "str 'g n' str 'opts new-tab drop' bind",
-    "str 'y l' str 'me focused str right 1 move-border' bind str Grow group repeat",
-    "str 'y h' str 'me focused str left 1 move-border' bind str Grow group repeat",
-    "str c1 client str %1 pane show",
-    "str c1 client str %2 pane show",
-    "str c1 client str %3 pane show",
-    "str c1 client str @1 tab show",
-    "str g unbind",
-    "str C-b str C-a move-keys",
-    "str C-a str C-b move-keys",
-    "str program-clipboard false set",
-    "str program-clipboard true set",
-    "str c1 client str hjkl text send-keys",
-    "str c1 client detach",
-    "str %1 pane str pasted paste send-keys",
-    "str %1 pane str x key send-keys",
-    "str %1 pane str C-b key send-keys",
-    "str V str 'me focused str vertical axis split drop' bind",
-    "str Up str 'me focused zoom' bind",
-    "str C-b str 'opts new-tab drop' bind",
-    "str 'g Enter' str 'me focused str right 1 move-border' bind repeat",
-    "str M-t code opts new-tab drop end bind",
-    "str x code me focused zoom end bind",
-    "str y code str %1 pane str z key send-keys end bind",
-    "str x unbind",
-    "str 'C-b g h' code me focused str left 1 move-border end bind str 'C-b g' repeat",
-    "str titles true set",
-    "str titles false set",
-    "str bell false set",
-    "str bell true set",
-    "str c2 client str ls text str Enter key send-keys",
-    "str terminal-clipboard false set",
-    "str terminal-clipboard true set",
-    "str c1 client str last step-tab",
-    "str c2 client str last step-workspace",
+    r##"(new-tab (in (size (options) 80 23) (workspace "+1"))) #inert"##,
+    r##"(new-tab (program (name (in (size (options) 80 23) (workspace "+1")) "two") "htop")) #inert"##,
+    r##"(new-tab (in (size (options) 80 23) "ws")) #inert"##,
+    r##"(split (axis (pane "%1") "horizontal")) #inert"##,
+    r##"(split (axis (pane "%2") "vertical")) #inert"##,
+    r##"(split (axis (pane "%2") "horizontal")) #inert"##,
+    r##"(split (axis (pane "%3") "horizontal")) #inert"##,
+    r##"(kill (pane "%1"))"##,
+    r##"(kill (pane "%2"))"##,
+    r##"(kill (tab "@1"))"##,
+    r##"(kill (workspace "+2"))"##,
+    r##"(move (pane "%1") "right")"##,
+    r##"(move (pane "%2") "new-tab")"##,
+    r##"(swap-with (pane "%1") (pane "%2"))"##,
+    r##"(move-border (pane "%1") "right" 5)"##,
+    r##"(rename (tab "@1") "renamed")"##,
+    r##"(reorder (tab "@1") "next")"##,
+    r##"(zoom (pane "%1"))"##,
+    r##"(step (client "c1") (focused (client "c1")) "next")"##,
+    r##"(step (client "c1") (tab (focused (client "c1"))) "next")"##,
+    r##"(step (client "c2") (workspace (focused (client "c2"))) "next")"##,
+    r##"(send-keys (key (client "c1") "C-b"))"##,
+    r##"(choose-pane (client "c2") (focused (client "c2")))"##,
+    r##"(choose-among (client "c1") (tab (focused (client "c1"))))"##,
+    r##"(confirm-close (client "c1") (tab (focused (client "c1"))))"##,
+    r##"(rename-prompt (client "c2") (workspace (focused (client "c2"))))"##,
+    r##"(command-prompt (client "c1"))"##,
+    r##"(bind-key "C-b t" (code! (lambda! () (zoom (focused (me))) #inert)))"##,
+    r##"(unbind "C-b t")"##,
+    r##"(unbind "C-b r")"##,
+    r##"(unbind "C-b t m")"##,
+    r##"(unbind-all)"##,
+    r##"(bind-key "g h" (code! (lambda! () (move-border (focused (me)) "left" 1) #inert))) (repeat "g")"##,
+    r##"(bind-key "t m j" (code! (lambda! () (zoom (focused (me))) #inert))) (group "Grow") (repeat "t m")"##,
+    r##"(bind-key "g n" (code! (lambda! () (new-tab (options)) #inert)))"##,
+    r##"(bind-key "y l" (code! (lambda! () (move-border (focused (me)) "right" 1) #inert))) (group "Grow") (repeat "y")"##,
+    r##"(bind-key "y h" (code! (lambda! () (move-border (focused (me)) "left" 1) #inert))) (group "Grow") (repeat "y")"##,
+    r##"(show (client "c1") (pane "%1"))"##,
+    r##"(show (client "c1") (pane "%2"))"##,
+    r##"(show (client "c1") (pane "%3"))"##,
+    r##"(show (client "c1") (tab "@1"))"##,
+    r##"(unbind "g")"##,
+    r##"(move-keys "C-b" "C-a")"##,
+    r##"(move-keys "C-a" "C-b")"##,
+    r##"(set "program-clipboard" #false)"##,
+    r##"(set "program-clipboard" #true)"##,
+    r##"(send-keys (text (client "c1") "hjkl"))"##,
+    r##"(detach (client "c1"))"##,
+    r##"(send-keys (paste (pane "%1") "pasted"))"##,
+    r##"(send-keys (key (pane "%1") "x"))"##,
+    r##"(send-keys (key (pane "%1") "C-b"))"##,
+    r##"(bind-key "V" (code! (lambda! () (split (axis (focused (me)) "vertical")) #inert)))"##,
+    r##"(bind-key "Up" (code! (lambda! () (zoom (focused (me))) #inert)))"##,
+    r##"(bind-key "C-b" (code! (lambda! () (new-tab (options)) #inert)))"##,
+    r##"(bind-key "g Enter" (code! (lambda! () (move-border (focused (me)) "right" 1) #inert))) (repeat "g")"##,
+    r##"(bind-key "M-t" (code! (lambda! () (new-tab (options)) #inert)))"##,
+    r##"(bind-key "x" (code! (lambda! () (zoom (focused (me))) #inert)))"##,
+    r##"(bind-key "y" (code! (lambda! () (send-keys (key (pane "%1") "z")) #inert)))"##,
+    r##"(unbind "x")"##,
+    r##"(bind-key "C-b g h" (code! (lambda! () (move-border (focused (me)) "left" 1) #inert))) (repeat "C-b g")"##,
+    r##"(set "titles" #true)"##,
+    r##"(set "titles" #false)"##,
+    r##"(set "bell" #false)"##,
+    r##"(set "bell" #true)"##,
+    r##"(send-keys (key (text (client "c2") "ls") "Enter"))"##,
+    r##"(set "terminal-clipboard" #false)"##,
+    r##"(set "terminal-clipboard" #true)"##,
+    r##"(step (client "c1") (tab (focused (client "c1"))) "last")"##,
+    r##"(step (client "c2") (workspace (focused (client "c2"))) "last")"##,
 ];
 
 /// What a pane's program may say of the mouse.
@@ -170,19 +170,18 @@ fn size(rows: u8, cols: u8) -> (u16, u16) {
     (1 + u16::from(rows) % 60, 1 + u16::from(cols) % 200)
 }
 
-/// The words that loop or recurse, with which a program typed at a prompt
-/// might never end: fux leaves stopping one to its user.
-const LOOPS: &[&str] = &["begin", "define"];
+/// What makes a program typed at a prompt read a file, or perhaps never
+/// end: fux leaves stopping one to its user. The bound programs here are
+/// the fixed ones above.
+const UNBOUNDED: &[&str] = &[
+    "lambda", "vau", "define", "apply", "evaluate", "include", "require", "read", "input",
+];
 
-/// The words `job` runs: a line's, as the client splits it; a code
-/// value's own.
-fn words(job: &Job) -> Result<Vec<String>, fuxth::Error> {
+/// The source `job` runs: a line's, or a code value's.
+fn source(job: &Job) -> &str {
     match &job.program {
-        Program::Line(line) => {
-            let tokens = fuxth::token::source("key", line)?;
-            Ok(tokens.iter().map(|t| t.text.to_string()).collect())
-        }
-        Program::Code(code) => Ok(code.words.clone()),
+        Program::Line(line) => line,
+        Program::Code(code) => &code.source,
     }
 }
 
@@ -286,7 +285,7 @@ impl Run {
         panes.get(usize::from(pick) % panes.len().max(1)).copied()
     }
 
-    /// Runs fuxth `code` as `client` (or from no client) runs it, the
+    /// Runs grift `code` as `client` (or from no client) runs it, the
     /// keymap its own: what it printed and left, a value a line, or why it
     /// failed; and the screen it opened, if it opened one.
     fn program(
@@ -309,8 +308,9 @@ impl Run {
             Some(_) => failed.notice(),
             None => failed.to_string(),
         };
-        let words = words(job).map_err(|e| told(e.into()))?;
-        if words.iter().any(|w| LOOPS.contains(&w.as_str())) {
+        if let Program::Line(line) = &job.program
+            && UNBOUNDED.iter().any(|word| line.contains(word))
+        {
             return Err("reads a file, or may not end".to_owned());
         }
         let mut machine = job
@@ -336,7 +336,6 @@ impl Run {
             context: context.clone(),
             opened: None,
             on_commit: Some(&mut publish),
-            stop: None,
         };
         let ended = run(&mut machine, &mut host, &mut asks, None).and_then(|stack| {
             fux::script::Asks::commit(&mut asks, &mut keymap, context)?;
@@ -356,12 +355,12 @@ impl Run {
     fn side(&mut self, pick: u8) -> Result<String, String> {
         let code = SIDE[usize::from(pick) % SIDE.len()];
         let client = match code {
-            "str titles true set"
-            | "str titles false set"
-            | "str bell true set"
-            | "str bell false set"
-            | "str terminal-clipboard true set"
-            | "str terminal-clipboard false set" => self.client(pick),
+            r##"(set "titles" #true)"##
+            | r##"(set "titles" #false)"##
+            | r##"(set "bell" #true)"##
+            | r##"(set "bell" #false)"##
+            | r##"(set "terminal-clipboard" #true)"##
+            | r##"(set "terminal-clipboard" #false)"## => self.client(pick),
             _ => None,
         };
         let before: Vec<_> = self
@@ -499,7 +498,7 @@ impl Run {
                     of: Some(self.s.run),
                     ..Default::default()
                 };
-                match fux::script::admit(open, Some(&self.keymap.draft()), &context, None) {
+                match fux::script::admit(open, Some(&self.keymap.draft()), &context) {
                     Ok(screen) => self.open(client, screen),
                     Err(failed) => {
                         self.s.acts(
@@ -672,8 +671,7 @@ impl Run {
                 }
                 Dispatch::Fence | Dispatch::Answer(..) => {}
                 Dispatch::Run(job) => {
-                    let said = words(&job).unwrap_or_default();
-                    writes |= said.iter().any(|w| WRITES.contains(&w.as_str()));
+                    writes |= WRITES.iter().any(|word| source(&job).contains(word));
                     self.run_as(client, &job);
                 }
             }
@@ -757,7 +755,7 @@ impl Run {
     /// What anyone can tell apart, as `State` lists it.
     fn state(&mut self) -> State {
         let ls = self
-            .program_opening(None, &"ls listing".into(), &mut None)
+            .program_opening(None, &"(listing (list-session))".into(), &mut None)
             .unwrap_or_else(|e| e);
         let screens = self
             .s

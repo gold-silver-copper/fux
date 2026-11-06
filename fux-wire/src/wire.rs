@@ -102,7 +102,7 @@ impl fuxix::Allocation for Memory {
         Ok(())
     }
     fn exceeded() -> Self::Error {
-        crate::code::fail(crate::code::Raise::Memory, "the OS refused memory")
+        crate::code::fail(crate::code::Code::Memory, "the OS refused memory")
     }
 }
 

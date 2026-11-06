@@ -1,0 +1,11 @@
+; Run a program, wait for its exit, and read what it printed. until-ended
+; leaves a capture once the `ended` count is 1, and `get` reads how it ended.
+; expect: tick 1
+; expect: tick 2
+; expect: tick 3
+; expect: done
+; expect: 0
+(define! p (new-tab (argument (argument (program (size (in (options) "agent") 80 24) "sh") "-c") "for i in 1 2 3; do echo tick $i; sleep 0.1; done; echo done")))
+(define! ended (until-ended p 60))
+(print (string ended))
+(get (get ended "program") "exited")

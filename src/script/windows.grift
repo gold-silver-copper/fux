@@ -1,0 +1,6 @@
+; The shell on Windows: %COMSPEC%, else cmd.exe, which is always there.
+; SHELL is not read: Git Bash sets it to a POSIX path.
+(set "shell" (list (catch-kind!
+  (catch-kind! (let! ((shell-value (environment-variable "COMSPEC"))) (if! (same? shell-value "") "cmd.exe" shell-value))
+    bad-value failure (warn (first (get failure "values"))) "cmd.exe")
+  unset-variable failure "cmd.exe")))

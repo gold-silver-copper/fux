@@ -3,12 +3,12 @@
 #   (`# expect:`, a line each) and exits with its status (`# status:`, else 0)
 # A workspace of its own keeps the server running when an example closes its
 # last pane.
-$ fux opts str hold in 80 24 size new-tab >/dev/null
+$ fux '(new-tab (size (in (options) "hold") 80 24))' >/dev/null
 $ bad=0
-> for f in "$REPO"/examples/*.fux; do
+> for f in "$REPO"/examples/*.grift; do
 >   fux --file "$f" >"$DIR/out"; status=$?
->   sed -n 's/^# expect: //p' "$f" >"$DIR/want"
->   want=$(sed -n 's/^# status: //p' "$f")
+>   sed -n 's/^; expect: //p' "$f" >"$DIR/want"
+>   want=$(sed -n 's/^; status: //p' "$f")
 >   if cmp -s "$DIR/out" "$DIR/want" && [ "$status" = "${want:-0}" ]; then
 >     echo "${f##*/}: as its header says"
 >   else
@@ -16,11 +16,11 @@ $ bad=0
 >   fi
 > done
 > echo "$bad differ"
-  = ask.fux: as its header says
-  = jobs.fux: as its header says
-  = watch.fux: as its header says
+  = ask.grift: as its header says
+  = jobs.grift: as its header says
+  = watch.grift: as its header says
   = 0 differ
-  ~ ask.fux: as its header says
-  ~ jobs.fux: as its header says
-  ~ watch.fux: as its header says
+  ~ ask.grift: as its header says
+  ~ jobs.grift: as its header says
+  ~ watch.grift: as its header says
   ~ 0 differ

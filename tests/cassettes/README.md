@@ -25,7 +25,7 @@ about two builds.
 # guards: keys sent with expect at a version the pane has moved past are
 #   refused stale, and none of them reach the program
 # exercises: stale-expect
-$ V=$(fux opts str agent in 80 24 size str sh program str -c arg str 'read x; read y; echo "second=$y"' arg new-tab)
+$ V=$(fux '(new-tab (size (in (options) "agent") 80 24))' str sh program str -c arg str 'read x; read y; echo "second=$y"' arg new-tab)
 $ fux "${V%%:*}" str x text str Enter key send-keys
   ~ %a:0.0.0.0.0:R1
 $ fux str "$V" expect str y text str Enter key send-keys
@@ -179,3 +179,5 @@ and by `tests/cassettes_runner.rs` (its own tests: the bounds, the deadlines,
 a request that never answers or prints past its bound, what establishes an
 operation, raw versions, names per run, a resize after an exit). `cargo fmt` doesn't reach an included file: format it with
 `rustfmt --edition 2024 tests/cassettes/runner.rs`.
+
+Port spelling: every fux invocation is one grift program. Snapshots and journal batches are read as grift data without evaluation; the shim retains JSON only for its own call log. The monitor recognizes the syntax tree of a single wait or guarded send, so a caught error or a program doing other work proves no such operation.

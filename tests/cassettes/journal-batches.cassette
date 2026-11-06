@@ -2,17 +2,17 @@
 # guards: the journal read on from each batch's next, as text through the
 #   CLI, gives every event once: all of them in one batch, none missed
 # fix: #320
-$ C=$(fux all str '' 0 next-events str next get)
+$ C=$(fux '(get (next-events (all) "" 0) "next")')
 $ fux - <<'EOF'
-> opts str agent in 80 24 size str sh program str -c arg str 'read x' arg new-tab let p
-> 0 begin p over string rename 1 add dup 70 eq until drop
+> (define! p (new-tab (argument (argument (program (size (in (options) "agent") 80 24) "sh") "-c") "read x")))
+> (for-each (lambda! (n) (rename p (integer-to-string n))) (range 0 70))
 > EOF
 $ fux - <<EOF
-> all str $C 0 next-events let one
-> one str events get len print one str status get print
-> all one str next get 0 next-events let two
-> two str events get len print two str missed get print
-> all two str next get 0 next-events str events get len print
+> (define! one (next-events (all) "$C" 0))
+> (print (length (get one "events"))) (print (get one "status"))
+> (define! two (next-events (all) (get one "next") 0))
+> (print (length (get two "events"))) (print (get two "missed"))
+> (print (length (get (next-events (all) (get two "next") 0) "events")))
 > EOF
   = 73
   = continuing

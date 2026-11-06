@@ -2,11 +2,11 @@
 # guards: json of a capture past 1,000,000 characters is an ordinary string,
 #   which len and slice take
 # fix: #313
-$ V=$(fux opts str agent in 120 40 size 33554432 history-bytes str sh program str -c arg str 'seq 1 200000' arg new-tab)
-$ fux "${V%%:*}" 20 until-ended drop
-$ fux "${V%%:*}" all-history capture json len 1000000 gt
-  = true
-  ~ true
-$ fux "${V%%:*}" all-history capture json 0 8 slice
-  = {"id":"%
-  ~ {"id":"%
+$ V=$(fux '(new-tab (argument (argument (program (history-bytes (size (in (options) "agent") 120 40) 33554432) "sh") "-c") "seq 1 200000"))')
+$ fux "(until-ended (pane \"${V%%:*}\") 20) #inert"
+$ fux "(greater-than? (string-byte-length (data-text (capture (all-history (pane \"${V%%:*}\"))))) 1000000)"
+  = #true
+  ~ #true
+$ fux "(byte-substring (data-text (capture (all-history (pane \"${V%%:*}\")))) 0 8)"
+  = ((kind "
+  ~ ((kind "

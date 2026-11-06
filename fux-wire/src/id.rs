@@ -139,7 +139,7 @@ impl Ids {
 fn take(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
     *counter = (counter.checked_add(1)).ok_or_else(|| {
         crate::code::fail(
-            crate::code::Raise::IdsExhausted,
+            crate::code::Code::IdsExhausted,
             format!("no {what} IDs are left"),
         )
     })?;

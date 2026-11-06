@@ -46,9 +46,9 @@
 //!   its answer and when it is due
 //!   after each 64 KiB tick (in 16 KiB reads) of the recordings: the server's
 //!   look at each output while a wait is armed.
-//! - `script/compile`: fuxth reading command lines an agent sends
+//! - `script/compile`: grift reading command lines an agent sends
 //!   (`fux::script::compile`, then run up to the first request), over and
-//!   over: what every `fux WORDS` does before it asks the server.
+//!   over: what every `fux PROGRAM` does before it asks the server.
 //!
 //! Each workload has a baseline: the same run without the part measured.
 //! For most that is making the bytes; for `paint/*` it is also feeding the
@@ -202,11 +202,11 @@ const WAITED: usize = 4 << 20;
 const COMPILES: usize = 2_000;
 /// Command lines an agent sends, as `docs/agents.md` shows them.
 const LINES: [&str; 5] = [
-    "opts str agent in str app name str ./app program str --fast arg new-tab",
-    "%2 str y text str Enter key send-keys",
-    "str %2:0.57.0.3.0:48211-1867a3f9c2b8e7d6 changed wait",
-    "define twice dup add end list 1 2 3 end each twice end len drop %2 all-history capture",
-    "str c1 client dup focused tab str next step",
+    r#"(new-tab (argument (program (name (in (options) "agent") "app") "./app") "--fast"))"#,
+    r#"(send-keys (key (text (pane "%2") "y") "Enter"))"#,
+    r#"(wait (changed "%2:0.57.0.3.0:48211-1867a3f9c2b8e7d6"))"#,
+    r#"(define! twice (lambda! (n) (+ n n))) (map twice (list 1 2 3)) (capture (all-history (pane "%2")))"#,
+    r#"(step (client "c1") (tab (focused (client "c1"))) "next")"#,
 ];
 /// The bytes of a pane's history fux keeps by default.
 const HISTORY: usize = 8 << 20;
@@ -351,7 +351,7 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
         ),
         (
             "script/compile",
-            "fuxth reading five command lines up to their first request, including a bound action, 2000 times",
+            "grift reading five command lines up to their first request, including a bound action, 2000 times",
         ),
     ] {
         out.push(spec(name.into(), about.into()));
@@ -1209,12 +1209,11 @@ fn split_first(s: &mut fux_server::session::Session) -> Result<(), String> {
     }
     let pane = *s.parts.panes().keys().next().ok_or("no pane")?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let cwd = fux_wire::words::quote(&cwd.to_string_lossy());
+    let cwd = fux::script::quoted(&cwd.to_string_lossy());
     let source = format!(
-        "{pane} str horizontal axis str {cwd} cwd list str /bin/sh end shell-program split drop"
+        r#"(split (shell-program (directory (axis (pane "{pane}") "horizontal") {cwd}) (list "/bin/sh"))) #inert"#
     );
-    let tokens = fuxth::token::source("bench", &source).map_err(|e| e.to_string())?;
-    let mut machine = fux::script::compile(&tokens).map_err(|e| format!("{e:?}"))?;
+    let mut machine = fux::script::compile(&source).map_err(|e| format!("{e:?}"))?;
     let mut keymap = (fux::script::default_state().map_err(|e| e.to_string())?).draft();
     let mut out = Vec::new();
     let mut host = fux::script::Host::new(Default::default(), Some(&mut keymap), &mut out);
@@ -1282,12 +1281,33 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     })
 }
 
-/// The client's cold library initialization, without the thread-local cache.
+/// What refuses every request: a program runs up to its first.
+struct NoServer;
+
+impl fux::script::Asks for NoServer {
+    fn ask(
+        &mut self,
+        _: &fux_wire::protocol::Asked,
+    ) -> Result<fux_wire::protocol::Reply, fux::script::Failed> {
+        Err(fux::script::Failed::new(
+            fux_wire::code::Code::Fail,
+            "no server",
+        ))
+    }
+}
+
+/// The client's cold library initialization, in an interpreter of its own.
 fn library(baseline: bool) -> Result<Done, String> {
     if baseline {
         black_box(());
     } else {
-        black_box(fux::script::libraries().map_err(|e| e.to_string())?);
+        let mut out = Vec::new();
+        let mut host = fux::script::Host::new(Default::default(), None, &mut out);
+        let mut asks = NoServer;
+        let mut runtime = fux::script::Runtime::new(&mut host, &mut asks, None);
+        let mut grift = fux::script::interpreter(&mut runtime).map_err(|e| e.to_string())?;
+        fux::script::load_libraries(&mut grift, &mut runtime).map_err(|e| e.to_string())?;
+        black_box(&grift);
     }
     Ok(Done {
         units: 1,
@@ -1350,21 +1370,18 @@ fn capture_history(baseline: bool, history: usize) -> Result<Done, String> {
 }
 
 fn compile(baseline: bool, compiles: usize) -> Result<Done, String> {
-    let lines: Vec<Vec<fuxth::token::Token>> = (LINES.iter())
-        .map(|line| fuxth::token::source("bench", line).map_err(|e| e.to_string()))
-        .collect::<Result<_, _>>()?;
     for n in 0..compiles {
-        let tokens = lines
-            .get(n.checked_rem(lines.len()).unwrap_or(0))
+        let line = LINES
+            .get(n.checked_rem(LINES.len()).unwrap_or(0))
             .ok_or("no line")?;
         if baseline {
-            black_box(tokens);
+            black_box(line);
             continue;
         }
-        let mut machine = fux::script::compile(tokens).map_err(|e| format!("{e:?}"))?;
+        let mut machine = fux::script::compile(line).map_err(|e| format!("{e:?}"))?;
         let mut out = Vec::new();
         let mut host = fux::script::Host::new(Default::default(), None, &mut out);
-        black_box(machine.run(&mut host, u64::MAX).is_ok());
+        black_box(fux::script::run(&mut machine, &mut host, &mut NoServer, None).is_ok());
     }
     Ok(Done {
         units: compiles,

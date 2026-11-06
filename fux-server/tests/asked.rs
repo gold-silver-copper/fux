@@ -38,7 +38,7 @@ fn every_code_the_server_answers_with_is_one_a_request_is_asked_with() -> std::i
     sources(&root.join("../fux-wire/src"), &mut texts)?;
     let mut unmarked = std::collections::BTreeSet::new();
     for text in &texts {
-        for prefix in ["Raise::", "Code::"] {
+        for prefix in ["Code::", "Code::"] {
             for (at, _) in text.match_indices(prefix) {
                 let rest = text.get(at + prefix.len()..).unwrap_or_default();
                 let variant: String = rest

@@ -633,7 +633,7 @@ fux-vt/compare/run.sh esctest --tmux             # also in a real tmux, held to 
   of a fux server of its own (under `fux-esctest-*` in `$TMPDIR` if it is
   short, else `~/.cache/fux`; never the user's), with a client on a 26×80
   PTY. The pane runs esctest as the server's `SHELL`: `fux __serve` takes
-  no config, and a client's `config.fux` reaches only panes made after the
+  no config, and a client's `config.grift` reaches only panes made after the
   first. Panes don't answer DECRQCRA, so tests that read cells are
   unavailable. A test that passes in one place and fails in the other is
   printed, and points at fux.

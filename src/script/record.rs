@@ -1,10 +1,10 @@
 //! Immutable local projections. Only checked constructors can retain a record.
+use super::{Failure, List, Value};
 use super::{Fux, handle};
-use fux_wire::code::{Code, Raise};
+use fux_wire::code::Code;
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::inspect::{self, Projection, Scope};
 use fux_wire::json::Json;
-use fuxth::{Failure, List, Value};
 use std::rc::Rc;
 
 type V = Value<Fux>;
@@ -13,8 +13,6 @@ type V = Value<Fux>;
 pub struct Record {
     pub(super) fields: Vec<(String, V)>,
     pub(super) of: Option<Run>,
-    /// A `next-events` batch, which the command line prints as its events.
-    batch: bool,
 }
 
 impl PartialEq for Record {
@@ -29,63 +27,111 @@ impl Record {
             .iter()
             .find(|(key, _)| key == field)
             .map(|(_, v)| v.clone())
-            .ok_or_else(|| {
-                Failure::new(
-                    Code::from(Raise::NoField).into(),
-                    format!("record has no field {field:?}"),
-                )
-            })
+            .ok_or_else(|| Failure::new(Code::NoField, format!("record has no field {field:?}")))
     }
-    /// What the command line prints of it, if not itself: a batch's
-    /// events alone; a batch that missed entries, refused.
-    pub(super) fn printed_events(&self) -> Result<Option<V>, Failure> {
-        if !self.batch {
-            return Ok(None);
+    /// Its kind and how a person says it, if the server's answer it is
+    /// holds one: a record of no kind is a plain record.
+    pub(super) fn held_kind(&self) -> Option<(&'static str, &'static str)> {
+        let kind = self.fields.iter().find(|(key, _)| key == "kind")?;
+        let Value::Str(kind) = &kind.1 else {
+            return None;
+        };
+        HELD.iter()
+            .copied()
+            .find(|(name, _)| name == &kind.as_str())
+    }
+    pub(super) fn is_held(&self) -> bool {
+        self.held_kind().is_some()
+    }
+    /// The version it holds, for `changed`, `expect` and a wait.
+    pub(super) fn version(&self) -> Option<fux_wire::command::Version> {
+        match self.get("version") {
+            Ok(Value::Str(version)) => version.parse().ok(),
+            _ => None,
         }
-        if let Value::Int(missed @ 1..) = self.get("missed")? {
-            return Err(missed_entries(missed));
+    }
+    /// A held answer's text: what it was told as, else its lines.
+    pub(super) fn write_held(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
+        if let Ok(Value::Str(text)) = self.get("text") {
+            return out.write_str(&text);
         }
-        self.get("events").map(Some)
+        let Ok(Value::List(lines)) = self.get("lines") else {
+            return Ok(());
+        };
+        for (i, line) in lines.items().iter().enumerate() {
+            if i > 0 {
+                out.write_char('\n')?;
+            }
+            if let Value::Str(line) = line {
+                out.write_str(line)?;
+            }
+        }
+        Ok(())
+    }
+    /// Whether it is a `next-events` batch.
+    pub(super) fn is_batch(&self) -> bool {
+        ["events", "first", "next", "missed", "status"]
+            .iter()
+            .all(|name| self.fields.iter().any(|(key, _)| key == name))
+    }
+    /// What the command line prints of a batch: its events alone; one that
+    /// missed entries is refused, as the reader must resnapshot (D-93).
+    pub(super) fn printed_events(&self) -> Result<Vec<V>, Failure> {
+        if let Ok(Value::Int(missed @ 1..)) = self.get("missed") {
+            let why = format!("{missed} journal entries missed; resnapshot before continuing");
+            return Err(Failure::new(Code::JournalLoss, why));
+        }
+        let Value::List(events) = self.get("events")? else {
+            return Ok(Vec::new());
+        };
+        Ok(events.items().to_vec())
+    }
+    /// A capture of no lines says nothing printed.
+    pub(super) fn says_nothing(&self) -> bool {
+        self.is_held()
+            && matches!(self.get("lines"), Ok(Value::List(lines)) if lines.items().is_empty())
     }
     pub(super) fn write(&self, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-        out.write_char('{')?;
+        out.write_str("(")?;
         for (i, (key, value)) in self.fields.iter().enumerate() {
             if i > 0 {
-                out.write_char(',')?;
+                out.write_str(" ")?;
             }
-            fux_wire::json::write_str(out, key)?;
-            out.write_char(':')?;
-            super::words::write_json_value(value, out)?;
+            write!(out, "({} ", key)?;
+            value.write_data(out)?;
+            out.write_str(")")?;
         }
-        out.write_char('}')
+        if let Some(run) = self
+            .of
+            .filter(|_| !self.fields.iter().any(|(k, _)| k == "run"))
+        {
+            if !self.fields.is_empty() {
+                out.write_str(" ")?;
+            }
+            write!(out, "(run \"{run}\")")?;
+        }
+        out.write_str(")")
     }
 }
 
-/// Journal entries lost before a cursor, which the reader must resnapshot
-/// for, as `events` says too.
-fn missed_entries(missed: i64) -> Failure {
-    Failure::new(
-        fuxth::Code::Fail,
-        format!("{missed} journal entries missed; resnapshot before continuing"),
-    )
-}
+/// The kinds a server's answer is, and how each is said.
+pub(super) const HELD: [(&str, &str); 4] = [
+    ("answer", "an action's answer"),
+    ("closed-answer", "a closed pane's answer"),
+    ("capture", "a capture"),
+    ("client-capture", "a client's capture"),
+];
 
 fn fail() -> Failure {
-    Failure::new(
-        fuxth::Code::TooLong,
-        "record nests deeper than a record may",
-    )
+    Failure::new(Code::TooLong, "record nests deeper than a record may")
 }
 fn null() -> V {
     Value::App(Fux::Null)
 }
 fn number(n: impl TryInto<i64>) -> Result<V, Failure> {
-    n.try_into().map(Value::Int).map_err(|_| {
-        Failure::new(
-            Code::from(Raise::Range).into(),
-            "integer is past fuxth's range",
-        )
-    })
+    n.try_into()
+        .map(Value::Int)
+        .map_err(|_| Failure::new(Code::Range, "integer is past the signed 64-bit range"))
 }
 fn id(id: AnyRef, run: Run) -> V {
     Value::App(handle(id, Some(run)))
@@ -120,12 +166,11 @@ impl Builder {
         self.finish(out, None)
     }
     fn finish(&mut self, fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
-        let batch = false;
-        Ok(Value::App(Fux::Record(Rc::new(Record {
-            fields,
-            of,
-            batch,
-        }))))
+        let fields = fields
+            .into_iter()
+            .map(|(name, value)| (super::field_name(&name), value))
+            .collect();
+        Ok(Value::App(Fux::Record(Rc::new(Record { fields, of }))))
     }
     fn json(&mut self, value: &Json, depth: u8) -> Result<V, Failure> {
         if depth >= inspect::DEPTH {
@@ -152,80 +197,7 @@ impl Builder {
 }
 
 pub(super) fn from_fields(fields: Vec<(String, V)>, of: Option<Run>) -> Result<V, Failure> {
-    Builder.finish(fields, of)
-}
-
-/// A failure's fields, as a handler reads them: its `code`, its `number`
-/// in Forth's table, its `message`, the `value` it carries (a failed wait's
-/// answer) and the `actions` that had taken effect before it, each where
-/// its word is.
-pub(super) fn failure(thrown: &fuxth::Thrown<Fux>) -> Record {
-    let number = thrown.number.map_or_else(null, Value::Int);
-    let actions = thrown.actions.iter();
-    let actions = actions.map(|t| Value::str(format!("{}: {}", t.place, t.text)));
-    let fields = [
-        ("code", Value::str(thrown.error.code.name())),
-        ("number", number),
-        ("message", Value::str(&*thrown.error.message)),
-        ("value", thrown.carried.clone().unwrap_or_else(null)),
-        (
-            "actions",
-            Value::List(Rc::new(List::new(actions.collect()))),
-        ),
-    ];
-    let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
-    Record {
-        fields,
-        of: None,
-        batch: false,
-    }
-}
-
-/// The dictionary's record of a word: its `name`; its `provenance`, where
-/// it came from: `core`, `fux`, `library`, or `run` for the program's own
-/// (a config's too); its `effect`, as declared, and its `documentation`,
-/// all `fux help NAME` says of it (`help::documentation`), or null for the
-/// program's own; its `definition`, the words that made it as they were
-/// read, `native` for a word in Rust, or null where a source it was read
-/// from couldn't keep them; and its `codes`, the codes it can fail with as
-/// it runs, each once (`Machine::codes`), or null where they are unknown.
-pub(super) fn word(definition: &fuxth::Definition<'_>, codes: Option<&[fuxth::Code]>) -> V {
-    use fuxth::Origin;
-    let provenance = match definition.origin {
-        Origin::Core => "core",
-        Origin::Host => "fux",
-        Origin::Library => "library",
-        Origin::Program => "run",
-    };
-    let text = |text: Option<&str>| text.map_or_else(null, Value::str);
-    let source = match definition.native() {
-        true => Value::str("native"),
-        false => definition.source().map_or_else(null, Value::str),
-    };
-    let fields = [
-        ("name", Value::str(definition.name)),
-        ("provenance", Value::str(provenance)),
-        ("effect", text(definition.effect)),
-        (
-            "documentation",
-            crate::help::documentation(definition).map_or_else(null, Value::str),
-        ),
-        ("definition", source),
-        (
-            "codes",
-            codes.map_or_else(null, |codes| {
-                let names = codes.iter().map(|code| Value::str(code.name()));
-                Value::List(Rc::new(List::new(names.collect())))
-            }),
-        ),
-    ];
-    let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
-    let record = Record {
-        fields,
-        of: None,
-        batch: false,
-    };
-    Value::App(Fux::Record(Rc::new(record)))
+    Ok(Value::App(Fux::Record(Rc::new(Record { fields, of }))))
 }
 
 pub(super) fn from_json(value: &Json) -> Result<V, Failure> {
@@ -320,7 +292,18 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
         let mut out = Vec::with_capacity(count);
         // The producer puts the event name first; IDs remain typed throughout.
         for (key, value) in data.iter().take(1) {
-            out.push((key.to_owned(), b.json(value, 0)?));
+            out.push((
+                key.to_owned(),
+                match value {
+                    Json::String(name) => b.text(&name.replace('_', "-"))?,
+                    value @ Json::Null
+                    | value @ Json::Bool(_)
+                    | value @ Json::Int(_)
+                    | value @ Json::Uint(_)
+                    | value @ Json::Array(_)
+                    | value @ Json::Object(_) => b.json(value, 0)?,
+                },
+            ));
         }
         for (key, value) in ids {
             if let Some(value) = value {
@@ -350,8 +333,7 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
     let fields = fields.map(|(key, value)| (key.to_owned(), value)).into();
     let record = Record {
         fields,
-        of: None,
-        batch: true,
+        of: Some(run),
     };
     Ok(Value::App(Fux::Record(Rc::new(record))))
 }
@@ -498,7 +480,7 @@ pub(super) fn answer_field(
     let b = &mut Builder;
     let absent = || {
         Failure::new(
-            Code::from(Raise::NoField).into(),
+            Code::NoField,
             format!("held observation has no field {field:?}"),
         )
     };
@@ -579,6 +561,83 @@ pub(super) fn answer_field(
             }
         }
         super::Answer::Panes(_) => Err(absent()),
+    }
+}
+
+/// A server's answer as the record a program holds: its `kind`, and each
+/// field it has; the text it says, where that isn't its lines.
+pub(super) fn datum(answer: &super::Answer, run: Option<Run>) -> Result<V, Failure> {
+    if let super::Answer::Panes(answers) = answer {
+        return Builder.list(answers, |_, answer| {
+            datum(&super::Answer::Pane(answer.clone()), run)
+        });
+    }
+    let mut fields = vec![("kind".to_owned(), Value::str(answer.names().0))];
+    let mut add = |name: &str| -> Result<(), Failure> {
+        match answer_field(answer, run, name) {
+            Ok(value) => fields.push((name.to_owned(), value)),
+            Err(error) if error.code == Code::NoField => (),
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    };
+    match answer {
+        super::Answer::Pane(pane) => {
+            for (_, name) in AnswerField::ALL {
+                add(name)?;
+            }
+            let mut text = String::new();
+            pane.write_text(&mut text)
+                .map_err(|_| Failure::new(Code::Output, "the text could not be written"))?;
+            fields.push(("text".to_owned(), Value::str(text)));
+        }
+        super::Answer::Capture(capture) => {
+            for (_, name) in CapturedField::ALL {
+                add(name)?;
+            }
+            if let fux_wire::answer::Of::Pane { pane, read, .. } = &capture.of {
+                for (name, _) in pane.fields() {
+                    add(name)?;
+                }
+                for (name, _) in read {
+                    add(name)?;
+                }
+            }
+            for (_, name) in CaptureField::ALL {
+                add(name)?;
+            }
+            if capture.styled || capture.changed_rows.is_some() {
+                let mut text = String::new();
+                capture
+                    .write_text(&mut text)
+                    .map_err(|_| Failure::new(Code::Output, "the text could not be written"))?;
+                fields.push(("text".to_owned(), Value::str(text)));
+            }
+        }
+        super::Answer::Panes(_) => (),
+    }
+    Builder.finish(fields, run)
+}
+
+/// `value` as plain data: a held answer's fields, no more its text.
+pub(super) fn plain(value: V) -> V {
+    match value {
+        Value::App(Fux::Record(record)) if record.is_held() => {
+            let fields = (record.fields.iter())
+                .filter(|(key, _)| key != "kind" && key != "text")
+                .cloned()
+                .collect();
+            let of = record.of;
+            Value::App(Fux::Record(Rc::new(Record { fields, of })))
+        }
+        value @ Value::Int(_)
+        | value @ Value::Float(_)
+        | value @ Value::Bool(_)
+        | value @ Value::Str(_)
+        | value @ Value::Symbol(_)
+        | value @ Value::List(_)
+        | value @ Value::App(_)
+        | value @ Value::Bytes(_) => value,
     }
 }
 
@@ -703,21 +762,21 @@ mod tests {
                     "tab",
                     "workspace",
                     "client",
-                    "from_tab",
-                    "from_workspace",
+                    "from-tab",
+                    "from-workspace",
                     "name",
                     "origin",
-                    "seq",
+                    "sequence",
                     "next"
                 ]
             );
-            assert_eq!(event.get("seq")?, Value::Int(0));
+            assert_eq!(event.get("sequence")?, Value::Int(0));
             assert_eq!(
                 event.get("pane")?,
                 id(AnyRef::Pane(PaneId::of(1)), next.run)
             );
             assert_eq!(
-                event.get("from_tab")?,
+                event.get("from-tab")?,
                 id(AnyRef::Tab(TabId::of(6)), next.run)
             );
             assert_eq!(
@@ -760,10 +819,7 @@ mod tests {
             return Err(fail());
         };
         assert_eq!(r.get("empty")?, null());
-        assert_eq!(
-            r.get("missing").map_err(|e| e.code),
-            Err(Code::from(Raise::NoField).into())
-        );
+        assert_eq!(r.get("missing").map_err(|e| e.code), Err(Code::NoField));
         let Value::List(items) = r.get("items")? else {
             return Err(fail());
         };
@@ -773,7 +829,7 @@ mod tests {
         );
         assert_eq!(
             from_json(&Json::Uint(u64::MAX)).map_err(|e| e.code),
-            Err(fuxth::Code::Range)
+            Err(Code::Range)
         );
         assert_eq!(r.get("items")?, Value::List(items));
         Ok(())

@@ -1,0 +1,23 @@
+
+A file of grift runs with `fux --file FILE`, or as a script ({shebang}).
+A file is read whole before it runs: one whose later form doesn't read runs
+none of its forms.
+
+A failure prints nothing more on stdout: `fux: KIND: MESSAGE (FILE:LINE)` on
+stderr, each action that already took effect after it, as `fux: already took
+effect: (CALL)`, then the forms it happened in, each cut short.
+A program isn't undone: what ran before its failure stays done. Exit statuses:
+  0    done, or what (exit N) gave
+  1    refused: anything else that failed
+  2    a mistake in the program
+  4    closed: the pane waited on closed
+  124  timeout: a wait's limit came first
+  141  stdout's reader went (a closed pipe), said nowhere
+
+The server: FUX_SOCKET's socket {socket} Nothing is saved on its own:
+`fux '(dump (all))' > FILE` saves the layouts and launches when you choose
+(never what a process held), and `fux '(start)'`, then `fux --file FILE`, makes
+them again on a fresh server.
+
+Driving programs from a script or an agent: `fux '(explain "agents")'`; one
+operation: `fux '(explain "split")'`; recipes: `fux '(explain "cookbook")'`.

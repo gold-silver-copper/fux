@@ -3,10 +3,8 @@
 //! make; a test fails while a list is stale (`fux_wire::lists`).
 use super::Word;
 #[cfg(unix)]
-use super::{Fux, record};
+use super::{Fux, Value, record};
 use fux_wire::lists::{check, file};
-#[cfg(unix)]
-use fuxth::Value;
 
 const TEST: &str = "cargo test -p fux --lib lists";
 
@@ -17,17 +15,15 @@ fn words_list_is_current() -> Result<(), String> {
     let fuxs = Word::ALL.iter().map(|w| (w.row().name, w.row().effect));
     let mut lines = vec!["## fux's words".to_owned()];
     lines.extend(fuxs.map(|(name, effect)| format!("{name} ( {effect} )")));
-    lines.push("## the libraries' words, written in fuxth".to_owned());
-    let docs = super::docs();
-    lines.extend(docs.iter().map(|d| format!("{} ( {} )", d.name, d.effect)));
-    lines.push("## the core's words".to_owned());
-    let core = fuxth::Builtin::ALL.into_iter().filter(|b| !b.hosted());
-    lines.extend(core.map(|b| match b.immediate() {
-        true => format!("{} ( {} ) immediate", b.name(), b.effect()),
-        false => format!("{} ( {} )", b.name(), b.effect()),
-    }));
+    lines.push("## the libraries' operations, written in grift".to_owned());
+    let docs = super::docs().map_err(|e| e.to_string())?;
+    lines.extend(docs.iter().map(|d| format!("{} {}", d.name, d.parameters)));
+    lines.push("## grift's standard names".to_owned());
+    lines.extend(super::language().map_err(|e| format!("{e:?}"))?);
+    lines.push("## what fux adds to the language".to_owned());
+    lines.extend(super::HOST.iter().map(|(name, _)| (*name).to_owned()));
     let head = format!(
-        "Every word a fux program may use, with its stack effect as `fux help WORD` \
+        "Every word a fux program may use, with what it takes and gives as `(explain \"WORD\")` \
          shows it. Generated: FUX_BLESS=1 {TEST}"
     );
     check("words.txt", &file(&head, lines), TEST)
@@ -67,52 +63,16 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
             line(&format!("{path}{which}"), &names);
             r.fields.clone()
         }
-        Value::App(Fux::Answer(answer, run)) => {
-            let fields: Vec<(String, Value<Fux>)> = held(answer)
-                .into_iter()
-                .filter_map(|name| {
-                    let value = record::answer_field(answer, *run, &name).ok()?;
-                    Some((name, value))
-                })
-                .collect();
-            let names: Vec<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
-            line(path, &names);
-            fields
-        }
         Value::Int(_)
+        | Value::Float(_)
         | Value::Bool(_)
         | Value::Str(_)
+        | Value::Symbol(_)
         | Value::App(_)
-        | Value::Xt(_)
-        | Value::Mark(_)
-        | Value::Failure(_)
-        | Value::Addr(_) => return,
+        | Value::Bytes(_) => return,
     };
     for (key, value) in &fields {
         records(&format!("{path}.{key}"), value, out);
-    }
-}
-
-/// The fields `get` may read of a held answer or capture: its kind's
-/// tables, then a captured pane's state's.
-#[cfg(unix)]
-fn held(answer: &super::Answer) -> Vec<String> {
-    use record::{AnswerField, CaptureField, CapturedField};
-    fn names<T>(all: &[(T, &str)]) -> Vec<String> {
-        all.iter().map(|(_, name)| (*name).to_owned()).collect()
-    }
-    match answer {
-        super::Answer::Pane(_) => names(AnswerField::ALL),
-        super::Answer::Capture(c) => {
-            let mut fields: Vec<String> = names(CaptureField::ALL);
-            fields.extend(names(CapturedField::ALL));
-            if let fux_wire::answer::Of::Pane { pane, read, .. } = &c.of {
-                fields.extend(pane.fields().map(|(name, _)| name.to_owned()));
-                fields.extend(read.iter().map(|(name, _)| name.clone()));
-            }
-            fields
-        }
-        super::Answer::Panes(_) => Vec::new(),
     }
 }
 
@@ -160,8 +120,10 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     session.output(pane, shown.as_bytes(), now);
     let run = session.run;
     let mut draft = super::default_state()?.draft();
-    let dir = fux_wire::words::quote(env!("CARGO_MANIFEST_DIR"));
-    let split = format!("%1 str vertical axis str {dir} cwd split %1 str {dir} cwd stack");
+    let dir = super::quoted(env!("CARGO_MANIFEST_DIR"));
+    let split = format!(
+        "(split (directory (axis (pane 1) \"vertical\") {dir})) (stack (directory (pane 1) {dir}))"
+    );
     let asks = &mut InProcess(&mut session);
     evaluate(&split, Some(&mut draft), asks, &mut Vec::new())?;
     let mut lines = Vec::new();
@@ -209,13 +171,19 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     let held = [
         (
             "capture[pane]",
-            format!("%1 styles str {before} since capture"),
+            format!(
+                "(capture (since (styles (pane 1)) {}))",
+                super::quoted(&before.to_string())
+            ),
         ),
-        ("capture[client]", format!("str {client} client capture")),
+        (
+            "capture[client]",
+            format!("(capture (client {}))", super::quoted(&client.to_string())),
+        ),
     ];
     let held = held.into_iter().chain([
-        ("word", "str dup word".to_owned()),
-        ("dictionary", "dictionary".to_owned()),
+        ("word", "(word \"first\")".to_owned()),
+        ("dictionary", "(dictionary)".to_owned()),
     ]);
     for (path, code) in held {
         for value in evaluate(&code, None, asks, &mut Vec::new())? {
@@ -246,7 +214,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
             },
         ),
     ] {
-        let value = super::Answer::Pane(answer).in_run(Some(run));
+        let value = super::Answer::Pane(answer).in_run(Some(run))?;
         records(path, &value, &mut lines);
     }
     let socket = fux_server::socket::checked("/nonexistent/fux.sock", "test")?;
@@ -282,7 +250,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         "Every record a program reads, and each held answer's and capture's \
          fields `get` reads, by where it is (`[]` a list's items; `[NAME]` its \
          event, kind or status, or which answer), each with its fields in order. \
-         A word's `codes` is the codes it can fail with, or null where they are unknown. \
+         A word's `codes` is the codes it can fail with, or none where they are unknown. \
          Generated: FUX_BLESS=1 {TEST}"
     );
     Ok(check("records.txt", &file(&head, lines), TEST)?)

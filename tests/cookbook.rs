@@ -1,11 +1,11 @@
-//! Every recipe of the cookbook (`docs/cookbook.md`, `fux help cookbook`)
+//! Every recipe of the cookbook (`docs/cookbook.md`, `(explain "cookbook")`)
 //! runs as it stands, so a stale one fails here: its `sh` blocks in
 //! order, each by a shell with `set -e -o pipefail` in one directory, on
 //! a private server, so every command's status counts; its `fux` blocks,
 //! which are configs, as a typing terminal runs one. Each must succeed: a
 //! recipe says the failures it expects (`|| [ $? -eq 124 ]`). The README
-//! runs the same way, on a server of its own. The agent page (`fux help
-//! agents`) runs as an agent types it, in one bash with no server: it
+//! runs the same way, on a server of its own. The agent page (`(explain
+//! "agents")`) runs as an agent types it, in one bash with no server: it
 //! starts its own, and stops it. None has `XDG_RUNTIME_DIR`, and each has
 //! its `TMPDIR` in its directory. What they print is never compared.
 // They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
@@ -21,7 +21,7 @@ const COOKBOOK: &str = include_str!("../docs/cookbook.md");
 
 const README: &str = include_str!("../README.md");
 
-/// The agent page, `fux help agents`: `docs/agents.md` before its first
+/// The agent page, `(explain "agents")`: `docs/agents.md` before its first
 /// topic.
 fn agent_page() -> &'static str {
     let agents = include_str!("../docs/agents.md");
@@ -30,7 +30,7 @@ fn agent_page() -> &'static str {
 
 /// Programs a recipe may use beyond `sh` and fux; a recipe that names one
 /// the machine lacks is skipped, saying so.
-const NEEDS: &[&str] = &["jq", "timeout", "ps", "pgrep", "prlimit"];
+const NEEDS: &[&str] = &["timeout", "ps", "pgrep", "prlimit"];
 
 /// How long one block may run before it fails as hung.
 const HUNG: Duration = Duration::from_secs(120);
@@ -214,11 +214,9 @@ fn runs(sh: &str, blocks: Vec<(&str, &str, String)>, cold: bool) -> Result<Vec<S
     let server = Server::start("")?;
     let dir = server.dir.join("recipes");
     std::fs::create_dir_all(&dir).map_err(e)?;
-    // Recipes name fuxed and the recipe files where a checkout of fux has them.
-    for name in ["fuxed", "recipes"] {
-        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
-        std::os::unix::fs::symlink(checkout, dir.join(name)).map_err(e)?;
-    }
+    // Recipes name the recipe files where a checkout of fux has them.
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("recipes");
+    std::os::unix::fs::symlink(checkout, dir.join("recipes")).map_err(e)?;
     let _started = Started(dir.clone());
     let mut skipped = Vec::new();
     for (i, (heading, lang, block)) in blocks.into_iter().enumerate() {
@@ -234,8 +232,8 @@ fn runs(sh: &str, blocks: Vec<(&str, &str, String)>, cold: bool) -> Result<Vec<S
                 let (status, said) = run(sh, cold, &server, &dir, i, &block)?;
                 assert_eq!(status, 0, "{heading}:\n{block}\n{said}");
             }
-            "fux" => {
-                let config = dir.join(format!("config-{i}.fux"));
+            "grift" => {
+                let config = dir.join(format!("config-{i}.grift"));
                 std::fs::write(&config, &block).map_err(e)?;
                 let ran = fux::script::run_file(&config).map(drop);
                 assert!(ran.is_ok(), "{heading}:\n{block}\n{ran:?}");

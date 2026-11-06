@@ -367,15 +367,82 @@ def ended(version):
     return counts(version)[4] == 1
 
 
+def string(text):
+    """`text` as a grift string."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+class Symbol(str):
+    """A bare word of grift data: a record's field, a handle, `none`."""
+
+
+ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
+DATA = re.compile(r'\s*(?:([()])|"((?:[^"\\]|\\.)*)"|([^\s()"]+))', re.S)
+
+
+def unescaped(text):
+    def one(found):
+        hexadecimal, other = found.groups()
+        if hexadecimal:
+            return chr(int(hexadecimal, 16))
+        return ESCAPES.get(other, other)
+    return re.sub(r"\\(?:x([0-9a-fA-F]+);|(.))", one, text, flags=re.S)
+
+
+def atom(word):
+    """A bare word: its boolean, number or nothing, else a symbol."""
+    if word in ("#true", "#false"):
+        return word == "#true"
+    if word == "none":
+        return None
+    for number in (int, float):
+        try:
+            return number(word)
+        except ValueError:
+            pass
+    return Symbol(word)
+
+
+def is_record(items):
+    return bool(items) and all(isinstance(i, list) and len(i) == 2 and isinstance(i[0], Symbol)
+                               for i in items)
+
+
+def read_data(text):
+    """The grift data fux prints, as Python's: a record, a list of two-item
+    lists each named by a symbol, as a dict; other lists as lists."""
+    stack, done, at = [[]], False, 0
+    while text[at:].strip():
+        found = DATA.match(text, at)
+        if not found:
+            raise ValueError(f"grift data at {at}: {text[at:at + 40]!r}")
+        at = found.end()
+        paren, quoted, word = found.groups()
+        if paren == "(":
+            stack.append([])
+        elif paren == ")":
+            items = stack.pop()
+            stack[-1].append(dict(items) if is_record(items) else items)
+        else:
+            stack[-1].append(unescaped(quoted) if quoted is not None else atom(word))
+    if len(stack) != 1 or len(stack[0]) != 1:
+        raise ValueError(f"not one value of grift data: {text[:80]!r}")
+    return stack[0][0]
+
+
+def short(handle):
+    """A handle without its run: `%2:RUN` is `%2`."""
+    return handle.split(":")[0]
+
+
 class Fux(Driver):
-    """fux, driven with fuxth: each call one program, `str` before each
-    text. Every action answers its pane's version from just before it
-    acted (`%2:0.57.0.3.0:RUN`: its pane, then respawns, screen, bells,
-    commands done, ended, then the server's run); the one wait, `str V
-    changed wait`, returns once that pane's version differs from V, its
-    first word the version now. What "done" means is the driver's to
-    judge, as `fux help agents` says: read the screen after each change,
-    the version held always from before."""
+    """fux, driven with grift: each call one program. Every action answers
+    its pane's version from just before it acted (`%2:0.57.0.3.0:RUN`: its
+    pane, then respawns, screen, bells, commands done, ended, then the
+    server's run); the one wait, `(wait (changed V))`, returns once that
+    pane's version differs from V, its first word the version now. What
+    "done" means is the driver's to judge, as the agents' guide says: read
+    the screen after each change, the version held always from before."""
     name = "fux"
 
     def __init__(self, work, env, binary):
@@ -385,12 +452,12 @@ class Fux(Driver):
         # Each pane's version from just before the last action on it.
         self.versions = {}
 
-    def fux(self, *words, check=True, timeout=120):
-        return self.run([self.bin, *words], check=check, timeout=timeout)
+    def fux(self, program, check=True, timeout=120):
+        return self.run([self.bin, program], check=check, timeout=timeout)
 
     def start(self):
         # A server a killed run left on this socket, stopped as a person does.
-        subprocess.run(["sh", "-c", 'pid=$("$0" status str server_pid get) && kill "$pid"', self.bin],
+        subprocess.run(["sh", "-c", 'pid=$("$0" \'(get (status) "server-process-id")\') && kill "$pid"', self.bin],
                        env=self.env, capture_output=True, timeout=20)
         self.server = subprocess.Popen([self.bin, "__serve", self.env["FUX_SOCKET"], "16384"],
                                        env=self.env, cwd=self.work,
@@ -409,25 +476,24 @@ class Fux(Driver):
 
     @staticmethod
     def pane(pane):
-        return ["str", pane, "pane"]
+        return f"(pane {string(pane)})"
 
     @staticmethod
-    def keyed(keys):
-        """The words for keys: each a key by its name, or text (`text:…`, or
-        a word no key is called)."""
-        words = []
+    def keyed(target, keys):
+        """`target` given keys: each a key by its name, or text (`text:…`,
+        or a word no key is called)."""
         for k in keys:
             if k.startswith("text:"):
-                words += ["str", k[5:], "text"]
+                target = f"(text {target} {string(k[5:])})"
             elif is_key_name(k):
-                words += ["str", k, "key"]
+                target = f"(key {target} {string(k)})"
             else:
-                words += ["str", k, "text"]
-        return words
+                target = f"(text {target} {string(k)})"
+        return target
 
-    def act(self, *words):
+    def act(self, program):
         """An action: its pane, whose version from before it is kept."""
-        version = self.fux(*words).stdout.split()[0]
+        version = self.fux(program).stdout.split()[0]
         pane = version.split(":")[0]
         self.versions[pane] = version
         return pane
@@ -438,8 +504,9 @@ class Fux(Driver):
         """One wait for a version's pane to differ from it: the answer's
         words (`%2:0.61.0.3.0:RUN screen`, `… exited 3`), or None when
         nothing changed in time (124)."""
-        out = self.fux("str", version, "changed", str(max(1, int(timeout))),
-                       "timeout", "wait", check=False, timeout=timeout + 10)
+        seconds = max(1, int(timeout))
+        out = self.fux(f"(wait (timeout (changed {string(version)}) {seconds}))",
+                       check=False, timeout=timeout + 10)
         if out.returncode == 124:
             return None
         if out.returncode == 4:
@@ -451,7 +518,7 @@ class Fux(Driver):
     def since(self, pane):
         """The version to wait from: the last action's, else now's."""
         if pane not in self.versions:
-            self.versions[pane] = self.fux(*self.pane(pane), "version").stdout.strip()
+            self.versions[pane] = self.fux(f"(version {self.pane(pane)})").stdout.strip()
         return self.versions[pane]
 
     def until(self, pane, test, timeout=10):
@@ -523,12 +590,12 @@ class Fux(Driver):
         once more than before them: a text only the reply holds
         (`reply_only`)."""
         before = self.screen(pane, history=True).count(reply_only(keys, reply))
-        self.act(*self.pane(pane), *self.keyed(keys), "send-keys")
+        self.act(f"(send-keys {self.keyed(self.pane(pane), keys)})")
         return self.wait_more(pane, reply, before, timeout)
 
     def send_wait_exit(self, pane, keys, timeout=20):
         """The keys in one action, then until the program exits."""
-        self.act(*self.pane(pane), *self.keyed(keys), "send-keys")
+        self.act(f"(send-keys {self.keyed(self.pane(pane), keys)})")
         return self.wait_exit(pane, timeout)
 
     def click_and_wait(self, pane, row, col, text, timeout=10):
@@ -547,8 +614,8 @@ class Fux(Driver):
         self.commands += 1
         n = self.commands
         done = re.compile(rf"=(\d+) __DONE{n}$", re.M)
-        self.act(*self.pane(pane), "str", f"echo __BE''GIN{n}; {cmd}; echo =$? __DO''NE{n}", "text",
-                 "str", "Enter", "key", "send-keys")
+        line = f"echo __BE''GIN{n}; {cmd}; echo =$? __DO''NE{n}"
+        self.act(f"(line {self.pane(pane)} {string(line)})")
         self.until(pane, lambda: done.search(self.screen(pane, history=True)), timeout)
         rows = [l.rstrip() for l in self.screen(pane, history=True).split("\n")]
         end = max(i for i, l in enumerate(rows) if done.search(l))
@@ -559,7 +626,7 @@ class Fux(Driver):
 
     def events_cursor(self):
         """Save before launch, so even exits before subscription are replayed."""
-        return json.loads(self.fux("ls", "json").stdout)["cursor"]
+        return self.fux('(get (information (all)) "cursor")').stdout.strip()
 
     def wait_first_exit(self, panes, cursor, timeout=15):
         """First matching journal exit after a pre-launch cursor; refuse loss."""
@@ -571,15 +638,16 @@ class Fux(Driver):
                 raise Timeout("event deadline ended before a matching exit")
             seconds = min(5, math.ceil(remaining))
             try:
-                batch = json.loads(self.fux("all", "str", cursor, str(seconds),
-                                            "next-events", "json", timeout=remaining).stdout)
+                batch = read_data(self.fux(f"(data-text (next-events (all) {string(cursor)} {seconds}))",
+                                           timeout=remaining).stdout)
             except subprocess.TimeoutExpired as error:
                 raise Timeout("event deadline ended before a matching exit") from error
             if batch["missed"]:
                 raise RuntimeError("journal loss: first exit is unknown")
             for event in batch["events"]:
-                if event["event"] == "exited" and event.get("pane") in names:
-                    return names[event["pane"]]
+                pane = short(event.get("pane") or "")
+                if event["event"] == "exited" and pane in names:
+                    return names[pane]
             cursor = batch["next"]
             if batch["status"] in ("gone", "stopped"):
                 raise Timeout("event read ended before a matching exit: " + batch["status"])
@@ -592,48 +660,54 @@ class Fux(Driver):
 
     # ------------------------------------------------- the rest
 
+    @staticmethod
+    def program(options, argv):
+        """`options` given a program and its arguments."""
+        options = f"(program {options} {string(argv[0])})"
+        for a in argv[1:]:
+            options = f"(argument {options} {string(a)})"
+        return options
+
     def spawn(self, argv, size=None, name=None):
-        words = ["opts", "str", "agent", "in"]
         # fux makes no size up, and no client is attached here: with none
         # asked for, tmux's size for a session no client shows, 80 by 24.
         cols, rows = size or (80, 24)
-        words += [str(cols), str(rows), "size"]
-        words += ["str", argv[0], "program"]
-        for a in argv[1:]:
-            words += ["str", a, "arg"]
-        words.append("new-tab")
+        options = self.program(f'(size (in (options) "agent") {cols} {rows})', argv)
         if name:
             # The pane's name, which `find` looks up; new-tab's names a tab.
-            words += ["dup", "str", name, "rename"]
-        return self.act(*words)
+            return self.act(f"(define! made (new-tab {options})) (rename made {string(name)}) made")
+        return self.act(f"(new-tab {options})")
 
     def shell(self, size=None):
         return self.spawn(["bash"], size=size)
 
     def keys(self, pane, *keys):
-        self.act(*self.pane(pane), *self.keyed(keys), "send-keys")
+        self.act(f"(send-keys {self.keyed(self.pane(pane), keys)})")
 
     def text(self, pane, text):
-        self.act(*self.pane(pane), "str", text, "text", "send-keys")
+        self.act(f"(send-keys (text {self.pane(pane)} {string(text)}))")
 
     def paste(self, pane, text):
-        self.act(*self.pane(pane), "str", text, "paste", "send-keys")
+        self.act(f"(send-keys (paste {self.pane(pane)} {string(text)}))")
 
     def raw(self, pane, data):
         self.text(pane, data)
 
     def mouse(self, pane, button, row, col):
         kind = {0: "click", 64: "wheel-up", 65: "wheel-down"}[button]
-        self.act(*self.pane(pane), "str", kind, str(row), str(col), "send-mouse")
+        self.act(f"(send-mouse {self.pane(pane)} {string(kind)} {row} {col})")
 
     def screen(self, pane, history=False):
-        return self.fux(*self.pane(pane), *(["all-history"] if history else []), "capture").stdout
+        target = f"(all-history {self.pane(pane)})" if history else self.pane(pane)
+        return self.fux(f"(capture {target})").stdout
 
     def ansi(self, pane):
-        return self.fux(*self.pane(pane), "styles", "capture").stdout
+        return self.fux(f"(capture (styles {self.pane(pane)}))").stdout
 
     def state(self, pane):
-        return json.loads(self.fux(*self.pane(pane), "capture", "json").stdout)
+        """The pane's record, of one observation."""
+        facts = read_data(self.fux(f"(information {self.pane(pane)})").stdout)
+        return next(p for p in facts["panes"] if short(p["id"]) == pane)
 
     def exit_status(self, pane):
         s = self.state(pane)["program"]
@@ -647,41 +721,38 @@ class Fux(Driver):
         return ended(self.state(pane)["version"])
 
     def cursor_hidden(self, pane):
-        return not self.state(pane)["cursor_visible"]
+        return not self.state(pane)["cursor-visible"]
 
     def main_screen(self, pane):
-        return self.fux(*self.pane(pane), "main-screen", "all-history", "capture").stdout
+        return self.fux(f"(capture (main-screen (all-history {self.pane(pane)})))").stdout
 
     def respawn(self, pane):
-        self.act(*self.pane(pane), "respawn")
+        self.act(f"(respawn {self.pane(pane)})")
 
     def resize(self, pane, cols, rows):
-        self.fux(*self.pane(pane), "tab", str(cols), str(rows), "resize")
+        self.fux(f"(resize (tab {self.pane(pane)}) {cols} {rows})")
 
     def resize_pct(self, pane, pct):
-        self.fux(*self.pane(pane), str(pct), "percent", "str", "horizontal", "resize-pane")
+        self.fux(f'(resize-pane {self.pane(pane)} (percent {pct}) "horizontal")')
 
     def split(self, pane, argv):
-        words = [*self.pane(pane), "str", "horizontal", "axis", "str", argv[0], "program"]
-        for a in argv[1:]:
-            words += ["str", a, "arg"]
-        return self.act(*words, "split")
+        axis = f'(axis {self.pane(pane)} "horizontal")'
+        return self.act(f"(split {self.program(axis, argv)})")
 
     def kill(self, pane):
-        self.fux(*self.pane(pane), "kill")
+        self.fux(f"(kill {self.pane(pane)})")
 
     def size_of(self, pane):
         s = self.state(pane)
-        return s["cols"], s["rows"]
+        return s["columns"], s["rows"]
 
     def find(self, name):
-        return self.fux("str", name, "pane").stdout.strip()
+        return self.fux(f"(pane {string(name)})").stdout.strip()
 
     def find_title(self, title):
         # Every pane `spawn` starts is in workspace agent.
-        snapshot = json.loads(self.fux("str", "agent", "workspace", "str", "topology",
-                                       "snapshot", "json").stdout)
-        return next(p["id"] for p in snapshot["panes"] if p["title"] == title)
+        snapshot = read_data(self.fux('(snapshot (workspace "agent") "topology")').stdout)
+        return next(short(p["id"]) for p in snapshot["panes"] if p["title"] == title)
 
     def attach_argv(self):
         return [self.bin]

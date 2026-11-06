@@ -1,6 +1,6 @@
 //! fux's server: one thread holds workspaces, tabs and split panes, their
 //! programs, and the clients attached to them, and answers each request
-//! in `fux-wire`'s terms. It never runs fuxth (D-2): programs run in
+//! in `fux-wire`'s terms. It never runs grift (D-2): programs run in
 //! clients.
 
 /// Writes to the server's log, its stderr: `log!("…", args)` writes the
@@ -63,7 +63,7 @@ macro_rules! wired {
     };
 }
 
-// The unit tests drive sessions through fux's fuxth; those that need a
+// The unit tests drive sessions through fux's grift; those that need a
 // POSIX shell or a Unix fact are `cfg(unix)`, and Windows tests the server
 // end to end besides (`tests/windows.rs`).
 pub mod capture;
@@ -107,6 +107,69 @@ pub(crate) fn take_signals(pipe: &fuxix::signal::Pipe) {
 #[path = "../../fux-vt/tests/corpus/feed.rs"]
 #[expect(dead_code, reason = "the tests use some of the helpers")]
 mod vt_feed;
+
+#[cfg(test)]
+fn test_reference(value: &str) -> String {
+    if value.starts_with('(') {
+        return value.to_owned();
+    }
+    if matches!(value, "true" | "false") {
+        return format!("#{value}");
+    }
+    if value == "all" {
+        return "(all)".into();
+    }
+    if let Ok(number) = value.parse::<i64>()
+        && !value.starts_with('+')
+    {
+        return number.to_string();
+    }
+    let constructor = match value.chars().next() {
+        Some('%') => "pane",
+        Some('@') => "tab",
+        Some('+') => "workspace",
+        Some('c')
+            if value
+                .get(1..)
+                .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit())) =>
+        {
+            "client"
+        }
+        _ => return fux::script::quoted(value),
+    };
+    format!("({constructor} {})", fux::script::quoted(value))
+}
+
+#[cfg(test)]
+fn test_data(text: &str, query: &str) -> Result<String, String> {
+    let mut g: grift::Grift = grift::Grift::new().map_err(|_| "initializing data reader")?;
+    let forms = g
+        .read_in("observed data", text)
+        .map_err(|_| format!("invalid data: {text}"))?;
+    let forms = g.list_items(&forms).map_err(|_| "data forms")?;
+    let [data] = forms.as_slice() else {
+        return Err(format!("expected one datum: {text}"));
+    };
+    g.define("data", data.clone()).map_err(|_| "binding data")?;
+    let program = format!(
+        "(define! field (lambda! (record name) (second (find-association name record)))) {query}"
+    );
+    let value = g
+        .evaluate(&mut (), &program)
+        .map_err(|_| format!("query {query}: {text}"))?;
+    if let Some(text) = g.as_str(&value).map_err(|_| "data string")? {
+        return Ok(text.to_owned());
+    }
+    let mut out = String::new();
+    g.write(&value, &mut out).map_err(|_| "data output")?;
+    // A handle as a person reads it, without the run it carries.
+    if matches!(value, grift::Value::Symbol(_))
+        && let Some((id, _)) = out.split_once(':')
+    {
+        return Ok(id.trim_start_matches('w').to_owned());
+    }
+    Ok(out)
+}
 
 /// Pictures for the tests.
 #[cfg(test)]

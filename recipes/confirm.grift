@@ -1,0 +1,15 @@
+; Asks before an action: `(require! "recipes/confirm.grift")`, then `confirm`.
+; client title callback: a question, a chooser with one row, Yes. Choosing it
+; runs the callback, a code value or (list captured-arguments code-value), on
+; its captured arguments alone. The title is choose's: text, or (list text
+; subject-handle), which closes when the subject goes.
+(define! confirm (lambda! (client title action)
+  (define! captured? (same? (kind action) "list"))
+  (when! (and!? captured? (not? (same? (length action) 2)))
+    (raise (error (quote! bad-value) "a callback is code or (list captured code)" action)))
+  (define! captured (if! captured? (first action) ()))
+  (define! run (assert-kind (if! captured? (second action) action) "code" "callback code"))
+  (assert-kind captured "list" "captured arguments")
+  (choose client title (list (list #true "Yes")) () (list 0)
+    (list (list run captured) (code! (lambda! (run captured #ignore #ignore)
+      (apply (evaluate (second run) (current-context)) captured) #inert))))))

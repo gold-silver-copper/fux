@@ -508,7 +508,7 @@ impl Told {
             Told::HungUp => ("hung_up", Vec::new()),
             Told::ReadFailed(error) => (
                 "read_failed",
-                vec![("read_error", Json::str(error.clone()))],
+                vec![("read-error", Json::str(error.clone()))],
             ),
             Told::Input {
                 kind,
@@ -673,7 +673,7 @@ pub fn every_kind(
         Told::HistoryCleared,
         Told::HungUp,
         Told::ReadFailed(fuxix::Errno::SRCH.to_string()),
-        // The most a fuxth integer says, as it reads them.
+        // The most a grift integer says, as it reads them.
         Told::Input {
             kind: Sent::Keys,
             bytes: isize::MAX.unsigned_abs(),
@@ -947,7 +947,7 @@ pub struct Read {
 
 /// The code of every id of a kind given.
 fn exhausted() -> fux_wire::code::Code {
-    fux_wire::code::Raise::IdsExhausted.into()
+    fux_wire::code::Code::IdsExhausted
 }
 
 fn reply(batch: Result<Batch, String>) -> fux_wire::protocol::Reply {
@@ -1143,9 +1143,9 @@ mod tests {
             let Some(Json::String(name)) = json.get("event") else {
                 return Err("event name".into());
             };
-            names.insert(name.clone());
+            names.insert(name.replace('_', "-"));
         }
-        let docs = include_str!("../../docs/json.md");
+        let docs = include_str!("../../docs/records.md");
         let table = |anchor: &str| -> Result<BTreeSet<String>, String> {
             let rows = docs
                 .split_once(anchor)

@@ -1,7 +1,7 @@
 //! fux's shared data: the requests a client sends its server, what the
 //! server answers, the records and error codes a program reads, and the
 //! frame codec both sides speak. Its server (`fux-server`) and its client
-//! (`fux`) depend on it; it depends on neither, and not on fuxth's
+//! (`fux`) depend on it; it depends on neither, and not on grift's
 //! interpreter.
 pub mod act;
 pub mod answer;

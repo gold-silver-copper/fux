@@ -623,7 +623,10 @@ impl Place {
 
 /// Kills `child`'s process group, and it, and reaps it.
 fn stop_group(child: &mut Child) {
-    if let Some(group) = i32::try_from(child.id()).ok().and_then(fuxix::process::Pid::from_raw) {
+    if let Some(group) = i32::try_from(child.id())
+        .ok()
+        .and_then(fuxix::process::Pid::from_raw)
+    {
         let _ = fuxix::process::kill_group(group, fuxix::process::Signal::Kill);
     }
     let _ = child.kill();
@@ -693,7 +696,14 @@ fn replay(cassette: &Cassette, ctx: &Ctx, keep: bool, deadline: Instant) -> Resu
     let mut server = Command::new(&ctx.fux)
         .arg(fux::SERVE)
         .arg(&place.socket)
-        .arg(fux::script::default_state().map_err(e)?.preferences.journal_entries.get().to_string())
+        .arg(
+            fux::script::default_state()
+                .map_err(e)?
+                .preferences
+                .journal_entries
+                .get()
+                .to_string(),
+        )
         .env_clear()
         .envs(place.env(ctx))
         .env("PS1", "$ ")
@@ -755,7 +765,13 @@ fn drive(
     let quote = |path: &Path| format!("'{}'", path.display());
     let steps = place.own.join("steps");
     let file = |n: usize, what: &str| quote(&steps.join(format!("{n}.{what}")));
-    let snapshot = |n: usize| format!("{} ls json >{} 2>&1\n", quote(&ctx.fux), file(n, "snap"));
+    let snapshot = |n: usize| {
+        format!(
+            "{} '(list-session)' >{} 2>&1\n",
+            quote(&ctx.fux),
+            file(n, "snap")
+        )
+    };
     let calls = quote(&place.own.join("calls.ndjson"));
     let mut script = format!("cd {}\nulimit -f 4096\n: >{calls}\n", quote(&place.dir));
     script.push_str(&snapshot(0));
@@ -785,7 +801,10 @@ fn drive(
         .map_err(e)?;
     let finished = finish(&mut sh, deadline).is_some();
     // Whatever a step left running in the background goes with it.
-    if let Some(group) = i32::try_from(sh.id()).ok().and_then(fuxix::process::Pid::from_raw) {
+    if let Some(group) = i32::try_from(sh.id())
+        .ok()
+        .and_then(fuxix::process::Pid::from_raw)
+    {
         let _ = fuxix::process::kill_group(group, fuxix::process::Signal::Kill);
     }
     let mut problems = Vec::new();
@@ -892,8 +911,12 @@ fn journal(ctx: &Ctx, place: &Place, run: &str, deadline: Instant) -> Result<Vec
         if Instant::now() >= deadline {
             return Err("the journal not read whole: the replay's time had passed".to_owned());
         }
-        let args = ["all", "str", &cursor, "0", "next-events", "json"];
-        let batch = Json::read(&place.fux(ctx, &args, deadline)?, ITEMS)?;
+        let program = format!(
+            "(data-text (next-events (all) {} 0))",
+            fux::script::quoted(&cursor)
+        );
+        let args = [program.as_str()];
+        let batch = Json::grift(&place.fux(ctx, &args, deadline)?, ITEMS)?;
         if batch.get("missed").map(Json::text).as_deref() != Some("0") {
             return Err(format!("the journal missed entries: {}", batch.render()));
         }
@@ -929,7 +952,7 @@ fn stop(server: &mut Child, ctx: &Ctx, place: &Place, panes: Vec<i32>) -> Vec<St
         left.push(format!("the server ended during the replay: {status}"));
     } else if let Err(why) = place.fux(
         ctx,
-        &["kill-server"],
+        &["(kill-server)"],
         after(Duration::from_secs(AFTER_SECS)),
     ) {
         left.push(format!("the server did not take kill-server: {why}"));
@@ -1105,16 +1128,16 @@ fn scan(text: &str) -> impl Iterator<Item = &str> {
 /// what follows its digits.
 fn pid_at(text: &str) -> Option<(&'static str, &str)> {
     ["\"pid\":", "\"foreground_group\":"]
-    .into_iter()
-    .find_map(|field| {
-        let after = text.strip_prefix(field)?;
-        let digits = after
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(after.len());
-        (digits > 0)
-            .then(|| Some((field, after.get(digits..)?)))
-            .flatten()
-    })
+        .into_iter()
+        .find_map(|field| {
+            let after = text.strip_prefix(field)?;
+            let digits = after
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(after.len());
+            (digits > 0)
+                .then(|| Some((field, after.get(digits..)?)))
+                .flatten()
+        })
 }
 
 /// A server run, `PID-HEX16`, at the start of `text`, and what follows it.
@@ -1228,7 +1251,11 @@ fn seen(lines: &[String], most: usize) -> Vec<Seen> {
 
 /// The code of the last `fux: CODE: …` line, if any.
 fn code(err: &str) -> Option<String> {
-    let line = err.lines().rev().find_map(|l| l.strip_prefix("fux: "))?;
+    // After its cause a failure lists what took effect and where it was.
+    let told = ["in ", "from ", "already took effect:"];
+    let line = (err.lines().rev())
+        .filter_map(|l| l.strip_prefix("fux: "))
+        .find(|l| !told.iter().any(|start| l.starts_with(start)))?;
     Some(line.split_once(':')?.0.to_owned())
 }
 
@@ -1275,7 +1302,7 @@ struct Pane {
 impl Snapshot {
     fn read(text: &str) -> Result<Snapshot, String> {
         let shown = || text.trim().chars().take(300).collect::<String>();
-        let json = Json::read(text, ITEMS).map_err(|why| format!("{why}: {}", shown()))?;
+        let json = Json::grift(text, ITEMS).map_err(|why| format!("{why}: {}", shown()))?;
         let field = |key| {
             json.get(key)
                 .map(Json::text)
@@ -1301,7 +1328,7 @@ impl Snapshot {
                 end: [program("exited"), program("signal")]
                     .map(|j| j.map(Json::render).unwrap_or_default())
                     .join(" "),
-                pid: program("pid").and_then(|pid| pid.text().parse().ok()),
+                pid: program("process-id").and_then(|pid| pid.text().parse().ok()),
             })
         };
         Ok(Snapshot {
@@ -1362,38 +1389,82 @@ impl Call {
     /// Anything else (a program on stdin, a file, a `try`, a word that only
     /// pushes `expect` as text) establishes no operation.
     fn operation(&self) -> Option<Operation> {
-        if !self.stdin.is_empty() {
+        use grift::{Grift, Value};
+        if !self.stdin.is_empty() || self.argv.len() != 1 {
             return None;
         }
-        let words: Vec<&str> = self.argv.iter().map(String::as_str).collect();
-        let ["str", version, rest @ ..] = words.as_slice() else {
+        let mut g: Grift = Grift::new().ok()?;
+        let forms = g.read(self.argv.first()?).ok()?;
+        let forms = g.list_items(&forms).ok()?;
+        let [root] = forms.as_slice() else {
             return None;
         };
-        let version: Version = version.parse().ok()?;
-        match rest {
-            ["changed", "wait"] => Some(Operation::Wait(version)),
-            ["changed", secs, "timeout", "wait"]
-                if secs.parse::<u32>().is_ok() =>
-            {
-                Some(Operation::Wait(version))
-            }
-            // Keys fux takes, so it reaches the send: some text, or a key's
-            // name.
-            ["expect", keys @ .., "send-keys"] => {
-                let (groups, left) = keys.as_chunks::<3>();
-                let input = |[s, value, kind]: &[&str; 3]| {
-                    *s == "str"
-                        && match *kind {
-                            "text" => !value.is_empty(),
-                            "key" => value.parse::<fux_vt::keys::KeyPress>().is_ok(),
-                            _ => false,
-                        }
-                };
-                let sent = !groups.is_empty() && groups.iter().all(input) && left.is_empty();
-                sent.then_some(Operation::Expect(version))
-            }
-            _ => None,
+        fn form(g: &Grift, value: &Value, name: &str) -> Option<Vec<Value>> {
+            let items = g.list_items(value).ok()?;
+            let Some(Value::Symbol(head)) = items.first() else {
+                return None;
+            };
+            (g.symbol_name(head).ok()? == name).then(|| items.into_iter().skip(1).collect())
         }
+        fn version(g: &Grift, value: &Value) -> Option<Version> {
+            g.as_str(value).ok()??.parse().ok()
+        }
+        fn expected(g: &Grift, value: &Value) -> Option<(Version, bool)> {
+            if let Some(items) = form(g, value, "expect") {
+                let [value] = items.as_slice() else {
+                    return None;
+                };
+                return Some((version(g, value)?, false));
+            }
+            for operation in ["key", "text"] {
+                let Some(items) = form(g, value, operation) else {
+                    continue;
+                };
+                let [target, input] = items.as_slice() else {
+                    return None;
+                };
+                let input = g.as_str(input).ok()??;
+                let valid = if operation == "key" {
+                    input.parse::<fux_vt::keys::KeyPress>().is_ok()
+                } else {
+                    !input.is_empty()
+                };
+                if !valid {
+                    return None;
+                }
+                let (version, _) = expected(g, target)?;
+                return Some((version, true));
+            }
+            None
+        }
+        if let Some(items) = form(&g, root, "send-keys") {
+            let [target] = items.as_slice() else {
+                return None;
+            };
+            let (version, sent) = expected(&g, target)?;
+            return sent.then_some(Operation::Expect(version));
+        }
+        let items = form(&g, root, "wait")?;
+        let [target] = items.as_slice() else {
+            return None;
+        };
+        let target = if let Some(timeout) = form(&g, target, "timeout") {
+            let [target, Value::Integer(seconds)] = timeout.as_slice() else {
+                return None;
+            };
+            let seconds = *seconds;
+            if !(0..=86400).contains(&seconds) {
+                return None;
+            }
+            target.clone()
+        } else {
+            target.clone()
+        };
+        let changed = form(&g, &target, "changed")?;
+        let [seen] = changed.as_slice() else {
+            return None;
+        };
+        Some(Operation::Wait(version(&g, seen)?))
     }
 }
 
@@ -1427,7 +1498,7 @@ impl Promise {
         }
     }
 
-    /// As fux words it (README, `docs/agents.md`, `docs/json.md`), with
+    /// As fux words it (README, `docs/agents.md`, `docs/data.md`), with
     /// what makes a replay exercise it.
     fn words(self) -> &'static str {
         match self {
@@ -1507,7 +1578,7 @@ fn monitor(
                     let at = ev.text_of("next").parse::<Cursor>().map(|c| c.seq.0);
                     at.is_ok_and(|at| at > before.cursor && at <= now.cursor)
                         && ev.text_of("pane") == id.to_string()
-                        && ["resized", "history_cleared", "history_budget"]
+                        && ["resized", "history-cleared", "history-budget"]
                             .contains(&ev.text_of("event").as_str())
                 })
                 .count();
@@ -2061,6 +2132,97 @@ enum Json {
 }
 
 impl Json {
+    /// Read fux's external data without evaluating any form. The JSON reader below
+    /// is only for the recording shim's own log, not a fux protocol fallback.
+    fn grift(text: &str, most: usize) -> Result<Json, String> {
+        use grift::{Grift, Value};
+        fn items(g: &Grift, value: &Value, most: usize) -> Result<Vec<Value>, String> {
+            let mut tail = value.clone();
+            let mut out = Vec::new();
+            while let Some((head, next)) = g.as_pair(&tail).map_err(|_| "invalid grift pair")? {
+                if out.len() >= most {
+                    return Err(format!("a list of more than {most} entries"));
+                }
+                out.push(head);
+                tail = next;
+            }
+            if tail != Value::EmptyList {
+                return Err("improper data list".into());
+            }
+            Ok(out)
+        }
+        fn value(g: &Grift, v: &Value, depth: usize, most: usize) -> Result<Json, String> {
+            if depth > DEEPEST {
+                return Err("data nested too deep".into());
+            }
+            Ok(match v {
+                Value::Integer(n) => Json::Number(n.to_string()),
+                Value::Float(n) => Json::Number(n.to_string()),
+                Value::Boolean(b) => Json::Bool(*b),
+                Value::String(_) => Json::String(
+                    g.as_str(v)
+                        .map_err(|_| "invalid string")?
+                        .ok_or("not a string")?
+                        .to_owned(),
+                ),
+                Value::Symbol(name) => {
+                    let name = g.symbol_name(name).map_err(|_| "invalid symbol")?;
+                    // A handle as a person reads it: the run it carries is
+                    // the run's, and no replay's to hold.
+                    let id = name.strip_prefix('w').unwrap_or(name);
+                    if name == "none" {
+                        Json::Null
+                    } else if id.starts_with(['%', '@', '+', 'c']) && id.contains(':') {
+                        let (id, _) = id.split_once(':').unwrap_or((id, ""));
+                        Json::String(id.to_owned())
+                    } else {
+                        Json::String(name.to_owned())
+                    }
+                }
+                Value::EmptyList => Json::Array(Vec::new()),
+                Value::Pair(_) => {
+                    let values = items(g, v, most)?;
+                    let mut fields = Vec::new();
+                    let mut record = true;
+                    for entry in &values {
+                        let Ok(parts) = items(g, entry, 2) else {
+                            record = false;
+                            break;
+                        };
+                        let [Value::Symbol(name), v] = parts.as_slice() else {
+                            record = false;
+                            break;
+                        };
+                        fields.push((
+                            g.symbol_name(name).map_err(|_| "invalid field")?.to_owned(),
+                            value(g, v, depth.saturating_add(1), most)?,
+                        ));
+                    }
+                    if record {
+                        Json::Object(fields)
+                    } else {
+                        Json::Array(
+                            values
+                                .iter()
+                                .map(|v| value(g, v, depth.saturating_add(1), most))
+                                .collect::<Result<_, _>>()?,
+                        )
+                    }
+                }
+                Value::Inert | Value::Ignore | Value::Bytes(_) | Value::Context(_) | Value::Operative(_) | Value::Applicative(_) | Value::Primitive(_) | Value::Host(_) => return Err("not readable fux data".into()),
+            })
+        }
+        let mut g: Grift = Grift::new().map_err(|_| "initializing data reader")?;
+        let forms = g
+            .read_in("fux data", text)
+            .map_err(|_| "invalid grift data")?;
+        let forms = items(&g, &forms, 2)?;
+        let [root] = forms.as_slice() else {
+            return Err("expected one datum".into());
+        };
+        value(&g, root, 0, most)
+    }
+
     /// `text`, each of its arrays and objects refused past `most`
     /// entries before it keeps another.
     fn read(text: &str, most: usize) -> Result<Json, String> {
