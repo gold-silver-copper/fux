@@ -573,7 +573,7 @@ impl End {
 
     /// The messages queued to go, as the other end will read them: for the
     /// tests.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub fn queued<T: Wire>(&self) -> Vec<T> {
         let mut decoder = Decoder::default();
         decoder.push(self.out.as_slice());

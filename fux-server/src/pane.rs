@@ -135,7 +135,7 @@ impl InputQueue {
         queued
     }
     /// Everything queued, for tests and the harnesses.
-    #[cfg(any(all(test, unix), feature = "in-process"))]
+    #[cfg(any(test, feature = "in-process"))]
     fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
@@ -869,18 +869,18 @@ impl<'a> PaneMut<'a> {
     }
     /// `n` bytes of its input were written to its terminal, as
     /// `write_input` writes them: for fux-diff's queue.
-    #[cfg(any(all(test, unix), feature = "in-process"))]
+    #[cfg(any(test, feature = "in-process"))]
     pub fn wrote_input(&mut self, n: usize) {
         self.pane.input.advance(n);
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         self.pane.set_process(process)
     }
     /// Everything queued for its program, as if written: for tests and the
     /// harnesses.
-    #[cfg(any(all(test, unix), feature = "in-process"))]
+    #[cfg(any(test, feature = "in-process"))]
     pub fn drain_input(&mut self) -> Vec<u8> {
         self.pane.input.drain_all()
     }
@@ -1707,7 +1707,7 @@ impl Pane {
     }
 
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         std::mem::replace(&mut self.process, process)
     }
@@ -1736,7 +1736,7 @@ impl Pane {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) mod tests {
     use crate::vt_feed::{Feed, Look};
     pub(crate) fn options(bytes: usize) -> Result<fux_wire::command::PaneOptions, String> {
@@ -2331,6 +2331,8 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    // Unix alone: a terminal size set on a descriptor.
+    #[cfg(unix)]
     #[test]
     fn a_failed_terminal_resize_keeps_the_real_errno_for_its_notice()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -2373,6 +2375,8 @@ pub(crate) mod tests {
     /// A program that writes back the size it read before a resize, as
     /// readline does, has its terminal sized as the screen again at its next
     /// output, and is told so in band.
+    // Unix alone: a pty's descriptor.
+    #[cfg(unix)]
     #[test]
     fn a_terminal_its_program_sized_back_is_sized_again() -> Result<(), Box<dyn std::error::Error>>
     {

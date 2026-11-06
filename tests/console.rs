@@ -35,6 +35,8 @@ mod windows {
     /// The words the shell runs `fux` with.
     const WORDS: &str = "FUX_CONSOLE_WORDS";
     const DEADLINE: Duration = Duration::from_secs(45);
+    /// What ends a pane's program.
+    const QUIT: &[u8] = b"Q";
     /// The package of the pinned ConPTY, as `tests/windows.rs` puts it.
     const PACKAGE: &str = "microsoft.windows.console.conpty.1.25.260930003.nupkg";
 
@@ -53,7 +55,12 @@ mod windows {
             Ok("shell") => shell(),
             Ok("pane") => pane(),
             Ok("built-in") => {
-                // No `load`: the terminal is Windows' built-in ConPTY.
+                // A folder with no ConPTY: the terminal is Windows' own.
+                let _ = pty::load(
+                    Path::new(env!("CARGO_TARGET_TMPDIR"))
+                        .join("no-conpty")
+                        .as_path(),
+                );
                 let tests: [Test; 1] = [("keys_reach_the_pane_through_the_built_in", keys)];
                 report(&tests)
             }
@@ -333,6 +340,13 @@ mod windows {
         contains(&got, bytes)
     }
 
+    /// How many bytes the pane has got.
+    fn pane_count(place: &Place) -> usize {
+        let got = place.lines("pane");
+        let bytes = got.iter().filter_map(|line| line.strip_prefix("got "));
+        bytes.map(|hex| hex.split(' ').count()).sum()
+    }
+
     fn contains(bytes: &[u8], wanted: &[u8]) -> bool {
         (0..bytes.len()).any(|at| bytes.get(at..).is_some_and(|rest| rest.starts_with(wanted)))
     }
@@ -369,9 +383,7 @@ mod windows {
         modes_back(&place, "detach")
     }
 
-    /// Keys as a terminal sends them, each reaching the pane exact; what
-    /// ConPTY has no record for (focus) is logged, not asserted, where the
-    /// host drops it.
+    /// Keys as a terminal sends them, each reaching the pane exact.
     fn keys() -> Outcome {
         let place = Place::new("keys")?;
         let _stops = Stops(&place);
@@ -399,10 +411,13 @@ mod windows {
             say!("key {name}: reached the pane");
         }
         console.until("the emoji painted back", |c| c.shows("😀"))?;
+        // More than a read holds, whole: its tail waits for no next key.
+        let paste: String = std::iter::repeat_n("0123456789abcdef", 4096).collect();
+        console.write(format!("\x1b[200~{paste}\x1b[201~").as_bytes())?;
+        console.until("a paste's last byte", |_| pane_count(&place) > paste.len())?;
+        // A pane that asked for focus reports, as a terminal gives them.
         console.write(b"\x1b[O\x1b[I")?;
-        let focus = console.until("focus", |_| pane_got(&place, b"\x1b[I"));
-        say!("focus report: {focus:?}");
-        Ok(())
+        console.until("the focus report", |_| pane_got(&place, b"\x1b[I"))
     }
 
     fn resize() -> Outcome {
@@ -421,18 +436,14 @@ mod windows {
     }
 
     fn ways_out() -> Outcome {
-        for (name, how) in [("stop", 0), ("break", 1)] {
+        for (name, how) in [("last-pane", 0), ("break", 1)] {
             let place = Place::new(&format!("out-{name}"))?;
             let _stops = Stops(&place);
             let mut console = Console::start(&place, "", 30, 100)?;
             pane_ready(&place, &mut console)?;
             match how {
-                0 => {
-                    let (status, _, stderr) = place.fux(&["kill-server"])?;
-                    if status != 0 {
-                        return Err(format!("kill-server: {stderr}"));
-                    }
-                }
+                // Its last pane ended, the server stops and says so.
+                0 => console.write(QUIT)?,
                 _ => console.write(BREAK)?,
             }
             console.until("the shell's end", |_| {
@@ -489,7 +500,19 @@ mod windows {
         if status == 0 {
             return Err("a squatter counted as a server".to_owned());
         }
-        Ok(())
+        drop((_connection, _taken, squatter));
+        // A record left by a server that crashed, and no pipe.
+        let (status, stdout, stderr) = place.fux(&["status"])?;
+        say!("a crashed record: {status} {stdout:?} {stderr:?}");
+        if status == 0 || !stderr.contains("left") {
+            return Err(format!("a crashed record read as {stderr:?}"));
+        }
+        let (status, _, stderr) = place.fux(&["start"])?;
+        let _stops = Stops(&place);
+        match status {
+            0 => Ok(()),
+            _ => Err(format!("`fux start` over a crashed record: {stderr}")),
+        }
     }
 
     fn accepted(
@@ -536,7 +559,16 @@ mod windows {
         heard
             .recv_timeout(Duration::from_secs(30))
             .map_err(|_| "`fux start`'s reader never saw its stdout end".to_owned())?;
-        child.wait().map_err(text)?;
+        let first = child.wait_with_output().map_err(text)?;
+        let said = String::from_utf8_lossy(&first.stderr);
+        if said.matches("fetching").count() != 1 {
+            return Err(format!("a first start said {said:?}"));
+        }
+        place.fux(&["kill-server"])?;
+        let (_, _, said) = place.fux(&["start"])?;
+        if said.contains("fetching") {
+            return Err(format!("a second start said {said:?}"));
+        }
         let mut events = Command::new(FUX);
         place.environment(&mut events)?;
         let mut child = events
@@ -571,6 +603,8 @@ mod windows {
 
     /// Stands for a person's shell: `fux`, between two looks at the console.
     fn shell() -> ExitCode {
+        // A shell lives through the Ctrl-Break that detaches what it runs.
+        let _lives = fuxix::signal::Pipe::new(&[Signal::Quit, Signal::Int]);
         note("shell", &format!("before {}", state()));
         let words = std::env::var(WORDS).unwrap_or_default();
         let status = Command::new(FUX)
@@ -596,6 +630,7 @@ mod windows {
         let Ok(winch) = fuxix::signal::Pipe::new(&[Signal::Winch]) else {
             return ExitCode::FAILURE;
         };
+        let _ = fuxix::io::write(&stdout, b"\x1b[?1004h");
         note("pane", "ready");
         let mut buffer = [0u8; 4096];
         loop {
@@ -615,6 +650,9 @@ mod windows {
                 Ok(0) => return ExitCode::SUCCESS,
                 Ok(n) => {
                     let got = buffer.get(..n).unwrap_or_default();
+                    if got == QUIT {
+                        return ExitCode::SUCCESS;
+                    }
                     let mut hex = String::new();
                     for byte in got {
                         let _ = write!(hex, "{byte:02x} ");

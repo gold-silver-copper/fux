@@ -583,6 +583,9 @@ pub fn dial(socket: &SocketPath) -> std::io::Result<Client> {
     }
 }
 
+/// What a refusal to attach adds: mintty's pipes are no console.
+pub const NOT_A_TERMINAL: &str = " (Git Bash's mintty is none: use Windows Terminal, or `winpty`)";
+
 /// This process's user, as a refusal says it.
 pub fn this_user() -> String {
     fuxix::socket::User::current().map_or_else(|e| e.to_string(), |user| user.to_string())

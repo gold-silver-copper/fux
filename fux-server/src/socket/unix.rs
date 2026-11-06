@@ -532,6 +532,9 @@ pub fn dial(socket: &SocketPath) -> std::io::Result<Client> {
     UnixStream::connect(socket.path())
 }
 
+/// What a refusal to attach adds.
+pub const NOT_A_TERMINAL: &str = "";
+
 /// This process's user, as a refusal says it.
 pub fn this_user() -> String {
     geteuid().to_string()
@@ -641,7 +644,7 @@ pub const SOCKET_HELP: &str = "(`FUX_SOCKET=/abs/path fux …`); else\n\
      server.sock in $XDG_RUNTIME_DIR/fux, or with XDG_RUNTIME_DIR unset\n\
      $TMPDIR/fux.";
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::super::{base_directory, checked};
     use super::*;

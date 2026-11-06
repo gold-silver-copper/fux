@@ -483,7 +483,7 @@ fn clean(title: &str) -> impl Iterator<Item = char> + '_ {
     title.chars().filter(|c| !c.is_control())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -64,7 +64,23 @@ mod windows {
         }
     }
 
+    /// The pinned ConPTY, as `tests/conpty.rs` gets it.
+    fn load() -> Outcome {
+        const PACKAGE: &str = "microsoft.windows.console.conpty.1.25.260930003.nupkg";
+        let folder = Path::new(env!("CARGO_TARGET_TMPDIR")).join("console-conpty");
+        std::fs::create_dir_all(&folder).map_err(text)?;
+        if let Some(package) = std::env::var_os("FUXIX_CONPTY_PACKAGE") {
+            std::fs::copy(package, folder.join(PACKAGE)).map_err(text)?;
+        }
+        pty::fetch(&folder).map_err(text)?;
+        pty::load(&folder).map_err(text)
+    }
+
     fn tests() -> ExitCode {
+        if let Err(why) = load() {
+            say!("the ConPTY: {why}");
+            return ExitCode::FAILURE;
+        }
         let mut failed = false;
         for (name, test) in [
             ("a_panic_puts_the_console_back", panic as fn() -> Outcome),

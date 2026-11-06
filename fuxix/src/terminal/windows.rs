@@ -371,8 +371,10 @@ fn push_unit(pending: &mut Pending, unit: u16, out: &mut VecDeque<u8>) {
     }
 }
 
-/// The virtual-key codes [`records_to_bytes`] looks at.
+/// The virtual-key codes [`records_to_bytes`] looks at: Space and 2, each
+/// NUL with Ctrl (a terminal's NUL comes as Ctrl+Shift+2, measured on CI).
 const VK_SPACE: u16 = 0x20;
+const VK_2: u16 = 0x32;
 const VK_MENU: u16 = 0x12;
 
 /// `records`, as the bytes a Unix terminal would have given, appended to
@@ -380,9 +382,9 @@ const VK_MENU: u16 = 0x12;
 /// key-down records, however many times its repeat count says; in-box
 /// conhost gives an emoji on `VK_MENU` key-up records, as Alt+Numpad does
 /// (S4). A key down with no character is a modifier or the like and gives
-/// nothing (that emoji's Alt+Numpad records are such), but for Ctrl+Space,
-/// which is NUL. Focus becomes the report the terminal would have sent,
-/// and a new size is left in `pending` for the caller.
+/// nothing (that emoji's Alt+Numpad records are such), but for Ctrl+Space
+/// and Ctrl+2, which are NUL. Focus becomes the report the terminal would
+/// have sent, and a new size is left in `pending` for the caller.
 pub(crate) fn records_to_bytes(
     pending: &mut Pending,
     records: &[INPUT_RECORD],
@@ -397,7 +399,7 @@ pub(crate) fn records_to_bytes(
                 let unit = unsafe { key.uChar.UnicodeChar };
                 let ctrl = key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0;
                 let down = key.bKeyDown != 0;
-                if down && unit == 0 && key.wVirtualKeyCode == VK_SPACE && ctrl {
+                if down && unit == 0 && ctrl && [VK_SPACE, VK_2].contains(&key.wVirtualKeyCode) {
                     for _ in 0..key.wRepeatCount.max(1) {
                         out.push_back(0);
                     }
@@ -741,6 +743,8 @@ mod tests {
         assert_eq!(bytes(&mut pending, &[key(false, 0x41, 97, 1, 0)]), b"");
         let space = key(true, VK_SPACE, 0, 1, LEFT_CTRL_PRESSED);
         assert_eq!(bytes(&mut pending, &[space]), [0]);
+        let at = key(true, VK_2, 0, 1, LEFT_CTRL_PRESSED | 0x10);
+        assert_eq!(bytes(&mut pending, &[at]), [0]);
         assert_eq!(bytes(&mut pending, &[key(true, VK_SPACE, 0, 1, 0)]), b"");
         assert_eq!(
             bytes(

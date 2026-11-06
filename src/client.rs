@@ -116,9 +116,11 @@ impl std::fmt::Display for Error {
                 write!(f, "{said}. Running the server's own binary instead cannot be: {why}")
             }
             Error::Protocol(error) => error.fmt(f),
-            Error::NotATerminal => {
-                f.write_str("attaching needs a terminal on stdin and stdout, the same one")
-            }
+            Error::NotATerminal => write!(
+                f,
+                "attaching needs a terminal on stdin and stdout, the same one{}",
+                socket::NOT_A_TERMINAL
+            ),
             Error::Unwaitable => f.write_str(
                 "the terminal on stdin can't be waited on for keys (macOS's poll says POLLNVAL \
                  of /dev/tty): give stdin as the terminal's own device, /dev/ and what \

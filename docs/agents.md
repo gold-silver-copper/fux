@@ -94,7 +94,9 @@ if fux status > /dev/null 2>&1; then kill "$(fux status str server_pid get 2>/de
 fux exits 0 when done (or with what `N exit` gave); 1 when refused, saying
 `fux: CODE: MESSAGE` on stderr; 2 for a mistake in the program (`usage`,
 `unknown_word`, `type` …); 4 if the pane waited on closed; 124 on
-`timeout`; 141, saying nothing, when stdout's reader went, as `cat` does.
+`timeout`; 141, saying nothing, when stdout's reader went, as `cat` does
+(on Windows within 100 ms, as the pipe is asked; where it won't say, at the
+next event's write).
 
 More: `fux help TOPIC` for `recipes`, `typing`, `read`, `shells`,
 `programs` and `servers`; `fux help guide` all of them; `fux help cookbook`.
