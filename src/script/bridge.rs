@@ -504,9 +504,7 @@ pub(super) fn request<A: Asks + ?Sized>(
                     .checkpoint(draft, state.host.context.clone())
                     .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
                 if pending {
-                    state
-                        .host
-                        .took("(this client's settings and keys)".to_owned());
+                    state.host.took(COMMITTED.to_owned());
                 }
             }
             let mut context = state.host.context.clone();
@@ -568,10 +566,14 @@ pub(super) fn request<A: Asks + ?Sized>(
             if matches!(what, Local::Open(_))
                 && let Some(draft) = state.host.state.as_deref_mut()
             {
+                let pending = draft.changed();
                 state
                     .asks
                     .checkpoint(draft, state.host.context.clone())
                     .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+                if pending {
+                    state.host.took(COMMITTED.to_owned());
+                }
             }
             out = state
                 .asks
@@ -936,7 +938,10 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
             if state.host.cli =>
         {
             let name = machine.source.trim();
-            let why = format!("{name} is a word: call it, as ({name})");
+            let why = match name.contains(char::is_whitespace) {
+                true => "the program's value is a combiner: call it".to_owned(),
+                false => format!("{name} is a word: call it, as ({name})"),
+            };
             Err(Failed::new(Code::Usage, why))
         }
         Ok(v) => match output_value(g, &v) {
@@ -1164,6 +1169,9 @@ fn on_its_line(source: &str, line: u32) -> String {
         .chain(source.chars())
         .collect()
 }
+
+/// What a run's local changes are called, published before it went on.
+const COMMITTED: &str = "(this client's settings and keys)";
 
 /// The head of a code value, a request and the field a run goes in.
 const CODE: &str = "code!";

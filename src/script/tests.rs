@@ -1064,6 +1064,52 @@ fn a_typed_answer_of_another_run_is_refused() -> TestResult {
         assert!(failed.message.contains("different server runs"), "{failed}");
         assert_eq!(asks.0, 0, "{value}");
     }
+    // Inside a word's own values: an arrangement's leaves.
+    let leaf = r#"(quote! ((kind "answer") (pane %3:3-4)))"#;
+    let source =
+        format!(r#"(arrange (tab 1) "@1:0:5-6" (list (list "horizontal" 1 1 1 2) {leaf} {leaf}))"#);
+    let context = Context {
+        of: Some("5-6".parse().map_err(|()| "a run")?),
+        ..Context::default()
+    };
+    let mut out = Vec::new();
+    let mut host = Host::new(context, None, &mut out);
+    let mut asks = Counted(0);
+    let mut machine = Machine::source("key", &source);
+    let failed = run(&mut machine, &mut host, &mut asks, None)
+        .err()
+        .ok_or("another run's leaf got through")?;
+    assert!(failed.message.contains("different server runs"), "{failed}");
+    assert_eq!(asks.0, 0);
+    Ok(())
+}
+
+/// The latest step a failed run took is told however many came before, and
+/// the list stays one size.
+#[test]
+fn a_long_run_tells_its_first_and_latest_steps() -> TestResult {
+    struct Done;
+    impl Asks for Done {
+        fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
+            Ok(Body::Empty.into())
+        }
+    }
+    let renames: String = (1..=100)
+        .map(|n| format!("(rename (pane 1) \"n{n}\")"))
+        .collect();
+    let mut out = Vec::new();
+    let mut host = Host::new(Context::default(), None, &mut out);
+    let mut machine = Machine::source("test", &format!("{renames} (nosuch)"));
+    let failed = run(&mut machine, &mut host, &mut Done, None)
+        .err()
+        .ok_or("nosuch ran")?;
+    let said = failed.actions.join("\n");
+    assert!(
+        said.contains(r#""n1")"#) && said.contains(r#""n100")"#),
+        "{said}"
+    );
+    assert!(said.contains("and 35 more"), "{said}");
+    assert!(failed.actions.len() <= 66, "{said}");
     Ok(())
 }
 

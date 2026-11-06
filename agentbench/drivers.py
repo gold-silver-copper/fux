@@ -638,7 +638,7 @@ class Fux(Driver):
                 raise Timeout("event deadline ended before a matching exit")
             seconds = min(5, math.ceil(remaining))
             try:
-                batch = read_data(self.fux(f"(next-events (all) {string(cursor)} {seconds})",
+                batch = read_data(self.fux(f"(data-text (next-events (all) {string(cursor)} {seconds}))",
                                            timeout=remaining).stdout)
             except subprocess.TimeoutExpired as error:
                 raise Timeout("event deadline ended before a matching exit") from error

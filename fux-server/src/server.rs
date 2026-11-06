@@ -1441,7 +1441,7 @@ impl Server {
                 if hello.role == Role::RETIRED_KILL {
                     let why = format!(
                         "the server runs {}, which takes no kill: `kill` on its process stops it \
-                         (`fux status` gives its `server_pid`, where the system says it)",
+                         (`fux '(status)'` gives its `server-pid`, where the system says it)",
                         fux_wire::protocol::Build::OURS
                     );
                     conn.end(session, &Greeting::Exit(&why), now);

@@ -371,7 +371,7 @@ words! {
         Clients Preferences "preferences" "client -- list" raises(Type asks) "each of the client's preferences, as it answers: its name, its value as set takes it, and its type" "fux '(data-text (preferences (client \"c1\")))'" [];
         Server Start "start" "--" raises(NotHere asks) "start the server in the background, if none answers" "fux '(sequence! (start) #inert)'" [];
         Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux '(status)' || fux '(start)'" [];
-        Server KillServer "kill-server" "--" raises(asks) "stop the server: not from its own panes, nor with people attached" "FUX_SOCKET=$PWD/test.sock fux kill-server" [];
+        Server KillServer "kill-server" "--" raises(asks) "stop the server: not from its own panes, nor with people attached" "FUX_SOCKET=$PWD/test.sock fux '(kill-server)'" [];
         Config AttachDefaults "attach-defaults" "attachable --" raises(Type Unused Config NotConfig) "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "(sequence! (attach-defaults (name (options) \"main\")) #inert)" [Either: In Name];
         Config Set "set" "setting new --" raises(Type Config NotConfig) "a preference for this client only: `fux '(explain \"set\")'` lists their effects" "fux '(sequence! (set \"history-bytes\" 16777216) #inert)'" [];
         Reading Version "version" "pane-or-seen -- string" raises(Type asks) "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux '(version (capture (pane 3)))'" [];
@@ -1799,7 +1799,7 @@ impl Host<'_> {
                 let read = (|| {
                     for node in list.items() {
                         let node = if let Some(pane) = as_pane(node) {
-                            of = super::same_run(of, super::scope(node))?;
+                            of = super::same_run(of, super::checked_scope(node)?)?;
                             fux_wire::layout::Node::Pane(pane)
                         } else if let Value::List(fields) = node
                             && let [Value::Str(kind), Value::List(children)] = fields.items()
@@ -1980,7 +1980,7 @@ impl Host<'_> {
                 self.prepare(false)
                     .map_err(|why| fail(Code::Config, why.to_string()))?;
                 let value = next()?;
-                let of = super::scope(&value);
+                let of = super::checked_scope(&value)?;
                 let (target, built) = attach_options(act, value)?;
                 if target.is_some() && built.given.contains(&Opt::Name) {
                     return Err(fail(
@@ -2105,7 +2105,10 @@ impl Host<'_> {
                     Value::List(list) => self.held(match list.items() {
                         [title, subject] => (|| {
                             let title = string(title)?;
-                            Ok((title, Some((target(subject)?, super::scope(subject)))))
+                            Ok((
+                                title,
+                                Some((target(subject)?, super::checked_scope(subject)?)),
+                            ))
                         })(),
                         _ => Err(fail(
                             Code::BadValue,

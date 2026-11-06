@@ -88,7 +88,7 @@ impl std::fmt::Display for Mismatch {
         };
         write!(
             f,
-            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on its process stops it and its panes (`fux status` gives its `server_pid`, where the system says it); a new server does not resume them",
+            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on its process stops it and its panes (`fux '(status)'` gives its `server_pid`, where the system says it); a new server does not resume them",
         )
     }
 }

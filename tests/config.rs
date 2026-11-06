@@ -244,6 +244,22 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     Ok(())
 }
 
+/// A config's stray `label` is its own mistake, told as it attaches, and
+/// the client keeps working default keys.
+#[test]
+fn a_stray_label_is_reported_and_keeps_the_default_keys() -> Outcome {
+    let server = Server::start("")?;
+    let config = server.dir.join("config/fux/config.grift");
+    std::fs::write(&config, r#"(label "mine")"#).map_err(e)?;
+    let mut terminal = Terminal::attach(&server, 10, 100, &[])?;
+    terminal.wait_for("bad-binding")?;
+    terminal.type_bytes(b"\x02")?;
+    terminal.wait_for("split side by side")?;
+    terminal.type_bytes(b"d")?;
+    terminal.wait_exit()?;
+    Ok(())
+}
+
 /// A config that fails is reported to the client attaching with it, which
 /// keeps the default keys; running it locally, as attaching does, finds its
 /// mistakes.

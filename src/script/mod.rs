@@ -382,6 +382,8 @@ pub struct Host<'a> {
     pub(crate) files: source::Files,
     file: Option<std::path::PathBuf>,
     actions: Vec<String>,
+    /// How many of `actions` went for room.
+    skipped: usize,
 }
 
 impl<'a> Host<'a> {
@@ -396,6 +398,7 @@ impl<'a> Host<'a> {
             files: source::Files::default(),
             file: None,
             actions: Vec::new(),
+            skipped: 0,
         }
     }
 
@@ -427,17 +430,28 @@ impl<'a> Host<'a> {
         self.files = source::Files::sealed();
         self.file = None;
         self.actions.clear();
+        self.skipped = 0;
     }
 
     /// `call` took effect: told if a later step fails, as many as a notice
     /// can say.
     fn took(&mut self, call: String) {
-        const MOST: usize = 64;
-        match self.actions.len() {
-            count if count < MOST => self.actions.push(call),
-            MOST => self.actions.push("and more, not listed".to_owned()),
-            _ => {}
+        const EACH_END: usize = 32;
+        if self.actions.len() <= EACH_END.saturating_mul(2) {
+            self.actions.push(call);
+            return;
         }
+        // The first and the latest, and how many went between: a run that
+        // acts without end keeps a list of this size.
+        self.skipped = self.skipped.saturating_add(1);
+        let first = self.actions.iter().take(EACH_END).cloned();
+        let between = format!("and {} more", self.skipped);
+        let latest = self
+            .actions
+            .iter()
+            .skip(EACH_END.saturating_add(2))
+            .cloned();
+        self.actions = first.chain([between]).chain(latest).chain([call]).collect();
     }
 
     /// The candidate state, for a client's worker.
@@ -1234,6 +1248,8 @@ fn bundled(config: bool) -> Result<(ClientState, Option<Result<ClientState, Fail
             if let Some(draft) = state.host.draft() {
                 *draft = defaults.draft();
             }
+            // Nothing is the config's to `label` until it binds a key.
+            state.host.last_bound = None;
             evaluate_job(&mut g, &mut state, &machine).and_then(|_| {
                 let files = std::mem::take(&mut state.host.files);
                 if let Some(draft) = state.host.draft() {

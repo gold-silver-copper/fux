@@ -85,7 +85,7 @@ class Tools(unittest.TestCase):
         driver.fux = fux
         with patch.object(drivers.time, "monotonic", side_effect=[0, 0, 5]):
             self.assertEqual(driver.wait_first_exit({"a": "%1"}, "0:RUN", timeout=15), "a")
-        self.assertEqual([call[0] for call in calls], ['(next-events (all) "0:RUN" 5)'] * 2)
+        self.assertEqual([call[0] for call in calls], ['(data-text (next-events (all) "0:RUN" 5))'] * 2)
         self.assertEqual([call[1] for call in calls], [15, 10])
 
     def test_first_exit_driver_continues_from_filtered_batch_prefixes(self):
@@ -103,7 +103,7 @@ class Tools(unittest.TestCase):
 
         driver.fux = fux
         self.assertEqual(driver.wait_first_exit({"a": "%1"}, "0:RUN"), "a")
-        self.assertEqual(calls, ['(next-events (all) "0:RUN" 5)', '(next-events (all) "256:RUN" 5)'])
+        self.assertEqual(calls, ['(data-text (next-events (all) "0:RUN" 5))', '(data-text (next-events (all) "256:RUN" 5))'])
 
     def test_published_tasks_are_scripted_fux_only_and_count_in_reports(self):
         tasks = run.tasks()

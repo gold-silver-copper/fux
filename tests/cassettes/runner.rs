@@ -911,7 +911,10 @@ fn journal(ctx: &Ctx, place: &Place, run: &str, deadline: Instant) -> Result<Vec
         if Instant::now() >= deadline {
             return Err("the journal not read whole: the replay's time had passed".to_owned());
         }
-        let program = format!("(next-events (all) {} 0)", fux::script::quoted(&cursor));
+        let program = format!(
+            "(data-text (next-events (all) {} 0))",
+            fux::script::quoted(&cursor)
+        );
         let args = [program.as_str()];
         let batch = Json::grift(&place.fux(ctx, &args, deadline)?, ITEMS)?;
         if batch.get("missed").map(Json::text).as_deref() != Some("0") {

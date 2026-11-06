@@ -132,7 +132,7 @@ styles. An absent field fails `no-field`; it never falls back to a live read. Us
 ANSWER) "name")` to ask for the live pane's name. `(get X "FIELD")` on a live handle and
 `panes`/`tabs` remain native selective reads. `id` and container membership are typed handles.
 
-Lists stay lists, records stay records, booleans and integers keep their types, and strings keep
+Lists stay lists, a record reads back with the same fields, booleans and integers keep their types, and strings keep
 their exact text. `none` is neither false nor an empty string or list. Unsigned numbers above i64
 fail `range-error`.
 
