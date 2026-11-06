@@ -198,7 +198,7 @@ fn open(socket: &SocketPath) -> Result<(Client, Option<fuxix::process::Pid>), Er
         Ok(peer) => Err(io::Error::other(format!(
             "its server runs as {}, not this user's ({})",
             peer.user,
-            fuxix::socket::User::current().map_or_else(|e| e.to_string(), |u| u.to_string()),
+            socket::this_user(),
         ))),
         Err(errno) => Err(errno.into()),
     }

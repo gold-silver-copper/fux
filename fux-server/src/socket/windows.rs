@@ -583,6 +583,11 @@ pub fn dial(socket: &SocketPath) -> std::io::Result<Client> {
     }
 }
 
+/// This process's user, as a refusal says it.
+pub fn this_user() -> String {
+    fuxix::socket::User::current().map_or_else(|e| e.to_string(), |user| user.to_string())
+}
+
 /// Who serves `client`, as the system says.
 pub fn client_peer(client: &Client) -> fuxix::Result<fuxix::socket::Peer> {
     client.peer()

@@ -532,6 +532,11 @@ pub fn dial(socket: &SocketPath) -> std::io::Result<Client> {
     UnixStream::connect(socket.path())
 }
 
+/// This process's user, as a refusal says it.
+pub fn this_user() -> String {
+    geteuid().to_string()
+}
+
 /// Who serves `client`, as the system says.
 pub fn client_peer(client: &Client) -> fuxix::Result<fuxix::socket::Peer> {
     fuxix::socket::peer(client)
