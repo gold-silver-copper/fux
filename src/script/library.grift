@@ -127,7 +127,7 @@
          (builder (argument (program (axis target "vertical") "env") (string-append "FUX_TARGET=" (string target))))
          (builder (argument builder (string-append "EDITOR=" editor)))
          (builder (argument (argument builder "sh") "-c")))
-    (split (argument builder "printf '\\033]2;history\\007'; file=$(mktemp) && \"${FUX:-fux}\" '(capture (all-history (pane (first (arguments)))))' \"$FUX_TARGET\" >\"$file\" && $EDITOR \"+$(wc -l <\"$file\")\" \"$file\" || read -r answer; rm -f \"$file\"; \"${FUX:-fux}\" '(kill (here))'"))
+    (split (argument builder "printf '\\033]2;history\\007'; file=$(mktemp) && \"${FUX:-fux}\" '(capture (all-history (pane (first (arguments)))))' \"$FUX_TARGET\" >\"$file\" && $EDITOR \"+$(($(wc -l <\"$file\")))\" \"$file\" || read -r answer; rm -f \"$file\"; \"${FUX:-fux}\" '(kill (here))'"))
     #inert)))
 ; The strict projection used when an event stream must not skip lost entries.
 (define! batch-events (lambda! (batch)

@@ -142,7 +142,7 @@ fn only_the_command_line_asks_its_process() -> TestResult {
 fn the_default_keys_are_a_config_list_keys_prints() -> TestResult {
     let defaults = default_state()?;
     let source = defaults.keys.describe();
-    let path = std::path::PathBuf::from(std::env::var_os("TMPDIR").ok_or("TMPDIR")?)
+    let path = std::env::temp_dir()
         .join(format!("default-keys-{}.grift", std::process::id()));
     std::fs::write(&path, &source)?;
     let state = run_file(&path);
