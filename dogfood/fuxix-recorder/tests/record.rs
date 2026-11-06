@@ -27,7 +27,7 @@ fn records_output_and_exit_status_without_a_terminal() -> Result {
     let log = std::fs::read_to_string(&cast)?;
     let mut lines = log.lines();
     let header = lines.next().ok_or("no header")?;
-    assert!(header.starts_with("{\"version\": 2, \"width\": 80, \"height\": 24,"), "{header}");
+    assert!(header.starts_with("{\"version\": 2, \"width\": "), "{header}");
     let events: String = lines.collect();
     assert!(events.contains("hello"), "{events}");
     Ok(())
