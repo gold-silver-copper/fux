@@ -279,7 +279,7 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     // However long what took effect, the bar shows the cause and its line.
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accept")?;
-    let long = "n".repeat(90);
+    let long: String = std::iter::repeat_n('n', 90).collect();
     client.keys(&format!(
         "(sequence! (rename (pane \"%1\") \"{long}\") (rename (pane \"%1\") \"acted\") (raise (error (quote! fail) \"boom\")) #inert)\r"
     ))?;

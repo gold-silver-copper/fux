@@ -92,7 +92,7 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
         kind.parse().unwrap_or(Code::Fail),
         written(g, "", &e.values, VALUES).trim_start(),
     );
-    failed.kind = Some(kind.to_owned());
+    failed.kind = Some(kind.into());
     let shown = e.trace().iter().filter(|form| {
         !matches!(g.position(form), Ok(Some((source, _)))
             if BOOKS.iter().any(|(name, _)| *name == source))
@@ -115,11 +115,9 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
             } else {
                 "from"
             };
-            let mut text = written(g, word, std::slice::from_ref(form), FORM);
-            if let Some(at) = at {
-                text = format!("{text} at {at}");
-            }
-            failed.trace.push(text);
+            let at = at.map_or(String::new(), |at| format!(" at {at}"));
+            let text = written(g, word, std::slice::from_ref(form), FORM);
+            failed.trace.push(text + &at);
         }
     }
     failed
@@ -129,10 +127,8 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
 /// put before it doesn't count in a column, and a name alone, of which grift
 /// keeps no position, is found by the first lines that read to hold it.
 fn failed_in<T>(g: &mut Grift<T>, e: Error, name: &str, text: &str) -> Failed {
-    let e = match g.is_kind(&e, "parse-error") {
-        Ok(true) => g.read_in(name, text).err().unwrap_or(e),
-        _ => e,
-    };
+    let unread = g.is_kind(&e, "parse-error").is_ok_and(|parse| parse);
+    let e = (unread.then(|| g.read_in(name, text).err()).flatten()).unwrap_or(e);
     let bare = e.values.first().cloned();
     let mut failed = failed(g, e);
     if let (None, Some("unbound-symbol"), Some(G::Symbol(symbol))) =
@@ -148,10 +144,8 @@ fn failed_in<T>(g: &mut Grift<T>, e: Error, name: &str, text: &str) -> Failed {
                     .and_then(|forms| g.list_items(&forms))
                     .is_ok_and(|forms| forms.contains(&symbol))
         });
-        failed.place = Some(match line {
-            Some((line, _)) => format!("{name}:{}", line.saturating_add(1)),
-            None => name.to_owned(),
-        });
+        let line = line.map(|(line, _)| format!(":{}", line.saturating_add(1)));
+        failed.place = Some(format!("{name}{}", line.unwrap_or_default()));
     }
     failed
 }

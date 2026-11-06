@@ -483,7 +483,7 @@ impl<'a> Host<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
     pub code: Code,
-    pub kind: Option<String>,
+    pub kind: Option<Box<str>>,
     pub message: String,
     pub place: Option<String>,
     /// The forms it happened in, a line each, the innermost first.
@@ -509,9 +509,8 @@ impl Failed {
     pub fn notice(&self) -> String {
         const MOST: usize = 80;
         let mut short = self.clone();
-        if let Some((end, _)) = self.message.char_indices().nth(MOST) {
-            short.message.truncate(end);
-            short.message.push('…');
+        if self.message.chars().nth(MOST).is_some() {
+            short.message = self.message.chars().take(MOST).chain(['…']).collect();
         }
         short.to_string().replace("\nfux: ", " · ")
     }

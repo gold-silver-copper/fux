@@ -205,7 +205,7 @@ fn a_failure_says_its_cause_first_and_stays_short() -> Outcome {
         "{}",
         nested.stderr
     );
-    let long = "x".repeat(100_000);
+    let long: String = std::iter::repeat_n('x', 100_000).collect();
     let big = server.fux(&[&format!("(raise (error (quote! fail) \"{long}\"))")])?;
     assert!(big.stderr.len() < 1_000, "{} bytes", big.stderr.len());
     server.ok(&["(sequence! (rename (new-tab (name (size (in (options) \"w\") 80 24) \"code\")) \"ed\") #inert)"])?;
