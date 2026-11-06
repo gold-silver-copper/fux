@@ -653,6 +653,46 @@ fn a_dump_replayed_beside_itself_makes_nothing_from_a_deleted_directory() -> Out
     Ok(())
 }
 
+/// A saved session is a program, but one whose workspaces or layout go
+/// round would never end: it is refused, with nothing made.
+#[test]
+fn a_session_that_goes_round_is_refused() -> Outcome {
+    let server = Server::start("")?;
+    let before = server.ok(&["(list-session)"])?;
+    let file = server.dir.join("round.grift");
+    let (path, leaf) = (file.to_str().ok_or("path")?, r#"("%1")"#);
+    for (first, second, nodes) in [
+        (r#""+1""#, "none", leaf),
+        (r#""+2""#, r#""+1""#, leaf),
+        ("none", r#""+1""#, r#"(("horizontal" 0 0 0 0) "%1" "%2")"#),
+        (
+            "none",
+            r#""+1""#,
+            r#"(("horizontal" 1 1 1 2) ("vertical" 1 1 0 2) "%1")"#,
+        ),
+    ] {
+        let recipe = format!(
+            r#"(restore-session (quote! ((projection "recipe")
+              (workspaces (((id "+1") (parent {first}) (name none))
+                           ((id "+2") (parent {second}) (name "in"))))
+              (tabs (((id "@1") (workspace "+1") (name none) (columns 80) (rows 24)
+                      (nodes {nodes}))))
+              (panes (((id "%1") (name none)))))))"#
+        );
+        std::fs::write(&file, recipe).map_err(e)?;
+        let mut restore = server.spawn(&["--file", path])?;
+        let ended = eventually("the restore to end", || {
+            Ok(restore.try_wait().map_err(e)?.is_some())
+        });
+        let _ = restore.kill();
+        let status = restore.wait().map_err(e)?;
+        ended?;
+        assert!(!status.success());
+        assert_eq!(server.ok(&["(list-session)"])?, before);
+    }
+    Ok(())
+}
+
 /// A given name matching an old automatic label survives dump replay;
 /// its unnamed workspace stays separate from a workspace with an old label.
 #[test]

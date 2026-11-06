@@ -15,10 +15,17 @@
     (raise (error (quote! type-error) "dump needs a recipe observation" recipe)))))
 (define! dump (lambda! (scope)
   (dump-recipe (snapshot (assert-kind scope "pane tab workspace answer closed-answer all" "a pane, tab, workspace or all") "recipe"))))
-(define! dump-first (lambda! (nodes index)
+; A saved session may say anything: what it links is followed no further
+; than it has records, so one that goes round is refused, not followed for ever.
+(define! session-step (lambda! (steps records)
+  (when! (greater-than? steps (length records))
+    (raise (error (quote! bad-value) "a saved session's links go round")))
+  (add steps 1)))
+(define! dump-first (lambda! (nodes index steps)
   (let! ((node (element-at nodes index)))
     (if! (string? node) node
-      (dump-first nodes (if! (same? (first node) "stack") (first (second node)) (element-at node 3)))))))
+      (dump-first nodes (if! (same? (first node) "stack") (first (second node)) (element-at node 3))
+        (session-step steps nodes))))))
 (define! dump-directory (lambda! (pane-record)
   (let! ((launch (get pane-record "launch")) (current (get pane-record "directory")))
     (if! (and!? (same? (get launch "choice") "shell") (not? (same? current none)) (same? (get current "status") "known"))
@@ -66,7 +73,13 @@
   (define! remember-pane (lambda! (record-value new-pane)
     (bind pane-map (string-to-symbol (get record-value "id")) new-pane)
     (when! (not? (same? (get record-value "name") none)) (rename new-pane (get record-value "name")))))
-  ; Check names before launching anything; top workspaces can be joined.
+  ; Check links and names before launching anything; top workspaces can be joined.
+  (define! session-root (lambda! (record-value steps)
+    (when! (not? (same? (get record-value "parent") none))
+      (session-root (session-find workspaces (get record-value "parent")) (session-step steps workspaces)))))
+  (for-each (lambda! (tab-record)
+    (session-root (session-find workspaces (get tab-record "workspace")) 0)
+    (dump-first (get tab-record "nodes") 0 0)) (get recipe "tabs"))
   (define! existing (session-data (snapshot (all) "topology")))
   (define! held (append (get existing "workspaces") (get existing "tabs") (get existing "panes")))
   (define! refuse-taken (lambda! (held) (lambda! (item)
@@ -82,7 +95,7 @@
     (filter (lambda! (w) (same? (get w "parent") none)) workspaces))
   (for-each (lambda! (tab-record)
     (define! nodes (get tab-record "nodes"))
-    (define! first-id (dump-first nodes 0))
+    (define! first-id (dump-first nodes 0 0))
     (define! first-record (session-find panes-in first-id))
     (define! builder (size (workspace-options (get tab-record "workspace")) (get tab-record "columns") (get tab-record "rows")))
     (define! builder (if! (same? (get tab-record "name") none) builder (name builder (get tab-record "name"))))
