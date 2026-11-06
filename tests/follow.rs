@@ -158,11 +158,28 @@ mod unix {
             };
             let dispositions = fuxix::process::Dispositions::Default;
             let (mut child, _) = slave.spawn(&[FUX], setup, dispositions).map_err(e)?;
-            let status = child.wait().map_err(e)?;
+            // Its terminal is read as it runs: macOS holds a process at its
+            // exit until what it wrote there has gone.
+            let mut said = Vec::new();
+            let mut buffer = [0; 4096];
+            let began = Instant::now();
+            let status = loop {
+                if let Ok(n) = fuxix::io::read(&master, &mut buffer) {
+                    said.extend_from_slice(buffer.get(..n).unwrap_or_default());
+                }
+                if let Some(status) = child.try_wait().map_err(e)? {
+                    break status;
+                }
+                if began.elapsed() > PATIENCE {
+                    let _ = child.kill();
+                    return Err(format!("still running: {}", String::from_utf8_lossy(&said)));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
             drop(master);
             Ok(Ran {
                 status: status.code(),
-                stdout: String::new(),
+                stdout: String::from_utf8_lossy(&said).into_owned(),
                 stderr: String::new(),
             })
         })
@@ -375,7 +392,10 @@ mod unix {
         } else {
             FOLLOWED.into()
         };
-        check(attach.status == Some(follows), &attach)?;
+        check(
+            attach.status == Some(follows) && !attach.stdout.contains("stop it"),
+            &attach,
+        )?;
         // What this fux can't read is told on one line of the refusal.
         let unread = against_protocol(76, "unread", &["(nosuch)"], "", &[], 1)?;
         check(
