@@ -2,6 +2,7 @@ use super::{Error, Session};
 use crate::copy::Copy as Pane;
 use crate::view::ClientKind;
 use crate::workspace::{Child, Fit};
+use fux_wire::code::Code;
 use fux_wire::command::AnyRef;
 use fux_wire::id::{PaneId, TabId};
 use fux_wire::inspect::{self, Projection, Scope, Snapshot};
@@ -94,7 +95,7 @@ impl Session {
         if let Projection::Field(field) = &projection {
             let Scope::Target(target) = scope else {
                 return Err(super::fail(
-                    fux_wire::code::Raise::BadValue,
+                    Code::BadValue,
                     "a field projection needs a pane, tab or workspace",
                 ));
             };

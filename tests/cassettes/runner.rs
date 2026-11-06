@@ -2182,7 +2182,7 @@ impl Json {
                         };
                         fields.push((
                             g.symbol_name(name).map_err(|_| "invalid field")?.to_owned(),
-                            value(g, v, depth + 1, most)?,
+                            value(g, v, depth.saturating_add(1), most)?,
                         ));
                     }
                     if record {
@@ -2191,12 +2191,12 @@ impl Json {
                         Json::Array(
                             values
                                 .iter()
-                                .map(|v| value(g, v, depth + 1, most))
+                                .map(|v| value(g, v, depth.saturating_add(1), most))
                                 .collect::<Result<_, _>>()?,
                         )
                     }
                 }
-                _ => return Err("not readable fux data".into()),
+                Value::Inert | Value::Ignore | Value::Bytes(_) | Value::Context(_) | Value::Operative(_) | Value::Applicative(_) | Value::Primitive(_) | Value::Host(_) => return Err("not readable fux data".into()),
             })
         }
         let mut g: Grift = Grift::new().map_err(|_| "initializing data reader")?;

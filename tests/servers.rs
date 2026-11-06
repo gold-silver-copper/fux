@@ -897,7 +897,7 @@ fn addressing_a_client_does_not_claim_its_origin() -> Outcome {
     let cursor = server.ok(&["(sequence! (define! value-1851 (next-events (all) \"\" 0)) \"next\" (get value-1851 \"next\"))"])?;
     server.ok(&[&format!(
         "(sequence! (show (client {}) (pane 1)) #inert)",
-        fux::script::quoted(&format!("{client}"))
+        fux::script::quoted(client)
     )])?;
     let origins = server.ok(&[&format!("(define! batch (next-events (all) {} 0)) (map (lambda! (e) (get (get e \"origin\") \"kind\")) (filter (lambda! (e) (same? (get e \"event\") \"shown\")) (get batch \"events\")))", fux::script::quoted(cursor.trim()))])?;
     assert!(!origins.trim().is_empty());

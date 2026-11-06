@@ -224,7 +224,14 @@ fn kind<A: Asks + ?Sized>(
         G::Applicative(_) | G::Host(_) => Some("applicative"),
         G::Inert => Some("inert"),
         G::Ignore => Some("ignore"),
-        _ => None,
+        G::EmptyList
+        | G::Boolean(_)
+        | G::Integer(_)
+        | G::Float(_)
+        | G::Symbol(_)
+        | G::Pair(_)
+        | G::String(_)
+        | G::Bytes(_) => None,
     };
     if let Some(kind) = kind {
         return g.string(kind);
@@ -232,7 +239,14 @@ fn kind<A: Asks + ?Sized>(
     let v = from_grift(g, v)?;
     let name = match &v {
         Value::App(a) => a.name(),
-        _ => v.kind(),
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::Symbol(_)
+        | Value::List(_)
+        | Value::Bytes(_)
+        | Value::Printed(_) => v.kind(),
     };
     g.string(name)
 }
@@ -342,7 +356,7 @@ pub(super) fn request<A: Asks + ?Sized>(
         let prefix = match word {
             Word::Act(Act::Pane) => "%",
             Word::Act(Act::Tab) => "@",
-            _ => "+",
+            Word::Opt(_) | Word::Screen(_) | Word::Keys(_) | Word::Act(_) => "+",
         };
         let id = format!("{prefix}{number}")
             .parse::<AnyRef>()
@@ -367,7 +381,7 @@ pub(super) fn request<A: Asks + ?Sized>(
                 Word::Act(Act::Pane) => "%",
                 Word::Act(Act::Tab) => "@",
                 Word::Act(Act::Workspace) => "+",
-                _ => "c",
+                Word::Opt(_) | Word::Screen(_) | Word::Keys(_) | Word::Act(_) => "c",
             };
             values = vec![Value::str(format!("{prefix}{n}"))];
         }
@@ -1051,7 +1065,7 @@ fn from_grift<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
 }
 fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Error> {
     let Some(depth) = depth.checked_sub(1) else {
-        return Err(g.error("too-long", &[v.clone()]));
+        return Err(g.error("too-long", std::slice::from_ref(v)));
     };
     Ok(match v {
         G::Float(n) => Value::Float(*n),
@@ -1078,22 +1092,30 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                 (CODE, [_, form]) => {
                     let mut source = String::new();
                     g.write(form, &mut source)
-                        .map_err(|_| g.error("bad-value", &[form.clone()]))?;
+                        .map_err(|_| g.error("bad-value", std::slice::from_ref(form)))?;
                     Value::App(Fux::Code(Rc::new(fux_wire::callback::Code { source })))
                 }
                 (REQUEST, [_, subject, steps @ ..]) => {
                     let subject = match from_grift_at(g, subject, depth)? {
                         Value::App(Fux::Null) => None,
-                        subject => Some(subject),
+                        subject @ Value::Int(_)
+                        | subject @ Value::Float(_)
+                        | subject @ Value::Bool(_)
+                        | subject @ Value::Str(_)
+                        | subject @ Value::Symbol(_)
+                        | subject @ Value::List(_)
+                        | subject @ Value::App(_)
+                        | subject @ Value::Bytes(_)
+                        | subject @ Value::Printed(_) => Some(subject),
                     };
                     let mut replayed = Vec::with_capacity(steps.len());
                     for step in steps {
                         let items = g.list_items(step)?;
                         let Some((G::Symbol(name), arguments)) = items.split_first() else {
-                            return Err(g.error("bad-value", &[step.clone()]));
+                            return Err(g.error("bad-value", std::slice::from_ref(step)));
                         };
                         let Some(Word::Opt(option)) = Word::named(g.symbol_name(name)?) else {
-                            return Err(g.error("bad-value", &[step.clone()]));
+                            return Err(g.error("bad-value", std::slice::from_ref(step)));
                         };
                         let arguments = arguments
                             .iter()
@@ -1138,7 +1160,12 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
             }
             record::from_fields(fields, None).map_err(|f| failure(g, f))?
         }
-        _ => return Err(g.error("type-error", &[v.clone()])),
+        G::Inert
+        | G::Ignore
+        | G::Operative(_)
+        | G::Applicative(_)
+        | G::Primitive(_)
+        | G::Host(_) => return Err(g.error("type-error", std::slice::from_ref(v))),
     })
 }
 
@@ -1159,7 +1186,19 @@ fn write_display<T>(g: &mut Grift<T>, v: &G, out: &mut String) -> Result<(), Err
             )) => Some(Value::App(app)),
             Ok(_) | Err(_) => None,
         },
-        _ => None,
+        G::EmptyList
+        | G::Boolean(_)
+        | G::Inert
+        | G::Ignore
+        | G::Integer(_)
+        | G::Float(_)
+        | G::String(_)
+        | G::Bytes(_)
+        | G::Context(_)
+        | G::Operative(_)
+        | G::Applicative(_)
+        | G::Primitive(_)
+        | G::Host(_) => None,
     };
     match shown {
         Some(value) => value.write_text(out).map_err(|f| failure(g, f)),

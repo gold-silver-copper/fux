@@ -1315,8 +1315,8 @@ fn observed_retains_a_capture_without_refreshing_it() -> Outcome {
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", "echo READY; read x"]))?);
     let code = format!(
         "(sequence! (define! variables-56 (context)) (bind variables-56 (quote! seen) (shows {} \"READY\" 3)) (kill {}) (string (shows (observed (evaluate (quote! seen) variables-56)) \"READY\" 1)))",
-        support::reference(&format!("{pane}")),
-        support::reference(&format!("{pane}"))
+        support::reference(&pane.to_string()),
+        support::reference(&pane.to_string())
     );
     assert_eq!(server.ok(&[&code])?, "READY\n");
     Ok(())
@@ -1331,11 +1331,11 @@ fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
     server.exits(&pane)?;
     for source in [
         pane.clone(),
-        format!("(capture {})", support::reference(&format!("{pane}"))),
+        format!("(capture {})", support::reference(&pane.to_string())),
     ] {
         let code = format!(
             "(sequence! (define! value-69 (until-ended (until-ended {} 1) 1)) \"program\" (define! value-71 (get value-69 \"program\")) \"exited\" (get value-71 \"exited\"))",
-            support::reference(&format!("{source}"))
+            support::reference(&source.to_string())
         );
         assert_eq!(server.ok(&[&code])?, "7\n");
     }
@@ -1355,29 +1355,29 @@ fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
     ))?);
     for source in [
         pane.clone(),
-        format!("(capture {})", support::reference(&format!("{pane}"))),
+        format!("(capture {})", support::reference(&pane.to_string())),
         format!(
             "(send-keys (text {} \"\"))",
-            support::reference(&format!("{pane}"))
+            support::reference(&pane.to_string())
         ),
     ] {
         server.ok(&[&format!(
             "(sequence! (grows {} \"bells\" 0 1) #inert)",
-            support::reference(&format!("{source}"))
+            support::reference(&source.to_string())
         )])?;
     }
     for (count, amount) in [("respawns", 0), ("nosuch", 0), ("bells", -1)] {
         let refused = server.fux(&[&format!(
             "(sequence! (grows (capture {}) {} {} 1) #inert)",
-            support::reference(&format!("{pane}")),
-            fux::script::quoted(&format!("{count}")),
+            support::reference(&pane.to_string()),
+            fux::script::quoted(count),
             support::reference(&format!("{amount}"))
         )])?;
         assert_eq!(refused.status, 1, "{}", refused.stdout);
     }
     let bell = format!(
         "(sequence! (define! value-91 (grows (line {} \"go\") \"bells\" 1 3)) \"bells\" (get value-91 \"bells\"))",
-        support::reference(&format!("{pane}"))
+        support::reference(&pane.to_string())
     );
     assert_eq!(server.ok(&[&bell])?, "1\n");
     let overflow = server.fux(&[&format!(
@@ -1388,8 +1388,8 @@ fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
     assert_eq!(overflow.status, 1);
     let generation = format!(
         "(sequence! (define! variables-94 (context)) (bind variables-94 (quote! seen) (capture {})) (respawn (kill-first {})) (grows (evaluate (quote! seen) variables-94) \"screen\" 1 1) #inert)",
-        support::reference(&format!("{pane}")),
-        support::reference(&format!("{pane}"))
+        support::reference(&pane.to_string()),
+        support::reference(&pane.to_string())
     );
     let refused = server.fux(&[&generation])?;
     assert!(
@@ -1407,8 +1407,8 @@ fn quiet_propagates_closure_instead_of_reporting_stability() -> Outcome {
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", "echo READY; read x"]))?);
     let code = format!(
         "(sequence! (define! variables-101 (context)) (bind variables-101 (quote! seen) (shows {} \"READY\" 3)) (kill {}) (quiet (evaluate (quote! seen) variables-101) 1) #inert)",
-        support::reference(&format!("{pane}")),
-        support::reference(&format!("{pane}"))
+        support::reference(&pane.to_string()),
+        support::reference(&pane.to_string())
     );
     let closed = server.fux(&[&code])?;
     assert_eq!(closed.status, 4, "{}", closed.stderr);

@@ -794,7 +794,7 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
     assert!(
         server
             .ok(&["(listing (list-session))"])?
-            .contains(&format!("{shell}"))
+            .contains(&shell.to_string())
     );
     std::fs::remove_dir(&blocked).map_err(e)?;
     server.type_line(&shell, "echo still-here")?;
@@ -924,11 +924,11 @@ fn a_takeover_keeps_ended_program_panes_by_their_role() -> Outcome {
     server.ok(&["(sequence! (start) #inert)"])?;
     let listing = server.ok(&["(listing (list-session))"])?;
     for kept in [&ended, &lost] {
-        assert!(listing.contains(&format!("{kept}")), "{kept}: {listing}");
+        assert!(listing.contains(&kept.to_string()), "{kept}: {listing}");
         let state = server.ok(&[&format!("(sequence! (define! value-1369 (pane {})) \"program\" (define! value-1371 (get value-1369 \"program\")) \"state\" (get value-1371 \"state\"))", fux::script::quoted(kept))])?;
         assert_eq!(state.trim(), "ended", "{kept}");
     }
-    assert!(!listing.contains(&format!("{shell}")), "{listing}");
+    assert!(!listing.contains(&shell.to_string()), "{listing}");
     Ok(())
 }
 

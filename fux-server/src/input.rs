@@ -1508,7 +1508,7 @@ mod tests {
                     &mut s,
                     &format!(
                         "(sequence! \"name\" (get {} \"name\"))",
-                        crate::test_reference(&format!("{target}"))
+                        crate::test_reference(target)
                     )
                 )?,
                 "destination\n",
@@ -1536,7 +1536,7 @@ mod tests {
                     &mut s,
                     &format!(
                         "(sequence! \"name\" (get {} \"name\"))",
-                        crate::test_reference(&format!("{target}"))
+                        crate::test_reference(target)
                     )
                 )
                 .is_err(),
@@ -1585,9 +1585,9 @@ mod tests {
         ] {
             let code = format!(
                 "(sequence! (choose (me) \"title\" {} {} {} (code! (lambda! (argument-106 argument-107) #inert))) #inert)",
-                crate::test_reference(&format!("{rows}")),
-                crate::test_reference(&format!("{current}")),
-                crate::test_reference(&format!("{selected}"))
+                crate::test_reference(rows),
+                crate::test_reference(current),
+                crate::test_reference(selected)
             );
             assert_eq!(
                 output_as(&mut s, Some(c), &code).is_ok(),

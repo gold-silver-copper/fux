@@ -667,7 +667,7 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
     // Answered once its client took the keys, so it is pumped meanwhile.
     let mut sending = server.spawn(&[&format!(
         "(sequence! (send-keys (key (client {}) \"F5\")) #inert)",
-        fux::script::quoted(&format!("{id}"))
+        fux::script::quoted(&id.to_string())
     )])?;
     eventually("committed title before the wait finishes", || {
         a.pump()?;

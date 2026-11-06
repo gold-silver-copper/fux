@@ -1,7 +1,9 @@
 //! `docs/words.txt` and `docs/records.txt`, written from fux's word table
 //! and the libraries' definitions, and from records the record builders
 //! make; a test fails while a list is stale (`fux_wire::lists`).
-use super::{Fux, Value, Word, record};
+use super::Word;
+#[cfg(unix)]
+use super::{Fux, Value, record};
 use fux_wire::lists::{check, file};
 
 const TEST: &str = "cargo test -p fux --lib lists";
@@ -69,7 +71,14 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
             line(&format!("{path}{which}"), &names);
             r.fields.clone()
         }
-        _ => return,
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::Str(_)
+        | Value::Symbol(_)
+        | Value::App(_)
+        | Value::Bytes(_)
+        | Value::Printed(_) => return,
     };
     for (key, value) in &fields {
         records(&format!("{path}.{key}"), value, out);

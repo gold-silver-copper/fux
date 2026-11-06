@@ -528,7 +528,14 @@ fn pane_outcomes_determine_the_reply_status() -> Result<(), Box<dyn std::error::
                     assert_eq!(scope(item), Some(version.run));
                 }
             }
-            value => assert_eq!(scope(value), Some(version.run)),
+            value @ Value::Int(_)
+            | value @ Value::Float(_)
+            | value @ Value::Bool(_)
+            | value @ Value::Str(_)
+            | value @ Value::Symbol(_)
+            | value @ Value::App(_)
+            | value @ Value::Bytes(_)
+            | value @ Value::Printed(_) => assert_eq!(scope(value), Some(version.run)),
         }
         let mut data = String::new();
         value.write_data(&mut data)?;
@@ -887,7 +894,11 @@ fn layout_scalar_refusals_do_not_copy_retained_strings() -> TestResult {
                     self.peak = fux_vt_peak::ThreadPeak.peak().saturating_sub(self.base);
                     Ok(vec![Value::str("")])
                 }
-                _ => Err(Failed::new(Code::Client, "unexpected local operation")),
+                Local::Attach { .. }
+                | Local::Start
+                | Local::Status
+                | Local::Open(_)
+                | Local::Shell(_) => Err(Failed::new(Code::Client, "unexpected local operation")),
             }
         }
     }

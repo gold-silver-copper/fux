@@ -2615,7 +2615,7 @@ mod tests {
         let id = s.focused(c).ok_or("the pane")?;
         let respawn = format!(
             "(respawn (kill-first {}))",
-            crate::test_reference(&format!("{id}"))
+            crate::test_reference(&id.to_string())
         );
         // Both parsers have gone through the same sizing and host setup.
         run(&mut s, &respawn)?;

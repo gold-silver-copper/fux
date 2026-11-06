@@ -12,7 +12,7 @@ fn size(server: &Server, pane: &str) -> Result<(u16, u16), String> {
     let ls = server.ok(&["(listing (list-session))"])?;
     let line = ls
         .lines()
-        .find(|l| l.trim_start().starts_with(&format!("{pane}")))
+        .find(|l| l.trim_start().starts_with(&pane.to_string()))
         .ok_or_else(|| format!("{pane} is not listed: {ls}"))?;
     let dims = line
         .split_whitespace()

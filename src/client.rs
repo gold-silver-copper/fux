@@ -1070,7 +1070,10 @@ struct Prepared<'a, 'b, 'c> {
 /// `state`. Each job has an interpreter nothing has run in, so a run's
 /// definitions, its failure's leftovers and what it held go with it; the
 /// next is built once `done` has told of this one, off the next key's path.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the worker and its tests share this loop"
+)]
 fn work(
     server: &mut dyn script::Asks,
     me: (fux_wire::id::ClientId, fux_wire::command::Run),

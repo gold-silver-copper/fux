@@ -116,7 +116,7 @@ fn run(
     let bin = Path::new(fux()).parent().ok_or("fux is in no directory")?;
     let path = std::env::var_os("PATH").unwrap_or_default();
     let path = std::iter::once(bin.to_owned()).chain(std::env::split_paths(&path));
-    let said = dir.join(format!("{}", format!(".recipe-{i}.out")));
+    let said = dir.join(format!(".recipe-{i}.out"));
     let file = std::fs::File::create(&said).map_err(e)?;
     let mut command = Command::new(sh);
     match cold {
@@ -235,7 +235,7 @@ fn runs(sh: &str, blocks: Vec<(&str, &str, String)>, cold: bool) -> Result<Vec<S
                 assert_eq!(status, 0, "{heading}:\n{block}\n{said}");
             }
             "grift" => {
-                let config = dir.join(format!("{}", format!("config-{i}.grift")));
+                let config = dir.join(format!("config-{i}.grift"));
                 std::fs::write(&config, &block).map_err(e)?;
                 let ran = fux::script::run_file(&config).map(drop);
                 assert!(ran.is_ok(), "{heading}:\n{block}\n{ran:?}");

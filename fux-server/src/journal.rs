@@ -947,7 +947,7 @@ pub struct Read {
 
 /// The code of every id of a kind given.
 fn exhausted() -> fux_wire::code::Code {
-    fux_wire::code::Raise::IdsExhausted.into()
+    fux_wire::code::Code::IdsExhausted
 }
 
 fn reply(batch: Result<Batch, String>) -> fux_wire::protocol::Reply {

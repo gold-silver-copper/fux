@@ -24,7 +24,7 @@ use crate::client;
 use crate::client_state::{ClientState, Draft};
 use fux_server::socket::SocketPath;
 use fux_wire::answer::{PaneAnswer, PaneResults};
-use fux_wire::code::{Code, Raise};
+use fux_wire::code::Code;
 use fux_wire::command::{
     AnyRef, Extent, HistoryBytes, Input, Limit, Program, Request, Run, Version, WsRef,
 };
@@ -136,7 +136,7 @@ impl Fux {
             Fux::Opts(_) => write!(out, "({})", self.kind()),
             Fux::Code(code) => out.write_str(&code.text()),
         }
-        .map_err(|_| Failure::new(Code::Output.into(), "the text could not be written"))
+        .map_err(|_| Failure::new(Code::Output, "the text could not be written"))
     }
 }
 
@@ -163,7 +163,7 @@ fn scope(value: &Value<Fux>) -> Option<Run> {
 fn same_run(a: Option<Run>, b: Option<Run>) -> Result<Option<Run>, Failure> {
     match (a, b) {
         (Some(a), Some(b)) if a != b => Err(Failure::new(
-            Code::from(Raise::BadValue).into(),
+            Code::BadValue,
             "handles are from different server runs",
         )),
         (a, b) => Ok(a.or(b)),
@@ -1312,7 +1312,14 @@ pub fn refuse_unfinished(values: &[Value<Fux>], host: &Host<'_>) -> Result<(), F
     for value in values {
         let items = match value {
             Value::List(items) => items.items(),
-            value => std::slice::from_ref(value),
+            value @ Value::Int(_)
+            | value @ Value::Float(_)
+            | value @ Value::Bool(_)
+            | value @ Value::Str(_)
+            | value @ Value::Symbol(_)
+            | value @ Value::App(_)
+            | value @ Value::Bytes(_)
+            | value @ Value::Printed(_) => std::slice::from_ref(value),
         };
         for item in items {
             if let Value::App(Fux::Opts(options)) = item {
@@ -1438,7 +1445,16 @@ fn main_program(
                     }
                     Value::Str(text) if text.is_empty() => {}
                     Value::App(Fux::Record(record)) if record.says_nothing() => {}
-                    _ => writeln!(host.out, "{}", value::Text(v)).map_err(output_failed)?,
+                    Value::Int(_)
+                    | Value::Float(_)
+                    | Value::Bool(_)
+                    | Value::Str(_)
+                    | Value::Symbol(_)
+                    | Value::App(_)
+                    | Value::Bytes(_)
+                    | Value::Printed(_) => {
+                        writeln!(host.out, "{}", value::Text(v)).map_err(output_failed)?
+                    }
                 }
             }
             Ok(cli.status.unwrap_or(0))
@@ -1663,7 +1679,14 @@ pub mod testing {
             Value::App(
                 app @ (Fux::Pane(..) | Fux::Tab(..) | Fux::Workspace(..) | Fux::Client(..)),
             ) => app.write_text(out).map_err(|_| std::fmt::Error),
-            other => other.write_data(out),
+            other @ Value::Int(_)
+            | other @ Value::Float(_)
+            | other @ Value::Bool(_)
+            | other @ Value::Str(_)
+            | other @ Value::Symbol(_)
+            | other @ Value::App(_)
+            | other @ Value::Bytes(_)
+            | other @ Value::Printed(_) => other.write_data(out),
         }
     }
 }

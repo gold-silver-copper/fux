@@ -1,7 +1,7 @@
 //! Immutable local projections. Only checked constructors can retain a record.
 use super::{Failure, List, Value};
 use super::{Fux, handle};
-use fux_wire::code::{Code, Raise};
+use fux_wire::code::Code;
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::inspect::{self, Projection, Scope};
 use fux_wire::json::Json;
@@ -27,12 +27,7 @@ impl Record {
             .iter()
             .find(|(key, _)| key == field)
             .map(|(_, v)| v.clone())
-            .ok_or_else(|| {
-                Failure::new(
-                    Code::from(Raise::NoField).into(),
-                    format!("record has no field {field:?}"),
-                )
-            })
+            .ok_or_else(|| Failure::new(Code::NoField, format!("record has no field {field:?}")))
     }
     /// Its kind and how a person says it, if the server's answer it is
     /// holds one: a record of no kind is a plain record.
@@ -116,12 +111,9 @@ fn null() -> V {
     Value::App(Fux::Null)
 }
 fn number(n: impl TryInto<i64>) -> Result<V, Failure> {
-    n.try_into().map(Value::Int).map_err(|_| {
-        Failure::new(
-            Code::from(Raise::Range).into(),
-            "integer is past the signed 64-bit range",
-        )
-    })
+    n.try_into()
+        .map(Value::Int)
+        .map_err(|_| Failure::new(Code::Range, "integer is past the signed 64-bit range"))
 }
 fn id(id: AnyRef, run: Run) -> V {
     Value::App(handle(id, Some(run)))
@@ -286,7 +278,12 @@ pub(super) fn events(batch: fux_wire::events::Batch) -> Result<V, Failure> {
                 key.to_owned(),
                 match value {
                     Json::String(name) => b.text(&name.replace('_', "-"))?,
-                    value => b.json(value, 0)?,
+                    value @ Json::Null
+                    | value @ Json::Bool(_)
+                    | value @ Json::Int(_)
+                    | value @ Json::Uint(_)
+                    | value @ Json::Array(_)
+                    | value @ Json::Object(_) => b.json(value, 0)?,
                 },
             ));
         }
@@ -462,7 +459,7 @@ pub(super) fn answer_field(
     let b = &mut Builder;
     let absent = || {
         Failure::new(
-            Code::from(Raise::NoField).into(),
+            Code::NoField,
             format!("held observation has no field {field:?}"),
         )
     };
@@ -612,7 +609,15 @@ pub(super) fn plain(value: V) -> V {
             let of = record.of;
             Value::App(Fux::Record(Rc::new(Record { fields, of })))
         }
-        value => value,
+        value @ Value::Int(_)
+        | value @ Value::Float(_)
+        | value @ Value::Bool(_)
+        | value @ Value::Str(_)
+        | value @ Value::Symbol(_)
+        | value @ Value::List(_)
+        | value @ Value::App(_)
+        | value @ Value::Bytes(_)
+        | value @ Value::Printed(_) => value,
     }
 }
 
@@ -794,10 +799,7 @@ mod tests {
             return Err(fail());
         };
         assert_eq!(r.get("empty")?, null());
-        assert_eq!(
-            r.get("missing").map_err(|e| e.code),
-            Err(Code::from(Raise::NoField).into())
-        );
+        assert_eq!(r.get("missing").map_err(|e| e.code), Err(Code::NoField));
         let Value::List(items) = r.get("items")? else {
             return Err(fail());
         };

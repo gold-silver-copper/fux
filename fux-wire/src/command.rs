@@ -317,7 +317,7 @@ impl Screen {
             .filter(|size| fux_vt::fits(*size));
         size.map(Screen).ok_or_else(|| {
             crate::code::fail(
-                crate::code::Raise::Size,
+                crate::code::Code::Size,
                 format!("{cols} columns by {rows} rows: no screen is that size"),
             )
         })

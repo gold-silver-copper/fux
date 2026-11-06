@@ -52,7 +52,7 @@ fn within(v: &Value<Fux>, depth: u8) -> Result<Data, Failure> {
                 .collect::<Result<_, Failure>>()?,
         },
         Value::App(Fux::Code(c)) => Data::Code((**c).clone()),
-        _ => {
+        Value::App(_) | Value::Printed(_) => {
             return Err(Failure::new(
                 fux_wire::code::Code::BadValue,
                 "callback arguments must be immutable data",
@@ -102,7 +102,15 @@ fn runs(v: &Data, of: &mut Option<fux_wire::command::Run>) -> Result<(), Failed>
                 runs(v, of)?;
             }
         }
-        _ => {}
+        Data::Int(_)
+        | Data::Bool(_)
+        | Data::Text(_)
+        | Data::All
+        | Data::Null
+        | Data::Code(_)
+        | Data::Bytes(_)
+        | Data::FloatBits(_)
+        | Data::Symbol(_) => {}
     }
     Ok(())
 }
@@ -530,7 +538,7 @@ mod tests {
             return Err("a record".into());
         };
         let held = record.get("code").map_err(|e| e.message)?;
-        assert_eq!(held, Value::App(Fux::Code(Rc::new(code.into()))));
+        assert_eq!(held, Value::App(Fux::Code(Rc::new(code))));
         let sent = data(&Value::App(Fux::Record(Rc::clone(record))));
         assert_eq!(sent.map_err(|e| e.message)?, answer);
         Ok(())

@@ -8,7 +8,7 @@ use super::{Done, Failure, Value};
 use crate::help;
 use fux_vt::keys::Direction;
 use fux_wire::callback::Open;
-use fux_wire::code::{Code, Raise};
+use fux_wire::code::Code;
 use fux_wire::command::{
     AnyRef, Beside, Button, ClientAction, ClientRead, Command, Extent, HistoryBytes, Input, Kind,
     Limit, Members, Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since,
@@ -45,7 +45,7 @@ macro_rules! words {
     };
     (@raises [$($code:ident)*] $asks:literal) => {
         Raises {
-            codes: &[$(Raise::$code),*],
+            codes: &[$(Code::$code),*],
             asks: $asks,
         }
     };
@@ -175,7 +175,7 @@ pub struct Row {
 /// fails `stack_underflow` given too few, and `bad_value` given handles of
 /// different server runs, besides.
 pub struct Raises {
-    pub codes: &'static [Raise],
+    pub codes: &'static [Code],
     pub asks: bool,
 }
 
@@ -187,15 +187,13 @@ impl Word {
             .effect
             .split_once("--")
             .is_some_and(|(t, _)| !t.trim().is_empty());
-        let taking = [Raise::StackUnderflow, Raise::BadValue]
+        let taking = [Code::StackUnderflow, Code::BadValue]
             .into_iter()
             .filter(|_| takes);
-        let own = (row.raises.codes.iter().copied())
-            .chain(taking)
-            .map(Code::from);
+        let own = (row.raises.codes.iter().copied()).chain(taking);
         let asked = Code::all().filter(|code| row.raises.asks && code.asked());
         let mut codes = Vec::new();
-        for code in own.chain(asked).map(Code::from) {
+        for code in own.chain(asked) {
             if !codes.contains(&code) {
                 codes.push(code);
             }
@@ -446,8 +444,8 @@ words! {
 }
 
 /// A failure of a word's own: its code and why.
-fn fail(code: Raise, message: impl Into<String>) -> Failure {
-    Failure::new(Code::from(code).into(), message)
+fn fail(code: Code, message: impl Into<String>) -> Failure {
+    Failure::new(code, message)
 }
 
 /// How a word of fux's is used, for a mistake in using it: what goes
@@ -496,20 +494,20 @@ fn described(word: Word, taken: Option<(usize, &'static str)>, mut failure: Fail
 
 /// A value read as `T`: one of a kind `T` doesn't take fails `type`, and one
 /// of its kind that `T` refuses fails `code`.
-fn read<T: Reads>(value: &Value<Fux>, code: Raise) -> Result<T, Failure> {
+fn read<T: Reads>(value: &Value<Fux>, code: Code) -> Result<T, Failure> {
     T::read(value).map_err(|unread| refused(unread, code))
 }
 
 /// A reader's refusal: `type` for a value of another kind, else `code`.
-fn refused(unread: super::settings::Unread, code: Raise) -> Failure {
+fn refused(unread: super::settings::Unread, code: Code) -> Failure {
     match unread {
-        super::settings::Unread::Kind(why) => fail(Raise::Type, why),
+        super::settings::Unread::Kind(why) => fail(Code::Type, why),
         super::settings::Unread::Value(why) => fail(code, why),
     }
 }
 
 fn wrong(wanted: &str, got: &Value<Fux>) -> Failure {
-    fail(Raise::Type, format!("takes {wanted}, not {}", got.kind()))
+    fail(Code::Type, format!("takes {wanted}, not {}", got.kind()))
 }
 
 fn string(value: &Value<Fux>) -> Result<String, Failure> {
@@ -547,7 +545,7 @@ const COUNT: RangeInclusive<i64> = 0..=i64::MAX;
 /// A share of a split (`shares`): 1 or more, in a u32.
 fn share(value: &Value<Fux>) -> Result<NonZeroU32, Failure> {
     let n = within(value, 1..=i64::from(u32::MAX))?;
-    NonZeroU32::new(n).ok_or_else(|| fail(Raise::Range, "a share is 1 or more"))
+    NonZeroU32::new(n).ok_or_else(|| fail(Code::Range, "a share is 1 or more"))
 }
 
 /// An integer within `range`, as the type it goes in.
@@ -559,7 +557,7 @@ fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Re
             (from, &i64::MAX) => format!("from {from}"),
             (from, to) => format!("{from} to {to}"),
         };
-        fail(Raise::Range, format!("{n} is out of range: {said}"))
+        fail(Code::Range, format!("{n} is out of range: {said}"))
     })
 }
 
@@ -578,7 +576,7 @@ fn one_of<T: Clone>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure>
     found.map(|(_, t)| t.clone()).ok_or_else(|| {
         let names: Vec<&str> = all.iter().map(|(name, _)| *name).collect();
         let names = fux_wire::words::listed(&names, "or");
-        fail(Raise::BadValue, format!("{given:?} is not {names}"))
+        fail(Code::BadValue, format!("{given:?} is not {names}"))
     })
 }
 
@@ -633,7 +631,7 @@ fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
         return Ok(WsRef::Id(*w));
     }
     fux_wire::command::parse_workspace(&string(value)?)
-        .map_err(|e| fail(Raise::BadValue, e.to_string()))
+        .map_err(|e| fail(Code::BadValue, e.to_string()))
 }
 
 fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
@@ -668,7 +666,7 @@ fn cursor(value: &Value<Fux>) -> Result<fux_wire::events::Cursor, Failure> {
     let text = string(value)?;
     text.parse().map_err(|()| {
         fail(
-            Raise::BadValue,
+            Code::BadValue,
             format!("{text:?} is no cursor: SEQ:RUN, as snapshot and next-events give it"),
         )
     })
@@ -688,7 +686,7 @@ fn unused(word: Act, built: &Opts) -> Result<(), Failure> {
         "takes no {option}: {option} goes on {}",
         takers(Some(Word::Opt(*option)))
     );
-    Err(fail(Raise::Unused, instead))
+    Err(fail(Code::Unused, instead))
 }
 
 /// What a request is on: a pane, tab or workspace, a client, or the
@@ -755,7 +753,7 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
             "{:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it",
             text
         );
-        fail(Raise::BadValue, why)
+        fail(Code::BadValue, why)
     })
 }
 
@@ -805,7 +803,7 @@ pub(super) fn replayed(
         let mut next = || {
             let value = given.next().ok_or_else(|| {
                 fail(
-                    Raise::StackUnderflow,
+                    Code::StackUnderflow,
                     format!("too few values: {}", Word::Opt(opt).row().effect),
                 )
             })?;
@@ -866,7 +864,7 @@ fn modify(
     ) && built.given.iter().any(|given| given.slot() == opt.slot())
     {
         return Err(fail(
-            Raise::Unused,
+            Code::Unused,
             format!("{opt}: {} is already given", opt.slot()),
         ));
     }
@@ -895,23 +893,23 @@ fn apply(
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
         Opt::In => built.place.push(workspace(&next()?)?),
         Opt::HistoryBytes => {
-            built.history_bytes = Some(read::<HistoryBytes>(&next()?, Raise::Range)?);
+            built.history_bytes = Some(read::<HistoryBytes>(&next()?, Code::Range)?);
         }
-        Opt::Reflow => built.reflow = Some(read::<bool>(&next()?, Raise::BadValue)?),
+        Opt::Reflow => built.reflow = Some(read::<bool>(&next()?, Code::BadValue)?),
         Opt::AlternateScrollLines => {
             built.alternate_scroll_lines = Some(read::<fux_wire::command::ScrollLines>(
                 &next()?,
-                Raise::Range,
+                Code::Range,
             )?)
         }
         Opt::PictureBytes => {
             built.picture_bytes = Some(read::<fux_wire::command::PictureBytes>(
                 &next()?,
-                Raise::Range,
+                Code::Range,
             )?)
         }
         Opt::ProgramClipboard => {
-            built.program_clipboard = Some(read::<bool>(&next()?, Raise::BadValue)?);
+            built.program_clipboard = Some(read::<bool>(&next()?, Code::BadValue)?);
         }
         Opt::History => built.history = Some(within(&next()?, COUNT)?),
         Opt::Size => built.size = Some(laid_out(&next()?, &next()?)?),
@@ -925,7 +923,7 @@ fn apply(
         Opt::Marks => built.view.marks = true,
         Opt::Timeout => {
             let secs = within(&next()?, COUNT)?;
-            let limit = Limit::read(secs).map_err(|why| fail(Raise::Range, why))?;
+            let limit = Limit::read(secs).map_err(|why| fail(Code::Range, why))?;
             built.timeout = Some(limit);
         }
         Opt::Text => built.inputs.push(Input::Text(text(&next()?)?)),
@@ -941,7 +939,7 @@ fn apply(
             let shell = opt == Opt::ShellProgram;
             built.shell = Some(shell);
             if shell {
-                let program = read::<Program>(&next()?, Raise::BadValue)?;
+                let program = read::<Program>(&next()?, Code::BadValue)?;
                 built.argv = program.into_argv();
                 return Ok(());
             }
@@ -950,7 +948,7 @@ fn apply(
         Opt::Arg => {
             let arg = text(&next()?)?;
             if built.argv.is_empty() {
-                return Err(fail(Raise::Usage, "comes after program"));
+                return Err(fail(Code::Usage, "comes after program"));
             }
             built.argv.push(arg);
         }
@@ -964,7 +962,7 @@ fn apply(
             let word = string(&next()?)?;
             let press = word.parse().map_err(|_| {
                 fail(
-                    Raise::NotAKey,
+                    Code::NotAKey,
                     format!("{word:?} is no key's name (key-names lists them)"),
                 )
             })?;
@@ -989,7 +987,7 @@ fn span(
     let (from, to) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
     if from > to {
         let why = format!("{from} {to}: the first {opt} must not exceed the exclusive end");
-        return Err(fail(Raise::Range, why));
+        return Err(fail(Code::Range, why));
     }
     Ok((from, to))
 }
@@ -1018,7 +1016,7 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
             "takes a pane, not options: what options gives is for {}; the rest go on the pane (`(capture (all-history (pane 2)))`, `(split (axis (pane 2) \"vertical\"))`)",
             from_opts("and")
         );
-        return Err(fail(Raise::Type, why));
+        return Err(fail(Code::Type, why));
     };
     unused(word, &built)?;
     Ok((on, built))
@@ -1030,10 +1028,10 @@ fn request_pane(word: Act, value: Value<Fux>) -> Result<(PaneId, Opts), Failure>
         (On::Target(AnyRef::Pane(p)), built) => Ok((p, built)),
         (On::Version(version), built) => Ok((version.pane, built)),
         // Refused, not acted on unchecked (`unused` refuses it first today).
-        (On::Seen(_), _) => Err(fail(Raise::Type, EXPECTED)),
-        (On::Changed(_), _) => Err(fail(Raise::Type, CHANGED)),
+        (On::Seen(_), _) => Err(fail(Code::Type, EXPECTED)),
+        (On::Changed(_), _) => Err(fail(Code::Type, CHANGED)),
         (On::Target(AnyRef::Tab(_) | AnyRef::Workspace(_)) | On::Client(_), _) => Err(fail(
-            Raise::Type,
+            Code::Type,
             "takes a pane (from pane, new-tab or split), or a request on one",
         )),
     }
@@ -1072,7 +1070,7 @@ fn attach_options(
     unused(word, &built)?;
     let target = match (&built.on, built.place.as_slice()) {
         (_, [_, _, ..]) => {
-            return Err(fail(Raise::BadValue, "attach takes one workspace in"));
+            return Err(fail(Code::BadValue, "attach takes one workspace in"));
         }
         (None, place) => place.first().cloned().map(T::Workspace),
         (Some(On::Target(target)), []) => Some(match target {
@@ -1082,11 +1080,11 @@ fn attach_options(
         }),
         (Some(On::Version(version)), []) => Some(T::Pane(version.pane)),
         (Some(_), [_]) => {
-            return Err(fail(Raise::BadValue, "attach takes no in with a subject"));
+            return Err(fail(Code::BadValue, "attach takes no in with a subject"));
         }
         (Some(_), []) => {
             return Err(fail(
-                Raise::Type,
+                Code::Type,
                 "attach needs a workspace, tab, pane or options",
             ));
         }
@@ -1117,7 +1115,7 @@ pub(super) fn check_attach_creation(
         })
     {
         return Err(fail(
-            Raise::Unused,
+            Code::Unused,
             format!("takes no {option} with a target or watch"),
         ));
     }
@@ -1183,7 +1181,7 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
             // An empty name never names the caller's pane, which `here` is.
             if text.trim().is_empty() {
                 return Err(fail(
-                    Raise::NoTarget,
+                    Code::NoTarget,
                     format!(
                         "an empty name names no {}: `here` is the pane this runs in",
                         kind.name()
@@ -1270,7 +1268,7 @@ impl Host<'_> {
         let mut next = || {
             let value = args.next().ok_or_else(|| {
                 fail(
-                    Raise::StackUnderflow,
+                    Code::StackUnderflow,
                     format!("too few values: {}", word.row().effect),
                 )
             })?;
@@ -1347,25 +1345,21 @@ impl Host<'_> {
         built: &Opts,
     ) -> Result<(fux_wire::command::Start, fux_wire::command::PaneOptions), Failure> {
         self.prepare()
-            .map_err(|why| fail(Raise::Config, why.to_string()))?;
+            .map_err(|why| fail(Code::Config, why.to_string()))?;
         let preferences = &self
             .state
             .as_deref()
-            .ok_or_else(|| fail(Raise::Config, "launch needs client defaults"))?
+            .ok_or_else(|| fail(Code::Config, "launch needs client defaults"))?
             .preferences;
         let options = built.pane_options(
             preferences
                 .pane_options()
-                .map_err(|why| fail(Raise::Config, why))?,
+                .map_err(|why| fail(Code::Config, why))?,
         );
         built
-            .launch(
-                preferences
-                    .shell()
-                    .map_err(|why| fail(Raise::Config, why))?,
-            )
+            .launch(preferences.shell().map_err(|why| fail(Code::Config, why))?)
             .map(|start| (start, options))
-            .map_err(|why| fail(Raise::BadValue, why))
+            .map_err(|why| fail(Code::BadValue, why))
     }
 }
 
@@ -1406,13 +1400,13 @@ impl Host<'_> {
                 let text = string(&next()?)?;
                 let id = text
                     .parse()
-                    .map_err(|e: Usage| fail(Raise::BadValue, e.to_string()))?;
+                    .map_err(|e: Usage| fail(Code::BadValue, e.to_string()))?;
                 now(out, Value::App(Fux::Client(id, None)))
             }
             Act::Me => match self.context.client {
                 Some(c) => now(out, Value::App(Fux::Client(c, self.context.of))),
                 None => Err(fail(
-                    Raise::NotHere,
+                    Code::NotHere,
                     "the client whose key or prompt runs this: this runs from the command line",
                 )),
             },
@@ -1446,7 +1440,7 @@ impl Host<'_> {
                 let (p, built) = request_pane(act, next()?)?;
                 let axis = built.axis.ok_or_else(|| {
                     fail(
-                        Raise::Usage,
+                        Code::Usage,
                         "split requires a direction: (split (axis (pane 2) \"horizontal\"))",
                     )
                 })?;
@@ -1480,7 +1474,7 @@ impl Host<'_> {
                     argv: if built.argv.is_empty() {
                         None
                     } else {
-                        Some(built.program().map_err(|why| fail(Raise::BadValue, why))?)
+                        Some(built.program().map_err(|why| fail(Code::BadValue, why))?)
                     },
                 };
                 later(ask(respawn))
@@ -1491,11 +1485,11 @@ impl Host<'_> {
                 // On a tab or workspace, in each of its panes.
                 let since = match on {
                     On::Version(version) | On::Changed(version) => Since::Version(version),
-                    On::Seen(_) => return Err(fail(Raise::Type, EXPECTED)),
+                    On::Seen(_) => return Err(fail(Code::Type, EXPECTED)),
                     On::Target(target) => Since::Now(target),
                     On::Client(_) => {
                         let why = "takes a pane, tab or workspace, not a client";
-                        return Err(fail(Raise::Type, why));
+                        return Err(fail(Code::Type, why));
                     }
                 };
                 let wait = Wait {
@@ -1509,7 +1503,7 @@ impl Host<'_> {
                 let (on, built) = request(act, next()?)?;
                 if built.inputs.is_empty() {
                     return Err(fail(
-                        Raise::Usage,
+                        Code::Usage,
                         "needs keys: (send-keys (text (pane 2) \"hello\"))",
                     ));
                 }
@@ -1517,14 +1511,14 @@ impl Host<'_> {
                     On::Target(target) => To::Now(target),
                     On::Version(version) => To::Now(AnyRef::Pane(version.pane)),
                     On::Seen(version) => To::Seen(version),
-                    On::Changed(_) => return Err(fail(Raise::Type, CHANGED)),
+                    On::Changed(_) => return Err(fail(Code::Type, CHANGED)),
                     On::Client(c) => {
                         // Typed at its terminal: whatever pane they reach is
                         // the client's to choose, so there is none to wait on
                         // here.
                         if built.inputs.iter().any(|i| matches!(i, Input::Bytes(_))) {
                             return Err(fail(
-                                Raise::Unused,
+                                Code::Unused,
                                 "to a client takes keys, text and pastes: bytes go to a pane",
                             ));
                         }
@@ -1575,7 +1569,7 @@ impl Host<'_> {
                 let mut text = String::new();
                 (next()?)
                     .write_data(&mut text)
-                    .map_err(|_| fail(Raise::Output, "writing data"))?;
+                    .map_err(|_| fail(Code::Output, "writing data"))?;
                 now(out, Value::str(text))
             }
             Act::Datum => {
@@ -1658,7 +1652,7 @@ impl Host<'_> {
                     Some(cursor(&Value::str(text))?)
                 };
                 let timeout = Limit::read(within(&next()?, 0..=i64::from(u32::MAX))?)
-                    .map_err(|why| fail(Raise::Range, why))?;
+                    .map_err(|why| fail(Code::Range, why))?;
                 tell(Request::NextEvents {
                     scope,
                     from,
@@ -1704,7 +1698,7 @@ impl Host<'_> {
             Act::ResizePane => resize_to(&mut next),
             Act::Percent => {
                 let n = within(&next()?, Percent::SHARES)?;
-                let share = Percent::new(n).ok_or_else(|| fail(Raise::Range, "no share"))?;
+                let share = Percent::new(n).ok_or_else(|| fail(Code::Range, "no share"))?;
                 now(out, Value::App(Fux::Extent(Extent::Percent(share))))
             }
             Act::Arrange => {
@@ -1718,7 +1712,7 @@ impl Host<'_> {
                 };
                 let revision = revision
                     .parse()
-                    .map_err(|()| fail(Raise::BadValue, "a layout revision is TAB:REVISION:RUN"))?;
+                    .map_err(|()| fail(Code::BadValue, "a layout revision is TAB:REVISION:RUN"))?;
                 let tree = next()?;
                 let Value::List(list) = &tree else {
                     return Err(wrong("a flat layout list", &tree));
@@ -1744,7 +1738,7 @@ impl Host<'_> {
                             let [axis, first_share, second_share, first, second] = fields.items()
                             else {
                                 return Err(fail(
-                                    Raise::BadValue,
+                                    Code::BadValue,
                                     "a split is (list AXIS SHARE SHARE FIRST SECOND); a stack is (list \"stack\" (list CHILD ...))",
                                 ));
                             };
@@ -1756,7 +1750,7 @@ impl Host<'_> {
                                 "vertical" => Axis::Vertical,
                                 _ => {
                                     return Err(fail(
-                                        Raise::BadValue,
+                                        Code::BadValue,
                                         "layout axis must be horizontal or vertical",
                                     ));
                                 }
@@ -1817,7 +1811,7 @@ impl Host<'_> {
                             let why = format!(
                                 "{given:?} is not new-tab, new-workspace, left, right, up or down"
                             );
-                            fail(Raise::BadValue, why)
+                            fail(Code::BadValue, why)
                         })?)
                     }
                     value @ (Value::Printed(_)
@@ -1859,7 +1853,7 @@ impl Host<'_> {
             }
             Act::HistoryBudget => {
                 let target = pane(&next()?)?;
-                let bytes = read::<HistoryBytes>(&next()?, Raise::Range)?;
+                let bytes = read::<HistoryBytes>(&next()?, Code::Range)?;
                 tell(Command::HistoryBudget { target, bytes })
             }
             Act::ClearHistory => tell(Command::ClearHistory {
@@ -1902,26 +1896,26 @@ impl Host<'_> {
             // ------------------------------------------------------ server
             Act::Start => {
                 self.prepare()
-                    .map_err(|why| fail(Raise::Config, why.to_string()))?;
+                    .map_err(|why| fail(Code::Config, why.to_string()))?;
                 local(Local::Start)
             }
             Act::Status => local(Local::Status),
             Act::KillServer => tell(Command::KillServer),
             Act::AttachDefaults => {
                 self.prepare()
-                    .map_err(|why| fail(Raise::Config, why.to_string()))?;
+                    .map_err(|why| fail(Code::Config, why.to_string()))?;
                 let value = next()?;
                 let of = super::scope(&value);
                 let (target, built) = attach_options(act, value)?;
                 if target.is_some() && built.given.contains(&Opt::Name) {
                     return Err(fail(
-                        Raise::BadValue,
+                        Code::BadValue,
                         "attach-defaults takes no name with a target",
                     ));
                 }
                 let state = self.state.as_deref_mut().ok_or_else(|| {
                     fail(
-                        Raise::NotConfig,
+                        Code::NotConfig,
                         "attach-defaults needs this client's local state",
                     )
                 })?;
@@ -1935,17 +1929,17 @@ impl Host<'_> {
             }
             Act::Set => {
                 self.prepare()
-                    .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
+                    .map_err(|failed| fail(Code::Config, failed.to_string()))?;
                 let name = string(&next()?)?;
                 let value = next()?;
                 let state = self
                     .state
                     .as_deref_mut()
-                    .ok_or_else(|| fail(Raise::NotConfig, "set needs this client's local state"))?;
+                    .ok_or_else(|| fail(Code::NotConfig, "set needs this client's local state"))?;
                 state
                     .preferences
                     .set(&name, &value)
-                    .map_err(|why| refused(why, Raise::Config))?;
+                    .map_err(|why| refused(why, Code::Config))?;
                 Ok(Done::Now)
             }
             Act::Version => {
@@ -1965,7 +1959,7 @@ impl Host<'_> {
             Act::ReadFile => local(Local::Shell(Shell::ReadFile(string(&next()?)?))),
             Act::Getenv => {
                 let name = string(&next()?)?.parse();
-                let name = name.map_err(|why: String| fail(Raise::BadValue, why))?;
+                let name = name.map_err(|why: String| fail(Code::BadValue, why))?;
                 local(Local::Shell(Shell::Getenv(name)))
             }
             Act::Warn => local(Local::Shell(Shell::Warn(next()?.text()?))),
@@ -1974,11 +1968,11 @@ impl Host<'_> {
             // A client's own; else the bundled keys, without a user config.
             Act::ListKeys => {
                 self.prepare()
-                    .map_err(|failed| fail(Raise::Config, failed.to_string()))?;
+                    .map_err(|failed| fail(Code::Config, failed.to_string()))?;
                 let text = match &self.state {
                     Some(state) => state.keys.describe(),
                     None => super::default_state()
-                        .map_err(|e| fail(Raise::Config, e.to_string()))?
+                        .map_err(|e| fail(Code::Config, e.to_string()))?
                         .keys
                         .describe(),
                 };
@@ -1992,7 +1986,7 @@ impl Host<'_> {
             Act::Explain => {
                 let word = string(&next()?)?;
                 let text = help::explain(&word)
-                    .ok_or_else(|| fail(Raise::UnknownWord, help::unknown(&word)))?;
+                    .ok_or_else(|| fail(Code::UnknownWord, help::unknown(&word)))?;
                 self.show(&text)
             }
         }
@@ -2004,7 +1998,7 @@ fn just_made<'k>(
     keymap: &'k mut crate::keymap::Keymap,
     bound: Option<&Bound>,
 ) -> Result<&'k mut crate::keymap::Binding, Failure> {
-    let refused = |why: &str| fail(Raise::BadBinding, why);
+    let refused = |why: &str| fail(Code::BadBinding, why);
     let binding = match bound.ok_or_else(|| refused("changes the binding just made: bind first"))? {
         Bound::Keys(keys) => keymap.binding_mut(keys),
         Bound::In(..) => return Err(refused("a screen's key has a label only")),
@@ -2015,7 +2009,7 @@ fn just_made<'k>(
 impl Host<'_> {
     /// Writes `text` out.
     fn show(&mut self, text: &str) -> Result<Done<Ask>, Failure> {
-        write!(self.out, "{text}").map_err(|e| fail(Raise::Output, e.to_string()))?;
+        write!(self.out, "{text}").map_err(|e| fail(Code::Output, e.to_string()))?;
         Ok(Done::Now)
     }
 
@@ -2039,7 +2033,7 @@ impl Host<'_> {
                             Ok((title, Some((target(subject)?, super::scope(subject)))))
                         })(),
                         _ => Err(fail(
-                            Raise::BadValue,
+                            Code::BadValue,
                             "title is text or [text,subject handle]",
                         )),
                     })?,
@@ -2064,7 +2058,7 @@ impl Host<'_> {
                             return Err(wrong("[payload,label]", row));
                         };
                         let [payload, label] = row.items() else {
-                            return Err(fail(Raise::BadValue, "a row is [payload,label]"));
+                            return Err(fail(Code::BadValue, "a row is [payload,label]"));
                         };
                         let payload = super::callback::data(payload)?;
                         let label = string(label)?;
@@ -2084,10 +2078,10 @@ impl Host<'_> {
                             .filter(|n| *n < items.len())
                             .map(Some)
                             .ok_or_else(|| {
-                                fail(Raise::BadValue, "index is outside the chooser rows")
+                                fail(Code::BadValue, "index is outside the chooser rows")
                             }),
                         _ => Err(fail(
-                            Raise::BadValue,
+                            Code::BadValue,
                             "an index is [] or [nonnegative integer]",
                         )),
                     }
@@ -2095,7 +2089,7 @@ impl Host<'_> {
                 let current = index(next()?)?;
                 let selected = index(next()?)?;
                 if selected.is_none() && !items.is_empty() {
-                    return Err(fail(Raise::BadValue, "nonempty rows need a selected index"));
+                    return Err(fail(Code::BadValue, "nonempty rows need a selected index"));
                 }
                 let action = self.action(&next()?)?;
                 Open::List(fux_wire::callback::ListScreen {
@@ -2123,7 +2117,7 @@ impl Host<'_> {
                     true => Err("a line holds text alone, no control characters".to_owned()),
                     false => line.edit(&fux_wire::act::Edit::Insert(start)),
                 };
-                typed.map_err(|why| fail(Raise::BadValue, why))?;
+                typed.map_err(|why| fail(Code::BadValue, why))?;
                 let action = Some(self.action(&next()?)?);
                 Open::Prompt(fux_wire::callback::Prompt {
                     title,
@@ -2154,7 +2148,7 @@ impl Host<'_> {
                     Ok((super::callback::code(code)?, out))
                 })(),
                 _ => Err(fail(
-                    Raise::BadValue,
+                    Code::BadValue,
                     "a callback is (code! (lambda! (...) ...)) or [captured arguments,(code! (lambda! (...) ...))]",
                 )),
             })?,
@@ -2183,7 +2177,7 @@ impl Host<'_> {
     ) -> Result<Done<Ask>, Failure> {
         let refused_context = || {
             fail(
-                Raise::NotConfig,
+                Code::NotConfig,
                 "changes a client's keys: in its config, or typed at its prompt",
             )
         };
@@ -2192,7 +2186,7 @@ impl Host<'_> {
         }
         let state = self.state.as_deref_mut().ok_or_else(refused_context)?;
         state.rebound = true;
-        let refused = |why: String| fail(Raise::BadBinding, why);
+        let refused = |why: String| fail(Code::BadBinding, why);
         let keymap = &mut state.keys;
         let mut pressed = || crate::keymap::keys(&string(&next()?)?).map_err(refused);
         match keys {
@@ -2281,7 +2275,7 @@ mod tests {
             let mut next = || {
                 values
                     .next()
-                    .ok_or_else(|| fail(Raise::StackUnderflow, "subject"))
+                    .ok_or_else(|| fail(Code::StackUnderflow, "subject"))
             };
             assert!(matches!(
                 host.dispatch(Word::Act(Act::AttachDefaults), &mut next, &mut Vec::new())
@@ -2334,7 +2328,7 @@ mod tests {
             value = Value::App(Fux::Opts(
                 modify(opt, &mut || {
                     args.next()
-                        .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
+                        .ok_or_else(|| fail(Code::StackUnderflow, "test argument"))
                 })
                 .map_err(|f| f.message)?,
             ));
@@ -2463,7 +2457,7 @@ mod tests {
                 let actual = modify(opt, &mut || {
                     values
                         .next()
-                        .ok_or_else(|| fail(Raise::StackUnderflow, "test argument"))
+                        .ok_or_else(|| fail(Code::StackUnderflow, "test argument"))
                 })
                 .map_err(|f| f.message)?;
                 assert_eq!(actual.on, expected.on, "{target:?} {opt}");
@@ -2526,7 +2520,7 @@ mod tests {
                     &mut sink,
                 );
                 let mut stack = stack.into_iter();
-                let mut next = || (stack.next()).ok_or_else(|| fail(Raise::StackUnderflow, "test"));
+                let mut next = || (stack.next()).ok_or_else(|| fail(Code::StackUnderflow, "test"));
                 if let Err(failure) = host.dispatch(word, &mut next, &mut Vec::new())
                     && !codes.contains(&failure.code)
                 {
@@ -2548,7 +2542,7 @@ mod tests {
             &mut self,
             _: &fux_wire::protocol::Asked,
         ) -> Result<fux_wire::protocol::Reply, crate::script::Failed> {
-            self.0 += 1;
+            self.0 = self.0.saturating_add(1);
             Err(crate::script::Failed::new(
                 Code::Client,
                 "unexpected request",
@@ -2560,7 +2554,7 @@ mod tests {
             _: Option<&mut crate::client_state::Draft>,
             _: &mut dyn std::io::Write,
         ) -> Result<Vec<Value<Fux>>, crate::script::Failed> {
-            self.0 += 1;
+            self.0 = self.0.saturating_add(1);
             Err(crate::script::Failed::new(
                 Code::Client,
                 "unexpected local action",

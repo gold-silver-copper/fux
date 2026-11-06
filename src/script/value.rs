@@ -96,7 +96,9 @@ impl Value<Fux> {
                 }
                 Ok(())
             }
-            _ => self.write_data(out),
+            Self::Int(_) | Self::Float(_) | Self::Bool(_) | Self::List(_) | Self::Bytes(_) => {
+                self.write_data(out)
+            }
         };
         result.map_err(|_| Failure::new(Code::Output, "writing value"))
     }

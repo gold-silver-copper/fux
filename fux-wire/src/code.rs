@@ -15,7 +15,6 @@ macro_rules! codes {
     ($($variant:ident $name:literal $([$asked:ident])? $($status:ident)?,)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Code { $($variant,)* }
-        pub type Raise = Code;
         impl Code {
             pub const ALL: &[Code] = &[$(Code::$variant,)*];
             pub fn name(self) -> &'static str { match self { $(Self::$variant => $name,)* } }
@@ -130,9 +129,9 @@ pub enum Error {
 }
 
 /// A failure of kind `code` (see [`Error::Failed`]).
-pub fn fail(code: Raise, message: impl Into<String>) -> Error {
+pub fn fail(code: Code, message: impl Into<String>) -> Error {
     Error::Failed {
-        code: code.into(),
+        code,
         message: message.into(),
     }
 }

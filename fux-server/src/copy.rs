@@ -11,7 +11,7 @@ use crate::link::{Hosting, Update};
 use crate::pane::{Runs, Said};
 use fux_vt::Size;
 use fux_wire::answer::Ended;
-use fux_wire::code::{Error, Raise, fail};
+use fux_wire::code::{Code, Error, fail};
 use fux_wire::command::{Counts, PaneOptions, Run, Version};
 use fux_wire::id::PaneId;
 use fux_wire::inspect::Facts;
@@ -247,13 +247,13 @@ impl Copy {
             State::HungUp => "its program closed its terminal: nothing reads input there",
             State::ReadFailed(error) => {
                 return Some(fail(
-                    Raise::NotRunning,
+                    Code::NotRunning,
                     format!("{}: reading program terminal failed: {error}", self.id),
                 ));
             }
             State::Exited(status) => return Some(crate::host::ended(self.id, *status)),
         };
-        Some(fail(Raise::NotRunning, format!("{}: {why}", self.id)))
+        Some(fail(Code::NotRunning, format!("{}: {why}", self.id)))
     }
 
     /// It told `told`, which left it at `counts`.

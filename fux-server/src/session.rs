@@ -10,7 +10,7 @@ use crate::workspace::{Child as _, Destination, Fit, Killing, Parts, Split, Tab,
 use fux_vt::Size;
 use fux_vt::keys::Direction;
 use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
-use fux_wire::code::{Error, Raise, fail};
+use fux_wire::code::{Code, Error, fail};
 use fux_wire::command::Start;
 use fux_wire::command::{
     self, AnyRef, Beside, ClientAction, Command, Extent, Input, Kind, Members, MoveTo, PaneResize,
@@ -302,12 +302,12 @@ pub struct Session {
 
 /// What a pane whose own process ended can't be asked to do.
 fn lost(pane: PaneId) -> Error {
-    fail(Raise::NotRunning, format!("{pane}: its own process ended"))
+    fail(Code::NotRunning, format!("{pane}: its own process ended"))
 }
 
 /// A value a command can't take, as `Usage` says why.
 fn bad_value(usage: command::Usage) -> Error {
-    fail(Raise::BadValue, usage.to_string())
+    fail(Code::BadValue, usage.to_string())
 }
 
 /// The answer of an action on a pane (keys, a mouse event, a signal, a
@@ -336,7 +336,7 @@ fn failure(error: Error, origin: &Origin, session: &Session) -> Reply {
                 Within::This | Within::Other => "is a pane of another fux server, not of this one",
             };
             fail(
-                Raise::StrayPane,
+                Code::StrayPane,
                 format!(
                     "FUX_PANE {pane}:{generation} {whose}, so it is not acted on; name the pane"
                 ),
@@ -351,7 +351,7 @@ fn failure(error: Error, origin: &Origin, session: &Session) -> Reply {
             }),
         ) => match session.parts.panes().contains_key(pane) {
             true => fail(
-                Raise::StrayPane,
+                Code::StrayPane,
                 format!("FUX_PANE {pane}:{generation} no longer identifies its program"),
             ),
             false => Error::NoPane(*pane),
@@ -417,7 +417,7 @@ impl Session {
     ) -> Result<(), Error> {
         if !initial.cwd.is_absolute() {
             return Err(fail(
-                Raise::Start,
+                Code::Start,
                 "the caller's own directory is unknown; give an absolute cwd",
             ));
         }
@@ -481,14 +481,14 @@ impl Session {
     fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
         match r {
             WsRef::New => Err(fail(
-                Raise::BadValue,
+                Code::BadValue,
                 "new-workspace is a creation destination, not an existing workspace",
             )),
             WsRef::Id(id) => Ok(self.workspace(*id).ok_or(Error::NoWorkspace(*id))?.id()),
             WsRef::Name(name) => match self.named(name) {
                 Some(AnyRef::Workspace(id)) => Ok(id),
                 _ => Err(fail(
-                    Raise::NoWorkspace,
+                    Code::NoWorkspace,
                     format!("no workspace named {name:?}"),
                 )),
             },
@@ -1191,7 +1191,7 @@ impl Session {
             (AnyRef::Tab(t), Kind::Workspace) => self.tab_workspace(t).map(AnyRef::Workspace),
             (AnyRef::Tab(_) | AnyRef::Workspace(_), Kind::Pane)
             | (AnyRef::Workspace(_), Kind::Tab) => Err(fail(
-                Raise::NoTarget,
+                Code::NoTarget,
                 format!(
                     "{text} is a {}, not a {}: choose a member explicitly",
                     id.kind().name(),
@@ -1220,9 +1220,9 @@ impl Session {
                 .filter(|found| found.kind() == kind)
                 .ok_or_else(|| {
                     let code = match kind {
-                        Kind::Pane => Raise::NoPane,
-                        Kind::Tab => Raise::NoTab,
-                        Kind::Workspace => Raise::NoWorkspace,
+                        Kind::Pane => Code::NoPane,
+                        Kind::Tab => Code::NoTab,
+                        Kind::Workspace => Code::NoWorkspace,
                     };
                     fail(code, format!("no {} named {text:?}", kind.name()))
                 }),
@@ -1370,7 +1370,7 @@ impl Session {
         };
         let refused = || {
             let message = format!("{pane} cannot be made {}x{} in its tab", want.0, want.1);
-            fail(Raise::Size, message)
+            fail(Code::Size, message)
         };
         root = layout::resize_to(&root, area, pane, axis, len).ok_or_else(refused)?;
         // A size the layout cannot give exactly is not met.
@@ -1429,7 +1429,7 @@ impl Session {
         let known = match here {
             // Empty: the caller could not read its own (`client::context`).
             Here::Cli(_, Some(cwd)) if !cwd.is_absolute() => {
-                return Err(fail(Raise::Start, "the caller's own directory is unknown"));
+                return Err(fail(Code::Start, "the caller's own directory is unknown"));
             }
             Here::Cli(_, Some(cwd)) => Some(cwd.to_owned()),
             Here::Cli(_, None) => near.and_then(|p| self.dir_of(p)),
@@ -1437,7 +1437,7 @@ impl Session {
         };
         let base = known.ok_or_else(|| {
             fail(
-                Raise::Start,
+                Code::Start,
                 "the nearby working directory is unknown; give an absolute cwd",
             )
         })?;
@@ -1520,20 +1520,20 @@ impl Session {
                     if i > 0 && self.parts.parent(id) != Some(parent) {
                         let p = parent.map_or_else(String::new, |p| p.to_string());
                         let why = format!("{} is not in {p}", AnyRef::Workspace(id));
-                        return Err(fail(Raise::BadValue, why));
+                        return Err(fail(Code::BadValue, why));
                     }
                     parent = Some(id);
                 }
                 (Some(id), _) => {
                     let why = format!("{} is not in a workspace made here", AnyRef::Workspace(id));
-                    return Err(fail(Raise::BadValue, why));
+                    return Err(fail(Code::BadValue, why));
                 }
                 (None, WsRef::Name(name)) => {
                     if tab == Some(name) || made.contains(&Some(name.clone())) {
                         let why = format!(
                             "a workspace and its tab or another workspace made with it cannot both be named {name:?}"
                         );
-                        return Err(fail(Raise::NameTaken, why));
+                        return Err(fail(Code::NameTaken, why));
                     }
                     made.push(Some(name.clone()));
                 }
@@ -1686,9 +1686,9 @@ impl Session {
         workspace: Option<&str>,
     ) -> Result<ClientId, Error> {
         let workspace = workspace.map(command::parse_workspace).transpose();
-        let size = Size::new(rows, cols).map_err(|e| fail(Raise::Size, e.to_string()))?;
+        let size = Size::new(rows, cols).map_err(|e| fail(Code::Size, e.to_string()))?;
         let workspace = workspace.map_err(bad_value)?;
-        let state = fux::script::default_state().map_err(|e| fail(Raise::Config, e.to_string()))?;
+        let state = fux::script::default_state().map_err(|e| fail(Code::Config, e.to_string()))?;
         self.attach_as(
             Attach {
                 initial: workspace.is_none().then(|| command::InitialWorkspace {
@@ -1718,7 +1718,7 @@ impl Session {
         self.check_run(attach.of)?;
         if attach.initial.is_some() && (attach.target.is_some() || attach.read_only) {
             return Err(fail(
-                Raise::BadValue,
+                Code::BadValue,
                 "initial launch inputs require an untargeted writable attach",
             ));
         }
@@ -1740,7 +1740,7 @@ impl Session {
                 if self.parts.workspaces().is_empty() && attach.read_only {
                     let why =
                         "the server holds nothing to watch: `fux` attaches and starts a shell";
-                    return Err(fail(Raise::NoWorkspace, why));
+                    return Err(fail(Code::NoWorkspace, why));
                 }
                 if self.parts.workspaces().is_empty() {
                     let size = Size::new(
@@ -1753,18 +1753,18 @@ impl Session {
                     .map_err(|_| {
                         let why =
                             format!("a screen of {rows} rows has no room for a pane below its bar");
-                        fail(Raise::Size, why)
+                        fail(Code::Size, why)
                     })?;
                     let initial = attach.initial.as_ref().ok_or_else(|| {
                         let why =
                             "the server holds no workspace, and the attach no launch to start one";
-                        fail(Raise::Start, why)
+                        fail(Code::Start, why)
                     })?;
                     self.start(size, initial, now)?;
                 }
                 let first = self.parts.workspaces().first().map(|w| w.id());
                 let why = "the server has no workspace";
-                AnyRef::Workspace(first.ok_or_else(|| fail(Raise::NoWorkspace, why))?)
+                AnyRef::Workspace(first.ok_or_else(|| fail(Code::NoWorkspace, why))?)
             }
         };
         let id = self.ids.client()?;
@@ -1930,12 +1930,8 @@ impl Session {
         };
         let size = (own.or_else(tab)).and_then(|area| Size::new(area.h(), area.w()).ok());
         let why = "the caller has no screen that sizes panes and no tab, and no size was given";
-        (size.map(Fit::Clients)).ok_or_else(|| {
-            fail(
-                Raise::Size,
-                format!("{why}: give a size (`COLS ROWS size`)"),
-            )
-        })
+        (size.map(Fit::Clients))
+            .ok_or_else(|| fail(Code::Size, format!("{why}: give a size (`COLS ROWS size`)")))
     }
 
     /// The clients showing tab `tab` that size it laid out as `root`.
@@ -2034,9 +2030,9 @@ impl Session {
                     path.display()
                 );
                 if self.staged.is_some() {
-                    self.unrecorded = Some(fail(Raise::Client, why.clone()));
+                    self.unrecorded = Some(fail(Code::Client, why.clone()));
                 }
-                Err(fail(Raise::Client, why))
+                Err(fail(Code::Client, why))
             }
         }
     }
@@ -2138,10 +2134,10 @@ impl Session {
             }
             Err(why) => {
                 match self.staged.is_some() {
-                    true => self.unrecorded = Some(fail(Raise::Start, why.clone())),
+                    true => self.unrecorded = Some(fail(Code::Start, why.clone())),
                     false => self.close_pane(id, None, now),
                 }
-                Err(fail(Raise::Start, why))
+                Err(fail(Code::Start, why))
             }
         }
     }
@@ -2157,7 +2153,7 @@ impl Session {
     pub fn resume(&mut self, record: crate::record::Record, now: Instant) -> Result<(), Error> {
         let Some(socket) = self.launch.clone() else {
             return Err(fail(
-                Raise::Start,
+                Code::Start,
                 "a session that starts no programs takes back none",
             ));
         };
@@ -2188,7 +2184,7 @@ impl Session {
                 }
                 // A pane that answers may still run: never taken for ended.
                 Err(crate::link::Untaken::Unknown(why)) => {
-                    return Err(fail(Raise::Start, format!("{id} answers, but: {why}")));
+                    return Err(fail(Code::Start, format!("{id} answers, but: {why}")));
                 }
             };
             copies.insert(id, copy);
@@ -2595,7 +2591,7 @@ impl Session {
             } => {
                 if !self.ids.gave_scope(scope) {
                     return Err(fail(
-                        Raise::BadValue,
+                        Code::BadValue,
                         "event scope was never issued by this server run",
                     ));
                 }
@@ -2605,7 +2601,7 @@ impl Session {
                     self.journal_run,
                     from,
                 )
-                .map_err(|why| fail(Raise::BadValue, why))?;
+                .map_err(|why| fail(Code::BadValue, why))?;
                 let read = crate::journal::Read::new(reader, crate::after(now, timeout.duration()));
                 return Ok(self.answered(Waiting::Events(read), now));
             }
@@ -2625,7 +2621,7 @@ impl Session {
         if let Watches::Panes(none) = &watches
             && none.is_empty()
         {
-            return Err(fail(Raise::NoPane, "it holds no pane to wait on"));
+            return Err(fail(Code::NoPane, "it holds no pane to wait on"));
         }
         let limit = wait.timeout.map(command::Limit::duration);
         Ok(self.answered(Waiting::new(watches, self.run, now, limit), now))
@@ -2649,11 +2645,11 @@ impl Session {
                 "{since} is from another server run ({}), not this one ({}): a server since stopped, or another socket's",
                 since.run, self.run
             );
-            return Err(fail(Raise::BadValue, why));
+            return Err(fail(Code::BadValue, why));
         }
         if !self.ids.gave(since.pane) {
             let why = format!("{since}: {} was never a pane of this run", since.pane);
-            return Err(fail(Raise::BadValue, why));
+            return Err(fail(Code::BadValue, why));
         }
         // Within one program every count only grows.
         if let Some(pane) = self.parts.panes().get(&since.pane)
@@ -2664,7 +2660,7 @@ impl Session {
                 since.pane,
                 pane.counts()
             );
-            return Err(fail(Raise::BadValue, why));
+            return Err(fail(Code::BadValue, why));
         }
         Ok(since.counts)
     }
@@ -2672,7 +2668,7 @@ impl Session {
     /// A value from another run must be refused before anything is acted on.
     pub fn check_run(&self, run: Option<command::Run>) -> Result<(), Error> {
         if run.is_some_and(|run| run != self.run) {
-            return Err(fail(Raise::BadValue, "handle is from another server run"));
+            return Err(fail(Code::BadValue, "handle is from another server run"));
         }
         Ok(())
     }
@@ -2780,7 +2776,7 @@ impl Session {
             self.counts_since(since)?;
             if since.pane != target {
                 let why = format!("{since} is {}'s version, not {target}'s", since.pane);
-                return Err(fail(Raise::BadValue, why));
+                return Err(fail(Code::BadValue, why));
             }
         }
         let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
@@ -2851,11 +2847,7 @@ impl Session {
                     let behind = revision.tab == *target
                         && revision.run == self.run
                         && now.is_none_or(|n| revision.serial < n.serial);
-                    let code = if behind {
-                        Raise::Stale
-                    } else {
-                        Raise::BadValue
-                    };
+                    let code = if behind { Code::Stale } else { Code::BadValue };
                     let now = now.map_or_else(|| "exhausted".into(), |r| r.to_string());
                     return Err(fail(code, format!("{target} is at {now}, not {revision}")));
                 }
@@ -2903,7 +2895,7 @@ impl Session {
                     let message = format!(
                         "{client} has a terminal, which sets its size; resize sizes headless clients"
                     );
-                    return Err(fail(Raise::NotHeadless, message));
+                    return Err(fail(Code::NotHeadless, message));
                 }
                 let size = size.size();
                 self.resize(client, size.rows(), size.cols(), now)?;
@@ -2932,7 +2924,7 @@ impl Session {
             &Command::Move { target, ref to } => match target {
                 AnyRef::Pane(pane) => self.move_pane(pane, to, here),
                 AnyRef::Workspace(ws) => self.move_workspace(ws, to, here),
-                AnyRef::Tab(_) => Err(fail(Raise::BadValue, "move takes a pane or workspace")),
+                AnyRef::Tab(_) => Err(fail(Code::BadValue, "move takes a pane or workspace")),
             }
             .map(|()| Reply::default()),
             &Command::SwapPane { target, with } => {
@@ -2972,7 +2964,7 @@ impl Session {
             | Command::ClearHistory { .. }
             | Command::HistoryBudget { .. }
             | Command::CapturePane { .. } => Err(fail(
-                Raise::NotHere,
+                Code::NotHere,
                 "a pane's own process does this, asked of it",
             )),
         }
@@ -3004,7 +2996,7 @@ impl Session {
                     "this runs in{pane} a pane of the server it would stop, with everything \
                      else in it; `kill` on status's server_pid stops it anyway"
                 );
-                return Err(fail(Raise::OwnServer, message));
+                return Err(fail(Code::OwnServer, message));
             }
             let people = (self.views.values())
                 .filter(|v| v.kind == ClientKind::Terminal)
@@ -3017,7 +3009,7 @@ impl Session {
                 let message = format!(
                     "{who} attached to this server; `kill` on status's server_pid stops it anyway"
                 );
-                return Err(fail(Raise::PeopleAttached, message));
+                return Err(fail(Code::PeopleAttached, message));
             }
         }
         let reason = match origin {
@@ -3052,7 +3044,7 @@ impl Session {
                         "{tab} cannot show its {} panes at that size; close some, or choose a bigger one",
                         root.panes().len()
                     );
-                    return Err(fail(Raise::Size, message));
+                    return Err(fail(Code::Size, message));
                 }
             }
         }
@@ -3145,7 +3137,7 @@ impl Session {
                     Some(None) | None => "it has no border there",
                 };
                 Err(fail(
-                    Raise::NothingThere,
+                    Code::NothingThere,
                     format!("{pane} cannot move {way}: {why}"),
                 ))
             }
@@ -3169,7 +3161,7 @@ impl Session {
             (None, Here::Client(client, _)) => client,
             (None, Here::Cli(..)) => {
                 return Err(fail(
-                    Raise::NoTarget,
+                    Code::NoTarget,
                     "this acts on a client's screen: name one (`str c1 client`; `fux ls` lists them)",
                 ));
             }
@@ -3228,7 +3220,7 @@ impl Session {
                 }
                 let mut grid = crate::render::Grid::default();
                 crate::render::compose_scene(&scene, &|id| self.screen(id), &mut grid)
-                    .map_err(|e| fail(Raise::Memory, format!("capturing {client}: {e}")))?;
+                    .map_err(|e| fail(Code::Memory, format!("capturing {client}: {e}")))?;
                 let captured = crate::capture::client(client, &grid);
                 return Ok(Body::Capture(Box::new(captured)).into());
             }
@@ -3301,7 +3293,7 @@ impl Session {
             }
             MoveTo::Top => {
                 let why = "all is where a workspace moves; a pane moves to a tab or workspace";
-                return Err(fail(Raise::BadValue, why));
+                return Err(fail(Code::BadValue, why));
             }
         };
         let tab = match &dest {
@@ -3331,7 +3323,7 @@ impl Session {
             MoveTo::Top => None,
             MoveTo::Tab(_) | MoveTo::NewTab | MoveTo::NewWorkspace | MoveTo::Beside(_) => {
                 let why = "a workspace moves into a workspace, or with all to the top";
-                return Err(fail(Raise::BadValue, why));
+                return Err(fail(Code::BadValue, why));
             }
         };
         if let Some(into) = into.filter(|into| self.parts.within(*into, ws)) {
@@ -3340,7 +3332,7 @@ impl Session {
                 true => format!("{ws} cannot move into itself"),
                 false => format!("{ws} cannot move into {into}, which is in it"),
             };
-            return Err(fail(Raise::BadValue, why));
+            return Err(fail(Code::BadValue, why));
         }
         if from != into {
             (self.parts.move_workspace(ws, into)).ok_or(Error::NoWorkspace(ws))?;
@@ -3364,7 +3356,7 @@ impl Session {
             "{tab} has no room to show every pane laid out so on its size, {cols}x{rows} \
              (`TAB COLS ROWS resize` makes it bigger)"
         );
-        Err(fail(Raise::Size, message))
+        Err(fail(Code::Size, message))
     }
 
     fn reorder(&mut self, target: AnyRef, toward: Sibling) -> Result<(), Error> {
@@ -3414,7 +3406,7 @@ impl Session {
                     last.and_then(|i| children.get(i))
                 }
             };
-            let child = child.ok_or_else(|| fail(Raise::NoPane, "no previously shown pane"))?;
+            let child = child.ok_or_else(|| fail(Code::NoPane, "no previously shown pane"))?;
             return Ok(AnyRef::Pane(child.first_shown(view.id)));
         }
         let within = match from {
@@ -3446,9 +3438,9 @@ impl Session {
                 .find_map(|seat| seat.last.filter(|_| seat.within == within))
                 .ok_or_else(|| {
                     let code = match kind {
-                        Kind::Pane => Raise::NoPane,
-                        Kind::Tab => Raise::NoTab,
-                        Kind::Workspace => Raise::NoWorkspace,
+                        Kind::Pane => Code::NoPane,
+                        Kind::Tab => Code::NoTab,
+                        Kind::Workspace => Code::NoWorkspace,
                     };
                     fail(code, format!("no previously shown {}", kind.name()))
                 }),
@@ -3465,7 +3457,7 @@ impl Session {
             (Way::Toward(direction), AnyRef::Tab(_) | AnyRef::Workspace(_)) => {
                 let (way, kind) = (direction.name(), kind.name());
                 let why = format!("{way} steps among a tab's panes: {from} is a {kind}");
-                Err(fail(Raise::BadValue, why))
+                Err(fail(Code::BadValue, why))
             }
         }
     }
@@ -3474,7 +3466,7 @@ impl Session {
 
     /// A pane's state, as `ls json` has it.
     fn field(&self, target: AnyRef, field: &str) -> Result<Body, Error> {
-        let no_field = || fail(Raise::NoField, format!("{target} has no field {field:?}"));
+        let no_field = || fail(Code::NoField, format!("{target} has no field {field:?}"));
         if let AnyRef::Pane(id) = target {
             return self.observed_field(id, field)?.ok_or_else(no_field);
         }
@@ -3496,7 +3488,7 @@ impl Session {
                     "layout_revision" => Json::str(format!(
                         "{}",
                         tab.revision(self.run)
-                            .ok_or_else(|| fail(Raise::Range, "layout revision exhausted"))?
+                            .ok_or_else(|| fail(Code::Range, "layout revision exhausted"))?
                     )),
                     "name" => tab.name().map_or(Json::Null, Json::str),
                     "label" => Json::str(format!("{}", tab.display_label(self.parts.panes()))),
@@ -3532,7 +3524,7 @@ fn found(found: AnyRef) -> Reply {
 
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
-        return Err(fail(Raise::BadName, "a name cannot be empty or blank"));
+        return Err(fail(Code::BadName, "a name cannot be empty or blank"));
     }
     // An id's sigils, and what a destination reads as the request for a
     // fresh workspace.
@@ -3545,7 +3537,7 @@ fn check_name(name: &str) -> Result<(), Error> {
     let invisible = |c: char| matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}');
     if name.chars().any(|c| c.is_control() || invisible(c)) {
         let message = "a name cannot contain control or invisible characters";
-        return Err(fail(Raise::BadName, message));
+        return Err(fail(Code::BadName, message));
     }
     Ok(())
 }
@@ -3734,8 +3726,7 @@ pub(crate) mod testing {
             let body = self
                 .inspect(scope, fux_wire::inspect::Projection::Recipe)
                 .map_err(|e| fux::script::Failed::new(e.code(), e.to_string()))?;
-            let tokens = Ok::<String, fux::script::Failed>(("(dump (all))").to_owned())
-                .map_err(fux::script::Failed::from)?;
+            let tokens = Ok::<String, fux::script::Failed>(("(dump (all))").to_owned())?;
             let mut machine = fux::script::compile(&tokens)?;
             let mut out = Vec::new();
             let mut host =
@@ -3903,7 +3894,14 @@ pub(crate) mod testing {
         for value in &ended {
             let values = match value {
                 fux::script::Value::List(items) => items.items(),
-                value => std::slice::from_ref(value),
+                value @ fux::script::Value::Int(_)
+                | value @ fux::script::Value::Float(_)
+                | value @ fux::script::Value::Bool(_)
+                | value @ fux::script::Value::Str(_)
+                | value @ fux::script::Value::Symbol(_)
+                | value @ fux::script::Value::App(_)
+                | value @ fux::script::Value::Bytes(_)
+                | value @ fux::script::Value::Printed(_) => std::slice::from_ref(value),
             };
             for value in values {
                 text.push_str(&value.text().map_err(|f| f.message)?);
@@ -4783,7 +4781,7 @@ mod tests {
                 &mut s,
                 &format!(
                     "(sequence! (new-tab (size (in (options) {}) 80 24)) #inert)",
-                    fux::script::quoted(&format!("{ws}"))
+                    fux::script::quoted(ws)
                 ),
             )?;
         }
@@ -4811,7 +4809,7 @@ mod tests {
                 Some(e),
                 &format!(
                     "(sequence! (step (me) {} \"last\") #inert)",
-                    crate::test_reference(&format!("{from}"))
+                    crate::test_reference(from)
                 ),
             )
             .err();
@@ -5092,25 +5090,25 @@ mod tests {
             *node = layout::Node::Pane(PaneId::of(1));
         }
         for (given, nodes, code) in [
-            (revision, vec![], Raise::BadValue),
+            (revision, vec![], Code::BadValue),
             (
                 revision,
                 vec![layout::Node::Pane(PaneId::of(1))],
-                Raise::BadValue,
+                Code::BadValue,
             ),
             (
                 revision,
                 vec![layout::Node::Pane(PaneId::of(999))],
-                Raise::BadValue,
+                Code::BadValue,
             ),
-            (revision, duplicate, Raise::BadValue),
+            (revision, duplicate, Code::BadValue),
             (
                 command::LayoutRevision {
                     serial: revision.serial.saturating_sub(1),
                     ..revision
                 },
                 valid.clone(),
-                Raise::Stale,
+                Code::Stale,
             ),
             (
                 command::LayoutRevision {
@@ -5118,7 +5116,7 @@ mod tests {
                     ..revision
                 },
                 valid.clone(),
-                Raise::BadValue,
+                Code::BadValue,
             ),
             (
                 command::LayoutRevision {
@@ -5126,7 +5124,7 @@ mod tests {
                     ..revision
                 },
                 valid.clone(),
-                Raise::BadValue,
+                Code::BadValue,
             ),
             (
                 command::LayoutRevision {
@@ -5134,7 +5132,7 @@ mod tests {
                     ..revision
                 },
                 valid,
-                Raise::BadValue,
+                Code::BadValue,
             ),
         ] {
             let command = Command::Arrange {
@@ -5146,7 +5144,7 @@ mod tests {
                 s.execute(&command, &origin, Instant::now())
                     .err()
                     .map(|e| e.code()),
-                Some(Code::from(code))
+                Some(code)
             );
             assert_eq!(s.root(tab), Some(&before));
             assert_eq!(s.tab(tab).and_then(|t| t.revision(s.run)), Some(revision));
@@ -5385,7 +5383,7 @@ mod tests {
                 )?;
                 let before = s.root(TabId::of(1)).cloned();
                 let tokens = Ok::<String, fux::script::Failed>(
-                    (&format!("{LAYOUTS} ({recipe} (tab 1))")).to_owned(),
+                    format!("{LAYOUTS} ({recipe} (tab 1))").to_owned(),
                 )?;
                 let mut machine = fux::script::compile(&tokens)?;
                 let mut out = Vec::new();
@@ -5400,7 +5398,7 @@ mod tests {
                 let result = fux::script::run(&mut machine, &mut host, &mut guarded, None);
                 assert_eq!((guarded.reads, guarded.commits), (1, 1));
                 if resize {
-                    assert!(result.is_err_and(|e| e.code == Code::from(Raise::Stale)));
+                    assert!(result.is_err_and(|e| e.code == Code::Stale));
                     assert_eq!(s.root(TabId::of(1)), before.as_ref());
                 } else {
                     assert!(result?.is_empty());
@@ -5791,7 +5789,7 @@ mod tests {
             Instant::now(),
         );
         let error = result.err().ok_or("capture succeeded")?;
-        assert_eq!(error.code(), Code::from(Raise::Memory));
+        assert_eq!(error.code(), Code::Memory);
         Ok(())
     }
 
@@ -6130,13 +6128,13 @@ mod tests {
         let bar = one.lines().last().unwrap_or_default();
         assert!(bar.contains("%2") && bar.contains("%3"), "{one}");
         // A pane's next steps among its stack's children, going round.
-        let step = |s: &mut Session, way| {
+        let step = |s: &mut Session, way: &str| {
             run(
                 s,
                 &format!(
                     "(sequence! (define! value-120 (client {})) (step value-120 (focused value-120) {}) #inert)",
                     fux::script::quoted(&format!("{c1}")),
-                    fux::script::quoted(&format!("{way}"))
+                    fux::script::quoted(way)
                 ),
             )
         };
@@ -7861,7 +7859,7 @@ mod tests {
                 &mut s,
                 &format!(
                     "(listing (information {}))",
-                    crate::test_reference(&format!("{only}"))
+                    crate::test_reference(&only.to_string())
                 ),
             )?;
             let words = text.lines().filter_map(|l| l.split_whitespace().next());
@@ -8041,10 +8039,7 @@ mod tests {
         let caught = "(sequence! \"timeout\" (element-at (catch-kind! (list (wait (timeout (pane 1) 1))) timeout failure-3428 (sequence! \"value\" (list (second (get failure-3428 \"values\"))))) 0))";
         let json = output(
             &mut s,
-            &format!(
-                "(data-text {})",
-                crate::test_reference(&format!("{caught}"))
-            ),
+            &format!("(data-text {})", crate::test_reference(caught)),
         )?;
         assert_eq!(crate::test_data(&json, "(field data (quote! pane))")?, "%1");
         assert!(crate::test_data(&json, "(field data (quote! version))")?.starts_with("%1:"));
@@ -8054,10 +8049,7 @@ mod tests {
         );
         let again = output(
             &mut s,
-            &format!(
-                "(wait (timeout {} 1))",
-                crate::test_reference(&format!("{caught}"))
-            ),
+            &format!("(wait (timeout {} 1))", crate::test_reference(caught)),
         )
         .err();
         assert!(
@@ -8081,7 +8073,7 @@ mod tests {
             &mut s,
             &format!(
                 "(sequence! \"done\" (get {} \"done\"))",
-                crate::test_reference(&format!("{capture}"))
+                crate::test_reference(&capture)
             ),
         )
         .err()
@@ -8141,20 +8133,20 @@ mod tests {
         );
         let data = output(
             &mut s,
-            &format!(
-                "(data-text {})",
-                crate::test_reference(&format!("{caught}"))
-            ),
+            &format!("(data-text {})", crate::test_reference(&caught)),
         )?;
         assert_eq!(crate::test_data(&data, "(field data (quote! pane))")?, "%2");
-        assert_eq!(crate::test_data(&data, "(field data (quote! status))")?, "4");
+        assert_eq!(
+            crate::test_data(&data, "(field data (quote! status))")?,
+            "4"
+        );
         assert_eq!(
             output(&mut s, &format!("(kind {caught})"))?.trim(),
             "closed-answer"
         );
         let gone = output(
             &mut s,
-            &format!("(capture {})", crate::test_reference(&format!("{caught}"))),
+            &format!("(capture {})", crate::test_reference(&caught)),
         )
         .err();
         assert!(
@@ -8647,7 +8639,7 @@ mod tests {
         assert_eq!(
             output(
                 &mut s,
-                &format!("(version {})", fux::script::quoted(&format!("{initial}")))
+                &format!("(version {})", fux::script::quoted(&initial.to_string()))
             )?,
             format!("{initial}\n")
         );
@@ -8995,7 +8987,7 @@ mod tests {
             &mut s,
             &format!(
                 "(next-events (all) {} 0)",
-                fux::script::quoted(&format!("{cursor}"))
+                fux::script::quoted(&cursor.to_string())
             ),
         )?;
         assert!(after.contains("(event \"bell\")"), "{after}");
@@ -9144,7 +9136,7 @@ mod tests {
                 &mut s,
                 &format!(
                     "(sequence! \"name\" (get {} \"name\"))",
-                    crate::test_reference(&format!("{act}"))
+                    crate::test_reference(act)
                 )
             )
             .is_err_and(|e| e.starts_with("no-field:"))
@@ -9154,7 +9146,7 @@ mod tests {
                 &mut s,
                 &format!(
                     "(sequence! (define! value-326 (pane {})) \"name\" (get value-326 \"name\"))",
-                    crate::test_reference(&format!("{act}"))
+                    crate::test_reference(act)
                 )
             )?,
             "none\n"
@@ -9164,15 +9156,15 @@ mod tests {
                 &mut s,
                 &format!(
                     "(list (tab {}) (workspace {}))",
-                    crate::test_reference(&format!("{act}")),
-                    crate::test_reference(&format!("{act}"))
+                    crate::test_reference(act),
+                    crate::test_reference(act)
                 )
             )?,
             "@1\n+1\n"
         );
         let alone = output(
             &mut s,
-            &format!("(data-text {})", crate::test_reference(&format!("{act}"))),
+            &format!("(data-text {})", crate::test_reference(act)),
         )?;
         assert!(alone.starts_with("((kind \"answer\") (pane %1:"), "{alone}");
         let listed = output(&mut s, &format!("(data-text (list {act}))"))?;
@@ -9863,7 +9855,7 @@ mod tests {
             &mut s,
             &format!(
                 "(sequence! {} (show (client \"c1\") (tab \"@2\")))",
-                crate::test_reference(&format!("{tab}"))
+                crate::test_reference(tab)
             ),
         )?;
         // Four panes stacked take their 2 rows each and 3 separators.
@@ -10082,8 +10074,8 @@ mod tests {
                 &mut s,
                 &format!(
                     "(sequence! (new-tab (in (size (options) {} 10) (workspace 1))) {})",
-                    crate::test_reference(&format!("{cols}")),
-                    crate::test_reference(&format!("{split}"))
+                    crate::test_reference(&cols.to_string()),
+                    crate::test_reference(split)
                 ),
             )?;
             assert_eq!(widths(&s), expected, "{split}");
@@ -10094,7 +10086,7 @@ mod tests {
             &mut s,
             &format!(
                 "(sequence! {} (split (shares (axis (pane 2) \"horizontal\") 4294967294 1)))",
-                crate::test_reference(&format!("{made}"))
+                crate::test_reference(made)
             ),
         )?;
         for split in [
@@ -10484,7 +10476,7 @@ mod journal_tests {
                 &format!(
                     "(sequence! (show (client {}) {}) #inert)",
                     fux::script::quoted(&format!("{client}")),
-                    crate::test_reference(&format!("{target}"))
+                    crate::test_reference(target)
                 ),
             )?;
             for scope in [

@@ -1000,7 +1000,7 @@ mod tests {
                 &mut s,
                 &format!(
                     "(sequence! (show (client \"c1\") {}) #inert)",
-                    crate::test_reference(&format!("{shown}"))
+                    crate::test_reference(shown)
                 ),
             )?;
             let _ = s.before_paint(c);
