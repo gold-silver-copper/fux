@@ -532,6 +532,9 @@ pub fn dial(socket: &SocketPath) -> std::io::Result<Client> {
     UnixStream::connect(socket.path())
 }
 
+/// What a refusal to attach adds.
+pub const NOT_A_TERMINAL: &str = "";
+
 /// This process's user, as a refusal says it.
 pub fn this_user() -> String {
     geteuid().to_string()

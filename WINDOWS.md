@@ -1,7 +1,7 @@
 # fux on Windows 11: handover
 
 The plan for porting fux, fuxix and fux-vt to Windows 11, from a study run on 2026-11-04. Nothing here
-is built yet. This file says what was decided, what was measured, the order of work, and the rules the
+was built then; the port has since landed, PR by PR. This file says what was decided, what was measured, the order of work, and the rules the
 spikes found the hard way. Whoever starts the port starts here.
 
 ## The owner's decisions (binding)
@@ -91,6 +91,15 @@ programs built on the libraries (below) are the acceptance test for the whole po
 8. **The client and fuxth-run on Windows:** console VT input and output, resize events, restore. Done when:
    `fux` runs in Windows Terminal on a Windows 11 machine and the dogfood programs pass.
 
+## The finish line, revised (PR 8)
+- **Original target:** "`fux` runs in Windows Terminal on a Windows 11 machine and the dogfood programs
+  pass."
+- **Evidence:** the owner has no Windows machine, and no one has run fux on a person's desktop.
+- **New target:** CI is the finish line, as real as a runner gets: the real client attached in a hosted
+  ConPTY through `cmd.exe` on both images, and real `fux` in real Windows Terminal on the runner's
+  desktop, typed at, with screenshots (see "What PR 8 found").
+- **Cost:** what only a person can see stays unseen; the list is under "Not verified yet".
+
 ## Open questions the later PRs settle (found in PR 2)
 - **"Killed by fux" on Windows** (D-136): `Status` there is only `Exited(i32)`, the native code as std,
   cmd and PowerShell show it (`0xC000013A` is -1073741510). The PR that adds terminate decides how the
@@ -143,6 +152,29 @@ programs built on the libraries (below) are the acceptance test for the whole po
   p99 < 10 ms); an idle loop 0 CPU ticks in 2 s (`GetProcessTimes` counts in ~15.6 ms ticks);
   4 MiB + 1 MiB both ways through one pipe with 500 signals, exact; 2000 raises from 4 threads, each
   seen; a child's 1 MiB and its `Chld`.
+
+## What PR 8 found
+- **A runner has a real desktop.** Both images log `runneradmin` on at the console at boot
+  (`AutoAdminLogon`): session 2, `WinSta0\Default`, `explorer` and `dwm` running, 1024x768, and a CI step
+  runs in that session. Windows Terminal starts there, takes real keystrokes and shows in a screenshot
+  (runs 42142106849, 42142509065). On the arm image Windows' first-logon privacy screen (`WWAHost`) holds
+  the foreground till it is ended.
+- **Defender can be on:** `Set-MpPreference -DisableRealtimeMonitoring $false` turns real-time protection
+  on (it is off on windows-2025, on on the arm image, whose tamper protection refuses
+  service changes but not that), and an EICAR file written then is quarantined by "Real-Time Protection",
+  so the scan is real. The ConPTY download and `OpenConsole.exe` pass with it on (run 42142106849).
+- **`RegisterWaitForSingleObject` on a console input handle works**, on both images: the console needs no
+  thread of ours.
+- **Records under `ENABLE_VIRTUAL_TERMINAL_INPUT`:** a terminal's bytes come as key-downs of `vk=0` and
+  the byte as the character; a terminal's NUL comes as Ctrl+Shift+2 with no character (`vk=0x32`,
+  state `0x18`), not as Ctrl+Space; in-box conhost's emoji on `VK_MENU` key-ups (as S4 said).
+- **A pane's program has invalid standard handles**, and `std` then reads nothing and writes nowhere,
+  silently: `terminal::open_stdio` opens the console for each one missing, so `fux` in a pane works.
+- **A Ctrl-Break reaches every process on the console:** a shell with no handler ends with it, and
+  takes the client's shell down, as on any console.
+- **Restoring on a panic can't come first:** `LEAVE` needs VT processing still on, or a console without
+  it prints it as text. So the panic hook writes `LEAVE` on a thread waited for 250 ms at most, then
+  restores: a console that stopped reading delays restoring by that, and no more.
 
 ## What PR 8 builds on (found in PR 7)
 - **fux-server's OS seam is one module switch**, `socket.rs` with `socket/unix.rs` (today's code,
@@ -314,8 +346,14 @@ programs built on the libraries (below) are the acceptance test for the whole po
   - Save both console modes and restore them on every exit path, including a close handler.
 
 ## Not verified yet (each becomes a check in the PR that needs it)
-- A real Windows 11 desktop: Windows Terminal, Defender on, a standard user, UAC. Every number is from
-  GitHub runners (admin, Defender off). Windows 11 22H2 and 23H2 aren't available as runners.
+- A person's Windows 11 desktop, as opposed to a runner's: a standard user with UAC, Windows Terminal's
+  real key encoding (win32-input-mode) from a real keyboard, IME, AltGr, Win+`.` emoji, a font's width for
+  wide emoji, mouse, drag-resize, closing a tab or window, logging off. Windows 11 22H2 and 23H2 aren't
+  available as runners.
+- `taskkill /F` of a client: `TerminateProcess` can't be restored from inside; what cmd and pwsh do with
+  a console left in VT input is unseen.
+- An elevated and a normal `fux` refusing each other (D-137): runners have no split token.
+- Git Bash's mintty getting the "not a terminal" answer.
 - Corporate lockdowns (AppLocker, WDAC) blocking the downloaded `OpenConsole.exe`.
 - Memory per empty pane: each pane adds an `OpenConsole.exe`, likely over the 1 MiB Unix figure.
 - `cargo install` while a run is alive: the kept executable must be a copy, not a hard link.
