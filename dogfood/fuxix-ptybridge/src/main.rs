@@ -10,14 +10,13 @@
 //! grace period a SIGHUP to its process group, then a SIGKILL. The program ending ends the
 //! connection: its last output is sent, then the socket is shut down.
 use fuxix::poll::{Events, Poll, PollFd};
-use fuxix::process::{Dispositions, Pid, Signal};
-use fuxix::terminal::{self, Size};
+use fuxix::io::Stream;
+use fuxix::process::{Dispositions, Job, Reach, Signal, Status};
+use fuxix::socket::Listener as Pipe;
+use fuxix::terminal::Size;
 use fuxix::{Errno, io, pty};
-use std::net::{Shutdown, TcpListener, TcpStream};
-use std::os::fd::{AsFd, BorrowedFd};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::process::{Child, ExitCode};
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "usage: fuxix-ptybridge [--once] [--raw] [--size ROWSxCOLS] [--term TERM] \
@@ -39,48 +38,11 @@ struct Options {
     argv: Vec<String>,
 }
 
-enum Address {
-    Tcp(String),
-    Unix(PathBuf),
-}
+/// `unix:PATH`: the pipe that names. Windows has TCP sockets, but fuxix
+/// waits on none, so `tcp:` is refused.
+struct Address(PathBuf);
 
-enum Listener {
-    Tcp(TcpListener),
-    Unix(UnixListener, PathBuf),
-}
-
-enum Conn {
-    Tcp(TcpStream),
-    Unix(UnixStream),
-}
-
-impl AsFd for Listener {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        match self {
-            Listener::Tcp(l) => l.as_fd(),
-            Listener::Unix(l, _) => l.as_fd(),
-        }
-    }
-}
-
-impl AsFd for Conn {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        match self {
-            Conn::Tcp(s) => s.as_fd(),
-            Conn::Unix(s) => s.as_fd(),
-        }
-    }
-}
-
-impl Conn {
-    fn shutdown(&self, how: Shutdown) {
-        // A peer already gone makes this fail, which changes nothing.
-        let _ = match self {
-            Conn::Tcp(s) => s.shutdown(how),
-            Conn::Unix(s) => s.shutdown(how),
-        };
-    }
-}
+type Conn = Stream;
 
 fn main() -> ExitCode {
     let options = match parse(std::env::args().skip(1)) {
@@ -110,10 +72,8 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--term" => term = Some(args.next().ok_or("--term needs a value")?),
             "--" => break,
             _ if address.is_none() => {
-                address = Some(if let Some(rest) = arg.strip_prefix("tcp:") {
-                    Address::Tcp(rest.to_owned())
-                } else if let Some(rest) = arg.strip_prefix("unix:") {
-                    Address::Unix(PathBuf::from(rest))
+                address = Some(if let Some(rest) = arg.strip_prefix("unix:") {
+                    Address(PathBuf::from(rest))
                 } else {
                     return Err(format!("not an address or option: {arg}"));
                 });
@@ -148,40 +108,25 @@ fn parse_size(text: &str) -> Result<Size, String> {
 }
 
 fn serve(options: &Options) -> Result<(), String> {
-    let listener = match &options.address {
-        Address::Tcp(addr) => {
-            Listener::Tcp(TcpListener::bind(addr).map_err(|e| format!("listening on {addr}: {e}"))?)
-        }
-        Address::Unix(path) => Listener::Unix(
-            UnixListener::bind(path)
-                .map_err(|e| format!("listening on {}: {e}", path.display()))?,
-            path.clone(),
-        ),
-    };
-    let result = accept_loop(&listener, options);
-    if let Listener::Unix(_, path) = &listener {
-        let _ = std::fs::remove_file(path);
-    }
-    result
+    let path = &options.address.0;
+    let base = path.to_string_lossy().replace('\\', "/");
+    let name = fuxix::socket::name(&format!("fuxix-ptybridge-{base}")).map_err(|e| e.to_string())?;
+    let mut listener = Pipe::bind(&name).map_err(|e| format!("listening on {}: {e}", path.display()))?;
+    accept_loop(&mut listener, options)
 }
 
 /// Accepts connections until a SIGINT or SIGTERM (or, with `--once`, the
-/// first connection is done), each served on a thread of its own.
-fn accept_loop(listener: &Listener, options: &Options) -> Result<(), String> {
+/// first connection is done), one at a time: one thread polls in a process
+/// here, so a connection can't have a thread of its own.
+fn accept_loop(listener: &mut Pipe, options: &Options) -> Result<(), String> {
     let signals = fuxix::signal::Pipe::new(&[Signal::Int, Signal::Term])
         .map_err(|e| format!("catching signals: {e}"))?;
-    match listener {
-        Listener::Tcp(l) => eprintln!(
-            "listening on tcp:{}",
-            l.local_addr().map_err(|e| e.to_string())?
-        ),
-        Listener::Unix(_, path) => eprintln!("listening on unix:{}", path.display()),
-    }
+    eprintln!("listening on unix:{}", options.address.0.display());
     let mut poll = Poll::default();
     let mut number = 0u64;
     loop {
         let mut list = poll.list();
-        let incoming = list.push(PollFd::new(listener, Events::IN));
+        let incoming = list.push(PollFd::new(&*listener, Events::IN));
         let signalled = list.push(PollFd::new(signals.reader(), Events::IN));
         match list.poll(None) {
             Ok(_) | Err(Errno::INTR) => {}
@@ -194,12 +139,9 @@ fn accept_loop(listener: &Listener, options: &Options) -> Result<(), String> {
         if !list.events(incoming).intersects(Events::IN) {
             continue;
         }
-        let conn = match listener {
-            Listener::Tcp(l) => l.accept().map(|(s, _)| Conn::Tcp(s)),
-            Listener::Unix(l, _) => l.accept().map(|(s, _)| Conn::Unix(s)),
-        };
-        let conn = match conn {
+        let conn = match listener.accept().and_then(fuxix::socket::Connection::stream) {
             Ok(conn) => conn,
+            Err(Errno::AGAIN) => continue,
             Err(e) => {
                 eprintln!("accept: {e}");
                 continue;
@@ -208,27 +150,19 @@ fn accept_loop(listener: &Listener, options: &Options) -> Result<(), String> {
         number = number.saturating_add(1);
         let session = Session {
             number,
-            raw: options.raw,
             size: options.size,
             term: options.term.clone(),
             argv: options.argv.clone(),
         };
+        session.run(conn);
         if options.once {
-            session.run(conn);
             return Ok(());
-        }
-        let spawned = std::thread::Builder::new()
-            .name(format!("conn {number}"))
-            .spawn(move || session.run(conn));
-        if let Err(e) = spawned {
-            eprintln!("conn {number}: no thread: {e}");
         }
     }
 }
 
 struct Session {
     number: u64,
-    raw: bool,
     size: Size,
     term: String,
     argv: Vec<String>,
@@ -238,32 +172,31 @@ impl Session {
     fn run(self, conn: Conn) {
         let n = self.number;
         match self.bridge(&conn) {
-            Ok(status) => eprintln!("conn {n}: program ended: {status}"),
+            Ok(status) => eprintln!("conn {n}: program ended: {status:?}"),
             Err(e) => {
                 eprintln!("conn {n}: {e}");
                 // The client is told too, if it is still there.
                 let _ = io::write(&conn, format!("fuxix-ptybridge: {e}\r\n").as_bytes());
             }
         }
-        conn.shutdown(Shutdown::Both);
+        drop(conn);
     }
 
-    fn bridge(&self, conn: &Conn) -> Result<std::process::ExitStatus, String> {
+    fn bridge(&self, conn: &Conn) -> Result<Status, String> {
+        let _ = pty::load(std::path::Path::new("no-pinned-conpty"));
         let (master, slave) = pty::open(self.size).map_err(|e| format!("opening a PTY: {e}"))?;
-        if self.raw {
-            let mut modes = terminal::attributes(&slave).map_err(|e| format!("tcgetattr: {e}"))?;
-            modes.make_raw();
-            terminal::set_attributes(&slave, &modes).map_err(|e| format!("tcsetattr: {e}"))?;
-        }
         let term = self.term.clone();
-        let (child, pid) = slave
-            .spawn(&self.argv, Dispositions::Default, |c| {
-                c.env("TERM", term);
-            })
+        let job = slave
+            .spawn(
+                &self.argv,
+                |c| {
+                    c.env("TERM", term);
+                },
+                Dispositions::Default,
+            )
             .map_err(|e| format!("starting {}: {e}", self.argv.join(" ")))?;
-        eprintln!("conn {}: started pid {pid}", self.number);
-        io::set_nonblocking(conn, true).map_err(|e| format!("O_NONBLOCK: {e}"))?;
-        Pump::new(conn, &master, child, pid).run()
+        eprintln!("conn {}: started pid {}", self.number, job.leader());
+        Pump::new(conn, &master, job).run()
     }
 }
 
@@ -271,8 +204,7 @@ impl Session {
 struct Pump<'a> {
     conn: &'a Conn,
     master: &'a pty::Master,
-    child: Child,
-    pid: Pid,
+    job: Job,
     to_pty: Vec<u8>,
     to_conn: Vec<u8>,
     /// The client may still send.
@@ -284,16 +216,15 @@ struct Pump<'a> {
     /// When the client hung up, and the end-of-file key still to send.
     hung_up: Option<(Instant, Option<u8>)>,
     hupped: Option<Instant>,
-    exited: Option<std::process::ExitStatus>,
+    exited: Option<Status>,
 }
 
 impl<'a> Pump<'a> {
-    fn new(conn: &'a Conn, master: &'a pty::Master, child: Child, pid: Pid) -> Self {
+    fn new(conn: &'a Conn, master: &'a pty::Master, job: Job) -> Self {
         Pump {
             conn,
             master,
-            child,
-            pid,
+            job,
             to_pty: Vec::new(),
             to_conn: Vec::new(),
             conn_reading: true,
@@ -305,7 +236,7 @@ impl<'a> Pump<'a> {
         }
     }
 
-    fn run(mut self) -> Result<std::process::ExitStatus, String> {
+    fn run(mut self) -> Result<Status, String> {
         let mut poll = Poll::default();
         let mut buffer = vec![0u8; 16 * 1024];
         loop {
@@ -363,13 +294,8 @@ impl<'a> Pump<'a> {
 
     fn client_hung_up(&mut self) {
         self.conn_reading = false;
-        // The master reads the modes the program has set: a line-editing
-        // terminal is told the input ended as a typist would tell it.
-        let key = terminal::attributes(self.master)
-            .ok()
-            .filter(|modes| modes.edits_lines())
-            .and_then(|modes| modes.end_of_file());
-        self.hung_up = Some((Instant::now(), key));
+        // Windows' master can't be asked for modes: no end-of-file key.
+        self.hung_up = Some((Instant::now(), None));
     }
 
     fn write_pty(&mut self) {
@@ -427,10 +353,10 @@ impl<'a> Pump<'a> {
 
     /// Reaps the program if it ended, signals it if the client left long
     /// enough ago, and says when the connection is done.
-    fn finished(&mut self) -> Result<Option<std::process::ExitStatus>, String> {
+    fn finished(&mut self) -> Result<Option<Status>, String> {
         let now = Instant::now();
         if self.exited.is_none()
-            && let Some(status) = self.child.try_wait().map_err(|e| format!("wait: {e}"))?
+            && let Some(status) = self.job.ended().map_err(|e| format!("wait: {e}"))?
         {
             self.exited = Some(status);
         }
@@ -456,13 +382,12 @@ impl<'a> Pump<'a> {
         Ok(None)
     }
 
-    /// Signals the program's process group: it leads a session, so the
-    /// group is its pid.
+    /// A hang-up closes its console; a kill ends its job.
     fn signal(&self, signal: Signal) {
-        if let Err(e) = fuxix::process::kill_group(self.pid, signal)
-            && e != Errno::SRCH
-        {
-            eprintln!("kill -{} -{}: {e}", signal.name(), self.pid);
+        match signal {
+            Signal::Kill => drop(self.job.kill(Reach::Session)),
+            _ => drop(pty::hang_up(self.master, &self.job)),
         }
+        eprintln!("SIG{} to its job", signal.name());
     }
 }
