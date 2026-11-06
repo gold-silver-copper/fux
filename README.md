@@ -230,7 +230,7 @@ as it runs, so a failure comes after the forms before it have acted, and
 stderr lists what took effect. `fux '(help)'` lists fux's operations and
 its library's, which are written in grift themselves (`fux '(explain
 "shows")'` shows each one's code); [grift's own
-README](https://github.com/gold-silver-copper/grift/tree/pure) and its `docs/LANGUAGE.md`
+README](https://github.com/gold-silver-copper/grift/tree/master) and its `docs/LANGUAGE.md`
 are the language at length.
 
 ```sh

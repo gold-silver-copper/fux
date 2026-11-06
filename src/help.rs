@@ -4,7 +4,7 @@ pub const AGENTS: &str = include_str!("../docs/agents.md");
 pub const DATA: &str = include_str!("../docs/data.md");
 pub const COOKBOOK: &str = include_str!("../docs/cookbook.md");
 pub const RECORDS: &str = include_str!("../docs/records.md");
-const LANGUAGE: &str = "https://github.com/gold-silver-copper/grift/blob/pure/docs/LANGUAGE.md";
+const LANGUAGE: &str = "https://github.com/gold-silver-copper/grift/blob/master/docs/LANGUAGE.md";
 pub fn overview() -> String {
     let from_opts = crate::script::from_opts("and");
     let mut text = include_str!("help-usage.txt").replace("FROM_OPTIONS", &from_opts);

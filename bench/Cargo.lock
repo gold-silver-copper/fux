@@ -57,7 +57,8 @@ dependencies = [
 [[package]]
 name = "grift"
 version = "2.0.0"
-source = "git+https://github.com/gold-silver-copper/grift?rev=8d4588f6cffc43d0061e023c6536f1e4bc9263fb#8d4588f6cffc43d0061e023c6536f1e4bc9263fb"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f73a1deeecb2ea7f5db86c961fe53dd6de48bdc73d3c4d713492e8014be147cd"
 
 [[package]]
 name = "itoa"
