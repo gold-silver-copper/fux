@@ -315,8 +315,23 @@ mod windows {
     struct Stops<'a>(&'a Place);
 
     impl Drop for Stops<'_> {
+        /// A client whose console just went may still be attached, which
+        /// `kill-server` refuses.
         fn drop(&mut self) {
-            let _ = self.0.fux(&["kill-server"]);
+            for _ in 0..50 {
+                if self
+                    .0
+                    .fux(&["kill-server"])
+                    .is_ok_and(|(status, ..)| status == 0)
+                    || self
+                        .0
+                        .fux(&["status"])
+                        .is_ok_and(|(status, ..)| status != 0)
+                {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
     }
 

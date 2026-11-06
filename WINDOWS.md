@@ -66,6 +66,8 @@ were settled by an experiment both sides agreed on beforehand (spike S5).
 | `foreground_group` | null |
 | split directory | the shell's process directory; pwsh needs `[Environment]::CurrentDirectory = $PWD.ProviderPath` in its prompt (document it) |
 | built-in ConPTY (offline) | works, with a one-time notice: no sixel or synchronized output, titles and links rewritten |
+| `fux all str '' events \| head -1` | ends within 100 ms of the reader going, the pipe being asked; where it won't say, at the next event's write |
+| a client killed outright (`taskkill /F`) | nothing can put the console back from inside: the shell after it finds raw modes (Unix's `kill -9` of a client leaves a raw terminal too) |
 
 ## Order of work (one PR each)
 Each PR keeps the Linux and macOS CI jobs green and adds its checks to a Windows job running on
