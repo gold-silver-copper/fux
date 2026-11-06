@@ -62,7 +62,7 @@ def main():
 
     known = words_of_fux(fux(DICTIONARY))
     used = driver_words((HERE / "drivers.py").read_text(), known)
-    missing = missing_words(used, fux('(explain "agents")'))
+    missing = missing_words(used, fux('(explain "guide")'))
     if missing:
         print("the full guide does not name:", " ".join(missing))
         return 1
