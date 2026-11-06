@@ -198,7 +198,7 @@ mod windows {
         }
 
         fn config(&self, program: &str) -> Outcome {
-            let path = self.dir.join("appdata").join("fux").join("config.fux");
+            let path = self.dir.join("appdata").join("fux").join("config.grift");
             std::fs::write(path, program).map_err(text)
         }
     }
@@ -324,11 +324,11 @@ mod windows {
             for _ in 0..50 {
                 if self
                     .0
-                    .fux(&["kill-server"])
+                    .fux(&["(kill-server)"])
                     .is_ok_and(|(status, ..)| status == 0)
                     || self
                         .0
-                        .fux(&["status"])
+                        .fux(&["(status)"])
                         .is_ok_and(|(status, ..)| status != 0)
                 {
                     return;
@@ -476,8 +476,8 @@ mod windows {
         let place = Place::new("worker")?;
         let _stops = Stops(&place);
         place.config(
-            "str 'C-b j' code me focused 60000 timeout wait drop end bind \
-             str 'C-b k' code me focused str next-''ok text send-keys end bind",
+            "(bind-key \"C-b j\" (code! (lambda! () (wait (timeout (focused (me)) 60000)) #inert)))
+             (bind-key \"C-b k\" (code! (lambda! () (send-keys (text (focused (me)) \"next-ok\")) #inert)))",
         )?;
         let mut console = Console::start(&place, "", 30, 100)?;
         pane_ready(&place, &mut console)?;
@@ -497,7 +497,7 @@ mod windows {
     /// busy: none runs, none is joined.
     fn finding() -> Outcome {
         let place = Place::new("finding")?;
-        let (status, stdout, stderr) = place.fux(&["status"])?;
+        let (status, stdout, stderr) = place.fux(&["(status)"])?;
         say!("no server: {status} {stdout:?} {stderr:?}");
         if status == 0 {
             return Err("a server was found where none runs".to_owned());
@@ -513,19 +513,19 @@ mod windows {
             "4 133000000000000000\n",
         )
         .map_err(text)?;
-        let (status, stdout, stderr) = place.fux(&["status"])?;
+        let (status, stdout, stderr) = place.fux(&["(status)"])?;
         say!("a squatter: {status} {stdout:?} {stderr:?}");
         if status == 0 {
             return Err("a squatter counted as a server".to_owned());
         }
         drop((_connection, _taken, squatter));
         // A record left by a server that crashed, and no pipe.
-        let (status, stdout, stderr) = place.fux(&["status"])?;
+        let (status, stdout, stderr) = place.fux(&["(status)"])?;
         say!("a crashed record: {status} {stdout:?} {stderr:?}");
         if status == 0 || !stderr.contains("left") {
             return Err(format!("a crashed record read as {stderr:?}"));
         }
-        let (status, _, stderr) = place.fux(&["start"])?;
+        let (status, _, stderr) = place.fux(&["(start)"])?;
         let _stops = Stops(&place);
         match status {
             0 => Ok(()),
@@ -561,7 +561,7 @@ mod windows {
         place.environment(&mut start)?;
         let mut child = start
             .env(ROLE, "pane")
-            .arg("start")
+            .arg("(start)")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -582,8 +582,8 @@ mod windows {
         if said.matches("fetching").count() != 1 {
             return Err(format!("a first start said {said:?}"));
         }
-        place.fux(&["kill-server"])?;
-        let (_, _, said) = place.fux(&["start"])?;
+        place.fux(&["(kill-server)"])?;
+        let (_, _, said) = place.fux(&["(start)"])?;
         if said.contains("fetching") {
             return Err(format!("a second start said {said:?}"));
         }
