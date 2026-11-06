@@ -675,7 +675,7 @@ pub fn rerun(mut command: std::process::Command, _arg0: &std::ffi::OsStr) -> std
     match command.status() {
         // No terminal is raw here: a command line, ending as what took its
         // place did.
-        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Ok(status) => fuxix::process::end(status.code().unwrap_or(1)),
         Err(error) => error,
     }
 }

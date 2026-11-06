@@ -263,6 +263,14 @@ fn create(
     Ok(unsafe { OwnedHandle::from_raw_handle(created.hProcess) })
 }
 
+/// Ends this process now with `code`: what stands for `exec`, once the
+/// program that took its place has ended with it.
+pub fn end(code: i32) -> ! {
+    use windows_sys::Win32::System::Threading::ExitProcess;
+    // SAFETY: it takes a number, and doesn't return.
+    unsafe { ExitProcess(code.cast_unsigned()) }
+}
+
 /// The path of the program process `pid` runs, as the system says.
 pub fn image(pid: Pid) -> std::io::Result<std::path::PathBuf> {
     use std::os::windows::ffi::OsStringExt as _;
