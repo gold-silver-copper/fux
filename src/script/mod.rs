@@ -1324,23 +1324,21 @@ struct ConfigOnly {
     diagnostics: bool,
 }
 
-impl ConfigOnly {
-    fn refused() -> Failed {
-        Failed::new(
-            Code::NotConfig,
-            "a config changes only its own client state",
-        )
-    }
+fn config_only() -> Failed {
+    Failed::new(
+        Code::NotConfig,
+        "a config changes only its own client state",
+    )
 }
 
 impl Asks for ConfigOnly {
     /// A config's settings arrive only when it ends whole, so what would
     /// commit them first fails here, and nothing took effect.
     fn checkpoint(&mut self, _: &mut Draft, _: Context) -> Result<(), Failed> {
-        Err(Self::refused())
+        Err(config_only())
     }
     fn ask(&mut self, _: &Asked) -> Result<Reply, Failed> {
-        Err(Self::refused())
+        Err(config_only())
     }
     fn local(
         &mut self,
