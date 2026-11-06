@@ -531,7 +531,7 @@ it there. Every server in fux's directory: `(status)` on each socket there (`(ex
 ```
 
 ```text
-((name "reflow") (value #true) (type "true or false"))
+((name "reflow") (value #true) (type "#true or #false"))
 ((name "bar") (value ("off" ("workspace" "tabs") ("pane") #false)) (type "[top/bottom/off [left fields] [right fields] tab-numbers?]; ..."))
 ```
 

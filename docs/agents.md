@@ -96,7 +96,8 @@ KIND: VALUES` on stderr; 2 for a mistake in the program (`usage`, `unbound-symbo
 `type-error` …); 4 if the pane waited on closed; 124 on `timeout`; 141, quietly, when stdout's reader went.
 
 More: `(explain "TOPIC")` for `recipes`, `typing`, `read`, `shells`,
-`programs` and `servers`; `(explain "guide")` all of them; `(explain "cookbook")`.
+`programs`, `servers` and `recipe-examples`; `(explain "guide")` all of them;
+`(explain "cookbook")`.
 
 ## recipes: Waiting for what you need
 

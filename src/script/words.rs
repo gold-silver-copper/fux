@@ -286,14 +286,14 @@ pub const KINDS: [(&str, &str, Option<&str>); 21] = [
 /// it stands for, as help says it.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str)] = &[
-    ("title", "a title or [title,subject handle]"),
-    ("callback", "(code! (lambda! (...) ...)), or [captured arguments,(code! (lambda! (...) ...))]"),
+    ("title", "a title or (title subject-handle)"),
+    ("callback", "(code! (lambda! (...) ...)), or (captured-arguments (code! (lambda! (...) ...)))"),
     ("code", "(code! (lambda! (...) ...)), a code value"),
     ("revision", "a run-qualified layout revision"),
     ("tree", "a flat layout node list"),
     ("closed-outcome", "a closed pane or collection answer"),
     ("outcome", "an action's or wait's answer: a pane's, or a tab's or workspace's panes'"),
-    ("x", "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or options)"),
+    ("x", "the pane it goes around (or a tab, workspace, client, a request on one, or options)"),
     ("target", "a pane, tab, workspace or client, or a request on one"),
     ("subject", "a pane, or a request on one"),
     ("place", "a pane, tab or workspace, or a request on one"),
@@ -305,7 +305,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("pane-builder", "a pane or a request on one"),
     ("ref", "a name, or a pane, tab or workspace"),
     ("text", "a string, a number or a boolean"),
-    ("new", "a setting's value: a number, true or false, or a list (fux '(explain \"set\")')"),
+    ("new", "a setting's value: a number, #true or #false, or a list (fux '(explain \"set\")')"),
     ("var", "a string, a number, a boolean, or a pane, tab or workspace"),
     ("value", "a value (options and requests are none: what acts on them gives one)"),
     ("seen", "a version: an action's or wait's answer, a pane's capture, or its text"),
@@ -328,8 +328,8 @@ words! {
         Finding Here "here" "-- pane" raises(asks) "the pane this runs in (FUX_PANE)" "fux '(sequence! (notify (here) \"done\") #inert)'" [];
         Finding Client "client" "name -- client" raises(Type) "a client by its id, c2" "fux '(sequence! (detach (client \"c1\")) #inert)'" [];
         Finding Me "me" "-- client" raises(NotHere) "the client whose key or prompt runs this" "(sequence! (bind-key \"C-b z\" (code! (lambda! () (sequence! (zoom (focused (me))) #inert)))) #inert)" [];
-        Finding Panes "panes" "scope -- list" raises(Type asks) "the panes in a pane (itself), a tab, a workspace or all, in layout order" "fux '(sequence! (fold (lambda! (accumulator-30 item-26) (let! ((() accumulator-30)) (sequence! (print (capture item-26)) (list)))) (list) (panes (workspace \"agent\"))) #inert)'" [];
-        Finding Tabs "tabs" "scope -- list" raises(Type asks) "the tabs in a tab (itself), a workspace or all, in order; a pane holds none" "fux '(sequence! (fold (lambda! (accumulator-41 item-36) (let! ((() accumulator-41)) (sequence! \"name\" (print (get item-36 \"name\")) (list)))) (list) (tabs (workspace \"agent\"))) #inert)'" [];
+        Finding Panes "panes" "scope -- list" raises(Type asks) "the panes in a pane (itself), a tab, a workspace or all, in layout order" "fux '(for-each (lambda! (p) (print (capture p))) (panes (workspace \"agent\")))'" [];
+        Finding Tabs "tabs" "scope -- list" raises(Type asks) "the tabs in a tab (itself), a workspace or all, in order; a pane holds none" "fux '(for-each (lambda! (t) (print (get t \"name\"))) (tabs (workspace \"agent\")))'" [];
         Finding All "all" "-- all" raises() "the whole session, for the words that take a scope: information, panes, tabs, kill, notify, events and dump" "fux '(information (all))'" [];
         Finding Focused "focused" "client -- pane" raises(Type asks) "the pane a client focuses: its tab's zoomed one while it has one" "fux '(capture (focused (client \"c1\")))'" [];
         Starting Opts "options" "-- options" raises() "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) \"./app\"))'" [];
@@ -346,7 +346,7 @@ words! {
         Reading Datum "datum" "value -- data" raises(Type Unused) "expose a retained result as grift data, without reading it again" "fux '(datum (capture (pane 1)))'" [];
         Reading Capture "capture" "capture-source -- capture-source" raises(Type Unused asks) "a pane's observation (its facts, as information gives them) with its screen, read with its options; or what a client terminal shows (without pane options or a version)" "fux '(capture (history (pane 3) 100))'" [Pane: History Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols Since];
         Reading Snapshot "snapshot" "snapshot-scope projection -- record" raises(Type asks) "one bounded observation: facts, topology or recipe" "fux '(data-text (snapshot (all) \"topology\"))'" [];
-        Reading Get "get" "readable field -- value" raises(Type NoField Range TooLong asks) "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux '(sequence! (define! value-106 (pane 3)) \"program\" (define! value-108 (get value-106 \"program\")) \"exited\" (get value-108 \"exited\"))'" [];
+        Reading Get "get" "readable field -- value" raises(Type NoField Range TooLong asks) "a held answer, capture, record or failure field, locally; or a live pane, tab or workspace field" "fux '(get (get (pane 3) \"program\") \"exited\")'" [];
         Reading NextEvents "next-events" "event-scope cursor secs -- record" raises(Type Range asks) "one bounded journal batch, with exact next cursor, missed count and status; empty cursor starts now" "fux '(data-text (next-events (all) \"\" 0))'" [];
         Changing Kill "kill" "scope --" raises(Type asks) "close a pane, tab or workspace, or all of them, without asking" "fux '(sequence! (kill (pane 3)) #inert)'" [];
         Changing Rename "rename" "handle text --" raises(Type asks) "rename a pane, tab or workspace, to a name no other one has" "fux '(sequence! (rename (pane 3) \"editor\") #inert)'" [];
@@ -367,10 +367,10 @@ words! {
         Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it, a pane's stacks too" "fux '(sequence! (show (client \"c1\") (pane 3)) #inert)'" [];
         Clients Step "step" "client handle way --" raises(Type asks) "show a client the next, previous or last shown of the handle's siblings (a pane's: the children of the stack nearest it, else its tab's panes shown), or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux '(sequence! (step (client \"c1\") (tab 2) \"next\") #inert)'" [];
         Clients Detach "detach" "client --" raises(Type asks) "detach a client" "fux '(sequence! (detach (client \"c1\")) #inert)'" [];
-        Clients Keymap "keys" "client -- record" raises(Type asks) "the client's keys, as it answers: at, the keys it has typed into the map it is in; keymap, its keys from the root, each one that runs a binding (kind binding: key, code, label, group) or holds a map of more (kind map: key, repeat, keymap), at any depth; list and line, its screens' keys (key, action or code, label). Each code is a code value of its words, which reading compiles nothing of: execute compiles them in this program's dictionary, as a callback's are, and runs them, failing there for a word it lacks; a callback or bind takes it as it came" "fux '(sequence! (define! value-195 (keys (client \"c1\"))) \"keymap\" (data-text (first (get value-195 \"keymap\"))))'" [];
+        Clients Keymap "keys" "client -- record" raises(Type asks) "the client's keys, as it answers: at, the keys it has typed into the map it is in; keymap, its keys from the root, each one that runs a binding (kind binding: key, code, label, group) or holds a map of more (kind map: key, repeat, keymap), at any depth; list and line, its screens' keys (key, action or code, label). Each code is a code value of its words, which reading compiles nothing of: execute compiles them in this program's dictionary, as a callback's are, and runs them, failing there for a word it lacks; a callback or bind takes it as it came" "fux '(data-text (first (get (keys (client \"c1\")) \"keymap\")))'" [];
         Clients Preferences "preferences" "client -- list" raises(Type asks) "each of the client's preferences, as it answers: its name, its value as set takes it, and its type" "fux '(data-text (preferences (client \"c1\")))'" [];
         Server Start "start" "--" raises(NotHere asks) "start the server in the background, if none answers" "fux '(sequence! (start) #inert)'" [];
-        Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no_server" "fux '(status)' || fux '(start)'" [];
+        Server Status "status" "-- record" raises(NotHere asks) "the server that answers, and its version; with none, fails no-server" "fux '(status)' || fux '(start)'" [];
         Server KillServer "kill-server" "--" raises(asks) "stop the server: not from its own panes, nor with people attached" "FUX_SOCKET=$PWD/test.sock fux '(kill-server)'" [];
         Config AttachDefaults "attach-defaults" "attachable --" raises(Type Unused Config NotConfig) "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "(sequence! (attach-defaults (name (options) \"main\")) #inert)" [Either: In Name];
         Config Set "set" "setting new --" raises(Type Config NotConfig) "a preference for this client only: `fux '(explain \"set\")'` lists their effects" "fux '(sequence! (set \"history-bytes\" 16777216) #inert)'" [];
@@ -384,9 +384,9 @@ words! {
         Config ListKeys "list-keys" "--" raises(Config Output) "this client's keys (the bundled keys from the CLI), as config lines that make them" "fux '(sequence! (list-keys) #inert)'" [];
         Config KeyNames "key-names" "--" raises(Output) "the names keys go by" "fux '(sequence! (key-names) #inert)'" [];
         Help Help "help" "--" raises(Output) "the words, under their headings" "fux '(sequence! (help) #inert)'" [];
-        Help Word "word" "word -- record" raises(Type UnknownWord) "the dictionary's record of the word named so now: its name, provenance (core, fux, library, or run for this program's own), effect, documentation (all help says of it), definition (its words as read, or native) and codes (what it can fail with as it runs, or null where unknown)" "fux '(sequence! (define! value-241 (word \"dup\")) \"definition\" (get value-241 \"definition\"))'" [];
+        Help Word "word" "word -- record" raises(Type UnknownWord) "the dictionary's record of the word named so now: its name, provenance (core, fux, library, or run for this program's own), effect, documentation (all help says of it), definition (its words as read, or native) and codes (what it can fail with as it runs, or none where unknown)" "fux '(get (word \"split\") \"definition\")'" [];
         Help Dictionary "dictionary" "-- list" raises() "a record of each word in this program's dictionary now, as word gives it, sorted by name" "fux '(map (lambda! (entry) (get entry \"name\")) (dictionary))'" [];
-        Help Explain "explain" "word --" raises(Type UnknownWord Output) "one operation at length; data describes printed data and errors; agents is the first screen of the agent guide; guide prints it whole" "fux '(sequence! (explain \"capture\") #inert)'" [];
+        Help Explain "explain" "word --" raises(Type UnknownWord Output) "one operation at length, or where a name of grift's is described; data describes printed data and errors, records every record and field; agents is the first screen of the agent guide, each topic (recipes typing read shells programs servers recipe-examples) a part of it, and guide all of it; cookbook has recipes to copy" "fux '(sequence! (explain \"capture\") #inert)'" [];
     }
     Opt {
         Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux '(new-tab (program (size (name (in (options) \"agent\") \"web\") 80 24) \"./app\"))'";
@@ -407,7 +407,7 @@ words! {
         Starting KillFirst "kill-first" "x -- x" raises(Type Unused) "respawn: end the program first if it still runs" "fux '(respawn (kill-first (pane 3)))'";
         Waiting Changed "changed" "seen -- changed-request" raises(Type Unused) "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `(get value \"version\")` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux '(line (pane 3) \"y\")'); fux '(wait (timeout (changed (first (arguments))) 60))' \"$A\"";
         Waiting Timeout "timeout" "x secs -- x" raises(Type Unused Range) "how long a wait waits for a change before it answers timeout; with none, until something changes" "fux '(wait (timeout (pane 3) 300))'";
-        Input Expect "expect" "seen -- expected-request" raises(Type Unused) "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux '(sequence! (define! variables-372 (context)) (bind variables-372 (quote! seen) (capture (pane 3))) (if! (not? (empty-list? (string-search (string (evaluate (quote! seen) variables-372)) \"[y/N]\" 0))) (sequence! (send-keys (text (expect (evaluate (quote! seen) variables-372)) \"y\")) (list)) (list)) #inert)'";
+        Input Expect "expect" "seen -- expected-request" raises(Type Unused) "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux '(define! seen (capture (pane 3))) (when! (not? (empty-list? (string-search (string seen) \"[y/N]\" 0))) (send-keys (text (expect seen) \"y\"))) #inert'";
         Input Text "text" "x text -- x" raises(Type Unused) "text, typed" "fux '(send-keys (key (text (pane 3) \"ls -l\") \"Enter\"))'";
         Input Key "key" "x key -- x" raises(Type Unused NotAKey) "a key by its name: Enter, C-c, Up, F5" "fux '(send-keys (key (pane 3) \"C-c\"))'";
         Input Paste "paste" "x text -- x" raises(Type Unused) "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux '(send-keys (key (paste (pane 3) \"a long prompt\") \"Enter\"))'";
@@ -425,8 +425,8 @@ words! {
         Reading Since "since" "pane-builder seen -- pane-builder" raises(Type Unused) "capture: only the lines with a row changed since this version of the pane (a capture's, or as changed takes it), each after its row as rows counts it (3:text; data: changed-rows); fails stale where fux can't say which rows changed: rows moved since (a scroll, resize, reset, switch of screens or change to history), the program respawned, or it was read mid-repeat (REP)" "V=$(fux '(version (capture (pane 3)))'); fux '(capture (since (pane 3) (first (arguments))))' \"$V\"";
     }
     Screen {
-        Clients Choose "choose" "client title list list list callback --" raises(Type TooLong NotHere asks) "a list of [payload,label] rows; current and selected are [] or [index]; callback receives captured arguments then client payload and leaves nothing" "fux '(sequence! (choose (client \"c1\") \"hosts\" (list (list \"host\" \"Host\")) () (list 0) (code! (lambda! (argument-467 argument-468) #inert))) #inert)'";
-        Clients Prompt "prompt" "client name text callback --" raises(Type TooLong NotHere asks) "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line its argument" "fux '(sequence! (prompt (client \"c1\") \"rename tab\" \"logs\" (code! (lambda! (argument-478) (sequence! (rename (tab 2) argument-478) #inert)))) #inert)'";
+        Clients Choose "choose" "client title list list list callback --" raises(Type TooLong NotHere asks) "a list of (payload label) rows; current and selected are () or (index); callback receives captured arguments then client payload and leaves nothing" "fux '(sequence! (choose (client \"c1\") \"hosts\" (list (list \"host\" \"Host\")) () (list 0) (code! (lambda! (client payload) #inert))) #inert)'";
+        Clients Prompt "prompt" "client name text callback --" raises(Type TooLong NotHere asks) "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line its argument" "fux '(sequence! (prompt (client \"c1\") \"rename tab\" \"logs\" (code! (lambda! (line) (sequence! (rename (tab 2) line) #inert)))) #inert)'";
         Clients CommandPrompt "command-prompt" "client --" raises(Type NotHere asks) "a prompt for grift" "fux '(sequence! (command-prompt (client \"c1\")) #inert)'";
     }
     Keys {
@@ -436,10 +436,10 @@ words! {
         Config Group "group" "name --" raises(Type NotConfig BadBinding) "the column's heading for the last binding" "(sequence! (bind-key \"C-b g v\" (code! (lambda! () (sequence! (split (axis (focused (me)) \"horizontal\")) #inert)))) (group \"panes\") #inert)";
         Config Repeat "repeat" "keys --" raises(Type NotConfig BadBinding) "the map the keys hold repeats: it stays after a key of it runs, until Esc (config)" "(sequence! (bind-key \"C-b g h\" (code! (lambda! () (sequence! (move-border (focused (me)) \"left\" 2) #inert)))) (repeat \"C-b g\") #inert)";
         Config Unbind "unbind" "keys --" raises(Type NotConfig BadBinding) "keys run or hold nothing, and a map they leave empty goes" "(sequence! (unbind \"C-b g v\") #inert)";
-        Config BindAction "bind-action" "key code --" raises(Type NotConfig BadBinding) "a list's key runs code, receiving client payload; Escape cannot be bound" "(sequence! (bind-action \"r\" (code! (lambda! (argument-71 argument-72) (sequence! (rename-prompt argument-71 argument-72) #inert)))) (label \"rename\") #inert)";
+        Config BindAction "bind-action" "key code --" raises(Type NotConfig BadBinding) "a list's key runs code, receiving client payload; Escape cannot be bound" "(sequence! (bind-action \"r\" (code! (lambda! (client target) (rename-prompt client target)))) (label \"rename\") #inert)";
         Config BindIn "bind-in" "screen key action --" raises(Type NotConfig BadBinding) "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "(sequence! (bind-in \"list\" \"g\" \"first\") (label \"first\") #inert)";
         Config UnbindIn "unbind-in" "screen key --" raises(Type NotConfig BadBinding) "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "(sequence! (unbind-in \"list\" \"g\") #inert)";
-        Config UnbindAll "unbind-all" "--" raises(NotConfig) "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
+        Config UnbindAll "unbind-all" "--" raises(NotConfig) "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "(sequence! (unbind-all) #inert)";
     }
 }
 
@@ -2132,10 +2132,10 @@ impl Host<'_> {
                     let mut items = Vec::with_capacity(rows.items().len());
                     for row in rows.items() {
                         let Value::List(row) = row else {
-                            return Err(wrong("[payload,label]", row));
+                            return Err(wrong("(payload label)", row));
                         };
                         let [payload, label] = row.items() else {
-                            return Err(fail(Code::BadValue, "a row is [payload,label]"));
+                            return Err(fail(Code::BadValue, "a row is (payload label)"));
                         };
                         let payload = super::callback::data(payload)?;
                         let label = string(label)?;

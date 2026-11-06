@@ -9,7 +9,7 @@
 //! (`client::Keyboard`), so nothing a run left behind reaches the next.
 mod callback;
 mod docs;
-pub use docs::{Doc, docs};
+pub use docs::{Doc, docs, language};
 
 #[cfg(test)]
 mod lists;
@@ -33,7 +33,7 @@ use fux_wire::layout::Axis;
 use fux_wire::protocol::{Asked, Body, Context, End, Reply, Response};
 mod bridge;
 mod value;
-pub use bridge::{
+pub use bridge::{HOST, 
     Interpreter, Machine, Runtime, callback_machine, compile, evaluate_job, interpreter,
     load_libraries, replay_config,
 };
@@ -44,7 +44,7 @@ use std::sync::{Arc, Mutex};
 pub use value::{Done, Failure, List, Value, quoted};
 
 pub use callback::admit;
-pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
+pub use words::{Act, After, Group, Keys, NAMES, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
 /// The sources a client's config was read from, whose definitions its
 /// bindings and prompt see.

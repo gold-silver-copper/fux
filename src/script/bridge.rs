@@ -752,20 +752,23 @@ fn library<'a, 'b, A: Asks + ?Sized>(
 }
 
 macro_rules! host_functions {
-    ($($name:literal $function:path;)*) => {
+    ($($name:literal $function:path, $about:literal;)*) => {
+        /// What fux adds to grift beyond its word table, each with what help
+        /// says of it.
+        pub const HOST: &[(&str, &str)] = &[$(($name, $about),)*];
         fn host_functions<'a, 'b, A: Asks + ?Sized>() -> Vec<(&'static str, grift::HostFunction<Runtime<'a, 'b, A>>)> {
             vec![$(($name, $function),)*]
         }
     };
 }
 host_functions! {
-    "display" output;
-    "data-text" data_text;
-    "read-source" read_source;
-    "finish-source" finish_source;
-    "native-check-stop" check;
-    "kind" kind;
-    "string" text_of;
+    "display" output, "print each value's text on stdout, with no line between or after";
+    "data-text" data_text, "serialize a value as readable grift data";
+    "read-source" read_source, "the forms of a file, for include! and require!";
+    "finish-source" finish_source, "end the file read-source began";
+    "native-check-stop" check, "fail if the run was stopped, for a library's loop";
+    "kind" kind, "a value's kind, as a string: pane, answer, record, or grift's own";
+    "string" text_of, "a value's text, as it prints";
 }
 
 macro_rules! library_words {

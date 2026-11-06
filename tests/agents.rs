@@ -8,8 +8,18 @@
 // They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #![cfg(unix)]
 mod support;
+#[path = "support/unbound.rs"]
+mod unbound;
 use std::time::{Duration, Instant};
 use support::*;
+
+/// The names any program sees: fux's, its libraries' and grift's.
+fn known(name: &str) -> bool {
+    fux::script::Word::named(name).is_some()
+        || fux::script::docs().is_ok_and(|docs| docs.iter().any(|doc| doc.name == name))
+        || fux::script::language().is_ok_and(|names| names.iter().any(|n| n == name))
+        || fux::script::HOST.iter().any(|(host, _)| *host == name)
+}
 
 /// The pane an answer is about: the first word of its first line.
 fn id(out: &str) -> String {
@@ -1154,15 +1164,15 @@ fn the_docs_recipes_run_as_written() -> Outcome {
             server.exits(&pane)?;
         }
     }
-    for (i, program) in include_str!("../docs/agents.md")
+    // A later program may call what an earlier one defined, as the guide says.
+    let mut shown = String::new();
+    for program in include_str!("../docs/agents.md")
         .split("```grift\n")
         .skip(1)
-        .enumerate()
     {
-        let program = program.split("```").next().unwrap_or_default();
-        let mut g: grift::Grift = grift::Grift::new().map_err(|_| "grift initialization")?;
-        g.read_in(&format!("guide-{i}"), program)
-            .map_err(|_| "guide program does not read")?;
+        shown.push_str(program.split("```").next().unwrap_or_default());
+        let unbound = unbound::unbound(&shown, &known)?;
+        assert!(unbound.is_empty(), "{program}: {unbound:?}");
     }
     Ok(())
 }

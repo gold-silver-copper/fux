@@ -19,17 +19,9 @@ fn words_list_is_current() -> Result<(), String> {
     let docs = super::docs().map_err(|e| e.to_string())?;
     lines.extend(docs.iter().map(|d| format!("{} {}", d.name, d.parameters)));
     lines.push("## grift's standard names".to_owned());
-    let grift: grift::Grift = grift::Grift::new().map_err(|e| format!("{e:?}"))?;
-    let names = grift
-        .names(&grift.top_level())
-        .map_err(|e| format!("{e:?}"))?;
-    let mut names = names
-        .into_iter()
-        .map(|name| grift.symbol_name(&name).map(str::to_owned))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("{e:?}"))?;
-    names.sort();
-    lines.extend(names);
+    lines.extend(super::language().map_err(|e| e.to_string())?.iter().cloned());
+    lines.push("## what fux adds to the language".to_owned());
+    lines.extend(super::HOST.iter().map(|(name, _)| (*name).to_owned()));
     let head = format!(
         "Every word a fux program may use, with what it takes and gives as `(explain \"WORD\")` \
          shows it. Generated: FUX_BLESS=1 {TEST}"
@@ -258,7 +250,7 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
         "Every record a program reads, and each held answer's and capture's \
          fields `get` reads, by where it is (`[]` a list's items; `[NAME]` its \
          event, kind or status, or which answer), each with its fields in order. \
-         A word's `codes` is the codes it can fail with, or null where they are unknown. \
+         A word's `codes` is the codes it can fail with, or none where they are unknown. \
          Generated: FUX_BLESS=1 {TEST}"
     );
     Ok(check("records.txt", &file(&head, lines), TEST)?)

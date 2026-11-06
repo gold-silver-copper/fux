@@ -124,11 +124,11 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
 /// `true` or `false`.
 impl Reads for bool {
     fn takes() -> String {
-        "true or false".to_owned()
+        "#true or #false".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<bool, Unread> {
         let Value::Bool(b) = value else {
-            return Err(wrong("true or false", value));
+            return Err(wrong("#true or #false", value));
         };
         Ok(*b)
     }
