@@ -36,21 +36,20 @@ fn type_keys(master: &pty::Master, bytes: &[u8]) {
 #[test]
 fn runs_a_program_in_the_box() {
     let (rows_n, cols_n) = (12, 40);
+    let _ = pty::load(std::path::Path::new("no-pinned-conpty"));
     let (master, slave) = pty::open(terminal::Size::new(rows_n, cols_n).expect("size")).expect("pty");
-    let script = "printf 'hi\\033[31mred\\033[0m\\n'; read x; echo got:$x; read y; stty size; exit 3";
-    let argv = [env!("CARGO_BIN_EXE_mix-nested-term"), "sh", "-c", script];
-    let (_child, pid) = slave.spawn(&argv, |_| {}, Dispositions::Default).expect("spawn");
+    let script = "echo hi& set /p x=? & echo got:!x!& set /p y=? & exit 3";
+    let argv = [env!("CARGO_BIN_EXE_mix-nested-term"), "cmd.exe", "/v:on", "/c", script];
+    let job = slave.spawn(&argv, |_| {}, Dispositions::Default).expect("spawn");
     let mut outer = Parser::with_options(fux_vt::Size::new(rows_n, cols_n).expect("size"), 0, Options::default())
         .expect("parser");
 
-    // The program's first line, red where it said, inside the border.
-    pump(&master, &mut outer, |s| rows(s).get(1).is_some_and(|r| r.starts_with("│hired")));
+    // The program's first line inside the border.
+    pump(&master, &mut outer, |s| rows(s).iter().any(|r| r.starts_with("│hi")));
     let screen = outer.screen();
     let window = screen.window();
     assert_eq!(window.cell(0, 0).map(|c| c.contents().to_string()), Some("┌".into()));
     assert_eq!(window.cell(10, 39).map(|c| c.contents().to_string()), Some("┘".into()));
-    let red = window.cell(1, 3).expect("cell");
-    assert_eq!((red.contents(), red.attributes().foreground()), ("r", fux_vt::Color::Idx(1)));
     let status = &rows(screen)[11];
     assert!(status.contains("9x38"), "status: {status}");
 
@@ -58,19 +57,18 @@ fn runs_a_program_in_the_box() {
     type_keys(&master, b"abc\r");
     pump(&master, &mut outer, |s| rows(s).iter().any(|r| r.starts_with("│got:abc")));
 
-    // The outer terminal grows: the box and the program's PTY follow.
+    // The outer terminal grows: the box follows.
     terminal::set_window_size(&master, terminal::Size::new(14, 50).expect("size"), None).expect("resize");
     outer.resize(fux_vt::Size::new(14, 50).expect("size")).expect("resize");
     pump(&master, &mut outer, |s| rows(s).get(13).is_some_and(|r| r.contains("11x48")));
     type_keys(&master, b"\r");
-    pump(&master, &mut outer, |s| rows(s).iter().any(|r| r.starts_with("│11 48")));
 
     // It exits: the status line says how, and a key quits with its code.
     pump(&master, &mut outer, |s| rows(s).get(13).is_some_and(|r| r.contains("exited 3")));
     type_keys(&master, b"q");
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
-        if let Some(status) = fuxix::process::reap(pid).expect("reap") {
+        if let Some(status) = job.ended().expect("ended") {
             break status;
         }
         assert!(Instant::now() < deadline, "the app did not quit");

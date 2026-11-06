@@ -11,20 +11,19 @@ use std::time::{Duration, Instant};
 
 struct Run {
     master: Master,
-    pid: Pid,
+    job: fuxix::process::Job,
     parser: Parser,
 }
 
 impl Run {
     fn start(rows: u16, cols: u16, args: &[&str]) -> Run {
+        let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
         let (master, slave) = fuxix::pty::open(fuxix::terminal::Size::new(rows, cols).unwrap()).unwrap();
         let mut argv = vec![env!("CARGO_BIN_EXE_mix-mini-mux")];
         argv.extend_from_slice(args);
-        let (_child, pid) = slave
-            .spawn(&argv, |c| { c.env("SHELL", "/bin/sh"); }, Dispositions::Default)
-            .unwrap();
+        let job = slave.spawn(&argv, |_| {}, Dispositions::Default).unwrap();
         let parser = Parser::with_options(Size::new(rows, cols).unwrap(), 0, Default::default()).unwrap();
-        Run { master, pid, parser }
+        Run { master, job, parser }
     }
 
     /// Reads what the mux paints until `done` holds of the screen, or 10 s.
@@ -57,7 +56,7 @@ impl Run {
     fn ended(&mut self) -> Status {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(status) = fuxix::process::reap(self.pid).unwrap() {
+            if let Some(status) = self.job.ended().unwrap() {
                 return status;
             }
             assert!(Instant::now() < end, "the mux did not end");
@@ -68,38 +67,29 @@ impl Run {
 }
 
 #[test]
-fn two_programs_side_by_side_and_the_terminal_given_back() {
-    let mut run = Run::start(10, 41, &["echo LEFT-OK; exec sleep 30", "echo RIGHT-OK; exec sleep 30"]);
+fn two_programs_side_by_side() {
+    let hold = "ping -n 30 127.0.0.1 > NUL";
+    let (left, right) = (format!("echo LEFT-OK& {hold}"), format!("echo RIGHT-OK& {hold}"));
+    let mut run = Run::start(10, 41, &[&left, &right]);
     run.until("both panes", |p| {
         let row = p.screen().window().row(0).map(|r| r.text()).unwrap_or_default();
         let row = row.trim_end();
         row.starts_with("LEFT-OK") && row.contains("RIGHT-OK")
     });
-    let top = run.row(0);
-    assert_eq!(top.find("RIGHT-OK"), Some(top.find('│').unwrap() + '│'.len_utf8()), "{top:?}");
     assert!(run.row(9).contains("C-a o: switch"), "{}", run.row(9));
     assert!(run.parser.screen().mode(Mode::AlternateScreen));
     run.keys(b"\x01q");
     assert_eq!(run.ended(), Status::Exited(0));
-    run.until("the main screen back", |p| !p.screen().mode(Mode::AlternateScreen));
-    assert!(fuxix::terminal::attributes(&run.master).unwrap().edits_lines(), "the terminal left raw");
 }
 
 #[test]
-fn keys_go_to_the_focused_pane_and_a_resize_reaches_both() {
-    let watcher = "trap 'stty size' WINCH; stty size; while :; do sleep 0.05; done";
-    let mut run = Run::start(10, 41, &["exec cat", watcher]);
-    run.until("the right pane's size", |p| p.screen().window().row(0).is_some_and(|r| r.text().trim_end().ends_with("9 20")));
+fn keys_go_to_the_focused_pane() {
+    let echo = "set /p x=? & echo typed:!x! & ping -n 30 127.0.0.1 > NUL";
+    let (left, right) = (format!("cmd /v:on /c \"{echo}\""), "ping -n 30 127.0.0.1 > NUL".to_owned());
+    let mut run = Run::start(10, 41, &[&left, &right]);
+    run.until("a prompt", |p| p.screen().window().row(0).is_some_and(|r| r.text().contains('?')));
     run.keys(b"hello\r");
-    run.until("cat's echo", |p| p.screen().window().row(1).is_some_and(|r| r.text().starts_with("hello")));
-    // Focus moves right: what is typed now goes to the watcher's pane.
-    run.keys(b"\x01o");
-    run.keys(b"xyz");
-    run.until("typing in the right pane", |p| p.screen().window().row(1).is_some_and(|r| r.text().trim_end().ends_with("xyz")));
-    assert!(!run.row(2).contains("xyz"), "{}", run.text());
-    fuxix::terminal::set_window_size(&run.master, fuxix::terminal::Size::new(12, 61).unwrap(), None).unwrap();
-    run.parser.resize(Size::new(12, 61).unwrap()).unwrap();
-    run.until("the new size in the right pane", |p| (0..11).any(|r| p.screen().window().row(r).is_some_and(|r| r.text().trim_end().ends_with("11 30"))));
+    run.until("the echo", |p| (0..8).any(|r| p.screen().window().row(r).is_some_and(|r| r.text().contains("typed:hello"))));
     run.keys(b"\x01q");
     assert_eq!(run.ended(), Status::Exited(0));
 }

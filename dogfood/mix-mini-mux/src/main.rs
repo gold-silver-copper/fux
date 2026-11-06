@@ -16,7 +16,7 @@ use fux_vt::keys::{Key, KeyPress, Modifiers, encode};
 use fux_vt::{Attributes, Event, Feature, Mark, Mode, Options, Parser, Sink};
 use fuxix::Errno;
 use fuxix::poll::{Events, Poll, PollFd};
-use fuxix::process::{Dispositions, Pid, Signal, Status};
+use fuxix::process::{Dispositions, Job, Signal, Status};
 use fuxix::pty::Master;
 use fuxix::signal::Pipe;
 use fuxix::terminal::Raw;
@@ -81,7 +81,7 @@ impl Sink for PaneSink<'_> {
 
 struct Pane {
     master: Master,
-    pid: Pid,
+    job: Job,
     parser: Parser,
     place: Place,
     /// Painted up to here.
@@ -99,8 +99,9 @@ struct Pane {
 impl Pane {
     fn start(command: &[String], place: Place) -> Result<Pane, String> {
         let pty_size = fuxix::terminal::Size::from(place.size.nonzero());
+        let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
         let (master, slave) = fuxix::pty::open(pty_size).map_err(|e| format!("opening a PTY: {e}"))?;
-        let (_child, pid) = slave
+        let job = slave
             .spawn(command, |c| { c.env("TERM", "xterm-256color"); }, Dispositions::Default)
             .map_err(|e| format!("starting {command:?}: {e}"))?;
         let options = Options::new().with(Feature::Events);
@@ -108,7 +109,7 @@ impl Pane {
             .map_err(|e| format!("making a screen: {e:?}"))?;
         let mark = parser.screen().mark();
         let title = command.last().cloned().unwrap_or_default();
-        Ok(Pane { master, pid, parser, place, mark, pending: Vec::new(), title, bells: 0, ended: None, closed: false })
+        Ok(Pane { master, job, parser, place, mark, pending: Vec::new(), title, bells: 0, ended: None, closed: false })
     }
 
     /// Reads what the program wrote, up to `limit`, onto the screen.
@@ -133,7 +134,7 @@ impl Pane {
                     self.closed = true;
                     break;
                 }
-                Err(e) => return Err(format!("reading pane {}: {e}", self.pid)),
+                Err(e) => return Err(format!("reading pane {}: {e}", self.job.leader())),
             }
         }
         Ok(())
@@ -216,7 +217,7 @@ impl Drop for Terminal {
 }
 
 fn terminal_size() -> Result<(u16, u16), String> {
-    let (size, _) = fuxix::terminal::window_size(std::io::stdout()).ok_or("stdout is no terminal")?;
+    let (size, _) = fuxix::terminal::stdin_size().ok_or("stdout is no terminal")?;
     Ok((size.rows.get(), size.cols.get()))
 }
 
@@ -304,9 +305,6 @@ impl Mux {
         let parts = self.panes.iter().enumerate().map(|(n, pane)| {
             let state = match pane.ended {
                 Some(Status::Exited(code)) => format!(" [exited {code}]"),
-                Some(Status::Signalled { signal, .. }) => {
-                    format!(" [killed by {}]", Signal::from_raw(signal).map_or("a signal", Signal::name))
-                }
                 None => String::new(),
             };
             let title: String = pane.title.chars().filter(|c| !c.is_control()).take(24).collect();
@@ -349,11 +347,10 @@ impl Mux {
             if pane.ended.is_some() {
                 continue;
             }
-            if let Some(status) = fuxix::process::ended(pane.pid).map_err(|e| format!("waitid: {e}"))? {
+            if let Some(status) = pane.job.ended().map_err(|e| format!("waitid: {e}"))? {
                 pane.read(usize::MAX)?;
                 pane.closed = true;
                 pane.ended = Some(status);
-                let _reaped = fuxix::process::reap(pane.pid);
             }
         }
         Ok(())
@@ -381,9 +378,9 @@ fn run() -> Result<(), String> {
             _ => return Err(format!("unexpected argument {arg}")),
         }
     }
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
     let argv = |n: usize| match commands.get(n) {
-        Some(command) => vec![shell.clone(), "-c".into(), command.clone()],
+        Some(command) => vec![shell.clone(), "/c".into(), command.clone()],
         None => vec![shell.clone()],
     };
     let (rows, cols) = terminal_size()?;
@@ -399,7 +396,7 @@ fn run() -> Result<(), String> {
     drop(terminal);
     for pane in &mux.panes {
         if pane.ended.is_none() {
-            let _ = fuxix::process::kill_group(pane.pid, Signal::Hup);
+            let _ = fuxix::pty::hang_up(&pane.master, &pane.job);
         }
     }
     result

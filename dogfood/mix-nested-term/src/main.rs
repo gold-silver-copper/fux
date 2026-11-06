@@ -3,7 +3,6 @@
 //! the program asked for them, the box's size given to the PTY, and a
 //! status line below the box.
 use std::io::Write;
-use std::os::fd::AsFd;
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -12,7 +11,7 @@ use fux_vt::keys::{KeyPress, encode};
 use fux_vt::{Attributes, CellRef, Mode, Options, Parser, RowId, Screen, Sink};
 use fuxix::Errno;
 use fuxix::poll::{Events, Poll, PollFd};
-use fuxix::process::{Dispositions, Pid, Signal, Status};
+use fuxix::process::{Dispositions, Signal, Status};
 use fuxix::{pty, signal, terminal};
 
 const USAGE: &str = "usage: mix-nested-term [--quit-key KEY] [--] [COMMAND ARGS...]
@@ -58,14 +57,14 @@ struct App {
     quit: KeyPress,
     parser: Parser,
     master: pty::Master,
-    pid: Pid,
+    job: fuxix::process::Job,
     exited: Option<Status>,
     to_child: Vec<u8>,
     view: View,
 }
 
 fn outer_layout() -> Layout {
-    match terminal::window_size(std::io::stdout()) {
+    match terminal::stdin_size() {
         Some((size, _)) => Layout {
             rows: size.rows.get(),
             cols: size.cols.get(),
@@ -113,8 +112,9 @@ impl App {
         let layout = outer_layout();
         let (vt, size) = sizes(layout)?;
         let parser = Parser::with_options(vt, 4 << 20, Options::default()).map_err(|e| e.to_string())?;
+        let _ = pty::load(std::path::Path::new("no-pinned-conpty"));
         let (master, slave) = pty::open(size).map_err(|e| e.to_string())?;
-        let (_child, pid) = slave
+        let job = slave
             .spawn(&argv, |c| {
                 c.env("TERM", "xterm-256color");
             }, Dispositions::Default)
@@ -124,7 +124,7 @@ impl App {
             quit,
             parser,
             master,
-            pid,
+            job,
             exited: None,
             to_child: Vec::new(),
             view: View { layout, painted: Vec::new(), status: String::new(), whole: true },
@@ -196,12 +196,8 @@ impl App {
         let size = screen.size();
         let title: String = String::from_utf8_lossy(screen.title().bytes).chars().filter(|c| !c.is_control()).collect();
         let state = match self.exited {
-            None => format!("{} | quit: {}", self.pid.as_raw(), key_name(self.quit)),
+            None => format!("{} | quit: {}", self.job.leader(), key_name(self.quit)),
             Some(Status::Exited(code)) => format!("exited {code} | any key quits"),
-            Some(Status::Signalled { signal, .. }) => {
-                let name = Signal::from_raw(signal).map_or("?", Signal::name);
-                format!("killed by SIG{name} | any key quits")
-            }
         };
         // What changes first, as the line is cut at the terminal's width.
         format!(" {}x{} | {state} | {title} | {}", size.rows(), size.cols(), self.argv.join(" "))
@@ -303,7 +299,7 @@ fn run(argv: Vec<String>, quit: KeyPress) -> Result<Option<Status>, String> {
         .map_err(|e| format!("signals: {e}"))?;
     let mut app = App::start(argv, quit)?;
     let stdin = std::io::stdin();
-    let _raw = terminal::Raw::enter(stdin.as_fd()).map_err(|e| format!("raw mode: {e}"))?;
+    let _raw = terminal::Raw::enter(std::io::stdin()).map_err(|e| format!("raw mode: {e}"))?;
     let mut stdout = std::io::stdout().lock();
     let write = |stdout: &mut std::io::StdoutLock, bytes: &[u8]| {
         stdout.write_all(bytes).and_then(|()| stdout.flush()).map_err(|e| format!("writing: {e}"))
@@ -312,7 +308,7 @@ fn run(argv: Vec<String>, quit: KeyPress) -> Result<Option<Status>, String> {
     let result = event_loop(&mut app, &signals, &stdin, &mut stdout, &write);
     // Whatever happened, the program goes and the terminal comes back.
     if app.exited.is_none() {
-        let _ = fuxix::process::kill_group(app.pid, Signal::Hup);
+        let _ = pty::hang_up(&app.master, &app.job);
     }
     let _ = write(&mut stdout, b"\x1b[0m\x1b[?25h\x1b[?1049l");
     result.map(|()| app.exited)
@@ -361,7 +357,7 @@ fn event_loop<'a>(
                     Signal::Winch => app.resize()?,
                     Signal::Chld => {
                         if app.exited.is_none()
-                            && let Ok(Some(status)) = fuxix::process::reap(app.pid)
+                            && let Ok(Some(status)) = app.job.ended()
                         {
                             // Everything it wrote is readable now.
                             child_open = app.read_child();
@@ -414,7 +410,6 @@ fn main() -> ExitCode {
     };
     match run(argv, quit) {
         Ok(Some(Status::Exited(code))) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
-        Ok(Some(Status::Signalled { signal, .. })) => ExitCode::from(u8::try_from(128 + signal).unwrap_or(1)),
         Ok(None) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("mix-nested-term: {e}");
