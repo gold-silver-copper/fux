@@ -1,4 +1,4 @@
-//! Checked fuxth values for local preferences and request options.
+//! Checked values for local preferences and request options.
 use super::Fux;
 use super::Value;
 use fux_wire::callback::Data;

@@ -4,7 +4,7 @@
 //! in another mode's table. The server draws what the client describes
 //! (`ScreenAct::Show`).
 //!
-//! What a screen's entry does is fuxth, run as the client runs a binding.
+//! What a screen's entry does is grift, run as the client runs a binding.
 use crate::keymap::{Held, Keymap, Modes};
 use crate::script;
 use fux_vt::keys::decode::Input;
@@ -23,7 +23,7 @@ pub enum Screen {
 }
 
 /// What a key leads to, in a screen or through the bindings: an action for
-/// the server, or fuxth to run as the client.
+/// the server, or grift to run as the client.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Send(Act),
@@ -130,7 +130,7 @@ impl Display {
 }
 
 /// What a job runs: a line typed at the command prompt, read as a
-/// program is; or a code value, compiled in the client's dictionary and
+/// program is; or a code value, read by the client and
 /// run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Program {
@@ -139,7 +139,7 @@ pub enum Program {
 }
 
 /// An owned worker operation: a program with inert typed arguments,
-/// or a relayed screen awaiting the receiving dictionary's admission.
+/// or a relayed screen awaiting the receiving client's admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
     pub program: Program,
@@ -192,7 +192,7 @@ impl Job {
         }
     }
 
-    /// Its machine, ready to run: compiling its code values stops at
+    /// Its machine, ready to run: reading its code values stops at
     /// `stop`.
     pub fn machine(
         &self,

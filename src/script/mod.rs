@@ -1,8 +1,8 @@
 //! fux's command line, config, bindings and prompt: grift programs, run in
-//! a client. Words build typed requests (`opts … new-tab`, `%2 … send-keys`)
-//! and execution words submit them: the program suspends while the server
-//! does what one asks, and goes on with what it answers, as typed values
-//! (a pane's handle, a capture), never text to be read back.
+//! a client. Words build typed requests (`(new-tab (options))`, `(send-keys
+//! (text (pane 2) "x"))`) and acting words submit them: a host function
+//! blocks while the server does what one asks, and answers grift data (a
+//! pane's handle, a capture's record), never text to be read back.
 //!
 //! Every run has an interpreter nothing else ran in. A command line builds
 //! one; a client's worker builds the next after each job, off the key's path
@@ -62,7 +62,7 @@ pub(crate) const DEFAULTS: &str = include_str!("client-defaults.grift");
 /// What differs on Windows, run after them: the default shell.
 const WINDOWS_DEFAULTS: &str = include_str!("windows.grift");
 
-/// A value of fux's own on the stack.
+/// A value of fux's own.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fux {
     Null,
@@ -80,8 +80,8 @@ pub enum Fux {
     Opts(Rc<Opts>),
     /// A width or height: cells, or a share of the tab.
     Extent(Extent),
-    /// A code value another client sent, as its words: `execute` compiles
-    /// them in this program's dictionary, then runs them (`Ask::Code`).
+    /// A code value another client sent, as its form: `execute!` evaluates
+    /// it in the caller's context, then calls it.
     Code(Rc<Sent>),
 }
 
@@ -300,11 +300,11 @@ pub enum Ask {
     /// Something the client itself does that takes over (attaching), or
     /// talks to no server (`status`).
     Local(Local),
-    /// The program's own dictionary's records: the word a name names
+    /// The program's own names' records: the word a name names
     /// (`word`), or every word (`dictionary`).
     Dictionary(Option<String>),
     /// A code value another client sent (`Fux::Code`), `execute`d: made
-    /// in the program's dictionary as #370 makes a callback's, then run.
+    /// in the program's context, then run.
     Code(Rc<Sent>),
 }
 
@@ -918,7 +918,7 @@ pub struct AsClient<'a> {
     pub context: Context,
     pub opened: Option<crate::screens::Screen>,
     pub on_commit: Option<&'a mut dyn FnMut(&ClientState)>,
-    /// What stops compiling a screen's code values as it opens.
+    /// What stops reading a screen's code values as it opens.
     pub stop: Option<&'a Stop>,
 }
 
@@ -975,7 +975,7 @@ fn acts(request: &Request) -> bool {
     )
 }
 
-/// What a reply's answer puts on the stack: nothing, a string, handles, or
+/// What a reply's answer gives: nothing, a string, handles, or
 /// an answer of fux's; a field's value as grift's own where it is one.
 pub fn answered(reply: Reply) -> Result<Vec<Value<Fux>>, Failed> {
     let run = reply.run;

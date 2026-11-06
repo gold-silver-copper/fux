@@ -269,8 +269,8 @@ wire! {
 pub struct Prompt {
     pub title: String,
     pub line: Line,
-    /// None: the line is fuxth to run. Some: fuxth run with the line on its
-    /// stack, a string.
+    /// None: the line is grift to run. Some: a callback, called with the line,
+    /// a string.
     pub action: Option<Callback>,
 }
 

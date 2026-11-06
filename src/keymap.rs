@@ -8,7 +8,7 @@
 //! while no keys are held: its prefix, `C-b`, is a key there that holds the
 //! map of fux's commands, and `C-b t` holds the tab commands in that one.
 //!
-//! A binding runs fuxth: its code value is compiled and run by the client,
+//! A binding runs grift: its code value is read and run by the client,
 //! fresh, each time its keys are typed, the client itself its `me`. The default
 //! bindings are a config too, `script/keys.fux`, run on `Keymap::default`
 //! before the user's.
@@ -240,7 +240,7 @@ pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
         .ok_or_else(|| "no keys given".to_owned())
 }
 
-/// A client's keymap and its screens' keys; empty until bundled fuxth
+/// A client's keymap and its screens' keys; empty until bundled grift
 /// supplies them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Keymap {
@@ -283,7 +283,7 @@ impl Keymap {
     }
 
     /// What `from` runs or holds, `to` does instead, and `from` nothing:
-    /// `str C-b str C-a move-keys` moves the prefix. All or nothing.
+    /// `(move-keys "C-b" "C-a")` moves the prefix. All or nothing.
     pub fn move_keys(&mut self, from: &[KeyPress], to: &[KeyPress]) -> Result<(), String> {
         if to.starts_with(from) {
             return Err(format!("{} is in {}", keys_text(to), keys_text(from)));

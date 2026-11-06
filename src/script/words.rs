@@ -1,5 +1,5 @@
 //! fux's words, one table of them (`words!`): each its family, name, what
-//! it does to the stack in the names of the kinds it takes and gives
+//! it takes and gives in the names of the kinds it takes and gives
 //! (`KINDS`, `NAMES`), a line of help, an example and the options it
 //! takes; and what each does, run by the program's [`Host`].
 use super::settings::Reads;
@@ -29,7 +29,7 @@ use std::ops::RangeInclusive;
 /// family; `Word::ALL`, every word, family by family, the acting words
 /// last, so that in `help` a heading's options come before the words that
 /// take them (each word's id in the vocabulary is its place here); `Word::row`, its
-/// facts: its name, stack effect, the codes it fails with (`asks`, those
+/// facts: its name, effect, the codes it fails with (`asks`, those
 /// asking a request does), help line, heading and an example; and
 /// `Act::takes`, the options an acting word takes and what they go after,
 /// which each of its rows says (`[]` for none).
@@ -159,8 +159,8 @@ macro_rules! words {
 /// What a word is.
 pub struct Row {
     pub name: &'static str,
-    /// What it does to the stack, in the names of `KINDS` and `NAMES`:
-    /// `x secs -- x`. fuxth reads it, for how many values the word takes
+    /// What it takes and gives, in the names of `KINDS` and `NAMES`:
+    /// `x secs -- x`. bridge.rs reads it, for how many values the word takes
     /// and gives, and their kinds.
     pub effect: &'static str,
     pub raises: Raises,

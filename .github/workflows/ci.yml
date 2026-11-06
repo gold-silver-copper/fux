@@ -135,13 +135,13 @@ jobs:
           cargo test -p fux-vt --features checks --release --locked --test external_corpora 2>&1 | tee "$CI_LOGS/external-corpora.log"
 
       - name: fux-vt builds for wasm32 (the browser)
-        # fux-vt and grift have no OS dependency, so they build for a 32-bit
-        # target with no OS at all; this keeps them that way.
+        # fux-vt has no OS dependency, so it builds for a 32-bit target with
+        # no OS at all; this keeps it that way. grift's own CI keeps grift so.
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           rustup target add wasm32-unknown-unknown
-          cargo check -p fux-vt -p fux-vt-peak -p grift --target wasm32-unknown-unknown --locked 2>&1 | tee "$CI_LOGS/wasm.log"
+          cargo check -p fux-vt -p fux-vt-peak --target wasm32-unknown-unknown --locked 2>&1 | tee "$CI_LOGS/wasm.log"
 
       - name: Minimum Rust version
         # Every manifest says rust-version = "1.95"; the pinned toolchain is
