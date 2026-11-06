@@ -35,10 +35,10 @@ const SOURCES: &[&str] = &[
     include_str!("../../fux-server/src/view.rs"),
     include_str!("../../fux-server/src/wait.rs"),
     include_str!("../../fux-wire/src/words.rs"),
-    include_str!("../../fuxth/src/reader.rs"),
-    include_str!("../../fuxth/src/error.rs"),
-    include_str!("../../fuxth/src/machine.rs"),
-    include_str!("../../fuxth/src/token.rs"),
+    include_str!("../../src/script/bridge.rs"),
+    include_str!("../../src/script/callback.rs"),
+    include_str!("../../src/script/record.rs"),
+    include_str!("../../src/script/value.rs"),
 ];
 
 /// A template with less fixed text than this matches too much to mean
@@ -197,10 +197,32 @@ impl Notices {
         if prefix && text.len() < 3 {
             return false;
         }
-        self.templates
-            .iter()
-            .any(|t| matches(t, &text, prefix) || contains_whole(t, &text, prefix))
+        let said = |text: &[char]| {
+            (self.templates.iter())
+                .any(|t| matches(t, text, prefix) || contains_whole(t, text, prefix))
+        };
+        said(&text)
+            || cause(&text).is_some_and(|(kind, value)| match value {
+                Some(value) => said(&value),
+                // Grift's own failures carry its data, not fux's words.
+                None => self.templates.contains(&kind),
+            })
     }
+}
+
+/// A program's failure as a notice says it: its kind, then its value before
+/// the forms it failed in. The value is `Some` if it is a string, as fux's
+/// own failures are, and its text then.
+fn cause(text: &[char]) -> Option<(Vec<char>, Option<Vec<char>>)> {
+    let text: String = text.iter().collect();
+    let (kind, rest) = text.split_once(": ")?;
+    let rest = rest.split(" in (").next().unwrap_or(rest);
+    let rest = rest.split("\\n").next().unwrap_or(rest);
+    let value = rest.strip_prefix('"').map(|value| {
+        let value = value.strip_suffix('"').unwrap_or(value);
+        value.replace("\\\"", "\"").replace("\\\\", "\\")
+    });
+    Some((kind.chars().collect(), value.map(|v| v.chars().collect())))
 }
 
 /// A notice may put its code before the cause and its source after it.
@@ -238,13 +260,20 @@ mod tests {
             "bundled initialization did not set shell",
             "only one pane",
             "C-b t q is not bound",
-            "unknown_word: nonsense: no such word; text is `str WORD` (/w/config/fux/config.fux:3)",
-            "unknown_word: nonsense: no such word; text is `str WORD` (prompt:1)",
-            "unknown_word: nonsense: no such word; text is `str WO…",
+            r#"no-pane: "no pane %99" in (pane "%99") at key:1\nfrom (kill (pane "%99")) at key:1"#,
+            r#"no-pane: "no pane %9…"#,
+            "unbound-symbol: nonsense",
+            "unbound-symbol: nonsense in (nonsense) at prompt:1",
         ] {
             assert!(notices.known(known), "{known}");
         }
-        for unknown in ["the server exploded", "", "…"] {
+        for unknown in [
+            "the server exploded",
+            "",
+            "…",
+            "exploded: nonsense",
+            r#"no-pane: "the server exploded" in (pane "%99") at key:1"#,
+        ] {
             assert!(!notices.known(unknown), "{unknown}");
         }
     }

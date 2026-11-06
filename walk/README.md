@@ -1,7 +1,7 @@
 # fux-walk: seeded walks over a real fux
 
 An excluded workspace with its own lockfile. It drives a real `fux` binary
-(a fresh server, real `fux opts attach` clients on PTYs, and the command line)
+(a fresh server, real attaching `fux` clients on PTYs, and the command line)
 through seeded random steps, checks every invariant after every step,
 saves each walk as a trace, and minimizes a failing walk to the steps that
 matter.
@@ -55,14 +55,14 @@ is a failure.
 
 ## Steps
 
-Each step is a small random index resolved against the live `ls json`,
+Each step is a small random index resolved against the live session's listing,
 recorded as the concrete step it became:
 
 - **keys:** default bindings, layers and repeat modes, each client with
-  the prefix its config gave it; overlays driven by their keys; command-prompt lines (fuxth the client runs), some wrong; a lone Esc,
+  the prefix its config gave it; overlays driven by their keys; command-prompt lines (grift the client runs), some wrong; a lone Esc,
   the doubled prefix, unbound, capital and Ctrl letters; a bracketed paste;
   plain typing; `C-b d`;
-- **commands:** fuxth programs from the whole vocabulary, with valid and
+- **commands:** grift programs from the whole vocabulary, with valid and
   invalid targets (never `kill-server`);
 - **what no command expresses:** a client resized (down to 1×1, 1×200,
   40×1); a client asking for 9000×9000 (`too-big`), which the server must
@@ -85,7 +85,7 @@ sleep: an act's marker shows in its pane, and every client's painted
 screen equals its `capture`. Then:
 
 - **the server** runs, answers, and its log has no panic;
-- **structure** (`ls json`): ids are unique (a client's workspace, tab
+- **structure** (`list-session`): ids are unique (a client's workspace, tab
   and focused pane belong together by fux's types);
 - **processes:** a pane's shell ends within three seconds of its pane
   closing;

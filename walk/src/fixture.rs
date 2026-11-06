@@ -35,7 +35,7 @@ shift
 echo "act-done-$(( $1 + 1000 ))"
 "#;
 
-/// A real `fux opts attach` on a PTY, and a terminal of what it shows.
+/// A real `fux` on a PTY, attaching,, and a terminal of what it shows.
 pub struct Client {
     pub id: String,
     master: Option<fuxix::pty::Master>,
@@ -43,6 +43,9 @@ pub struct Client {
     pub screen: fux_vt::Parser,
     pub rows: u16,
     pub cols: u16,
+    /// Whether its config gave it a bar on a row of its own: one that
+    /// failed leaves it the bundled state, whose bar takes no row.
+    pub bar: bool,
 }
 
 impl Client {
@@ -151,6 +154,8 @@ pub struct Fixture {
     pub dir: PathBuf,
     pub socket: PathBuf,
     pub config: PathBuf,
+    /// Whether the config a client reads now fails.
+    pub config_fails: bool,
     pub fux: PathBuf,
     server: Option<Child>,
     pub clients: BTreeMap<String, Client>,
@@ -173,8 +178,8 @@ impl Fixture {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| e.to_string())?;
         std::fs::write(dir.join("act.sh"), ACT).map_err(|e| e.to_string())?;
-        // Where each client finds it: `$XDG_CONFIG_HOME/fux/config.fux`.
-        let config = dir.join("config").join("fux").join("config.fux");
+        // Where each client finds it: `$XDG_CONFIG_HOME/fux/config.grift`.
+        let config = dir.join("config").join("fux").join("config.grift");
         if let Some(parent) = config.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -203,6 +208,7 @@ impl Fixture {
             dir,
             socket,
             config,
+            config_fails: false,
             fux: fux.to_owned(),
             server: Some(server),
             clients: BTreeMap::new(),
@@ -288,16 +294,9 @@ impl Fixture {
     /// Types `line` into `pane`, and Enter.
     pub fn type_line(&self, pane: &str, line: &str) -> Result<Output, String> {
         self.fux(&[
-            "str",
+            r#"(line (pane (first (arguments))) (second (arguments)))"#,
             pane,
-            "pane",
-            "str",
             line,
-            "text",
-            "str",
-            "Enter",
-            "key",
-            "send-keys",
         ])
     }
 
@@ -305,7 +304,7 @@ impl Fixture {
     pub fn listed_clients(&self) -> Result<Vec<String>, String> {
         Ok(self
             .fux(&[
-                "ls", "str", "clients", "get", "each", "str", "id", "get", "print", "end",
+                r#"(for-each (lambda! (c) (print (get c "id"))) (get (list-session) "clients"))"#,
             ])?
             .stdout
             .lines()
@@ -360,6 +359,7 @@ impl Fixture {
                     .and_then(terminal)?,
                 rows: rows.max(1),
                 cols: cols.max(1),
+                bar: !self.config_fails,
             },
         );
         Ok(id)
@@ -482,8 +482,10 @@ impl Drop for Fixture {
 
 /// The configuration a walk starts from, and returns to.
 /// The walk's clients keep the bar on a row of its own: its checks read it.
-pub const CONFIG_VALID: &str = "str shell list str /bin/sh end set\nstr history-bytes 500000 set\n\
-    str bar list str bottom list str workspace str tabs end list str pane end false end set\n";
+pub const CONFIG_VALID: &str = r#"(set "shell" (list "/bin/sh"))
+(set "history-bytes" 500000)
+(set "bar" (quote! ("bottom" ("workspace" "tabs") ("pane") #false)))
+"#;
 
 /// The environment of everything the walk starts: nothing inherited but
 /// `PATH`, and `HOME` the fixture.
