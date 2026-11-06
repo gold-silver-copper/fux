@@ -89,11 +89,6 @@ jobs:
           cargo clippy -p fux-server --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
           cargo test -p fux-server --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
 
-      # fuxed, the editor written in fuxth, headless on the fuxth the
-      # workspace's tests built.
-      - name: fuxed's own test
-        run: fuxed/test.sh target/debug/fuxth
-
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
       # in release, as debug is too slow for the step's 5 minutes; built in
       # a step of its own, and run under an 8 GiB data limit, so a bound
@@ -140,13 +135,13 @@ jobs:
           cargo test -p fux-vt --features checks --release --locked --test external_corpora 2>&1 | tee "$CI_LOGS/external-corpora.log"
 
       - name: fux-vt builds for wasm32 (the browser)
-        # fux-vt and fuxth have no OS dependency, so they build for a 32-bit
+        # fux-vt and grift have no OS dependency, so they build for a 32-bit
         # target with no OS at all; this keeps them that way.
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           rustup target add wasm32-unknown-unknown
-          cargo check -p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth --target wasm32-unknown-unknown --locked 2>&1 | tee "$CI_LOGS/wasm.log"
+          cargo check -p fux-vt -p fux-vt-peak -p grift --target wasm32-unknown-unknown --locked 2>&1 | tee "$CI_LOGS/wasm.log"
 
       - name: Minimum Rust version
         # Every manifest says rust-version = "1.95"; the pinned toolchain is
@@ -348,23 +343,22 @@ jobs:
           echo "02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee  $package" | sha256sum --check
           echo "FUXIX_CONPTY_PACKAGE=$package" >> "$GITHUB_ENV"
 
-      - name: fux-vt, fuxth, fuxix, fux-wire, fux-server, fux and fuxth-run
+      - name: fux-vt, grift, fuxix, fux-wire, fux-server and fux
         run: |
           set -euo pipefail
-          packages=(-p fux-vt -p fux-vt-peak -p fuxth-core -p fuxth -p fuxix -p fux-wire)
-          cargo clippy "${packages[@]}" -p fux-server -p fux -p fuxth-run --all-targets --locked -- -D warnings
+          packages=(-p fux-vt -p fux-vt-peak -p fuxix -p fux-wire)
+          cargo clippy "${packages[@]}" -p fux-server -p fux --all-targets --locked -- -D warnings
           cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings
           cargo test "${packages[@]}" --locked -- --skip another_user_is_refused
 
       # One polling thread per process (WINDOWS.md, PR 4): these poll, so
       # they take turns.
-      - name: fux-server, fux and fuxth-run units
+      - name: fux-server and fux units
         if: ${{ !cancelled() }}
         timeout-minutes: 7
         run: |
           set -euo pipefail
-          cargo test -p fux-server -p fux -p fuxth-run --lib --bins --locked -- --test-threads 1
-          cargo test -p fuxth-run --test runner --locked -- --test-threads 1
+          cargo test -p fux-server -p fux --lib --bins --locked -- --test-threads 1
 
       # fux's server (WINDOWS.md, PR 7), real fux driven over its pipe by
       # a small wire client, with what each found in the log: a server
