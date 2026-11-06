@@ -262,7 +262,7 @@ impl Session {
 /// The client and the server together: bytes typed at a client's terminal
 /// go through its screens and keymap (`Session::input`), as its client
 /// takes them, and what it sends is what the server applies.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use crate::session::Session;
     use crate::session::testing::{output, output_as, run};
@@ -691,6 +691,7 @@ mod tests {
     }
 
     /// The confirmation's recipe file, loaded.
+    #[cfg(unix)]
     const CONFIRM: &str = concat!(
         "require ",
         env!("CARGO_MANIFEST_DIR"),
@@ -699,6 +700,8 @@ mod tests {
 
     /// A question's or a prompt's action is checked as it opens: one with
     /// a mistake opens nothing.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn an_action_is_checked_as_its_screen_opens() -> Outcome {
         let (mut s, c) = session()?;
@@ -727,6 +730,8 @@ mod tests {
     /// callback on the pane it captured; `n` and Escape cancel, and the
     /// list's row actions, `r` and `x`, refuse its row: it is no pane, tab
     /// or workspace.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_confirmation_runs_its_callback_by_y_or_enter_alone() -> Outcome {
         let (mut s, c) = session()?;
@@ -834,6 +839,8 @@ mod tests {
     /// it does not bind keeps it open, saying so; its binding runs on the
     /// next key; the prefix inside it goes to the pane; and Enter on its
     /// entry in the column opens it too.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_map_runs_its_binding_on_the_next_key() -> Outcome {
         let (mut s, c) = session()?;
@@ -989,6 +996,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn keys_after_the_prefix_match_as_typed() -> Outcome {
         let (mut s, c) = session()?;
@@ -1011,6 +1020,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_binding_wins_over_the_columns_own_keys() -> Outcome {
         let (mut s, c) = session()?;
@@ -1054,6 +1065,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_key_bound_without_the_prefix_runs_at_once_and_reaches_no_pane() -> Outcome {
         let (mut s, c) = session()?;
@@ -1088,6 +1101,7 @@ mod tests {
     /// What a user can tell apart: every workspace, tab, pane and client,
     /// what the server draws for the client, its notice, and the screen
     /// its client has open.
+    #[cfg(unix)]
     fn state(s: &mut Session, c: ClientId) -> Result<String, String> {
         // Opening the prefix panel and leaving it are real journal events;
         // direct evaluation has a different history, with the same state.
@@ -1141,6 +1155,8 @@ mod tests {
     /// Typing a default binding's keys does what running its program as the
     /// client does, and the program runs; a repeating one also enters its
     /// mode.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn every_default_binding_runs_its_program() -> Outcome {
         let keymap = fux::script::default_state()
@@ -1197,6 +1213,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn every_chooser_of_the_keys_builds_its_rows_from_one_topology_observation() -> Outcome {
         use fux::script::{AsClient, Asks, Host};

@@ -17,10 +17,16 @@ whether a program is ready, idle or done. What the OS already does, the
 OS does: `env`, `timeout`, `kill`, `ps`, your terminal's clipboard and
 your editor.
 
-fux is one binary for macOS and Linux, built with Rust 1.95 or later:
-`cargo install --locked fux`, or in a clone `cargo install --locked --path
-.`. `fux` alone attaches, starting a server if none runs. The `fuxth`
+fux is one binary for macOS, Linux and Windows 11, built with Rust 1.95 or
+later: `cargo install --locked fux`, or in a clone `cargo install --locked
+--path .`. `fux` alone attaches, starting a server if none runs. The `fuxth`
 runner is a program of its own: `cargo install --locked --path fuxth-run`.
+
+On Windows a pane's shell is `%COMSPEC%`, else `cmd.exe`, and the config is
+`%APPDATA%\fux\config.fux`; for PowerShell, `str shell list str pwsh end set`
+there, and `[Environment]::CurrentDirectory = $PWD.ProviderPath` in its prompt,
+so a split starts where you are. fux fetches Microsoft's ConPTY on first use
+and says so; [WINDOWS.md](WINDOWS.md) says what differs.
 
 - `fux help agents` is the page for driving programs from a script or an
   agent ([docs/agents.md](docs/agents.md)), `fux help TOPIC` the rest.

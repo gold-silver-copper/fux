@@ -77,6 +77,30 @@ pub fn scratch() -> std::io::Result<std::path::PathBuf> {
     dir.canonicalize()
 }
 
+/// Where a user's config lives: `XDG_CONFIG_HOME`, else `~/.config`.
+#[cfg(unix)]
+pub fn config_dir() -> Option<std::path::PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|d| !d.is_empty());
+    set("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| set("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))
+}
+
+/// A new file for this process alone, open to read and write, named after
+/// `name`: removed from its directory at once, it goes with its last
+/// descriptor.
+#[cfg(unix)]
+pub fn anonymous(name: &str) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = scratch()?.join(format!("{name}-{}", std::process::id()));
+    let file = (std::fs::OpenOptions::new().read(true).write(true))
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    std::fs::remove_file(&path)?;
+    Ok(file)
+}
+
 /// A descriptor naming the file at `path`, a symbolic link refused,
 /// without opening it for reading or writing (`O_PATH`). While it is held
 /// the file's inode stays allocated, so its number cannot be given to

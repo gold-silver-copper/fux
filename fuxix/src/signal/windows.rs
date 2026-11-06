@@ -81,12 +81,12 @@ impl Sealed for Pipe {
         }
     }
 
-    fn reading(&self) -> Option<&crate::io::Stream> {
-        None
+    fn read(&self, _: &mut [u8]) -> Result<usize> {
+        Err(Errno::BADF)
     }
 
-    fn writing(&self) -> Option<&crate::io::Stream> {
-        None
+    fn write(&self, _: &[u8]) -> Result<usize> {
+        Err(Errno::BADF)
     }
 }
 
@@ -138,7 +138,7 @@ fn console_event(event: u32) -> Option<Signal> {
 /// Sets [`handle`] as this process's console control handler, once. With
 /// `int`, Ctrl-C is also let through again: a process started with it
 /// ignored (as one started in a new process group is) is told it too.
-fn handle_console(int: bool) -> Result<()> {
+pub(crate) fn handle_console(int: bool) -> Result<()> {
     static SET: OnceLock<Result<()>> = OnceLock::new();
     let set = SET.get_or_init(|| {
         // SAFETY: `handle` is an `extern "system"` function that lives as
@@ -165,12 +165,27 @@ pub(crate) fn heed_ctrl_c() -> Result<()> {
     }
 }
 
+/// Whether any pipe asked for `signal`.
+fn asked(signal: Signal) -> bool {
+    (lock(&PIPES).iter().filter_map(Weak::upgrade)).any(|queue| queue.signals.contains(&signal))
+}
+
 /// What a console control event runs, on a thread Windows starts for it:
-/// it tells the pipes that asked. An event none asked for goes on to the
-/// next handler, the system's own, which ends the process as it would
-/// have.
+/// it tells the pipes that asked. An event that ends this process whatever
+/// it does (close, logoff, shutdown) and one none asked for, which goes on
+/// to the system's own handler, first put the console back as it was
+/// ([`crate::terminal::restore_held`]); an event a pipe asked for and a
+/// loop still acts on doesn't, as that loop still paints.
 unsafe extern "system" fn handle(event: u32) -> BOOL {
-    match console_event(event).map(tell) {
+    let signal = console_event(event);
+    let ends = matches!(
+        event,
+        CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT
+    );
+    if ends || !signal.is_some_and(asked) {
+        crate::terminal::restore_held();
+    }
+    match signal.map(tell) {
         Some(Ok(true)) => 1,
         Some(Ok(false) | Err(_)) | None => 0,
     }

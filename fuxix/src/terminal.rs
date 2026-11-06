@@ -1,6 +1,7 @@
 //! Terminals: on Unix their modes, their size, their foreground group, and
 //! which session they control (`unix.rs`); on Windows a pseudo console's
-//! size (`windows.rs`). A [`Size`] and [`Pixels`] are the same on both.
+//! size, and the console this process runs in (`windows.rs`). A [`Size`],
+//! [`Pixels`] and `Raw` are the same on both.
 use std::num::NonZeroU16;
 
 #[cfg(unix)]

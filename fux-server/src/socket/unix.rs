@@ -509,14 +509,142 @@ pub fn taken_stdio() -> std::io::Result<(Stream, Stream)> {
 }
 
 /// Unix's terminals need nothing got ready: nothing to say.
-pub fn prepare_terminals() -> Option<String> {
+pub fn prepare_terminals(_notice: impl Fn(&str)) -> Option<String> {
     None
 }
 
 /// Unix's terminals need nothing chosen.
 pub fn load_terminals() {}
 
-#[cfg(all(test, unix))]
+/// A client's connection to its server: the same methods on every OS.
+pub type Client = UnixStream;
+
+/// The signals that detach an attached client.
+pub const CLIENT_STOPS: [fuxix::process::Signal; 3] = crate::STOPS;
+
+/// What starts a server at `path`, quoted for a shell.
+pub(super) fn start_another(path: &str) -> String {
+    format!("`FUX_SOCKET={path} fux start` starts one")
+}
+
+/// Connects to the server at `socket`.
+pub fn dial(socket: &SocketPath) -> std::io::Result<Client> {
+    UnixStream::connect(socket.path())
+}
+
+/// What a refusal to attach adds.
+pub const NOT_A_TERMINAL: &str = "";
+
+/// This process's user, as a refusal says it.
+pub fn this_user() -> String {
+    geteuid().to_string()
+}
+
+/// Who serves `client`, as the system says.
+pub fn client_peer(client: &Client) -> fuxix::Result<fuxix::socket::Peer> {
+    fuxix::socket::peer(client)
+}
+
+/// The server's log at `path`, opened to append: a regular file alone. A
+/// link is not followed, a FIFO with no reader refused at once (`ENXIO`),
+/// not waited on, and a terminal there never becomes this process's.
+pub fn open_log(path: &Path) -> std::io::Result<File> {
+    let flags = fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK | fuxix::file::NOCTTY;
+    let file = (OpenOptions::new().create(true).append(true))
+        .custom_flags(flags)
+        .open(path)?;
+    // Nonblocking changes nothing for a regular file's writes.
+    match file.metadata()?.is_file() {
+        true => Ok(file),
+        false => Err(std::io::Error::other("not a regular file")),
+    }
+}
+
+/// A server being started: what it says on stdout, then its end.
+pub struct Starting {
+    child: std::process::Child,
+}
+
+/// Starts `exe` with `args` in the background, its stderr `log`, its stdout
+/// a pipe to read; without the variable `unset`. A daemon (daemon(7)): a
+/// session of its own, no descriptors of the client's but stdio, no
+/// directory kept busy.
+pub fn start_server(
+    exe: &Path,
+    args: &[&std::ffi::OsStr],
+    _socket: &SocketPath,
+    log: File,
+    unset: &str,
+) -> std::io::Result<Starting> {
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(args)
+        .env_remove(unset)
+        .current_dir("/")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(log);
+    fuxix::process::lead_session(&mut command, false, fuxix::process::Dispositions::Default);
+    Ok(Starting {
+        child: command.spawn()?,
+    })
+}
+
+impl Starting {
+    /// What it writes on stdout, to read until it closes.
+    pub fn output(&mut self) -> Option<impl std::io::Read + use<>> {
+        self.child.stdout.take()
+    }
+
+    /// Waits for it to end: how, as words. Dropped instead, it runs on.
+    pub fn ended(mut self) -> std::io::Result<String> {
+        self.child.wait().map(|status| status.to_string())
+    }
+}
+
+/// The program process `pid` runs, to run it, however it was replaced
+/// since; its path, to say; and whether it is this very binary.
+pub fn server_binary(pid: fuxix::process::Pid) -> Result<(PathBuf, PathBuf, bool), String> {
+    let exe = PathBuf::from(format!("/proc/{pid}/exe"));
+    let named = |e: std::io::Error| format!("{}: {e}", exe.display());
+    let path = fs::read_link(&exe).map_err(named)?;
+    let theirs = fs::metadata(&exe).map_err(named)?;
+    let ours = fs::metadata("/proc/self/exe").map_err(|e| format!("/proc/self/exe: {e}"))?;
+    let same = (theirs.dev(), theirs.ino()) == (ours.dev(), ours.ino());
+    Ok((exe, path, same))
+}
+
+/// Runs `command` in this process's place, its first argument `arg0`:
+/// returns only if it can't.
+pub fn rerun(mut command: std::process::Command, arg0: &std::ffi::OsStr) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    command.arg0(arg0).exec()
+}
+
+/// The id a command that followed finds in its mark: its own, as `exec`
+/// keeps it.
+pub fn follower_id() -> u32 {
+    std::process::id()
+}
+
+/// A connection's process started before its client came takes it at the
+/// server's socket on its stdout, and its link is on stdin.
+pub fn waiting_stdio() -> Result<(), String> {
+    use std::os::fd::AsFd;
+    let server = std::io::stdin().as_fd().try_clone_to_owned();
+    let out = std::io::stdout().as_fd().try_clone_to_owned();
+    match (out, server) {
+        (Ok(listener), Ok(server)) => crate::conn::wait(listener.into(), server.into()),
+        (Err(e), _) | (_, Err(e)) => Err(format!("its sockets: {e}")),
+    }
+}
+
+/// Where `fux help` says a server is found.
+pub const SOCKET_HELP: &str = "(`FUX_SOCKET=/abs/path fux …`); else\n\
+     server.sock in $XDG_RUNTIME_DIR/fux, or with XDG_RUNTIME_DIR unset\n\
+     $TMPDIR/fux.";
+
+#[cfg(test)]
 mod tests {
     use super::super::{base_directory, checked};
     use super::*;

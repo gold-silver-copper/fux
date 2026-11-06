@@ -6,7 +6,7 @@
 //! is this test's, which, run as fux was (`argv[0]` fux's path), plays the
 //! binary followed and says what it was given. That needs a `main` of its
 //! own, not the test harness's.
-// It drives the fux client, Unix-only till WINDOWS.md's PR 8.
+// It scripts `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #[cfg(unix)]
 mod unix {
     use std::io::{Read, Write};

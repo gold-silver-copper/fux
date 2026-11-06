@@ -78,7 +78,25 @@ pub fn start(
     args: &[&OsStr],
     stdio: [Option<BorrowedHandle<'_>>; 3],
 ) -> std::io::Result<Started> {
+    start_in(program, args, stdio, None, &[])
+}
+
+/// As [`start`], in `directory` if one is given, this process's own
+/// otherwise, with this process's environment but for `unset`.
+pub fn start_in(
+    program: &Path,
+    args: &[&OsStr],
+    stdio: [Option<BorrowedHandle<'_>>; 3],
+    directory: Option<&Path>,
+    unset: &[&str],
+) -> std::io::Result<Started> {
     use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+    let place = Place {
+        directory: directory
+            .map(|directory| crate::pty::wide(directory.as_os_str()))
+            .transpose()?,
+        environment: (!unset.is_empty()).then(|| environment_without(unset)),
+    };
     let mut line = Vec::new();
     for arg in std::iter::once(program.as_os_str()).chain(args.iter().copied()) {
         crate::pty::quote(arg, &mut line)?;
@@ -95,17 +113,45 @@ pub fn start(
     if unsafe { IsProcessInJob(this(), std::ptr::null_mut(), &mut inside) } == 0 {
         return Err(std::io::Error::last_os_error());
     }
-    let (process, breakaway) = match create(&path, &line, &copies, inside != 0) {
+    let (process, breakaway) = match create(&path, &line, &copies, &place, inside != 0) {
         Ok(process) if inside != 0 => (process, Breakaway::Left),
         Ok(process) => (process, Breakaway::Free),
-        Err(error) if inside != 0 && denied(&error) => {
-            (create(&path, &line, &copies, false)?, Breakaway::Refused)
-        }
+        Err(error) if inside != 0 && denied(&error) => (
+            create(&path, &line, &copies, &place, false)?,
+            Breakaway::Refused,
+        ),
         Err(error) => return Err(error),
     };
     drop(copies);
     let pid = remember(process, true)?;
     Ok(Started { pid, breakaway })
+}
+
+/// Where a process starts: its directory, NUL-ended, and its environment
+/// block; none, this process's.
+struct Place {
+    directory: Option<Vec<u16>>,
+    environment: Option<Vec<u16>>,
+}
+
+/// This process's environment as a block `CreateProcessW` takes, but for
+/// `unset`, whose names are matched as Windows matches them, in any case.
+fn environment_without(unset: &[&str]) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let mut block = Vec::new();
+    for (name, value) in std::env::vars_os() {
+        if unset.iter().any(|gone| name.eq_ignore_ascii_case(gone)) {
+            continue;
+        }
+        block.extend(name.encode_wide());
+        block.push(u16::from(b'='));
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    // Ended by an empty string: an empty block has two NULs too.
+    block.push(0);
+    block.push(0);
+    block
 }
 
 fn denied(error: &std::io::Error) -> bool {
@@ -136,19 +182,21 @@ fn inheritable(handle: BorrowedHandle<'_>) -> std::io::Result<OwnedHandle> {
 }
 
 /// One `CreateProcessW`: `path` with the command line `line` (NUL-ended),
-/// its standard handles `stdio`, which it alone inherits, out of this
-/// process's job if `breakaway`. Its process handle; its thread's is
-/// closed at once.
+/// its standard handles `stdio`, which it alone inherits, at `place`, out
+/// of this process's job if `breakaway`. Its process handle; its thread's
+/// is closed at once.
 fn create(
     path: &[u16],
     line: &[u16],
     stdio: &[Option<OwnedHandle>],
+    place: &Place,
     breakaway: bool,
 ) -> std::io::Result<OwnedHandle> {
     use windows_sys::Win32::System::Threading::{
-        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
-        EXTENDED_STARTUPINFO_PRESENT, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
-        STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT,
+        CreateProcessW, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, STARTUPINFOW,
     };
     let raw = |at: usize| {
         (stdio.get(at).and_then(Option::as_ref)).map_or(INVALID_HANDLE_VALUE, |h| h.as_raw_handle())
@@ -177,10 +225,15 @@ fn create(
         },
         lpAttributeList: attributes.list(),
     };
-    let mut flags = EXTENDED_STARTUPINFO_PRESENT | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    let mut flags = EXTENDED_STARTUPINFO_PRESENT
+        | DETACHED_PROCESS
+        | CREATE_NEW_PROCESS_GROUP
+        | CREATE_UNICODE_ENVIRONMENT;
     if breakaway {
         flags |= CREATE_BREAKAWAY_FROM_JOB;
     }
+    let environment = (place.environment.as_ref()).map_or(std::ptr::null(), |block| block.as_ptr());
+    let directory = (place.directory.as_ref()).map_or(std::ptr::null(), |wide| wide.as_ptr());
     let mut line = line.to_vec();
     let mut created = PROCESS_INFORMATION::default();
     // SAFETY: `path` and `line` are NUL-ended and live through the call,
@@ -194,8 +247,8 @@ fn create(
             std::ptr::null(),
             i32::from(!handed.is_empty()),
             flags,
-            std::ptr::null(),
-            std::ptr::null(),
+            environment.cast(),
+            directory,
             &info.StartupInfo,
             &mut created,
         )
@@ -208,6 +261,91 @@ fn create(
     drop(unsafe { OwnedHandle::from_raw_handle(created.hThread) });
     // SAFETY: as above.
     Ok(unsafe { OwnedHandle::from_raw_handle(created.hProcess) })
+}
+
+/// Ends this process now with `code`: what stands for `exec`, once the
+/// program that took its place has ended with it.
+pub fn end(code: i32) -> ! {
+    use windows_sys::Win32::System::Threading::ExitProcess;
+    // SAFETY: it takes a number, and doesn't return.
+    unsafe { ExitProcess(code.cast_unsigned()) }
+}
+
+/// The path of the program process `pid` runs, as the system says.
+pub fn image(pid: Pid) -> std::io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    // SAFETY: it takes numbers and touches no memory.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.as_raw()) };
+    if raw.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `raw` was just opened, and nothing else owns it.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut name = vec![0u16; 32 * 1024];
+    let mut length = u32::try_from(name.len()).unwrap_or(0);
+    // SAFETY: the process is open; `name` is writable for `length` units.
+    let asked = unsafe {
+        QueryFullProcessImageNameW(
+            process.as_raw_handle(),
+            PROCESS_NAME_WIN32,
+            name.as_mut_ptr(),
+            &mut length,
+        )
+    };
+    if asked == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    name.truncate(usize::try_from(length).unwrap_or(0));
+    Ok(std::ffi::OsString::from_wide(&name).into())
+}
+
+/// This process and its ancestors, nearest first, as the system lists them.
+/// A pid is reused once its process is gone: a parent made after its child
+/// is no parent, and the chain ends there.
+pub fn ancestry() -> Vec<u32> {
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    let mut chain = vec![std::process::id()];
+    // SAFETY: it takes numbers and touches no memory.
+    let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if raw == INVALID_HANDLE_VALUE {
+        return chain;
+    }
+    // SAFETY: `raw` was just made, and nothing else owns it.
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut parents = BTreeMap::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).unwrap_or(0),
+        ..PROCESSENTRY32W::default()
+    };
+    // SAFETY: the snapshot is open, and `entry` is writable, its size set.
+    let mut more = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    while more {
+        parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    }
+    let born = |pid: u32| {
+        Pid::from_raw(pid)
+            .and_then(|pid| identity(pid).ok())
+            .map(|i| i.created)
+    };
+    let mut child = std::process::id();
+    while let Some(parent) = (parents.get(&child).copied()).filter(|parent| *parent != 0) {
+        let older = matches!((born(parent), born(child)), (Some(a), Some(b)) if a <= b);
+        if !older || chain.contains(&parent) {
+            break;
+        }
+        chain.push(parent);
+        child = parent;
+    }
+    chain
 }
 
 /// `process` known by its pid from now on, watched.
