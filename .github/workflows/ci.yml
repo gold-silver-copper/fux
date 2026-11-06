@@ -2,8 +2,7 @@ name: CI
 
 # fux is developed on macOS and published for both platforms, and the two
 # differ in ways that have hidden real defects (bevy-final findings 010-013),
-# so every change runs on both. The crates that already build on Windows run
-# there too, on the way to fux on Windows 11 (WINDOWS.md, D-130).
+# so every change runs on both, and on Windows 11 too (WINDOWS.md, D-130).
 
 on:
   pull_request:
