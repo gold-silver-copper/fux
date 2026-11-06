@@ -603,7 +603,7 @@ dependencies = [
  "fux-vt",
  "fux-wire",
  "fuxix",
- "fuxth",
+ "grift",
 ]
 
 [[package]]
@@ -645,7 +645,6 @@ version = "0.37.0"
 dependencies = [
  "fux-vt",
  "fuxix",
- "fuxth-core",
 ]
 
 [[package]]
@@ -655,17 +654,6 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "fuxth"
-version = "0.8.0"
-dependencies = [
- "fuxth-core",
-]
-
-[[package]]
-name = "fuxth-core"
-version = "0.8.0"
 
 [[package]]
 name = "generic-array"
@@ -709,6 +697,11 @@ dependencies = [
  "color_quant",
  "weezl",
 ]
+
+[[package]]
+name = "grift"
+version = "2.0.0"
+source = "git+https://github.com/gold-silver-copper/grift?rev=8d4588f6cffc43d0061e023c6536f1e4bc9263fb#8d4588f6cffc43d0061e023c6536f1e4bc9263fb"
 
 [[package]]
 name = "half"

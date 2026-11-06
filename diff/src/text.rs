@@ -1,7 +1,7 @@
 //! Text, in the baseline and the current fux: words quote alike; key
 //! names read and print alike; JSON strings and base64 are written the
 //! same. Config files are no longer
-//! compared: the baseline's grammar is gone, and a config is a fuxth
+//! compared: the baseline's grammar is gone, and a config is a grift
 //! program its clients run.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
