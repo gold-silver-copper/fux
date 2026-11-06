@@ -90,7 +90,7 @@ impl Backend {
         let mut asked = Asked::default();
         // The update below looks at the mode, so a frame's start or end
         // needs no stop.
-        self.parser.process_all(bytes, &mut asked)?;
+        let _ = self.parser.process_all(bytes, &mut asked);
         if !asked.replies.is_empty() {
             out.push_str("{\"reply\":");
             string(out, &String::from_utf8_lossy(&asked.replies));

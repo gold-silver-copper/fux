@@ -196,7 +196,7 @@ impl Replay {
         // Events for titles, and the modes a feature must turn on to be seen.
         let options = [Feature::Events, Feature::ColorSchemeUpdates, Feature::InBandResize];
         let mut parser = Parser::with_options(size, 0, options.into_iter().collect())?;
-        parser.process_all(recording, &mut ())?;
+        let _ = parser.process_all(recording, &mut ());
         Ok(Replay { parser })
     }
 

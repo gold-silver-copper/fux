@@ -67,7 +67,7 @@ fn run(input: &[u8], rows: u16, cols: u16, newline: bool) -> Result<Parser, Stri
     let mut parser = Parser::with_options(size, 0, options).map_err(|e| e.to_string())?;
     // Replies and events go nowhere: nothing goes back to a program.
     if newline {
-        parser.process_all(b"\x1b[20h", &mut ()).map_err(|e| e.to_string())?;
+        let _ = parser.process_all(b"\x1b[20h", &mut ());
     }
     // `Err` means some output was refused room, but every byte was read:
     // keep the screen.

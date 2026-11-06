@@ -1,0 +1,56 @@
+name: dogfood-windows
+# The 30 programs built on fuxix and fux-vt, on Windows: never merged.
+on:
+  push:
+    branches: [dogfood/windows]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  programs:
+    name: programs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-11-arm, windows-2025]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Toolchain
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+            Invoke-WebRequest "https://static.rust-lang.org/rustup/dist/$arch-pc-windows-msvc/rustup-init.exe" -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
+            & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain none --profile minimal
+            "$env:USERPROFILE\.cargo\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: dogfood-${{ matrix.os }}
+          workspaces: ". -> target-dog"
+      - name: Each program's own tests
+        timeout-minutes: 35
+        run: |
+          set -uo pipefail
+          export CARGO_TARGET_DIR="$PWD/target-dog"
+          : > results.txt
+          for dir in dogfood/*/; do
+            name=$(basename "$dir")
+            echo "::group::$name"
+            timeout 300 cargo test --manifest-path "$dir/Cargo.toml" -- --test-threads 1 > "out-$name.txt" 2>&1
+            code=$?
+            tail -25 "out-$name.txt" | cut -c1-180
+            echo "::endgroup::"
+            passed=$(grep -E '^test result' "out-$name.txt" | sed -E 's/.* ([0-9]+) passed.*/\1/' | paste -sd+ | bc)
+            failed=$(grep -E '^test result' "out-$name.txt" | sed -E 's/.* ([0-9]+) failed.*/\1/' | paste -sd+ | bc)
+            echo "RESULT $name exit=$code passed=${passed:-0} failed=${failed:-0}" | tee -a results.txt
+          done
+          cat results.txt

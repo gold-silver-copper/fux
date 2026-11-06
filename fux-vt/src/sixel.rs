@@ -64,7 +64,7 @@ impl Picture {
         self.rgba.capacity().saturating_add(self.covered_bytes())
     }
     /// The RGBA of the pixel at `x`, `y`, if it is in the picture.
-    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+    pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.width || y >= self.height {
             return None;
         }
