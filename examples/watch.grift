@@ -1,4 +1,5 @@
-; Wait for a program's exit, print its captured output and its status.
+; Run a program, wait for its exit, and read what it printed. until-ended
+; leaves a capture once the `ended` count is 1, and `get` reads how it ended.
 ; expect: tick 1
 ; expect: tick 2
 ; expect: tick 3

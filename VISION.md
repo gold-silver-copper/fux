@@ -10,7 +10,7 @@ changes only by an owner decision recorded in `DECISIONS.md`.
 ## The goal
 
 **fux is a minimal terminal multiplexer, driven and configured entirely in
-fuxth, a small Forth.** An agent driving it can:
+grift, a small Lisp built on fexprs.** An agent driving it can:
 - read every fact the ontology defines;
 - learn every multiplexer and program change from the journal, which is
   bounded;
@@ -31,7 +31,7 @@ thing and says so, or refuses with an error; it never pretends.
 ## Who it is for
 
 1. **Agents first.** Claude, Codex and whatever comes next, driving fux one
-   command or one small fuxth program at a time. The interface is designed
+   command or one small grift program at a time. The interface is designed
    for a reader who pays for every byte and whose next turn starts with a
    fresh shell.
 2. **The person who watches and steers.** The owner attaches to watch the
@@ -53,20 +53,20 @@ reference.
 
 | Thing | What it is | Identity | Lifetime |
 |---|---|---|---|
-| server | owns everything for one run; a crashed server process is replaced by the next `fux start`, and the run goes on (D-124) | its socket and its run | start until told to stop |
+| server | owns everything for one run; a crashed server process is replaced by the next `fux '(start)'`, and the run goes on (D-124) | its socket and its run | start until told to stop |
 | workspace | an ordered group of tabs and workspaces, seen one at a time (tmux: session) | `+N` plus run; a name or none | until its last child closes |
 | tab | panes laid out together, split side by side or stacked one at a time, seen one at a time (tmux: window) | `@N` plus run; a name or none | until its last pane closes |
 | pane | a terminal that outlives its programs | `%N` plus run; a name or none | until killed |
 | program | one run of a process in a pane; a respawn is the next generation | pane plus generation | start to exit |
 | client | an attached terminal, or a headless stand-in | `cN` plus run | attach to detach |
 | journal | the numbered, bounded events of one server process in a run | the run and its server process | that process's |
-| dictionary | the words one fuxth run can call | one per run | the run's |
-| word | a named fuxth definition | its name plus which definition | its dictionary's |
+| dictionary | the names one grift run can call | one per run | the run's |
+| word | a named grift definition | its name plus which definition | its dictionary's |
 
 **Not things, on purpose:**
 - **judgements:** readiness, idle, done;
 - **an agent:** it's a program in a pane;
-- **a command:** it's a word;
+- **a command:** it's an operation, a word;
 - **a setting:** it's a value;
 - **a hook:** it's a program reading the journal;
 - **a record or capture:** it's a value holding facts at one version;
@@ -85,7 +85,7 @@ reference.
    it depends on. That state's owner refuses it as stale if the version
    changed before acceptance. A version says nothing about another owner's
    state.
-3. **Every failure says what already happened.** A fuxth program can fail
+3. **Every failure says what already happened.** A grift program can fail
    after it acted, so its error lists the actions that already took effect.
 4. **Limits belong to users and the OS** (D-83). fux sets no limits of
    its own on memory, steps, time or queues:
@@ -95,25 +95,25 @@ reference.
      fact.
 
    The one exception is parsing untrusted wire input safely. When something
-   does fail, the error says so with a code.
+   does fail, the error says so with its kind.
 5. **Deterministic, with its inputs stated.** The same source, the same
    starting state and the same host answers give the same result. The order
    in which competing agents arrive is an input, not something fux makes
    repeatable.
-6. **One language, mechanism in Rust, policy in fuxth.** Atomic changes,
+6. **One language, mechanism in Rust, policy in grift.** Atomic changes,
    bounded observations, the terminal engine and OS facts are Rust.
    Defaults, key bindings, recipes, and anything someone might want
-   different, are fuxth.
-7. **Text stays data.** Callbacks, bindings and hooks hold code values or
-   word names, never strings that become code. fux never runs a string as
+   different, are grift.
+7. **Text stays data.** Callbacks, bindings and hooks hold code values,
+   never strings that become code. fux never runs a string as
    source.
 8. **Self-describing.** Every fact in the ontology can be read with a word,
    every word carries its documentation and can be listed from the
    dictionary, and every key can say what it runs.
-9. **Independent programs.** fux, fuxth and fuxed each build and run alone.
-   fux doesn't know the editor exists, and fuxth knows neither. A project
-   contains no code specific to another tool.
-10. **The Unix philosophy** (D-82, D-91, D-92). fux, fuxth and fuxed each
+9. **Independent programs.** fux and grift each build and run alone, and
+   grift knows nothing of fux. A project contains no code specific to
+   another tool.
+10. **The Unix philosophy** (D-82, D-91, D-92). fux and grift each
     do one thing well, and work with other programs instead of growing.
     - **Lean on the OS.** What the OS or an ordinary program already does,
       they use or report, never rebuild:
@@ -126,7 +126,7 @@ reference.
       Every feature and review asks whether the OS or an ordinary program
       already does it.
     - **Text streams.** stdout carries only data: an item per line, or a
-      record as one JSON object per line. Diagnostics go to stderr, and the
+      record as one line of grift data. Diagnostics go to stderr, and the
       exit status says how it ended. Nothing that runs without a terminal
       prompts or chats.
     - **Silence.** A command with nothing to say prints nothing.
@@ -138,7 +138,7 @@ reference.
     They compose through arguments, stdin, stdout, stderr, exit codes and
     files.
 
-    **The boundary:** the shell composes `fux` commands, fuxth does what
+    **The boundary:** the shell composes `fux` commands, grift does what
     must happen inside one request or one key binding, and ordinary
     programs do everything else.
 11. **Finished parts stay finished.** A part marked frozen changes only for
@@ -151,20 +151,21 @@ reference.
   use separate servers or OS isolation. Confinement built into fux would be
   easy to break and would promise a safety it can't give.
 - **Not an agent framework.** No model calls, scheduler, task queue or
-  message bus inside fux or fuxth. Agents coordinate through files and
+  message bus inside fux or grift. Agents coordinate through files and
   processes outside them.
 - **Not a judge of readiness,** ever.
-- **Not an editor.** fuxed is its own project, with its own vision.
-- **Not a clone** of tmux or Forth. fuxth works like a real Forth: a
-  dictionary, an outer interpreter, immediate and defining words, a data
-  space, execution tokens (D-84). Its words are full English words that need
-  no quoting in a shell, such as `define … end`, `add` and `str`, never
-  Forth's symbols such as `:` `;` `+` and `s"` (D-87).
+- **Not an editor.** `C-b c` hands a pane's history to yours. fuxed, the
+  editor written in fuxth, is kept in `archived/`.
+- **Not a clone** of tmux or Kernel. grift is a Lisp whose one primitive
+  operative is `vau!`, with no macros: `if!` and `lambda!` are definitions a
+  reader can read and replace. Its names are full English words, such as
+  `define!`, `add` and `string-append`, never symbols such as `+`, and a
+  command line quotes its program once, as one shell argument.
 - **Not mouse-first, no floating panes** (rejected 2026-10-26).
-- **Not a general runtime.** No threads, floats, packages or network in
-  fuxth. It is otherwise a real Forth (D-84). Its data space holds
-  memory-safe cells, never host memory.
-- **Not a plugin platform.** Extension is fuxth source anyone can read.
+- **Not a general runtime.** No threads, packages or network in grift as fux
+  runs it: it reaches the outside only through the operations fux gives it,
+  and holds memory-safe values, never host memory.
+- **Not a plugin platform.** Extension is grift source anyone can read.
 - **Not finished by audits.** An audit can find a bug; only the checklist
   says "done".
 - **Not stable inside.** The frame protocol and the Rust internals change
@@ -180,8 +181,7 @@ The checkpoint, fux's next version, is reached when all of these hold:
 - **every changed contract has been shown working in the real program** on
   the release head (D-48);
 - **the local gate passes;**
-- **fuxth's Forth core has landed** (D-84), since fux's words are fuxth
-  words;
+- **grift has replaced fuxth,** since fux's words are grift operations;
 - **fux is smaller than it was on 2026-10-31** (D-85): its production
   lines, not counting fux-vt and fuxix, end below master `1a8f860f`.
 
@@ -202,5 +202,5 @@ The machine numbers hold throughout:
 | Idle wakeups in 10 s | 0 | 0 |
 | Server memory at start / per empty pane, every process counted (D-121) | 5.3 MiB / 60 KiB | ≤ 8 MiB / ≤ 1 MiB |
 | One `fux` command, cold | 8.25 M instructions | ≤ 10 M |
-| fuxth steps a second | 130–140 M | ≥ 100 M |
+| grift steps a second | not measured | not set: fuxth's was ≥ 100 M |
 | Longest hold of the server loop by one request | not gated | ≤ 16 ms |

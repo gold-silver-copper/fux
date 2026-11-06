@@ -1,4 +1,8 @@
-; Confirm explicit code, retaining its captured data.
+; Asks before an action: `(require! "recipes/confirm.grift")`, then `confirm`.
+; client title callback: a question, a chooser with one row, Yes. Choosing it
+; runs the callback, a code value or (list captured-arguments code-value), on
+; its captured arguments alone. The title is choose's: text, or (list text
+; subject-handle), which closes when the subject goes.
 (define! confirm (lambda! (client title action)
   (define! captured? (same? (kind action) "list"))
   (when! (and!? captured? (not? (same? (length action) 2)))
