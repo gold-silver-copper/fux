@@ -1,0 +1,114 @@
+name: spike-win-terminal
+# Throwaway: the client's console tests alone, for a faster turn than CI.
+on:
+  push:
+    branches: [spike/win-terminal]
+permissions:
+  contents: read
+jobs:
+  console:
+    name: console (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-11-arm, windows-2025]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Toolchain
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+            Invoke-WebRequest "https://static.rust-lang.org/rustup/dist/$arch-pc-windows-msvc/rustup-init.exe" -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
+            & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain none --profile minimal
+            "$env:USERPROFILE\.cargo\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: spike-console-${{ matrix.os }}
+      - name: ConPTY package
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/conpty/conpty.nupkg"
+          mkdir -p "$(dirname "$package")"
+          curl --fail --silent --show-error --location --proto =https --retry 5 --retry-all-errors --max-time 120 -o "$package" \
+            https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/1.25.260930003/microsoft.windows.console.conpty.1.25.260930003.nupkg
+          echo "FUXIX_CONPTY_PACKAGE=$package" >> "$GITHUB_ENV"
+      - name: units
+        if: ${{ matrix.os == 'windows-2025' }}
+        timeout-minutes: 14
+        run: |
+          set -uo pipefail
+          cargo test -p fux --lib --locked -- --test-threads 1 2>&1 | tail -50 | cut -c1-220
+          cargo test -p fux-server -p fuxth-run --lib --bins --no-fail-fast --locked -- --test-threads 1 2>&1 | tail -12 | cut -c1-200
+      - name: console tests
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: |
+          set +e
+          cargo test -p fuxth-run --test runner --locked -- --nocapture --test-threads 1
+          cargo test -p fuxix --test console --locked -- --nocapture; a=$?
+          cargo test -p fux --test console --locked -- --nocapture; b=$?
+          echo "exits $a $b"
+          tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe|console-" || true
+          exit $((a + b))
+      - name: the console tests as a standard user
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          $pw = 'Fx!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
+          "::add-mask::$pw"
+          net user fuxclient $pw /add | Out-Null
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Set-Service seclogon -StartupType Manual
+          Start-Service seclogon
+          icacls $PWD /grant '*S-1-5-32-545:(OI)(CI)M' /Q | Out-Null
+          icacls (Split-Path $env:FUXIX_CONPTY_PACKAGE) /grant '*S-1-5-32-545:(OI)(CI)RX' /Q | Out-Null
+          [Environment]::SetEnvironmentVariable('FUXIX_CONPTY_PACKAGE', $env:FUXIX_CONPTY_PACKAGE, 'Machine')
+          $cred = New-Object System.Management.Automation.PSCredential('fuxclient', (ConvertTo-SecureString $pw -AsPlainText -Force))
+          $failed = 0
+          foreach ($exe in Get-ChildItem target\debug\deps\console-*.exe) {
+            "=== $($exe.Name)"
+            $err = "$env:RUNNER_TEMP\console-err.txt"
+            $p = Start-Process -FilePath $exe.FullName -Credential $cred -WorkingDirectory $PWD -RedirectStandardError $err -RedirectStandardOutput "$err.out" -PassThru -Wait
+            Get-Content $err
+            "exit $($p.ExitCode)"
+            $failed += [int]($p.ExitCode -ne 0)
+          }
+          exit $failed
+      - name: fux in real Windows Terminal, Defender on
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $false
+          foreach ($i in 1..30) { if ((Get-MpComputerStatus).RealTimeProtectionEnabled) { break }; Start-Sleep 1 }
+          "real-time protection: $((Get-MpComputerStatus).RealTimeProtectionEnabled)"
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $version = '1.25.2733.0'
+          curl.exe -fsSL -o "$env:RUNNER_TEMP\wt.zip" "https://github.com/microsoft/terminal/releases/download/v$version/Microsoft.WindowsTerminal_${version}_$arch.zip"
+          Expand-Archive "$env:RUNNER_TEMP\wt.zip" "$env:RUNNER_TEMP\wt"
+          $exe = Get-ChildItem "$env:RUNNER_TEMP\wt" -Recurse -Filter WindowsTerminal.exe | Select-Object -First 1
+          New-Item -ItemType File (Join-Path $exe.DirectoryName '.portable') -Force | Out-Null
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\run" | Out-Null
+          Copy-Item target\debug\fux.exe "$env:RUNNER_TEMP\run\fux.exe"
+          ./tests/windows-terminal.ps1 -Fux "$env:RUNNER_TEMP\run\fux.exe" -Terminal $exe.FullName -Out "$env:RUNNER_TEMP\terminal"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: terminal-${{ matrix.os }}
+          path: ${{ runner.temp }}/terminal/*.png
+          if-no-files-found: warn
+      - name: logs
+        if: ${{ always() }}
+        run: |
+          for f in target/tmp/console-keys-*/pane.log; do [ -f "$f" ] && { echo "=== $f"; tail -40 "$f" | cut -c1-200; }; done; true
