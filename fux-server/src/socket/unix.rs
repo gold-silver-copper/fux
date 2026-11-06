@@ -641,7 +641,7 @@ pub const SOCKET_HELP: &str = "(`FUX_SOCKET=/abs/path fux …`); else\n\
      server.sock in $XDG_RUNTIME_DIR/fux, or with XDG_RUNTIME_DIR unset\n\
      $TMPDIR/fux.";
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::super::{base_directory, checked};
     use super::*;

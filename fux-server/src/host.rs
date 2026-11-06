@@ -1524,14 +1524,14 @@ impl Host {
 
 /// What the tests and the tools look at, and do, in a host held in their
 /// process (`Session::host_mut`).
-#[cfg(any(all(test, unix), feature = "in-process"))]
+#[cfg(any(test, feature = "in-process"))]
 impl Host {
     /// Whether a respawn is under way.
     pub fn respawning(&self) -> bool {
         self.respawning.is_some()
     }
     /// Its ended program's last output is awaited till `at`.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn settle_till(&mut self, at: Instant) {
         self.settling = Some(at);
     }
@@ -1550,24 +1550,24 @@ impl Host {
         }
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn set_process(&mut self, process: Process) -> Process {
         self.pane_mut().set_process(process)
     }
     /// Starts real programs from now on, told `socket`, or none.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn starts(&mut self, socket: Option<PathBuf>) {
         self.socket = socket;
     }
     /// The program a respawn under way started, and its fresh pane's
     /// history budget.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn replacement(&self) -> Option<(Option<&Child>, usize)> {
         let r = self.respawning.as_ref()?;
         Some((r.process.child(), r.fresh.history_bytes()))
     }
     /// The program a respawn under way respawns over is `old`.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn respawned_over(&mut self, old: Child) {
         if let Some(r) = &mut self.respawning {
             r.old = Some(old);
@@ -1575,7 +1575,7 @@ impl Host {
     }
     /// A respawn under way over `old`, into `fresh`, its grace over: as
     /// one over a program that ignores the hangup.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn respawning_over(&mut self, fresh: Pane, old: Child, now: Instant) {
         if let Process::Reading(child) = self.set_process(Process::Respawning) {
             self.dying.push(Dying {
@@ -1595,7 +1595,7 @@ impl Host {
         });
     }
     /// The programs it started and has not reaped.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn children(&self) -> Vec<Pid> {
         (self.pane.process().child().into_iter())
             .chain(
@@ -2141,7 +2141,7 @@ fn read_program(host: &mut Host, buffer: &mut [u8], clock: &mut Clock, now: Inst
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -2173,6 +2173,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: descriptors of any kind, which fuxix reads on Unix alone.
+    #[cfg(unix)]
     #[test]
     fn what_is_left_is_read_a_turn_at_a_time_to_its_end() -> TestResult {
         // 2 MiB, then the end: all of it, a turn's worth each turn.
@@ -2209,6 +2211,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: descriptors of any kind, which fuxix reads on Unix alone.
+    #[cfg(unix)]
     #[test]
     fn unexpected_terminal_read_errors_are_not_empty_output() -> TestResult {
         let mut reads = [Ok(1), Err(fuxix::Errno::INTR), Err(fuxix::Errno::SRCH)].into_iter();

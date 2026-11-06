@@ -1817,6 +1817,7 @@ impl Server {
 }
 
 // They drive the server over Unix sockets and `/bin/sh`.
+// Unix alone: Unix sockets stand for clients and panes, and `/bin/sh` runs.
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

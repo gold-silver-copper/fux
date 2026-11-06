@@ -374,10 +374,11 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 8
         run: |
-          set -euo pipefail
-          cargo test -p fuxix --test console --locked -- --nocapture
-          cargo test -p fux --test console --locked -- --nocapture
+          set -uo pipefail
+          cargo test -p fuxix --test console --locked -- --nocapture; console=$?
+          cargo test -p fux --test console --locked -- --nocapture; client=$?
           tasklist //FO CSV | grep -iE "fux|openconsole|cmd.exe" || true
+          exit $((console + client))
 
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured
       # in the log: a flood both ways with signals, no lost wake-up, an idle
