@@ -480,6 +480,7 @@ jobs:
             Start-Sleep 1
           }
           "real-time protection: $((Get-MpComputerStatus).RealTimeProtectionEnabled)"
+          if (-not (Get-MpComputerStatus).RealTimeProtectionEnabled) { throw 'real-time protection is off' }
           $version = '1.25.2733.0'
           $arch, $hash = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
             'arm64', '11b4fe264ecaa71b08cd84195536f68c669808155338e9f47f4da668b4cf0e26'
