@@ -245,6 +245,8 @@ mod tests {
         Ok(String::from_utf8(out)?)
     }
 
+    // Unix alone: a symbolic link, which Windows lets few users make.
+    #[cfg(unix)]
     #[test]
     fn a_diamond_runs_each_canonical_file_once() -> TestResult {
         let f = Fixture::new()?;
@@ -283,7 +285,9 @@ mod tests {
         }
         f.write("f1000.grift", "(print \"last\")")?;
         let printed = std::thread::Builder::new()
-            .stack_size(128 << 10)
+            // Windows' debug frames are larger: its stack still holds far
+            // fewer calls than the chain is long.
+            .stack_size(if cfg!(windows) { 512 << 10 } else { 128 << 10 })
             .spawn(move || run(&root).map_err(|e| e.to_string()))?
             .join()
             .map_err(|_| "reading overflowed its stack")??;

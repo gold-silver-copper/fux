@@ -8,7 +8,7 @@
 //! agents`) runs as an agent types it, in one bash with no server: it
 //! starts its own, and stops it. None has `XDG_RUNTIME_DIR`, and each has
 //! its `TMPDIR` in its directory. What they print is never compared.
-// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+// They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #![cfg(unix)]
 mod support;
 use std::os::unix::process::CommandExt;

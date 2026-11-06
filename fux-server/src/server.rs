@@ -642,15 +642,15 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
         false => {}
     }
     // The run's own fux, from here on: what it says, it says once.
-    if let Some(notice) = crate::socket::prepare_terminals() {
-        log!("notice: {notice}");
+    if let Some(text) = crate::socket::prepare_terminals(notice) {
+        notice(&text);
     }
     // Said once: a job that keeps its processes in ends this run with it
     // (D-135). Unix has no jobs.
     if fuxix::process::job_fate() == fuxix::process::Fate::Bound {
-        log!(
-            "notice: this run ends with the terminal or launcher that started it: \
-             its job ends its processes and lets none leave"
+        notice(
+            "this run ends with the terminal or launcher that started it: \
+             its job ends its processes and lets none leave",
         );
     }
     let mut session = Session::new(socket.path().to_owned(), true, run, journal);
@@ -762,6 +762,21 @@ fn ready() {
         Err(error) => log!("{null}: {error}"),
     }
 }
+
+/// What a server says before it listens, for the person who started it: in
+/// its log, and on stdout, a `NOTICE` line the starter shows
+/// (`client::start_server`). Unix has none to say.
+fn notice(text: &str) {
+    log!("notice: {text}");
+    let mut stdout = std::io::stdout();
+    let line = format!("{NOTICE}{text}\n");
+    let _ = stdout
+        .write_all(line.as_bytes())
+        .and_then(|()| stdout.flush());
+}
+
+/// What begins a line of a server's stdout that is a notice.
+pub const NOTICE: &str = "notice: ";
 
 /// What a server says on stdout once it listens.
 pub const READY: &[u8] = b"fux server: listening\n";
@@ -1802,6 +1817,7 @@ impl Server {
 }
 
 // They drive the server over Unix sockets and `/bin/sh`.
+// Unix alone: Unix sockets stand for clients and panes, and `/bin/sh` runs.
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

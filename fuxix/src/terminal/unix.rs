@@ -187,6 +187,38 @@ pub fn window_size(fd: impl AsFd) -> Option<(Size, Option<Pixels>)> {
     Some((Size::new(size.ws_row, size.ws_col)?, pixels))
 }
 
+/// The size of the terminal on stdin.
+pub fn stdin_size() -> Option<(Size, Option<Pixels>)> {
+    window_size(std::io::stdin())
+}
+
+/// Whether stdin and stdout are one terminal: the same device, or both the
+/// session's controlling terminal (`fux </dev/tty`, whose device is
+/// `/dev/tty`'s).
+pub fn on_one_terminal() -> bool {
+    use std::io::IsTerminal as _;
+    use std::os::unix::fs::MetadataExt as _;
+    let device = |fd: std::os::fd::BorrowedFd<'_>| {
+        let file = std::fs::File::from(fd.try_clone_to_owned().ok()?);
+        file.metadata().ok().map(|m| m.rdev())
+    };
+    let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
+    stdin.is_terminal()
+        && stdout.is_terminal()
+        && (device(stdin.as_fd()).is_some_and(|d| device(stdout.as_fd()) == Some(d))
+            || controls_session(stdin) && controls_session(stdout))
+}
+
+/// Unix has nothing to open: a process's descriptors are what it was
+/// given.
+pub fn open_stdio() {}
+
+/// Runs `leave`, what a program writes to its terminal as a panic ends it,
+/// before the panic hook puts the terminal back.
+pub fn leaving(leave: fn()) {
+    leave();
+}
+
 /// Sets the size of the terminal `fd`, in cells and, if known, in
 /// `pixels` (else 0 by 0, as the kernel says unknown); the kernel tells
 /// its foreground group with SIGWINCH when either changes.

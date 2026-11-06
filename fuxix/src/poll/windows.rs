@@ -25,8 +25,8 @@ use crate::errno::{Errno, Result};
 use std::marker::PhantomData;
 use std::ops::{BitOr, BitOrAssign};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::IO::{
@@ -35,8 +35,9 @@ use windows_sys::Win32::System::IO::{
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CancelWaitableTimer, CreateWaitableTimerExW,
-    GetCurrentThread, INFINITE, SetThreadPriority, SetWaitableTimer, THREAD_PRIORITY_TIME_CRITICAL,
-    TIMER_ALL_ACCESS, WaitForSingleObject,
+    GetCurrentThread, INFINITE, RegisterWaitForSingleObject, SetThreadPriority, SetWaitableTimer,
+    THREAD_PRIORITY_TIME_CRITICAL, TIMER_ALL_ACCESS, UnregisterWaitEx, WT_EXECUTEINWAITTHREAD,
+    WT_EXECUTEONLYONCE, WaitForSingleObject,
 };
 
 /// What a source is waited for, or was found ready for.
@@ -99,18 +100,41 @@ pub(crate) mod sealed {
         /// What it is ready for now: of `interest`, and `ERR` and `HUP`
         /// unasked.
         fn ready(&self, interest: Events) -> Events;
-        /// The stream [`crate::io::read`] reads, if it reads. No default:
-        /// each source says.
-        fn reading(&self) -> Option<&crate::io::Stream>;
-        /// The stream [`crate::io::write`] writes, if it writes.
-        fn writing(&self) -> Option<&crate::io::Stream>;
+        /// What [`crate::io::read`] does with it: `BADF` if it reads
+        /// nothing. No default: each source says.
+        fn read(&self, buffer: &mut [u8]) -> crate::errno::Result<usize>;
+        /// What [`crate::io::write`] does with it: `BADF` if it writes
+        /// nothing.
+        fn write(&self, bytes: &[u8]) -> crate::errno::Result<usize>;
     }
 }
 
 /// Something a poll waits on: an [`crate::io::Stream`], a
-/// [`crate::signal::Pipe`] or a [`crate::pty::Master`]. Sealed: Windows tells readiness only of what
-/// fuxix itself keeps a read or a queue for.
+/// [`crate::signal::Pipe`], a [`crate::pty::Master`], a
+/// [`crate::socket::Client`], a [`Wake`], or this process's stdin and
+/// stdout. Sealed: Windows tells readiness only of what fuxix itself keeps
+/// a read or a queue for.
 pub trait Source: sealed::Sealed {}
+
+impl<S: Source + ?Sized> sealed::Sealed for &S {
+    fn arm(&self, interest: Events) {
+        (**self).arm(interest);
+    }
+
+    fn ready(&self, interest: Events) -> Events {
+        (**self).ready(interest)
+    }
+
+    fn read(&self, buffer: &mut [u8]) -> Result<usize> {
+        (**self).read(buffer)
+    }
+
+    fn write(&self, bytes: &[u8]) -> Result<usize> {
+        (**self).write(bytes)
+    }
+}
+
+impl<S: Source + ?Sized> Source for &S {}
 
 /// A source to wait on, borrowed for as long as it is waited on.
 pub struct PollFd<'fd> {
@@ -305,6 +329,108 @@ pub(crate) fn wake() -> Result<()> {
     }
     Ok(())
 }
+
+/// A registered thread-pool wait, unregistered when dropped.
+pub(crate) struct Wait(HANDLE);
+
+// SAFETY: a registered wait may be unregistered from any thread.
+unsafe impl Send for Wait {}
+
+impl Wait {
+    /// Runs `callback` once, on the pool's wait thread, as `object` is
+    /// signalled: the object stays open till this is dropped, and
+    /// `callback` takes no context and is short.
+    pub(crate) fn once(
+        object: HANDLE,
+        callback: unsafe extern "system" fn(*mut core::ffi::c_void, bool),
+    ) -> Result<Wait> {
+        port()?;
+        let mut wait: HANDLE = std::ptr::null_mut();
+        // SAFETY: `object` is open for as long as this wait lives, by this
+        // function's own terms; the callback touches no memory of the
+        // caller's.
+        let registered = unsafe {
+            RegisterWaitForSingleObject(
+                &mut wait,
+                object,
+                Some(callback),
+                std::ptr::null(),
+                INFINITE,
+                WT_EXECUTEONLYONCE | WT_EXECUTEINWAITTHREAD,
+            )
+        };
+        match registered {
+            0 => Err(Errno::last()),
+            _ => Ok(Wait(wait)),
+        }
+    }
+}
+
+impl Drop for Wait {
+    fn drop(&mut self) {
+        // SAFETY: unregisters this wait, once, waiting for a callback
+        // already running to finish, before the object it waits on closes.
+        unsafe { UnregisterWaitEx(self.0, INVALID_HANDLE_VALUE) };
+    }
+}
+
+/// A [`Wait`]'s callback that only wakes the poll, which looks at what
+/// ended.
+pub(crate) unsafe extern "system" fn woken(_: *mut core::ffi::c_void, _: bool) {
+    // A wake that can't be posted has nobody to tell.
+    let _ = wake();
+}
+
+/// Ready to read once its [`Poke`] was poked, till [`Wake::drain`].
+pub struct Wake(Arc<AtomicBool>);
+
+/// What wakes a poll on its [`Wake`], from any thread.
+#[derive(Clone)]
+pub struct Poke(Arc<AtomicBool>);
+
+/// A source another thread makes ready.
+pub fn waker() -> std::io::Result<(Wake, Poke)> {
+    port().map_err(std::io::Error::from)?;
+    let poked = Arc::new(AtomicBool::new(false));
+    Ok((Wake(poked.clone()), Poke(poked)))
+}
+
+impl Wake {
+    /// Takes what was poked: it is not ready again till the next poke.
+    pub fn drain(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Poke {
+    /// Makes its [`Wake`] ready, and wakes the poll.
+    pub fn poke(&self) {
+        self.0.store(true, Ordering::SeqCst);
+        // A wake that can't be posted has a broken port: the poll fails.
+        let _ = wake();
+    }
+}
+
+impl sealed::Sealed for Wake {
+    fn arm(&self, _: Events) {}
+
+    fn ready(&self, interest: Events) -> Events {
+        match interest.intersects(Events::IN) && self.0.load(Ordering::SeqCst) {
+            true => Events::IN,
+            false => Events::NONE,
+        }
+    }
+
+    fn read(&self, _: &mut [u8]) -> Result<usize> {
+        Err(Errno::BADF)
+    }
+
+    fn write(&self, _: &[u8]) -> Result<usize> {
+        Err(Errno::BADF)
+    }
+}
+
+impl Source for Wake {}
 
 /// Takes the packets queued, up to [`PACKETS`], waiting at most `millis`
 /// for the first.

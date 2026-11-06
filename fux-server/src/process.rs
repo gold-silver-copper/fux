@@ -203,12 +203,15 @@ pub fn reaped(job: Job) -> Option<Job> {
     job.reap().err()
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     /// A leader whose status can't be read (reaped behind its back, its
     /// status lost) is told ended, its status unknown: never a success.
+    // Unix alone: `/bin/sh`, `/bin/cat`, or `/` as an absolute directory.
+    #[cfg(unix)]
     #[test]
     fn a_status_not_read_is_no_success() -> Result<(), String> {
         let argv = ["/bin/sh".to_owned(), "-c".to_owned(), "exit 0".to_owned()];

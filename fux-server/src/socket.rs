@@ -122,8 +122,7 @@ pub fn start_hint(path: &Path) -> String {
         return "`fux` in a terminal starts one, or `fux '(start)'` one with no terminal".into();
     }
     // Quoted for a shell, as the hint is a command to run.
-    let path = fux_wire::words::quote(&path.to_string_lossy());
-    format!("`FUX_SOCKET={path} fux '(start)'` starts one")
+    start_another(&fux_wire::words::quote(&path.to_string_lossy()))
 }
 
 /// fux's directory: under the first of `BASES` that is set (Unix:

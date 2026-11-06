@@ -20,14 +20,11 @@ use fux_vt::keys::decode::{Decoder, Input as Decoded, Timing};
 use fux_vt::keys::{Direction, Key, KeyPress};
 use fuxix::Errno;
 use fuxix::poll::{Events, PollFd, poll};
-use fuxix::process::{Pid, Signal, kill};
+use fuxix::process::Signal;
 use fuxix::signal::Pipe;
-use fuxix::terminal::{Termios, attributes, set_attributes, window_size};
 use fuxth::{Code, Failure};
 use std::collections::VecDeque;
 use std::io::IsTerminal;
-use std::os::fd::{AsFd, BorrowedFd};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::Instant;
 
@@ -94,20 +91,12 @@ impl From<Failure> for Stop {
     }
 }
 
-/// The terminal's modes as found, and for keys once `stty` made them;
-/// and whether its own modes read a CR typed as a newline (`ICRNL`).
-struct Modes {
-    cooked: Termios,
-    raw: Option<Termios>,
-    crnl: bool,
-}
-
 pub struct Input {
     terminal: bool,
     /// Once set, the key mode lasts till the runner ends; else, in the
     /// REPL, only while a key word waits.
     stays_raw: bool,
-    modes: Option<Modes>,
+    modes: Option<crate::os::Modes>,
     /// The terminal may be out of its own modes: they are put back.
     raw: bool,
     decoder: Decoder,
@@ -266,7 +255,7 @@ impl Input {
                     input.timeout();
                     return Ok(!input.keys.is_empty() || input.ended);
                 }
-                if !input.wait(std::io::stdin().as_fd(), Some(Instant::now()))? {
+                if !input.wait(crate::os::stdin(), Some(Instant::now()))? {
                     return Ok(false);
                 }
                 input.fill()?;
@@ -323,7 +312,7 @@ impl Input {
                     false => Ok(Some(text(std::mem::take(&mut self.bytes).into())?)),
                 };
             }
-            if self.wait(std::io::stdin().as_fd(), None)? {
+            if self.wait(crate::os::stdin(), None)? {
                 self.fill()?;
             }
         }
@@ -332,7 +321,7 @@ impl Input {
     /// All of stdin, to its end, as it is: a program.
     pub fn all(&mut self) -> Result<String, Stop> {
         while !self.ended {
-            if self.wait(std::io::stdin().as_fd(), None)? {
+            if self.wait(crate::os::stdin(), None)? {
                 self.fill()?;
             }
         }
@@ -358,35 +347,14 @@ impl Input {
         if meta.is_file() {
             return Ok(std::fs::read(path).and_then(utf8));
         }
-        let open = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(path);
-        let file = match open {
-            Ok(file) => file,
-            Err(e) => return Ok(Err(e)),
-        };
-        let mut bytes = Vec::new();
-        let mut buffer = [0; 4096];
-        loop {
-            if !self.wait(file.as_fd(), None)? {
-                continue;
-            }
-            match fuxix::io::read(&file, &mut buffer) {
-                Ok(0) => break,
-                Ok(n) => bytes.extend(buffer.get(..n).unwrap_or_default()),
-                Err(Errno::AGAIN | Errno::INTR) => {}
-                Err(e) => return Ok(Err(std::io::Error::from_raw_os_error(e.raw()))),
-            }
-        }
-        Ok(utf8(bytes))
+        crate::os::read_waiting(self, path)
     }
 
     /// The terminal's rows and columns: stdin's, else `LINES` and
     /// `COLUMNS`.
     pub fn screen_size(&self) -> Option<(i64, i64)> {
         if self.terminal
-            && let Some((size, _)) = window_size(std::io::stdin())
+            && let Some((size, _)) = fuxix::terminal::stdin_size()
         {
             return Some((i64::from(size.rows.get()), i64::from(size.cols.get())));
         }
@@ -426,7 +394,7 @@ impl Input {
             // Off a terminal, a sequence begun waits for the rest however
             // long it takes.
             let deadline = self.decoder.deadline().filter(|_| self.terminal);
-            match self.wait(std::io::stdin().as_fd(), deadline)? {
+            match self.wait(crate::os::stdin(), deadline)? {
                 true => self.fill()?,
                 false => self.timeout(),
             }
@@ -479,8 +447,10 @@ impl Input {
     fn fill(&mut self) -> Result<(), Stop> {
         let mut buffer = [0; 4096];
         loop {
-            match fuxix::io::read(std::io::stdin(), &mut buffer) {
-                Ok(n) => {
+            match crate::os::read_stdin(self.raw && self.terminal, &mut buffer) {
+                // Records that were no bytes: a key's release.
+                Ok(None) => return Ok(()),
+                Ok(Some(n)) => {
                     self.ended |= n == 0;
                     self.bytes.extend(buffer.get(..n).unwrap_or_default());
                     // A key read reads only once every byte is taken.
@@ -498,7 +468,11 @@ impl Input {
     /// Waits until `fd` can be read, or `until`: whether it can. Ctrl-C
     /// and the ending signals stop it, and Ctrl-Z stops the runner
     /// meanwhile.
-    fn wait(&mut self, fd: BorrowedFd<'_>, until: Option<Instant>) -> Result<bool, Stop> {
+    pub(crate) fn wait(
+        &mut self,
+        fd: crate::os::Waited<'_>,
+        until: Option<Instant>,
+    ) -> Result<bool, Stop> {
         loop {
             let timeout = until.map(|until| until.saturating_duration_since(Instant::now()));
             let mut fds = vec![
@@ -531,12 +505,7 @@ impl Input {
     fn suspend(&mut self) -> Result<(), Failure> {
         let raw = self.raw;
         self.cook()?;
-        let me = i32::try_from(std::process::id())
-            .ok()
-            .and_then(Pid::from_raw);
-        if let Some(me) = me {
-            kill(me, Signal::Stop).map_err(|e| errno("stopping", e))?;
-        }
+        crate::os::stop_self()?;
         if raw {
             self.make_raw()?;
         }
@@ -544,57 +513,32 @@ impl Input {
     }
 
     /// The terminal in key mode, if stdin is one. The first time, its own
-    /// modes are kept, then the signals caught, then `stty` run.
+    /// modes are kept, then the signals caught.
     fn make_raw(&mut self) -> Result<(), Failure> {
         if self.raw || !self.terminal {
             return Ok(());
         }
         if self.modes.is_none() {
-            let cooked = attributes(std::io::stdin())
-                .map_err(|e| errno("reading the terminal's modes", e))?;
-            let crnl = crnl()?;
-            self.modes = Some(Modes {
-                cooked,
-                raw: None,
-                crnl,
-            });
+            self.modes = Some(crate::os::Modes::keep()?);
             for signal in std::iter::once(Signal::Tstp).chain(ENDING) {
                 let pipe = Pipe::new(&[signal]).map_err(|e| errno("catching a signal", e))?;
                 self.caught.push((signal, pipe));
             }
         }
-        let raw = match self.modes.as_ref().and_then(|modes| modes.raw.clone()) {
-            Some(raw) => raw,
-            None => {
-                // From here the terminal may change: its own modes are put
-                // back on any way out, a failed `stty` among them.
-                self.raw = true;
-                let made = stty().and_then(|()| {
-                    attributes(std::io::stdin())
-                        .map_err(|e| errno("reading the terminal's modes", e))
-                });
-                let raw = match made {
-                    Ok(raw) => raw,
-                    Err(failure) => {
-                        let _ = self.cook();
-                        return Err(failure);
-                    }
-                };
-                if let Some(modes) = &mut self.modes {
-                    modes.raw = Some(raw.clone());
-                }
-                raw
-            }
-        };
+        // From here the terminal may change: its own modes are put back on
+        // any way out, a failure to set them among them.
         self.raw = true;
-        set_attributes(std::io::stdin(), &raw).map_err(|e| errno("setting the terminal's modes", e))
+        let made = self.modes.as_mut().map_or(Ok(()), crate::os::Modes::keys);
+        if made.is_err() {
+            let _ = self.cook();
+        }
+        made
     }
 
     /// The terminal in its own modes again.
     fn cook(&mut self) -> Result<(), Failure> {
-        if let (true, Some(modes)) = (self.raw, &self.modes) {
-            set_attributes(std::io::stdin(), &modes.cooked)
-                .map_err(|e| errno("restoring the terminal's modes", e))?;
+        if let (true, Some(modes)) = (self.raw, &mut self.modes) {
+            modes.own()?;
             self.raw = false;
         }
         Ok(())
@@ -625,46 +569,6 @@ fn line_end(bytes: &VecDeque<u8>, most: usize, raw: usize) -> Option<(usize, boo
         }
     }
     None
-}
-
-/// Whether the terminal on stdin reads a CR typed as a newline, as
-/// `stty -a` says (`icrnl` or `-icrnl`).
-fn crnl() -> Result<bool, Failure> {
-    let ran = std::process::Command::new("stty")
-        .arg("-a")
-        .stdin(std::process::Stdio::inherit())
-        .output()
-        .map_err(|e| Failure::new(Code::Host(IO), format!("stty -a: {e}")))?;
-    if !ran.status.success() {
-        let said = String::from_utf8_lossy(&ran.stderr);
-        return Err(Failure::new(
-            Code::Host(IO),
-            format!("stty -a: {}", said.trim()),
-        ));
-    }
-    let said = String::from_utf8_lossy(&ran.stdout);
-    Ok(said.split_whitespace().any(|flag| flag == "icrnl"))
-}
-
-/// Puts the terminal on stdin in key mode, as `stty` does it.
-fn stty() -> Result<(), Failure> {
-    let ran = std::process::Command::new("stty")
-        .args([
-            "-icanon", "-echo", "-iexten", "-ixon", "-icrnl", "min", "1", "time", "0",
-        ])
-        .stdin(std::process::Stdio::inherit())
-        .output()
-        .map_err(|e| Failure::new(Code::Host(IO), format!("stty: {e}")))?;
-    match ran.status.success() {
-        true => Ok(()),
-        false => {
-            let said = String::from_utf8_lossy(&ran.stderr);
-            Err(Failure::new(
-                Code::Host(IO),
-                format!("stty: {}", said.trim()),
-            ))
-        }
-    }
 }
 
 /// A key's value: what a terminal sends for it, Ctrl and a letter as its
@@ -703,11 +607,10 @@ fn value(press: KeyPress) -> i64 {
     n | mask(mods.shift, SHIFT) | mask(ctrl, CTRL) | mask(mods.alt, ALT)
 }
 
-/// Whether a signal's pipe had a byte, which it is emptied of.
+/// Whether a signal came on its pipe, which it is emptied of.
 fn drained(pipe: &Pipe) -> bool {
     let mut any = false;
-    let mut buffer = [0; 64];
-    while fuxix::io::read(pipe.reader(), &mut buffer).is_ok_and(|n| n > 0) {
+    while pipe.next().is_some() {
         any = true;
     }
     any
@@ -721,7 +624,7 @@ fn text(bytes: Vec<u8>) -> Result<String, Failure> {
     String::from_utf8(bytes).map_err(|_| Failure::new(Code::Host(READ), "stdin: not UTF-8 text"))
 }
 
-fn utf8(bytes: Vec<u8>) -> std::io::Result<String> {
+pub(crate) fn utf8(bytes: Vec<u8>) -> std::io::Result<String> {
     String::from_utf8(bytes)
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8 text"))
 }
@@ -730,7 +633,7 @@ fn ended() -> Failure {
     Failure::new(Code::EndOfInput, "stdin ended")
 }
 
-fn errno(doing: &str, error: Errno) -> Failure {
+pub(crate) fn errno(doing: &str, error: Errno) -> Failure {
     let why = std::io::Error::from_raw_os_error(error.raw());
     Failure::new(Code::Host(IO), format!("{doing}: {why}"))
 }

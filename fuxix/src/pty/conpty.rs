@@ -343,6 +343,13 @@ fn sha256(bytes: &[u8]) -> std::io::Result<[u8; 32]> {
     }
 }
 
+/// Whether `dir` holds the pinned ConPTY whole, so [`fetch`] has nothing to
+/// download; with none pinned for this architecture, nothing to try.
+pub fn fetched(dir: &Path) -> bool {
+    ARCH.as_ref()
+        .is_none_or(|arch| verify(&folder(dir, arch), arch).is_ok())
+}
+
 /// Makes sure `dir` holds the pinned `conpty.dll` and `OpenConsole.exe`
 /// ([`load`] reads them from there): at once if it does; else from the
 /// pinned package, a copy of it in `dir` if one was put there by hand, or

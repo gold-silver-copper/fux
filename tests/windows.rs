@@ -1,6 +1,6 @@
 //! fux's server on Windows (WINDOWS.md, PR 7), driven as its clients
-//! drive it, over its pipe, by a small client of the wire protocol: fux's
-//! own client is Unix's till PR 8. Each test checks one property, against
+//! drive it, over its pipe, by a small client of the wire protocol (fux's
+//! own client: `tests/console.rs`). Each test checks one property, against
 //! the real `fux` binary on a private socket, and has a deadline.
 //!
 //! - A server killed outright leaves its panes running, and a new server
@@ -128,8 +128,13 @@ fn serve(socket: &Path, log: &Path) -> Result<Served, String> {
     let stdout = child.stdout.take().ok_or("its stdout")?;
     let (said, heard) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        // What it says first is for its starter to show.
+        let mut stdout = BufReader::new(stdout);
         let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
+        while {
+            line.clear();
+            matches!(stdout.read_line(&mut line), Ok(n) if n > 0) && line.starts_with("notice: ")
+        } {}
         let _ = said.send(line);
     });
     let line = heard.recv_timeout(Duration::from_secs(30)).map_err(|_| {

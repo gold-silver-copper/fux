@@ -1,7 +1,7 @@
 //! Colour queries and colour-scheme reports (`src/outer.rs`): the server
 //! asks each client's terminal its colours, and answers a pane's program
 //! with them; a terminal that answers nothing costs nothing.
-// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+// They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #![cfg(unix)]
 mod support;
 use support::*;

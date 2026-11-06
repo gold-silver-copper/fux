@@ -1,6 +1,6 @@
 //! A server under pressure: out of descriptors, or with a pane whose
 //! program is not reading.
-// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+// They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #![cfg(unix)]
 mod support;
 use std::os::unix::net::UnixStream;

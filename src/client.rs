@@ -11,7 +11,7 @@ use fux_vt::keys::{Key, KeyPress, Modifiers};
 use fux_wire::act::Act;
 use fux_wire::code::Code;
 use fux_wire::command::ClientRead;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use fux_wire::command::Command;
 use fux_wire::command::Request;
 use fux_wire::protocol::{
@@ -20,10 +20,10 @@ use fux_wire::protocol::{
 };
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
+use socket::Client;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, ErrorKind, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -116,9 +116,11 @@ impl std::fmt::Display for Error {
                 write!(f, "{said}. Running the server's own binary instead cannot be: {why}")
             }
             Error::Protocol(error) => error.fmt(f),
-            Error::NotATerminal => {
-                f.write_str("attaching needs a terminal on stdin and stdout, the same one")
-            }
+            Error::NotATerminal => write!(
+                f,
+                "attaching needs a terminal on stdin and stdout, the same one{}",
+                socket::NOT_A_TERMINAL
+            ),
             Error::Unwaitable => f.write_str(
                 "the terminal on stdin can't be waited on for keys (macOS's poll says POLLNVAL \
                  of /dev/tty): give stdin as the terminal's own device, /dev/ and what \
@@ -184,21 +186,21 @@ const ANSWER: Duration = Duration::from_secs(5);
 /// this user, and the server's process, where the system says it. fux is
 /// reached through its socket alone: where the system denies `connect` (a
 /// sandbox), it cannot be.
-fn open(socket: &SocketPath) -> Result<(UnixStream, Option<fuxix::process::Pid>), Error> {
+fn open(socket: &SocketPath) -> Result<(Client, Option<fuxix::process::Pid>), Error> {
     // Said of the socket chosen, which a hint starts again.
     let failed = |source| Error::Connect {
         path: socket.path().to_owned(),
         source,
     };
     socket::check_client_socket(socket)?;
-    let stream = UnixStream::connect(socket.path()).map_err(failed)?;
+    let stream = socket::dial(socket).map_err(failed)?;
     // Its server is this user's, whoever made the path's directories.
-    let euid = fuxix::process::geteuid();
-    match fuxix::socket::peer(&stream) {
+    match socket::client_peer(&stream) {
         Ok(peer) if peer.user.is_current() => Ok((stream, peer.pid)),
         Ok(peer) => Err(io::Error::other(format!(
-            "its server runs as {}, not this user's ({euid})",
-            peer.user
+            "its server runs as {}, not this user's ({})",
+            peer.user,
+            socket::this_user(),
         ))),
         Err(errno) => Err(errno.into()),
     }
@@ -207,7 +209,7 @@ fn open(socket: &SocketPath) -> Result<(UnixStream, Option<fuxix::process::Pid>)
 
 /// A connection to the server at `socket` as `role`, greeted, with the
 /// server's version.
-fn connect(socket: &SocketPath, role: Role) -> Result<(UnixStream, Decoder, String), Error> {
+fn connect(socket: &SocketPath, role: Role) -> Result<(Client, Decoder, String), Error> {
     let (mut stream, server) = open(socket)?;
     let ours = Hello::ours(role);
     let sent = send(&mut stream, &ours);
@@ -244,11 +246,11 @@ fn greeted(
 /// ever). macOS refuses a timeout on a socket its peer has shut: a read
 /// there cannot wait, as what the server left is read at once and then its
 /// end, so the refusal changes nothing.
-fn wait_at_most(stream: &UnixStream, timeout: Option<Duration>) {
+fn wait_at_most(stream: &Client, timeout: Option<Duration>) {
     let _ = stream.set_read_timeout(timeout);
 }
 
-fn send<'a>(stream: &mut UnixStream, frame: &impl Frame<'a>) -> Result<(), Error> {
+fn send<'a>(stream: &mut Client, frame: &impl Frame<'a>) -> Result<(), Error> {
     stream
         .write_all(&frame.encode())
         .map_err(failed("writing to the server"))
@@ -257,7 +259,7 @@ fn send<'a>(stream: &mut UnixStream, frame: &impl Frame<'a>) -> Result<(), Error
 /// The next frame the server sends, waiting `timeout` at most for each
 /// read; none once it has closed.
 fn read_frame<'d, F: Frame<'d>>(
-    stream: &mut UnixStream,
+    stream: &mut Client,
     decoder: &'d mut Decoder,
     timeout: Option<Duration>,
 ) -> Result<Option<F>, Error> {
@@ -272,7 +274,7 @@ fn read_frame<'d, F: Frame<'d>>(
 
 /// What the server sent next, read into `decoder`: false once it has
 /// closed.
-fn read_more(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Error> {
+fn read_more(stream: &mut Client, decoder: &mut Decoder) -> Result<bool, Error> {
     let mut buffer = [0u8; 16 * 1024];
     loop {
         match stream.read(&mut buffer) {
@@ -295,7 +297,7 @@ fn read_more(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Err
 /// before the next. One per run of a program, made when its first request
 /// is.
 pub(crate) struct Requests {
-    stream: UnixStream,
+    stream: Client,
     decoder: Decoder,
 }
 
@@ -343,30 +345,27 @@ impl Requests {
 
     /// What stops it from another thread: shut down, the request under way
     /// ends as if the server had closed the connection.
-    pub fn stopper(&self) -> Option<UnixStream> {
+    pub fn stopper(&self) -> Option<Client> {
         self.stream.try_clone().ok()
     }
 }
 
 /// Waits until the server sends more on `stream`, or stdout's reader is
 /// gone, and says which. Only a pipe's is watched: its reader gone, Linux
-/// says `POLLERR`, and macOS, asked for `POLLHUP`, says that.
-fn reader_gone(stream: &UnixStream) -> Result<bool, Error> {
-    use std::os::fd::AsFd as _;
-    use std::os::unix::fs::FileTypeExt as _;
-    let out = io::stdout();
-    let pipe = (out.as_fd().try_clone_to_owned())
-        .and_then(|fd| std::fs::File::from(fd).metadata())
-        .is_ok_and(|meta| meta.file_type().is_fifo());
-    if !pipe {
+/// says `POLLERR`, and macOS, asked for `POLLHUP`, says that; Windows has
+/// no such word, so its pipe is asked at each `STDOUT_LOOK`.
+fn reader_gone(stream: &Client) -> Result<bool, Error> {
+    if !fuxix::io::stdout_is_fifo() {
         return Ok(false);
     }
+    let out = io::stdout();
     loop {
         let mut fds = [
             PollFd::new(stream, PollFlags::IN),
             PollFd::new(&out, PollFlags::HUP),
         ];
-        match fuxix::poll::poll(&mut fds, None) {
+        match fuxix::poll::poll(&mut fds, fuxix::io::STDOUT_LOOK) {
+            Ok(0) => {}
             Ok(_) => {
                 let [_, out] = fds;
                 return Ok(out.revents().intersects(PollFlags::ERR | PollFlags::HUP));
@@ -410,7 +409,7 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
         Ok((stream, _, version)) => Ok(Probe::Server {
             protocol: PROTOCOL,
             version,
-            pid: fuxix::socket::peer(&stream).ok().and_then(|peer| peer.pid),
+            pid: socket::client_peer(&stream).ok().and_then(|peer| peer.pid),
         }),
         Err(Error::Mismatch {
             said: Mismatch { protocol, version },
@@ -463,18 +462,14 @@ fn followed(
     server: Option<fuxix::process::Pid>,
     rerun: &Rerun,
 ) -> Result<std::convert::Infallible, String> {
-    use std::os::unix::fs::MetadataExt;
-    use std::os::unix::process::CommandExt;
-    let us = std::process::id().to_string();
-    once(std::env::var_os(FOLLOWED).as_deref(), &us)?;
+    once(
+        std::env::var_os(FOLLOWED).as_deref(),
+        &socket::follower_id().to_string(),
+    )?;
     let pid = server.ok_or("the system does not say which process the server is")?;
-    let exe = PathBuf::from(format!("/proc/{pid}/exe"));
-    let named = |e: io::Error| format!("{}: {e}", exe.display());
-    let path = std::fs::read_link(&exe).map_err(named)?;
-    let theirs = std::fs::metadata(&exe).map_err(named)?;
-    let ours = std::fs::metadata("/proc/self/exe").map_err(|e| format!("/proc/self/exe: {e}"))?;
+    let (exe, path, same) = socket::server_binary(pid)?;
     // Run again, it would meet the same server, and follow it again.
-    if (theirs.dev(), theirs.ino()) == (ours.dev(), ours.ino()) {
+    if same {
         return Err(format!(
             "the server runs this same binary, {}",
             path.display()
@@ -482,7 +477,9 @@ fn followed(
     }
     let (arg0, args) = rerun.argv.split_first().ok_or("no command line to run")?;
     let mut command = std::process::Command::new(&exe);
-    command.arg0(arg0).args(args).env(FOLLOWED, us);
+    command
+        .args(args)
+        .env(FOLLOWED, std::process::id().to_string());
     if let Some(program) = &rerun.program {
         let file = program_file(program).map_err(|e| format!("keeping the program: {e}"))?;
         command.stdin(file);
@@ -497,7 +494,7 @@ fn followed(
         "fux: the server runs {theirs} and this client {ours}: running the server's own binary, {}",
         path.display()
     );
-    let error = command.exec();
+    let error = socket::rerun(command, arg0);
     Err(format!("running {}: {error}", path.display()))
 }
 
@@ -515,17 +512,11 @@ fn once(marked: Option<&std::ffi::OsStr>, us: &str) -> Result<(), String> {
     }
 }
 
-/// A file holding `program`, open to read from its start: removed from its
-/// directory at once, it goes with its last descriptor.
+/// A file holding `program`, open to read from its start, for this
+/// process alone (`fuxix::file::anonymous`).
 fn program_file(program: &str) -> io::Result<std::fs::File> {
     use std::io::Seek;
-    use std::os::unix::fs::OpenOptionsExt;
-    let path = fuxix::file::scratch()?.join(format!("fux-program-{}", std::process::id()));
-    let mut file = (std::fs::OpenOptions::new().read(true).write(true))
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
-    std::fs::remove_file(&path)?;
+    let mut file = fuxix::file::anonymous("fux-program")?;
     file.write_all(program.as_bytes())?;
     file.rewind()?;
     Ok(file)
@@ -543,45 +534,53 @@ pub fn answers(socket: &SocketPath) -> bool {
 }
 
 /// Starts a server in the background, its journal keeping `journal`
-/// events, in a new session with its log in
-/// `fux.log` beside the socket, and waits for the line it writes once it
-/// listens (`server::READY`). Its stdout closing first means it failed, or
-/// found another server on the socket: one that answers, as a server that
-/// starts waits for the one starting before it (`socket::bind_socket`). A
-/// server that hangs before it listens holds the client too.
+/// events, with its log in `fux.log` beside the socket (`socket::start_server`
+/// says how each OS does), and waits for the line it writes once it listens
+/// (`server::READY`), showing each notice it says first as it comes, for a
+/// download's wait, and giving them back, as the alternate screen would hide
+/// them. Its stdout closing first means it failed, or found another server
+/// on the socket: one that answers, as a server that starts waits for the
+/// one starting before it (`socket::bind_socket`). A server that hangs
+/// before it listens holds the client too.
 pub fn start_server(
     socket: &SocketPath,
     journal: fux_wire::command::JournalEntries,
-) -> Result<(), Error> {
+) -> Result<Vec<String>, Error> {
     let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
     socket::private_directory(socket, true)?;
     let log = socket.directory().join("fux.log");
-    let output = open_log(&log).map_err(|e| Error::Failed(format!("{}: {e}", log.display())))?;
-    let mut command = std::process::Command::new(exe);
-    command
-        .arg(crate::SERVE)
-        .arg(socket.path())
-        .arg(journal.get().to_string())
-        // A follow's mark is this command's, not its panes' (`follow`).
-        .env_remove(FOLLOWED)
-        .current_dir("/")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(output);
-    // A daemon (daemon(7)): a session of its own, no descriptors of the
-    // client's but stdio, no directory kept busy.
-    fuxix::process::lead_session(&mut command, false, fuxix::process::Dispositions::Default);
-    let mut child = command.spawn().map_err(failed("starting a server"))?;
+    let output =
+        socket::open_log(&log).map_err(|e| Error::Failed(format!("{}: {e}", log.display())))?;
+    let entries = journal.get().to_string();
+    let args = [
+        std::ffi::OsStr::new(crate::SERVE),
+        socket.path().as_os_str(),
+        std::ffi::OsStr::new(&entries),
+    ];
+    // A follow's mark is this command's, not its panes' (`follow`).
+    let mut child = socket::start_server(&exe, &args, socket, output, FOLLOWED)
+        .map_err(failed("starting a server"))?;
     let mut said = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        let line = io::BufReader::new(stdout.take(64 << 10)).read_until(b'\n', &mut said);
-        line.map_err(failed("reading the server"))?;
+    let mut notices = Vec::new();
+    if let Some(stdout) = child.output() {
+        let mut lines = io::BufReader::new(stdout.take(64 << 10));
+        loop {
+            said.clear();
+            let line = lines.read_until(b'\n', &mut said);
+            line.map_err(failed("reading the server"))?;
+            let text = String::from_utf8_lossy(&said);
+            let Some(notice) = text.trim_end().strip_prefix(fux_server::server::NOTICE) else {
+                break;
+            };
+            let _ = writeln!(io::stderr(), "fux: {notice}");
+            notices.push(notice.to_owned());
+        }
     }
-    // Dropping a `Child` neither waits for nor kills it.
+    // Dropping what started it neither waits for nor kills it.
     if said == fux_server::server::READY || answers(socket) {
-        return Ok(());
+        return Ok(notices);
     }
-    let status = child.wait().map_err(failed("waiting for the server"))?;
+    let status = child.ended().map_err(failed("waiting for the server"))?;
     // A server that refused to start says why.
     let refused = String::from_utf8_lossy(&said);
     let why = match refused.trim_end().strip_prefix("fux server: ") {
@@ -591,46 +590,18 @@ pub fn start_server(
     Err(Error::Failed(why))
 }
 
-/// The server's log at `path`, opened to append: a regular file alone. A
-/// link is not followed, a FIFO with no reader refused at once (`ENXIO`),
-/// not waited on, and a terminal there never becomes this process's.
-fn open_log(path: &std::path::Path) -> io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let flags = fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK | fuxix::file::NOCTTY;
-    let file = (std::fs::OpenOptions::new().create(true).append(true))
-        .custom_flags(flags)
-        .open(path)?;
-    // Nonblocking changes nothing for a regular file's writes.
-    match file.metadata()?.is_file() {
-        true => Ok(file),
-        false => Err(io::Error::other("not a regular file")),
-    }
-}
-
 /// The rows and columns of the terminal on stdin, which the client reads
 /// and the server paints, if it says them: one that says none (or 0 of
 /// either) has no size fux could lay panes out on.
 pub(crate) fn window_size() -> Option<fux_vt::Size> {
-    fuxix::terminal::window_size(io::stdin()).map(|(s, _)| (s.rows, s.cols).into())
+    fuxix::terminal::stdin_size().map(|(s, _)| (s.rows, s.cols).into())
 }
 
-/// Whether stdin and stdout are one terminal: the same device, or both the
-/// session's controlling terminal (`fux </dev/tty`, whose device is
-/// `/dev/tty`'s). The client reads keys from stdin, which the server
-/// paints, and sets the terminal's modes through stdout.
+/// Whether stdin and stdout are one terminal: the client reads keys from
+/// stdin, which the server paints, and sets the terminal's modes through
+/// stdout.
 pub(crate) fn on_one_terminal() -> bool {
-    use io::IsTerminal as _;
-    use std::os::fd::AsFd as _;
-    use std::os::unix::fs::MetadataExt as _;
-    let device = |fd: std::os::fd::BorrowedFd<'_>| {
-        let file = std::fs::File::from(fd.try_clone_to_owned().ok()?);
-        file.metadata().ok().map(|m| m.rdev())
-    };
-    io::stdin().is_terminal()
-        && io::stdout().is_terminal()
-        && (device(io::stdin().as_fd()).is_some_and(|d| device(io::stdout().as_fd()) == Some(d))
-            || fuxix::terminal::controls_session(io::stdin())
-                && fuxix::terminal::controls_session(io::stdout()))
+    fuxix::terminal::on_one_terminal()
 }
 
 /// Whether the terminal on stdin can be waited on for keys: macOS's poll
@@ -655,6 +626,8 @@ pub struct Attaching {
     pub creation: crate::script::Opts,
     pub state: ClientState,
     pub problem: Option<String>,
+    /// What a server started for this attach said (`start_server`).
+    pub notices: Vec<String>,
 }
 
 impl Attaching {
@@ -728,7 +701,7 @@ pub struct Keyboard {
     /// Bounded committed presentation updates and the dispatched program's result.
     told: std::sync::mpsc::Receiver<Update>,
     receipt: Option<std::sync::mpsc::SyncSender<u64>>,
-    wake: io::PipeReader,
+    wake: fuxix::poll::Wake,
     /// How many admitted programs are not yet done.
     running: usize,
     /// Admitted jobs dispatched after the running job's screen effects.
@@ -759,9 +732,7 @@ impl Keyboard {
     ) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<(Job, u64)>();
         let (tell, told) = std::sync::mpsc::sync_channel::<Update>(1);
-        let (wake, poke) = io::pipe()?;
-        fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
-        fuxix::io::set_nonblocking(&poke, true).map_err(io::Error::from)?;
+        let (wake, poke) = fuxix::poll::waker()?;
         let path = socket.path().to_owned();
         let stop = script::Stop::default();
         let stops = stop.clone();
@@ -785,7 +756,7 @@ impl Keyboard {
                             stops.stop();
                             return;
                         }
-                        let _ = fuxix::io::write(&poke, b"!");
+                        poke.poke();
                         // Receipt follows transmission, not mailbox consumption.
                         // Dropping the keyboard drops the receipt sender too.
                         match received.recv() {
@@ -800,9 +771,7 @@ impl Keyboard {
                     if tell.send(Update::Finished(ran)).is_err() {
                         break;
                     }
-                    // A pipe too full for it is readable: the client wakes
-                    // all the same.
-                    let _ = fuxix::io::write(&poke, b"!");
+                    poke.poke();
                 }
             });
         spawned?;
@@ -833,7 +802,7 @@ impl Keyboard {
     }
 
     /// Readable when a program it ran is done (`Keyboard::ran`).
-    pub fn wake(&self) -> &io::PipeReader {
+    pub fn wake(&self) -> &fuxix::poll::Wake {
         &self.wake
     }
 
@@ -936,7 +905,7 @@ impl Keyboard {
     /// opens, what one said shows, and the keys that waited go on.
     /// Handle returned effects in order, as `Keyboard` requires.
     pub fn ran(&mut self) -> Vec<Dispatch> {
-        fux_server::drain(&self.wake);
+        self.wake.drain();
         let mut acts = Vec::new();
         while let Ok(update) = self.told.try_recv() {
             let ran = match update {
@@ -1180,7 +1149,11 @@ pub fn attach(
         presentation: attaching.state.preferences.presentation(),
         initial,
         // A pane's program among them, it runs in that pane.
-        ancestry: if terminal { ancestry() } else { Vec::new() },
+        ancestry: if terminal {
+            fuxix::process::ancestry()
+        } else {
+            Vec::new()
+        },
     };
     let raw = terminal
         .then(|| Raw::enter_with(&mut io::stdout()))
@@ -1214,48 +1187,6 @@ pub fn attach(
     Ok(())
 }
 
-/// This process and its ancestors, nearest first, as the OS says: each
-/// one's parent from `/proc` where there is one, else from `ps(1)`.
-fn ancestry() -> Vec<u32> {
-    let listed = std::cell::OnceCell::new();
-    let parent = |pid: u32| -> Option<u32> {
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            let listed: &Vec<(u32, u32)> = listed.get_or_init(parents);
-            return listed
-                .iter()
-                .find(|(p, _)| *p == pid)
-                .map(|(_, parent)| *parent);
-        };
-        // The name, in parentheses, may hold anything; the state, then the
-        // parent, follow it.
-        let (_, fields) = stat.rsplit_once(')')?;
-        fields.split_whitespace().nth(1)?.parse().ok()
-    };
-    let mut chain = vec![std::process::id()];
-    let mut next = Some(std::os::unix::process::parent_id());
-    while let Some(pid) = next.filter(|pid| *pid > 1 && !chain.contains(pid)) {
-        chain.push(pid);
-        next = parent(pid);
-    }
-    chain
-}
-
-/// Every process and its parent, as `ps -A -o pid= -o ppid=` lists them;
-/// none if it can't.
-fn parents() -> Vec<(u32, u32)> {
-    let listed = std::process::Command::new("ps")
-        .args(["-A", "-o", "pid=", "-o", "ppid="])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output();
-    let listed = listed.map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
-    let pair = |line: &str| {
-        let mut numbers = line.split_whitespace().map(str::parse);
-        Some((numbers.next()?.ok()?, numbers.next()?.ok()?))
-    };
-    listed.map_or_else(|_| Vec::new(), |out| out.lines().filter_map(pair).collect())
-}
-
 /// Why a client detached when a signal told it to.
 const STOPPED: &str = "detached by a signal";
 
@@ -1271,7 +1202,7 @@ impl Signals {
         Ok(Signals {
             winch: fuxix::signal::Pipe::new(&[fuxix::process::Signal::Winch])
                 .map_err(io::Error::from)?,
-            stops: fuxix::signal::Pipe::new(&fux_server::STOPS).map_err(io::Error::from)?,
+            stops: fuxix::signal::Pipe::new(&socket::CLIENT_STOPS).map_err(io::Error::from)?,
         })
     }
 }
@@ -1291,7 +1222,7 @@ impl Raw {
         HOOKED.call_once(|| {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                leave();
+                fuxix::terminal::leaving(leave);
                 previous(info);
             }));
         });
@@ -1329,14 +1260,15 @@ struct Output {
     /// Whether a write failed, which ends the writer: set before its wake.
     failed: std::sync::Arc<AtomicBool>,
     /// Readable once the writer wrote some, or failed.
-    wake: io::PipeReader,
+    wake: fuxix::poll::Wake,
 }
 
 /// Writes all of `bytes` to stdout's descriptor, not through `Stdout`,
 /// whose lock a terminal that stopped reading would hold from `restore`.
 fn write_stdout(mut bytes: &[u8]) -> io::Result<()> {
+    let stdout = io::stdout();
     while !bytes.is_empty() {
-        match fuxix::io::write(io::stdout(), bytes) {
+        match fuxix::io::write(&stdout, bytes) {
             Ok(0) => return Err(ErrorKind::WriteZero.into()),
             Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
             Err(Errno::INTR) => {}
@@ -1349,9 +1281,7 @@ fn write_stdout(mut bytes: &[u8]) -> io::Result<()> {
 impl Output {
     fn open() -> Result<Output, Error> {
         let (to, todo) = std::sync::mpsc::channel::<Vec<u8>>();
-        let (wake, poke) = io::pipe()?;
-        fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
-        fuxix::io::set_nonblocking(&poke, true).map_err(io::Error::from)?;
+        let (wake, poke) = fuxix::poll::waker()?;
         let unwritten = std::sync::Arc::new(AtomicUsize::new(0));
         let failed = std::sync::Arc::new(AtomicBool::new(false));
         let (left, failing) = (unwritten.clone(), failed.clone());
@@ -1362,9 +1292,7 @@ impl Output {
                     let wrote = write_stdout(&bytes);
                     left.fetch_sub(bytes.len(), Ordering::Relaxed);
                     failing.store(wrote.is_err(), Ordering::Release);
-                    // A pipe too full for it is readable: the client wakes
-                    // all the same.
-                    let _ = fuxix::io::write(&poke, b"!");
+                    poke.poke();
                     wrote?;
                 }
                 Ok(())
@@ -1396,7 +1324,7 @@ impl Output {
 
     /// The writer wrote some: an error if a write failed.
     fn woke(&mut self) -> Result<(), Error> {
-        fux_server::drain(&self.wake);
+        self.wake.drain();
         match self.failed.load(Ordering::Acquire) {
             true => self.ended(),
             false => Ok(()),
@@ -1435,7 +1363,7 @@ fn next_frame(frames: u64) -> Result<u64, Error> {
 /// the client's id (its `Welcome`), an `Exit` is a refusal.
 fn attached(
     socket: &SocketPath,
-    stream: &mut UnixStream,
+    stream: &mut Client,
     decoder: &mut Decoder,
     signals: &Signals,
     attaching: &Attaching,
@@ -1477,6 +1405,9 @@ fn attached(
                     keyboard = Some(Keyboard::new(socket, me, run, state, attaching.read_only)?);
                     if let Some(text) = attaching.problem.clone() {
                         acts.push(Dispatch::Send(Act::Notice { text, error: true }));
+                    }
+                    for text in attaching.notices.iter().cloned() {
+                        acts.push(Dispatch::Send(Act::Notice { text, error: false }));
                     }
                 }
                 (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),
@@ -1532,7 +1463,7 @@ fn attached(
         // hang-up is told all the same.
         let reads = match output.as_ref().is_none_or(|o| o.room()) {
             true => PollFlags::IN,
-            false => PollFlags::NONE,
+            false => PollFlags::WATCH,
         };
         let mut fds = vec![
             PollFd::new(&*stream, reads),
@@ -1637,7 +1568,7 @@ fn attached(
 /// read it, may still be writing. Only a server that said nothing makes
 /// the failed write the end.
 fn tell(
-    stream: &mut UnixStream,
+    stream: &mut Client,
     decoder: &mut Decoder,
     welcomed: bool,
     output: Option<&mut Output>,
@@ -1656,7 +1587,7 @@ fn tell(
 /// is an `output` for one: how the attachment ended, the `Exit`'s reason (a refusal, before its
 /// `Welcome`), or `None` if the server said nothing more.
 fn last_frames(
-    stream: &mut UnixStream,
+    stream: &mut Client,
     decoder: &mut Decoder,
     welcomed: bool,
     mut output: Option<&mut Output>,
@@ -1692,6 +1623,13 @@ fn last_frames(
 mod tests {
     use super::*;
 
+    /// A socket no server is at, absolute on each OS.
+    const NOWHERE: &str = if cfg!(windows) {
+        r"C:\nowhere\fux\s.sock"
+    } else {
+        "/nowhere/fux/s.sock"
+    };
+
     fn new_keyboard(
         socket: &SocketPath,
         state: ClientState,
@@ -1708,7 +1646,7 @@ mod tests {
 
     fn keyboard(read_only: bool) -> Result<Keyboard, Box<dyn std::error::Error>> {
         new_keyboard(
-            &socket::checked("/nowhere/fux/s.sock", "test")?,
+            &socket::checked(NOWHERE, "test")?,
             script::default_state().map_err(|e| e.to_string())?,
             read_only,
         )
@@ -1761,7 +1699,7 @@ mod tests {
     #[test]
     fn decoder_timing_belongs_to_each_client_and_waits_for_idle()
     -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let socket = socket::checked(NOWHERE, "test")?;
         let mut a = script::default_state().map_err(|e| e.to_string())?;
         let b = a.clone();
         a.preferences.escape_delay = fux_wire::command::DecodeMillis::new(100).ok_or("delay")?;
@@ -1782,6 +1720,8 @@ mod tests {
         Ok(())
     }
 
+    // Unix alone: a socket pair stands for the server.
+    #[cfg(unix)]
     #[test]
     fn committed_presentation_precedes_the_following_request()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1816,7 +1756,7 @@ mod tests {
             0,
             "the request overtook the unsent presentation"
         );
-        let (mut attachment, mut view) = UnixStream::pair()?;
+        let (mut attachment, mut view) = Client::pair()?;
         let mut frames = 7;
         for effect in pending {
             match effect {
@@ -1899,7 +1839,7 @@ mod tests {
     /// preceding acts still belong to the local transport.
     #[test]
     fn a_binding_emits_its_job_after_prior_keys() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let socket = socket::checked(NOWHERE, "test")?;
         let mut state = script::default_state().map_err(|e| e.to_string())?;
         state.keys.bind(
             &[KeyPress::char('y')],
@@ -2214,7 +2154,7 @@ mod tests {
     /// split them: the cancel is checked at each key, not at a read's end.
     #[test]
     fn a_stop_is_the_same_however_the_reads_split() -> Result<(), Box<dyn std::error::Error>> {
-        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let socket = socket::checked(NOWHERE, "test")?;
         let mut state = script::default_state().map_err(|e| e.to_string())?;
         let forever = crate::keymap::Binding::new(crate::testing::code(
             "(lambda! () (let! ((spin (lambda! () (spin)))) (spin)))",
@@ -2280,6 +2220,8 @@ mod tests {
 
     /// The server's log is a regular file alone: a FIFO no one reads is
     /// refused at once, not waited on, and a link is not followed.
+    // Unix alone: FIFOs and symbolic links.
+    #[cfg(unix)]
     #[test]
     fn the_server_log_is_a_regular_file() -> Result<(), Box<dyn std::error::Error>> {
         let dir = fuxix::file::scratch()?.join(format!("fux-log-{}", std::process::id()));
@@ -2294,13 +2236,18 @@ mod tests {
         );
         let link = dir.join("link.log");
         std::os::unix::fs::symlink(dir.join("file.log"), &link)?;
-        let refused = [open_log(&fifo).is_err(), open_log(&link).is_err()];
-        let opened = open_log(&dir.join("file.log")).is_ok();
+        let refused = [
+            socket::open_log(&fifo).is_err(),
+            socket::open_log(&link).is_err(),
+        ];
+        let opened = socket::open_log(&dir.join("file.log")).is_ok();
         std::fs::remove_dir_all(&dir)?;
         assert_eq!((refused, opened), ([true, true], true));
         Ok(())
     }
 
+    // Unix alone: a pty.
+    #[cfg(unix)]
     #[test]
     fn terminal_entry_failures_restore_modes() -> Result<(), Box<dyn std::error::Error>> {
         const CHILD: &str = "FUX_TEST_ENTRY_FAILURE";
@@ -2385,8 +2332,9 @@ mod tests {
 
     /// What the client makes of the server's answer to Hello, as read from
     /// a socket in `wait`.
-    fn answer(server: impl FnOnce(&mut UnixStream), wait: Duration) -> Result<String, Error> {
-        let (client, mut peer) = UnixStream::pair()?;
+    #[cfg(unix)]
+    fn answer(server: impl FnOnce(&mut Client), wait: Duration) -> Result<String, Error> {
+        let (client, mut peer) = Client::pair()?;
         let mut client = client;
         server(&mut peer);
         let mut decoder = Decoder::default();
@@ -2394,6 +2342,7 @@ mod tests {
         greeted(&ours(), None, answer, Ok(()))
     }
 
+    #[cfg(unix)]
     fn ours() -> Hello {
         Hello {
             protocol: PROTOCOL,
@@ -2402,7 +2351,8 @@ mod tests {
         }
     }
 
-    fn write(peer: &mut UnixStream, frame: &Greeting) {
+    #[cfg(unix)]
+    fn write(peer: &mut Client, frame: &Greeting) {
         let _ = peer.write_all(&frame.encode());
     }
 
@@ -2419,6 +2369,8 @@ mod tests {
 
     /// A server whose process is not known, or which runs this same
     /// binary, is not followed: it is said why, and nothing runs.
+    // Unix alone: /proc.
+    #[cfg(unix)]
     #[test]
     fn a_server_that_cannot_be_followed_is_refused() {
         let said = Mismatch {
@@ -2445,6 +2397,8 @@ mod tests {
 
     /// A server that refuses says why; one that says nothing times out;
     /// one that hangs up did not answer.
+    // Unix alone: a socket pair stands for the server.
+    #[cfg(unix)]
     #[test]
     fn the_client_tells_a_refusal_from_a_timeout() {
         let wait = Duration::from_millis(50);

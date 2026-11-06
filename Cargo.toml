@@ -44,6 +44,11 @@ fux-vt-peak = { path = "fux-vt/peak" }
 name = "cassettes"
 harness = false
 
+# It plays a console's terminal, shell and pane, so it has a main of its own.
+[[test]]
+name = "console"
+harness = false
+
 # Its binary plays the one a client follows, so it has a main of its own.
 [[test]]
 name = "follow"

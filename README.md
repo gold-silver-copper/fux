@@ -8,6 +8,17 @@ Run `fux` to attach a terminal. The prefix is `C-b`; `C-b e` opens the command p
 and `C-b d` detaches. A pane keeps running after its client detaches.
 
 | Keys | Action |
+
+fux is one binary for macOS, Linux and Windows 11, built with Rust 1.95 or later:
+`cargo install --locked fux`, or in a clone `cargo install --locked --path .`.
+
+On Windows a pane's shell is `%COMSPEC%`, else `cmd.exe`, and the config is
+`%APPDATA%\fux\config.grift`; for PowerShell, `(set "shell" (list "pwsh"))` there, and
+`[Environment]::CurrentDirectory = $PWD.ProviderPath` in its prompt, so a split starts
+where you are. fux fetches Microsoft's ConPTY on first use and says so;
+[WINDOWS.md](WINDOWS.md) says what differs.
+
+| Keys | Action |
 | --- | --- |
 | `C-b v`, `C-b s` | Split side by side or stacked |
 | `C-b h j k l` | Focus left, down, up or right |

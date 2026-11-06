@@ -45,6 +45,44 @@ impl BitOrAssign for Events {
     }
 }
 
+/// Ready to read once its [`Poke`] was poked, till [`Wake::drain`].
+pub struct Wake(std::io::PipeReader);
+
+/// What wakes a poll on its [`Wake`], from any thread.
+pub struct Poke(std::io::PipeWriter);
+
+/// A descriptor another thread makes readable: a pipe, nonblocking at both
+/// ends.
+pub fn waker() -> std::io::Result<(Wake, Poke)> {
+    let (wake, poke) = std::io::pipe()?;
+    crate::io::set_nonblocking(&wake, true).map_err(std::io::Error::from)?;
+    crate::io::set_nonblocking(&poke, true).map_err(std::io::Error::from)?;
+    Ok((Wake(wake), Poke(poke)))
+}
+
+impl Wake {
+    /// Takes what was poked: it is not readable again till the next poke.
+    pub fn drain(&self) {
+        use std::io::Read as _;
+        let mut buffer = [0u8; 256];
+        while matches!((&self.0).read(&mut buffer), Ok(n) if n > 0) {}
+    }
+}
+
+impl AsFd for Wake {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
+impl Poke {
+    /// Makes its [`Wake`] readable. A pipe too full for it is readable:
+    /// the poll wakes all the same.
+    pub fn poke(&self) {
+        let _ = crate::io::write(&self.0, b"!");
+    }
+}
+
 /// A descriptor to wait on, borrowed for as long as it is waited on.
 #[repr(transparent)]
 pub struct PollFd<'fd> {

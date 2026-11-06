@@ -1,6 +1,6 @@
 //! What becomes of a pane's processes: background jobs when the pane
 //! closes, and a leader that is stopped rather than exited.
-// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+// They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #![cfg(unix)]
 mod support;
 use fuxix::process::Signal;

@@ -63,9 +63,9 @@ macro_rules! wired {
     };
 }
 
-// The unit tests (`cfg(all(test, unix))` throughout) drive sessions through
-// fux's fuxth, whose client is Unix-only till WINDOWS.md's PR 8; Windows
-// tests the server end to end instead (`tests/windows.rs`).
+// The unit tests drive sessions through fux's fuxth; those that need a
+// POSIX shell or a Unix fact are `cfg(unix)`, and Windows tests the server
+// end to end besides (`tests/windows.rs`).
 pub mod capture;
 pub mod conn;
 pub mod copy;
@@ -86,7 +86,6 @@ pub mod wait;
 pub mod workspace;
 
 use fuxix::process::Signal;
-use std::io::{PipeReader, Read};
 use std::time::{Duration, Instant};
 
 /// `wait` after `from`. A time too far off for an `Instant` is taken as
@@ -98,25 +97,19 @@ pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
 /// The signals that stop a server and detach a client.
 pub const STOPS: [Signal; 3] = [Signal::Term, Signal::Int, Signal::Hup];
 
-/// Reads whatever a pipe holds.
-pub fn drain(mut pipe: &PipeReader) {
-    let mut buffer = [0u8; 256];
-    while matches!(pipe.read(&mut buffer), Ok(n) if n > 0) {}
-}
-
 /// Takes every signal a signal pipe holds.
 pub(crate) fn take_signals(pipe: &fuxix::signal::Pipe) {
     while pipe.next().is_some() {}
 }
 
 /// How the tests feed a parser and read its screen, as fux-vt's own do.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "../../fux-vt/tests/corpus/feed.rs"]
 #[expect(dead_code, reason = "the tests use some of the helpers")]
 mod vt_feed;
 
 /// Pictures for the tests.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod test_picture {
     /// A picture for the tests, `width` by `height` pixels of one colour, each
     /// channel off or full, drawn as a program draws one: sixel, read by

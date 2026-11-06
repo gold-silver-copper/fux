@@ -6,7 +6,6 @@
 use crate::input::{self, Input, Stop};
 use fuxth::{AppValue, Args, Code, Done, Error, Failure, Host, List, Thrown, Value, Vocabulary};
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -355,7 +354,7 @@ impl Runner {
                 let path = string(next()?, name)?;
                 match std::fs::metadata(&**path) {
                     Ok(meta) => {
-                        out.extend([Value::Int(i64::from(meta.mode() & 0o7777)), Value::Int(0)])
+                        out.extend([Value::Int(crate::os::file_mode(&meta)), Value::Int(0)])
                     }
                     Err(e) => out.extend([Value::Int(0), ior(Err(e), &path)]),
                 }
@@ -365,7 +364,7 @@ impl Runner {
                 let why = "set-file-mode takes a mode from 0 to 4095 (0o7777)";
                 let mode = u32::try_from(mode).ok().filter(|mode| *mode <= 0o7777);
                 let mode = mode.ok_or_else(|| Failure::new(Code::Range, why))?;
-                let set = std::fs::set_permissions(&**path, std::fs::Permissions::from_mode(mode));
+                let set = crate::os::set_file_mode(Path::new(&**path), mode);
                 return Ok(acted(out, ior(set, &path)));
             }
             Word::Get => {

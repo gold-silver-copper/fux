@@ -868,7 +868,7 @@ fn painted(a: &Attributes) -> bool {
     highlighted(a) || a.underline() || a.strikeout()
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use crate::pane::tests::pane;
     use fux_wire::command::CaptureView;
@@ -910,6 +910,8 @@ mod tests {
         super::pane(observed, pane, journal, history, view)
     }
 
+    // Unix alone: a path that is no text, which Windows paths are not in bytes.
+    #[cfg(unix)]
     #[test]
     fn recipe_paths_keep_exact_os_bytes() {
         use std::os::unix::ffi::OsStrExt;

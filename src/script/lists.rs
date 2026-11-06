@@ -1,8 +1,7 @@
 //! `docs/words.txt` and `docs/records.txt`, written from fux's word table
 //! and the libraries' definitions, and from records the record builders
 //! make; a test fails while a list is stale (`fux_wire::lists`).
-use super::Value;
-use super::{Fux, Word, record};
+use super::{Fux, Value, Word, record};
 use fux_wire::lists::{check, file};
 
 const TEST: &str = "cargo test -p fux --lib lists";
@@ -42,6 +41,7 @@ fn words_list_is_current() -> Result<(), String> {
 /// `status` says which after its path (`[created]`). A held answer or
 /// capture, which `get` reads too, lists the fields it has of its kind's
 /// table (`record::AnswerField`, …), a capture's state's after them.
+#[cfg(unix)]
 fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
     let mut line = |path: &str, fields: &[&str]| {
         let line = format!("{path}: {}", fields.join(" "));
@@ -94,6 +94,7 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
 
 /// The fields `get` may read of a held answer or capture: its kind's
 /// tables, then a captured pane's state's.
+#[cfg(unix)]
 fn held(answer: &super::Answer) -> Vec<String> {
     use record::{AnswerField, CaptureField, CapturedField};
     fn names<T>(all: &[(T, &str)]) -> Vec<String> {
@@ -127,6 +128,8 @@ fn held(answer: &super::Answer) -> Vec<String> {
 /// - `buffers`, `status`, a batch of every kind of event, a word's record
 ///   and the dictionary's;
 /// - the bundled keys' and preferences' records, as a client answers them.
+// Unix alone: the list is generated once, and the test names `/` paths.
+#[cfg(unix)]
 #[test]
 fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
     use super::testing::{InProcess, attached, evaluate};

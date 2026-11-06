@@ -244,12 +244,12 @@ impl Sealed for Master {
         self.output.ready(wants(Events::IN)) | self.input.ready(wants(Events::OUT))
     }
 
-    fn reading(&self) -> Option<&Stream> {
-        Some(&self.output)
+    fn read(&self, buffer: &mut [u8]) -> SysResult<usize> {
+        crate::io::read(&self.output, buffer)
     }
 
-    fn writing(&self) -> Option<&Stream> {
-        Some(&self.input)
+    fn write(&self, bytes: &[u8]) -> SysResult<usize> {
+        crate::io::write(&self.input, bytes)
     }
 }
 
@@ -264,7 +264,7 @@ impl std::io::Read for &Master {
 
 impl std::io::Read for Master {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        (&*self).read(buffer)
+        std::io::Read::read(&mut &*self, buffer)
     }
 }
 
@@ -281,7 +281,7 @@ impl std::io::Write for &Master {
 
 impl std::io::Write for Master {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        (&*self).write(bytes)
+        std::io::Write::write(&mut &*self, bytes)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

@@ -12,6 +12,9 @@
 //! program is: Ctrl-C, `timeout`, `ulimit`.
 mod input;
 mod json;
+#[cfg_attr(unix, path = "os/unix.rs")]
+#[cfg_attr(windows, path = "os/windows.rs")]
+mod os;
 mod words;
 
 use fuxix::process::Signal;
@@ -37,6 +40,7 @@ enum Ended {
 }
 
 fn main() -> ExitCode {
+    fuxix::terminal::open_stdio();
     let mut args = std::env::args().skip(1);
     let file = args.next();
     let repl = file.is_none() && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();

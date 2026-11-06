@@ -2,7 +2,7 @@
 //! program draws in it whole, never half of one, and a frame that never
 //! ends is shown once its timeout passes
 //! (`references/modern/mode_2026_synchronized_output.md`).
-// They drive the fux client, Unix-only till WINDOWS.md's PR 8.
+// They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #![cfg(unix)]
 mod support;
 use std::time::{Duration, Instant};
