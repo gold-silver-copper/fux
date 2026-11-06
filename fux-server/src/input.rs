@@ -733,6 +733,18 @@ mod tests {
             assert!(refused.contains(said), "{refused}");
             assert_eq!(mode(&s, c), "normal");
         }
+        // Grift resolves a name when it runs: a screen opens on a callback
+        // naming nothing, and Enter says which name.
+        let open = format!("{CONFIRM} (confirm (me) \"late\" (code! (lambda! () (nosuch))))");
+        output_as(&mut s, Some(c), &open)?;
+        assert_eq!(mode(&s, c), "list late 0");
+        s.input(c, b"y");
+        let failed = notice(&s, c);
+        assert!(
+            failed.contains("unbound-symbol") && failed.contains("nosuch"),
+            "{failed}"
+        );
+        assert_eq!(mode(&s, c), "normal");
         // A prompt's start is a line as typing makes one: no line end.
         let open = "(sequence! (prompt (me) \"t\" (apply string-append (list \"a\" (code-point-to-string 10) \"b\")) (code! (lambda! (argument-140) #inert))) #inert)";
         let refused = output_as(&mut s, Some(c), open).err().unwrap_or_default();

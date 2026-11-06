@@ -9752,7 +9752,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_dump_leaves_out_a_directory_that_is_not_text() -> TestResult {
+    fn a_dump_restores_a_directory_that_is_not_text_byte_for_byte() -> TestResult {
         use std::os::unix::ffi::OsStrExt;
         let dir = (fuxix::file::scratch()?.join(format!("fux-dump-{}", std::process::id())))
             .join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
@@ -9768,15 +9768,13 @@ mod tests {
         };
         s.execute(&program, &Origin::Cli(Caller::default()), Instant::now())?;
         let dump = s.dump_recipe(None)?;
-        let _ = dir.parent().map(std::fs::remove_dir_all);
-        let told = dump.contains("; %2: directory bytes (hex) ") && dump.contains("636166e9");
-        let written = dump
-            .lines()
-            .any(|l| !l.starts_with(';') && l.contains("caf"));
-        assert!(told && !written, "{dump}");
+        assert!(dump.contains("636166e9"), "{dump}");
         let mut again = started()?;
         run(&mut again, &dump)?;
         assert_eq!(again.parts.panes().len(), 3, "{dump}");
+        let replayed = again.dump_recipe(None)?;
+        let _ = dir.parent().map(std::fs::remove_dir_all);
+        assert!(replayed.contains("636166e9"), "{replayed}");
         Ok(())
     }
 

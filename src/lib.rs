@@ -28,6 +28,7 @@ mod testing {
     pub fn code(words: &str) -> fux_wire::callback::Code {
         fux_wire::callback::Code {
             source: words.to_owned(),
+            ..Default::default()
         }
     }
 }

@@ -2160,8 +2160,14 @@ impl Json {
                 ),
                 Value::Symbol(name) => {
                     let name = g.symbol_name(name).map_err(|_| "invalid symbol")?;
+                    // A handle as a person reads it: the run it carries is
+                    // the run's, and no replay's to hold.
+                    let id = name.strip_prefix('w').unwrap_or(name);
                     if name == "none" {
                         Json::Null
+                    } else if id.starts_with(['%', '@', '+', 'c']) && id.contains(':') {
+                        let (id, _) = id.split_once(':').unwrap_or((id, ""));
+                        Json::String(id.to_owned())
                     } else {
                         Json::String(name.to_owned())
                     }

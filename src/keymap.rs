@@ -598,7 +598,11 @@ impl Held {
         let prefixed = matches!(std::mem::take(self), Held::Prefixed(_));
         if prefixed && press == KeyPress::char('d') {
             let source = "(lambda! () (detach (me)))".to_owned();
-            return vec![Effect::Run(Code { source }.into())];
+            let code = Code {
+                source,
+                ..Code::default()
+            };
+            return vec![Effect::Run(code.into())];
         }
         if !prefixed && keymap.leads(press) {
             *self = Held::Prefixed(press);

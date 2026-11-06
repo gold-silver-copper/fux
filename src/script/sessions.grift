@@ -26,10 +26,7 @@
   (define! current (get pane-record "directory"))
   (define! unknown (and!? (same? (get (get pane-record "launch") "choice") "shell")
     (or!? (same? current none) (not? (same? (get current "status") "known")))))
-  (string-append
-    (if! unknown (string-append "; " (string (get pane-record "id")) ": its current directory is unknown, so it starts in its launch directory\n") "")
-    (if! (same? (get (dump-directory pane-record) "encoding") "utf8") ""
-      (string-append "; " (string (get pane-record "id")) ": directory bytes (hex) " (get (dump-directory pane-record) "text") " are not UTF-8 text; it starts where this runs\n")))))
+  (if! unknown (string-append "; " (string (get pane-record "id")) ": its current directory is unknown, so it starts in its launch directory\n") "")))
 (define! session-find (lambda! (records id)
   (let! ((found (filter (lambda! (record-value) (same? (get record-value "id") id)) records)))
     (if! (same? (length found) 1) (first found) (raise (error (quote! no-target) id))))))
@@ -44,8 +41,7 @@
   (define! builder (alternate-scroll-lines builder (get pane-record "alternate-scroll-lines")))
   (define! builder (picture-bytes builder (get pane-record "picture-bytes")))
   (define! builder (program-clipboard builder (get pane-record "program-clipboard")))
-  (define! builder (if! (same? (get place "encoding") "utf8") (directory builder (get place "text"))
-    (sequence! (catch-kind! (warn (dump-warnings pane-record)) not-here failure #inert) builder)))
+  (define! builder (directory builder place))
   (if! (same? (get launch "choice") "shell") (shell-program builder program-arguments)
     (fold (lambda! (builder value) (argument builder value)) (program builder (first program-arguments)) (rest program-arguments)))))
 (define! restore-session (lambda! (recipe)

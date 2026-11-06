@@ -8,5 +8,5 @@ $ fux "(greater-than? (string-byte-length (data-text (capture (all-history (pane
   = #true
   ~ #true
 $ fux "(byte-substring (data-text (capture (all-history (pane \"${V%%:*}\")))) 0 8)"
-  = ((id %a)
-  ~ ((id %a)
+  = ((kind "
+  ~ ((kind "

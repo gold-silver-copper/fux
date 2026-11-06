@@ -222,6 +222,7 @@ mod tests {
         )));
         let code = Code {
             source: "(lambda! (client payload) (receiver-only client payload))".into(),
+            ..Code::default()
         };
         let job =
             crate::screens::Job::call(&code.into(), [Data::Client(client, Some(run)), payload]);
@@ -249,7 +250,7 @@ mod tests {
             Data::Bytes(vec![0, 255]),
             Data::FloatBits((-0.0f64).to_bits()),
         ]);
-        let code=Code{source:"(lambda! (payload) (choose (me) \"typed data\" (list (list payload \"Data\")) () (list 0) (code! (lambda! (client payload) #inert))))".into()};
+        let code = Code { source: "(lambda! (payload) (choose (me) \"typed data\" (list (list payload \"Data\")) () (list 0) (code! (lambda! (client payload) #inert))))".into(), ..Code::default() };
         let job = crate::screens::Job::call(&code.into(), [payload.clone()]);
         let mut machine = job.machine(None, None)?;
         let mut state = crate::script::default_state()?.draft();

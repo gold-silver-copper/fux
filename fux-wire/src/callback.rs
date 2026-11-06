@@ -155,14 +155,25 @@ impl Wire for Data {
 }
 
 wire! {
-    /// A code value (`code … end`), as it goes on the wire: the words
-    /// between, as read, which the receiving client compiles in its own
-    /// dictionary. Only a program's own source makes one, never a string.
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    /// A code value (`(code! FORM)`), as it goes on the wire: its form as
+    /// text, which the receiving client reads, and where it was written, so
+    /// a failure there names that file and line. Only a program's own
+    /// source makes one, never a string.
+    #[derive(Clone, Debug, Default)]
     pub struct Code {
         pub source: String,
+        pub file: String,
+        pub line: u32,
     }
 }
+
+/// Two code values are alike if they say the same, written where they may.
+impl PartialEq for Code {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+    }
+}
+impl Eq for Code {}
 
 impl Code {
     /// Its grift form, written when a program explicitly made code.

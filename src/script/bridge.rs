@@ -11,6 +11,8 @@ pub struct Machine {
     config: Option<Config>,
     args: Option<Vec<fux_wire::callback::Data>>,
     callback: bool,
+    /// The line of its file a callback's form was written on.
+    line: u32,
 }
 impl Machine {
     pub fn source(name: &str, source: &str) -> Self {
@@ -21,6 +23,7 @@ impl Machine {
             config: None,
             args: None,
             callback: false,
+            line: 0,
         }
     }
 }
@@ -36,15 +39,17 @@ pub fn callback_machine(
     if let Some(stop) = stop {
         stop.check()?;
     }
-    let (source, callback) = match program {
-        crate::screens::Program::Line(s) => (s.clone(), false),
-        crate::screens::Program::Code(c) => (c.source.clone(), true),
+    let (source, callback, name, line) = match program {
+        crate::screens::Program::Line(s) => (s.clone(), false, "key", 0),
+        crate::screens::Program::Code(c) if c.file.is_empty() => (c.source.clone(), true, "key", 0),
+        crate::screens::Program::Code(c) => (c.source.clone(), true, c.file.as_str(), c.line),
     };
     Ok(Machine {
         config: config.cloned(),
         args: args.map(<[_]>::to_vec),
         callback,
-        ..Machine::source("key", &source)
+        line,
+        ..Machine::source(name, &source)
     })
 }
 /// What a run's host functions reach. `A` is where its requests go.
@@ -298,6 +303,26 @@ fn field_of<T>(g: &mut Grift<T>, record: &G, field: &G) -> Result<Option<G>, Err
     Err(g.error("no-field", &[about]))
 }
 
+/// A word's call as a failure's effect list says it (D-25): its name and
+/// values as data, cut short past what a line of a notice shows.
+fn call_text<T>(g: &Grift<T>, name: &str, args: &[G]) -> String {
+    const MOST: usize = 200;
+    let mut text = format!("({name}");
+    for arg in args {
+        text.push(' ');
+        if g.write(arg, &mut text).is_err() || text.len() > MOST {
+            break;
+        }
+    }
+    if text.len() > MOST {
+        let end = (0..=MOST).rev().find(|at| text.is_char_boundary(*at));
+        text.truncate(end.unwrap_or(0));
+        text.push('…');
+    }
+    text.push(')');
+    text
+}
+
 /// One word of fux's vocabulary, called from grift.
 pub(super) fn request<A: Asks + ?Sized>(
     g: &mut Interpreter<'_, '_, A>,
@@ -446,7 +471,7 @@ pub(super) fn request<A: Asks + ?Sized>(
                 return Err(g.error(code.name(), &values));
             }
             if acts(&asked.request) {
-                state.host.actions.push(name.to_owned());
+                state.host.actions.push(call_text(g, name, args));
             }
             out = answered(reply).map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
         }
@@ -484,7 +509,7 @@ pub(super) fn request<A: Asks + ?Sized>(
                 .local(&what, state.host.state.as_deref_mut(), state.host.out)
                 .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
             if matches!(what, Local::Start | Local::Attach { .. }) {
-                state.host.actions.push(name.to_owned());
+                state.host.actions.push(call_text(g, name, args));
             }
             if matches!(what, Local::Shell(Shell::Exit(_))) {
                 runtime_exit(g, state);
@@ -814,9 +839,12 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
         let name = g.symbol("callback-arguments").map_err(|e| failed(g, e))?;
         g.bind(&program, &G::Symbol(name), args)
             .map_err(|e| failed(g, e))?;
-        format!(
-            "(native-check-stop) (apply {} callback-arguments)",
-            machine.source
+        on_its_line(
+            &format!(
+                "(native-check-stop) (apply {} callback-arguments)",
+                machine.source
+            ),
+            machine.line,
         )
     } else {
         format!(
@@ -976,7 +1004,7 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
             g.list(&items)?
         }
         Value::App(Fux::Code(code)) => {
-            let forms = g.read(&code.source)?;
+            let forms = g.read_in(&code.file, &on_its_line(&code.source, code.line))?;
             let form = g
                 .list_items(&forms)?
                 .into_iter()
@@ -1022,6 +1050,12 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
             G::Symbol(g.symbol(&name)?)
         }
     })
+}
+
+/// `source` on `line` of its file, as a failure in it then names that line.
+fn on_its_line(source: &str, line: u32) -> String {
+    let lines = usize::try_from(line.saturating_sub(1)).unwrap_or(0);
+    format!("{}{source}", "\n".repeat(lines))
 }
 
 /// The head of a code value, a request and the field a run goes in.
@@ -1093,7 +1127,15 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                     let mut source = String::new();
                     g.write(form, &mut source)
                         .map_err(|_| g.error("bad-value", std::slice::from_ref(form)))?;
-                    Value::App(Fux::Code(Rc::new(fux_wire::callback::Code { source })))
+                    let (file, line) = match g.position(form)? {
+                        Some((file, line)) => (file.to_owned(), line),
+                        None => (String::new(), 0),
+                    };
+                    Value::App(Fux::Code(Rc::new(fux_wire::callback::Code {
+                        source,
+                        file,
+                        line,
+                    })))
                 }
                 (REQUEST, [_, subject, steps @ ..]) => {
                     let subject = match from_grift_at(g, subject, depth)? {

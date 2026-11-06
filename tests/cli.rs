@@ -332,7 +332,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "type-error",
     )?;
     assert!(server.ok(&["(listing (list-session))"])?.contains("agent"));
-    assert!(before.contains("already took effect: new-tab"), "{before}");
+    assert!(before.contains("already took effect: (new-tab"), "{before}");
     let caught = server.words(r#"(catch! (sequence! (line (pane 1) "x") (divide 1 0)) failure (list (symbol-to-string (get failure "kind")) (length (actions))))"#)?;
     assert_eq!(caught, "division-by-zero\n1\n");
     let twice = server.words(r#"(catch! (sequence! (rename (pane 1) "first") (rename (pane 1) "second") (raise (error (quote! fail) "boom"))) failure (length (actions)))"#)?;
@@ -653,7 +653,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
     let refused = full()?.args([r#"(rename (pane 1) "x") 42"#]).output();
     let told = String::from_utf8_lossy(&refused.map_err(e)?.stderr).into_owned();
     assert!(
-        told.starts_with("fux: output: ") && told.contains("\nfux: already took effect: rename\n"),
+        told.starts_with("fux: output: ") && told.contains("\nfux: already took effect: (rename "),
         "{told}"
     );
     let cursor = server.ok(&["(sequence! (define! value-765 (next-events (all) \"\" 0)) \"next\" (get value-765 \"next\"))"])?;
@@ -754,7 +754,7 @@ fn a_started_server_is_an_action() -> Outcome {
     assert!(
         failed
             .stderr
-            .contains("\nfux: already took effect: start\n"),
+            .contains("\nfux: already took effect: (start)\n"),
         "{}",
         failed.stderr
     );
@@ -825,7 +825,7 @@ fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
         failed.stderr
     );
     assert!(
-        failed.stderr.contains("already took effect: send-keys"),
+        failed.stderr.contains("already took effect: (send-keys "),
         "{}",
         failed.stderr
     );
@@ -834,7 +834,7 @@ fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
     assert!(refused.stdout.is_empty());
     assert!(
         refused.stderr.contains("entries missed")
-            && refused.stderr.contains("already took effect: send-keys"),
+            && refused.stderr.contains("already took effect: (send-keys "),
         "{}",
         refused.stderr
     );

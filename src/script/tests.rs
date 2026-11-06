@@ -941,3 +941,25 @@ fn the_library_words_are_what_the_libraries_define() {
     words.sort_unstable();
     assert_eq!(defined, words);
 }
+
+/// A binding's failure names the config line it was written on, and the
+/// name that wasn't there.
+#[test]
+fn a_callback_fails_at_the_line_it_was_written() -> TestResult {
+    let source = "\n\n(code! (lambda! () (nosuch)))";
+    let values = evaluate(source, None, &mut NoRequests, &mut Vec::new())?;
+    let [Value::App(Fux::Code(code))] = values.as_slice() else {
+        return Err("no code value".into());
+    };
+    assert_eq!((code.file.as_str(), code.line), ("test", 3));
+    let program = crate::screens::Program::Code((**code).clone());
+    let mut machine = callback_machine(None, &program, Some(&[]), None)?;
+    let mut out = Vec::new();
+    let mut host = Host::new(Context::default(), None, &mut out);
+    let failed = run(&mut machine, &mut host, &mut NoRequests, None)
+        .err()
+        .ok_or("the callback ran")?;
+    assert!(failed.message.contains("nosuch"), "{failed}");
+    assert!(failed.message.contains("at test:3"), "{failed}");
+    Ok(())
+}

@@ -845,6 +845,56 @@ const MICE: [(&str, Mouse); 8] = [
     ("move", Mouse::Move),
 ];
 
+/// A directory: its text, its bytes, or as a saved session holds one, a
+/// record of its `encoding` and `text`, so one that isn't text comes back
+/// byte for byte.
+fn directory(value: &Value<Fux>) -> Result<std::path::PathBuf, Failure> {
+    let bytes = match value {
+        Value::Bytes(bytes) => (**bytes).clone(),
+        Value::App(Fux::Record(place)) => {
+            let text = string(&place.get("text")?)?;
+            if string(&place.get("encoding")?)? == "utf8" {
+                return Ok(text.into());
+            }
+            let digit = |c: u8| {
+                char::from(c)
+                    .to_digit(16)
+                    .and_then(|d| u8::try_from(d).ok())
+            };
+            let pair = |pair: &[u8]| match pair {
+                [high, low] => Some(
+                    digit(*high)?
+                        .saturating_mul(16)
+                        .saturating_add(digit(*low)?),
+                ),
+                _ => None,
+            };
+            let bytes = text.as_bytes().chunks(2).map(pair).collect::<Option<_>>();
+            bytes.ok_or_else(|| fail(Code::BadValue, format!("{text:?}: no directory's hex")))?
+        }
+        other => return Ok(string(other)?.into()),
+    };
+    path_of_bytes(bytes)
+}
+
+#[cfg(unix)]
+fn path_of_bytes(bytes: Vec<u8>) -> Result<std::path::PathBuf, Failure> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(std::ffi::OsString::from_vec(bytes).into())
+}
+
+/// A Windows path that isn't text, a lone surrogate's, isn't made again.
+#[cfg(windows)]
+fn path_of_bytes(bytes: Vec<u8>) -> Result<std::path::PathBuf, Failure> {
+    let text = String::from_utf8(bytes).map_err(|_| {
+        fail(
+            Code::BadValue,
+            "a directory that isn't text can't be restored on Windows",
+        )
+    })?;
+    Ok(text.into())
+}
+
 /// The options or request an option makes of what it goes on, `next`
 /// giving its values: `changed` and `expect` make a request on a version's
 /// pane.
@@ -890,7 +940,7 @@ fn apply(
         Opt::Changed => built.on = Some(On::Changed(version(&next()?)?)),
         Opt::Expect => built.on = Some(On::Seen(version(&next()?)?)),
         Opt::Name => built.name = Some(string(&next()?)?),
-        Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
+        Opt::Cwd => built.cwd = Some(directory(&next()?)?),
         Opt::In => built.place.push(workspace(&next()?)?),
         Opt::HistoryBytes => {
             built.history_bytes = Some(read::<HistoryBytes>(&next()?, Code::Range)?);
