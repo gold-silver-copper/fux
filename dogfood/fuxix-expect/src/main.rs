@@ -19,7 +19,7 @@
 
 use fuxix::Errno;
 use fuxix::poll::{Events, PollFd};
-use fuxix::process::{Pid, Signal};
+use fuxix::process::{Job, Reach, Signal, Status};
 use fuxix::pty::Master;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -115,8 +115,7 @@ struct Session {
     master: Master,
     /// Readable once SIGCHLD came: the program may have ended.
     children: fuxix::signal::Pipe,
-    child: Child,
-    pid: Pid,
+    job: Job,
     /// Output since the last match.
     seen: Vec<u8>,
     /// The master read its end: no one holds the slave open.
@@ -192,7 +191,7 @@ impl Session {
 
     /// Whether the program has ended, left to be reaped.
     fn ended(&self) -> Result<bool, Failure> {
-        fuxix::process::ended(self.pid)
+        self.job.ended()
             .map(|s| s.is_some())
             .map_err(|e| Failure::Io(format!("waiting for the program: {e}")))
     }
@@ -253,32 +252,25 @@ impl Session {
     /// Hangs the program's session up, as closing its terminal would, and
     /// kills it if it outlives that by a second.
     fn hang_up(&mut self) {
-        // It leads its own session and group (`Slave::spawn`).
-        let _ = fuxix::process::kill_group(self.pid, Signal::Hup);
-        let _ = fuxix::process::kill_group(self.pid, Signal::Cont);
+        let _ = fuxix::pty::hang_up(&self.master, &self.job);
         let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap_or_else(Instant::now);
         while matches!(self.ended(), Ok(false)) && Instant::now() < deadline {
             let _ = self.pump(Instant::now().checked_add(Duration::from_millis(20)).unwrap_or(deadline), &mut &[][..]);
         }
         if !matches!(self.ended(), Ok(true)) {
-            let _ = fuxix::process::kill_group(self.pid, Signal::Kill);
+            let _ = self.job.kill(Reach::Group);
         }
     }
 
     /// Reaps the program: its exit status as a shell gives it.
     fn status(&mut self) -> Result<u8, String> {
-        use std::os::unix::process::ExitStatusExt;
-        let status = self.child.wait().map_err(|e| format!("waiting for the program: {e}"));
-        // What it left running in its group, holding the terminal or not,
-        // is hung up as closing the terminal would (ESRCH if none is left).
-        let _ = fuxix::process::kill_group(self.pid, Signal::Hup);
-        let status = status?;
-        let code = match (status.code(), status.signal()) {
-            (Some(code), _) => code,
-            (None, Some(signal)) => 128_i32.saturating_add(signal),
-            (None, None) => 1,
-        };
-        Ok(u8::try_from(code & 0xff).unwrap_or(1))
+        loop {
+            match self.job.ended() {
+                Ok(Some(Status::Exited(code))) => return Ok(u8::try_from(code & 0xff).unwrap_or(1)),
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                Err(e) => return Err(format!("waiting for the program: {e}")),
+            }
+        }
     }
 }
 
@@ -335,15 +327,20 @@ fn start(s: &Settings) -> Result<(Session, Vec<Step>), String> {
     };
     // Before the spawn, so that no SIGCHLD of the program's is missed.
     let children = fuxix::signal::Pipe::new(&[Signal::Chld]).map_err(|e| format!("SIGCHLD: {e}"))?;
+    let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
     let (master, slave) = fuxix::pty::open((s.rows, s.cols).into()).map_err(|e| e.to_string())?;
-    let (child, pid) = slave
-        .spawn(&s.argv, fuxix::process::Dispositions::Default, |command| {
-            if std::env::var_os("TERM").is_none() {
-                command.env("TERM", "xterm-256color");
-            }
-        })
+    let job = slave
+        .spawn(
+            &s.argv,
+            |command| {
+                if std::env::var_os("TERM").is_none() {
+                    command.env("TERM", "xterm-256color");
+                }
+            },
+            fuxix::process::Dispositions::Default,
+        )
         .map_err(|e| format!("{}: {e}", s.argv.first().map_or("", String::as_str)))?;
-    let session = Session { master, children, child, pid, seen: Vec::new(), hung_up: false, echo: s.echo, log };
+    let session = Session { master, children, job, seen: Vec::new(), hung_up: false, echo: s.echo, log };
     Ok((session, steps))
 }
 

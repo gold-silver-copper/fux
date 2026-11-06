@@ -5,14 +5,12 @@
 //! signal that killed it.
 use fuxix::Errno;
 use fuxix::poll::{Events, PollFd};
-use fuxix::process::{Dispositions, Pid, Signal};
+use fuxix::process::{Dispositions, Signal};
 use fuxix::pty::Master;
 use fuxix::signal::Pipe;
 use fuxix::terminal::{self, Size};
 use std::io::{ErrorKind, Write};
-use std::os::fd::AsFd;
-use std::os::unix::process::ExitStatusExt;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 /// The signals passed on to the command's process group.
 const FORWARDED: [Signal; 4] = [Signal::Int, Signal::Term, Signal::Hup, Signal::Quit];
@@ -67,7 +65,7 @@ fn failed<E: std::fmt::Display>(what: &'static str) -> impl FnOnce(E) -> Failure
 
 /// The size of the terminal our stderr is on, if it is on one.
 fn our_size() -> Option<Size> {
-    terminal::window_size(std::io::stderr()).map(|(size, _)| size)
+    terminal::stdin_size().map(|(size, _)| size)
 }
 
 /// What reading the master found.
@@ -116,11 +114,8 @@ fn output_failed(error: std::io::Error) -> Failure {
 fn run(argv: &[std::ffi::OsString]) -> Result<u8, Failure> {
     let size = our_size().or(Size::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1));
     let size = size.ok_or_else(|| failed("sizing the PTY")("a zero size"))?;
+    let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
     let (master, slave) = fuxix::pty::open(size).map_err(failed("opening a PTY"))?;
-    // "\n" comes through as written, not "\r\n".
-    let mut modes = terminal::attributes(&slave).map_err(failed("reading the PTY's modes"))?;
-    modes.set_newline_as_crlf(false);
-    terminal::set_attributes(&slave, &modes).map_err(failed("setting the PTY's modes"))?;
     // Before the spawn, so that an exit at once is not missed.
     let mut caught = FORWARDED.to_vec();
     caught.extend([Signal::Winch, Signal::Chld]);
@@ -129,7 +124,9 @@ fn run(argv: &[std::ffi::OsString]) -> Result<u8, Failure> {
         .first()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let (mut child, pid) = spawn_output(slave, argv).map_err(|error| Failure {
+    let job = slave
+        .spawn(argv, |_| {}, Dispositions::Default)
+        .map_err(|error| Failure {
         code: if error.kind() == ErrorKind::NotFound {
             127
         } else {
@@ -137,51 +134,26 @@ fn run(argv: &[std::ffi::OsString]) -> Result<u8, Failure> {
         },
         message: format!("{program}: {error}"),
     })?;
-    let copied = pump(&master, pid, &signals);
+    let copied = pump(&master, &job, &signals);
     if copied.is_err() {
         // Nobody reads what it writes any more: hang it up, as closing a
         // terminal would.
-        let _ = fuxix::process::kill_group(pid, Signal::Hup);
-        drop(master);
+        let _ = fuxix::pty::hang_up(&master, &job);
     }
-    // Otherwise the master stays open until the command has exited: with
-    // its stdin not on the PTY, it may close its stdout and stderr (as GNU
-    // tools do at exit) and still be running, and closing the master then
-    // would hang it up.
-    let status = child.wait().map_err(failed("waiting for the command"))?;
+    let status = loop {
+        match job.ended().map_err(failed("waiting for the command"))? {
+            Some(status) => break status,
+            None => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    };
     copied?;
-    Ok(match (status.code(), status.signal()) {
-        (Some(code), _) => u8::try_from(code).unwrap_or(1),
-        (None, Some(signal)) => u8::try_from(signal).map_or(255, |s| s.saturating_add(128)),
-        (None, None) => 1,
-    })
-}
-
-/// Starts `argv` leading a session of its own, with its stdout and stderr
-/// on `slave` and its stdin ours. fuxix makes a PTY the controlling terminal
-/// only through stdin, so here it is none.
-fn spawn_output(
-    slave: fuxix::pty::Slave,
-    argv: &[std::ffi::OsString],
-) -> std::io::Result<(std::process::Child, Pid)> {
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| std::io::Error::other("no program to run"))?;
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .stdout(slave.as_fd().try_clone_to_owned()?)
-        .stderr(slave.as_fd().try_clone_to_owned()?);
-    fuxix::process::lead_session(&mut command, false, Dispositions::Inherited);
-    drop(slave);
-    let child = command.spawn()?;
-    let pid = Pid::of(&child).ok_or_else(|| std::io::Error::other("a child with no pid"))?;
-    Ok((child, pid))
+    let fuxix::process::Status::Exited(code) = status;
+    Ok(u8::try_from(code & 0xff).unwrap_or(1))
 }
 
 /// Copies the PTY's output to stdout and passes signals on, until the
 /// command has exited and its output is read.
-fn pump(master: &Master, pid: Pid, signals: &Pipe) -> Result<(), Failure> {
+fn pump(master: &Master, job: &fuxix::process::Job, signals: &Pipe) -> Result<(), Failure> {
     let mut out = std::io::stdout().lock();
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -203,7 +175,7 @@ fn pump(master: &Master, pid: Pid, signals: &Pipe) -> Result<(), Failure> {
                 Signal::Chld => {}
                 // It leads its own session, so its group's ID is its pid.
                 _ => {
-                    let _ = fuxix::process::kill_group(pid, signal);
+                    let _ = fuxix::pty::hang_up(master, job);
                 }
             }
         }
