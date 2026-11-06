@@ -536,6 +536,13 @@ same list inside a program. A run exits 0, the last value
 printed; or the one `(exit N)` gives (0 to 255); or with the status of the
 failure that stopped it (above), stdout getting nothing more and stderr
 why.
+A request acts only when a word sends it or it is the program's last value, so
+a request left unused does nothing and says nothing: `(key (pane 1) "Enter")
+(print "sent")` sends no key and exits 0. Write `(send-keys (key (pane 1)
+"Enter"))`.
+fux itself never runs text from a screen (D-151), but a program can, with
+`read-form` and `evaluate`. A pane shows what anything wrote there, so don't
+evaluate text you captured from one.
 `(environment-variable "NAME")` reads a local variable in config, a binding or a
 command line; an unset variable fails `unset-variable`, never an empty string.
 From the command line alone, a script reads `(arguments)` (the strings after
