@@ -31,7 +31,7 @@ pub enum Outgoing {
     /// A frame for a client: bytes for its terminal outside any paint
     /// (questions for the terminal; the bell; the keyboard flags pushed;
     /// clipboard copies),
-    /// fuxth to run as its own, keys to take as typed at its terminal
+    /// grift to run as its own, keys to take as typed at its terminal
     /// (`send-keys` to a client), its screen ended by the server, or its
     /// detach, saying why.
     To(ClientId, ToAttached<'static>),
@@ -3867,7 +3867,7 @@ pub(crate) mod testing {
         Ok((session, client))
     }
 
-    /// Runs fuxth `code` as client `client` would, or from no client: what
+    /// Runs grift `code` as client `client` would, or from no client: what
     /// it printed and what it left, a value a line; or its failure. A screen
     /// it opens opens on the client (`Session::input` reads its keys), and
     /// what the server sends clients meanwhile reaches them (`deliver`).
@@ -4029,13 +4029,13 @@ pub(crate) mod testing {
         }
     }
 
-    /// Runs fuxth `code` from no client: what it printed and left, or its
+    /// Runs grift `code` from no client: what it printed and left, or its
     /// failure.
     pub(crate) fn output(session: &mut Session, code: &str) -> Result<String, String> {
         output_as(session, None, code)
     }
 
-    /// Runs fuxth `code` from no client; its failure, if it fails.
+    /// Runs grift `code` from no client; its failure, if it fails.
     pub(crate) fn run(session: &mut Session, code: &str) -> Result<(), String> {
         output(session, code).map(drop)
     }
@@ -4136,7 +4136,7 @@ pub(crate) mod testing {
             deliver(self);
         }
 
-        /// Runs fuxth as client `client`: a failure, or what it says, in its
+        /// Runs grift as client `client`: a failure, or what it says, in its
         /// notice, as its client shows them.
         pub(crate) fn run_as(&mut self, client: ClientId, job: &fux::screens::Job) {
             match output_job(self, Some(client), job) {

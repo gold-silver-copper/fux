@@ -86,6 +86,17 @@ pub(super) fn value(v: &Data) -> Result<Value<Fux>, Failed> {
         .map_err(super::callback_failed)?,
     })
 }
+/// `source` reads whole, as data, without running any of it.
+fn reads(source: &str) -> Result<(), Failed> {
+    let mut g: grift::Grift = grift::Grift::new()
+        .map_err(|_| Failed::new(fux_wire::code::Code::Memory, "initializing grift"))?;
+    g.read(source).map(drop).map_err(|e| {
+        let mut text = String::new();
+        let _ = g.describe(&e, &mut text);
+        Failed::new(fux_wire::code::Code::BadValue, text)
+    })
+}
+/// The values `v` holds are all of one server run, and its code all reads.
 fn runs(v: &Data, of: &mut Option<fux_wire::command::Run>) -> Result<(), Failed> {
     match v {
         Data::Handle(_, r) | Data::Client(_, r) => {
@@ -109,12 +120,12 @@ fn runs(v: &Data, of: &mut Option<fux_wire::command::Run>) -> Result<(), Failed>
                     .map_err(super::callback_failed)?;
             }
         }
+        Data::Code(code) => reads(&code.source)?,
         Data::Int(_)
         | Data::Bool(_)
         | Data::Text(_)
         | Data::All
         | Data::Null
-        | Data::Code(_)
         | Data::Bytes(_)
         | Data::FloatBits(_) => {}
     }
@@ -134,18 +145,7 @@ pub fn admit(
         for arg in &action.args {
             runs(arg, &mut of)?;
         }
-        // Read the whole expression as data, without executing user code.
-        let mut g: grift::Grift = grift::Grift::new()
-            .map_err(|_| Failed::new(fux_wire::code::Code::Memory, "initializing grift"))?;
-        let parsed = g.read(&action.code.source);
-        match parsed {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                let mut text = String::new();
-                let _ = g.describe(&e, &mut text);
-                Err(Failed::new(fux_wire::code::Code::BadValue, text))
-            }
-        }
+        reads(&action.code.source)
     };
     match &mut open {
         Open::List(l) => {
@@ -439,6 +439,10 @@ mod tests {
         });
         assert!(admit(spec, None, &context, None).is_err());
         assert!(data(&Value::App(Fux::Opts(std::rc::Rc::new(Default::default())))).is_err());
+        // Code in a payload is read at open, as the action's own is.
+        let unread = Data::List(vec![Data::Code(crate::testing::code("(lambda!"))]);
+        let spec = list(unread, "(lambda! (#ignore #ignore) #inert)");
+        assert!(admit(spec, None, &context, None).is_err());
         Ok(())
     }
     #[test]

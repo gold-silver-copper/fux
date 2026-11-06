@@ -532,7 +532,7 @@ name or a correction. `fux '(help)'` lists fux's library, written in grift, and
 The whole program is read before anything runs, so a form that doesn't read
 (`parse-error`) acts on nothing. After that forms run in order, so the forms before
 a failing one have already acted: stderr lists each step that took effect, once,
-after why it failed (`fux: already took effect: rename`), and `(actions)` is the
+after why it failed (`fux: already took effect: (rename ...)`), and `(actions)` is the
 same list inside a program. A run exits 0, the last value
 printed; or the one `(exit N)` gives (0 to 255); or with the status of the
 failure that stopped it (above), stdout getting nothing more and stderr

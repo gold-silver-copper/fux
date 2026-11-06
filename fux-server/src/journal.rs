@@ -673,7 +673,7 @@ pub fn every_kind(
         Told::HistoryCleared,
         Told::HungUp,
         Told::ReadFailed(fuxix::Errno::SRCH.to_string()),
-        // The most a fuxth integer says, as it reads them.
+        // The most a grift integer says, as it reads them.
         Told::Input {
             kind: Sent::Keys,
             bytes: isize::MAX.unsigned_abs(),

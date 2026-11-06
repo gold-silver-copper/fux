@@ -774,7 +774,7 @@ fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Ou
             value
         );
     }
-    let replay = server.dir.join("pane-policy.fux");
+    let replay = server.dir.join("pane-policy.grift");
     std::fs::write(
         &replay,
         format!("(set \"history-bytes\" 8192) (set \"program-clipboard\" #true)\n{recipe}"),

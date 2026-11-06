@@ -365,7 +365,7 @@ impl OneKind for Hello {
 
 wire! {
     /// An attaching client and its optional conditional first launch. A
-    /// headless one has no terminal (`opts COLS ROWS size attach`): nothing
+    /// headless one has no terminal (`(attach (size (options) COLUMNS ROWS))`): nothing
     /// but its end follows, and the server sizes it (`resize`).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Attach {

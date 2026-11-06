@@ -969,7 +969,7 @@ mod tests {
             "Pane actions",
             "Move",
         ];
-        assert_eq!(groups, order, "in the order keys.fux binds them");
+        assert_eq!(groups, order, "in the order keys.grift binds them");
         assert_eq!(
             keymap.repeat_bar(&keys("C-b r")?).as_deref(),
             Some("RESIZE  h j k l · Esc")

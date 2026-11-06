@@ -1,6 +1,6 @@
 //! fux's server: one thread holds workspaces, tabs and split panes, their
 //! programs, and the clients attached to them, and answers each request
-//! in `fux-wire`'s terms. It never runs fuxth (D-2): programs run in
+//! in `fux-wire`'s terms. It never runs grift (D-2): programs run in
 //! clients.
 
 /// Writes to the server's log, its stderr: `log!("…", args)` writes the
@@ -63,7 +63,7 @@ macro_rules! wired {
     };
 }
 
-// The unit tests drive sessions through fux's fuxth; those that need a
+// The unit tests drive sessions through fux's grift; those that need a
 // POSIX shell or a Unix fact are `cfg(unix)`, and Windows tests the server
 // end to end besides (`tests/windows.rs`).
 pub mod capture;

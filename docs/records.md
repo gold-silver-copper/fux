@@ -465,7 +465,7 @@ and origin, with explicit source; it never runs on the server.
 
 A failure is one line on stderr, `fux: KIND: VALUES in FORM at FILE:LINE`, each enclosing form after
 it as `from FORM at FILE:LINE`, then a line for each step that had taken effect before it, `fux:
-already took effect: rename`. Its exit status is 2 for a mistake in the program itself
+already took effect: (rename ...)`. Its exit status is 2 for a mistake in the program itself
 (`usage`, `type-error`, `arity-error`, `unbound-symbol`, `read-error`, `parse-error`), a wait's own
 (above), else 1. Every native kind (`fux-wire/src/code.rs` says what each means):
 
@@ -503,8 +503,8 @@ that had taken effect by then, as an uncaught failure lists them on stderr.
 ## `status`
 
 ```text
-((socket "/run/user/1000/fux/server.sock") (release "0.37.0") (protocol 77)
- (server-release "0.37.0") (server-protocol 77) (server-process-id 4242) (compatible #true))
+((socket "/run/user/1000/fux/server.sock") (release "0.37.0") (protocol 78)
+ (server-release "0.37.0") (server-protocol 78) (server-process-id 4242) (compatible #true))
 ```
 
 `(status)` returns an ordinary record with these locally readable fields, including `(compatible

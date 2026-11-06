@@ -1,5 +1,5 @@
 //! The requests a client sends the server: typed actions, each built by
-//! fuxth words in a client (its `script`) and carried whole over the
+//! grift words in a client (its `script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::Axis;
@@ -300,7 +300,7 @@ pub fn size(rows: impl Into<i64>, cols: impl Into<i64>) -> Result<(u16, u16), cr
 
 /// A size a client's screen, and so a tab, may be: at least 1 row and
 /// column, and a grid fux-vt can make. Every size a request gives is one,
-/// so each size the server holds is one a dump writes (`COLS ROWS size`)
+/// so each size the server holds is one a dump writes (`(size OPTIONS COLUMNS ROWS)`)
 /// and makes again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Screen(fux_vt::Size);
@@ -910,7 +910,7 @@ wire! {
             target: Option<AnyRef>,
             members: Members,
         },
-        /// A command on one client's screen: the client named (`str c1 client`), or the one
+        /// A command on one client's screen: the client named (`(client "c1")`), or the one
         /// whose key, chooser or prompt ran it.
         Client {
             client: Option<ClientId>,
