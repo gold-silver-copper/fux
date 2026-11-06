@@ -102,6 +102,24 @@ programs built on the libraries (below) are the acceptance test for the whole po
   desktop, typed at, with screenshots (see "What PR 8 found").
 - **Cost:** what only a person can see stays unseen; the list is under "Not verified yet".
 
+The dogfood half, measured: **29 of the 30 programs' own tests pass on both images, 1 doesn't build**
+(run 42150709484, branch `dogfood/windows`, never merged). Original target: all pass. "Pass" means each
+program's `cargo test` on Windows, and most needed changes first:
+
+| Programs | What it took | What each gave up |
+|---|---|---|
+| 15 on fux-vt | No Windows change; 4 fixed for API drift since they were written, and `vt-graphics-preview` needs `Picture::pixel` public (on that branch only) | nothing |
+| recorder, expect, PTY driver, line editor, two-pane mux, nested term | `Job`, `stdin_size`, tests rewritten for `cmd` | line editor: Ctrl-Z redraws; byte-exact output checks, as ConPTY repaints |
+| dtach, shared shell, agent socket | Unix sockets to `fuxix::socket`, servers on `process::start` | the TERM cleanup test; the agent's `forbid_dumps` |
+| PTY bridge | as above, on a pipe | **TCP** (fuxix can't wait on a socket) and a connection at a time (one poller per process) |
+| unbuffer | runs whole on a console | **stdin staying ours**, and `\n` as written: ConPTY has no output-only terminal |
+| supervisor, group timeout, task runner | `process::start`, `Job` on a console | **TERM and its grace**: Windows ends a process outright; Ctrl-C stops the supervisor; a runner's pipe task runs on a console |
+| job top (`ptop`) | **doesn't build** (18 errors) | it reads each process's state, CPU, memory and directory from `/proc`, and fuxix has nothing for them on Windows |
+
+Cost: `ptop`'s kind of program has no way in, and each bold line is a feature that isn't there. Gaps the
+port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Child, Job)` on Unix and
+`Job` on Windows; a `Job` exists only with a console; `terminal::attributes` has no Windows form.
+
 ## Open questions the later PRs settle (found in PR 2)
 - **"Killed by fux" on Windows** (D-136): `Status` there is only `Exited(i32)`, the native code as std,
   cmd and PowerShell show it (`0xC000013A` is -1073741510). The PR that adds terminate decides how the

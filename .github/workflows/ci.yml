@@ -420,46 +420,6 @@ jobs:
           }
           exit $failed
 
-      # Real fux in real Windows Terminal, on the runner's desktop, with
-      # Defender's real-time protection on, fetching the ConPTY itself and
-      # typed at through the keyboard: CI's nearest to a person. Its
-      # screenshots are kept. What it can't show: WINDOWS.md, "Not verified
-      # yet".
-      - name: fux in Windows Terminal
-        if: ${{ !cancelled() }}
-        timeout-minutes: 5
-        shell: pwsh
-        run: |
-          Set-MpPreference -DisableRealtimeMonitoring $false
-          foreach ($i in 1..30) {
-            if ((Get-MpComputerStatus).RealTimeProtectionEnabled) { break }
-            Start-Sleep 1
-          }
-          "real-time protection: $((Get-MpComputerStatus).RealTimeProtectionEnabled)"
-          $version = '1.25.2733.0'
-          $arch, $hash = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
-            'arm64', '11b4fe264ecaa71b08cd84195536f68c669808155338e9f47f4da668b4cf0e26'
-          } else {
-            'x64', 'bf3ef2012f6c44d8340a4c58125acc9498d19b580f9890dc043cdf831852e796'
-          }
-          $zip = "$env:RUNNER_TEMP\wt.zip"
-          curl.exe -fsSL --retry 5 -o $zip "https://github.com/microsoft/terminal/releases/download/v$version/Microsoft.WindowsTerminal_${version}_$arch.zip"
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $hash) { throw 'Windows Terminal hash' }
-          Expand-Archive $zip "$env:RUNNER_TEMP\wt"
-          $terminal = Get-ChildItem "$env:RUNNER_TEMP\wt" -Recurse -Filter WindowsTerminal.exe | Select-Object -First 1
-          New-Item -ItemType File (Join-Path $terminal.DirectoryName '.portable') -Force | Out-Null
-          # A copy: a runner's tests may still hold the build's own.
-          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\run" | Out-Null
-          Copy-Item target\debug\fux.exe "$env:RUNNER_TEMP\run\fux.exe"
-          ./tests/windows-terminal.ps1 -Fux "$env:RUNNER_TEMP\run\fux.exe" -Terminal $terminal.FullName -Out "$env:RUNNER_TEMP\terminal"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ always() }}
-        with:
-          name: windows-terminal-${{ matrix.os }}
-          path: ${{ runner.temp }}/terminal/*.png
-          if-no-files-found: warn
-
       # The event loop's probes (WINDOWS.md, PR 4), with what each measured
       # in the log: a flood both ways with signals, no lost wake-up, an idle
       # loop's CPU, a 1 ms timeout's lateness, a child's exit as Chld.
@@ -509,6 +469,46 @@ jobs:
           $env:FUXIX_OTHER_DIR = $dir
           cargo test -p fuxix --test pipes --locked -- --nocapture --test-threads 1
           exit $LASTEXITCODE
+
+      # Real fux in real Windows Terminal, on the runner's desktop, with
+      # Defender's real-time protection on, fetching the ConPTY itself and
+      # typed at through the keyboard: CI's nearest to a person. Its
+      # screenshots are kept. What it can't show: WINDOWS.md, "Not verified
+      # yet". Last: Defender on and a timing probe don't mix.
+      - name: fux in Windows Terminal
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $false
+          foreach ($i in 1..30) {
+            if ((Get-MpComputerStatus).RealTimeProtectionEnabled) { break }
+            Start-Sleep 1
+          }
+          "real-time protection: $((Get-MpComputerStatus).RealTimeProtectionEnabled)"
+          $version = '1.25.2733.0'
+          $arch, $hash = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+            'arm64', '11b4fe264ecaa71b08cd84195536f68c669808155338e9f47f4da668b4cf0e26'
+          } else {
+            'x64', 'bf3ef2012f6c44d8340a4c58125acc9498d19b580f9890dc043cdf831852e796'
+          }
+          $zip = "$env:RUNNER_TEMP\wt.zip"
+          curl.exe -fsSL --retry 5 -o $zip "https://github.com/microsoft/terminal/releases/download/v$version/Microsoft.WindowsTerminal_${version}_$arch.zip"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $hash) { throw 'Windows Terminal hash' }
+          Expand-Archive $zip "$env:RUNNER_TEMP\wt"
+          $terminal = Get-ChildItem "$env:RUNNER_TEMP\wt" -Recurse -Filter WindowsTerminal.exe | Select-Object -First 1
+          New-Item -ItemType File (Join-Path $terminal.DirectoryName '.portable') -Force | Out-Null
+          # A copy: a runner's tests may still hold the build's own.
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\run" | Out-Null
+          Copy-Item target\debug\fux.exe "$env:RUNNER_TEMP\run\fux.exe"
+          ./tests/windows-terminal.ps1 -Fux "$env:RUNNER_TEMP\run\fux.exe" -Terminal $terminal.FullName -Out "$env:RUNNER_TEMP\terminal"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: windows-terminal-${{ matrix.os }}
+          path: ${{ runner.temp }}/terminal/*.png
+          if-no-files-found: warn
 
   # The agent benchmark's scripted tier for fux: every task, once, with fux
   # and python3 alone (no tmux, zellij, herdr or claude). A task fux used to
