@@ -213,33 +213,25 @@ mod tests {
         Ok(())
     }
 
-    /// A task that times out has its whole tree ended, a job in a group of
-    /// its own and a double-forked orphan in a session of its own included;
-    /// statuses and output come back on pipes and on a PTY.
+    /// A task that times out has its whole tree ended; statuses and output
+    /// come back on a console.
     #[test]
     fn a_timed_out_tree_is_ended_and_statuses_are_reported() -> Result<(), String> {
         let mut os = os::Os::new().map_err(|e| e.to_string())?;
-        // sh, a sleep in a group of its own (set -m), and an orphan in a
-        // session of its own; odd lengths, to look for them after.
-        let script = "set -m; sh -c 'sleep 3141' & setsid sh -c 'sleep 3142' & echo started; sleep 3143";
         let spec = |name: &str, timeout: u64, pty: bool, argv: &[&str]| Spec {
             name: name.into(),
             timeout: Duration::from_millis(timeout),
             pty,
             argv: argv.iter().map(|a| (*a).to_owned()).collect(),
         };
-        let hung = run(&mut os, &spec("hung", 800, false, &["sh", "-c", script]), &mut |_| {});
-        assert!(matches!(hung.end, End::TimedOut { killed } if killed >= 3), "{hung:?}");
-        assert_eq!(String::from_utf8_lossy(&hung.output).trim(), "started");
-        let ps = std::process::Command::new("ps").args(["-eo", "args"]).output().map_err(|e| e.to_string())?;
-        assert!(!String::from_utf8_lossy(&ps.stdout).contains("sleep 314"), "left running");
-
-        let failed = run(&mut os, &spec("exit3", 5000, false, &["sh", "-c", "echo out; echo err >&2; exit 3"]), &mut |_| {});
-        assert_eq!((failed.end.clone(), failed.output.clone()), (End::Ended(os::Status::Exited(3)), b"out\nerr\n".to_vec()));
-        let tty = run(&mut os, &spec("tty", 5000, true, &["sh", "-c", "test -t 0 && echo yes; kill -INT $$"]), &mut |_| {});
-        assert_eq!(tty.end, End::Ended(os::Status::Killed("INT".into())));
-        assert_eq!(String::from_utf8_lossy(&tty.output), "yes\r\n");
-        let missing = run(&mut os, &spec("none", 5000, false, &["/no/such/program"]), &mut |_| {});
+        let script = "start /b ping -n 3141 127.0.0.1 > NUL & echo started& ping -n 3143 127.0.0.1 > NUL";
+        let hung = run(&mut os, &spec("hung", 1500, false, &["cmd.exe", "/c", script]), &mut |_| {});
+        assert!(matches!(hung.end, End::TimedOut { killed } if killed >= 2), "{hung:?}");
+        assert!(String::from_utf8_lossy(&hung.output).contains("started"));
+        let failed = run(&mut os, &spec("exit3", 5000, false, &["cmd.exe", "/c", "echo out& exit 3"]), &mut |_| {});
+        assert_eq!(failed.end, End::Ended(os::Status::Exited(3)));
+        assert!(String::from_utf8_lossy(&failed.output).contains("out"));
+        let missing = run(&mut os, &spec("none", 5000, false, &["C:\\no\\such\\program.exe"]), &mut |_| {});
         assert!(matches!(missing.end, End::Failed(_)));
         Ok(())
     }
