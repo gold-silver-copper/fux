@@ -58,6 +58,7 @@ dependencies = [
 [[package]]
 name = "grift"
 version = "2.0.0"
+source = "git+https://github.com/gold-silver-copper/grift?rev=8d4588f6cffc43d0061e023c6536f1e4bc9263fb#8d4588f6cffc43d0061e023c6536f1e4bc9263fb"
 
 [[package]]
 name = "libc"

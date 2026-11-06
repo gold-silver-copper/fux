@@ -148,7 +148,7 @@ impl Error {
             Self::NoPaneGiven | Self::NoWorkspaceGiven => Code::NoTarget,
             Self::NoClient(_) => Code::NoClient,
             Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
-            Self::NameReadAsTarget(_) => Raise::BadName.into(),
+            Self::NameReadAsTarget(_) => Code::BadName,
             Self::NameTaken(..) => Code::NameTaken,
             Self::Failed { code, .. } => *code,
         }
