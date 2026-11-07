@@ -1744,3 +1744,56 @@ fn a_resize_before_welcome_is_sent_after_it_before_a_fenced_job() -> Outcome {
     assert!(terminal.wait_exit()?.success());
     Ok(())
 }
+
+/// A key's program whose walk of `d`, a value that shares its parts, would
+/// take for ever and all memory (capped, should it try), each of `marks` the
+/// name it gives pane 1 before a stop is to come: the program comes to
+/// "stopped" with those stops, its handler unrun.
+#[cfg(target_os = "linux")]
+fn stops_end(body: &str, marks: &[&str]) -> Outcome {
+    let keys = format!(
+        r#"(define! shared (lambda! (n d) (if! (same? n 0) d (shared (subtract n 1) (list d d)))))
+        (define! spin (lambda! () (spin)))
+        (define! mark (lambda! (name) (rename (pane 1) name)))
+        (bind-key "C-b g" (code! (lambda! () (define! d (shared 40 ())) {body})))"#
+    );
+    let server = Server::start(&keys)?;
+    let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
+    terminal.wait_for("$")?;
+    cap(i32::try_from(terminal.child.id()).map_err(e)?, 256 << 20)?;
+    terminal.type_bytes(b"\x02g")?;
+    for mark in marks {
+        eventually(&format!("{mark} of {body}"), || {
+            terminal.pump();
+            Ok(server.ok(&["(get (pane 1) \"name\")"])?.contains(mark))
+        })?;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        terminal.type_bytes(b"\x02\x1b")?;
+    }
+    terminal
+        .wait_for("stopped")
+        .map_err(|why| format!("{body}: {why}"))?;
+    let name = server.ok(&["(get (pane 1) \"name\")"])?;
+    assert!(!name.contains("caught"), "{body}: its handler ran");
+    Ok(())
+}
+
+/// fux's own walk of a value, for a word's arguments or to ask what it is, is
+/// no step of grift's: a stop ends it itself, a cleanup's by a second stop.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stop_ends_fuxs_walk_of_a_value() -> Outcome {
+    for body in [
+        "(mark \"walking\") (kind d)",
+        "(mark \"walking\") (string d)",
+        "(mark \"walking\") (get d 1)",
+        "(mark \"walking\") (kind (list (quote! code!) d))",
+        "(catch! (sequence! (mark \"walking\") (kind d)) e (mark \"caught\"))",
+    ] {
+        stops_end(body, &["walking"])?;
+    }
+    stops_end(
+        "(finally! (sequence! (mark \"walking\") (spin)) (sequence! (mark \"again\") (kind d)))",
+        &["walking", "again"],
+    )
+}

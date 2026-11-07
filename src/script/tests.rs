@@ -1298,3 +1298,19 @@ fn a_stop_is_one_step_to_the_program() -> TestResult {
     }
     Ok(())
 }
+
+/// A stop grift has already acted on stops no walk of a cleanup's: however a
+/// stop is held up, what a cleanup asks about a value still answers.
+#[cfg(unix)]
+#[test]
+fn a_cleanups_walk_goes_on_after_the_stop_that_let_it_run() -> TestResult {
+    for at in [Step::Told, Step::Noted] {
+        let cleaned = r#"(define! spin (lambda! () (spin)))
+            (finally! (sequence! (display "go") (spin))
+                (sequence! (define! asked (kind (list 1 2))) (rename (pane 1) asked)))"#;
+        let (asked, failed) = stopped_at(at, cleaned, false)?;
+        assert_eq!(asked, 2, "{failed}");
+        assert!(failed.actions.iter().any(|step| step.contains("rename")));
+    }
+    Ok(())
+}
