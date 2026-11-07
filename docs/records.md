@@ -493,7 +493,8 @@ fux sets no limits of its own: memory, time and steps are the user's and the OS'
 cgroups, `timeout`), and a program that loops is stopped as any program is. What nests too deep to
 cross the wire (a callback's lists past 64, records past 32, a layout past 64) fails `too-long`,
 whether the word or the server refuses it; a size no screen can have, past what a grid holds, fails
-`size`. When the OS refuses memory where fux asks for it, the failure is `out-of-memory`.
+`size`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
+handler catches; where fux's own code asks for it, the process aborts.
 [`codes.txt`](codes.txt) lists every kind with its exit status.
 
 A program catches a failure by kind with `(catch-kind! EXPRESSION KIND NAME HANDLER...)`, or any with
