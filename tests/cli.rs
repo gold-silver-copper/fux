@@ -962,3 +962,43 @@ fn a_stop_ends_the_wait_it_beat_and_asks_the_cleanup() -> Outcome {
     assert!(server.ok(&["(list-session)"])?.contains("cleaned"));
     Ok(())
 }
+
+/// Memory refused while printing a value is the program's limit, as anywhere
+/// else, which no handler sees: it does not become a failure to output that
+/// one catches, going on as if nothing were wrong. The program builds its
+/// value first, and the cap comes as it waits to print it.
+#[cfg(target_os = "linux")]
+#[test]
+fn memory_refused_while_printing_passes_a_programs_handlers() -> Outcome {
+    use std::io::{BufRead, Read};
+    use std::process::Stdio;
+    let server = Server::empty()?;
+    let mut child = server
+        .command(fux())
+        .arg(
+            r#"(define! deep (lambda! (n d) (if! (same? n 0) d (deep (subtract n 1) (pair d ())))))
+            (define! d (deep 1000000 ()))
+            (display "built\n")
+            (input)
+            (catch! (data-text d) e (display "handled\n") #inert)"#,
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    let mut said = std::io::BufReader::new(child.stdout.take().ok_or("its stdout")?);
+    let mut built = String::new();
+    said.read_line(&mut built).map_err(e)?;
+    assert_eq!(built, "built\n");
+    cap(i32::try_from(child.id()).map_err(e)?, 1 << 20)?;
+    drop(child.stdin.take());
+    let mut rest = String::new();
+    said.read_to_string(&mut rest).map_err(e)?;
+    let done = child.wait_with_output().map_err(e)?;
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(!rest.contains("handled"), "its handler ran: {stderr}");
+    assert_eq!(done.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("out-of-memory"), "{stderr}");
+    Ok(())
+}

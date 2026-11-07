@@ -186,6 +186,15 @@ fn written<T>(g: &Grift<T>, start: &str, values: &[G], most: usize) -> String {
     out.text
 }
 
+/// Why printing failed: the value's own reason (memory refused, say), which
+/// stays what it is, or, if the output refused, `kind`.
+fn unwritten<T>(g: &mut Grift<T>, why: grift::WriteError, kind: &str, values: &[G]) -> Error {
+    match why {
+        grift::WriteError::Value(e) => e,
+        grift::WriteError::Output => g.error(kind, values),
+    }
+}
+
 fn check<A: Asks + ?Sized>(
     g: &mut Interpreter<'_, '_, A>,
     state: &mut Runtime<'_, '_, A>,
@@ -229,7 +238,7 @@ fn data_text<A: Asks + ?Sized>(
     };
     let mut text = String::new();
     g.write(value, &mut text)
-        .map_err(|_| g.error("output", args))?;
+        .map_err(|why| unwritten(g, why, "output", args))?;
     g.string(&text)
 }
 fn read_source<A: Asks + ?Sized>(
@@ -699,7 +708,7 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> R
         };
         let mut source = String::new();
         g.write(&v, &mut source)
-            .map_err(|_| g.error("output", &[]))?;
+            .map_err(|why| unwritten(g, why, "output", &[]))?;
         for (name, value) in [
             ("name", Some(text.clone())),
             ("provenance", Some(provenance.to_owned())),
@@ -1187,7 +1196,7 @@ fn write_form<T>(
     let Some(items) = items else {
         return g
             .write(form, out)
-            .map_err(|_| g.error("bad-value", std::slice::from_ref(form)));
+            .map_err(|why| unwritten(g, why, "bad-value", std::slice::from_ref(form)));
     };
     if let Some((_, at)) = g.position(form)?
         && at > *line
@@ -1409,7 +1418,9 @@ fn write_display<T>(g: &mut Grift<T>, v: &G, out: &mut String) -> Result<(), Err
     };
     match shown {
         Some(value) => value.write_text(out).map_err(|f| failure(g, f)),
-        None => g.write(v, out).map_err(|_| g.error("output", &[])),
+        None => g
+            .write(v, out)
+            .map_err(|why| unwritten(g, why, "output", &[])),
     }
 }
 
@@ -1426,7 +1437,8 @@ fn output_value<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
         return Ok(value);
     }
     let mut text = String::new();
-    g.write(v, &mut text).map_err(|_| g.error("output", &[]))?;
+    g.write(v, &mut text)
+        .map_err(|why| unwritten(g, why, "output", &[]))?;
     Ok(Value::str(text))
 }
 
