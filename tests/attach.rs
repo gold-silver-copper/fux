@@ -1797,3 +1797,14 @@ fn a_stop_ends_fuxs_walk_of_a_value() -> Outcome {
         &["walking", "again"],
     )
 }
+
+/// A job's value is written out after its run has ended, when no step of
+/// grift's can come: a stop ends that too, however long the value would take.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stop_ends_the_walk_of_a_jobs_value() -> Outcome {
+    for body in ["(mark \"walking\") d", "(mark \"walking\") (list d d)"] {
+        stops_end(body, &["walking"])?;
+    }
+    Ok(())
+}

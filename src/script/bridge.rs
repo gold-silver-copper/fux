@@ -1028,7 +1028,7 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
             refused.place = last.map(|(n, _)| format!("{}:{}", machine.name, n.saturating_add(1)));
             Err(refused)
         }
-        Ok(v) => match output_value(g, &v) {
+        Ok(v) => match output_value(g, state.stop, &v) {
             // A list's items, each said alone; a record's fields are one value.
             Ok(Value::Str(_))
                 if matches!(v, G::Pair(_) | G::EmptyList)
@@ -1038,7 +1038,7 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
                 let items = g.list_items(&v).map_err(|e| failed(g, e))?;
                 let values = items
                     .iter()
-                    .map(|item| output_value(g, item))
+                    .map(|item| output_value(g, state.stop, item))
                     .collect::<Result<_, _>>()
                     .map_err(|e| failed(g, e))?;
                 Ok(vec![Value::List(Rc::new(List::new(values)))])
@@ -1465,22 +1465,46 @@ fn write_display<T>(
     }
 }
 
-fn output_value<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
+/// A job's value as text, which refuses more once the job is stopped: the run
+/// has ended, so nothing else would end the printer.
+struct Unstopped<'a> {
+    text: String,
+    stop: Option<&'a Stop>,
+}
+
+impl std::fmt::Write for Unstopped<'_> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        if self.stop.is_some_and(Stop::stopped) {
+            return Err(std::fmt::Error);
+        }
+        self.text.push_str(s);
+        Ok(())
+    }
+}
+
+/// The value `v`, what a job ended with, is said as. Its run is over, so a
+/// stop reaches this through `stop` alone.
+fn output_value<T>(g: &mut Grift<T>, stop: Option<&Stop>, v: &G) -> Result<Value<Fux>, Error> {
     if matches!(
         v,
         G::Integer(_) | G::Boolean(_) | G::String(_) | G::Float(_) | G::Bytes(_) | G::Symbol(_)
     ) {
-        return from_grift(g, None, v);
+        return from_grift(g, stop, v);
     }
     if matches!(v, G::Pair(_))
-        && let Ok(value @ Value::App(_)) = from_grift(g, None, v)
+        && let Ok(value @ Value::App(_)) = from_grift(g, stop, v)
     {
         return Ok(value);
     }
-    let mut text = String::new();
-    g.write(v, &mut text)
-        .map_err(|why| unwritten(g, why, "output", &[]))?;
-    Ok(Value::str(text))
+    let mut out = Unstopped {
+        text: String::new(),
+        stop,
+    };
+    g.write(v, &mut out).map_err(|why| {
+        let stopped = unstopped(g, stop).err();
+        stopped.unwrap_or_else(|| unwritten(g, why, "output", &[]))
+    })?;
+    Ok(Value::str(out.text))
 }
 
 fn runtime_exit<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, state: &mut Runtime<'_, '_, A>) {
