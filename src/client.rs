@@ -1336,6 +1336,7 @@ impl Raw {
         // process, however often it attaches.
         static HOOKED: std::sync::Once = std::sync::Once::new();
         HOOKED.call_once(|| {
+            fuxix::terminal::leaving_on_abort(LEAVE);
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
                 fuxix::terminal::leaving(leave);

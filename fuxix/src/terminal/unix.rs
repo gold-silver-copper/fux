@@ -94,7 +94,10 @@ fn set(raw: libc::c_int, when: libc::c_int, termios: &Termios) -> Result<()> {
 /// before its message is printed, in the panic hook the first `enter`
 /// installs, which then calls the hook that was there: a program that
 /// writes something to its terminal as it leaves (the alternate screen's
-/// end) sets its own hook after entering, to run first.
+/// end) sets its own hook after entering, to run first. An abort (an
+/// allocation refused, a stack overflow) runs no hook: a handler of SIGABRT
+/// the first `enter` installs does the same, after what [`leaving_on_abort`]
+/// says to write.
 pub struct Raw<F: AsFd> {
     fd: F,
     saved: Termios,
@@ -135,6 +138,14 @@ impl<F: AsFd> Raw<F> {
         raw.make_raw();
         static HOOKED: std::sync::Once = std::sync::Once::new();
         HOOKED.call_once(|| {
+            // SAFETY: the handler has the signature `signal` wants, and does
+            // only what a signal handler may.
+            unsafe {
+                libc::signal(
+                    libc::SIGABRT,
+                    restore_on_abort as extern "C" fn(libc::c_int) as libc::sighandler_t,
+                )
+            };
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
                 // Waited for: only a push, a retain and this loop run
@@ -212,6 +223,37 @@ pub fn on_one_terminal() -> bool {
 /// Unix has nothing to open: a process's descriptors are what it was
 /// given.
 pub fn open_stdio() {}
+
+/// What to write to stdout as an abort ends this process in raw mode.
+static LEAVE_ON_ABORT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// `text`, what a program writes to its terminal as it leaves, is written to
+/// stdout if this process aborts while a `Raw` is live.
+pub fn leaving_on_abort(text: &'static str) {
+    let _ = LEAVE_ON_ABORT.set(text);
+}
+
+/// Puts the terminals back as an abort ends this process, then lets the
+/// signal end it, wherever it came from. `try_lock`: the thread aborting may
+/// be the one holding the lock, and then nothing is put back.
+extern "C" fn restore_on_abort(signal: libc::c_int) {
+    if let Ok(held) = HELD.try_lock()
+        && !held.is_empty()
+    {
+        if let Some(text) = LEAVE_ON_ABORT.get() {
+            // SAFETY: `write` may be called in a handler, and `text` is a
+            // whole static string.
+            let _ = unsafe { libc::write(libc::STDOUT_FILENO, text.as_ptr().cast(), text.len()) };
+        }
+        for (_, raw, termios, when) in held.iter().rev() {
+            let _ = set(*raw, *when, termios);
+        }
+    }
+    // SAFETY: `signal` may be called in a handler; the default ends the process.
+    unsafe { libc::signal(signal, libc::SIG_DFL) };
+    // SAFETY: `raise` may be called in a handler; it is delivered as this returns.
+    unsafe { libc::raise(signal) };
+}
 
 /// Runs `leave`, what a program writes to its terminal as a panic ends it,
 /// before the panic hook puts the terminal back.

@@ -1001,6 +1001,32 @@ pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) ->
     }
 }
 
+/// Caps `pid`'s address space at `more` bytes past what it has now
+/// (`prlimit`, util-linux): an allocation past it fails, and if that ends
+/// it, leaves no core.
+#[cfg(target_os = "linux")]
+pub fn cap(pid: i32, more: u64) -> Outcome {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(e)?;
+    let kib: u64 = (status.lines())
+        .find_map(|line| line.strip_prefix("VmSize:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+        .ok_or("its size")?;
+    let limit = kib.saturating_mul(1024).saturating_add(more).to_string();
+    let out = std::process::Command::new("prlimit")
+        .args([
+            "--pid",
+            &pid.to_string(),
+            &format!("--as={limit}:{limit}"),
+            "--core=0",
+        ])
+        .output()
+        .map_err(e)?;
+    match out.status.success() {
+        true => Ok(()),
+        false => Err(String::from_utf8_lossy(&out.stderr).into_owned()),
+    }
+}
+
 /// The real `fux` attached (no words, or `opts … attach`), on a PTY of
 /// its own, and a fux-vt screen of what it shows.
 pub struct Terminal {
@@ -1106,6 +1132,12 @@ impl Terminal {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The terminal's modes now.
+    pub fn modes(&self) -> Result<fuxix::terminal::Termios, String> {
+        let master = self.master.as_ref().ok_or("the terminal is closed")?;
+        fuxix::terminal::attributes(master).map_err(e)
     }
 
     pub fn wait_for(&mut self, needle: &str) -> Outcome {
