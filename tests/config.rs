@@ -43,13 +43,13 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
     );
     for args in [
         &[
-            "(sequence! (define! variables-1 (context)) (define! value-2 (options)) (define! value-3 (watch value-2)) (define! value-4 (attach value-3)) #inert)",
+            "(sequence! (define! variables-1 (context ())) (define! value-2 (options)) (define! value-3 (watch value-2)) (define! value-4 (attach value-3)) #inert)",
         ],
         &[
-            "(sequence! (define! variables-5 (context)) (define! value-6 (options)) (define! value-7 (size value-6 80 10)) (define! value-8 (attach value-7)) #inert)",
+            "(sequence! (define! variables-5 (context ())) (define! value-6 (options)) (define! value-7 (size value-6 80 10)) (define! value-8 (attach value-7)) #inert)",
         ],
         &[
-            "(sequence! (define! variables-9 (context)) (define! value-10 (options)) (define! value-11 (size value-10 80 10)) (define! value-12 (watch value-11)) (define! value-13 (attach value-12)) #inert)",
+            "(sequence! (define! variables-9 (context ())) (define! value-10 (options)) (define! value-11 (size value-10 80 10)) (define! value-12 (watch value-11)) (define! value-13 (attach value-12)) #inert)",
         ],
     ] {
         let mut terminal = Terminal::attach(&server, 10, 80, args)?;
@@ -173,13 +173,13 @@ fn launch_preferences_apply_only_to_new_requests() -> Outcome {
     // Bad values are refused; keys are a client's, never the server's.
     for args in [
         &[
-            "(sequence! (define! variables-14 (context)) (define! value-15 \"buffers\") (define! value-16 (set value-15 0)) #inert)",
+            "(sequence! (define! variables-14 (context ())) (define! value-15 \"buffers\") (define! value-16 (set value-15 0)) #inert)",
         ],
         &[
-            "(sequence! (define! variables-17 (context)) (define! value-18 \"terminal-clipboard\") (define! value-19 \"maybe\") (define! value-20 (set value-18 value-19)) #inert)",
+            "(sequence! (define! variables-17 (context ())) (define! value-18 \"terminal-clipboard\") (define! value-19 \"maybe\") (define! value-20 (set value-18 value-19)) #inert)",
         ],
         &[
-            "(sequence! (define! variables-21 (context)) (define! value-22 \"nonsense\") (define! value-23 (set value-22 1)) #inert)",
+            "(sequence! (define! variables-21 (context ())) (define! value-22 \"nonsense\") (define! value-23 (set value-22 1)) #inert)",
         ],
     ] {
         let out = server.fux(args)?;
@@ -489,29 +489,29 @@ fn key_words_refuse_the_command_line() -> Outcome {
     let server = Server::start("")?;
     for words in [
         &[
-            "(sequence! (define! variables-24 (context)) (define! value-25 \"C-b\") (define! value-26 \"C-a\") (define! value-27 (move-keys value-25 value-26)) #inert)",
+            "(sequence! (define! variables-24 (context ())) (define! value-25 \"C-b\") (define! value-26 \"C-a\") (define! value-27 (move-keys value-25 value-26)) #inert)",
         ],
         &[
-            "(sequence! (define! variables-28 (context)) (define! value-29 \"q\") (define! value-34 (code! (lambda! () (sequence! (define! variables-30 (context)) (define! value-31 (me)) (define! value-32 (focused value-31)) (define! value-33 (zoom value-32)) #inert)))) (define! value-35 (bind-key value-29 value-34)) #inert)",
+            "(sequence! (define! variables-28 (context ())) (define! value-29 \"q\") (define! value-34 (code! (lambda! () (sequence! (define! variables-30 (context ())) (define! value-31 (me)) (define! value-32 (focused value-31)) (define! value-33 (zoom value-32)) #inert)))) (define! value-35 (bind-key value-29 value-34)) #inert)",
         ],
         &[
-            "(sequence! (define! variables-36 (context)) (define! value-37 \"q\") (define! value-38 (unbind value-37)) #inert)",
+            "(sequence! (define! variables-36 (context ())) (define! value-37 \"q\") (define! value-38 (unbind value-37)) #inert)",
         ],
-        &["(sequence! (define! variables-39 (context)) (define! value-40 (unbind-all)) #inert)"],
+        &["(sequence! (define! variables-39 (context ())) (define! value-40 (unbind-all)) #inert)"],
         &[
-            "(sequence! (define! variables-41 (context)) (define! value-42 \"copy\") (define! value-43 \"g\") (define! value-44 \"top\") (define! value-45 (bind-in value-42 value-43 value-44)) #inert)",
-        ],
-        &[
-            "(sequence! (define! variables-46 (context)) (define! value-47 \"copy\") (define! value-48 \"v\") (define! value-49 (unbind-in value-47 value-48)) #inert)",
+            "(sequence! (define! variables-41 (context ())) (define! value-42 \"copy\") (define! value-43 \"g\") (define! value-44 \"top\") (define! value-45 (bind-in value-42 value-43 value-44)) #inert)",
         ],
         &[
-            "(sequence! (define! variables-50 (context)) (define! value-51 \"name\") (define! value-52 (label value-51)) #inert)",
+            "(sequence! (define! variables-46 (context ())) (define! value-47 \"copy\") (define! value-48 \"v\") (define! value-49 (unbind-in value-47 value-48)) #inert)",
         ],
         &[
-            "(sequence! (define! variables-53 (context)) (define! value-54 \"name\") (define! value-55 (group value-54)) #inert)",
+            "(sequence! (define! variables-50 (context ())) (define! value-51 \"name\") (define! value-52 (label value-51)) #inert)",
         ],
         &[
-            "(sequence! (define! variables-56 (context)) (define! value-57 \"C-b r\") (define! value-58 (repeat value-57)) #inert)",
+            "(sequence! (define! variables-53 (context ())) (define! value-54 \"name\") (define! value-55 (group value-54)) #inert)",
+        ],
+        &[
+            "(sequence! (define! variables-56 (context ())) (define! value-57 \"C-b r\") (define! value-58 (repeat value-57)) #inert)",
         ],
     ] {
         let result = server.fux(words)?;
@@ -532,10 +532,12 @@ fn unrelated_commands_do_not_load_shell_defaults() -> Outcome {
     for words in [
         &["--version"][..],
         &[
-            "(sequence! (define! variables-59 (context)) (define! value-60 (list-session)) value-60)",
+            "(sequence! (define! variables-59 (context ())) (define! value-60 (list-session)) value-60)",
         ],
-        &["(sequence! (define! variables-61 (context)) (define! value-62 (status)) value-62)"],
-        &["(sequence! (define! variables-63 (context)) (define! value-64 (kill-server)) #inert)"],
+        &["(sequence! (define! variables-61 (context ())) (define! value-62 (status)) value-62)"],
+        &[
+            "(sequence! (define! variables-63 (context ())) (define! value-64 (kill-server)) #inert)",
+        ],
     ] {
         let result = std::process::Command::new(FUX)
             .args(words)
@@ -974,7 +976,7 @@ fn another_program_reads_a_clients_keys_and_preferences() -> Outcome {
     terminal.type_bytes(b"\x02e")?;
     terminal.wait_for("Enter accept")?;
     let fresh = r#"(bind-key "C-b y" (code! (lambda! () (zoom (focused (me))) #inert)))
-        (if! (same? (kind (get (find-key (prefix-rows) "y") "code")) "code") (print (string-append "read-back-" "fresh")) (print (string-append "read-back-" "stale")))"#;
+        (if! (same? (kind (get (find-key (prefix-rows) "y") "code")) "code") (print (join "read-back-" "fresh")) (print (join "read-back-" "stale")))"#;
     terminal.type_bytes(format!("{}\r", query(fresh)).as_bytes())?;
     terminal.wait_for("read-back-fresh")?;
     terminal.type_bytes(b"\x02d")?;

@@ -4,9 +4,9 @@
 # fix: #313
 $ V=$(fux '(new-tab (argument (argument (program (history-bytes (size (in (options) "agent") 120 40) 33554432) "sh") "-c") "seq 1 200000"))')
 $ fux "(until-ended (pane \"${V%%:*}\") 20) #inert"
-$ fux "(greater-than? (string-byte-length (data-text (capture (all-history (pane \"${V%%:*}\"))))) 1000000)"
+$ fux "(greater-than? (byte-length (data-text (capture (all-history (pane \"${V%%:*}\"))))) 1000000)"
   = #true
   ~ #true
-$ fux "(byte-substring (data-text (capture (all-history (pane \"${V%%:*}\")))) 0 8)"
+$ fux "(slice (data-text (capture (all-history (pane \"${V%%:*}\")))) 0 8)"
   = ((kind "
   ~ ((kind "

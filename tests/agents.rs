@@ -956,7 +956,7 @@ fn json_of_a_saved_capture_is_that_capture() -> Outcome {
     let started = server.ok(&launch(&[], &["sh", "-c", script]))?;
     let pane = id(&started);
     shows_after(&server, &started, "BEFORE")?;
-    let json = server.ok(&[&format!("(sequence! (define! variables-221 (context)) (bind variables-221 (quote! P) (pane {})) (bind variables-221 (quote! C) (capture (evaluate (quote! P) variables-221))) (send-keys (key (evaluate (quote! P) variables-221) \"Enter\")) (kill (evaluate (quote! P) variables-221)) (evaluate (quote! C) variables-221))", fux::script::quoted(&pane))])?;
+    let json = server.ok(&[&format!("(sequence! (define! variables-221 (context ())) (bind variables-221 (quote! P) (pane {})) (bind variables-221 (quote! C) (capture (evaluate (quote! P) variables-221))) (send-keys (key (evaluate (quote! P) variables-221) \"Enter\")) (kill (evaluate (quote! P) variables-221)) (evaluate (quote! C) variables-221))", fux::script::quoted(&pane))])?;
     assert!(json.contains("BEFORE") && !json.contains("LATER"), "{json}");
     Ok(())
 }
@@ -1324,7 +1324,7 @@ fn observed_retains_a_capture_without_refreshing_it() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", "echo READY; read x"]))?);
     let code = format!(
-        "(sequence! (define! variables-56 (context)) (bind variables-56 (quote! seen) (shows {} \"READY\" 3)) (kill {}) (string (shows (observed (evaluate (quote! seen) variables-56)) \"READY\" 1)))",
+        "(sequence! (define! variables-56 (context ())) (bind variables-56 (quote! seen) (shows {} \"READY\" 3)) (kill {}) (string (shows (observed (evaluate (quote! seen) variables-56)) \"READY\" 1)))",
         support::reference(&pane.to_string()),
         support::reference(&pane.to_string())
     );
@@ -1397,7 +1397,7 @@ fn grows_validates_its_baseline_and_requested_growth() -> Outcome {
     )])?;
     assert_eq!(overflow.status, 1);
     let generation = format!(
-        "(sequence! (define! variables-94 (context)) (bind variables-94 (quote! seen) (capture {})) (respawn (kill-first {})) (grows (evaluate (quote! seen) variables-94) \"screen\" 1 1) #inert)",
+        "(sequence! (define! variables-94 (context ())) (bind variables-94 (quote! seen) (capture {})) (respawn (kill-first {})) (grows (evaluate (quote! seen) variables-94) \"screen\" 1 1) #inert)",
         support::reference(&pane.to_string()),
         support::reference(&pane.to_string())
     );
@@ -1416,7 +1416,7 @@ fn quiet_propagates_closure_instead_of_reporting_stability() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&launch(&[], &["sh", "-c", "echo READY; read x"]))?);
     let code = format!(
-        "(sequence! (define! variables-101 (context)) (bind variables-101 (quote! seen) (shows {} \"READY\" 3)) (kill {}) (quiet (evaluate (quote! seen) variables-101) 1) #inert)",
+        "(sequence! (define! variables-101 (context ())) (bind variables-101 (quote! seen) (shows {} \"READY\" 3)) (kill {}) (quiet (evaluate (quote! seen) variables-101) 1) #inert)",
         support::reference(&pane.to_string()),
         support::reference(&pane.to_string())
     );

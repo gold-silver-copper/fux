@@ -316,6 +316,10 @@ impl<F: AsHandle> Drop for Raw<F> {
 /// How long a panic's last output may hold up putting the console back.
 const LEAVING: Duration = Duration::from_millis(250);
 
+/// Nothing: no handler runs here as an abort ends a process, so an abort
+/// leaves the console as it was.
+pub fn leaving_on_abort(_: &'static str) {}
+
 /// Runs `leave`, what a program writes to its terminal as a panic ends it,
 /// before the panic hook puts the console back: the modes must still be
 /// on for it to mean anything. A console that stopped reading would hold it

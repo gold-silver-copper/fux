@@ -146,11 +146,10 @@ fn test_data(text: &str, query: &str) -> Result<String, String> {
     let forms = g
         .read_in("observed data", text)
         .map_err(|_| format!("invalid data: {text}"))?;
-    let forms = g.list_items(&forms).map_err(|_| "data forms")?;
-    let [data] = forms.as_slice() else {
+    let Some((data, grift::Value::EmptyList)) = g.as_pair(&forms).map_err(|_| "data forms")? else {
         return Err(format!("expected one datum: {text}"));
     };
-    g.define("data", data.clone()).map_err(|_| "binding data")?;
+    g.define("data", data).map_err(|_| "binding data")?;
     let program = format!(
         "(define! field (lambda! (record name) (second (find-association name record)))) {query}"
     );

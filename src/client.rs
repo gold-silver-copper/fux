@@ -1336,6 +1336,7 @@ impl Raw {
         // process, however often it attaches.
         static HOOKED: std::sync::Once = std::sync::Once::new();
         HOOKED.call_once(|| {
+            fuxix::terminal::leaving_on_abort(LEAVE);
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
                 fuxix::terminal::leaving(leave);
@@ -1859,7 +1860,7 @@ mod tests {
         let effects = admitted(
             &mut keyboard,
             Job::from(
-                "(sequence! (define! variables-2 (context)) (define! value-3 \"terminal-clipboard\") (define! value-4 (set value-3 #false)) (define! value-5 \"styles\") (define! value-8 \"bar\") (define! value-9 (list value-8 7 8)) (define! value-10 (list value-9)) (define! value-11 (set value-5 value-10)) (define! value-12 \"bar-slots\") (define! value-15 \"inert\") (define! value-16 (list 0 value-15)) (define! value-17 (list value-16)) (define! value-18 (set value-12 value-17)) (define! value-19 \"show-column\") (define! value-20 (set value-19 #false)) (define! value-21 (pane 1)) (define! value-22 \"Enter\") (define! value-23 (key value-21 value-22)) (define! value-24 (send-keys value-23)) #inert)",
+                "(sequence! (define! variables-2 (context ())) (define! value-3 \"terminal-clipboard\") (define! value-4 (set value-3 #false)) (define! value-5 \"styles\") (define! value-8 \"bar\") (define! value-9 (list value-8 7 8)) (define! value-10 (list value-9)) (define! value-11 (set value-5 value-10)) (define! value-12 \"bar-slots\") (define! value-15 \"inert\") (define! value-16 (list 0 value-15)) (define! value-17 (list value-16)) (define! value-18 (set value-12 value-17)) (define! value-19 \"show-column\") (define! value-20 (set value-19 #false)) (define! value-21 (pane 1)) (define! value-22 \"Enter\") (define! value-23 (key value-21 value-22)) (define! value-24 (send-keys value-23)) #inert)",
             ),
         );
         let [Dispatch::Run(job)] = effects.as_slice() else {
@@ -1945,7 +1946,7 @@ mod tests {
         program(
             &mut keyboard,
             Job::from(
-                "(sequence! (define! variables-25 (context)) (define! value-26 \"titles\") (define! value-27 (set value-26 #true)) (define! value-28 (pane 1)) (define! value-29 (timeout value-28 30)) (define! value-30 (wait value-29)) value-30)",
+                "(sequence! (define! variables-25 (context ())) (define! value-26 \"titles\") (define! value-27 (set value-26 #true)) (define! value-28 (pane 1)) (define! value-29 (timeout value-28 30)) (define! value-30 (wait value-29)) value-30)",
             ),
         );
         let mut wake = [PollFd::new(keyboard.wake(), PollFlags::IN)];
@@ -1980,7 +1981,7 @@ mod tests {
         state.keys.bind(
             &[KeyPress::char('y')],
             crate::keymap::Binding::new(crate::testing::code(
-                "(lambda! () (sequence! (define! variables-31 (context)) (define! value-32 \"done\") value-32))",
+                "(lambda! () (sequence! (define! variables-31 (context ())) (define! value-32 \"done\") value-32))",
             )),
         )?;
         let mut typed = vec![b'a'; 3000];
@@ -2014,7 +2015,7 @@ mod tests {
     fn a_completed_jobs_screen_precedes_the_next_job() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         let first = admitted(&mut keyboard, Job::from("(command-prompt (me)) \"ready\""));
-        assert!(admitted(&mut keyboard, Job::from("(sequence! (define! variables-34 (context)) (define! value-35 \"next\") value-35)")).is_empty());
+        assert!(admitted(&mut keyboard, Job::from("(sequence! (define! variables-34 (context ())) (define! value-35 \"next\") value-35)")).is_empty());
         assert!(transport(&mut keyboard, first).is_empty());
         let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
         assert_ne!(fuxix::poll::poll(&mut done, Some(ANSWER))?, 0);
@@ -2211,7 +2212,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fux-isolated-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("config.grift");
-        std::fs::write(&path, "(define! store (context))\n")?;
+        std::fs::write(&path, "(define! store (context ()))\n")?;
         let state = Mutex::new(script::run_file(&path).map_err(|e| e.to_string())?);
         let said = jobs_on_a_worker(
             &state,
@@ -2255,7 +2256,7 @@ mod tests {
         );
         let stop = script::Stop::default();
         let mut updates = Vec::new();
-        let code = "(sequence! (define! variables-37 (context)) (define! value-38 \"history-bytes\") (define! value-39 (set value-38 0)) (define! value-40 \"program-clipboard\") (define! value-41 (set value-40 #false)) (define! value-42 \"terminal-clipboard\") (define! value-43 (set value-42 #false)) (define! value-44 \"bell\") (define! value-45 (set value-44 #false)) (define! value-46 \"titles\") (define! value-47 (set value-46 #true)) #inert)";
+        let code = "(sequence! (define! variables-37 (context ())) (define! value-38 \"history-bytes\") (define! value-39 (set value-38 0)) (define! value-40 \"program-clipboard\") (define! value-41 (set value-40 #false)) (define! value-42 \"terminal-clipboard\") (define! value-43 (set value-42 #false)) (define! value-44 \"bell\") (define! value-45 (set value-44 #false)) (define! value-46 \"titles\") (define! value-47 (set value-46 #true)) #inert)";
         let ran = one_job(&mut Refuse, me, &state, code.into(), &stop, &mut |p| {
             updates.push(p)
         });
@@ -2275,14 +2276,14 @@ mod tests {
         );
         updates.clear();
         let committed = lock(&state).clone();
-        let failed = "(sequence! (define! variables-48 (context)) (define! value-49 \"titles\") (define! value-50 (set value-49 #false)) (define! value-51 \"Nope\") (define! value-52 (unbind value-51)) #inert)";
+        let failed = "(sequence! (define! variables-48 (context ())) (define! value-49 \"titles\") (define! value-50 (set value-49 #false)) (define! value-51 \"Nope\") (define! value-52 (unbind value-51)) #inert)";
         let ran = one_job(&mut Refuse, me, &state, failed.into(), &stop, &mut |p| {
             updates.push(p)
         });
         assert!(ran.notice.is_some());
         assert!(updates.is_empty());
         assert_eq!(*lock(&state), committed);
-        let checkpoint = "(sequence! (define! variables-53 (context)) (define! value-54 \"titles\") (define! value-55 (set value-54 #false)) (define! value-56 (pane 1)) (define! value-57 \"horizontal\") (define! value-58 (axis value-56 value-57)) (define! value-59 (split value-58)) #inert)";
+        let checkpoint = "(sequence! (define! variables-53 (context ())) (define! value-54 \"titles\") (define! value-55 (set value-54 #false)) (define! value-56 (pane 1)) (define! value-57 \"horizontal\") (define! value-58 (axis value-56 value-57)) (define! value-59 (split value-58)) #inert)";
         let ran = one_job(
             &mut Refuse,
             me,
@@ -2302,9 +2303,9 @@ mod tests {
     fn queued_programs_commit_the_whole_local_state() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyboard = keyboard(false)?;
         for code in [
-            "(sequence! (define! variables-60 (context)) (define! value-61 \"C-b\") (define! value-62 \"C-a\") (define! value-63 (move-keys value-61 value-62)) (define! value-64 \"history-bytes\") (define! value-65 (set value-64 2)) #inert)",
-            "(sequence! (define! variables-66 (context)) (define! value-67 \"F5\") (define! value-70 (code! (lambda! () (sequence! (define! variables-68 (context)) (define! value-69 (list-session)) value-69)))) (define! value-71 (bind-key value-67 value-70)) (define! value-72 \"titles\") (define! value-73 (set value-72 #true)) #inert)",
-            "(sequence! (define! variables-74 (context)) (define! value-75 \"F6\") (define! value-78 (code! (lambda! () (sequence! (define! variables-76 (context)) (define! value-77 (list-session)) value-77)))) (define! value-79 (bind-key value-75 value-78)) (define! value-80 \"history-bytes\") (define! value-81 (set value-80 0)) (define! value-82 \"bell\") (define! value-83 (set value-82 #false)) (define! value-84 \"Nope\") (define! value-85 (unbind value-84)) #inert)",
+            "(sequence! (define! variables-60 (context ())) (define! value-61 \"C-b\") (define! value-62 \"C-a\") (define! value-63 (move-keys value-61 value-62)) (define! value-64 \"history-bytes\") (define! value-65 (set value-64 2)) #inert)",
+            "(sequence! (define! variables-66 (context ())) (define! value-67 \"F5\") (define! value-70 (code! (lambda! () (sequence! (define! variables-68 (context ())) (define! value-69 (list-session)) value-69)))) (define! value-71 (bind-key value-67 value-70)) (define! value-72 \"titles\") (define! value-73 (set value-72 #true)) #inert)",
+            "(sequence! (define! variables-74 (context ())) (define! value-75 \"F6\") (define! value-78 (code! (lambda! () (sequence! (define! variables-76 (context ())) (define! value-77 (list-session)) value-77)))) (define! value-79 (bind-key value-75 value-78)) (define! value-80 \"history-bytes\") (define! value-81 (set value-80 0)) (define! value-82 \"bell\") (define! value-83 (set value-82 #false)) (define! value-84 \"Nope\") (define! value-85 (unbind value-84)) #inert)",
         ] {
             assert!(program(&mut keyboard, Job::from(code)).is_empty());
         }
@@ -2339,7 +2340,7 @@ mod tests {
         program(
             &mut keyboard,
             Job::from(
-                "(sequence! (define! variables-86 (context)) (define! value-87 \"F5\") (define! value-90 (code! (lambda! () (sequence! (define! variables-88 (context)) (define! value-89 (list-session)) value-89)))) (define! value-91 (bind-key value-87 value-90)) #inert)",
+                "(sequence! (define! variables-86 (context ())) (define! value-87 \"F5\") (define! value-90 (code! (lambda! () (sequence! (define! variables-88 (context ())) (define! value-89 (list-session)) value-89)))) (define! value-91 (bind-key value-87 value-90)) #inert)",
             ),
         );
         assert_eq!(all_ran(&mut keyboard)?, []);
@@ -2347,7 +2348,7 @@ mod tests {
         program(
             &mut keyboard,
             Job::from(
-                "(sequence! (define! variables-92 (context)) (define! value-93 \"line\") (define! value-94 \"F2\") (define! value-95 \"home\") (define! value-96 (bind-in value-93 value-94 value-95)) #inert)",
+                "(sequence! (define! variables-92 (context ())) (define! value-93 \"line\") (define! value-94 \"F2\") (define! value-95 \"home\") (define! value-96 (bind-in value-93 value-94 value-95)) #inert)",
             ),
         );
         let acts = all_ran(&mut keyboard)?;
@@ -2376,11 +2377,11 @@ mod tests {
         let (mut session, client) = crate::script::testing::attached(24, 80)?;
         for (suffix, failed) in [
             (
-                "(sequence! (define! variables-97 (context)) (define! value-98 \"hello\") value-98)",
+                "(sequence! (define! variables-97 (context ())) (define! value-98 \"hello\") value-98)",
                 false,
             ),
             (
-                "(sequence! (define! variables-99 (context)) (define! value-100 \"boom\") (define! value-101 (raise (error (quote! fail) value-100))) #inert)",
+                "(sequence! (define! variables-99 (context ())) (define! value-100 \"boom\") (define! value-101 (raise (error (quote! fail) value-100))) #inert)",
                 true,
             ),
         ] {

@@ -457,7 +457,7 @@ fn a_script_runs_as_the_shell_runs_it() -> Outcome {
     };
     let greet = script(
         "greet.grift",
-        "#!/usr/bin/env -S fux --file\n(sequence! (fold (lambda! (accumulator-201 item-196) (let! ((() accumulator-201)) (sequence! (print (string-append \"hello \" item-196)) (list)))) (list) (arguments)) #inert)",
+        "#!/usr/bin/env -S fux --file\n(sequence! (fold (lambda! (accumulator-201 item-196) (let! ((() accumulator-201)) (sequence! (print (join \"hello \" item-196)) (list)))) (list) (arguments)) #inert)",
     )?;
     let greeted = server.piped(&greet, &["ann", "bob"], "")?;
     assert_eq!(
@@ -960,5 +960,75 @@ fn a_stop_ends_the_wait_it_beat_and_asks_the_cleanup() -> Outcome {
     assert_eq!(failed.actions.len(), 1, "{failed}");
     assert!(failed.actions.iter().all(|step| step.contains("cleaned")));
     assert!(server.ok(&["(list-session)"])?.contains("cleaned"));
+    Ok(())
+}
+
+/// Memory refused while printing a value is the program's limit, as anywhere
+/// else, which no handler sees: it does not become a failure to output that
+/// one catches, going on as if nothing were wrong. The program builds its
+/// value first, and the cap comes as it waits to print it.
+#[cfg(target_os = "linux")]
+#[test]
+fn memory_refused_while_printing_passes_a_programs_handlers() -> Outcome {
+    refused_while_printing(
+        "(define! deep (lambda! (n d) (if! (same? n 0) d (deep (subtract n 1) (pair d ())))))
+        (define! d (deep 1000000 ()))",
+        "(data-text d)",
+        1 << 20,
+    )
+}
+
+/// The same for `display` of a long flat list, where memory is refused as fux
+/// looks at the list, to see whether it is one of fux's own values, though
+/// grift's printer would still find room for its text.
+#[cfg(target_os = "linux")]
+#[test]
+fn memory_refused_while_displaying_a_list_passes_a_programs_handlers() -> Outcome {
+    refused_while_printing(FLAT, "(display d)", 8 << 20)?;
+    // The list as a key program's form, and as the program's value.
+    refused_while_printing(FLAT, "(display (kind (list (quote! code!) d)))", 8 << 20)?;
+    refused_while_printing(FLAT, "d", 8 << 20)
+}
+
+/// A flat list of a million zeroes, `d`.
+#[cfg(target_os = "linux")]
+const FLAT: &str =
+    "(define! flat (lambda! (n d) (if! (same? n 0) d (flat (subtract n 1) (pair 0 d)))))
+    (define! d (flat 1000000 ()))";
+
+#[cfg(target_os = "linux")]
+fn refused_while_printing(build: &str, print: &str, more: u64) -> Outcome {
+    use std::io::{BufRead, Read};
+    use std::process::Stdio;
+    let server = Server::empty()?;
+    let mut child = server
+        .command(fux())
+        .arg(format!(
+            r#"{build}
+            (display "built\n")
+            (input)
+            (catch! {print} e (display "handled\n") #inert)"#
+        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    let mut said = std::io::BufReader::new(child.stdout.take().ok_or("its stdout")?);
+    let mut built = String::new();
+    said.read_line(&mut built).map_err(e)?;
+    assert_eq!(built, "built\n");
+    cap(i32::try_from(child.id()).map_err(e)?, more)?;
+    drop(child.stdin.take());
+    let mut rest = String::new();
+    said.read_to_string(&mut rest).map_err(e)?;
+    let done = child.wait_with_output().map_err(e)?;
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(
+        !rest.contains("handled"),
+        "{print}: its handler ran: {stderr}"
+    );
+    assert_eq!(done.status.code(), Some(1), "{print}: {stderr}");
+    assert!(stderr.contains("out-of-memory"), "{print}: {stderr}");
     Ok(())
 }

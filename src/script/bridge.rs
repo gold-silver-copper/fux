@@ -62,7 +62,6 @@ pub struct Runtime<'a, 'b, A: Asks + ?Sized> {
     configuring: bool,
     /// Replaying a config already told: what it warns of was said then.
     replaying: bool,
-    exiting: bool,
 }
 impl<'a, 'b, A: Asks + ?Sized> Runtime<'a, 'b, A> {
     pub fn new(host: &'a mut Host<'b>, asks: &'a mut A, stop: Option<&'a Stop>) -> Self {
@@ -72,7 +71,6 @@ impl<'a, 'b, A: Asks + ?Sized> Runtime<'a, 'b, A> {
             stop,
             configuring: false,
             replaying: false,
-            exiting: false,
         }
     }
 }
@@ -93,14 +91,12 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
         written(g, "", &e.values, VALUES).trim_start(),
     );
     failed.kind = Some(kind.into());
-    let shown = e.trace().iter().filter(|form| {
-        !matches!(g.position(form), Ok(Some((source, _)))
-            if BOOKS.iter().any(|(name, _)| *name == source))
-    });
-    for form in shown {
-        // Grift names the source of text that didn't read as a string, the
+    for form in &e.trace {
+        // Grift names the source of text that didn't read as a symbol, the
         // line being the second of the parse error's values.
-        if let (Ok(Some(source)), Some(G::Integer(line))) = (g.as_str(form), e.values.get(1)) {
+        if let (G::Symbol(source), Some(G::Integer(line))) = (form, e.values.get(1))
+            && let Ok(source) = g.symbol_name(source)
+        {
             failed.place = Some(format!("{source}:{line}"));
             continue;
         }
@@ -127,7 +123,9 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
 /// put before it doesn't count in a column, and a name alone, of which grift
 /// keeps no position, is found by the first lines that read to hold it.
 fn failed_in<T>(g: &mut Grift<T>, e: Error, name: &str, text: &str) -> Failed {
-    let unread = g.is_kind(&e, "parse-error").is_ok_and(|parse| parse);
+    let unread = g
+        .symbol_name(&e.kind)
+        .is_ok_and(|kind| kind == "parse-error");
     let e = (unread.then(|| g.read_in(name, text).err()).flatten()).unwrap_or(e);
     let bare = e.values.first().cloned();
     let mut failed = failed(g, e);
@@ -186,28 +184,67 @@ fn written<T>(g: &Grift<T>, start: &str, values: &[G], most: usize) -> String {
     out.text
 }
 
+/// Why printing failed: the value's own reason (memory refused, say), which
+/// stays what it is, or, if the output refused, `kind`.
+fn unwritten<T>(g: &mut Grift<T>, why: grift::WriteError, kind: &str, values: &[G]) -> Error {
+    match why {
+        grift::WriteError::Value(e) => e,
+        grift::WriteError::Output => g.error(kind, values),
+    }
+}
+
+/// Fails if this job was stopped.
+fn unstopped<T>(g: &mut Grift<T>, stop: Option<&Stop>) -> Result<(), Error> {
+    if let Some(stop) = stop {
+        stop.check()
+            .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+    }
+    Ok(())
+}
+
+/// A stop that came as a host function began ends the run at a step of
+/// grift's; one grift has acted on makes this a cleanup's call, which runs.
+fn heed<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
+) -> Result<(), Error> {
+    if state.stop.is_some_and(Stop::news) {
+        g.evaluate(state, "#inert")?;
+    }
+    Ok(())
+}
+
+/// A walk's check, at each part of a value: a walk has no step of grift's, so
+/// a stop that comes during one is its own to end it. Grift has yet to act on
+/// that stop, `heed` having told of any before, and it takes whatever the
+/// step then fails with to be that stop.
+fn walking<T>(g: &mut Grift<T>, stop: Option<&Stop>) -> Result<(), Error> {
+    if stop.is_some_and(Stop::news) {
+        unstopped(g, stop)?;
+    }
+    Ok(())
+}
+
 fn check<A: Asks + ?Sized>(
     g: &mut Interpreter<'_, '_, A>,
     state: &mut Runtime<'_, '_, A>,
     _: &[G],
 ) -> Result<G, Error> {
-    if let Some(stop) = state.stop {
-        stop.check()
-            .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
-    }
+    unstopped(g, state.stop)?;
     Ok(G::Inert)
 }
-fn output<A: Asks + ?Sized>(
-    g: &mut Interpreter<'_, '_, A>,
-    state: &mut Runtime<'_, '_, A>,
+fn output<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<G, Error> {
+    heed(g, state)?;
     for argument in args {
         let result = if let Some(text) = g.as_str(argument)? {
             state.host.out.write_all(text.as_bytes())
         } else {
             let mut text = String::new();
-            write_display(g, argument, &mut text)?;
+            write_display(g, state.stop, argument, &mut text)?;
             state.host.out.write_all(text.as_bytes())
         };
         result.map_err(|error| failure(g, Failure::new(Code::Output, error.to_string())))?;
@@ -229,7 +266,7 @@ fn data_text<A: Asks + ?Sized>(
     };
     let mut text = String::new();
     g.write(value, &mut text)
-        .map_err(|_| g.error("output", args))?;
+        .map_err(|why| unwritten(g, why, "output", args))?;
     g.string(&text)
 }
 fn read_source<A: Asks + ?Sized>(
@@ -240,9 +277,8 @@ fn read_source<A: Asks + ?Sized>(
     let [path, once] = args else {
         return Err(g.error("arity-error", args));
     };
-    let path = g
-        .as_string(path)?
-        .ok_or_else(|| g.error("type-error", args))?;
+    let path = g.as_str(path)?.map(str::to_owned);
+    let path = path.ok_or_else(|| g.error("type-error", args))?;
     let file = state
         .host
         .files
@@ -282,11 +318,12 @@ fn finish_source<A: Asks + ?Sized>(
     Ok(G::Inert)
 }
 
-fn kind<A: Asks + ?Sized>(
-    g: &mut Interpreter<'_, '_, A>,
-    _: &mut Runtime<'_, '_, A>,
+fn kind<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<G, Error> {
+    heed(g, state)?;
     let [v] = args else {
         return Err(g.error("arity-error", args));
     };
@@ -317,7 +354,7 @@ fn kind<A: Asks + ?Sized>(
     {
         return g.string("record");
     }
-    let v = from_grift(g, v)?;
+    let v = from_grift(g, state.stop, v)?;
     let name = match &v {
         Value::App(a) => a.name(),
         Value::Int(_)
@@ -330,11 +367,12 @@ fn kind<A: Asks + ?Sized>(
     };
     g.string(name)
 }
-fn text_of<A: Asks + ?Sized>(
-    g: &mut Interpreter<'_, '_, A>,
-    _: &mut Runtime<'_, '_, A>,
+fn text_of<'a, 'b, A: Asks + ?Sized>(
+    g: &mut Interpreter<'a, 'b, A>,
+    state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<G, Error> {
+    heed(g, state)?;
     let [v] = args else {
         return Err(g.error("arity-error", args));
     };
@@ -343,7 +381,7 @@ fn text_of<A: Asks + ?Sized>(
         held_text(g, v, &mut text)?;
         return g.string(&text);
     }
-    let v = from_grift(g, v)?;
+    let v = from_grift(g, state.stop, v)?;
     let text = v.text().map_err(|f| failure(g, f))?;
     g.string(&text)
 }
@@ -358,7 +396,8 @@ fn held_kind<T>(g: &Grift<T>, v: &G) -> Result<Option<String>, Error> {
         return Ok(None);
     };
     let kind = g
-        .as_string(&value)?
+        .as_str(&value)?
+        .map(str::to_owned)
         .filter(|kind| key == "kind" && record::HELD.iter().any(|(name, _)| name == kind));
     Ok(kind)
 }
@@ -391,7 +430,7 @@ fn held_text<T>(g: &Grift<T>, v: &G, out: &mut String) -> Result<(), Error> {
 
 /// `get` of a value that is a record: its field, no server asked.
 fn field_of<T>(g: &mut Grift<T>, record: &G, field: &G) -> Result<Option<G>, Error> {
-    let Some(field_name) = g.as_string(field)? else {
+    let Some(field_name) = g.as_str(field)?.map(str::to_owned) else {
         return Ok(None);
     };
     let name = g.symbol(&field_name)?;
@@ -440,11 +479,7 @@ pub(super) fn request<'a, 'b, A: Asks + ?Sized>(
     word: Word,
     args: &[G],
 ) -> Result<G, Error> {
-    // A stop that came as this word began ends the run at a step of grift's;
-    // one grift has acted on makes this a cleanup's word, which runs.
-    if state.stop.is_some_and(Stop::news) {
-        g.evaluate(state, "#inert")?;
-    }
+    heed(g, state)?;
     let name = word.row().name;
     let takes = word
         .row()
@@ -487,7 +522,7 @@ pub(super) fn request<'a, 'b, A: Asks + ?Sized>(
     }
     let mut values = args
         .iter()
-        .map(|v| from_grift(g, v))
+        .map(|v| from_grift(g, state.stop, v))
         .collect::<Result<Vec<_>, _>>()?;
     if matches!(
         word,
@@ -629,8 +664,8 @@ pub(super) fn request<'a, 'b, A: Asks + ?Sized>(
                 state.host.took(call_text(g, name, args));
             }
             if matches!(what, Local::Shell(Shell::Exit(_))) {
-                runtime_exit(g, state);
-                return Err(g.error("interrupted", &[]));
+                // A limit: no handler catches it, and every cleanup runs.
+                return Err(g.error("exit", &[]).as_limit());
             }
         }
     }
@@ -652,7 +687,7 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> R
     let mut entries = Vec::new();
     let wanted = match args {
         [] => None,
-        [v] => g.as_string(v)?,
+        [v] => g.as_str(v)?.map(str::to_owned),
         _ => return Err(g.error("arity-error", args)),
     };
     let built_in = g.symbol("built-in-names")?;
@@ -699,7 +734,7 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> R
         };
         let mut source = String::new();
         g.write(&v, &mut source)
-            .map_err(|_| g.error("output", &[]))?;
+            .map_err(|why| unwritten(g, why, "output", &[]))?;
         for (name, value) in [
             ("name", Some(text.clone())),
             ("provenance", Some(provenance.to_owned())),
@@ -787,7 +822,7 @@ fn book<'a, 'b, A: Asks + ?Sized>(
     let words = place(g, WORDS)?;
     let context = g.context(Some(&words))?;
     g.bind(&top, &G::Symbol(symbol), context.clone())?;
-    g.evaluate_in(state, &context, name, text)?;
+    g.evaluate_library_in(state, &context, name, text)?;
     Ok(context)
 }
 
@@ -870,7 +905,7 @@ pub fn interpreter<'a, 'b, A: Asks + ?Sized>(
             let name = g.symbol(name)?;
             g.bind(&words, &G::Symbol(name), function)?;
         }
-        g.evaluate_in(
+        g.evaluate_library_in(
             state,
             &words,
             "prelude.grift",
@@ -881,7 +916,6 @@ pub fn interpreter<'a, 'b, A: Asks + ?Sized>(
         g.define(PROGRAM, program)
     })();
     built.map_err(|e| failed(&g, e))?;
-    g.seal_library();
     Ok(g)
 }
 
@@ -991,25 +1025,30 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
             refused.place = last.map(|(n, _)| format!("{}:{}", machine.name, n.saturating_add(1)));
             Err(refused)
         }
-        Ok(v) => match output_value(g, &v) {
+        Ok(v) => match output_value(g, state.stop, &v) {
             // A list's items, each said alone; a record's fields are one value.
-            Ok(Value::Str(_))
-                if matches!(v, G::Pair(_) | G::EmptyList)
-                    && g.list_items(&v)
-                        .is_ok_and(|items| matches!(fields(g, &items), Ok(None))) =>
-            {
-                let items = g.list_items(&v).map_err(|e| failed(g, e))?;
-                let values = items
-                    .iter()
-                    .map(|item| output_value(g, item))
-                    .collect::<Result<_, _>>()
-                    .map_err(|e| failed(g, e))?;
-                Ok(vec![Value::List(Rc::new(List::new(values)))])
+            Ok(Value::Str(text)) if matches!(v, G::Pair(_) | G::EmptyList) => {
+                let each = (g.list_items(&v))
+                    .and_then(|items| Ok(fields(g, &items)?.is_none().then_some(items)));
+                match each {
+                    Ok(Some(items)) => {
+                        let values = items
+                            .iter()
+                            .map(|item| output_value(g, state.stop, item))
+                            .collect::<Result<_, _>>()
+                            .map_err(|e| failed(g, e))?;
+                        Ok(vec![Value::List(Rc::new(List::new(values)))])
+                    }
+                    Err(e) if e.is_limit() => Err(failed(g, e)),
+                    Ok(None) | Err(_) => Ok(vec![Value::Str(text)]),
+                }
             }
             Ok(value) => Ok(vec![value]),
             Err(e) => Err(failed(g, e)),
         },
-        Err(e) if state.exiting && g.is_kind(&e, "interrupted").unwrap_or(false) => Ok(Vec::new()),
+        Err(e) if e.is_limit() && g.symbol_name(&e.kind).is_ok_and(|kind| kind == "exit") => {
+            Ok(Vec::new())
+        }
         Err(e) => {
             let mut f = failed_in(g, e, &machine.name, &text);
             f.actions = state.host.actions.clone();
@@ -1175,19 +1214,25 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
 /// `line`, so a failure deep in a binding names the config's own line.
 fn write_form<T>(
     g: &mut Grift<T>,
+    stop: Option<&Stop>,
     form: &G,
     out: &mut String,
     line: &mut u32,
     depth: u8,
 ) -> Result<(), Error> {
+    walking(g, stop)?;
     let items = match (form, depth.checked_sub(1)) {
-        (G::Pair(_), Some(_)) => g.list_items(form).ok(),
+        (G::Pair(_), Some(_)) => match g.list_items(form) {
+            Ok(items) => Some(items),
+            Err(why) if why.is_limit() => return Err(why),
+            Err(_) => None,
+        },
         _ => None,
     };
     let Some(items) = items else {
         return g
             .write(form, out)
-            .map_err(|_| g.error("bad-value", std::slice::from_ref(form)));
+            .map_err(|why| unwritten(g, why, "bad-value", std::slice::from_ref(form)));
     };
     if let Some((_, at)) = g.position(form)?
         && at > *line
@@ -1203,7 +1248,7 @@ fn write_form<T>(
         if i > 0 {
             out.push(' ');
         }
-        write_form(g, item, out, line, depth.saturating_sub(1))?;
+        write_form(g, stop, item, out, line, depth.saturating_sub(1))?;
     }
     out.push(')');
     Ok(())
@@ -1265,10 +1310,16 @@ fn run_of<T>(g: &Grift<T>, fields: &[(String, G)]) -> Result<Option<Run>, Error>
     }
 }
 
-fn from_grift<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
-    from_grift_at(g, v, fux_wire::callback::DEPTH.saturating_add(1))
+fn from_grift<T>(g: &mut Grift<T>, stop: Option<&Stop>, v: &G) -> Result<Value<Fux>, Error> {
+    from_grift_at(g, stop, v, fux_wire::callback::DEPTH.saturating_add(1))
 }
-fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Error> {
+fn from_grift_at<T>(
+    g: &mut Grift<T>,
+    stop: Option<&Stop>,
+    v: &G,
+    depth: u8,
+) -> Result<Value<Fux>, Error> {
+    walking(g, stop)?;
     let Some(depth) = depth.checked_sub(1) else {
         return Err(g.error("too-long", std::slice::from_ref(v)));
     };
@@ -1276,7 +1327,7 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
         G::Float(n) => Value::Float(*n),
         G::Integer(n) => Value::Int(*n),
         G::Boolean(b) => Value::Bool(*b),
-        G::String(_) => Value::str(g.as_string(v)?.unwrap_or_default()),
+        G::String(_) => Value::str(g.as_str(v)?.map(str::to_owned).unwrap_or_default()),
         G::Bytes(_) => Value::Bytes(Rc::new(g.as_bytes(v)?.unwrap_or_default().to_vec())),
         G::EmptyList => Value::List(Rc::new(List::new(Vec::new()))),
         G::Symbol(s) => {
@@ -1297,7 +1348,7 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                 (CODE, [_, form]) => {
                     let mut source = String::new();
                     let first = g.position(form)?.map_or(0, |(_, line)| line);
-                    write_form(g, form, &mut source, &mut { first }, depth)?;
+                    write_form(g, stop, form, &mut source, &mut { first }, depth)?;
                     let place = g.position(form)?.map(|(file, line)| {
                         let file = file.to_owned();
                         Box::new(fux_wire::callback::Place { file, line })
@@ -1308,7 +1359,7 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                     })))
                 }
                 (REQUEST, [_, subject, steps @ ..]) => {
-                    let subject = match from_grift_at(g, subject, depth)? {
+                    let subject = match from_grift_at(g, stop, subject, depth)? {
                         Value::App(Fux::Null) => None,
                         subject @ Value::Int(_)
                         | subject @ Value::Float(_)
@@ -1330,7 +1381,7 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                         };
                         let arguments = arguments
                             .iter()
-                            .map(|v| from_grift_at(g, v, depth))
+                            .map(|v| from_grift_at(g, stop, v, depth))
                             .collect::<Result<_, _>>()?;
                         replayed.push((option, arguments));
                     }
@@ -1341,7 +1392,7 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                         let run = run_of(g, &fields)?;
                         let mut out = Vec::with_capacity(fields.len());
                         for (name, value) in fields {
-                            out.push((name, from_grift_at(g, &value, depth)?));
+                            out.push((name, from_grift_at(g, stop, &value, depth)?));
                         }
                         record::from_fields(out, run).map_err(|f| failure(g, f))?
                     }
@@ -1350,7 +1401,7 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
                     Some(_) | None => Value::List(Rc::new(List::new(
                         items
                             .iter()
-                            .map(|v| from_grift_at(g, v, depth))
+                            .map(|v| from_grift_at(g, stop, v, depth))
                             .collect::<Result<_, _>>()?,
                     ))),
                 },
@@ -1362,7 +1413,7 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
             for key in g.names(v)? {
                 let name = g.symbol_name(&key)?.to_owned();
                 if let Some(value) = g.lookup(v, &key)? {
-                    fields.push((name, from_grift_at(g, &value, depth)?));
+                    fields.push((name, from_grift_at(g, stop, &value, depth)?));
                 }
             }
             record::from_fields(fields, None).map_err(|f| failure(g, f))?
@@ -1378,9 +1429,14 @@ fn from_grift_at<T>(g: &mut Grift<T>, v: &G, depth: u8) -> Result<Value<Fux>, Er
 
 /// `v` as `display` says it: a string or a held answer as its text, a handle
 /// as its id, anything else as data.
-fn write_display<T>(g: &mut Grift<T>, v: &G, out: &mut String) -> Result<(), Error> {
+fn write_display<T>(
+    g: &mut Grift<T>,
+    stop: Option<&Stop>,
+    v: &G,
+    out: &mut String,
+) -> Result<(), Error> {
     let shown = match v {
-        G::Symbol(_) | G::Pair(_) => match from_grift(g, v) {
+        G::Symbol(_) | G::Pair(_) => match from_grift(g, stop, v) {
             Ok(Value::App(Fux::Record(record))) if record.is_held() => {
                 Some(Value::App(Fux::Record(record)))
             }
@@ -1391,6 +1447,8 @@ fn write_display<T>(g: &mut Grift<T>, v: &G, out: &mut String) -> Result<(), Err
                 | Fux::Client(..)
                 | Fux::All),
             )) => Some(Value::App(app)),
+            // Memory refused as fux looks at it ends the printing too.
+            Err(why) if why.is_limit() => return Err(why),
             Ok(_) | Err(_) => None,
         },
         G::EmptyList
@@ -1409,29 +1467,52 @@ fn write_display<T>(g: &mut Grift<T>, v: &G, out: &mut String) -> Result<(), Err
     };
     match shown {
         Some(value) => value.write_text(out).map_err(|f| failure(g, f)),
-        None => g.write(v, out).map_err(|_| g.error("output", &[])),
+        None => g
+            .write(v, out)
+            .map_err(|why| unwritten(g, why, "output", &[])),
     }
 }
 
-fn output_value<T>(g: &mut Grift<T>, v: &G) -> Result<Value<Fux>, Error> {
+/// A job's value as text, which refuses more once the job is stopped: the run
+/// has ended, so nothing else would end the printer.
+struct Unstopped<'a> {
+    text: String,
+    stop: Option<&'a Stop>,
+}
+
+impl std::fmt::Write for Unstopped<'_> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        if self.stop.is_some_and(Stop::stopped) {
+            return Err(std::fmt::Error);
+        }
+        self.text.push_str(s);
+        Ok(())
+    }
+}
+
+/// The value `v`, what a job ended with, is said as. Its run is over, so a
+/// stop reaches this through `stop` alone.
+fn output_value<T>(g: &mut Grift<T>, stop: Option<&Stop>, v: &G) -> Result<Value<Fux>, Error> {
     if matches!(
         v,
         G::Integer(_) | G::Boolean(_) | G::String(_) | G::Float(_) | G::Bytes(_) | G::Symbol(_)
     ) {
-        return from_grift(g, v);
+        return from_grift(g, stop, v);
     }
-    if matches!(v, G::Pair(_))
-        && let Ok(value @ Value::App(_)) = from_grift(g, v)
-    {
-        return Ok(value);
+    if matches!(v, G::Pair(_)) {
+        match from_grift(g, stop, v) {
+            Ok(value @ Value::App(_)) => return Ok(value),
+            Err(why) if why.is_limit() => return Err(why),
+            Ok(_) | Err(_) => {}
+        }
     }
-    let mut text = String::new();
-    g.write(v, &mut text).map_err(|_| g.error("output", &[]))?;
-    Ok(Value::str(text))
-}
-
-fn runtime_exit<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, state: &mut Runtime<'_, '_, A>) {
-    state.exiting = true;
-    let mut stop = g.interrupter();
-    let _ = stop.stop();
+    let mut out = Unstopped {
+        text: String::new(),
+        stop,
+    };
+    g.write(v, &mut out).map_err(|why| {
+        let stopped = unstopped(g, stop).err();
+        stopped.unwrap_or_else(|| unwritten(g, why, "output", &[]))
+    })?;
+    Ok(Value::str(out.text))
 }

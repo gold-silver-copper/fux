@@ -134,26 +134,6 @@ fn kept(server: &Server) -> PathBuf {
     fux_server::socket::panes(&server.socket)
 }
 
-/// Caps `pid`'s address space at `more` bytes past what it has now
-/// (`prlimit`, util-linux): an allocation past it fails.
-#[cfg(target_os = "linux")]
-fn cap(pid: i32, more: u64) -> Outcome {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(e)?;
-    let kib: u64 = (status.lines())
-        .find_map(|line| line.strip_prefix("VmSize:"))
-        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
-        .ok_or("its size")?;
-    let limit = kib.saturating_mul(1024).saturating_add(more).to_string();
-    let out = std::process::Command::new("prlimit")
-        .args(["--pid", &pid.to_string(), &format!("--as={limit}:{limit}")])
-        .output()
-        .map_err(e)?;
-    match out.status.success() {
-        true => Ok(()),
-        false => Err(String::from_utf8_lossy(&out.stderr).into_owned()),
-    }
-}
-
 /// 1. A pane's own process killed: the server and another pane go on,
 ///    taking input and captures, and the journal says how it ended, then
 ///    its program's end, its real status.
@@ -1117,5 +1097,34 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
         }
         detached(&mut client, conn, &format!("at {delay} ms"))?;
     }
+    Ok(())
+}
+
+/// A client's allocation refused aborts it, which no panic hook sees: its
+/// terminal comes back all the same, off the alternate screen and out of raw
+/// mode. Printing a value that shares its parts takes more text than any
+/// memory holds, in a string of fux's own, which refuses by aborting.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_that_aborts_puts_its_terminal_back() -> Outcome {
+    use std::os::unix::process::ExitStatusExt;
+    let server = Server::start(
+        r#"(define! shared (lambda! (n d) (if! (same? n 0) d (shared (subtract n 1) (list d d)))))
+        (bind-key "C-b g" (code! (lambda! () (data-text (shared 40 ())))))"#,
+    )?;
+    let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
+    terminal.wait_for("$")?;
+    assert!(!terminal.modes()?.echoes(), "attached in raw mode");
+    cap(i32::try_from(terminal.child.id()).map_err(e)?, 32 << 20)?;
+    terminal.type_bytes(b"\x02g")?;
+    let status = terminal.wait_exit()?;
+    assert_eq!(status.signal(), Some(Signal::Abrt.raw()), "{status}");
+    let modes = terminal.modes()?;
+    assert!(modes.echoes() && modes.edits_lines(), "still raw");
+    let output = String::from_utf8_lossy(&terminal.output);
+    assert!(
+        output.contains("\x1b[?1049l"),
+        "still on the alternate screen"
+    );
     Ok(())
 }

@@ -180,6 +180,17 @@ fn an_exit_cannot_be_caught_as_an_ordinary_error() -> TestResult {
     Ok(())
 }
 #[test]
+fn an_exit_runs_the_cleanups_around_it() -> TestResult {
+    let mut out = Vec::new();
+    let status = main(
+        &["(finally! (exit 3) (display \"cleaned\"))".into()],
+        None,
+        &mut out,
+    )?;
+    assert_eq!((status, out.as_slice()), (3, &b"cleaned"[..]));
+    Ok(())
+}
+#[test]
 fn explicit_code_runs_in_its_receiving_dictionary() -> TestResult {
     let mut out = Vec::new();
     main(&["(define! receiver (lambda! (x) (add x 1))) (execute! (code! (lambda! (x) (receiver x))) 41)".into()],None,&mut out)?;
@@ -278,7 +289,7 @@ fn ended_answers_expose_both_exit_fields() -> TestResult {
             response: Response::Answered(PaneResults::One(answer)),
         };
         let values = held_reply(
-            "(sequence! (define! variables-6 (context)) (bind variables-6 (quote! held) (wait (timeout (pane 1) 0))) (define! value-10 (evaluate (quote! held) variables-6)) \"exited\" (define! value-12 (get value-10 \"exited\")) (define! value-13 (evaluate (quote! held) variables-6)) \"signal\" (list value-12 (get value-13 \"signal\")))",
+            "(sequence! (define! variables-6 (context ())) (bind variables-6 (quote! held) (wait (timeout (pane 1) 0))) (define! value-10 (evaluate (quote! held) variables-6)) \"exited\" (define! value-12 (get value-10 \"exited\")) (define! value-13 (evaluate (quote! held) variables-6)) \"signal\" (list value-12 (get value-13 \"signal\")))",
             reply,
             &mut Vec::new(),
         )?;
@@ -384,7 +395,7 @@ fn local_json_accepts_observations_from_different_runs() -> TestResult {
     let mut reports = Reports(runs.into_iter().collect::<Result<_, _>>()?);
     let mut sink = Vec::new();
     evaluate(
-        "(sequence! (define! variables-30 (context)) (bind variables-30 (quote! a) (list-session)) (bind variables-30 (quote! b) (list-session)) (print (datum (list (evaluate (quote! a) variables-30) (evaluate (quote! b) variables-30)))) #inert)",
+        "(sequence! (define! variables-30 (context ())) (bind variables-30 (quote! a) (list-session)) (bind variables-30 (quote! b) (list-session)) (print (datum (list (evaluate (quote! a) variables-30) (evaluate (quote! b) variables-30)))) #inert)",
         None,
         &mut reports,
         &mut sink,
@@ -627,7 +638,7 @@ fn a_batch_left_that_missed_entries_is_refused() -> TestResult {
 }
 #[test]
 fn a_deep_list_is_written_as_json_and_refused_past_the_wire() -> TestResult {
-    let source = "(define! nest (lambda! (n value) (if! (same? n 0) value (nest (subtract n 1) (list value))))) (string-byte-length (data-text (nest 100000 ())))";
+    let source = "(define! nest (lambda! (n value) (if! (same? n 0) value (nest (subtract n 1) (list value))))) (byte-length (data-text (nest 100000 ())))";
     let left = evaluate(source, None, &mut NoRequests, &mut Vec::new())?;
     assert_eq!(left, [Value::Int(200002)]);
     let mut value = Value::<Fux>::Int(0);
@@ -876,6 +887,18 @@ fn attach_words_accept_compiled_action_answers_and_keep_their_run() -> TestResul
 }
 
 #[test]
+fn a_file_that_does_not_read_is_placed_at_its_line() -> TestResult {
+    let mut g: grift::Grift = grift::Grift::new().map_err(|e| format!("{e:?}"))?;
+    let unread = g
+        .evaluate_in(&mut (), &g.top_level(), "keys.grift", "(print 1)\n(first")
+        .err()
+        .ok_or("it read")?;
+    let failure = bridge::failed(&g, unread);
+    assert_eq!(failure.place.as_deref(), Some("keys.grift:2"));
+    Ok(())
+}
+
+#[test]
 fn telling_an_uncaught_failure_allocates_no_more_at_depth() -> TestResult {
     let allocator = fux_vt_peak::ThreadPeak;
     let mut told = Vec::new();
@@ -891,12 +914,14 @@ fn telling_an_uncaught_failure_allocates_no_more_at_depth() -> TestResult {
         let base = allocator.live();
         allocator.reset_peak();
         let failure = bridge::failed(&g, error);
-        told.push((allocator.peak().saturating_sub(base), failure.message));
+        let place = failure.trace.first().cloned().unwrap_or_default();
+        told.push((allocator.peak().saturating_sub(base), place));
     }
     let [(shallow, said), (deep, again)] = told.as_slice() else {
         return Err("two depths".into());
     };
-    assert!(said.contains("first") && again.contains("first"));
+    // An error names its values, not who failed; the trace says where.
+    assert!(said.contains("(first ())") && again.contains("(first ())"));
     assert_eq!(
         shallow, deep,
         "formatting a deep trace should have bounded temporary storage"
@@ -1295,6 +1320,22 @@ fn a_stop_is_one_step_to_the_program() -> TestResult {
         let (asked, failed) = stopped_at(at, cleaned, false)?;
         assert_eq!(asked, 2, "{failed}");
         assert!(failed.actions.iter().any(|step| step.contains("cleaned")));
+    }
+    Ok(())
+}
+
+/// A stop grift has already acted on stops no walk of a cleanup's: however a
+/// stop is held up, what a cleanup asks about a value still answers.
+#[cfg(unix)]
+#[test]
+fn a_cleanups_walk_goes_on_after_the_stop_that_let_it_run() -> TestResult {
+    for at in [Step::Told, Step::Noted] {
+        let cleaned = r#"(define! spin (lambda! () (spin)))
+            (finally! (sequence! (display "go") (spin))
+                (sequence! (define! asked (kind (list 1 2))) (rename (pane 1) asked)))"#;
+        let (asked, failed) = stopped_at(at, cleaned, false)?;
+        assert_eq!(asked, 2, "{failed}");
+        assert!(failed.actions.iter().any(|step| step.contains("rename")));
     }
     Ok(())
 }

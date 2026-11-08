@@ -13,7 +13,7 @@ import subprocess
 
 HERE = Path(__file__).resolve().parent
 # Printed by fux, each name and where it comes from.
-DICTIONARY = ('(for-each (lambda! (w) (print (string-append (get w "name") " " '
+DICTIONARY = ('(for-each (lambda! (w) (print (join (get w "name") " " '
               '(get w "provenance")))) (dictionary))')
 # The harness's own, which is no word the guide need name.
 OWN = {"__serve"}

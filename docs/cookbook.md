@@ -503,11 +503,11 @@ config gives the bar its own row below the panes again.
 from a file, relative to the file or directory that names it.
 
 ```sh
-fux '(define! screen-has (lambda! (p needle) (not? (empty-list? (string-search (string (capture p)) needle 0))))) (screen-has (pane "shell") "42")'
+fux '(define! screen-has (lambda! (p needle) (not? (empty-list? (search (string (capture p)) needle 0))))) (screen-has (pane "shell") "42")'
 cat > names.grift <<'EOF'
 ; pane text -> boolean: whether the pane's screen shows the text
 (define! screen-has (lambda! (p needle)
-  (not? (empty-list? (string-search (string (capture p)) needle 0)))))
+  (not? (empty-list? (search (string (capture p)) needle 0)))))
 EOF
 fux '(require! "names.grift") (screen-has (pane "shell") "42")'
 ```
@@ -550,13 +550,13 @@ echo '(divide 1 0)' | fux - || [ $? -ne 0 ]
 
 ## Keep data in a context
 
-A context is grift's table of names, and a value like any other: `(context)`
+A context is grift's table of names, and a value like any other: `(context ())`
 makes an empty one, `bind` sets a name in it, `lookup` reads one with a
 default, and `names` lists them. Lists hold everything else: `pair`, `first`,
 `rest`, `element-at`, `take`, `drop`, `map`, `filter`, `fold` and `sort`.
 
 ```sh
-fux '(define! counts (context))
+fux '(define! counts (context ()))
   (define! count! (lambda! (name) (bind counts name (add 1 (lookup counts name 0)))))
   (for-each count! (quote! (a b a)))
   (list (lookup counts (quote! a) 0) (names counts))'
@@ -590,7 +590,7 @@ cat > interpret.grift <<'END'
 ; text context -> the last form's value: reads and runs each form of the text
 (define! interpret (lambda! (source where)
   (define! walk (lambda! (from last-value)
-    (let! ((remaining (string-trim (byte-substring source from (string-byte-length source)))))
+    (let! ((remaining (string-trim (slice source from (byte-length source)))))
       (if! (same? remaining "") last-value
         (let! (((form #ignore end) (read-form source from)))
           (walk end (evaluate form where)))))))

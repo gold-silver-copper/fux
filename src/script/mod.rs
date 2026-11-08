@@ -638,8 +638,8 @@ impl Write for Watched<'_> {
 /// What stops a run from another thread (the prefix then Esc, for a key's
 /// program): grift's interrupter, which ends the body at its next step and
 /// runs its cleanups, and the connection of the request under way, if one
-/// is, which it shuts down. Each stop does both, so a second ends a cleanup
-/// that won't finish. A cleanup's requests are asked: a request is refused
+/// is, which it shuts down. Each stop does both, and a second forces the
+/// run, which ends every cleanup that won't finish. A cleanup's requests are asked: a request is refused
 /// only for a stop the program has not heard of.
 #[derive(Clone, Default)]
 pub struct Stop {
@@ -705,12 +705,13 @@ impl Stop {
 }
 
 impl Stop {
-    /// Stops the run under way.
+    /// Stops the run under way: the first stop ends its body and lets its
+    /// cleanups run, and any later one forces it, ending every cleanup left.
     pub fn stop(&self) {
-        self.flag.store(true, Ordering::SeqCst);
+        let again = self.flag.swap(true, Ordering::SeqCst);
         let mut reach = self.reach();
         if let Some(stop) = reach.interrupt.as_mut() {
-            let _ = stop.stop();
+            let _ = if again { stop.force() } else { stop.stop() };
         }
         #[cfg(test)]
         self.pause(Step::Told);
