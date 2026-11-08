@@ -159,7 +159,7 @@ reference.
 - **Not a clone** of tmux or Kernel. grift is a Lisp whose one primitive
   operative is `vau!`, with no macros: `if!` and `lambda!` are definitions a
   reader can read and replace. Its names are full English words, such as
-  `define!`, `add` and `string-append`, never symbols such as `+`, and a
+  `define!`, `add` and `join`, never symbols such as `+`, and a
   command line quotes its program once, as one shell argument.
 - **Not mouse-first, no floating panes** (rejected 2026-10-26).
 - **Not a general runtime.** No threads, packages or network in grift as fux

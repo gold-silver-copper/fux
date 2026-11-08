@@ -81,6 +81,27 @@ fn failure<T>(g: &mut Grift<T>, f: Failure) -> Error {
     let value = g.string(&f.message).unwrap_or(G::Inert);
     g.error(f.code.name(), &[value])
 }
+/// A new list of `items`, built of pairs.
+pub(super) fn list<T>(g: &mut Grift<T>, items: &[G]) -> Result<G, Error> {
+    let rest = Ok(G::EmptyList);
+    items.iter().rfold(rest, |rest, v| g.pair(v.clone(), rest?))
+}
+
+/// The items of a proper list; a `type-error` carrying anything else.
+pub(super) fn list_items<T>(g: &mut Grift<T>, list: &G) -> Result<Vec<G>, Error> {
+    let mut items = Vec::new();
+    let mut rest = list.clone();
+    while let Some((item, next)) = g.as_pair(&rest)? {
+        items.push(item);
+        rest = next;
+    }
+    if rest == G::EmptyList {
+        Ok(items)
+    } else {
+        Err(g.error("type-error", std::slice::from_ref(list)))
+    }
+}
+
 pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
     /// The most of a failure's values shown, and of each form.
     const VALUES: usize = 600;
@@ -93,14 +114,12 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
         written(g, "", &e.values, VALUES).trim_start(),
     );
     failed.kind = Some(kind.into());
-    let shown = e.trace().iter().filter(|form| {
-        !matches!(g.position(form), Ok(Some((source, _)))
-            if BOOKS.iter().any(|(name, _)| *name == source))
-    });
-    for form in shown {
-        // Grift names the source of text that didn't read as a string, the
+    for form in &e.trace {
+        // Grift names the source of text that didn't read as a symbol, the
         // line being the second of the parse error's values.
-        if let (Ok(Some(source)), Some(G::Integer(line))) = (g.as_str(form), e.values.get(1)) {
+        if let (G::Symbol(source), Some(G::Integer(line))) = (form, e.values.get(1))
+            && let Ok(source) = g.symbol_name(source)
+        {
             failed.place = Some(format!("{source}:{line}"));
             continue;
         }
@@ -127,7 +146,9 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
 /// put before it doesn't count in a column, and a name alone, of which grift
 /// keeps no position, is found by the first lines that read to hold it.
 fn failed_in<T>(g: &mut Grift<T>, e: Error, name: &str, text: &str) -> Failed {
-    let unread = g.is_kind(&e, "parse-error").is_ok_and(|parse| parse);
+    let unread = g
+        .symbol_name(&e.kind)
+        .is_ok_and(|kind| kind == "parse-error");
     let e = (unread.then(|| g.read_in(name, text).err()).flatten()).unwrap_or(e);
     let bare = e.values.first().cloned();
     let mut failed = failed(g, e);
@@ -141,7 +162,7 @@ fn failed_in<T>(g: &mut Grift<T>, e: Error, name: &str, text: &str) -> Failed {
             let lines = text.get(..*end).unwrap_or_default();
             lines.lines().last().is_some_and(|l| l.contains(&word))
                 && g.read(lines)
-                    .and_then(|forms| g.list_items(&forms))
+                    .and_then(|forms| list_items(g, &forms))
                     .is_ok_and(|forms| forms.contains(&symbol))
         });
         let line = line.map(|(line, _)| format!(":{}", line.saturating_add(1)));
@@ -279,9 +300,8 @@ fn read_source<A: Asks + ?Sized>(
     let [path, once] = args else {
         return Err(g.error("arity-error", args));
     };
-    let path = g
-        .as_string(path)?
-        .ok_or_else(|| g.error("type-error", args))?;
+    let path = g.as_str(path)?.map(str::to_owned);
+    let path = path.ok_or_else(|| g.error("type-error", args))?;
     let file = state
         .host
         .files
@@ -306,7 +326,7 @@ fn read_source<A: Asks + ?Sized>(
     state.host.files.required.push(file.clone());
     state.host.files.loading.push(file.clone());
     state.host.files.parents.push(state.host.file.replace(file));
-    g.list(&[forms])
+    list(g, &[forms])
 }
 fn finish_source<A: Asks + ?Sized>(
     g: &mut Interpreter<'_, '_, A>,
@@ -352,7 +372,7 @@ fn kind<'a, 'b, A: Asks + ?Sized>(
         return g.string(&held);
     }
     if matches!(v, G::Pair(_))
-        && let Ok(items) = g.list_items(v)
+        && let Ok(items) = list_items(g, v)
         && fields(g, &items)?.is_some()
     {
         return g.string("record");
@@ -391,7 +411,7 @@ fn text_of<'a, 'b, A: Asks + ?Sized>(
 
 /// The kind of the server's answer `v` is, its first field: read without
 /// making a whole capture a value to ask it.
-fn held_kind<T>(g: &Grift<T>, v: &G) -> Result<Option<String>, Error> {
+fn held_kind<T>(g: &mut Grift<T>, v: &G) -> Result<Option<String>, Error> {
     let Some((first, _)) = g.as_pair(v)? else {
         return Ok(None);
     };
@@ -399,14 +419,15 @@ fn held_kind<T>(g: &Grift<T>, v: &G) -> Result<Option<String>, Error> {
         return Ok(None);
     };
     let kind = g
-        .as_string(&value)?
+        .as_str(&value)?
+        .map(str::to_owned)
         .filter(|kind| key == "kind" && record::HELD.iter().any(|(name, _)| name == kind));
     Ok(kind)
 }
 
 /// A held answer's text, as `Record::write_held` says it.
-fn held_text<T>(g: &Grift<T>, v: &G, out: &mut String) -> Result<(), Error> {
-    let items = g.list_items(v)?;
+fn held_text<T>(g: &mut Grift<T>, v: &G, out: &mut String) -> Result<(), Error> {
+    let items = list_items(g, v)?;
     let mut lines = None;
     for item in &items {
         if let Some((key, value)) = field(g, item)? {
@@ -420,7 +441,7 @@ fn held_text<T>(g: &Grift<T>, v: &G, out: &mut String) -> Result<(), Error> {
             }
         }
     }
-    let lines = lines.map(|lines| g.list_items(&lines)).transpose()?;
+    let lines = lines.map(|lines| list_items(g, &lines)).transpose()?;
     for (i, line) in lines.unwrap_or_default().iter().enumerate() {
         if i > 0 {
             out.push('\n');
@@ -432,7 +453,7 @@ fn held_text<T>(g: &Grift<T>, v: &G, out: &mut String) -> Result<(), Error> {
 
 /// `get` of a value that is a record: its field, no server asked.
 fn field_of<T>(g: &mut Grift<T>, record: &G, field: &G) -> Result<Option<G>, Error> {
-    let Some(field_name) = g.as_string(field)? else {
+    let Some(field_name) = g.as_str(field)?.map(str::to_owned) else {
         return Ok(None);
     };
     let name = g.symbol(&field_name)?;
@@ -453,7 +474,7 @@ fn field_of<T>(g: &mut Grift<T>, record: &G, field: &G) -> Result<Option<G>, Err
     {
         return Ok(None);
     }
-    for entry in g.list_items(record)? {
+    for entry in list_items(g, record)? {
         if let Some((G::Symbol(key), rest)) = g.as_pair(&entry)?
             && key == name
             && let Some((value, _)) = g.as_pair(&rest)?
@@ -679,7 +700,7 @@ pub(super) fn request<'a, 'b, A: Asks + ?Sized>(
                 .iter()
                 .map(|v| to_grift(g, v))
                 .collect::<Result<Vec<_>, _>>()?;
-            g.list(&xs)
+            list(g, &xs)
         }
     }
 }
@@ -689,14 +710,14 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> R
     let mut entries = Vec::new();
     let wanted = match args {
         [] => None,
-        [v] => g.as_string(v)?,
+        [v] => g.as_str(v)?.map(str::to_owned),
         _ => return Err(g.error("arity-error", args)),
     };
     let built_in = g.symbol("built-in-names")?;
     let built_in = g.lookup(&words, &built_in)?.unwrap_or(G::EmptyList);
     let mut names = g.names(&program)?;
     names.extend(g.names(&words)?);
-    for name in g.list_items(&built_in)? {
+    for name in list_items(g, &built_in)? {
         if let G::Symbol(name) = name {
             names.push(name);
         }
@@ -760,7 +781,7 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> R
                 Some(value) => g.string(&value)?,
                 None => G::Symbol(g.symbol("none")?),
             };
-            record.push(g.list(&[G::Symbol(key), value])?);
+            record.push(list(g, &[G::Symbol(key), value])?);
         }
         let codes = match native {
             Some(word) => {
@@ -769,18 +790,18 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> R
                     .iter()
                     .map(|code| g.string(code.name()))
                     .collect::<Result<Vec<_>, _>>()?;
-                g.list(&codes)?
+                list(g, &codes)?
             }
             None => G::Symbol(g.symbol("none")?),
         };
         let key = g.symbol("codes")?;
-        record.push(g.list(&[G::Symbol(key), codes])?);
-        entries.push(g.list(&record)?);
+        record.push(list(g, &[G::Symbol(key), codes])?);
+        entries.push(list(g, &record)?);
     }
     if wanted.is_some() {
         entries.pop().ok_or_else(|| g.error("unbound-symbol", args))
     } else {
-        g.list(&entries)
+        list(g, &entries)
     }
 }
 
@@ -824,7 +845,7 @@ fn book<'a, 'b, A: Asks + ?Sized>(
     let words = place(g, WORDS)?;
     let context = g.context(Some(&words))?;
     g.bind(&top, &G::Symbol(symbol), context.clone())?;
-    g.evaluate_in(state, &context, name, text)?;
+    g.evaluate_library_in(state, &context, name, text)?;
     Ok(context)
 }
 
@@ -907,7 +928,7 @@ pub fn interpreter<'a, 'b, A: Asks + ?Sized>(
             let name = g.symbol(name)?;
             g.bind(&words, &G::Symbol(name), function)?;
         }
-        g.evaluate_in(
+        g.evaluate_library_in(
             state,
             &words,
             "prelude.grift",
@@ -918,7 +939,6 @@ pub fn interpreter<'a, 'b, A: Asks + ?Sized>(
         g.define(PROGRAM, program)
     })();
     built.map_err(|e| failed(&g, e))?;
-    g.seal_library();
     Ok(g)
 }
 
@@ -988,7 +1008,7 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
             let v = callback::value(arg)?;
             args.push(to_grift(g, &v).map_err(|e| failed(g, e))?);
         }
-        let args = g.list(&args).map_err(|e| failed(g, e))?;
+        let args = list(g, &args).map_err(|e| failed(g, e))?;
         let name = g.symbol("callback-arguments").map_err(|e| failed(g, e))?;
         g.bind(&program, &G::Symbol(name), args)
             .map_err(|e| failed(g, e))?;
@@ -1032,10 +1052,10 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
             // A list's items, each said alone; a record's fields are one value.
             Ok(Value::Str(_))
                 if matches!(v, G::Pair(_) | G::EmptyList)
-                    && g.list_items(&v)
+                    && list_items(g, &v)
                         .is_ok_and(|items| matches!(fields(g, &items), Ok(None))) =>
             {
-                let items = g.list_items(&v).map_err(|e| failed(g, e))?;
+                let items = list_items(g, &v).map_err(|e| failed(g, e))?;
                 let values = items
                     .iter()
                     .map(|item| output_value(g, state.stop, item))
@@ -1046,7 +1066,13 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
             Ok(value) => Ok(vec![value]),
             Err(e) => Err(failed(g, e)),
         },
-        Err(e) if state.exiting && g.is_kind(&e, "interrupted").unwrap_or(false) => Ok(Vec::new()),
+        Err(e)
+            if state.exiting
+                && g.symbol_name(&e.kind)
+                    .is_ok_and(|kind| kind == "interrupted") =>
+        {
+            Ok(Vec::new())
+        }
         Err(e) => {
             let mut f = failed_in(g, e, &machine.name, &text);
             f.actions = state.host.actions.clone();
@@ -1154,34 +1180,33 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
                 .iter()
                 .map(|v| to_grift(g, v))
                 .collect::<Result<Vec<_>, _>>()?;
-            g.list(&items)?
+            list(g, &items)?
         }
         Value::App(Fux::Code(code)) => {
             let forms = match &code.place {
                 Some(place) => g.read_in(&place.file, &on_its_line(&code.source, place.line))?,
                 None => g.read(&code.source)?,
             };
-            let form = g
-                .list_items(&forms)?
+            let form = list_items(g, &forms)?
                 .into_iter()
                 .next()
                 .ok_or_else(|| g.error("parse-error", &[]))?;
             let tag = g.symbol(CODE)?;
-            g.list(&[G::Symbol(tag), form])?
+            list(g, &[G::Symbol(tag), form])?
         }
         Value::App(Fux::Record(r)) => {
             let mut items = Vec::with_capacity(r.fields.len().saturating_add(1));
             for (k, v) in &r.fields {
                 let key = g.symbol(k)?;
                 let value = to_grift(g, v)?;
-                items.push(g.list(&[G::Symbol(key), value])?);
+                items.push(list(g, &[G::Symbol(key), value])?);
             }
             if let Some(run) = r.of.filter(|_| !r.fields.iter().any(|(k, _)| k == RUN)) {
                 let key = g.symbol(RUN)?;
                 let value = g.string(&run.to_string())?;
-                items.push(g.list(&[G::Symbol(key), value])?);
+                items.push(list(g, &[G::Symbol(key), value])?);
             }
-            g.list(&items)?
+            list(g, &items)?
         }
         Value::App(Fux::Opts(opts)) => {
             let tag = g.symbol(REQUEST)?;
@@ -1195,9 +1220,9 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
                 for argument in arguments {
                     step.push(to_grift(g, argument)?);
                 }
-                items.push(g.list(&step)?);
+                items.push(list(g, &step)?);
             }
-            g.list(&items)?
+            list(g, &items)?
         }
         Value::App(Fux::Extent(Extent::Cells(n))) => G::Integer(i64::from(*n)),
         Value::App(app) => {
@@ -1220,7 +1245,7 @@ fn write_form<T>(
 ) -> Result<(), Error> {
     walking(g, stop)?;
     let items = match (form, depth.checked_sub(1)) {
-        (G::Pair(_), Some(_)) => g.list_items(form).ok(),
+        (G::Pair(_), Some(_)) => list_items(g, form).ok(),
         _ => None,
     };
     let Some(items) = items else {
@@ -1321,7 +1346,7 @@ fn from_grift_at<T>(
         G::Float(n) => Value::Float(*n),
         G::Integer(n) => Value::Int(*n),
         G::Boolean(b) => Value::Bool(*b),
-        G::String(_) => Value::str(g.as_string(v)?.unwrap_or_default()),
+        G::String(_) => Value::str(g.as_str(v)?.map(str::to_owned).unwrap_or_default()),
         G::Bytes(_) => Value::Bytes(Rc::new(g.as_bytes(v)?.unwrap_or_default().to_vec())),
         G::EmptyList => Value::List(Rc::new(List::new(Vec::new()))),
         G::Symbol(s) => {
@@ -1333,7 +1358,7 @@ fn from_grift_at<T>(
             }
         }
         G::Pair(_) => {
-            let items = g.list_items(v)?;
+            let items = list_items(g, v)?;
             let head = match items.first() {
                 Some(G::Symbol(head)) => g.symbol_name(head)?.to_owned(),
                 _ => String::new(),
@@ -1366,7 +1391,7 @@ fn from_grift_at<T>(
                     };
                     let mut replayed = Vec::with_capacity(steps.len());
                     for step in steps {
-                        let items = g.list_items(step)?;
+                        let items = list_items(g, step)?;
                         let Some((G::Symbol(name), arguments)) = items.split_first() else {
                             return Err(g.error("bad-value", std::slice::from_ref(step)));
                         };

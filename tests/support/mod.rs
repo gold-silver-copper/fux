@@ -1288,13 +1288,12 @@ pub fn read_data(text: &str, query: &str) -> Result<String, String> {
     let forms = reader
         .read_in("result", text)
         .map_err(|_| "result does not read")?;
-    let forms = reader.list_items(&forms).map_err(|_| "result forms")?;
-    let [data] = forms.as_slice() else {
+    let Some((data, grift::Value::EmptyList)) =
+        reader.as_pair(&forms).map_err(|_| "result forms")?
+    else {
         return Err(format!("expected one datum: {text}"));
     };
-    reader
-        .define("data", data.clone())
-        .map_err(|_| "bind data")?;
+    reader.define("data", data).map_err(|_| "bind data")?;
     reader
         .evaluate(
             &mut (),
@@ -1304,8 +1303,8 @@ pub fn read_data(text: &str, query: &str) -> Result<String, String> {
     let result = reader
         .evaluate(&mut (), query)
         .map_err(|_| format!("query {query} failed for {text}"))?;
-    if let Some(text) = reader.as_string(&result).map_err(|_| "string result")? {
-        return Ok(text);
+    if let Some(text) = reader.as_str(&result).map_err(|_| "string result")? {
+        return Ok(text.to_owned());
     }
     let mut text = String::new();
     reader

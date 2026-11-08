@@ -278,7 +278,7 @@ fn ended_answers_expose_both_exit_fields() -> TestResult {
             response: Response::Answered(PaneResults::One(answer)),
         };
         let values = held_reply(
-            "(sequence! (define! variables-6 (context)) (bind variables-6 (quote! held) (wait (timeout (pane 1) 0))) (define! value-10 (evaluate (quote! held) variables-6)) \"exited\" (define! value-12 (get value-10 \"exited\")) (define! value-13 (evaluate (quote! held) variables-6)) \"signal\" (list value-12 (get value-13 \"signal\")))",
+            "(sequence! (define! variables-6 (context ())) (bind variables-6 (quote! held) (wait (timeout (pane 1) 0))) (define! value-10 (evaluate (quote! held) variables-6)) \"exited\" (define! value-12 (get value-10 \"exited\")) (define! value-13 (evaluate (quote! held) variables-6)) \"signal\" (list value-12 (get value-13 \"signal\")))",
             reply,
             &mut Vec::new(),
         )?;
@@ -384,7 +384,7 @@ fn local_json_accepts_observations_from_different_runs() -> TestResult {
     let mut reports = Reports(runs.into_iter().collect::<Result<_, _>>()?);
     let mut sink = Vec::new();
     evaluate(
-        "(sequence! (define! variables-30 (context)) (bind variables-30 (quote! a) (list-session)) (bind variables-30 (quote! b) (list-session)) (print (datum (list (evaluate (quote! a) variables-30) (evaluate (quote! b) variables-30)))) #inert)",
+        "(sequence! (define! variables-30 (context ())) (bind variables-30 (quote! a) (list-session)) (bind variables-30 (quote! b) (list-session)) (print (datum (list (evaluate (quote! a) variables-30) (evaluate (quote! b) variables-30)))) #inert)",
         None,
         &mut reports,
         &mut sink,
@@ -627,7 +627,7 @@ fn a_batch_left_that_missed_entries_is_refused() -> TestResult {
 }
 #[test]
 fn a_deep_list_is_written_as_json_and_refused_past_the_wire() -> TestResult {
-    let source = "(define! nest (lambda! (n value) (if! (same? n 0) value (nest (subtract n 1) (list value))))) (string-byte-length (data-text (nest 100000 ())))";
+    let source = "(define! nest (lambda! (n value) (if! (same? n 0) value (nest (subtract n 1) (list value))))) (byte-length (data-text (nest 100000 ())))";
     let left = evaluate(source, None, &mut NoRequests, &mut Vec::new())?;
     assert_eq!(left, [Value::Int(200002)]);
     let mut value = Value::<Fux>::Int(0);
@@ -891,12 +891,14 @@ fn telling_an_uncaught_failure_allocates_no_more_at_depth() -> TestResult {
         let base = allocator.live();
         allocator.reset_peak();
         let failure = bridge::failed(&g, error);
-        told.push((allocator.peak().saturating_sub(base), failure.message));
+        let place = failure.trace.first().cloned().unwrap_or_default();
+        told.push((allocator.peak().saturating_sub(base), place));
     }
     let [(shallow, said), (deep, again)] = told.as_slice() else {
         return Err("two depths".into());
     };
-    assert!(said.contains("first") && again.contains("first"));
+    // An error names its values, not who failed; the trace says where.
+    assert!(said.contains("(first ())") && again.contains("(first ())"));
     assert_eq!(
         shallow, deep,
         "formatting a deep trace should have bounded temporary storage"

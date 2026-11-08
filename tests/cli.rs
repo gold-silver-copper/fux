@@ -457,7 +457,7 @@ fn a_script_runs_as_the_shell_runs_it() -> Outcome {
     };
     let greet = script(
         "greet.grift",
-        "#!/usr/bin/env -S fux --file\n(sequence! (fold (lambda! (accumulator-201 item-196) (let! ((() accumulator-201)) (sequence! (print (string-append \"hello \" item-196)) (list)))) (list) (arguments)) #inert)",
+        "#!/usr/bin/env -S fux --file\n(sequence! (fold (lambda! (accumulator-201 item-196) (let! ((() accumulator-201)) (sequence! (print (join \"hello \" item-196)) (list)))) (list) (arguments)) #inert)",
     )?;
     let greeted = server.piped(&greet, &["ann", "bob"], "")?;
     assert_eq!(

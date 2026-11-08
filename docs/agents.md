@@ -182,7 +182,7 @@ stays unknown.
 
   ```grift
   (define! hits (lambda! (p)
-    (length (filter (lambda! (row) (not? (empty-list? (string-search row "42" 0))))
+    (length (filter (lambda! (row) (not? (empty-list? (search row "42" 0))))
       (get (capture (history p 1000)) "lines")))))
   (define! until-more (lambda! (p seen n)
     (if! (greater-than? (hits p) n) "answered"
@@ -237,7 +237,7 @@ stays unknown.
   ```grift
   (define! until-marked (lambda! (p needle)
     (define! seen (capture (marks (wrapped p))))
-    (if! (empty-list? (string-search (string seen) needle 0))
+    (if! (empty-list? (search (string seen) needle 0))
       (sequence! (wait (timeout (changed seen) 5)) (until-marked p needle))
       seen)))
   (define! seen (until-marked (pane (first (arguments))) "⟦Alpha⟧"))
@@ -276,7 +276,7 @@ stays unknown.
   (define! cursor (get (information (all)) "cursor"))
   (define! job (lambda! (seconds)
     (pane (new-tab (argument (argument (program (size (in (options) "agent") 80 24) "sh") "-c")
-      (string-append "sleep " seconds))))))
+      (join "sleep " seconds))))))
   (define! jobs (map job (list "0.3" "0.05" "0.15")))
   (define! ours? (lambda! (event)
     (and!? (same? (get event "event") "exited")
@@ -338,7 +338,7 @@ stays unknown.
   ```grift
   (define! p (pane 2))
   (define! until-gone (lambda! (seen)
-    (if! (empty-list? (string-search (string (capture p)) "INSERT" 0)) seen
+    (if! (empty-list? (search (string (capture p)) "INSERT" 0)) seen
       (until-gone (wait (timeout (changed seen) 5))))))
   (until-gone (press p "Escape"))
   (line p ":wq")

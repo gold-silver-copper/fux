@@ -4413,7 +4413,7 @@ mod tests {
         assert_eq!(
             output(
                 &mut s,
-                "(sequence! (define! variables-1755 (context)) (bind variables-1755 (quote! held) (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))) (define! value-1763 (evaluate (quote! held) variables-1755)) \"version\" (bind variables-1755 (quote! before) (get value-1763 \"version\")) (kill (pane (evaluate (quote! held) variables-1755))) (define! value-1769 (evaluate (quote! held) variables-1755)) \"version\" (equal? (get value-1769 \"version\") (evaluate (quote! before) variables-1755)))"
+                "(sequence! (define! variables-1755 (context ())) (bind variables-1755 (quote! held) (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))) (define! value-1763 (evaluate (quote! held) variables-1755)) \"version\" (bind variables-1755 (quote! before) (get value-1763 \"version\")) (kill (pane (evaluate (quote! held) variables-1755))) (define! value-1769 (evaluate (quote! held) variables-1755)) \"version\" (equal? (get value-1769 \"version\") (evaluate (quote! before) variables-1755)))"
             )?,
             "#true\n"
         );
@@ -4424,7 +4424,7 @@ mod tests {
         assert_eq!(
             output(
                 &mut s,
-                "(sequence! (define! variables-1784 (context)) (bind variables-1784 (quote! held) (capture (pane 3))) (kill (pane 3)) (define! value-1789 (evaluate (quote! held) variables-1784)) \"last_status\" (kind (get value-1789 \"last-status\")))"
+                "(sequence! (define! variables-1784 (context ())) (bind variables-1784 (quote! held) (capture (pane 3))) (kill (pane 3)) (define! value-1789 (evaluate (quote! held) variables-1784)) \"last_status\" (kind (get value-1789 \"last-status\")))"
             )?,
             "none\n"
         );
@@ -4484,7 +4484,7 @@ mod tests {
         );
         run(
             &mut s,
-            "(sequence! (define! variables-1810 (context)) (define! value-1813 (snapshot (tab 2) \"topology\")) \"tabs\" (bind variables-1810 (quote! observed_tab) (first (get value-1813 \"tabs\"))) (define! value-1817 (evaluate (quote! observed_tab) variables-1810)) \"id\" (define! value-1819 (get value-1817 \"id\")) (define! value-1820 (evaluate (quote! observed_tab) variables-1810)) \"layout_revision\" (define! value-1822 (get value-1820 \"layout-revision\")) (define! value-1823 (evaluate (quote! observed_tab) variables-1810)) \"nodes\" (arrange value-1819 value-1822 (get value-1823 \"nodes\")) #inert)",
+            "(sequence! (define! variables-1810 (context ())) (define! value-1813 (snapshot (tab 2) \"topology\")) \"tabs\" (bind variables-1810 (quote! observed_tab) (first (get value-1813 \"tabs\"))) (define! value-1817 (evaluate (quote! observed_tab) variables-1810)) \"id\" (define! value-1819 (get value-1817 \"id\")) (define! value-1820 (evaluate (quote! observed_tab) variables-1810)) \"layout_revision\" (define! value-1822 (get value-1820 \"layout-revision\")) (define! value-1823 (evaluate (quote! observed_tab) variables-1810)) \"nodes\" (arrange value-1819 value-1822 (get value-1823 \"nodes\")) #inert)",
         )?;
         assert_ne!(
             before,
@@ -4521,7 +4521,7 @@ mod tests {
             ..body.into()
         }));
         let values = fux::script::testing::evaluate(
-            "(sequence! (define! variables-1829 (context)) (bind variables-1829 (quote! held) (snapshot (all) \"topology\")) (define! value-1833 (evaluate (quote! held) variables-1829)) \"panes\" (define! value-1836 (first (get value-1833 \"panes\"))) \"id\" (define! value-1838 (get value-1836 \"id\")) (define! value-1839 (evaluate (quote! held) variables-1829)) \"panes\" (define! value-1842 (first (get value-1839 \"panes\"))) \"name\" (list value-1838 (kind (get value-1842 \"name\"))))",
+            "(sequence! (define! variables-1829 (context ())) (bind variables-1829 (quote! held) (snapshot (all) \"topology\")) (define! value-1833 (evaluate (quote! held) variables-1829)) \"panes\" (define! value-1836 (first (get value-1833 \"panes\"))) \"id\" (define! value-1838 (get value-1836 \"id\")) (define! value-1839 (evaluate (quote! held) variables-1829)) \"panes\" (define! value-1842 (first (get value-1839 \"panes\"))) \"name\" (list value-1838 (kind (get value-1842 \"name\"))))",
             None,
             &mut once,
             &mut Vec::new(),
@@ -4538,7 +4538,7 @@ mod tests {
         assert_eq!(
             output(
                 &mut s,
-                "(sequence! (define! variables-1847 (context)) (bind variables-1847 (quote! held) (snapshot (all) \"facts\")) (rename (pane 1) \"changed\") (define! value-1854 (evaluate (quote! held) variables-1847)) \"panes\" (define! value-1857 (first (get value-1854 \"panes\"))) \"name\" (kind (get value-1857 \"name\")))"
+                "(sequence! (define! variables-1847 (context ())) (bind variables-1847 (quote! held) (snapshot (all) \"facts\")) (rename (pane 1) \"changed\") (define! value-1854 (evaluate (quote! held) variables-1847)) \"panes\" (define! value-1857 (first (get value-1854 \"panes\"))) \"name\" (kind (get value-1857 \"name\")))"
             )?,
             "none\n"
         );
@@ -5208,7 +5208,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(sequence! (define! variables-2104 (context)) (bind variables-2104 (quote! b) (split (axis (pane 1) \"horizontal\"))) (define! value-2109 (tab 1)) \"layout_revision\" (arrange value-2109 (get value-2109 \"layout-revision\") (list (list \"vertical\" 1 1 1 2) (pane 1) (evaluate (quote! b) variables-2104))) #inert)",
+            "(sequence! (define! variables-2104 (context ())) (bind variables-2104 (quote! b) (split (axis (pane 1) \"horizontal\"))) (define! value-2109 (tab 1)) \"layout_revision\" (arrange value-2109 (get value-2109 \"layout-revision\") (list (list \"vertical\" 1 1 1 2) (pane 1) (evaluate (quote! b) variables-2104))) #inert)",
         )?;
         assert_eq!(
             s.root(TabId::of(1)).map(Tree::panes),
@@ -8093,7 +8093,7 @@ mod tests {
             "(pane 1)",
             "(capture (pane 1))",
             "(send-keys (text (pane 1) \"x\"))",
-            "(sequence! (define! variables-3451 (context)) (bind variables-3451 (quote! sample) (capture (pane 1))) (kill (pane 1)) (evaluate (quote! sample) variables-3451))",
+            "(sequence! (define! variables-3451 (context ())) (bind variables-3451 (quote! sample) (capture (pane 1))) (kill (pane 1)) (evaluate (quote! sample) variables-3451))",
         ] {
             let source = format!("(let! ((o {source})) {read})");
             assert_eq!(output(&mut s, &source)?.trim(), expected, "{source}");
@@ -8114,7 +8114,7 @@ mod tests {
         let mut s = started()?;
         let json = output(
             &mut s,
-            "(data-text (sequence! (define! variables-3459 (context)) (bind variables-3459 (quote! sent) (send-keys (text (expect (capture (pane 1))) \"x\"))) \"timeout\" (quiet (element-at (catch-kind! (list (wait (timeout (evaluate (quote! sent) variables-3459) 0))) timeout failure-3472 (sequence! \"value\" (list (second (get failure-3472 \"values\"))))) 0) 0)))",
+            "(data-text (sequence! (define! variables-3459 (context ())) (bind variables-3459 (quote! sent) (send-keys (text (expect (capture (pane 1))) \"x\"))) \"timeout\" (quiet (element-at (catch-kind! (list (wait (timeout (evaluate (quote! sent) variables-3459) 0))) timeout failure-3472 (sequence! \"value\" (list (second (get failure-3472 \"values\"))))) 0) 0)))",
         )?;
         assert!(
             json.contains("(id %1:") && json.contains("(version \"%1:"),
@@ -8651,7 +8651,7 @@ mod tests {
         assert!(!record.contains("idle-ms"), "{record}");
         let held = output(
             &mut s,
-            "(sequence! (define! variables-3896 (context)) (bind variables-3896 (quote! action) (send-keys (text (pane 1) \"x\"))) (bind variables-3896 (quote! sample) (capture (pane 1))) (kill (pane 1)) (list (version (evaluate (quote! action) variables-3896)) (version (evaluate (quote! sample) variables-3896))))",
+            "(sequence! (define! variables-3896 (context ())) (bind variables-3896 (quote! action) (send-keys (text (pane 1) \"x\"))) (bind variables-3896 (quote! sample) (capture (pane 1))) (kill (pane 1)) (list (version (evaluate (quote! action) variables-3896)) (version (evaluate (quote! sample) variables-3896))))",
         )?;
         assert_eq!(held, format!("{initial}\n{initial}\n"));
         Ok(())
@@ -9319,7 +9319,7 @@ mod tests {
             Ok(())
         }
         let mut s = started()?;
-        let arrange = "(sequence! (define! variables-4337 (context)) (define! value-4340 (snapshot (tab 1) \"topology\")) \"tabs\" (bind variables-4337 (quote! t) (first (get value-4340 \"tabs\"))) (define! value-4344 (evaluate (quote! t) variables-4337)) \"id\" (define! value-4346 (get value-4344 \"id\")) (define! value-4347 (evaluate (quote! t) variables-4337)) \"layout_revision\" (define! value-4349 (get value-4347 \"layout-revision\")) (define! value-4350 (evaluate (quote! t) variables-4337)) \"nodes\" (arrange value-4346 value-4349 (get value-4350 \"nodes\")) #inert)";
+        let arrange = "(sequence! (define! variables-4337 (context ())) (define! value-4340 (snapshot (tab 1) \"topology\")) \"tabs\" (bind variables-4337 (quote! t) (first (get value-4340 \"tabs\"))) (define! value-4344 (evaluate (quote! t) variables-4337)) \"id\" (define! value-4346 (get value-4344 \"id\")) (define! value-4347 (evaluate (quote! t) variables-4337)) \"layout_revision\" (define! value-4349 (get value-4347 \"layout-revision\")) (define! value-4350 (evaluate (quote! t) variables-4337)) \"nodes\" (arrange value-4346 value-4349 (get value-4350 \"nodes\")) #inert)";
         for code in [
             "(sequence! (split (axis (pane 1) \"horizontal\")) #inert)",
             "(sequence! (swap-with (pane 1) (pane 2)) #inert)",
@@ -9717,11 +9717,9 @@ mod tests {
         let forms = reader
             .read_in("session.grift", &dump)
             .map_err(|_| "saved data")?;
-        let form = reader
-            .list_items(&forms)
+        let (form, _) = reader
+            .as_pair(&forms)
             .map_err(|_| "forms")?
-            .into_iter()
-            .next()
             .ok_or("one form")?;
         reader.define("saved-form", form).map_err(|_| "bind")?;
         let saved = reader
