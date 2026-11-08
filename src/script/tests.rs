@@ -180,6 +180,17 @@ fn an_exit_cannot_be_caught_as_an_ordinary_error() -> TestResult {
     Ok(())
 }
 #[test]
+fn an_exit_runs_the_cleanups_around_it() -> TestResult {
+    let mut out = Vec::new();
+    let status = main(
+        &["(finally! (exit 3) (display \"cleaned\"))".into()],
+        None,
+        &mut out,
+    )?;
+    assert_eq!((status, out.as_slice()), (3, &b"cleaned"[..]));
+    Ok(())
+}
+#[test]
 fn explicit_code_runs_in_its_receiving_dictionary() -> TestResult {
     let mut out = Vec::new();
     main(&["(define! receiver (lambda! (x) (add x 1))) (execute! (code! (lambda! (x) (receiver x))) 41)".into()],None,&mut out)?;

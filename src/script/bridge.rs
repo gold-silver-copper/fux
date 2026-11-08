@@ -62,7 +62,6 @@ pub struct Runtime<'a, 'b, A: Asks + ?Sized> {
     configuring: bool,
     /// Replaying a config already told: what it warns of was said then.
     replaying: bool,
-    exiting: bool,
 }
 impl<'a, 'b, A: Asks + ?Sized> Runtime<'a, 'b, A> {
     pub fn new(host: &'a mut Host<'b>, asks: &'a mut A, stop: Option<&'a Stop>) -> Self {
@@ -72,7 +71,6 @@ impl<'a, 'b, A: Asks + ?Sized> Runtime<'a, 'b, A> {
             stop,
             configuring: false,
             replaying: false,
-            exiting: false,
         }
     }
 }
@@ -687,8 +685,8 @@ pub(super) fn request<'a, 'b, A: Asks + ?Sized>(
                 state.host.took(call_text(g, name, args));
             }
             if matches!(what, Local::Shell(Shell::Exit(_))) {
-                runtime_exit(g, state);
-                return Err(g.error("interrupted", &[]));
+                // A limit: no handler catches it, and every cleanup runs.
+                return Err(g.error("exit", &[]).as_limit());
             }
         }
     }
@@ -1066,11 +1064,7 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
             Ok(value) => Ok(vec![value]),
             Err(e) => Err(failed(g, e)),
         },
-        Err(e)
-            if state.exiting
-                && g.symbol_name(&e.kind)
-                    .is_ok_and(|kind| kind == "interrupted") =>
-        {
+        Err(e) if e.is_limit() && g.symbol_name(&e.kind).is_ok_and(|kind| kind == "exit") => {
             Ok(Vec::new())
         }
         Err(e) => {
@@ -1530,10 +1524,4 @@ fn output_value<T>(g: &mut Grift<T>, stop: Option<&Stop>, v: &G) -> Result<Value
         stopped.unwrap_or_else(|| unwritten(g, why, "output", &[]))
     })?;
     Ok(Value::str(out.text))
-}
-
-fn runtime_exit<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, state: &mut Runtime<'_, '_, A>) {
-    state.exiting = true;
-    let mut stop = g.interrupter();
-    let _ = stop.stop();
 }

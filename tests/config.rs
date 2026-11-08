@@ -535,7 +535,9 @@ fn unrelated_commands_do_not_load_shell_defaults() -> Outcome {
             "(sequence! (define! variables-59 (context ())) (define! value-60 (list-session)) value-60)",
         ],
         &["(sequence! (define! variables-61 (context ())) (define! value-62 (status)) value-62)"],
-        &["(sequence! (define! variables-63 (context ())) (define! value-64 (kill-server)) #inert)"],
+        &[
+            "(sequence! (define! variables-63 (context ())) (define! value-64 (kill-server)) #inert)",
+        ],
     ] {
         let result = std::process::Command::new(FUX)
             .args(words)
