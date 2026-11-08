@@ -1,5 +1,4 @@
 //! Help reads the same explicit definitions that the client evaluates.
-use super::bridge::list_items;
 use super::{Code, Failed};
 use grift::{Grift, Value};
 use std::sync::OnceLock;
@@ -21,7 +20,7 @@ pub fn docs() -> Result<&'static [Doc], Failed> {
 pub fn language() -> Result<Vec<String>, grift::Error> {
     let mut g: Grift = Grift::new()?;
     let names = g.evaluate(&mut (), "built-in-names")?;
-    let symbols = list_items(&mut g, &names)?.into_iter();
+    let symbols = g.list_items(&names)?.into_iter();
     let symbols = symbols.filter_map(|name| {
         let Value::Symbol(symbol) = name else {
             return None;
@@ -42,10 +41,11 @@ fn read() -> Result<Vec<Doc>, Failed> {
         let forms = g
             .read_in(file, text)
             .map_err(|_| Failed::new(Code::Parse, "reading bundled help definitions"))?;
-        for form in list_items(&mut g, &forms)
+        for form in g
+            .list_items(&forms)
             .map_err(|_| Failed::new(Code::Parse, "reading help forms"))?
         {
-            let Ok(items) = list_items(&mut g, &form) else {
+            let Ok(items) = g.list_items(&form) else {
                 continue;
             };
             let [Value::Symbol(head), Value::Symbol(name), expression] = items.as_slice() else {
@@ -62,7 +62,7 @@ fn read() -> Result<Vec<Doc>, Failed> {
             g.write(expression, &mut source)
                 .map_err(|_| Failed::new(Code::Output, "printing help definition"))?;
             let mut parameters = String::new();
-            if let Ok(body) = list_items(&mut g, expression)
+            if let Ok(body) = g.list_items(expression)
                 && let Some(parameters_value) = body.get(1)
             {
                 let _ = g.write(parameters_value, &mut parameters);

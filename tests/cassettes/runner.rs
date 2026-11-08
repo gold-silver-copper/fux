@@ -1395,21 +1395,12 @@ impl Call {
         }
         let mut g: Grift = Grift::new().ok()?;
         let forms = g.read(self.argv.first()?).ok()?;
-        let forms = items(&g, &forms)?;
+        let forms = g.list_items(&forms).ok()?;
         let [root] = forms.as_slice() else {
             return None;
         };
-        fn items(g: &Grift, list: &Value) -> Option<Vec<Value>> {
-            let mut items = Vec::new();
-            let mut rest = list.clone();
-            while let Some((item, next)) = g.as_pair(&rest).ok()? {
-                items.push(item);
-                rest = next;
-            }
-            (rest == Value::EmptyList).then_some(items)
-        }
         fn form(g: &Grift, value: &Value, name: &str) -> Option<Vec<Value>> {
-            let items = items(g, value)?;
+            let items = g.list_items(value).ok()?;
             let Some(Value::Symbol(head)) = items.first() else {
                 return None;
             };

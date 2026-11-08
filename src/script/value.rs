@@ -110,7 +110,7 @@ impl Value<Fux> {
             Self::Float(n) => write!(out, "{n:?}"),
             Self::Int(n) => write!(out, "{n}"),
             Self::Bool(b) => write!(out, "#{b}"),
-            Self::Str(s) => write_string(s, out),
+            Self::Str(s) => grift::write_string(s, out),
             Self::Symbol(s) => out.write_str(s),
             Self::List(xs) => {
                 out.write_str("(")?;
@@ -158,27 +158,8 @@ impl Value<Fux> {
 /// One grift string literal, also used by generated config lines.
 pub fn quoted(text: &str) -> String {
     let mut out = String::new();
-    let _ = write_string(text, &mut out);
+    let _ = grift::write_string(text, &mut out);
     out
-}
-
-/// `text` as one grift string literal, with grift's escapes, which its reader
-/// reads back. Grift keeps its own private, and writing a string through an
-/// interpreter needs one, which a config line and a value fux owns have not.
-fn write_string(text: &str, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
-    out.write_char('"')?;
-    for c in text.chars() {
-        match c {
-            '"' => out.write_str("\\\"")?,
-            '\\' => out.write_str("\\\\")?,
-            '\n' => out.write_str("\\n")?,
-            '\r' => out.write_str("\\r")?,
-            '\t' => out.write_str("\\t")?,
-            c if c.is_control() => write!(out, "\\x{:x};", u32::from(c))?,
-            c => out.write_char(c)?,
-        }
-    }
-    out.write_char('"')
 }
 
 pub(super) struct Text<'a>(pub &'a Value<Fux>);
