@@ -887,6 +887,18 @@ fn attach_words_accept_compiled_action_answers_and_keep_their_run() -> TestResul
 }
 
 #[test]
+fn a_file_that_does_not_read_is_placed_at_its_line() -> TestResult {
+    let mut g: grift::Grift = grift::Grift::new().map_err(|e| format!("{e:?}"))?;
+    let unread = g
+        .evaluate_in(&mut (), &g.top_level(), "keys.grift", "(print 1)\n(first")
+        .err()
+        .ok_or("it read")?;
+    let failure = bridge::failed(&g, unread);
+    assert_eq!(failure.place.as_deref(), Some("keys.grift:2"));
+    Ok(())
+}
+
+#[test]
 fn telling_an_uncaught_failure_allocates_no_more_at_depth() -> TestResult {
     let allocator = fux_vt_peak::ThreadPeak;
     let mut told = Vec::new();
