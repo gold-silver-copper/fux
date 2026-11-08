@@ -1027,18 +1027,21 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
         }
         Ok(v) => match output_value(g, state.stop, &v) {
             // A list's items, each said alone; a record's fields are one value.
-            Ok(Value::Str(_))
-                if matches!(v, G::Pair(_) | G::EmptyList)
-                    && g.list_items(&v)
-                        .is_ok_and(|items| matches!(fields(g, &items), Ok(None))) =>
-            {
-                let items = g.list_items(&v).map_err(|e| failed(g, e))?;
-                let values = items
-                    .iter()
-                    .map(|item| output_value(g, state.stop, item))
-                    .collect::<Result<_, _>>()
-                    .map_err(|e| failed(g, e))?;
-                Ok(vec![Value::List(Rc::new(List::new(values)))])
+            Ok(Value::Str(text)) if matches!(v, G::Pair(_) | G::EmptyList) => {
+                let each = (g.list_items(&v))
+                    .and_then(|items| Ok(fields(g, &items)?.is_none().then_some(items)));
+                match each {
+                    Ok(Some(items)) => {
+                        let values = items
+                            .iter()
+                            .map(|item| output_value(g, state.stop, item))
+                            .collect::<Result<_, _>>()
+                            .map_err(|e| failed(g, e))?;
+                        Ok(vec![Value::List(Rc::new(List::new(values)))])
+                    }
+                    Err(e) if e.is_limit() => Err(failed(g, e)),
+                    Ok(None) | Err(_) => Ok(vec![Value::Str(text)]),
+                }
             }
             Ok(value) => Ok(vec![value]),
             Err(e) => Err(failed(g, e)),
@@ -1219,7 +1222,11 @@ fn write_form<T>(
 ) -> Result<(), Error> {
     walking(g, stop)?;
     let items = match (form, depth.checked_sub(1)) {
-        (G::Pair(_), Some(_)) => g.list_items(form).ok(),
+        (G::Pair(_), Some(_)) => match g.list_items(form) {
+            Ok(items) => Some(items),
+            Err(why) if why.is_limit() => return Err(why),
+            Err(_) => None,
+        },
         _ => None,
     };
     let Some(items) = items else {
@@ -1492,10 +1499,12 @@ fn output_value<T>(g: &mut Grift<T>, stop: Option<&Stop>, v: &G) -> Result<Value
     ) {
         return from_grift(g, stop, v);
     }
-    if matches!(v, G::Pair(_))
-        && let Ok(value @ Value::App(_)) = from_grift(g, stop, v)
-    {
-        return Ok(value);
+    if matches!(v, G::Pair(_)) {
+        match from_grift(g, stop, v) {
+            Ok(value @ Value::App(_)) => return Ok(value),
+            Err(why) if why.is_limit() => return Err(why),
+            Ok(_) | Err(_) => {}
+        }
     }
     let mut out = Unstopped {
         text: String::new(),

@@ -984,13 +984,17 @@ fn memory_refused_while_printing_passes_a_programs_handlers() -> Outcome {
 #[cfg(target_os = "linux")]
 #[test]
 fn memory_refused_while_displaying_a_list_passes_a_programs_handlers() -> Outcome {
-    refused_while_printing(
-        "(define! flat (lambda! (n d) (if! (same? n 0) d (flat (subtract n 1) (pair 0 d)))))
-        (define! d (flat 1000000 ()))",
-        "(display d)",
-        8 << 20,
-    )
+    refused_while_printing(FLAT, "(display d)", 8 << 20)?;
+    // The list as a key program's form, and as the program's value.
+    refused_while_printing(FLAT, "(display (kind (list (quote! code!) d)))", 8 << 20)?;
+    refused_while_printing(FLAT, "d", 8 << 20)
 }
+
+/// A flat list of a million zeroes, `d`.
+#[cfg(target_os = "linux")]
+const FLAT: &str =
+    "(define! flat (lambda! (n d) (if! (same? n 0) d (flat (subtract n 1) (pair 0 d)))))
+    (define! d (flat 1000000 ()))";
 
 #[cfg(target_os = "linux")]
 fn refused_while_printing(build: &str, print: &str, more: u64) -> Outcome {
@@ -1020,8 +1024,11 @@ fn refused_while_printing(build: &str, print: &str, more: u64) -> Outcome {
     said.read_to_string(&mut rest).map_err(e)?;
     let done = child.wait_with_output().map_err(e)?;
     let stderr = String::from_utf8_lossy(&done.stderr);
-    assert!(!rest.contains("handled"), "its handler ran: {stderr}");
-    assert_eq!(done.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("out-of-memory"), "{stderr}");
+    assert!(
+        !rest.contains("handled"),
+        "{print}: its handler ran: {stderr}"
+    );
+    assert_eq!(done.status.code(), Some(1), "{print}: {stderr}");
+    assert!(stderr.contains("out-of-memory"), "{print}: {stderr}");
     Ok(())
 }
