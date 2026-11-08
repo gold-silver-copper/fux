@@ -1312,6 +1312,30 @@ fn a_stop_runs_cleanups_and_a_second_ends_them() -> Outcome {
     terminal.wait_for("next-ok")
 }
 
+/// A second stop ends every cleanup left, however deep: cleanups inside a
+/// cleanup don't each need a stop of their own.
+#[test]
+fn a_second_stop_ends_cleanups_inside_cleanups() -> Outcome {
+    let keys = r#"(define! spin (lambda! () (spin)))
+(bind-key "F5" (code! (lambda! () (finally! (spin) (finally! (spin) (finally! (spin) (spin)))))))"#;
+    let server = Server::start(keys)?;
+    let mut terminal = Terminal::attach(&server, 12, 140, &[])?;
+    terminal.wait_for("$")?;
+    let shows = |terminal: &mut Terminal, what: &str| {
+        eventually(what, || {
+            terminal.pump();
+            Ok(terminal.text().contains(what))
+        })
+    };
+    terminal.type_bytes(b"\x1b[15~")?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    terminal.type_bytes(b"\x02\x1b")?;
+    shows(&mut terminal, "stopping…")?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    terminal.type_bytes(b"\x02\x1b")?;
+    shows(&mut terminal, "stopped")
+}
+
 /// Commands from the command line are not ended by signals either, when
 /// one arrives while they wait for the server.
 #[test]
