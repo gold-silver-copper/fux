@@ -1440,6 +1440,8 @@ fn write_display<T>(
                 | Fux::Client(..)
                 | Fux::All),
             )) => Some(Value::App(app)),
+            // Memory refused as fux looks at it ends the printing too.
+            Err(why) if why.is_limit() => return Err(why),
             Ok(_) | Err(_) => None,
         },
         G::EmptyList

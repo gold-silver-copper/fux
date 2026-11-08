@@ -970,18 +970,41 @@ fn a_stop_ends_the_wait_it_beat_and_asks_the_cleanup() -> Outcome {
 #[cfg(target_os = "linux")]
 #[test]
 fn memory_refused_while_printing_passes_a_programs_handlers() -> Outcome {
+    refused_while_printing(
+        "(define! deep (lambda! (n d) (if! (same? n 0) d (deep (subtract n 1) (pair d ())))))
+        (define! d (deep 1000000 ()))",
+        "(data-text d)",
+        1 << 20,
+    )
+}
+
+/// The same for `display` of a long flat list, where memory is refused as fux
+/// looks at the list, to see whether it is one of fux's own values, though
+/// grift's printer would still find room for its text.
+#[cfg(target_os = "linux")]
+#[test]
+fn memory_refused_while_displaying_a_list_passes_a_programs_handlers() -> Outcome {
+    refused_while_printing(
+        "(define! flat (lambda! (n d) (if! (same? n 0) d (flat (subtract n 1) (pair 0 d)))))
+        (define! d (flat 1000000 ()))",
+        "(display d)",
+        8 << 20,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn refused_while_printing(build: &str, print: &str, more: u64) -> Outcome {
     use std::io::{BufRead, Read};
     use std::process::Stdio;
     let server = Server::empty()?;
     let mut child = server
         .command(fux())
-        .arg(
-            r#"(define! deep (lambda! (n d) (if! (same? n 0) d (deep (subtract n 1) (pair d ())))))
-            (define! d (deep 1000000 ()))
+        .arg(format!(
+            r#"{build}
             (display "built\n")
             (input)
-            (catch! (data-text d) e (display "handled\n") #inert)"#,
-        )
+            (catch! {print} e (display "handled\n") #inert)"#
+        ))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -991,7 +1014,7 @@ fn memory_refused_while_printing_passes_a_programs_handlers() -> Outcome {
     let mut built = String::new();
     said.read_line(&mut built).map_err(e)?;
     assert_eq!(built, "built\n");
-    cap(i32::try_from(child.id()).map_err(e)?, 1 << 20)?;
+    cap(i32::try_from(child.id()).map_err(e)?, more)?;
     drop(child.stdin.take());
     let mut rest = String::new();
     said.read_to_string(&mut rest).map_err(e)?;
