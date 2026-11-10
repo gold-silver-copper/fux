@@ -658,7 +658,16 @@ fn a_dump_replayed_beside_itself_makes_nothing_from_a_deleted_directory() -> Out
 #[test]
 fn a_session_that_goes_round_is_refused() -> Outcome {
     let server = Server::start("")?;
-    let before = server.ok(&["(list-session)"])?;
+    // What a restore writes, not what the running shell moves (its screen,
+    // version and the journal's cursor).
+    let shape = || {
+        server.ok(&[r#"(define! s (snapshot (all) "topology"))
+      (data-text (list
+        (map (lambda! (w) (map (lambda! (k) (get w k)) (list "id" "parent" "name" "children"))) (get s "workspaces"))
+        (map (lambda! (t) (map (lambda! (k) (get t k)) (list "id" "workspace" "name" "columns" "rows" "nodes" "layout-revision"))) (get s "tabs"))
+        (map (lambda! (p) (map (lambda! (k) (get p k)) (list "id" "tab" "name"))) (get s "panes"))))"#])
+    };
+    let before = shape()?;
     let file = server.dir.join("round.grift");
     let (path, leaf) = (file.to_str().ok_or("path")?, r#"("%1")"#);
     for (first, second, nodes) in [
@@ -694,7 +703,7 @@ fn a_session_that_goes_round_is_refused() -> Outcome {
         let said = String::from_utf8_lossy(&told.stderr);
         assert!(!told.status.success());
         assert!(said.starts_with("fux: bad-value: "), "{said}");
-        assert_eq!(server.ok(&["(list-session)"])?, before);
+        assert_eq!(shape()?, before);
     }
     Ok(())
 }
