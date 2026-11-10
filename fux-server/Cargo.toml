@@ -28,7 +28,7 @@ fuxix = { path = "../fuxix", version = "0.9.0" }
 # The tests run programs against a session as its clients do: through
 # fux's own fuxth vocabulary, which only a test build links.
 [dev-dependencies]
-grift = { path = "/home/gsc/.cache/claude-tmp/grift-v4/fux/grift/crates/grift" }
+grift = "4.0.0"
 fux = { path = "..", features = ["in-process"] }
 fux-wire = { path = "../fux-wire", features = ["testing"] }
 fux-vt-peak = { path = "../fux-vt/peak" }
