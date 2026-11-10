@@ -90,10 +90,12 @@ pub(super) fn value(v: &Data) -> Result<Value<Fux>, Failed> {
 fn reads(source: &str) -> Result<(), Failed> {
     let mut g: grift::Grift = grift::Grift::new()
         .map_err(|_| Failed::new(fux_wire::code::Code::Memory, "initializing grift"))?;
+    /// The most of a report a failure shows: a parse error's is a line.
+    const REPORT: usize = 600;
     g.read(source).map(drop).map_err(|e| {
-        let mut text = String::new();
-        let _ = g.describe(&e, &mut text);
-        Failed::new(fux_wire::code::Code::BadValue, text)
+        let mut text = grift::TextBuffer::new();
+        let _ = g.describe(&e, &mut text, REPORT);
+        Failed::new(fux_wire::code::Code::BadValue, text.as_str())
     })
 }
 /// The values `v` holds are all of one server run, and its code all reads.

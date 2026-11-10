@@ -27,7 +27,7 @@ struct Names {
 
 /// A list's items, and what ends one that isn't proper.
 fn items(g: &Grift, list: &Value) -> Result<Vec<Value>, String> {
-    let (mut items, mut rest) = (Vec::new(), list.clone());
+    let (mut items, mut rest) = (Vec::new(), *list);
     while let Some((item, tail)) = g.as_pair(&rest).map_err(|e| format!("{e:?}"))? {
         items.push(item);
         rest = tail;
