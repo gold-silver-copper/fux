@@ -2209,7 +2209,7 @@ impl Json {
                         )
                     }
                 }
-                Value::Inert | Value::Ignore | Value::Bytes(_) | Value::Context(_) | Value::Operative(_) | Value::Applicative(_) | Value::Primitive(_) | Value::Host(_) => return Err("not readable fux data".into()),
+                Value::Inert | Value::Ignore | Value::Bytes(_) | Value::Context(_) | Value::Operative(_) | Value::Applicative(_) => return Err("not readable fux data".into()),
             })
         }
         let mut g: Grift = Grift::new().map_err(|_| "initializing data reader")?;

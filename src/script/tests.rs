@@ -977,8 +977,11 @@ fn layout_scalar_refusals_do_not_copy_retained_strings() -> TestResult {
             base: 0,
             peak: 0,
         };
+        // A copy shows in one refusal. Grift collects once it has allocated
+        // about as much as survived, the string included, so many refusals
+        // would measure that pacing rather than a copy.
         let source = format!(
-            r#"(define! bad (input)) (define! t (tab 1)) (environment-variable "MEASURE") (for-each (lambda! (#ignore) (catch-kind! {proposal} bad-value failure #inert)) (range 0 16)) (environment-variable "PEAK")"#
+            r#"(define! bad (input)) (define! t (tab 1)) (environment-variable "MEASURE") (for-each (lambda! (#ignore) (catch-kind! {proposal} bad-value failure #inert)) (range 0 4)) (environment-variable "PEAK")"#
         );
         evaluate(&source, None, &mut scalars, &mut Vec::new())?;
         peaks.push(scalars.peak);

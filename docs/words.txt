@@ -274,7 +274,6 @@ square-root
 standard-context
 string-ends-with?
 string-join
-string-less-than?
 string-pad-left
 string-pad-right
 string-repeat
@@ -307,5 +306,7 @@ data-text
 read-source
 finish-source
 native-check-stop
+native-load-library
+native-library-loaded
 kind
 string
