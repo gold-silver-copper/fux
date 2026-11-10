@@ -1,7 +1,7 @@
 //! Grift evaluates policy; native calls marshal into the existing request vocabulary.
 use super::*;
 use fux_wire::command::Percent;
-use grift::{Answer, Error, Grift, Ran, Value as G};
+use grift::{Answer, Error, Grift, HostCall, Ran, Value as G};
 
 #[derive(Clone, Debug)]
 pub struct Machine {
@@ -75,7 +75,9 @@ impl<'a, 'b, A: Asks + ?Sized> Runtime<'a, 'b, A> {
     }
 }
 pub type Interpreter<'a, 'b, A> = Grift<Runtime<'a, 'b, A>>;
-fn failure<T>(g: &mut Grift<T>, f: Failure) -> Error {
+/// What fux's host functions are given: the interpreter, no run to begin.
+type Call<'g, 'a, 'b, A> = HostCall<'g, Runtime<'a, 'b, A>>;
+fn failure<T>(g: &mut HostCall<'_, T>, f: Failure) -> Error {
     let value = g.string(&f.message).unwrap_or(G::Inert);
     g.error(f.code.name(), &[value])
 }
@@ -125,7 +127,7 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
 /// As `failed`, of `text`, the program `name` as it was written: what fux
 /// put before it doesn't count in a column, and a name alone, of which grift
 /// keeps no position, is found by the first lines that read to hold it.
-fn failed_in<T>(g: &mut Grift<T>, e: Error, name: &str, text: &str) -> Failed {
+fn failed_in<T>(g: &mut HostCall<'_, T>, e: Error, name: &str, text: &str) -> Failed {
     let unread = g
         .symbol_name(&e.kind)
         .is_ok_and(|kind| kind == "parse-error");
@@ -188,7 +190,7 @@ fn written<T>(g: &Grift<T>, start: &str, values: &[G], most: usize) -> String {
 }
 
 /// Fails if this job was stopped.
-fn unstopped<T>(g: &mut Grift<T>, stop: Option<&Stop>) -> Result<(), Error> {
+fn unstopped<T>(g: &mut HostCall<'_, T>, stop: Option<&Stop>) -> Result<(), Error> {
     if let Some(stop) = stop {
         stop.check()
             .map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
@@ -202,11 +204,11 @@ fn unstopped<T>(g: &mut Grift<T>, stop: Option<&Stop>) -> Result<(), Error> {
 /// act on ends the run there, and one it has acted on makes this a
 /// cleanup's call, which runs.
 fn heeding<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     name: &str,
     args: &[G],
-    f: impl FnOnce(&mut Interpreter<'a, 'b, A>, &mut Runtime<'a, 'b, A>, &[G]) -> Result<G, Error>,
+    f: impl FnOnce(&mut Call<'_, 'a, 'b, A>, &mut Runtime<'a, 'b, A>, &[G]) -> Result<G, Error>,
 ) -> Result<Answer, Error> {
     if state.stop.is_some_and(Stop::news) {
         return Ok(Answer::Call {
@@ -220,28 +222,28 @@ fn heeding<'a, 'b, A: Asks + ?Sized>(
 
 /// Word `name`, `f`, which a stop need not reach before it acts.
 fn now<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     _: &str,
     args: &[G],
-    f: impl FnOnce(&mut Interpreter<'a, 'b, A>, &mut Runtime<'a, 'b, A>, &[G]) -> Result<G, Error>,
+    f: impl FnOnce(&mut Call<'_, 'a, 'b, A>, &mut Runtime<'a, 'b, A>, &[G]) -> Result<G, Error>,
 ) -> Result<Answer, Error> {
     f(g, state, args).map(Answer::Now)
 }
 
 /// Word `name`, `f`, which answers grift itself.
 fn answer<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     _: &str,
     args: &[G],
-    f: impl FnOnce(&mut Interpreter<'a, 'b, A>, &mut Runtime<'a, 'b, A>, &[G]) -> Result<Answer, Error>,
+    f: impl FnOnce(&mut Call<'_, 'a, 'b, A>, &mut Runtime<'a, 'b, A>, &[G]) -> Result<Answer, Error>,
 ) -> Result<Answer, Error> {
     f(g, state, args)
 }
 
 /// The word `name` of fux's vocabulary, as grift calls it.
-fn word<T>(g: &mut Grift<T>, name: &str) -> Result<G, Error> {
+fn word<T>(g: &mut HostCall<'_, T>, name: &str) -> Result<G, Error> {
     let words = place(g, WORDS)?;
     let symbol = g.symbol(name)?;
     g.lookup(&words, &symbol)?
@@ -252,7 +254,7 @@ fn word<T>(g: &mut Grift<T>, name: &str) -> Result<G, Error> {
 /// a stop that comes during one is its own to end it. Grift has yet to act on
 /// that stop, `heed` having told of any before, and it takes whatever the
 /// step then fails with to be that stop.
-fn walking<T>(g: &mut Grift<T>, stop: Option<&Stop>) -> Result<(), Error> {
+fn walking<T>(g: &mut HostCall<'_, T>, stop: Option<&Stop>) -> Result<(), Error> {
     if stop.is_some_and(Stop::news) {
         unstopped(g, stop)?;
     }
@@ -260,7 +262,7 @@ fn walking<T>(g: &mut Grift<T>, stop: Option<&Stop>) -> Result<(), Error> {
 }
 
 fn check<A: Asks + ?Sized>(
-    g: &mut Interpreter<'_, '_, A>,
+    g: &mut Call<'_, '_, '_, A>,
     state: &mut Runtime<'_, '_, A>,
     _: &[G],
 ) -> Result<G, Error> {
@@ -268,7 +270,7 @@ fn check<A: Asks + ?Sized>(
     Ok(G::Inert)
 }
 fn output<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<G, Error> {
@@ -290,7 +292,7 @@ fn output<'a, 'b, A: Asks + ?Sized>(
     Ok(G::Inert)
 }
 fn data_text<A: Asks + ?Sized>(
-    g: &mut Interpreter<'_, '_, A>,
+    g: &mut Call<'_, '_, '_, A>,
     _: &mut Runtime<'_, '_, A>,
     args: &[G],
 ) -> Result<G, Error> {
@@ -302,7 +304,7 @@ fn data_text<A: Asks + ?Sized>(
     g.string(&text)
 }
 fn read_source<A: Asks + ?Sized>(
-    g: &mut Interpreter<'_, '_, A>,
+    g: &mut Call<'_, '_, '_, A>,
     state: &mut Runtime<'_, '_, A>,
     args: &[G],
 ) -> Result<G, Error> {
@@ -338,7 +340,7 @@ fn read_source<A: Asks + ?Sized>(
     g.list(&[forms])
 }
 fn finish_source<A: Asks + ?Sized>(
-    g: &mut Interpreter<'_, '_, A>,
+    g: &mut Call<'_, '_, '_, A>,
     state: &mut Runtime<'_, '_, A>,
     args: &[G],
 ) -> Result<G, Error> {
@@ -351,7 +353,7 @@ fn finish_source<A: Asks + ?Sized>(
 }
 
 fn kind<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<G, Error> {
@@ -399,7 +401,7 @@ fn kind<'a, 'b, A: Asks + ?Sized>(
     g.string(name)
 }
 fn text_of<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<G, Error> {
@@ -459,7 +461,7 @@ fn held_text<T>(g: &Grift<T>, v: &G, out: &mut String) -> Result<(), Error> {
 }
 
 /// `get` of a value that is a record: its field, no server asked.
-fn field_of<T>(g: &mut Grift<T>, record: &G, field: &G) -> Result<Option<G>, Error> {
+fn field_of<T>(g: &mut HostCall<'_, T>, record: &G, field: &G) -> Result<Option<G>, Error> {
     let Some(field_name) = g.as_str(field)?.map(str::to_owned) else {
         return Ok(None);
     };
@@ -504,7 +506,7 @@ fn call_text<T>(g: &Grift<T>, name: &str, args: &[G]) -> String {
 
 /// One word of fux's vocabulary, called from grift.
 pub(super) fn request<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     word: Word,
     args: &[G],
@@ -515,7 +517,7 @@ pub(super) fn request<'a, 'b, A: Asks + ?Sized>(
 }
 
 fn asked<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     word: Word,
     args: &[G],
@@ -546,9 +548,9 @@ fn asked<'a, 'b, A: Asks + ?Sized>(
             && text.parse::<fux_wire::command::LayoutRevision>().is_err()
         {
             let about = g.string("not a layout revision")?;
-            return Err(g.error("bad-value", &[about, revision.clone()]));
+            return Err(g.error("bad-value", &[about, *revision]));
         }
-        let mut rest = nodes.clone();
+        let mut rest = *nodes;
         while let Some((node, tail)) = g.as_pair(&rest)? {
             rest = tail;
             if let Some((axis, _)) = g.as_pair(&node)?
@@ -724,7 +726,7 @@ fn asked<'a, 'b, A: Asks + ?Sized>(
         }
     }
 }
-fn dictionary<A: Asks + ?Sized>(g: &mut Interpreter<'_, '_, A>, args: &[G]) -> Result<G, Error> {
+fn dictionary<A: Asks + ?Sized>(g: &mut Call<'_, '_, '_, A>, args: &[G]) -> Result<G, Error> {
     let program = place(g, PROGRAM)?;
     let words = place(g, WORDS)?;
     let mut entries = Vec::new();
@@ -840,7 +842,7 @@ const BOOKS: [(&str, &str); 2] = [
     ("sessions.grift", include_str!("sessions.grift")),
 ];
 
-fn place<T>(g: &mut Grift<T>, name: &str) -> Result<G, Error> {
+fn place<T>(g: &mut HostCall<'_, T>, name: &str) -> Result<G, Error> {
     let top = g.top_level();
     let symbol = g.symbol(name)?;
     g.lookup(&top, &symbol)?
@@ -849,7 +851,7 @@ fn place<T>(g: &mut Grift<T>, name: &str) -> Result<G, Error> {
 
 /// Library `book`'s source name and text, and its context if it is loaded.
 fn loaded<T>(
-    g: &mut Grift<T>,
+    g: &mut HostCall<'_, T>,
     book: usize,
 ) -> Result<(&'static str, &'static str, Option<G>), Error> {
     let Some(&(name, text)) = BOOKS.get(book) else {
@@ -867,15 +869,15 @@ fn book<'a, 'b, A: Asks + ?Sized>(
     state: &mut Runtime<'a, 'b, A>,
     book: usize,
 ) -> Result<G, Error> {
-    let (name, text, found) = loaded(g, book)?;
+    let (name, text, found) = loaded(&mut HostCall::from(&mut *g), book)?;
     if let Some(found) = found {
         return Ok(found);
     }
     let top = g.top_level();
     let symbol = g.symbol(name)?;
-    let words = place(g, WORDS)?;
+    let words = place(&mut HostCall::from(&mut *g), WORDS)?;
     let context = g.context(Some(&words))?;
-    g.bind(&top, &G::Symbol(symbol), context.clone())?;
+    g.bind(&top, &G::Symbol(symbol), context)?;
     g.evaluate_library_in(state, &context, name, text)?;
     Ok(context)
 }
@@ -890,7 +892,7 @@ const LOADED: &str = "native-library-loaded";
 /// do: the run parks for it (`LOAD`), and then calls this word again
 /// (`LOADED`).
 fn library<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     index: usize,
     name: &str,
@@ -927,14 +929,14 @@ fn library<'a, 'b, A: Asks + ?Sized>(
 /// `(native-load-library book)`: parks the run, for its host to load
 /// library `book` (`evaluate`).
 fn load_library<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     _: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<Answer, Error> {
     let [book @ G::Integer(_)] = args else {
         return Err(g.error("type-error", args));
     };
-    Ok(Answer::Later(book.clone()))
+    Ok(Answer::Later(*book))
 }
 
 /// `(native-library-loaded word arguments stopped loaded)`: calls `word`
@@ -943,7 +945,7 @@ fn load_library<'a, 'b, A: Asks + ?Sized>(
 /// run of grift's, so it ends this one here, as the first step of a run
 /// ends one that came before it.
 fn library_loaded<'a, 'b, A: Asks + ?Sized>(
-    g: &mut Interpreter<'a, 'b, A>,
+    g: &mut Call<'_, 'a, 'b, A>,
     state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<Answer, Error> {
@@ -954,7 +956,7 @@ fn library_loaded<'a, 'b, A: Asks + ?Sized>(
         unstopped(g, state.stop)?;
     }
     Ok(Answer::Call {
-        function: function.clone(),
+        function: *function,
         arguments: g.list_items(arguments)?,
         then: None,
     })
@@ -1094,7 +1096,7 @@ pub fn replay_config<'a, 'b, A: Asks + ?Sized>(
     config: &Config,
     defaults: &ClientState,
 ) -> Result<(), Failed> {
-    let program = place(g, PROGRAM).map_err(|e| failed(g, e))?;
+    let program = place(&mut HostCall::from(&mut *g), PROGRAM).map_err(|e| failed(g, e))?;
     let previous = state.host.state.as_deref().cloned();
     if let Some(draft) = state.host.state.as_deref_mut() {
         *draft = defaults.draft();
@@ -1133,8 +1135,10 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
         stop.check()?;
     }
     state.host.file = machine.path.clone();
-    let program = place(g, PROGRAM).map_err(|e| failed(g, e))?;
+    let host = &mut HostCall::from(&mut *g);
+    let program = place(host, PROGRAM).map_err(|e| failed(host, e))?;
     let text = if machine.callback {
+        let g = host;
         let mut args = Vec::new();
         for arg in machine.args.as_deref().unwrap_or_default() {
             let v = callback::value(arg)?;
@@ -1162,6 +1166,7 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
     if let Some(stop) = state.stop {
         stop.listen(None);
     }
+    let g = &mut HostCall::from(&mut *g);
     match result {
         Ok(G::Inert) => Ok(Vec::new()),
         // `fux status`, or `status` at the prompt, names a word and calls
@@ -1298,7 +1303,7 @@ pub(crate) fn from_handle_name(name: &str) -> Option<Fux> {
 /// record a list of `(field value)`, a request `(request! SUBJECT (OPTION
 /// ARGUMENT…)…)`, a code value `(code! FORM)`. A value of a server's keeps
 /// its run; nothing here is encoded, as a person reads it back.
-fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
+fn to_grift<T>(g: &mut HostCall<'_, T>, v: &Value<Fux>) -> Result<G, Error> {
     Ok(match v {
         Value::Float(n) => G::Float(*n),
         Value::Int(n) => G::Integer(*n),
@@ -1369,7 +1374,7 @@ fn to_grift<T>(g: &mut Grift<T>, v: &Value<Fux>) -> Result<G, Error> {
 /// `form` as text, each combination on the line it was written on after
 /// `line`, so a failure deep in a binding names the config's own line.
 fn write_form<T>(
-    g: &mut Grift<T>,
+    g: &mut HostCall<'_, T>,
     stop: Option<&Stop>,
     form: &G,
     out: &mut String,
@@ -1464,11 +1469,11 @@ fn run_of<T>(g: &Grift<T>, fields: &[(String, G)]) -> Result<Option<Run>, Error>
     }
 }
 
-fn from_grift<T>(g: &mut Grift<T>, stop: Option<&Stop>, v: &G) -> Result<Value<Fux>, Error> {
+fn from_grift<T>(g: &mut HostCall<'_, T>, stop: Option<&Stop>, v: &G) -> Result<Value<Fux>, Error> {
     from_grift_at(g, stop, v, fux_wire::callback::DEPTH.saturating_add(1))
 }
 fn from_grift_at<T>(
-    g: &mut Grift<T>,
+    g: &mut HostCall<'_, T>,
     stop: Option<&Stop>,
     v: &G,
     depth: u8,
@@ -1581,7 +1586,7 @@ fn from_grift_at<T>(
 /// `v` as `display` says it: a string or a held answer as its text, a handle
 /// as its id, anything else as data.
 fn write_display<T>(
-    g: &mut Grift<T>,
+    g: &mut HostCall<'_, T>,
     stop: Option<&Stop>,
     v: &G,
     out: &mut String,
@@ -1639,7 +1644,11 @@ impl std::fmt::Write for Unstopped<'_> {
 
 /// The value `v`, what a job ended with, is said as. Its run is over, so a
 /// stop reaches this through `stop` alone.
-fn output_value<T>(g: &mut Grift<T>, stop: Option<&Stop>, v: &G) -> Result<Value<Fux>, Error> {
+fn output_value<T>(
+    g: &mut HostCall<'_, T>,
+    stop: Option<&Stop>,
+    v: &G,
+) -> Result<Value<Fux>, Error> {
     if matches!(
         v,
         G::Integer(_) | G::Boolean(_) | G::String(_) | G::Float(_) | G::Bytes(_) | G::Symbol(_)

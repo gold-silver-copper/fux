@@ -1456,9 +1456,9 @@ impl Call {
             if !(0..=86400).contains(&seconds) {
                 return None;
             }
-            target.clone()
+            *target
         } else {
-            target.clone()
+            *target
         };
         let changed = form(&g, &target, "changed")?;
         let [seen] = changed.as_slice() else {
@@ -2137,7 +2137,7 @@ impl Json {
     fn grift(text: &str, most: usize) -> Result<Json, String> {
         use grift::{Grift, Value};
         fn items(g: &Grift, value: &Value, most: usize) -> Result<Vec<Value>, String> {
-            let mut tail = value.clone();
+            let mut tail = *value;
             let mut out = Vec::new();
             while let Some((head, next)) = g.as_pair(&tail).map_err(|_| "invalid grift pair")? {
                 if out.len() >= most {
