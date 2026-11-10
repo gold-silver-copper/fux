@@ -1131,7 +1131,6 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
 ) -> Result<Vec<Value<Fux>>, Failed> {
     if let Some(stop) = state.stop {
         stop.check()?;
-        stop.listen(Some(g.interrupter()));
     }
     state.host.file = machine.path.clone();
     let program = place(g, PROGRAM).map_err(|e| failed(g, e))?;
@@ -1156,6 +1155,9 @@ pub fn evaluate_job<'a, 'b, A: Asks + ?Sized>(
     };
     // Inside the run: grift drops a stop that comes between runs.
     let source = format!("(native-check-stop) {text}");
+    // Taken only now: binding the arguments is a run of its own, which a
+    // stop must not reach instead of the callback's.
+    listen(g, state);
     let result = evaluate(g, state, &program, &machine.name, &source);
     if let Some(stop) = state.stop {
         stop.listen(None);
