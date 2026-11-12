@@ -1,7 +1,7 @@
 //! Grift evaluates policy; native calls marshal into the existing request vocabulary.
 use super::*;
 use fux_wire::command::Percent;
-use grift::{Answer, Error, Grift, HostCall, Ran, Value as G};
+use grift::{Answer, Error, Grift, HostCall, Kind, Ran, Value as G};
 
 #[derive(Clone, Debug)]
 pub struct Machine {
@@ -90,8 +90,8 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
     let kind = g.symbol_name(&e.kind).unwrap_or("fail");
     // Text that didn't read: grift's values are its reason, line, column
     // and source, a symbol, which the place names instead.
-    let unread = match (kind, e.values.as_slice()) {
-        ("parse-error", [_, G::Integer(line), _, G::Symbol(source)]) => g
+    let unread = match (e.grift_kind(), e.values.as_slice()) {
+        (Some(Kind::ParseError), [_, G::Integer(line), _, G::Symbol(source)]) => g
             .symbol_name(source)
             .ok()
             .map(|source| format!("{source}:{line}")),
@@ -128,15 +128,12 @@ pub(super) fn failed<T>(g: &Grift<T>, e: Error) -> Failed {
 /// put before it doesn't count in a column, and a name alone, of which grift
 /// keeps no position, is found by the first lines that read to hold it.
 fn failed_in<T>(g: &mut HostCall<'_, T>, e: Error, name: &str, text: &str) -> Failed {
-    let unread = g
-        .symbol_name(&e.kind)
-        .is_ok_and(|kind| kind == "parse-error");
+    let unread = e.grift_kind() == Some(Kind::ParseError);
     let e = (unread.then(|| g.read_in(name, text).err()).flatten()).unwrap_or(e);
+    let unbound = e.grift_kind() == Some(Kind::UnboundSymbol);
     let bare = e.values.first().cloned();
     let mut failed = failed(g, e);
-    if let (None, Some("unbound-symbol"), Some(G::Symbol(symbol))) =
-        (&failed.place, failed.kind.as_deref(), bare)
-    {
+    if let (None, true, Some(G::Symbol(symbol))) = (&failed.place, unbound, bare) {
         let word = g.symbol_name(&symbol).unwrap_or_default().to_owned();
         let symbol = G::Symbol(symbol);
         let ends = text.match_indices('\n').map(|(end, _)| end);
@@ -247,7 +244,7 @@ fn word<T>(g: &mut HostCall<'_, T>, name: &str) -> Result<G, Error> {
     let words = place(g, WORDS)?;
     let symbol = g.symbol(name)?;
     g.lookup(&words, &symbol)?
-        .ok_or_else(|| g.error("unbound-symbol", &[G::Symbol(symbol)]))
+        .ok_or_else(|| g.error(Kind::UnboundSymbol, &[G::Symbol(symbol)]))
 }
 
 /// A walk's check, at each part of a value: a walk has no step of grift's, so
@@ -307,8 +304,9 @@ fn read_source<A: Asks + ?Sized>(
     args: &[G],
 ) -> Result<G, Error> {
     let [path, once] = g.exactly(args)?;
-    let path = g.as_str(path)?.map(str::to_owned);
-    let path = path.ok_or_else(|| g.error("type-error", args))?;
+    let Some(path) = g.as_str(path)?.map(str::to_owned) else {
+        return Err(g.type_error(*path));
+    };
     let file = state
         .host
         .files
@@ -697,10 +695,7 @@ fn asked<'a, 'b, A: Asks + ?Sized>(
             }
             if matches!(what, Local::Shell(Shell::Exit(_))) {
                 // A limit: no handler catches it, and every cleanup runs.
-                return Err(Error {
-                    limit: true,
-                    ..g.error("exit", &[])
-                });
+                return Err(g.limit("exit", &[]));
             }
         }
     }
@@ -810,7 +805,7 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Call<'_, '_, '_, A>, args: &[G]) -> Resu
         entries.push(g.list(&record)?);
     }
     if wanted.is_some() {
-        entries.pop().ok_or_else(|| g.error("unbound-symbol", args))
+        entries.pop().ok_or_else(|| g.error(Kind::UnboundSymbol, args))
     } else {
         g.list(&entries)
     }
@@ -836,7 +831,7 @@ fn place<T>(g: &mut HostCall<'_, T>, name: &str) -> Result<G, Error> {
     let top = g.top_level();
     let symbol = g.symbol(name)?;
     g.lookup(&top, &symbol)?
-        .ok_or_else(|| g.error("unbound-symbol", &[G::Symbol(symbol)]))
+        .ok_or_else(|| g.error(Kind::UnboundSymbol, &[G::Symbol(symbol)]))
 }
 
 /// Library `book`'s source name and text, and its context if it is loaded.
@@ -845,11 +840,19 @@ fn loaded<T>(
     book: usize,
 ) -> Result<(&'static str, &'static str, Option<G>), Error> {
     let Some(&(name, text)) = BOOKS.get(book) else {
-        return Err(g.error("unbound-symbol", &[]));
+        return Err(no_book(g, book));
     };
     let top = g.top_level();
     let symbol = g.symbol(name)?;
     Ok((name, text, g.lookup(&top, &symbol)?))
+}
+
+/// The range-error of a library number fux has no library for, carrying it.
+fn no_book<T>(g: &mut HostCall<'_, T>, book: usize) -> Error {
+    match i64::try_from(book) {
+        Ok(book) => g.error(Kind::RangeError, &[G::Integer(book)]),
+        Err(_) => g.error(Kind::RangeError, &[]),
+    }
 }
 
 /// The context of library `book`, which is evaluated here the first time:
@@ -889,7 +892,7 @@ fn library<'a, 'b, A: Asks + ?Sized>(
     args: &[G],
 ) -> Result<Answer, Error> {
     let Some(context) = loaded(g, index)?.2 else {
-        let book = i64::try_from(index).map_err(|_| g.error("unbound-symbol", &[]))?;
+        let book = i64::try_from(index).map_err(|_| no_book(g, index))?;
         let again = vec![
             word(g, name)?,
             g.list(args)?,
@@ -907,7 +910,7 @@ fn library<'a, 'b, A: Asks + ?Sized>(
         false => None,
     };
     let Some(f) = found else {
-        return Err(g.error("unbound-symbol", &[G::Symbol(symbol)]));
+        return Err(g.error(Kind::UnboundSymbol, &[G::Symbol(symbol)]));
     };
     Ok(Answer::Call {
         function: f,
@@ -923,9 +926,13 @@ fn load_library<'a, 'b, A: Asks + ?Sized>(
     _: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<Answer, Error> {
-    let [book @ G::Integer(_)] = args else {
-        return Err(g.error("type-error", args));
+    let [book] = g.exactly(args)?;
+    let G::Integer(index) = book else {
+        return Err(g.type_error(*book));
     };
+    if !usize::try_from(*index).is_ok_and(|index| index < BOOKS.len()) {
+        return Err(g.error(Kind::RangeError, &[*book]));
+    }
     Ok(Answer::Later(*book))
 }
 
@@ -939,8 +946,9 @@ fn library_loaded<'a, 'b, A: Asks + ?Sized>(
     state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<Answer, Error> {
-    let [function, arguments, G::Boolean(stopped), _] = args else {
-        return Err(g.error("type-error", args));
+    let [function, arguments, stopped, _] = g.exactly(args)?;
+    let G::Boolean(stopped) = stopped else {
+        return Err(g.type_error(*stopped));
     };
     if !stopped {
         unstopped(g, state.stop)?;
@@ -1318,7 +1326,10 @@ fn to_grift<T>(g: &mut HostCall<'_, T>, v: &Value<Fux>) -> Result<G, Error> {
                 .list_items(&forms)?
                 .into_iter()
                 .next()
-                .ok_or_else(|| g.error("parse-error", &[]))?;
+                .ok_or_else(|| {
+                    let why = format!("code holds no form: {:?}", code.source);
+                    failure(g, Failure::new(Code::BadValue, why))
+                })?;
             let tag = g.symbol(CODE)?;
             g.list(&[G::Symbol(tag), form])?
         }
@@ -1568,7 +1579,7 @@ fn from_grift_at<T>(
             record::from_fields(fields, None).map_err(|f| failure(g, f))?
         }
         G::Inert | G::Ignore | G::Operative(_) | G::Applicative(_) => {
-            return Err(g.error("type-error", std::slice::from_ref(v)));
+            return Err(g.type_error(*v));
         }
     })
 }
