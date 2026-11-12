@@ -1219,6 +1219,23 @@ fn a_request_read_back_takes_what_its_words_take() {
     }
 }
 
+/// A word's wrong count is the arity-error a primitive's is: its one value
+/// the arguments as a list.
+#[test]
+fn a_words_wrong_count_fails_as_a_primitives_does() -> Result<(), Box<dyn std::error::Error>> {
+    let caught = |call: &str| {
+        let source = format!("(catch! {call} e (evaluate-in! values e))");
+        let values =
+            evaluate(&source, None, &mut NoRequests, &mut Vec::new()).map_err(|f| f.message)?;
+        values
+            .iter()
+            .map(|v| v.text().map_err(|f| f.message))
+            .collect::<Result<Vec<_>, _>>()
+    };
+    assert_eq!(caught("(string 1 2)")?, caught("(first 1 2)")?);
+    Ok(())
+}
+
 /// A stop as a program's thread sees it, held up `at` a step of it. With
 /// `word` it comes as the program's first word begins; else as the program
 /// first prints. Says how many requests reached the server, what the run

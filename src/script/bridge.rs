@@ -296,9 +296,7 @@ fn data_text<A: Asks + ?Sized>(
     _: &mut Runtime<'_, '_, A>,
     args: &[G],
 ) -> Result<G, Error> {
-    let [value] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [value] = g.exactly(args)?;
     let mut text = String::new();
     g.write(value, &mut text)?;
     g.string(&text)
@@ -308,9 +306,7 @@ fn read_source<A: Asks + ?Sized>(
     state: &mut Runtime<'_, '_, A>,
     args: &[G],
 ) -> Result<G, Error> {
-    let [path, once] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [path, once] = g.exactly(args)?;
     let path = g.as_str(path)?.map(str::to_owned);
     let path = path.ok_or_else(|| g.error("type-error", args))?;
     let file = state
@@ -344,9 +340,7 @@ fn finish_source<A: Asks + ?Sized>(
     state: &mut Runtime<'_, '_, A>,
     args: &[G],
 ) -> Result<G, Error> {
-    if !args.is_empty() {
-        return Err(g.error("arity-error", args));
-    }
+    g.exactly::<0>(args)?;
     state.host.file = state.host.files.parents.pop().flatten();
     state.host.files.loading.pop();
     Ok(G::Inert)
@@ -357,9 +351,7 @@ fn kind<'a, 'b, A: Asks + ?Sized>(
     state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<G, Error> {
-    let [v] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [v] = g.exactly(args)?;
     let kind = match v {
         G::Context(_) => Some("context"),
         G::Operative(_) => Some("operative"),
@@ -405,9 +397,7 @@ fn text_of<'a, 'b, A: Asks + ?Sized>(
     state: &mut Runtime<'a, 'b, A>,
     args: &[G],
 ) -> Result<G, Error> {
-    let [v] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [v] = g.exactly(args)?;
     if held_kind(g, v)?.is_some() {
         let mut text = String::new();
         held_text(g, v, &mut text)?;
@@ -529,7 +519,7 @@ fn asked<'a, 'b, A: Asks + ?Sized>(
         .split_once("--")
         .map_or(0, |(s, _)| s.split_whitespace().count());
     if args.len() != takes {
-        return Err(g.error("arity-error", args));
+        return Err(g.arity_error(args));
     }
     if matches!(word, Word::Act(Act::Word | Act::Dictionary)) {
         return dictionary(g, args);
@@ -733,7 +723,7 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Call<'_, '_, '_, A>, args: &[G]) -> Resu
     let wanted = match args {
         [] => None,
         [v] => g.as_str(v)?.map(str::to_owned),
-        _ => return Err(g.error("arity-error", args)),
+        _ => return Err(g.arity_error(args)),
     };
     let built_in = g.symbol("built-in-names")?;
     let built_in = g.lookup(&words, &built_in)?.unwrap_or(G::EmptyList);

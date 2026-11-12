@@ -55,9 +55,9 @@ dependencies = [
 
 [[package]]
 name = "grift"
-version = "4.0.0"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a678beb166986aba869b4e2bd1ad97725127dbdb999e9c15e106aa5cdead7273"
+checksum = "6d872e75a956a0c8276c23c45ed05684bedf05ca4c0482c5b4abfaf3c72d6270"
 
 [[package]]
 name = "libc"
