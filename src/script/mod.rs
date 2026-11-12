@@ -710,7 +710,7 @@ impl Stop {
     pub fn stop(&self) {
         let again = self.flag.swap(true, Ordering::SeqCst);
         let mut reach = self.reach();
-        if let Some(stop) = reach.interrupt.as_mut() {
+        if let Some(stop) = reach.interrupt.as_ref() {
             let _ = if again { stop.force() } else { stop.stop() };
         }
         #[cfg(test)]
