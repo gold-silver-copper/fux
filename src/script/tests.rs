@@ -1236,6 +1236,72 @@ fn a_words_wrong_count_fails_as_a_primitives_does() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+/// fux's own host functions fail as a primitive does: a wrong count is an
+/// arity-error, a wrong type a type-error carrying the one value of the
+/// wrong type, and a library number fux has no library for a range-error
+/// carrying that number.
+#[test]
+fn host_functions_fail_as_primitives_do() -> Result<(), Box<dyn std::error::Error>> {
+    let caught = |call: &str| {
+        let source = format!("(catch! {call} e (evaluate-in! values e))");
+        let values =
+            evaluate(&source, None, &mut NoRequests, &mut Vec::new()).map_err(|f| f.message)?;
+        values
+            .iter()
+            .map(|v| v.text().map_err(|f| f.message))
+            .collect::<Result<Vec<_>, String>>()
+            .map(|texts| texts.concat())
+    };
+    assert_eq!(caught("(native-load-library 1 2)")?, caught("(first 1 2)")?);
+    assert_eq!(caught("(native-load-library)")?, caught("(first)")?);
+    assert_eq!(caught(r#"(read-source 1 #false)"#)?, caught("(first 1)")?);
+    assert_eq!(caught("(native-load-library 99)")?, "(99)");
+    let kind = |call: &str| {
+        let failed = evaluate(call, None, &mut NoRequests, &mut Vec::new()).err();
+        failed.and_then(|f| f.kind)
+    };
+    assert_eq!(
+        kind("(native-load-library)").as_deref(),
+        Some("arity-error")
+    );
+    assert_eq!(
+        kind("(read-source 1 #false)").as_deref(),
+        Some("type-error")
+    );
+    assert_eq!(
+        kind("(native-load-library 99)").as_deref(),
+        Some("range-error")
+    );
+    assert_eq!(
+        kind("(native-load-library -1)").as_deref(),
+        Some("range-error")
+    );
+    Ok(())
+}
+
+/// A code value that holds no form is a bad value, as one that doesn't
+/// read is where fux takes one in, and no parse error with nothing to say.
+#[test]
+fn a_code_value_with_no_form_is_a_bad_value() -> TestResult {
+    let program = crate::screens::Program::Code(fux_wire::callback::Code {
+        source: "(lambda! (c) c)".into(),
+        place: None,
+    });
+    let empty = fux_wire::callback::Code {
+        source: String::new(),
+        place: None,
+    };
+    let args = [fux_wire::callback::Data::Code(empty)];
+    let mut machine = callback_machine(None, &program, Some(&args), None)?;
+    let mut out = Vec::new();
+    let mut host = Host::new(Context::default(), None, &mut out);
+    let failed = run(&mut machine, &mut host, &mut NoRequests, None)
+        .err()
+        .ok_or("the callback ran")?;
+    assert_eq!(failed.code, Code::BadValue, "{failed}");
+    Ok(())
+}
+
 /// A stop as a program's thread sees it, held up `at` a step of it. With
 /// `word` it comes as the program's first word begins; else as the program
 /// first prints. Says how many requests reached the server, what the run
