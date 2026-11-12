@@ -1260,10 +1260,22 @@ fn host_functions_fail_as_primitives_do() -> Result<(), Box<dyn std::error::Erro
         let failed = evaluate(call, None, &mut NoRequests, &mut Vec::new()).err();
         failed.and_then(|f| f.kind)
     };
-    assert_eq!(kind("(native-load-library)").as_deref(), Some("arity-error"));
-    assert_eq!(kind("(read-source 1 #false)").as_deref(), Some("type-error"));
-    assert_eq!(kind("(native-load-library 99)").as_deref(), Some("range-error"));
-    assert_eq!(kind("(native-load-library -1)").as_deref(), Some("range-error"));
+    assert_eq!(
+        kind("(native-load-library)").as_deref(),
+        Some("arity-error")
+    );
+    assert_eq!(
+        kind("(read-source 1 #false)").as_deref(),
+        Some("type-error")
+    );
+    assert_eq!(
+        kind("(native-load-library 99)").as_deref(),
+        Some("range-error")
+    );
+    assert_eq!(
+        kind("(native-load-library -1)").as_deref(),
+        Some("range-error")
+    );
     Ok(())
 }
 

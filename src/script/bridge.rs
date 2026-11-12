@@ -805,7 +805,9 @@ fn dictionary<A: Asks + ?Sized>(g: &mut Call<'_, '_, '_, A>, args: &[G]) -> Resu
         entries.push(g.list(&record)?);
     }
     if wanted.is_some() {
-        entries.pop().ok_or_else(|| g.error(Kind::UnboundSymbol, args))
+        entries
+            .pop()
+            .ok_or_else(|| g.error(Kind::UnboundSymbol, args))
     } else {
         g.list(&entries)
     }
@@ -1322,14 +1324,10 @@ fn to_grift<T>(g: &mut HostCall<'_, T>, v: &Value<Fux>) -> Result<G, Error> {
                 Some(place) => g.read_in(&place.file, &on_its_line(&code.source, place.line))?,
                 None => g.read(&code.source)?,
             };
-            let form = g
-                .list_items(&forms)?
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    let why = format!("code holds no form: {:?}", code.source);
-                    failure(g, Failure::new(Code::BadValue, why))
-                })?;
+            let form = g.list_items(&forms)?.into_iter().next().ok_or_else(|| {
+                let why = format!("code holds no form: {:?}", code.source);
+                failure(g, Failure::new(Code::BadValue, why))
+            })?;
             let tag = g.symbol(CODE)?;
             g.list(&[G::Symbol(tag), form])?
         }
