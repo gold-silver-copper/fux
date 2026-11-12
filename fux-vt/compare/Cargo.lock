@@ -700,9 +700,9 @@ dependencies = [
 
 [[package]]
 name = "grift"
-version = "5.0.0"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d872e75a956a0c8276c23c45ed05684bedf05ca4c0482c5b4abfaf3c72d6270"
+checksum = "6bc9777d6c0a10f85773dfe5e6762cd9b6899af3f8e504ee03081c8c3b5bea49"
 
 [[package]]
 name = "half"
