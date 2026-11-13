@@ -175,8 +175,8 @@ of a tab in the snapshot: `stack`, `current` and `last` index that tab's `nodes`
 
 `(all)` includes every root and view. A workspace includes its descendants, the workspaces in it at
 any depth with theirs, and views showing any of them; a tab includes its whole tab and parent
-workspace reference. Pane facts include only that pane's facts, with its tab topology and relevant
-views; pane topology and recipe include its whole tab. A client includes that client and its current
+workspace reference. A pane includes that pane alone, in every projection: its tab as far as the
+pane is in it (the tab's `nodes`, the pane alone), and relevant views. A client includes that client and its current
 workspace closure. Missing explicit scopes fail.
 
 `cursor` is the journal cursor `SEQUENCE:RUN`, gathered with the hierarchy in one server turn. A
@@ -342,7 +342,7 @@ its pane closed. Uncaught, it ends the program with that status, stdout getting 
 why on stderr; nothing after it runs. Caught by `catch-kind!`, the failure's `values` hold the message
 and then the answer:
 
-```grift
+```grift not run: it needs a pane 3 that does not change
 (catch-kind! (wait (timeout (changed (capture (pane 3))) 5)) timeout failure
   (second (get failure "values")))
 ```

@@ -5,7 +5,17 @@ answer[closed][closed-answer]: kind pane status text
 answer[ended][answer]: kind pane version respawns screen bells done ended status changed exited signal text
 answer[timed_out][answer]: kind pane version respawns screen bells done ended status text
 capture[client][client-capture]: kind client screen-rows screen-columns screen-cursor lines run
+capture[pane].cell: width height
+capture[pane].last-output: start end
+capture[pane].launch.directory: encoding text
+capture[pane].launch: choice directory
+capture[pane].links[]: row column length uri
+capture[pane].lost: copies-cut copies-not-text pictures memory
+capture[pane].pictures[]: row column rows cropped columns width height
+capture[pane].program: pane generation arguments process-id state exited signal read-error input-unread foreground-group
+capture[pane].styles[][]: column length fg bg bold inverse hidden dim italic strikeout underline blink
 capture[pane][capture]: kind id tab version wrap-pending respawns screen bells done ended name label title rows columns row column program launch alternate-screen mouse-mode mouse-encoding bracketed-paste focus-events application-cursor application-keypad keyboard-flags pictures lost cell cursor-visible history-bytes program-clipboard reflow alternate-scroll-lines picture-bytes history-lines command-running last-status last-output notification truncated input-queued cursor above wrapped-rows links screen-cursor lines styles changed-rows text run
+dictionary[]: name provenance effect documentation definition codes
 events.events[].origin[client]: kind client
 events.events[].origin[outside]: kind
 events.events[].origin[pane]: kind pane generation
@@ -108,3 +118,4 @@ snapshot.topology.tabs[]: id workspace name label fit columns rows host nodes la
 snapshot.topology.workspaces[]: id parent name label children
 snapshot.topology: run cursor scope projection workspaces tabs panes clients
 status: socket release protocol server-release server-protocol server-process-id compatible
+word: name provenance effect documentation definition codes
