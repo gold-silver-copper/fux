@@ -256,7 +256,9 @@ reads each line whole, so it may begin above the range. `links` holds a run of c
 one hyperlink (OSC 8) each, of the columns read: on row `row`, numbered as `rows` counts rows (the
 screen's rows, without `history` or `rows`), from column `column` (the row's own, counted from 0),
 `length` cells long, its target `uri`; a link that wraps has a run on each row. A link's text is what
-the screen shows; its `uri` is not.
+the screen shows; its `uri` is not. A URI with a byte outside printable ASCII (a raw `café`), over
+2083 bytes, or with an id over 250, links nothing: its text shows unlinked. A program percent-encodes
+such bytes, each UTF-8 byte as `%XX` (`caf%C3%A9`), and the text may stay Unicode.
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped` (each screen row a line).
 Blanks at a line's end are trimmed, but with `styles` those painted (a background, reverse video,
