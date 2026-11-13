@@ -718,36 +718,99 @@ fn a_connection_ends_with_its_server_though_its_client_reads_nothing() -> Outcom
 }
 
 /// 13a. A client gone while its request waits (killed, Ctrl-C, a timeout)
-///      ends its connection's process, and so the wait, whatever it waited
-///      for: a pane to change, text to show, a pane to go quiet, or events.
+///      ends its connection's process, and so the wait, whether it waited
+///      for a pane to change, for events, or behind an attached client's
+///      frames. The client is the test's own, so that its request is known
+///      sent before it goes: sent, it is taken and waits whenever its end
+///      is read, which comes after it.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_client_gone_while_its_request_waits_ends_its_connection() -> Outcome {
+    use fux_wire::command::{Limit, Request, Since, Wait};
+    use fux_wire::protocol::{
+        Asked, Context, Decoder, Fence, Frame, Greeting, Hello, PROTOCOL, Role,
+    };
+    use std::io::{Read, Write};
     let server = Server::start("")?;
     let pid = server_pid(&server)?;
-    let seen = server.version("%1")?;
-    for wait in [
-        format!("(wait (changed {}))", fux::script::quoted(&seen)),
-        r#"(shows (pane 1) "never shown" 3600)"#.to_owned(),
-        "(quiet (pane 1) 3600)".to_owned(),
-        r#"(events (pane 1) "")"#.to_owned(),
+    // Its shell's prompt shown, the pane changes no more: the wait waits.
+    let mut attached = server.attach(10, 40)?;
+    attached.wait_for("$")?;
+    let seen: fux_wire::command::Version =
+        (server.version("%1")?.parse()).map_err(|()| "its version")?;
+    // Behind more frames than the attached client ever sends.
+    let fence = Fence {
+        run: seen.run,
+        client: (attached.id.as_deref().ok_or("its id")?)
+            .parse()
+            .map_err(e)?,
+        frames: u64::MAX,
+    };
+    let listing = fux_wire::command::Command::Inspect {
+        scope: fux_wire::inspect::Scope::All,
+        projection: fux_wire::inspect::Projection::Facts,
+    };
+    for (after, request) in [
+        (
+            None,
+            Request::Wait(Wait {
+                since: Since::Version(seen),
+                timeout: None,
+            }),
+        ),
+        (
+            None,
+            Request::NextEvents {
+                scope: fux_wire::inspect::Scope::All,
+                from: None,
+                timeout: Limit::from_secs(3600),
+            },
+        ),
+        (Some(fence), listing.into()),
     ] {
         let before = connections(pid);
-        let mut client = started(&server, &[&wait])?;
+        let mut client = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+        client.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+        let hello = Hello {
+            protocol: PROTOCOL,
+            version: "0".into(),
+            role: Role::Command,
+        };
+        client.write_all(&hello.encode()).map_err(e)?;
+        // Greeted, its connection's process has it.
+        let (mut decoder, mut buffer) = (Decoder::default(), [0u8; 4096]);
+        while decoder.frame::<Greeting>().map_err(e)?.is_none() {
+            let n = client.read(&mut buffer).map_err(e)?;
+            assert!(n > 0, "no greeting");
+            decoder.push(buffer.get(..n).unwrap_or_default());
+        }
         let mut conn = None;
         eventually("its connection", || {
             conn = (connections(pid).into_iter()).find(|conn| !before.contains(conn));
             Ok(conn.is_some())
         })?;
         let conn = conn.ok_or("its connection")?;
-        // Its request is taken, and waits.
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        assert!(client.try_wait().map_err(e)?.is_none(), "{wait} waits");
-        client.kill().map_err(e)?;
-        client.wait().map_err(e)?;
-        eventually(&format!("{wait}: its connection gone"), || Ok(!alive(conn)))?;
+        let asked = Asked {
+            after,
+            request,
+            context: Context {
+                of: None,
+                cwd: PathBuf::new(),
+                pane: None,
+                server: None,
+                client: None,
+            },
+        };
+        client.write_all(&asked.encode()).map_err(e)?;
+        let waits = format!("{:?} after {after:?}", asked.request);
+        // Gone as a killed client is: its socket closed.
+        drop(client);
+        eventually(&format!("{waits}: its connection gone"), || {
+            Ok(!alive(conn))
+        })?;
     }
     assert!(alive(pid), "the server");
+    drop(attached);
     Ok(())
 }
 

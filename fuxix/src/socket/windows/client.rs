@@ -29,7 +29,7 @@ use windows_sys::Win32::System::Threading::{
 /// What one read takes in.
 const BUFFER: usize = 64 * 1024;
 
-/// How much a client only watched for its end ([`Events::WATCH`]) keeps of
+/// How much a client only watched for its end ([`Events::HUP`] without `IN`) keeps of
 /// what it reads, as `crate::io`'s streams do: past it, that end is told
 /// once it is read.
 const AHEAD: usize = 3 * BUFFER;
@@ -388,7 +388,7 @@ impl Drop for Inner {
 }
 
 impl Sealed for Client {
-    /// Keeps a read in flight for `IN` and for [`Events::WATCH`], with a
+    /// Keeps a read in flight for `IN` and for [`Events::HUP`] alone, with a
     /// wait that wakes the poll as it ends. What a watch's reads bring is
     /// set aside, as a stream's are.
     fn arm(&self, interest: Events) {

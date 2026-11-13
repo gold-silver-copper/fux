@@ -17,10 +17,6 @@ impl Events {
     pub const ERR: Self = Self(libc::POLLERR);
     pub const HUP: Self = Self(libc::POLLHUP);
     pub const NVAL: Self = Self(libc::POLLNVAL);
-    /// What a source not read yet is waited for, to learn of its end: on
-    /// Unix nothing, what `poll` tells unasked. Not `HUP`: macOS's `poll`
-    /// watches a descriptor asked for it, and one asked for nothing not.
-    pub const WATCH: Self = Self::NONE;
 
     /// Whether any event of `other` is here.
     pub fn intersects(self, other: Self) -> bool {

@@ -40,7 +40,7 @@ const BUFFER: usize = 64 * 1024;
 /// poll from its timeout.
 const EMPTY_READS: usize = 16;
 
-/// How much a stream only watched for its end ([`Events::WATCH`]) keeps of
+/// How much a stream only watched for its end ([`Events::HUP`] without `IN`) keeps of
 /// what it reads, to read on to that end. A peer that wrote past it and
 /// more than its pipe holds is read no further until it is read: that end
 /// is told then, as a peer blocked on a full Unix socket has not ended.
@@ -352,7 +352,7 @@ impl Stream {
 }
 
 impl Sealed for Stream {
-    /// Keeps a read in flight for `IN`, and for [`Events::WATCH`] too: a
+    /// Keeps a read in flight for `IN`, and for [`Events::HUP`] alone too: a
     /// poll that wants no bytes yet still learns that the other end went,
     /// which only a read that ends tells. What such a poll's reads bring
     /// is set aside, [`AHEAD`] at most, for the read that follows; a read

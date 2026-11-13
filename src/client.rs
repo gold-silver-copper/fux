@@ -1583,11 +1583,15 @@ fn attached(
                 .ok_or_else(|| Error::Failed("a program has no attached keyboard".into()))?
                 .dispatch(job, frames)?;
         }
-        // The server's frames only while the terminal has room for them; a
-        // hang-up is told all the same.
+        // The server's frames only while the terminal has room for them.
+        // Not read, only the server's end is to be learned: Windows tells
+        // that of a read kept in flight, which `HUP` and `ERR` ask for;
+        // Unix is asked nothing: Linux tells a hang-up unasked, and macOS
+        // nothing till the terminal has room again.
         let reads = match output.as_ref().is_none_or(|o| o.room()) {
             true => PollFlags::IN,
-            false => PollFlags::WATCH,
+            false if cfg!(windows) => PollFlags::HUP | PollFlags::ERR,
+            false => PollFlags::NONE,
         };
         let mut fds = vec![
             PollFd::new(&*stream, reads),

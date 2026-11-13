@@ -24,8 +24,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// The most it reads from its client before it looks at its server.
+/// The most it reads from its client before it looks at its server, and
+/// the most it holds of what its client sent ahead of its stage.
 const READ: usize = 256 * 1024;
+/// What a client that sent that much ahead is told as it is refused.
+const AHEAD: &str = "more than 256 KiB sent before the last request was answered: \
+                     a request is sent once the one before it is answered";
 /// The least time between two paints for a client, as a flood is painted.
 /// A keystroke's echo (`Clock::echo`) and panes gone quiet (`QUIET`) are
 /// painted sooner.
@@ -925,6 +929,18 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 }
             }
         }
+        // Whether its stage takes its client's frames now. What it doesn't
+        // take yet is held, `READ` at most: a client that sent that much
+        // ahead is refused: told why (`AHEAD`), and from then on a client
+        // gone, which its server ends. So its client is read at every
+        // stage, and its end is always heard.
+        let takes = !shut && !matches!(want, Want::Answer | Want::Nothing);
+        if !(ended || shut || closing || takes) && decoder.buffered() >= READ {
+            out.push_with(|frames| fux_wire::protocol::ToCommand::Exit(AHEAD).encode_into(frames));
+            decoder = Decoder::default();
+            link.send(&FromConn::Shut);
+            (ended, told_shut) = (true, true);
+        }
         // Its client sends no more: said once what it sent is taken, or
         // can't be, a frame left whole for its stage or a part of one.
         let taken = decoder.buffered() == 0 || !decoder.ready().unwrap_or(true);
@@ -961,11 +977,9 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         if link.flush().is_err() {
             return Ok(());
         }
-        let reads = !shut && !ended && !matches!(want, Want::Answer | Want::Nothing);
-        // Its client is listened to whatever its stage, to hear its end:
-        // what a stage does not take yet is held, `READ` at most, and past
-        // that only a hang-up is heard (`Events::WATCH`).
-        let listens = !ended && (reads || decoder.buffered() < READ);
+        // Its client is read whatever its stage, to hear its end, till it
+        // ended or its connection does.
+        let listens = !(ended || shut || closing);
         let wake = composer.due(out.is_empty());
         // An errand with no link left to wait on goes on at once.
         let timeout = match errands.iter().any(|errand| errand.links().is_empty()) {
@@ -973,17 +987,16 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             false => wake.map(|at| at.saturating_duration_since(now)),
         };
         let mut fds = poll.list();
-        let mut theirs = match (ended, listens) {
-            (true, _) => Events::NONE,
-            (false, true) => Events::IN,
-            (false, false) => Events::WATCH,
+        let mut theirs = match listens {
+            true => Events::IN,
+            false => Events::NONE,
         };
         if !out.is_empty() {
             theirs |= Events::OUT;
         }
-        // Its end heard and nothing left to write it, its client is waited
+        // Read no more and nothing left to write it, its client is waited
         // on no more: a hang-up, told unasked, would wake every wait.
-        let watched = !ended || !out.is_empty();
+        let watched = !theirs.is_empty();
         if watched {
             fds.push(PollFd::new(&client, theirs));
         }
@@ -1032,18 +1045,24 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         let ready: Vec<Events> = fds.revents().collect();
         let now = Instant::now();
         // A client is read to its end whatever its stage, so that its
-        // server is told (`Shut`); one that hung up, though more is held of
-        // it than its stage takes: what is left of it is no more than its
-        // socket held.
+        // server is told (`Shut`): as much at once as `READ` for a stage
+        // that takes its frames, and for one that doesn't no more than
+        // brings what is held to `READ`.
         let client_ready = match watched {
             true => ready.first().copied().unwrap_or(Events::NONE),
             false => Events::NONE,
         };
-        let hung_up = client_ready.intersects(Events::HUP | Events::ERR);
-        if !ended && (listens && !client_ready.is_empty() || hung_up) {
+        if listens && !client_ready.is_empty() {
+            let room = match takes {
+                true => READ,
+                false => READ.saturating_sub(decoder.buffered()),
+            };
             let mut read = 0usize;
-            while read < READ {
-                match fuxix::io::read(&client, &mut buffer) {
+            while read < room {
+                let into = buffer
+                    .get_mut(..room.saturating_sub(read))
+                    .unwrap_or_default();
+                match fuxix::io::read(&client, into) {
                     Ok(n) if n > 0 => {
                         read = read.saturating_add(n);
                         decoder.push(buffer.get(..n).unwrap_or_default());
@@ -1302,15 +1321,20 @@ mod tests {
         Ok(())
     }
 
-    /// A client gone while its request waits for its answer is told its
-    /// server (`Shut`), whatever the request waits for there, whether it
-    /// closed or only shut its side: so the wait ends with it.
+    /// A client whose request waits for its answer, which its server never
+    /// gives: its end of its socket, its server's end of its process's
+    /// link, and its process.
     #[cfg(unix)]
-    #[test]
-    fn a_client_gone_while_its_request_waits_is_told_its_server() -> Result<(), String> {
-        use crate::link::{End, Expect, FromConn, Read, ToConn};
+    type Waits = (
+        std::os::unix::net::UnixStream,
+        crate::link::End,
+        std::thread::JoinHandle<Result<(), String>>,
+    );
+
+    #[cfg(unix)]
+    fn waiting() -> Result<Waits, String> {
+        use crate::link::{End, Expect, FromConn, ToConn};
         use fux_wire::protocol::{Asked, Frame, Hello, PROTOCOL, Role};
-        use fuxix::poll::{Events, PollFd};
         use std::io::Write;
         use std::os::unix::net::UnixStream;
         let e = |error: std::io::Error| error.to_string();
@@ -1334,49 +1358,100 @@ mod tests {
                 client: None,
             },
         };
-        for closes in [true, false] {
-            let (client, mut theirs) = UnixStream::pair().map_err(e)?;
-            let (server, link) = UnixStream::pair().map_err(e)?;
-            let mut server = End::new(server).map_err(e)?;
-            let link = End::new(link).map_err(e)?;
-            let conn = std::thread::spawn(move || super::serve(client, link, Vec::new()));
-            // What its process says next, given long enough.
-            let next = |server: &mut End| -> Result<FromConn, String> {
-                let mut buffer = [0u8; 4096];
-                loop {
-                    if let Some(said) = server.next_message().map_err(|e| e.to_string())? {
-                        return Ok(said);
-                    }
-                    let mut fds = [PollFd::new(&server.stream, Events::IN)];
-                    let ready = fuxix::poll::poll(&mut fds, Some(Duration::from_secs(20)));
-                    if ready == Ok(0) || server.read(&mut buffer) == Read::Closed {
-                        return Err(format!("its process said nothing (closes: {closes})"));
-                    }
-                }
-            };
-            theirs.write_all(&hello.encode()).map_err(e)?;
-            theirs.write_all(&asked.encode()).map_err(e)?;
-            assert!(
-                matches!(next(&mut server)?, FromConn::Frame { .. }),
-                "hello"
-            );
-            server.send(&ToConn::Expect(Expect::Asked));
-            server.flush_all().map_err(|errno| errno.to_string())?;
-            assert!(
-                matches!(next(&mut server)?, FromConn::Frame { .. }),
-                "asked"
-            );
-            // Its request waits from here on: its server answers nothing.
+        let (client, mut theirs) = UnixStream::pair().map_err(e)?;
+        let (server, link) = UnixStream::pair().map_err(e)?;
+        let mut server = End::new(server).map_err(e)?;
+        let link = End::new(link).map_err(e)?;
+        let conn = std::thread::spawn(move || super::serve(client, link, Vec::new()));
+        theirs.write_all(&hello.encode()).map_err(e)?;
+        theirs.write_all(&asked.encode()).map_err(e)?;
+        let hello = said(&mut server)?;
+        assert!(matches!(hello, FromConn::Frame { .. }), "hello");
+        server.send(&ToConn::Expect(Expect::Asked));
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        // Its request waits from here on: its server answers nothing.
+        let asked = said(&mut server)?;
+        assert!(matches!(asked, FromConn::Frame { .. }), "asked");
+        Ok((theirs, server, conn))
+    }
+
+    /// What a connection's process says its server next, given long enough.
+    #[cfg(unix)]
+    fn said(server: &mut crate::link::End) -> Result<crate::link::FromConn, String> {
+        use fuxix::poll::{Events, PollFd};
+        let mut buffer = [0u8; 4096];
+        loop {
+            if let Some(said) = server.next_message().map_err(|e| e.to_string())? {
+                return Ok(said);
+            }
+            let mut fds = [PollFd::new(&server.stream, Events::IN)];
+            let ready = fuxix::poll::poll(&mut fds, Some(Duration::from_secs(20)));
+            if ready == Ok(0) || server.read(&mut buffer) == crate::link::Read::Closed {
+                return Err("its process said nothing".into());
+            }
+        }
+    }
+
+    /// A client gone while its request waits for its answer is told its
+    /// server (`Shut`), whatever the request waits for there, whether it
+    /// closed or only shut its side, and though it sent as much ahead as is
+    /// held of it but a byte: so the wait ends with it.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_gone_while_its_request_waits_is_told_its_server() -> Result<(), String> {
+        use crate::link::FromConn;
+        use std::io::Write;
+        let e = |error: std::io::Error| error.to_string();
+        for (closes, ahead) in [(true, 0), (false, 0), (false, super::READ - 1)] {
+            let (mut theirs, mut server, conn) = waiting()?;
+            theirs.write_all(&vec![0u8; ahead]).map_err(e)?;
             if !closes {
                 theirs.shutdown(std::net::Shutdown::Write).map_err(e)?;
             }
             // One that only shut its side still reads till its wait ended.
             let reading = (!closes).then_some(theirs);
-            let said = next(&mut server);
+            let said = said(&mut server);
             drop((server, reading));
             conn.join().map_err(|_| "its process panicked")??;
-            assert!(matches!(said, Ok(FromConn::Shut)), "{said:?}");
+            assert!(
+                matches!(said, Ok(FromConn::Shut)),
+                "{said:?} (closes: {closes}, ahead: {ahead})"
+            );
         }
+        Ok(())
+    }
+
+    /// A client that sends ahead, while its request waits, as much as is
+    /// held of it is refused: told why (an `Exit`), and its server told it
+    /// is gone, which ends its wait and its process. No more of it is held
+    /// than that.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_that_sends_too_much_ahead_is_refused_and_told_why() -> Result<(), String> {
+        use crate::link::FromConn;
+        use fux_wire::protocol::ToCommand;
+        use std::io::{Read, Write};
+        let e = |error: std::io::Error| error.to_string();
+        let (mut theirs, mut server, conn) = waiting()?;
+        // More than is held: what is over stays in its socket, unread.
+        theirs
+            .write_all(&vec![0u8; super::READ + 4096])
+            .map_err(e)?;
+        let said = said(&mut server);
+        assert!(matches!(said, Ok(FromConn::Shut)), "{said:?}");
+        drop(server);
+        conn.join().map_err(|_| "its process panicked")??;
+        // Its last word, before its socket's end (told as a reset, with
+        // bytes of its own left unread there).
+        let mut got = Vec::new();
+        let mut buffer = [0u8; 4096];
+        while let Ok(n @ 1..) = theirs.read(&mut buffer) {
+            got.extend_from_slice(buffer.get(..n).unwrap_or_default());
+        }
+        let mut decoder = Decoder::default();
+        decoder.push(&got);
+        let last = decoder.frame::<ToCommand>().map_err(|e| e.to_string())?;
+        assert!(matches!(last, Some(ToCommand::Exit(_))), "{last:?}");
         Ok(())
     }
 

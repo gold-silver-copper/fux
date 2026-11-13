@@ -1038,9 +1038,13 @@ impl Server {
             // Its process's link is read, what its client sent and whether
             // the client took what it was sent, but while what its client
             // types waits for a pane (`Server::held`).
-            // Held, it is watched for its end alone (`PollFlags::WATCH`).
+            // Held, it is not read, and only its end is to be learned.
+            // Windows tells that of a read kept in flight, which `HUP` and
+            // `ERR` ask for; Unix is asked nothing: Linux tells a hang-up
+            // unasked, and macOS nothing till the link is read again.
             let mut flags = match held.get(i).copied().unwrap_or(false) {
-                true => PollFlags::WATCH,
+                true if cfg!(windows) => PollFlags::HUP | PollFlags::ERR,
+                true => PollFlags::NONE,
                 false => PollFlags::IN,
             };
             if !conn.out.is_empty() || !conn.link.out.is_empty() {
