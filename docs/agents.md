@@ -607,7 +607,7 @@ of that server's panes. Each script should clean up the targets and processes it
   `.sock` files, on Windows the `.server` records beside the pipes they name: `status` each.
 
   ```sh
-  for s in "${XDG_RUNTIME_DIR-$TMPDIR}"/fux/*.sock; do FUX_SOCKET=$s fux '(status)'; done
+  for s in "${XDG_RUNTIME_DIR-$TMPDIR}"/fux/*.sock; do [ -S "$s" ] || continue; FUX_SOCKET=$s fux '(status)'; done
   ```
   Inside a person's pane, `(here)` is that pane. Every pane has
   `FUX_PANE` (`%N:GENERATION`, the pane and its program generation),
