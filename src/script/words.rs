@@ -304,7 +304,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("capture-source", "a pane, a request on one, or a client"),
     ("pane-builder", "a pane or a request on one"),
     ("ref", "a name, or a pane, tab or workspace"),
-    ("text", "a string, a number or a boolean"),
+    ("text", TEXT),
     ("new", "a setting's value: a number, #true or #false, or a list (fux '(explain \"set\")')"),
     ("var", "a string, a number, a boolean, or a pane, tab or workspace"),
     ("value", "a value (options and requests are none: what acts on them gives one)"),
@@ -517,14 +517,19 @@ fn string(value: &Value<Fux>) -> Result<String, Failure> {
     Ok(s.to_string())
 }
 
-/// A value as words that take text read it: a string, or a number.
+/// What words that take text take: a float has no one text, so it is
+/// refused, and `(string 1.5)` says which text is meant.
+const TEXT: &str = "a string, an integer or a boolean";
+
+/// A value as words that take text read it: a string, an integer or a
+/// boolean.
 fn text(value: &Value<Fux>) -> Result<String, Failure> {
     match value {
         Value::Str(_) | Value::Symbol(_) => string(value),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
         other @ (Value::Float(_) | Value::Bytes(_) | Value::List(_) | Value::App(_)) => {
-            Err(wrong("a string, a number or a boolean", other))
+            Err(wrong(TEXT, other))
         }
     }
 }

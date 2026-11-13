@@ -1422,3 +1422,15 @@ fn a_cleanups_walk_goes_on_after_the_stop_that_let_it_run() -> TestResult {
     }
     Ok(())
 }
+#[test]
+fn text_takes_an_integer_and_refuses_a_float_saying_so() -> TestResult {
+    let mut out = Vec::new();
+    let taken = "(sequence! (argument (program (options) \"echo\") 1) #true)";
+    assert_eq!(main(&[taken.into()], None, &mut out)?, 0);
+    let refused = "(argument (program (options) \"echo\") 1.5)";
+    let failed = main(&[refused.into()], None, &mut out)
+        .err()
+        .ok_or("taken")?;
+    assert!(failed.message.contains("an integer"), "{}", failed.message);
+    Ok(())
+}
