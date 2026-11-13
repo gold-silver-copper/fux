@@ -12,6 +12,8 @@
 //!   are fields of a record `docs/records.txt` lists (the code's list), in
 //!   that order. `...` leaves fields out.
 //! - `LANG run by tests/agents.rs`: run there, under its heading.
+//! - `LANG not run here: WHO`: run by a harness outside cargo test (agentbench
+//!   on CI), named with its task.
 //! - `LANG not run: WHY`: needs what a test can't have (a person's TUI in
 //!   pane 2, another machine); the names its programs use are bound.
 //!
@@ -101,8 +103,8 @@ enum How {
 impl Block {
     fn how(&self) -> Result<How, String> {
         let (lang, note) = self.info.split_once(' ').unwrap_or((self.info, ""));
-        if note
-            .strip_prefix("not run: ")
+        if (note.strip_prefix("not run: "))
+            .or_else(|| note.strip_prefix("not run here: "))
             .is_some_and(|why| !why.is_empty())
         {
             return Ok(How::NotRun);

@@ -155,7 +155,7 @@ stays unknown.
   and run `timeout 30 fux --file reply.grift "$V"`, with the prompt's
   version above:
 
-  ```grift not run: it answers the prompt above, given its version
+  ```grift not run here: agentbench runs it (published-prompt), answering its slow prompt
   (define! answer (send-keys (key (text (expect (first (arguments))) "6*7") "Enter")))
   (define! seen (shows answer "42" 5))
   (print (string seen))
@@ -234,7 +234,7 @@ stays unknown.
   as the first file argument. Here reverse video identifies the app's
   selection. That meaning belongs to this app, not to fux.
 
-  ```grift not run: it needs a TUI that marks its selection
+  ```grift not run here: agentbench runs it (published-tui) against its menu fixture
   (define! until-marked (lambda! (p needle)
     (define! seen (capture (marks (wrapped p))))
     (if! (empty-list? (search (string seen) needle 0))
@@ -249,7 +249,7 @@ stays unknown.
   uses Down to select Beta. Keep the marked view in the loop; `shows` would
   use plain screens on later reads.
 
-  ```grift not run: it needs a TUI that marks its selection
+  ```grift not run here: agentbench runs it (published-tui) against its menu fixture
   (define! answer (press (expect (first (arguments))) "Down"))
   (define! seen (until-marked (pane answer) "⟦Beta⟧"))
   (print (string seen))
