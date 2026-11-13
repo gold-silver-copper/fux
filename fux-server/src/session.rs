@@ -4432,6 +4432,27 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_field_only_a_snapshot_holds_names_the_route_that_reads_it() -> TestResult {
+        let (mut s, _) = attached(12, 80)?;
+        let refused = output(&mut s, "(get (tab 1) \"nodes\")")
+            .err()
+            .ok_or("refused")?;
+        let route = refused.split("has it: ").nth(1).ok_or("no route")?;
+        let route = route
+            .split("\" (")
+            .next()
+            .ok_or("route")?
+            .replace("\\\"", "\"");
+        assert_eq!(output(&mut s, &route)?, "%1\n");
+        // A field no record has names no route.
+        let bogus = output(&mut s, "(get (tab 1) \"bogus\")")
+            .err()
+            .ok_or("refused")?;
+        assert!(!bogus.contains("snapshot"), "{bogus}");
+        Ok(())
+    }
+
+    #[test]
     fn scoped_topology_keeps_full_membership_and_the_shared_layout_revision() -> TestResult {
         use fux_wire::inspect::{Projection, Scope};
         use fux_wire::layout::Node;
