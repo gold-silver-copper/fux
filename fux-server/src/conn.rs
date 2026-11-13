@@ -1367,15 +1367,13 @@ mod tests {
                 "asked"
             );
             // Its request waits from here on: its server answers nothing.
-            match closes {
-                true => drop(theirs),
-                false => {
-                    theirs.shutdown(std::net::Shutdown::Write).map_err(e)?;
-                    std::mem::forget(theirs);
-                }
+            if !closes {
+                theirs.shutdown(std::net::Shutdown::Write).map_err(e)?;
             }
+            // One that only shut its side still reads till its wait ended.
+            let reading = (!closes).then_some(theirs);
             let said = next(&mut server);
-            drop(server);
+            drop((server, reading));
             conn.join().map_err(|_| "its process panicked")??;
             assert!(matches!(said, Ok(FromConn::Shut)), "{said:?}");
         }
