@@ -375,7 +375,7 @@ words! {
         Config AttachDefaults "attach-defaults" "attachable --" raises(Type Unused Config NotConfig) "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "(sequence! (attach-defaults (name (options) \"main\")) #inert)" [Either: In Name];
         Config Set "set" "setting new --" raises(Type Config NotConfig) "a preference for this client only: `fux '(explain \"set\")'` lists their effects" "fux '(sequence! (set \"history-bytes\" 16777216) #inert)'" [];
         Reading Version "version" "pane-or-seen -- string" raises(Type asks) "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux '(version (capture (pane 3)))'" [];
-        Shell Args "arguments" "-- list" raises() "the strings after the program on its command line, or after fux --file FILE (none for a key or a config)" "fux '(length (arguments))'" [];
+        Shell Args "arguments" "-- list" raises() "the strings after the program on its command line, after fux --file FILE, or after fux - (none for a key or a config)" "fux '(length (arguments))'" [];
         Shell Input "input" "-- string" raises(Read NotHere) "the rest of stdin, as UTF-8 text; not when the program came from stdin" "printf 'text\\n' | fux '(byte-length (input))'" [];
         Shell ReadFile "read-file" "path -- string" raises(Type Read NotHere) "a file's text, as UTF-8" "fux '(length (string-split (read-file \"notes.txt\") \"\\n\"))'" [];
         Shell Getenv "environment-variable" "name -- string" raises(Type UnsetVar NotHere) "an environment variable's value; one not set fails unset-variable" "fux '(environment-variable \"HOME\")'" [];

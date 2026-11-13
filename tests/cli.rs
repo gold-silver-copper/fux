@@ -425,6 +425,9 @@ fn programs_come_from_stdin_and_files() -> Outcome {
     // What it reads is its program: `input` has nothing left to read.
     let input = server.piped(fux().as_ref(), &["-"], "(input)")?;
     assert!(input.stderr.starts_with("fux: read: "), "{}", input.stderr);
+    // The arguments after `-` are its strings, as they are after a file.
+    let args = server.piped(fux().as_ref(), &["-", "x", "-"], "(arguments)")?;
+    assert_eq!((args.status, args.stdout.as_str()), (0, "x\n-\n"));
     for name in ["prog.fux", "prog"] {
         let file = server.dir.join(name);
         std::fs::write(&file, program).map_err(e)?;
