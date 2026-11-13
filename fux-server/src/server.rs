@@ -2209,6 +2209,31 @@ mod tests {
         Ok((server, peers, client))
     }
 
+    /// A request held behind an attached client's frames, whose own client
+    /// goes while it is held, is held no more: its connection's process
+    /// says so, and its connection ends, though the attached client never
+    /// sends those frames.
+    #[test]
+    fn a_fenced_request_whose_client_is_gone_is_dropped() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::io::Write;
+        let (mut server, peers, client) = ordered_fixture()?;
+        // Its process is told what to expect before its client sends it.
+        let worker = server.conns.get_mut(0).ok_or("worker")?;
+        worker.link.flush_all()?;
+        let mut theirs = peers.first().ok_or("its client")?;
+        theirs.write_all(&key_request(server.session.run, client, u64::MAX).encode())?;
+        // Held by its server, it was taken by its process, which waits.
+        heard(&mut server, 0)?;
+        let stage = server.conns.first().map(|c| &c.stage);
+        assert!(matches!(stage, Some(Stage::Blocked(_))));
+        theirs.shutdown(std::net::Shutdown::Both)?;
+        heard(&mut server, 0)?;
+        let stage = server.conns.first().map(|c| &c.stage);
+        assert!(matches!(stage, Some(Stage::Dead)));
+        Ok(())
+    }
+
     fn key_request(run: fux_wire::command::Run, client: ClientId, frames: u64) -> Asked {
         Asked {
             after: Some(fux_wire::protocol::Fence {
