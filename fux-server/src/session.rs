@@ -6968,8 +6968,7 @@ mod tests {
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let queue = |s: &mut Session, bytes: &[u8]| {
             host(s, id, |h| {
-                h.pane_mut()
-                    .push_with(|_, out| out.extend_from_slice(bytes))
+                let _ = h.pane_mut().type_in(bytes);
             })
         };
         queue(&mut s, b"abc")?;

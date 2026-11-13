@@ -41,12 +41,38 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// The most input a pane holds that its program has not read yet (D-156).
+pub const INPUT_MAX: usize = 64 << 20;
+
+/// The memory an empty input queue keeps for what is typed next.
+const INPUT_KEEP: usize = 64 << 10;
+
 /// Input and terminal replies waiting for the pane's program to read them,
 /// end to end, to be written together, however many pieces they came in.
-#[derive(Default)]
+/// It holds `limit` bytes at most, and grows only as the OS gives it
+/// memory: what does not fit is refused whole, and what waits stays.
 pub struct InputQueue {
     bytes: ByteQueue,
     touched: bool,
+    limit: usize,
+}
+
+impl Default for InputQueue {
+    fn default() -> InputQueue {
+        InputQueue {
+            bytes: ByteQueue::default(),
+            touched: false,
+            limit: INPUT_MAX,
+        }
+    }
+}
+
+/// Why input was not queued, with how much waited unread: the queue is at
+/// its bound, or the OS refused it memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unqueued {
+    Full { held: usize, limit: usize },
+    Memory { held: usize },
 }
 
 /// A pane's runs of losses, each over at a success of its kind: a copy made, a picture placed whole, a
@@ -97,20 +123,16 @@ impl Run {
 }
 
 impl InputQueue {
-    /// Queues `bytes` as a piece. Only the pane queues (`Pane::push`).
-    fn push(&mut self, bytes: impl AsRef<[u8]>) {
-        let bytes = bytes.as_ref();
-        self.bytes.push(bytes);
+    /// Queues `bytes` as a piece, all of them or none. Only the pane
+    /// queues (`Pane::push`).
+    fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Unqueued> {
+        let (bytes, held, limit) = (bytes.as_ref(), self.len(), self.limit);
+        if held.saturating_add(bytes.len()) > limit {
+            return Err(Unqueued::Full { held, limit });
+        }
+        (self.bytes.try_push(bytes)).map_err(|_| Unqueued::Memory { held })?;
         self.touched |= !bytes.is_empty();
-    }
-    /// Queues what `write` appends to its vector as a piece, in place.
-    fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) {
-        let len = self.bytes.push_with(|out| {
-            let start = out.len();
-            write(out);
-            out.len().saturating_sub(start)
-        });
-        self.touched |= len > 0;
+        Ok(())
     }
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
@@ -126,6 +148,10 @@ impl InputQueue {
     /// `n` bytes of the front were written: its terminal took them.
     fn advance(&mut self, n: usize) {
         self.bytes.take(n);
+        // Read to its end, it gives back what a large paste took.
+        if self.bytes.is_empty() {
+            self.bytes.shrink(INPUT_KEEP);
+        }
     }
     /// Lets everything queued go, as its program ends unread: how many
     /// bytes, which its ender tells.
@@ -752,9 +778,15 @@ impl<'a> PaneMut<'a> {
         self.pane.ended(ended, &mut self.tell)
     }
     /// A request's `bytes` are queued for its program, and told as `kind`,
-    /// with the version `expect` admitted them at, if it did.
-    pub fn send(&mut self, bytes: &[u8], kind: Sent, expected: Option<fux_wire::command::Version>) {
-        self.pane.push(bytes);
+    /// with the version `expect` admitted them at, if it did; or refused,
+    /// none of them queued or told.
+    pub fn send(
+        &mut self,
+        bytes: &[u8],
+        kind: Sent,
+        expected: Option<fux_wire::command::Version>,
+    ) -> Result<(), fux_wire::code::Error> {
+        self.pane.push(bytes)?;
         self.queued();
         self.tell.tell(Told::Input {
             kind,
@@ -762,12 +794,18 @@ impl<'a> PaneMut<'a> {
             expected: expected.map(Box::new),
             generation: self.pane.respawns,
         });
+        Ok(())
     }
     /// Its program is sent `held`'s mouse report, `report`; the button
     /// `send-mouse press` holds is `held` once it is queued.
-    pub fn send_mouse(&mut self, report: &[u8], held: Option<fux_vt::keys::mouse::MouseButton>) {
-        self.send(report, Sent::Mouse, None);
+    pub fn send_mouse(
+        &mut self,
+        report: &[u8],
+        held: Option<fux_vt::keys::mouse::MouseButton>,
+    ) -> Result<(), fux_wire::code::Error> {
+        self.send(report, Sent::Mouse, None)?;
         self.pane.mouse_held = held;
+        Ok(())
     }
     /// A request sent `signal` to what runs in its terminal's foreground.
     pub(crate) fn tell_signalled(&mut self, signal: fuxix::process::Signal) {
@@ -780,13 +818,16 @@ impl<'a> PaneMut<'a> {
     pub fn write_input(&mut self) -> bool {
         self.pane.write_input()
     }
-    pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) {
-        self.pane.push_with(write);
+    /// What a client typed, `bytes`, is queued for its program, or
+    /// refused, none of it queued: no request's, so not told (`send`).
+    pub fn type_in(&mut self, bytes: &[u8]) -> Result<(), fux_wire::code::Error> {
+        self.pane.push(bytes)?;
         self.queued();
+        Ok(())
     }
     /// Its program is told the scheme is `scheme`.
     pub fn offer_scheme(&mut self, scheme: Scheme) {
-        self.pane.push(scheme.report());
+        self.pane.answer(scheme.report());
         self.pane.scheme_told = Some(scheme);
         self.queued();
     }
@@ -883,6 +924,12 @@ impl<'a> PaneMut<'a> {
     #[cfg(any(test, feature = "in-process"))]
     pub fn drain_input(&mut self) -> Vec<u8> {
         self.pane.input.drain_all()
+    }
+    /// Its program's unread input may be `limit` bytes at most: a test's
+    /// bound, reached with a few bytes.
+    #[cfg(test)]
+    pub(crate) fn set_input_limit(&mut self, limit: usize) {
+        self.pane.input.limit = limit;
     }
 }
 
@@ -1224,7 +1271,8 @@ impl Pane {
             begun = Some((read, fux_vt::Stop::Budget));
         }
         if !sink.replies.is_empty() {
-            self.input.push(&sink.replies);
+            // One that does not fit is let go (`answer`).
+            let _ = self.input.push(&sink.replies);
         }
         if let Some(scheme) = sink.told {
             self.scheme_told = Some(scheme);
@@ -1327,7 +1375,7 @@ impl Pane {
     fn report_size(&mut self) {
         let takes = crate::host::refuses_input(self).is_none();
         if let Some(report) = self.parser.resize_report().filter(|_| takes) {
-            self.input.push(report);
+            let _ = self.input.push(report);
         }
     }
 
@@ -1464,15 +1512,34 @@ impl Pane {
         std::mem::take(&mut self.untold)
     }
 
-    /// Queues `bytes` of input for its program.
-    fn push(&mut self, bytes: impl AsRef<[u8]>) {
-        self.input.push(bytes);
+    /// Queues `bytes` of input for its program, all of them or none: why
+    /// none, for whoever sent them (D-156).
+    fn push(&mut self, bytes: &[u8]) -> Result<(), fux_wire::code::Error> {
+        use fux_wire::code::{Code, fail};
+        let (id, sent) = (self.id(), bytes.len());
+        self.input.push(bytes).map_err(|unqueued| match unqueued {
+            Unqueued::Full { held, limit } => fail(
+                Code::TooLong,
+                format!(
+                    "{id}'s program has not read {held} bytes of input, and {id} holds {limit} at most: \
+                     these {sent} bytes were not sent; send them once it has read, or fewer at a time"
+                ),
+            ),
+            Unqueued::Memory { held } => fail(
+                Code::Memory,
+                format!(
+                    "{id}: the OS refused memory for {sent} bytes of input, {held} waiting unread: \
+                     they were not sent"
+                ),
+            ),
+        })
     }
 
-    /// Queues for its program what `write` makes for its screen.
-    fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) {
-        let screen = self.parser.screen();
-        self.input.push_with(|out| write(screen, out));
+    /// Queues what its terminal itself says to its program: an answer to
+    /// its query, a report it asked for. One that does not fit is let go:
+    /// a program that reads nothing is answered nothing more.
+    fn answer(&mut self, bytes: &[u8]) {
+        let _ = self.input.push(bytes);
     }
 
     /// Its program's queries are answered with `colours` and `palette`

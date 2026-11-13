@@ -124,6 +124,9 @@ pub struct Host {
     /// connections to fetch (`ToSide::Fetch`): each by its token.
     bodies: BTreeMap<u64, Vec<Input>>,
     awaiting: BTreeMap<u64, Awaiting>,
+    /// Bodies that come no more (`body_lost`), till what would wait for
+    /// each asks for it, and is refused.
+    lost: std::collections::BTreeSet<u64>,
     held: BTreeMap<u64, Box<fux_wire::answer::Captured>>,
 }
 
@@ -210,6 +213,7 @@ impl Host {
             whole: 0,
             bodies: BTreeMap::new(),
             awaiting: BTreeMap::new(),
+            lost: std::collections::BTreeSet::new(),
             held: BTreeMap::new(),
         })
     }
@@ -925,13 +929,25 @@ impl Host {
         let screen = pane.screen();
         let mut bytes = Vec::new();
         let mut retired = None;
+        let mut refused = None;
         match typed {
             Typed::Key(stroke) => {
                 fux_vt::keys::encode::key_bytes(stroke, screen.key_mode(), &mut bytes);
             }
             Typed::Paste(text) => {
-                let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
-                fux_vt::keys::encode::paste(&text, bracketed, &mut bytes);
+                let input = [Input::Paste(text)];
+                match (room(pane.id(), &input), &input) {
+                    (Ok(()), [Input::Paste(text)]) => {
+                        let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
+                        fux_vt::keys::encode::paste(text, bracketed, &mut bytes);
+                    }
+                    (Ok(()), _) => {}
+                    (Err(error), _) => refused = Some(error),
+                }
+            }
+            Typed::Body(token) if self.lost.remove(&token) => {
+                retired = Some(token);
+                refused = Some(self.no_body());
             }
             Typed::Body(token) => {
                 let Some(inputs) = self.bodies.remove(&token) else {
@@ -940,10 +956,15 @@ impl Host {
                 };
                 retired = Some(token);
                 let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
-                for input in inputs {
-                    if let Input::Paste(text) = input {
-                        fux_vt::keys::encode::paste(&text, bracketed, &mut bytes);
+                match room(pane.id(), &inputs) {
+                    Ok(()) => {
+                        for input in inputs {
+                            if let Input::Paste(text) = input {
+                                fux_vt::keys::encode::paste(&text, bracketed, &mut bytes);
+                            }
+                        }
                     }
+                    Err(error) => refused = Some(error),
                 }
             }
             Typed::Focus(gained) => {
@@ -959,9 +980,12 @@ impl Host {
         if let Some(token) = retired {
             self.report(FromPane::Retired(token));
         }
-        if !bytes.is_empty() {
-            self.pane_mut()
-                .push_with(|_, out| out.extend_from_slice(&bytes));
+        // What does not fit is refused whole, and its client told why:
+        // its program and what it has not read yet stay (D-156).
+        let refused = refused.or_else(|| self.pane_mut().type_in(&bytes).err());
+        if let Some(refused) = refused {
+            let why = refused.to_string();
+            self.report(FromPane::Refused { client, why });
         }
     }
 
@@ -982,6 +1006,10 @@ impl Host {
                 Some(inputs) => {
                     self.report(FromPane::Retired(token));
                     self.send_keys(&inputs, seen)
+                }
+                None if self.lost.remove(&token) => {
+                    self.report(FromPane::Retired(token));
+                    Err(self.no_body())
                 }
                 None => {
                     let actor = self.actor;
@@ -1063,12 +1091,12 @@ impl Host {
         if let Some(refused) = refuses_input(&self.pane) {
             return Err(refused);
         }
-        let bytes = bytes(&self.pane, inputs);
+        let bytes = bytes(&self.pane, inputs)?;
         let kind = match inputs.iter().any(|input| matches!(input, Input::Paste(_))) {
             true => Sent::Paste,
             false => Sent::Keys,
         };
-        self.pane_mut().send(&bytes, kind, seen);
+        self.pane_mut().send(&bytes, kind, seen)?;
         Ok(Answered::Acted(now))
     }
 
@@ -1159,7 +1187,7 @@ impl Host {
             return Err(fail(Code::Mouse, message));
         }
         let version = p.version(run);
-        p.send_mouse(&report, held);
+        p.send_mouse(&report, held)?;
         Ok(Answered::Acted(version))
     }
 
@@ -1181,9 +1209,7 @@ impl Host {
         match fuxix::process::delivery(signal, shell) {
             Delivery::Group => self.signal_group(signal)?,
             // Written as keys after what was typed before them.
-            Delivery::Keys(keys) => {
-                (self.pane_mut()).push_with(|_, out| out.extend_from_slice(keys))
-            }
+            Delivery::Keys(keys) => self.pane_mut().type_in(keys)?,
             Delivery::Attached => {
                 let child = self.pane.process().child();
                 let sent = child.map(|child| child.leader.kill_as(Reach::Attached));
@@ -1400,6 +1426,34 @@ impl Host {
             None => {
                 self.bodies.insert(token, inputs);
             }
+        }
+    }
+
+    /// Why input that never came whole was not sent (`body_lost`).
+    fn no_body(&self) -> Error {
+        let pane = self.pane.id();
+        let why = format!(
+            "{pane}: the OS refused memory for the input on its way to it: it was not sent"
+        );
+        fail(Code::Memory, why)
+    }
+
+    /// Body `token` comes no more: its sender's connection, or this
+    /// process, was refused the memory for it. What waits for it is
+    /// refused, to whoever sent it; what would, once it asks (D-156).
+    pub fn body_lost(&mut self, token: u64) {
+        match self.awaiting.remove(&token) {
+            Some(Awaiting::Keys { ask, .. }) => {
+                self.report(FromPane::Retired(token));
+                let answer = Answered::Refused(Refusal::from(self.no_body()));
+                self.report(FromPane::Answer { ask, answer });
+            }
+            Some(Awaiting::Paste { client }) => {
+                self.report(FromPane::Retired(token));
+                let why = self.no_body().to_string();
+                self.report(FromPane::Refused { client, why });
+            }
+            None => _ = self.lost.insert(token),
         }
     }
 
@@ -1692,9 +1746,26 @@ pub(crate) fn ended(pane: PaneId, status: Ended) -> Error {
     fail(Code::NotRunning, told)
 }
 
+/// Refuses `inputs` for `pane` unless the OS would give the memory to
+/// encode them: a copy as its program takes them, and for a paste with
+/// line ends, two more as they are made carriage returns (D-156).
+fn room(pane: PaneId, inputs: &[Input]) -> Result<(), Error> {
+    let sent = crate::conn::held(inputs);
+    let line_ends = |input: &Input| matches!(input, Input::Paste(text) if text.contains('\n'));
+    let copies = if inputs.iter().any(line_ends) { 3 } else { 1 };
+    if crate::has_room(sent.saturating_mul(copies)) {
+        return Ok(());
+    }
+    let why =
+        format!("{pane}: the OS refused memory for {sent} bytes of input: they were not sent");
+    Err(fail(Code::Memory, why))
+}
+
 /// `inputs` as `p`'s program takes them: keys and pastes encoded as it
-/// asked for them, text and bytes as they are.
-fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
+/// asked for them, text and bytes as they are; or refused, the OS giving
+/// no memory for them.
+fn bytes(p: &Pane, inputs: &[Input]) -> Result<Vec<u8>, Error> {
+    room(p.id(), inputs)?;
     let screen = p.screen();
     let mut bytes = Vec::new();
     for input in inputs {
@@ -1710,7 +1781,7 @@ fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
             Input::Bytes(given) => bytes.extend_from_slice(given),
         }
     }
-    bytes
+    Ok(bytes)
 }
 
 /// How a turn's read of what a program left went (`left_turn`).
@@ -1780,6 +1851,8 @@ impl Clock {
 struct Peer {
     end: crate::link::End,
     side: Option<Option<Watch>>,
+    /// The body it said comes next (`ToSide::Coming`), till it has.
+    coming: Option<u64>,
 }
 
 /// The loop of a pane's own process (`fux __pane`), listening at its
@@ -1998,7 +2071,11 @@ pub fn serve(
                     && host.closed.is_none()
                     && let Ok(end) = crate::socket::serve(reached).and_then(End::new)
                 {
-                    peers.push(Peer { end, side: None });
+                    peers.push(Peer {
+                        end,
+                        side: None,
+                        coming: None,
+                    });
                 }
             }
         }
@@ -2063,7 +2140,12 @@ pub fn serve(
                                 watch.waiting = false;
                             }
                         }
-                        Ok(Some(ToSide::Body { token, inputs })) => host.body(token, inputs),
+                        Ok(Some(ToSide::Body { token, inputs })) => {
+                            peer.coming = None;
+                            host.body(token, inputs);
+                        }
+                        Ok(Some(ToSide::Coming { token })) => peer.coming = Some(token),
+                        Ok(Some(ToSide::Lost { token })) => host.body_lost(token),
                         Ok(Some(ToSide::Fetch { token })) => {
                             let captured = host.fetch(token);
                             peer.end.send(&FromSide::Held { token, captured });
@@ -2077,6 +2159,10 @@ pub fn serve(
                 }
             }
             closed |= done;
+            // A body it said would come, and now won't: refused out loud.
+            if closed && let Some(token) = peer.coming.take() {
+                host.body_lost(token);
+            }
             // Its server's link now, or gone.
             if taken {
                 link = Some(peer.end);
@@ -2257,6 +2343,71 @@ mod tests {
             exe: None,
         };
         Ok(Host::begin(begin, Instant::now())?)
+    }
+
+    /// Input past what a pane holds for a program that reads none is
+    /// refused whole to whoever sent it, a request or a client typing: what
+    /// waited stays, and its program lives (D-156).
+    #[test]
+    fn input_past_what_a_pane_holds_is_refused_and_the_pane_lives() -> TestResult {
+        let mut host = lone(5, 20)?;
+        host.pane_mut().set_input_limit(8);
+        let text = |text: &str| [Input::Text(text.into())];
+        let taken = host.send_keys(&text("12345"), None);
+        assert!(matches!(taken, Ok(Answered::Acted(_))), "{taken:?}");
+        drop(host.take());
+        let refused = host.send_keys(&text("6789"), None).err().ok_or("taken")?;
+        assert_eq!(refused.code(), Code::TooLong, "{refused}");
+        let client = ClientId::of(1);
+        host.typed(client, Typed::Paste("6789".into()));
+        let told = host.take();
+        let refusals = (told.iter())
+            .filter(|told| matches!(told, FromPane::Refused { client: c, .. } if *c == client))
+            .count();
+        assert_eq!(refusals, 1, "{told:?}");
+        // Nothing of either was queued or told as sent, and what fits still is.
+        assert!(
+            !told.iter().any(|t| matches!(t, FromPane::Told { .. })),
+            "{told:?}"
+        );
+        assert_eq!(host.pane().input().len(), 5);
+        assert!(host.pane().process().exit_status().is_none());
+        assert!(host.send_keys(&text("678"), None).is_ok());
+        assert_eq!(host.pane().input().len(), 8);
+        Ok(())
+    }
+
+    /// A body that comes no more, its sender or this process refused the
+    /// memory for it, refuses what waits for it, and what asks for it
+    /// after: no question waits for ever (D-156).
+    #[test]
+    fn a_body_that_comes_no_more_refuses_what_waits_for_it() -> TestResult {
+        let mut host = lone(5, 20)?;
+        drop(host.take());
+        let keys = |body| Ask::Keys {
+            inputs: Vec::new(),
+            seen: None,
+            body: Some(body),
+        };
+        assert!(host.ask(1, keys(7), Instant::now()).is_none(), "answered");
+        host.body_lost(7);
+        let told = host.take();
+        let refused = |told: &FromPane| {
+            matches!(
+                told,
+                FromPane::Answer { ask: 1, answer: Answered::Refused(refusal) }
+                    if refusal.code == Code::Memory
+            )
+        };
+        assert!(told.iter().any(refused), "{told:?}");
+        host.body_lost(8);
+        let answer = host.ask(2, keys(8), Instant::now());
+        assert!(
+            matches!(&answer, Some(Answered::Refused(refusal)) if refusal.code == Code::Memory),
+            "{answer:?}"
+        );
+        assert!(host.pane().input().is_empty());
+        Ok(())
     }
 
     /// A frame whose reading takes more than one call of the parser is

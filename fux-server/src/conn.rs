@@ -300,6 +300,18 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
     Ok(frame)
 }
 
+/// How many bytes `inputs` hold: what its client sent, so what a copy of
+/// them costs in memory.
+pub(crate) fn held(inputs: &[Input]) -> usize {
+    (inputs.iter())
+        .map(|input| match input {
+            Input::Key(_) => 0,
+            Input::Text(text) | Input::Paste(text) => text.len(),
+            Input::Bytes(bytes) => bytes.len(),
+        })
+        .fold(0, usize::saturating_add)
+}
+
 /// The pane `id` of run `run` reached at its socket in `panes`, its first
 /// word said (`ToPane::Join`); none if it can't be.
 fn join(panes: &std::path::Path, run: Run, id: PaneId) -> Option<End> {
@@ -450,10 +462,15 @@ impl Errand {
                 ..
             } => {
                 let inputs = bodies.remove(&body).unwrap_or_default();
-                let end = reach(&client_socket(panes, client), run).map(|mut end| {
-                    end.send(&ToSide::Body { token, inputs });
-                    end
-                });
+                // With no memory for the copy its link holds, they reach
+                // no client, and their asker is told so (D-156).
+                let end = (crate::has_room(held(&inputs)))
+                    .then(|| reach(&client_socket(panes, client), run))
+                    .flatten()
+                    .map(|mut end| {
+                        end.send(&ToSide::Body { token, inputs });
+                        end
+                    });
                 Errand::Keys { end, client, token }
             }
             Making::Capture {
@@ -719,21 +736,33 @@ impl Composer {
     /// Body `token`, `inputs`, sent to each of `panes` (`ToSide::Body`):
     /// on its link to one it shows, else on one made for it, which goes on
     /// as an errand till its pane took it all.
-    fn deliver(&mut self, token: u64, inputs: &[Input], panes: &[PaneId]) -> Vec<Errand> {
-        let message = ToSide::Body {
-            token,
-            inputs: inputs.to_vec(),
+    ///
+    /// Each pane is told first that it comes (`ToSide::Coming`), so that
+    /// one that can't hold it refuses what waits for it; and with no
+    /// memory here for the copy each pane's link holds till it is sent,
+    /// that it comes no more (`ToSide::Lost`), which refuses the same
+    /// (D-156).
+    fn deliver(&mut self, token: u64, inputs: Vec<Input>, panes: &[PaneId]) -> Vec<Errand> {
+        let copies = held(&inputs).saturating_mul(panes.len());
+        let message = match crate::has_room(copies) {
+            true => ToSide::Body { token, inputs },
+            false => ToSide::Lost { token },
         };
+        let coming = ToSide::Coming { token };
         let mut posts = Vec::new();
         for id in panes {
             match self.sides.get_mut(id).and_then(|side| side.end.as_mut()) {
-                Some(end) => end.send(&message),
+                Some(end) => {
+                    end.send(&coming);
+                    end.send(&message);
+                }
                 None => {
                     let reached = self
                         .panes
                         .as_ref()
                         .and_then(|(panes, run)| join(panes, *run, *id));
                     if let Some(mut end) = reached {
+                        end.send(&coming);
                         end.send(&message);
                         posts.push(Errand::Post(end));
                     }
@@ -1140,7 +1169,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                     ToConn::Scene(scene) => composer.scene(*scene),
                     ToConn::Deliver { body, token, panes } => {
                         let inputs = bodies.remove(&body).unwrap_or_default();
-                        errands.extend(composer.deliver(token, &inputs, &panes));
+                        errands.extend(composer.deliver(token, inputs, &panes));
                     }
                     ToConn::Listen { client: me } => {
                         listening = composer

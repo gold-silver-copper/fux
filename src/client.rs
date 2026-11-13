@@ -317,7 +317,18 @@ impl Requests {
         let out = out.filter(|_| waits);
         wait_at_most(&self.stream, None);
 
-        send(&mut self.stream, asked)?;
+        // A server that refuses what it is sent stops reading it, says why
+        // and closes: its reason, read after the write that failed so, is
+        // the failure, not the closed pipe.
+        if let Err(error) = send(&mut self.stream, asked) {
+            wait_at_most(&self.stream, Some(ANSWER));
+            return Err(
+                match read_frame(&mut self.stream, &mut self.decoder, Some(ANSWER)) {
+                    Ok(Some(ToCommand::Exit(reason))) => Error::Refused(reason.to_owned()),
+                    Ok(_) | Err(_) => error,
+                },
+            );
+        }
         let mut parts = Vec::new();
         loop {
             while let Some(frame) = self.decoder.frame()? {

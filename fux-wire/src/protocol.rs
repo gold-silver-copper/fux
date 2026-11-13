@@ -44,6 +44,9 @@ pub enum Error {
     UnexpectedKind(u8),
     /// A payload that does not read as its frame's.
     Wire(crate::wire::Error),
+    /// The OS refused the memory to hold what came, this many bytes of it
+    /// held so far (D-156).
+    Memory(usize),
 }
 
 impl std::fmt::Display for Error {
@@ -55,6 +58,10 @@ impl std::fmt::Display for Error {
             Error::Empty => f.write_str("an empty frame"),
             Error::UnexpectedKind(kind) => write!(f, "unexpected frame kind {kind}"),
             Error::Wire(error) => write!(f, "a frame's payload: {error}"),
+            Error::Memory(held) => write!(
+                f,
+                "out of memory: the OS refused memory past the first {held} bytes of it"
+            ),
         }
     }
 }
@@ -688,7 +695,9 @@ impl<T: OneKind> Frame<'_> for T {
 
 /// Accumulates bytes from a stream and yields whole frames, a frame sent
 /// in pieces joined. A frame header claiming more than `MAX_FRAME` is
-/// refused as soon as it arrives.
+/// refused as soon as it arrives. What it holds is as long as its sender
+/// made it, so it grows only as the OS gives it memory: refused, it holds
+/// no more, and says so in place of the next frame (`Error::Memory`).
 #[derive(Default)]
 pub struct Decoder {
     buffer: ByteQueue,
@@ -696,11 +705,39 @@ pub struct Decoder {
     pieces: Vec<u8>,
     /// The last frame joined from pieces, which its decoded value borrows.
     joined: Vec<u8>,
+    /// The OS refused it memory, holding this many bytes: its stream is
+    /// unusable, as after any frame that does not decode.
+    refused: Option<usize>,
+    /// The most it holds, for a test to reach: none but the OS's.
+    #[cfg(test)]
+    limit: Option<usize>,
+}
+
+/// Room for `more` bytes after `bytes`, unless the OS refuses it: asked for
+/// doubled first, as a `Vec` grows, and exactly when that is refused.
+fn room(bytes: &mut Vec<u8>, more: usize) -> Result<(), std::collections::TryReserveError> {
+    match bytes.try_reserve(more) {
+        Ok(()) => Ok(()),
+        Err(_) => bytes.try_reserve_exact(more),
+    }
 }
 
 impl Decoder {
+    /// Takes `bytes` as they came. Refused the memory for them, it takes
+    /// no more, and its next `frame` or `ready` says so.
     pub fn push(&mut self, bytes: &[u8]) {
-        self.buffer.push(bytes);
+        #[cfg(test)]
+        if (self.limit).is_some_and(|limit| self.buffered().saturating_add(bytes.len()) > limit) {
+            self.refused = Some(self.buffered());
+        }
+        if self.refused.is_none() && self.buffer.try_push(bytes).is_err() {
+            self.refused = Some(self.buffered());
+        }
+    }
+
+    /// Why no frame comes of it any more, if the OS refused it memory.
+    fn refusal(&self) -> Result<(), Error> {
+        self.refused.map_or(Ok(()), |held| Err(Error::Memory(held)))
     }
 
     /// Gives back memory beyond `keep` bytes once no more is pending.
@@ -711,6 +748,7 @@ impl Decoder {
     /// Whether `frame` has something to say without more bytes: a whole
     /// frame held, its pieces before it, or an error.
     pub fn ready(&self) -> Result<bool, Error> {
+        self.refusal()?;
         let mut pending = self.buffer.as_slice();
         while let Some(length) = whole(pending)? {
             if pending.get(4) != Some(&MORE) {
@@ -727,6 +765,7 @@ impl Decoder {
     /// is then unusable.
     pub fn frame<'a, F: Frame<'a>>(&'a mut self) -> Result<Option<F>, Error> {
         self.joined = Vec::new();
+        self.refusal()?;
         let whole = loop {
             let Some(whole) = whole(self.buffer.as_slice())? else {
                 return Ok(None);
@@ -735,8 +774,13 @@ impl Decoder {
                 break whole;
             }
             let piece = self.buffer.take_front(whole);
-            self.pieces
-                .extend_from_slice(piece.get(5..).unwrap_or_default());
+            let piece = piece.get(5..).unwrap_or_default();
+            if room(&mut self.pieces, piece.len()).is_err() {
+                let held = self.pieces.len();
+                self.refused = Some(held);
+                return Err(Error::Memory(held));
+            }
+            self.pieces.extend_from_slice(piece);
         };
         let frame = self.buffer.take_front(whole);
         // A whole frame has its kind byte.
@@ -748,6 +792,11 @@ impl Decoder {
             return F::decode(*kind, payload).map(Some);
         }
         self.joined = std::mem::take(&mut self.pieces);
+        if room(&mut self.joined, payload.len()).is_err() {
+            let held = self.joined.len();
+            self.refused = Some(held);
+            return Err(Error::Memory(held));
+        }
         self.joined.extend_from_slice(payload);
         F::decode(*kind, &self.joined).map(Some)
     }
@@ -1000,6 +1049,29 @@ mod tests {
             decoder.push(&encoded);
             assert_eq!(decoder.frame::<Hello>()?.map(|h| h.role), Some(role));
         }
+        Ok(())
+    }
+
+    /// A decoder refused the memory for what its sender sent holds no
+    /// more and says so: it never ends its process (D-156).
+    #[test]
+    fn a_frame_the_decoder_has_no_memory_for_is_refused() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let text: String = std::iter::repeat_n('x', 4096).collect();
+        let frame = AttachedFrame::Act(Box::new(Act::Paste(text))).encode();
+        let mut decoder = Decoder {
+            limit: Some(frame.len() + 100),
+            ..Decoder::default()
+        };
+        decoder.push(&frame);
+        assert!(decoder.frame::<AttachedFrame>()?.is_some());
+        decoder.push(&frame);
+        decoder.push(&frame);
+        assert_eq!(decoder.ready(), Err(Error::Memory(frame.len())));
+        assert_eq!(
+            decoder.frame::<AttachedFrame>(),
+            Err(Error::Memory(frame.len()))
+        );
         Ok(())
     }
 

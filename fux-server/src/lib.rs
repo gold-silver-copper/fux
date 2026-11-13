@@ -94,6 +94,19 @@ pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
     from.checked_add(wait).unwrap_or(from)
 }
 
+/// Whether the OS would give this process `bytes` more memory now: asked
+/// for, and given straight back. Each of fux's processes does one thing at
+/// a time, so what it is given once it can be given again: a process asks
+/// before it takes what another's bytes will cost it, and refuses them if
+/// not, where running out part-way would end it (D-156).
+pub(crate) fn has_room(bytes: usize) -> bool {
+    let mut probe = Vec::<u8>::new();
+    let given = probe.try_reserve_exact(bytes).is_ok();
+    // Kept from being optimized away with the allocation it asks for.
+    std::hint::black_box(&probe);
+    given
+}
+
 /// The signals that stop a server and detach a client.
 pub const STOPS: [Signal; 3] = [Signal::Term, Signal::Int, Signal::Hup];
 

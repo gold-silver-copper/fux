@@ -47,6 +47,18 @@ impl ByteQueue {
         self.compact();
         self.bytes.extend_from_slice(more);
     }
+    /// `push`, unless the OS refuses the memory: then nothing is queued, and
+    /// what was queued stays. For bytes whose count another process chose
+    /// (D-156). Growth is asked for doubled first, so that pushes cost one
+    /// copy on average, and exactly when that much is refused.
+    pub fn try_push(&mut self, more: &[u8]) -> Result<(), std::collections::TryReserveError> {
+        self.compact();
+        if self.bytes.try_reserve(more.len()).is_err() {
+            self.bytes.try_reserve_exact(more.len())?;
+        }
+        self.bytes.extend_from_slice(more);
+        Ok(())
+    }
     /// Appends what `write` adds to the end of the queue's buffer, in place.
     /// `write` should only add after the queued bytes; one that truncates
     /// them leaves the queue holding what is left.
@@ -129,7 +141,8 @@ mod tests {
     fn bytes_leave_in_the_order_they_came() {
         let mut queue = ByteQueue::default();
         assert!(queue.is_empty());
-        queue.push(b"hello");
+        queue.push(b"hel");
+        assert!(queue.try_push(b"lo").is_ok());
         queue.take(2);
         assert_eq!(queue.as_slice(), b"llo");
         // As much taken as is left: the next push moves the rest to the front.

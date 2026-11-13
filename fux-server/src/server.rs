@@ -119,6 +119,8 @@ struct Conn {
     pending: bool,
     /// Its client sent what is no frame: it is read no more.
     bad: bool,
+    /// Why it is read no more, till its client is told so (`refuse`).
+    refusal: Option<String>,
     /// Its process closed its link: it is done, whatever its stage.
     gone: bool,
     /// The body each frame its process sent has, which its process keeps
@@ -246,6 +248,7 @@ impl Conn {
             out: ByteQueue::default(),
             pending: false,
             bad: false,
+            refusal: None,
             gone: false,
             bodies: std::collections::VecDeque::new(),
             body: None,
@@ -334,12 +337,14 @@ impl Conn {
                 Ok(Some(FromConn::Bad(why))) => {
                     log!("a client sent a bad frame: {why}");
                     self.bad = true;
+                    self.refusal = Some(format!("what the client sent was refused: {why}"));
                     return true;
                 }
                 Ok(None) => break,
                 Err(error) => {
                     log!("a connection's process sent a bad frame: {error}");
                     self.bad = true;
+                    self.refusal = Some(format!("what the client sent was refused: {error}"));
                     return true;
                 }
             }
@@ -491,6 +496,20 @@ impl Conn {
         self.tell_process(&crate::link::ToConn::Answered);
     }
 
+    /// Ends the connection saying `why`, as its stage says a last word: a
+    /// client whose frames can't be taken (no frame, or more than there is
+    /// memory for, D-156) is told so, never just closed. One that waits
+    /// for an answer sent nothing to refuse.
+    fn refuse(&mut self, session: &mut Session, why: &str, now: Instant) {
+        match self.stage {
+            Stage::Hello => self.end(session, &Greeting::Exit(why), now),
+            Stage::Attaching => self.end(session, &ToAttached::Exit(why), now),
+            Stage::Attached(_) => self.exit(session, Detach::Failed, why, now),
+            Stage::Command => self.end(session, &ToCommand::Exit(why), now),
+            Stage::Blocked(_) | Stage::Waiting(_) | Stage::Closing | Stage::Dead => {}
+        }
+    }
+
     /// Sends the connection's last frame, its client detached and its
     /// terminal given back first: it closes once what waits is sent.
     fn end<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>, now: Instant) {
@@ -558,7 +577,15 @@ pub struct Server {
     spare_waits: bool,
     /// When a failure to keep one was last logged.
     accept_logged: Option<Instant>,
+    /// The memory the OS must still be willing to give it for it to take
+    /// a request (`HEADROOM`; a test's is more than there is).
+    headroom: usize,
 }
+
+/// What the server must still be able to get to take a request: the
+/// largest frame one arrives in, which bounds what one makes it hold
+/// (D-156).
+pub const HEADROOM: usize = fux_wire::protocol::MAX_FRAME;
 
 /// Allocate the shared buffer without putting a large array on the stack.
 fn read_buffer() -> Result<Box<[u8; READ_BUFFER]>, Error> {
@@ -689,6 +716,7 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
         spare: None,
         spare_waits: false,
         accept_logged: None,
+        headroom: HEADROOM,
     };
     ready();
     server.run();
@@ -1370,6 +1398,9 @@ impl Server {
             return;
         };
         let mut closed = conn.hear(self.read_buffer.as_mut_slice());
+        if let Some(why) = conn.refusal.take() {
+            conn.refuse(&mut self.session, &why, Instant::now());
+        }
         // Held apart while the frames it lends are handled.
         let mut decoder = mem::take(&mut conn.decoder);
         let mut frames = 0usize;
@@ -1386,6 +1417,10 @@ impl Server {
                 Ok(false) => break,
                 Err(error) => {
                     log!("a client sent a bad frame: {error}");
+                    if let Some(conn) = self.conns.get_mut(index) {
+                        let why = format!("what the client sent was refused: {error}");
+                        conn.refuse(&mut self.session, &why, Instant::now());
+                    }
                     closed = true;
                     break;
                 }
@@ -1523,7 +1558,18 @@ impl Server {
                     return Ok(false);
                 };
                 conn.body = conn.bodies.pop_front().flatten();
-                self.ordered_request(index, asked, now);
+                // A server the OS would give no more memory takes no
+                // request, which may grow it: refused, it lives (D-156).
+                if !crate::has_room(self.headroom) {
+                    let why = format!(
+                        "the server is out of memory: the OS would not give it {} bytes more, \
+                         so it takes no request; nothing changed",
+                        self.headroom
+                    );
+                    conn.answer(session, Reply::failed(Code::Memory, why), now);
+                } else {
+                    self.ordered_request(index, asked, now);
+                }
             }
             // Nothing more is asked of a waiting command. A
             // connection that is ending has had its last word: what came
@@ -2082,6 +2128,7 @@ mod tests {
                 spare: None,
                 spare_waits: false,
                 accept_logged: None,
+                headroom: HEADROOM,
             },
             peer,
         ))
@@ -2125,6 +2172,55 @@ mod tests {
         server.session.pump(Instant::now());
         assert!(server.session.answered_yet(*ask), "still waited for");
         assert!(server.session.answer_to(*ask).is_none(), "its answer kept");
+        Ok(())
+    }
+
+    /// A server the OS would give no more memory refuses a request as
+    /// `out-of-memory`, changing nothing, and goes on serving (D-156).
+    #[test]
+    fn a_server_out_of_memory_refuses_a_request_and_lives() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::io::Write;
+        let (mut server, _peer) = server()?;
+        // More than any process is given.
+        server.headroom = usize::MAX;
+        let (stream, mut client) = UnixStream::pair()?;
+        let mut conn = linked(stream, Some(crate::link::Expect::Asked))?;
+        conn.stage = Stage::Command;
+        server.conns.push(conn);
+        let asked = Asked {
+            after: None,
+            request: fux_wire::command::Command::KillServer.into(),
+            context: Context::default(),
+        };
+        client.write_all(&asked.encode())?;
+        let deadline = after(Instant::now(), Duration::from_secs(10));
+        while client_bytes(server.conns.get(1).ok_or("its connection")?).is_empty() {
+            if Instant::now() > deadline {
+                return Err("its request was not answered".into());
+            }
+            heard(&mut server, 1)?;
+        }
+        let mut decoder = Decoder::default();
+        decoder.push(&client_bytes(server.conns.get(1).ok_or("its connection")?));
+        let Some(ToCommand::Part(part)) = decoder.frame()? else {
+            return Err("no reply".into());
+        };
+        let reply = fux_wire::wire::Reader::new(&part).whole::<Reply>()?;
+        assert!(
+            matches!(
+                &reply.response,
+                fux_wire::protocol::Response::Failed {
+                    code: Code::Memory,
+                    ..
+                }
+            ),
+            "{reply:?}"
+        );
+        // Not run: its pane is there, and its connection takes the next.
+        assert!(server.session.locate(PaneId::of(1)).is_some());
+        let conn = server.conns.get(1).ok_or("its connection")?;
+        assert!(matches!(conn.stage, Stage::Command), "ended");
         Ok(())
     }
 
@@ -2201,6 +2297,7 @@ mod tests {
             spare: None,
             spare_waits: false,
             accept_logged: None,
+            headroom: HEADROOM,
         };
         Ok((server, peers, client))
     }

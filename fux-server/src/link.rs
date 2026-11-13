@@ -300,10 +300,16 @@ pub enum ToSide {
     /// Body `token`, which a question its server asked waits for: the
     /// connection's client's inputs (`Ask::Keys`, `Typed::Body`).
     Body { token: u64, inputs: Vec<Input> },
+    /// Body `token` comes next on this link: if the link ends first, or
+    /// what comes can't be held, what waits for it is refused (D-156).
+    Coming { token: u64 },
+    /// Body `token` comes no more: its connection had no memory to send
+    /// it. What waits for it is refused.
+    Lost { token: u64 },
     /// The capture held as `token` (`Ask::Capture`), taken.
     Fetch { token: u64 },
 }
-wired!(ToSide { Watch, Taken, Body { token, inputs }, Fetch { token } });
+wired!(ToSide { Watch, Taken, Body { token, inputs }, Coming { token }, Lost { token }, Fetch { token } });
 
 /// From a pane's process to a connection's that reached it.
 #[derive(Clone, Debug)]
