@@ -27,8 +27,9 @@ use std::time::{Duration, Instant};
 /// The most it reads from its client before it looks at its server, and
 /// the most it holds of what its client sent ahead of its stage.
 const READ: usize = 256 * 1024;
-/// What a client that sent that much ahead is told as it is refused.
-const AHEAD: &str = "more than 256 KiB sent before the last request was answered: \
+/// What a client that sent that much ahead of a request that waits is told
+/// as it is refused.
+const AHEAD: &str = "more than 256 KiB sent while a request waited: \
                      a request is sent once the one before it is answered";
 /// The least time between two paints for a client, as a flood is painted.
 /// A keystroke's echo (`Clock::echo`) and panes gone quiet (`QUIET`) are
@@ -864,6 +865,9 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     let mut composer = Composer::new(Instant::now());
     let mut want = Want::Hello;
     let (mut answered, mut shut, mut closing) = (false, false, false);
+    // Its client's request waits, its server said: no answer comes till
+    // what it waits for does.
+    let mut waits = false;
     // Bytes its server sent its client, not all written yet: its server is
     // told once they are (`Flushed`). Its own paints and replies are no
     // news to it.
@@ -930,12 +934,16 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             }
         }
         // Whether its stage takes its client's frames now. What it doesn't
-        // take yet is held, `READ` at most: a client that sent that much
-        // ahead is refused: told why (`AHEAD`), and from then on a client
-        // gone, which its server ends. So its client is read at every
-        // stage, and its end is always heard.
+        // take yet is held, `READ` at most, and past that its client is not
+        // read till it does. Its end is heard all the same: an answer on
+        // its way is written to it, which fails once it is gone. But a
+        // request that waits (its server's, or at a pane for its reply) is
+        // owed nothing to write, so a client that sent that much ahead of
+        // one is refused: told why (`AHEAD`), and from then on a client
+        // gone, which its server ends.
         let takes = !shut && !matches!(want, Want::Answer | Want::Nothing);
-        if !(ended || shut || closing || takes) && decoder.buffered() >= READ {
+        let full = !takes && decoder.buffered() >= READ;
+        if full && want == Want::Answer && (waits || making) && !(ended || shut || closing) {
             out.push_with(|frames| fux_wire::protocol::ToCommand::Exit(AHEAD).encode_into(frames));
             decoder = Decoder::default();
             link.send(&FromConn::Shut);
@@ -978,8 +986,8 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             return Ok(());
         }
         // Its client is read whatever its stage, to hear its end, till it
-        // ended or its connection does.
-        let listens = !(ended || shut || closing);
+        // ended or its connection does, or as much is held as may be.
+        let listens = !(ended || shut || closing || full);
         let wake = composer.due(out.is_empty());
         // An errand with no link left to wait on goes on at once.
         let timeout = match errands.iter().any(|errand| errand.links().is_empty()) {
@@ -1168,7 +1176,8 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                         unflushed = true;
                     }
                     ToConn::Expect(expect) => want = Want::Frames(expect),
-                    ToConn::Answered => answered = true,
+                    ToConn::Answered => (answered, waits) = (true, false),
+                    ToConn::Waits => waits = true,
                     ToConn::Hello { panes, run } => composer.panes = Some((panes, run)),
                     ToConn::Scene(scene) => composer.scene(*scene),
                     ToConn::Deliver { body, token, panes } => {
@@ -1372,6 +1381,8 @@ mod tests {
         // Its request waits from here on: its server answers nothing.
         let asked = said(&mut server)?;
         assert!(matches!(asked, FromConn::Frame { .. }), "asked");
+        server.send(&ToConn::Waits);
+        server.flush_all().map_err(|errno| errno.to_string())?;
         Ok((theirs, server, conn))
     }
 
@@ -1422,7 +1433,8 @@ mod tests {
     }
 
     /// A client that sends ahead, while its request waits, as much as is
-    /// held of it is refused: told why (an `Exit`), and its server told it
+    /// held of it is refused (one whose answer is on its way is only read
+    /// no more, `tests/servers.rs`): told why (an `Exit`), and its server told it
     /// is gone, which ends its wait and its process. No more of it is held
     /// than that.
     #[cfg(unix)]

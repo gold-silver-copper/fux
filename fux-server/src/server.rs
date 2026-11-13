@@ -400,6 +400,11 @@ impl Conn {
             | Stage::Closing
             | Stage::Dead => {}
         }
+        // Its process is told a request waits: it holds its client to less
+        // meanwhile (`conn::serve`).
+        if matches!(self.stage, Stage::Blocked(_) | Stage::Waiting(_)) {
+            self.tell_process(&crate::link::ToConn::Waits);
+        }
         match (&self.stage, next_expects) {
             // A command client's next request is read once its answer is
             // written (`answer`).
