@@ -199,7 +199,7 @@ the wrong type, a form that doesn't read …); 4 if the pane waited on closed; 1
 in time; and 141, quietly, if stdout's reader went (`| head -n 1`). The
 first argument is a whole program, never a file; `fux
 --file FILE ARGS…` runs a file, so a script can start with `#!/usr/bin/env
--S fux --file`, and `fux -` runs what stdin says.
+-S fux --file`, and `fux - ARGS…` runs what stdin says.
 
 A handle names everything under it: `information`, `dump`, `events`, `panes`,
 `tabs` and `kill` take a pane, a tab, a workspace or `(all)`, and apply to

@@ -142,6 +142,10 @@ Ballots: `~/code/notes/projects/fux/vision/panel/ballot-1.md` and `~/code/notes/
 | D-149 | **A request is the options that made it,** `(request! SUBJECT (OPTION ARG...)...)`, replayed through the same words when read, so what they check is checked again. No codec | PR | this PR |
 | D-150 | **Open, for the owner: D-12 and grift.** D-12 (owner) says text from a screen never becomes code; grift has `evaluate` and `read-form`, so a program can do that, as any Lisp can. Nothing in fux does it by itself. Not superseded here: the owner either supersedes D-12 or asks fux to take `evaluate` from programs | open | review of this PR |
 | D-151 | **Supersedes D-12, settles D-150: fux itself never runs text from a screen; a user's own program may.** `evaluate` and `read-form` stay in programs, and the docs warn about it. A program can already send keys to a shell, which runs text anyway | owner, 2026-11-05 | this PR |
+| D-152 | **`fux - ARGS…` gives the stdin program the arguments after `-`,** as `fux --file FILE ARGS…` and a command-line program get theirs, rather than refusing them: one rule for every way a program comes | PR | found in use, this PR |
+| D-153 | **Words that take text refuse a float and say "integer".** A float has no one text (`1.5`, `1.50`, `3e-1`), so `(string X)` says which is meant; the error and help name what is taken | PR | found in use, this PR |
+| D-154 | **A paste sends each line end as a CR, as xterm sends a paste (`pasteLiteralNL` off);** the behaviour stays and `paste`'s help says it. `bytes` sends an LF as it is | PR | found in use, this PR |
+| D-155 | **A live `get` of a field a pane, tab or workspace doesn't answer live, but its topology snapshot record holds, names the snapshot route.** The client asks for that snapshot only on the failure, so `record::snapshot` stays the one place naming the fields | PR | found in use, this PR |
 
 ## Settled by the decision panel, sitting 2 (2026-10-30): how fux gets finished
 

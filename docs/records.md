@@ -184,7 +184,9 @@ batch from it (`(next-events (all) CURSOR 0)`) starts after that observation; a 
 requires another snapshot. OS observations happen during the turn but are not simultaneous OS
 snapshots. Each pane reports from its own process, so a snapshot holds each pane as the server last
 heard from it: it claims no moment the panes shared, and one pane's facts may be newer than
-another's. A pane version does not certify process metadata or client focus.
+another's. So a pane's `rows` and `columns` may still be its size before the last layout change, the
+tab's already the new one, until the pane reports: read a pane's size from its capture, which waits
+for that report. A pane version does not certify process metadata or client focus.
 
 A snapshot is one observation, never truncated or combined from several turns; narrower scopes are
 separate observations. Records nest at most 32 deep.
@@ -256,7 +258,9 @@ reads each line whole, so it may begin above the range. `links` holds a run of c
 one hyperlink (OSC 8) each, of the columns read: on row `row`, numbered as `rows` counts rows (the
 screen's rows, without `history` or `rows`), from column `column` (the row's own, counted from 0),
 `length` cells long, its target `uri`; a link that wraps has a run on each row. A link's text is what
-the screen shows; its `uri` is not.
+the screen shows; its `uri` is not. A URI with a byte outside printable ASCII (a raw `café`), over
+2083 bytes, or with an id over 250, links nothing: its text shows unlinked. A program percent-encodes
+such bytes, each UTF-8 byte as `%XX` (`caf%C3%A9`), and the text may stay Unicode.
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped` (each screen row a line).
 Blanks at a line's end are trimmed, but with `styles` those painted (a background, reverse video,
@@ -491,9 +495,9 @@ program may raise any kind: `(raise (error (quote! my-kind) 1 2))`.
 
 fux sets no limits of its own: memory, time and steps are the user's and the OS's to bound (`ulimit`,
 cgroups, `timeout`), and a program that loops is stopped as any program is. What nests too deep to
-cross the wire (a callback's lists past 64, records past 32, a layout past 64) fails `too-long`,
-whether the word or the server refuses it; a size no screen can have, past what a grid holds, fails
-`size`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
+cross the wire (a callback's lists past 64, records past 32) fails `too-long`, whether the word or
+the server refuses it. A layout is a flat list of nodes, so it nests as deep as its panes take it,
+with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
 handler catches; where fux's own code asks for it, the process aborts.
 [`codes.txt`](codes.txt) lists every kind with its exit status.
 

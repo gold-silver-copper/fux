@@ -533,8 +533,8 @@ fux '(explain "shows")'
 
 ## Run a grift program from a file or stdin
 
-`fux --file FILE ARGS…` runs a file, its arguments in `(arguments)`, and `fux -`
-runs what stdin says; a file can start `#!/usr/bin/env -S fux --file`. It prints
+`fux --file FILE ARGS…` runs a file, its arguments in `(arguments)`, and `fux - ARGS…`
+runs what stdin says, its arguments the same; a file can start `#!/usr/bin/env -S fux --file`. It prints
 what the program prints, then its last value; a failure says why on stderr and
 exits with its status. Neither needs a server unless the program asks one
 for something. Without fux, grift's own `grift` runner runs the same language,
@@ -545,6 +545,7 @@ printf '(define! square (lambda! (x) (multiply x x)))\n(square 7)\n' > square.gr
 fux --file square.grift
 printf '(add 3 4)\n' | fux -
 echo '(arguments)' > args.grift && fux --file args.grift one two
+echo '(arguments)' | fux - one two
 echo '(divide 1 0)' | fux - || [ $? -ne 0 ]
 ```
 
@@ -552,7 +553,8 @@ echo '(divide 1 0)' | fux - || [ $? -ne 0 ]
 
 A context is grift's table of names, and a value like any other: `(context ())`
 makes an empty one, `bind` sets a name in it, `lookup` reads one with a
-default, and `names` lists them. Lists hold everything else: `pair`, `first`,
+default, and `names` lists them. fux's `unbind` takes keys, so grift's, which
+removes a name, is read from `(standard-context)`. Lists hold everything else: `pair`, `first`,
 `rest`, `element-at`, `take`, `drop`, `map`, `filter`, `fold` and `sort`.
 
 ```sh
@@ -560,6 +562,11 @@ fux '(define! counts (context ()))
   (define! count! (lambda! (name) (bind counts name (add 1 (lookup counts name 0)))))
   (for-each count! (quote! (a b a)))
   (list (lookup counts (quote! a) 0) (names counts))'
+fux '(define! counts (context ()))
+  (bind counts (quote! a) 1)
+  (define! forget (lookup (standard-context) (quote! unbind) #inert))
+  (forget counts (quote! a))
+  (names counts)'
 fux '(element-at (map (lambda! (n) (multiply n n)) (list 1 2 3)) 2)'
 ```
 

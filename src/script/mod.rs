@@ -903,8 +903,8 @@ pub struct Cli {
 enum Given {
     /// The words given.
     Words,
-    /// stdin, which `input` then cannot read.
-    Stdin,
+    /// stdin, `-`, which `input` then cannot read, and the arguments after it.
+    Stdin(Vec<String>),
     /// A file, `--file FILE`, and the arguments after it.
     File(Vec<String>),
 }
@@ -953,14 +953,16 @@ impl Cli {
         Ok(match shell {
             Shell::Args => {
                 let args = match &self.from {
-                    Given::File(args) => args.iter().map(|a| Value::str(a.as_str())).collect(),
-                    Given::Words | Given::Stdin => Vec::new(),
+                    Given::File(args) | Given::Stdin(args) => {
+                        args.iter().map(|a| Value::str(a.as_str())).collect()
+                    }
+                    Given::Words => Vec::new(),
                 };
                 let list = List::new(args);
                 vec![Value::List(Rc::new(list))]
             }
             Shell::Input => match self.from {
-                Given::Stdin => {
+                Given::Stdin(_) => {
                     let why = "stdin: the program itself was read from it";
                     return Err(Failed::new(Code::Read, why));
                 }
@@ -1525,9 +1527,10 @@ fn main_program(
             Given::Words,
             None,
         ),
-        [p] if p == "-" => {
+        [p, rest @ ..] if p == "-" => {
             let text = read_text("stdin", io::stdin())?;
-            (Machine::source("stdin", &text), Given::Stdin, Some(text))
+            let given = Given::Stdin(rest.to_vec());
+            (Machine::source("stdin", &text), given, Some(text))
         }
         [flag] if flag == "--file" => {
             return Err(Failed::new(Code::Usage, "--file needs a FILE"));

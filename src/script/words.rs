@@ -304,7 +304,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("capture-source", "a pane, a request on one, or a client"),
     ("pane-builder", "a pane or a request on one"),
     ("ref", "a name, or a pane, tab or workspace"),
-    ("text", "a string, a number or a boolean"),
+    ("text", TEXT),
     ("new", "a setting's value: a number, #true or #false, or a list (fux '(explain \"set\")')"),
     ("var", "a string, a number, a boolean, or a pane, tab or workspace"),
     ("value", "a value (options and requests are none: what acts on them gives one)"),
@@ -375,7 +375,7 @@ words! {
         Config AttachDefaults "attach-defaults" "attachable --" raises(Type Unused Config NotConfig) "replace this client's preferred attach place; target-only retains the first name, name-only or empty clears the target; target and name conflict" "(sequence! (attach-defaults (name (options) \"main\")) #inert)" [Either: In Name];
         Config Set "set" "setting new --" raises(Type Config NotConfig) "a preference for this client only: `fux '(explain \"set\")'` lists their effects" "fux '(sequence! (set \"history-bytes\" 16777216) #inert)'" [];
         Reading Version "version" "pane-or-seen -- string" raises(Type asks) "a pane's current version, or the version an answer, pane capture or canonical text holds" "fux '(version (capture (pane 3)))'" [];
-        Shell Args "arguments" "-- list" raises() "the strings after the program on its command line, or after fux --file FILE (none for a key or a config)" "fux '(length (arguments))'" [];
+        Shell Args "arguments" "-- list" raises() "the strings after the program on its command line, after fux --file FILE, or after fux - (none for a key or a config)" "fux '(length (arguments))'" [];
         Shell Input "input" "-- string" raises(Read NotHere) "the rest of stdin, as UTF-8 text; not when the program came from stdin" "printf 'text\\n' | fux '(byte-length (input))'" [];
         Shell ReadFile "read-file" "path -- string" raises(Type Read NotHere) "a file's text, as UTF-8" "fux '(length (string-split (read-file \"notes.txt\") \"\\n\"))'" [];
         Shell Getenv "environment-variable" "name -- string" raises(Type UnsetVar NotHere) "an environment variable's value; one not set fails unset-variable" "fux '(environment-variable \"HOME\")'" [];
@@ -391,7 +391,7 @@ words! {
     Opt {
         Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux '(new-tab (program (size (name (in (options) \"agent\") \"web\") 80 24) \"./app\"))'";
         Starting Size "size" "x columns rows -- x" raises(Type Unused Size) "what its tab is always laid out on, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) \"./app\"))'";
-        Starting Cwd "directory" "x dir -- x" raises(Type Unused) "where it starts" "fux '(new-tab (program (size (directory (in (options) \"agent\") \"/srv\") 80 24) \"./app\"))'";
+        Starting Cwd "directory" "x dir -- x" raises(Type Unused) "where it starts. With none, a command line's program (run from a pane too) starts in the directory fux ran in, not the pane's it splits; a key's or prompt's in that pane's. A relative one is from the directory fux ran in, or a key's client's focused pane's" "fux '(new-tab (program (size (directory (in (options) \"agent\") \"/srv\") 80 24) \"./app\"))'";
         Starting Program "program" "x path -- x" raises(Type Unused) "the program to start, in place of a shell; its pane stays once it exits" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) \"./app\"))'";
         Starting HistoryBytes "history-bytes" "x integer -- x" raises(Type Unused Range) "history budget for the new pane, in bytes" "fux '(new-tab (program (history-bytes (in (options) \"agent\") 0) \"/bin/cat\"))'";
         Starting Reflow "reflow" "x boolean -- x" raises(Type Unused) "whether the new pane rewraps primary-screen lines on resize" "fux '(new-tab (program (reflow (in (options) \"agent\") #false) \"/bin/cat\"))'";
@@ -410,7 +410,7 @@ words! {
         Input Expect "expect" "seen -- expected-request" raises(Type Unused) "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux '(define! seen (capture (pane 3))) (when! (not? (empty-list? (search (string seen) \"[y/N]\" 0))) (send-keys (text (expect seen) \"y\"))) #inert'";
         Input Text "text" "x text -- x" raises(Type Unused) "text, typed" "fux '(send-keys (key (text (pane 3) \"ls -l\") \"Enter\"))'";
         Input Key "key" "x key -- x" raises(Type Unused NotAKey) "a key by its name: Enter, C-c, Up, F5" "fux '(send-keys (key (pane 3) \"C-c\"))'";
-        Input Paste "paste" "x text -- x" raises(Type Unused) "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux '(send-keys (key (paste (pane 3) \"a long prompt\") \"Enter\"))'";
+        Input Paste "paste" "x text -- x" raises(Type Unused) "text as a terminal pastes it: each line end (LF or CR LF) a CR, as xterm sends one; bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); bytes sends a LF as it is" "fux '(send-keys (key (paste (pane 3) \"a long prompt\") \"Enter\"))'";
         Input Bytes "bytes" "x bytes -- x" raises(Type Unused) "immutable bytes as they are, including non-UTF-8 input" "fux '(send-keys (bytes (pane 3) #bytes(27 91 65)))'";
         Reading History "history" "pane-builder lines -- pane-builder" raises(Type Unused Range) "capture: lines of history first (all-history: all of it)" "fux '(capture (history (pane 3) 100))'";
         Reading Wrapped "wrapped" "pane-builder -- pane-builder" raises(Type Unused) "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux '(capture (rows (wrapped (pane 3)) 0 2))'";
@@ -435,7 +435,7 @@ words! {
         Config Label "label" "text --" raises(Type NotConfig BadBinding) "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "(sequence! (bind-key \"C-b g v\" (code! (lambda! () (sequence! (split (axis (focused (me)) \"horizontal\")) #inert)))) (label \"split right\") #inert)";
         Config Group "group" "name --" raises(Type NotConfig BadBinding) "the column's heading for the last binding" "(sequence! (bind-key \"C-b g v\" (code! (lambda! () (sequence! (split (axis (focused (me)) \"horizontal\")) #inert)))) (group \"panes\") #inert)";
         Config Repeat "repeat" "keys --" raises(Type NotConfig BadBinding) "the map the keys hold repeats: it stays after a key of it runs, until Esc (config)" "(sequence! (bind-key \"C-b g h\" (code! (lambda! () (sequence! (move-border (focused (me)) \"left\" 2) #inert)))) (repeat \"C-b g\") #inert)";
-        Config Unbind "unbind" "keys --" raises(Type NotConfig BadBinding) "keys run or hold nothing, and a map they leave empty goes" "(sequence! (unbind \"C-b g v\") #inert)";
+        Config Unbind "unbind" "keys --" raises(Type NotConfig BadBinding) "keys run or hold nothing, and a map they leave empty goes. It hides grift's (unbind context symbol), the one name of grift's fux takes: (lookup (standard-context) (quote! unbind) #inert) is grift's" "(sequence! (unbind \"C-b g v\") #inert)";
         Config BindAction "bind-action" "key code --" raises(Type NotConfig BadBinding) "a list's key runs code, receiving client payload; Escape cannot be bound" "(sequence! (bind-action \"r\" (code! (lambda! (client target) (rename-prompt client target)))) (label \"rename\") #inert)";
         Config BindIn "bind-in" "screen key action --" raises(Type NotConfig BadBinding) "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "(sequence! (bind-in \"list\" \"g\" \"first\") (label \"first\") #inert)";
         Config UnbindIn "unbind-in" "screen key --" raises(Type NotConfig BadBinding) "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "(sequence! (unbind-in \"list\" \"g\") #inert)";
@@ -517,14 +517,19 @@ fn string(value: &Value<Fux>) -> Result<String, Failure> {
     Ok(s.to_string())
 }
 
-/// A value as words that take text read it: a string, or a number.
+/// What words that take text take: a float has no one text, so it is
+/// refused, and `(string 1.5)` says which text is meant.
+const TEXT: &str = "a string, an integer or a boolean";
+
+/// A value as words that take text read it: a string, an integer or a
+/// boolean.
 fn text(value: &Value<Fux>) -> Result<String, Failure> {
     match value {
         Value::Str(_) | Value::Symbol(_) => string(value),
         Value::Int(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
         other @ (Value::Float(_) | Value::Bytes(_) | Value::List(_) | Value::App(_)) => {
-            Err(wrong("a string, a number or a boolean", other))
+            Err(wrong(TEXT, other))
         }
     }
 }

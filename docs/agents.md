@@ -479,7 +479,7 @@ line and stdin); `(include! "FILE")` reads one each time, in the caller's contex
 reads, a FIFO or `<(…)` among them; a cycle fails. No config is loaded
 by a command line unless it requires it.
 
-A file of grift runs with `fux --file FILE ARGS…` (or `fux -` from stdin;
+A file of grift runs with `fux --file FILE ARGS…` (or `fux - ARGS…` from stdin;
 a script may start `#!/usr/bin/env -S fux --file`), and keeps its names
 between steps:
 

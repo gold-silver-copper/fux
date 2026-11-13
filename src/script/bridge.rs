@@ -1,6 +1,6 @@
 //! Grift evaluates policy; native calls marshal into the existing request vocabulary.
 use super::*;
-use fux_wire::command::Percent;
+use fux_wire::command::{Command, Percent};
 use grift::{Answer, Error, Grift, HostCall, Kind, Ran, Value as G};
 
 #[derive(Clone, Debug)]
@@ -483,6 +483,49 @@ fn field_of<T>(g: &mut HostCall<'_, T>, record: &G, field: &G) -> Result<Option<
     Err(g.error("no-field", &[about]))
 }
 
+/// Where a field a live pane, tab or workspace doesn't answer can be read:
+/// a topology snapshot's record of it, if that holds the field. The
+/// snapshot is asked for, so its record (`record::snapshot`) stays the one
+/// place that names its fields.
+fn snapshot_route<A: Asks + ?Sized>(
+    asks: &mut A,
+    asked: &Asked,
+    scope: fux_wire::inspect::Scope,
+    field: &str,
+) -> Option<String> {
+    let fux_wire::inspect::Scope::Target(target) = scope else {
+        return None;
+    };
+    let (word, list) = match target {
+        AnyRef::Pane(_) => ("pane", "panes"),
+        AnyRef::Tab(_) => ("tab", "tabs"),
+        AnyRef::Workspace(_) => ("workspace", "workspaces"),
+    };
+    let snapshot = Asked {
+        after: None,
+        context: asked.context.clone(),
+        request: Request::Do(Command::Inspect {
+            scope,
+            projection: fux_wire::inspect::Projection::Topology,
+        }),
+    };
+    let reply = asks.ask(&snapshot).ok()?;
+    let Some(Value::App(Fux::Record(record))) = answered(reply).ok()?.into_iter().next() else {
+        return None;
+    };
+    // Scoped to it, its own record comes first in its list.
+    let Value::List(records) = record.get(list).ok()? else {
+        return None;
+    };
+    let Some(Value::App(Fux::Record(own))) = records.items().first().cloned() else {
+        return None;
+    };
+    own.get(field).ok()?;
+    Some(format!(
+        "; a snapshot's record of it has it: (get (first (get (snapshot ({word} \"{target}\") \"topology\") \"{list}\")) \"{field}\")"
+    ))
+}
+
 /// A word's call as a failure's effect list says it (D-25): its name and
 /// values as data, cut short past what a line of a notice shows.
 fn call_text<T>(g: &Grift<T>, name: &str, args: &[G]) -> String {
@@ -633,6 +676,14 @@ fn asked<'a, 'b, A: Asks + ?Sized>(
             if let End::Failed { code, message } = reply.end() {
                 let answer =
                     answered(reply).map_err(|f| failure(g, Failure::new(f.code, f.message)))?;
+                let route = match (code, &asked.request) {
+                    (Code::NoField, Request::Do(Command::Inspect { scope, .. })) => {
+                        let field = args.get(1).map(|f| g.as_str(f)).transpose()?.flatten();
+                        field.and_then(|field| snapshot_route(state.asks, &asked, *scope, field))
+                    }
+                    _ => None,
+                };
+                let message = message + &route.unwrap_or_default();
                 let mut values = vec![g.string(&message)?];
                 for v in answer {
                     values.push(to_grift(g, &v)?);
