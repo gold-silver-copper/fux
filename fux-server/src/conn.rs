@@ -962,6 +962,10 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             return Ok(());
         }
         let reads = !shut && !ended && !matches!(want, Want::Answer | Want::Nothing);
+        // Its client is listened to whatever its stage, to hear its end:
+        // what a stage does not take yet is held, `READ` at most, and past
+        // that only a hang-up is heard (`Events::WATCH`).
+        let listens = !ended && (reads || decoder.buffered() < READ);
         let wake = composer.due(out.is_empty());
         // An errand with no link left to wait on goes on at once.
         let timeout = match errands.iter().any(|errand| errand.links().is_empty()) {
@@ -969,19 +973,23 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             false => wake.map(|at| at.saturating_duration_since(now)),
         };
         let mut fds = poll.list();
-        // Not read, its client is watched for its end (`Events::WATCH`), till
-        // that is seen: then nothing more is to be heard of it.
-        let mut theirs = match ended {
-            true => Events::NONE,
-            false => Events::WATCH,
+        let mut theirs = match (ended, listens) {
+            (true, _) => Events::NONE,
+            (false, true) => Events::IN,
+            (false, false) => Events::WATCH,
         };
-        if reads {
-            theirs |= Events::IN;
-        }
         if !out.is_empty() {
             theirs |= Events::OUT;
         }
-        fds.push(PollFd::new(&client, theirs));
+        // Its end heard and nothing left to write it, its client is waited
+        // on no more: a hang-up, told unasked, would wake every wait.
+        let watched = !ended || !out.is_empty();
+        if watched {
+            fds.push(PollFd::new(&client, theirs));
+        }
+        // Where its server's link is among those waited on, the rest after.
+        let ours_at = usize::from(watched);
+        let rest = ours_at.saturating_add(1);
         let ours = match link.out.is_empty() {
             true => Events::IN,
             false => Events::IN | Events::OUT,
@@ -1023,10 +1031,16 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         }
         let ready: Vec<Events> = fds.revents().collect();
         let now = Instant::now();
-        // A client seen to end is read to that end whatever its stage, so
-        // that its server is told (`Shut`).
-        let client_ready = ready.first().copied().unwrap_or(Events::NONE);
-        if reads && !client_ready.is_empty() || client_ready.intersects(Events::WATCH) {
+        // A client is read to its end whatever its stage, so that its
+        // server is told (`Shut`); one that hung up, though more is held of
+        // it than its stage takes: what is left of it is no more than its
+        // socket held.
+        let client_ready = match watched {
+            true => ready.first().copied().unwrap_or(Events::NONE),
+            false => Events::NONE,
+        };
+        let hung_up = client_ready.intersects(Events::HUP | Events::ERR);
+        if !ended && (listens && !client_ready.is_empty() || hung_up) {
             let mut read = 0usize;
             while read < READ {
                 match fuxix::io::read(&client, &mut buffer) {
@@ -1043,12 +1057,12 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 }
             }
         }
-        let heard: Vec<(PaneId, bool)> = (sides.iter().zip(ready.iter().skip(2)))
+        let heard: Vec<(PaneId, bool)> = (sides.iter().zip(ready.iter().skip(rest)))
             .map(|(id, flags)| (*id, !flags.is_empty()))
             .collect();
         composer.heard(&mut buffer, &heard, now);
         // Bodies other connections sent its client.
-        let mut at = sides.len().saturating_add(2);
+        let mut at = sides.len().saturating_add(rest);
         if let (Some(listen), Some((_, run))) = (&mut listening, &composer.panes) {
             let readable: Vec<bool> = (ready.iter().skip(at).take(listened))
                 .map(|flags| !flags.is_empty())
@@ -1078,7 +1092,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         }
         errands = going;
         let mut gone = false;
-        if ready.get(1).is_some_and(|f| !f.is_empty()) {
+        if ready.get(ours_at).is_some_and(|f| !f.is_empty()) {
             gone = link.read(&mut buffer) == Read::Closed;
             loop {
                 match link.next_message::<ToConn>() {
