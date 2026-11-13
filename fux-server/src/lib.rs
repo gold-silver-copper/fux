@@ -98,7 +98,7 @@ pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
 /// for, and given straight back. Each of fux's processes does one thing at
 /// a time, so what it is given once it can be given again: a process asks
 /// before it takes what another's bytes will cost it, and refuses them if
-/// not, where running out part-way would end it (D-156).
+/// not, where running out part-way would end it (D-159).
 pub(crate) fn has_room(bytes: usize) -> bool {
     let mut probe = Vec::<u8>::new();
     let given = probe.try_reserve_exact(bytes).is_ok();

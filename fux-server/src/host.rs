@@ -981,7 +981,7 @@ impl Host {
             self.report(FromPane::Retired(token));
         }
         // What does not fit is refused whole, and its client told why:
-        // its program and what it has not read yet stay (D-156).
+        // its program and what it has not read yet stay (D-159).
         let refused = refused.or_else(|| self.pane_mut().type_in(&bytes).err());
         if let Some(refused) = refused {
             let why = refused.to_string();
@@ -1440,7 +1440,7 @@ impl Host {
 
     /// Body `token` comes no more: its sender's connection, or this
     /// process, was refused the memory for it. What waits for it is
-    /// refused, to whoever sent it; what would, once it asks (D-156).
+    /// refused, to whoever sent it; what would, once it asks (D-159).
     pub fn body_lost(&mut self, token: u64) {
         match self.awaiting.remove(&token) {
             Some(Awaiting::Keys { ask, .. }) => {
@@ -1748,7 +1748,7 @@ pub(crate) fn ended(pane: PaneId, status: Ended) -> Error {
 
 /// Refuses `inputs` for `pane` unless the OS would give the memory to
 /// encode them: a copy as its program takes them, and for a paste with
-/// line ends, two more as they are made carriage returns (D-156).
+/// line ends, two more as they are made carriage returns (D-159).
 fn room(pane: PaneId, inputs: &[Input]) -> Result<(), Error> {
     let sent = crate::conn::held(inputs);
     let line_ends = |input: &Input| matches!(input, Input::Paste(text) if text.contains('\n'));
@@ -2347,7 +2347,7 @@ mod tests {
 
     /// Input the OS gives a pane no memory for, its program reading none,
     /// is refused whole to whoever sent it, a request or a client typing:
-    /// what waited stays, and its program lives (D-156).
+    /// what waited stays, and its program lives (D-159).
     #[test]
     fn input_a_pane_has_no_memory_for_is_refused_and_the_pane_lives() -> TestResult {
         let mut host = lone(5, 20)?;
@@ -2379,7 +2379,7 @@ mod tests {
 
     /// A body that comes no more, its sender or this process refused the
     /// memory for it, refuses what waits for it, and what asks for it
-    /// after: no question waits for ever (D-156).
+    /// after: no question waits for ever (D-159).
     #[test]
     fn a_body_that_comes_no_more_refuses_what_waits_for_it() -> TestResult {
         let mut host = lone(5, 20)?;

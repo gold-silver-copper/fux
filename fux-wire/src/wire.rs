@@ -25,7 +25,7 @@ pub enum Error {
     /// Bytes after the value.
     Trailing,
     /// The OS refused the memory to hold a text or a list of this many
-    /// bytes (D-156).
+    /// bytes (D-159).
     Memory(usize),
 }
 

@@ -463,7 +463,7 @@ impl Errand {
             } => {
                 let inputs = bodies.remove(&body).unwrap_or_default();
                 // With no memory for the copy its link holds, they reach
-                // no client, and their asker is told so (D-156).
+                // no client, and their asker is told so (D-159).
                 let end = (crate::has_room(held(&inputs)))
                     .then(|| reach(&client_socket(panes, client), run))
                     .flatten()
@@ -741,7 +741,7 @@ impl Composer {
     /// one that can't hold it refuses what waits for it; and with no
     /// memory here for the copy each pane's link holds till it is sent,
     /// that it comes no more (`ToSide::Lost`), which refuses the same
-    /// (D-156).
+    /// (D-159).
     fn deliver(&mut self, token: u64, inputs: Vec<Input>, panes: &[PaneId]) -> Vec<Errand> {
         let copies = held(&inputs).saturating_mul(panes.len());
         let message = match crate::has_room(copies) {

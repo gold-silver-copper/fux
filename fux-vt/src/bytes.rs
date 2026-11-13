@@ -49,7 +49,7 @@ impl ByteQueue {
     }
     /// `push`, unless the OS refuses the memory: then nothing is queued, and
     /// what was queued stays. For bytes whose count another process chose
-    /// (D-156). Growth is asked for doubled first, so that pushes cost one
+    /// (D-159). Growth is asked for doubled first, so that pushes cost one
     /// copy on average, and exactly when that much is refused.
     pub fn try_push(&mut self, more: &[u8]) -> Result<(), std::collections::TryReserveError> {
         self.compact();

@@ -48,7 +48,7 @@ const INPUT_KEEP: usize = 64 << 10;
 /// end to end, to be written together, however many pieces they came in.
 /// It has no bound of its own (D-83): it grows as the OS gives it memory,
 /// and what the OS gives none for is refused whole, what waits staying
-/// (D-156).
+/// (D-159).
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
@@ -1504,7 +1504,7 @@ impl Pane {
     }
 
     /// Queues `bytes` of input for its program, all of them or none: why
-    /// none, for whoever sent them (D-156).
+    /// none, for whoever sent them (D-159).
     fn push(&mut self, bytes: &[u8]) -> Result<(), fux_wire::code::Error> {
         use fux_wire::code::{Code, fail};
         let (id, sent) = (self.id(), bytes.len());

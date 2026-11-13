@@ -301,7 +301,7 @@ pub enum ToSide {
     /// connection's client's inputs (`Ask::Keys`, `Typed::Body`).
     Body { token: u64, inputs: Vec<Input> },
     /// Body `token` comes next on this link: if the link ends first, or
-    /// what comes can't be held, what waits for it is refused (D-156).
+    /// what comes can't be held, what waits for it is refused (D-159).
     Coming { token: u64 },
     /// Body `token` comes no more: its connection had no memory to send
     /// it. What waits for it is refused.

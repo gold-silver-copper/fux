@@ -45,7 +45,7 @@ pub enum Error {
     /// A payload that does not read as its frame's.
     Wire(crate::wire::Error),
     /// The OS refused the memory to hold what came, this many bytes of it
-    /// held so far (D-156).
+    /// held so far (D-159).
     Memory(usize),
 }
 
@@ -1053,7 +1053,7 @@ mod tests {
     }
 
     /// A decoder refused the memory for what its sender sent holds no
-    /// more and says so: it never ends its process (D-156).
+    /// more and says so: it never ends its process (D-159).
     #[test]
     fn a_frame_the_decoder_has_no_memory_for_is_refused() -> Result<(), Box<dyn std::error::Error>>
     {

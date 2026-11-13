@@ -498,7 +498,7 @@ impl Conn {
 
     /// Ends the connection saying `why`, as its stage says a last word: a
     /// client whose frames can't be taken (no frame, or more than there is
-    /// memory for, D-156) is told so, never just closed. One that waits
+    /// memory for, D-159) is told so, never just closed. One that waits
     /// for an answer sent nothing to refuse.
     fn refuse(&mut self, session: &mut Session, why: &str, now: Instant) {
         match self.stage {
@@ -584,7 +584,7 @@ pub struct Server {
 
 /// What the server must still be able to get to take a request: the
 /// largest frame one arrives in, which bounds what one makes it hold
-/// (D-156).
+/// (D-159).
 pub const HEADROOM: usize = fux_wire::protocol::MAX_FRAME;
 
 /// Allocate the shared buffer without putting a large array on the stack.
@@ -1561,7 +1561,7 @@ impl Server {
                 };
                 conn.body = conn.bodies.pop_front().flatten();
                 // A server the OS would give no more memory takes no
-                // request, which may grow it: refused, it lives (D-156).
+                // request, which may grow it: refused, it lives (D-159).
                 if !crate::has_room(self.headroom) {
                     let why = format!(
                         "the server is out of memory: the OS would not give it {} bytes more, \
@@ -2178,7 +2178,7 @@ mod tests {
     }
 
     /// A server the OS would give no more memory refuses a request as
-    /// `out-of-memory`, changing nothing, and goes on serving (D-156).
+    /// `out-of-memory`, changing nothing, and goes on serving (D-159).
     #[test]
     fn a_server_out_of_memory_refuses_a_request_and_lives() -> Result<(), Box<dyn std::error::Error>>
     {
