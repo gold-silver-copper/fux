@@ -2345,19 +2345,19 @@ mod tests {
         Ok(Host::begin(begin, Instant::now())?)
     }
 
-    /// Input past what a pane holds for a program that reads none is
-    /// refused whole to whoever sent it, a request or a client typing: what
-    /// waited stays, and its program lives (D-156).
+    /// Input the OS gives a pane no memory for, its program reading none,
+    /// is refused whole to whoever sent it, a request or a client typing:
+    /// what waited stays, and its program lives (D-156).
     #[test]
-    fn input_past_what_a_pane_holds_is_refused_and_the_pane_lives() -> TestResult {
+    fn input_a_pane_has_no_memory_for_is_refused_and_the_pane_lives() -> TestResult {
         let mut host = lone(5, 20)?;
-        host.pane_mut().set_input_limit(8);
+        host.pane_mut().input_memory(8);
         let text = |text: &str| [Input::Text(text.into())];
         let taken = host.send_keys(&text("12345"), None);
         assert!(matches!(taken, Ok(Answered::Acted(_))), "{taken:?}");
         drop(host.take());
         let refused = host.send_keys(&text("6789"), None).err().ok_or("taken")?;
-        assert_eq!(refused.code(), Code::TooLong, "{refused}");
+        assert_eq!(refused.code(), Code::Memory, "{refused}");
         let client = ClientId::of(1);
         host.typed(client, Typed::Paste("6789".into()));
         let told = host.take();

@@ -1398,9 +1398,6 @@ impl Server {
             return;
         };
         let mut closed = conn.hear(self.read_buffer.as_mut_slice());
-        if let Some(why) = conn.refusal.take() {
-            conn.refuse(&mut self.session, &why, Instant::now());
-        }
         // Held apart while the frames it lends are handled.
         let mut decoder = mem::take(&mut conn.decoder);
         let mut frames = 0usize;
@@ -1429,6 +1426,11 @@ impl Server {
         if let Some(conn) = self.conns.get_mut(index) {
             decoder.shrink(CONN_KEEP);
             conn.decoder = decoder;
+            // Told once what it sent before is taken: a frame that ended
+            // it first (a detach) has had the last word.
+            if let Some(why) = conn.refusal.take() {
+                conn.refuse(&mut self.session, &why, Instant::now());
+            }
             // A command client that shut its side still gets the answers
             // to what it asked.
             if closed {
@@ -2180,11 +2182,10 @@ mod tests {
     #[test]
     fn a_server_out_of_memory_refuses_a_request_and_lives() -> Result<(), Box<dyn std::error::Error>>
     {
-        use std::io::Write;
         let (mut server, _peer) = server()?;
         // More than any process is given.
         server.headroom = usize::MAX;
-        let (stream, mut client) = UnixStream::pair()?;
+        let (stream, _client) = UnixStream::pair()?;
         let mut conn = linked(stream, Some(crate::link::Expect::Asked))?;
         conn.stage = Stage::Command;
         server.conns.push(conn);
@@ -2193,14 +2194,9 @@ mod tests {
             request: fux_wire::command::Command::KillServer.into(),
             context: Context::default(),
         };
-        client.write_all(&asked.encode())?;
-        let deadline = after(Instant::now(), Duration::from_secs(10));
-        while client_bytes(server.conns.get(1).ok_or("its connection")?).is_empty() {
-            if Instant::now() > deadline {
-                return Err("its request was not answered".into());
-            }
-            heard(&mut server, 1)?;
-        }
+        let conn = server.conns.get_mut(1).ok_or("its connection")?;
+        conn.decoder.push(&asked.encode());
+        server.serve_conn(1, PollFlags::IN, Instant::now());
         let mut decoder = Decoder::default();
         decoder.push(&client_bytes(server.conns.get(1).ok_or("its connection")?));
         let Some(ToCommand::Part(part)) = decoder.frame()? else {

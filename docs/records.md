@@ -498,7 +498,11 @@ cgroups, `timeout`), and a program that loops is stopped as any program is. What
 cross the wire (a callback's lists past 64, records past 32) fails `too-long`, whether the word or
 the server refuses it. A layout is a flat list of nodes, so it nests as deep as its panes take it,
 with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
-handler catches; where fux's own code asks for it, the process aborts.
+handler catches. Where a fux process is refused the memory to hold what a client sent (a request, a
+paste, input for a pane), that request fails `out-of-memory` and the process, its panes and their
+programs live; a request too large for its connection to hold ends that connection, saying so. A
+server the OS would give no further 1 MiB takes no request, each failing `out-of-memory`, till it
+can. Elsewhere in fux's own code a refused allocation still aborts the process.
 [`codes.txt`](codes.txt) lists every kind with its exit status.
 
 A program catches a failure by kind with `(catch-kind! EXPRESSION KIND NAME HANDLER...)`, or any with

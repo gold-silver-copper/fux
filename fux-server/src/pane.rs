@@ -41,38 +41,28 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// The most input a pane holds that its program has not read yet (D-156).
-pub const INPUT_MAX: usize = 64 << 20;
-
 /// The memory an empty input queue keeps for what is typed next.
 const INPUT_KEEP: usize = 64 << 10;
 
 /// Input and terminal replies waiting for the pane's program to read them,
 /// end to end, to be written together, however many pieces they came in.
-/// It holds `limit` bytes at most, and grows only as the OS gives it
-/// memory: what does not fit is refused whole, and what waits stays.
+/// It has no bound of its own (D-83): it grows as the OS gives it memory,
+/// and what the OS gives none for is refused whole, what waits staying
+/// (D-156).
+#[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
     touched: bool,
-    limit: usize,
+    /// What a test's OS gives it memory for: this many bytes, no more.
+    #[cfg(test)]
+    given: Option<usize>,
 }
 
-impl Default for InputQueue {
-    fn default() -> InputQueue {
-        InputQueue {
-            bytes: ByteQueue::default(),
-            touched: false,
-            limit: INPUT_MAX,
-        }
-    }
-}
-
-/// Why input was not queued, with how much waited unread: the queue is at
-/// its bound, or the OS refused it memory.
+/// Input was not queued, the OS giving no memory for it: how much waited
+/// unread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Unqueued {
-    Full { held: usize, limit: usize },
-    Memory { held: usize },
+struct Unqueued {
+    held: usize,
 }
 
 /// A pane's runs of losses, each over at a success of its kind: a copy made, a picture placed whole, a
@@ -126,11 +116,12 @@ impl InputQueue {
     /// Queues `bytes` as a piece, all of them or none. Only the pane
     /// queues (`Pane::push`).
     fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Unqueued> {
-        let (bytes, held, limit) = (bytes.as_ref(), self.len(), self.limit);
-        if held.saturating_add(bytes.len()) > limit {
-            return Err(Unqueued::Full { held, limit });
+        let (bytes, held) = (bytes.as_ref(), self.len());
+        #[cfg(test)]
+        if (self.given).is_some_and(|given| held.saturating_add(bytes.len()) > given) {
+            return Err(Unqueued { held });
         }
-        (self.bytes.try_push(bytes)).map_err(|_| Unqueued::Memory { held })?;
+        (self.bytes.try_push(bytes)).map_err(|_| Unqueued { held })?;
         self.touched |= !bytes.is_empty();
         Ok(())
     }
@@ -925,11 +916,11 @@ impl<'a> PaneMut<'a> {
     pub fn drain_input(&mut self) -> Vec<u8> {
         self.pane.input.drain_all()
     }
-    /// Its program's unread input may be `limit` bytes at most: a test's
-    /// bound, reached with a few bytes.
+    /// The OS gives its input queue memory for `given` bytes and no
+    /// more: a test's, refused with a few bytes.
     #[cfg(test)]
-    pub(crate) fn set_input_limit(&mut self, limit: usize) {
-        self.pane.input.limit = limit;
+    pub(crate) fn input_memory(&mut self, given: usize) {
+        self.pane.input.given = Some(given);
     }
 }
 
@@ -1517,21 +1508,12 @@ impl Pane {
     fn push(&mut self, bytes: &[u8]) -> Result<(), fux_wire::code::Error> {
         use fux_wire::code::{Code, fail};
         let (id, sent) = (self.id(), bytes.len());
-        self.input.push(bytes).map_err(|unqueued| match unqueued {
-            Unqueued::Full { held, limit } => fail(
-                Code::TooLong,
-                format!(
-                    "{id}'s program has not read {held} bytes of input, and {id} holds {limit} at most: \
-                     these {sent} bytes were not sent; send them once it has read, or fewer at a time"
-                ),
-            ),
-            Unqueued::Memory { held } => fail(
-                Code::Memory,
-                format!(
-                    "{id}: the OS refused memory for {sent} bytes of input, {held} waiting unread: \
-                     they were not sent"
-                ),
-            ),
+        self.input.push(bytes).map_err(|Unqueued { held }| {
+            let why = format!(
+                "{id}: the OS refused memory for {sent} bytes of input, {held} waiting unread by \
+                 its program: they were not sent"
+            );
+            fail(Code::Memory, why)
         })
     }
 
