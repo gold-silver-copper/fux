@@ -155,7 +155,7 @@ stays unknown.
   and run `timeout 30 fux --file reply.grift "$V"`, with the prompt's
   version above:
 
-  ```grift
+  ```grift not run here: agentbench runs it (published-prompt), answering its slow prompt
   (define! answer (send-keys (key (text (expect (first (arguments))) "6*7") "Enter")))
   (define! seen (shows answer "42" 5))
   (print (string seen))
@@ -166,7 +166,7 @@ stays unknown.
   answer, or pane capture). A spinner or clock on the screen is a
   change, so then wait for a text.
 
-  ```grift
+  ```grift not run: it needs an agent's TUI in pane 2
   (define! p (pane 2))
   (send-keys (key (paste p "fix the test") "Enter"))
   (string (quiet p 5))
@@ -180,7 +180,7 @@ stays unknown.
   history and the screen, so a count can fall as lines scroll past them: choose a window the reply
   surely comes within.
 
-  ```grift
+  ```grift not run: it needs an agent's TUI in pane 2
   (define! hits (lambda! (p)
     (length (filter (lambda! (row) (not? (empty-list? (search row "42" 0))))
       (get (capture (history p 1000)) "lines")))))
@@ -200,7 +200,7 @@ stays unknown.
   as a command unless `setopt interactive_comments`; a syntax error is
   tested in bash and zsh alone.)
 
-  ```grift
+  ```grift not run: it needs a shell with marks in pane 3, and a make test
   (define! p (pane 3))
   (define! before (capture p))
   (line p "make test")
@@ -213,7 +213,7 @@ stays unknown.
   the line shows `END-OF""-RUN` as you type it, and `END-OF-RUN 0` at its
   end (`$status` in fish).
 
-  ```grift
+  ```grift not run: it needs a shell in pane 3, and a make test
   (define! p (pane 3))
   (line p "make test; echo END-OF\"\"-RUN $?")
   (shows p "END-OF-RUN" 600)
@@ -234,7 +234,7 @@ stays unknown.
   as the first file argument. Here reverse video identifies the app's
   selection. That meaning belongs to this app, not to fux.
 
-  ```grift
+  ```grift not run here: agentbench runs it (published-tui) against its menu fixture
   (define! until-marked (lambda! (p needle)
     (define! seen (capture (marks (wrapped p))))
     (if! (empty-list? (search (string seen) needle 0))
@@ -249,7 +249,7 @@ stays unknown.
   uses Down to select Beta. Keep the marked view in the loop; `shows` would
   use plain screens on later reads.
 
-  ```grift
+  ```grift not run here: agentbench runs it (published-tui) against its menu fixture
   (define! answer (press (expect (first (arguments))) "Down"))
   (define! seen (until-marked (pane answer) "⟦Beta⟧"))
   (print (string seen))
@@ -295,7 +295,7 @@ stays unknown.
 - **A deadline, a fallback, a retry:** `catch-kind!` catches the failures it
   names (`programs`). A key, and C-c if nothing came of it in 10 s:
 
-  ```grift
+  ```grift not run: it needs a program in pane 2 that asks for a key
   (define! p (pane 2))
   (define! a (type p "y"))
   (catch-kind! (wait (timeout a 10)) timeout failure (press p "C-c"))
@@ -322,7 +322,7 @@ stays unknown.
   `(send-keys (fold (lambda! (keys #ignore) (key keys "Down")) (pane 2) (range 0 3)))`.
   A file's text, whole, from stdin (`(input)`):
 
-  ```sh
+  ```sh not run: FILE is your file
   fux '(send-keys (paste (pane 2) (input)))' < FILE
   ```
 - They are written together, in order, as the program's terminal takes
@@ -335,7 +335,7 @@ stays unknown.
   Linux) are refused (`not-running`). Keys a program does not read wait
   for it, as many as memory holds.
 
-  ```grift
+  ```grift not run: it needs Vim in insert mode in pane 2
   (define! p (pane 2))
   (define! until-gone (lambda! (seen)
     (if! (empty-list? (search (string (capture p)) "INSERT" 0)) seen
@@ -363,7 +363,7 @@ stays unknown.
   already sent to %2 %4`). A pane whose own process ended before it said
   whether it took them fails `indeterminate`: it may have.
 
-  ```grift
+  ```grift not run: it needs a program in pane 2 that asks for y
   (define! seen (capture (pane 2)))
   (line (expect seen) "y")   ; stale if %2 changed since
   ```
@@ -442,14 +442,14 @@ sends no `C`, and `DONE` and `last-status` stay. fish marks a comment line
 as a command, and zsh runs `#` as one unless `setopt
 interactive_comments`. Readiness remains the caller's decision. To send them, in your own startup files:
 
-```bash
+```bash run by tests/agents.rs
 # bash 4.4 or later (macOS's /bin/bash 3.2 has no PS0), ~/.bashrc
 PS0='\e]133;C\a'
 mark_end() { local s=$?; printf '\e]133;D;%s\a\e]133;A\a' "$s"; return "$s"; }
 PROMPT_COMMAND=mark_end${PROMPT_COMMAND:+;$PROMPT_COMMAND}  # first: the hooks after it see $?
 ```
 
-```zsh
+```zsh run by tests/agents.rs
 # zsh, ~/.zshrc
 autoload -Uz add-zsh-hook
 mark_start() { print -n '\e]133;C\a' }
@@ -458,7 +458,7 @@ add-zsh-hook preexec mark_start
 precmd_functions=(mark_end $precmd_functions)  # first, so $? is the command's
 ```
 
-```fish
+```fish run by tests/agents.rs
 # fish, ~/.config/fish/config.fish
 function mark_start --on-event fish_preexec; printf '\e]133;C\a'; end
 function mark_end --on-event fish_postexec; printf '\e]133;D;%s\a' $status; end
@@ -561,7 +561,7 @@ An attached typing client loads `$XDG_CONFIG_HOME/fux/config.grift`, or
 `$HOME/.config/fux/config.grift`. The complete candidate config is checked before it becomes
 live. A failure keeps the bundled keys and reports its file, line and value.
 
-```grift
+```grift config
 (set "history-bytes" 16777216)
 (bind-key "C-b y" (code! (lambda! ()
   (split (axis (focused (me)) "horizontal")) #inert)))
@@ -607,7 +607,7 @@ of that server's panes. Each script should clean up the targets and processes it
   `.sock` files, on Windows the `.server` records beside the pipes they name: `status` each.
 
   ```sh
-  for s in "${XDG_RUNTIME_DIR-$TMPDIR}"/fux/*.sock; do FUX_SOCKET=$s fux '(status)'; done
+  for s in "${XDG_RUNTIME_DIR-$TMPDIR}"/fux/*.sock; do [ -S "$s" ] || continue; FUX_SOCKET=$s fux '(status)'; done
   ```
   Inside a person's pane, `(here)` is that pane. Every pane has
   `FUX_PANE` (`%N:GENERATION`, the pane and its program generation),
@@ -688,7 +688,7 @@ The pane is a shell argument string, never source pasted into the program.
 
 ### Quiet after a request
 
-```grift
+```grift run by tests/agents.rs
 (define! p (pane (first (arguments))))
 (line p "go")
 (string (quiet p 1))
@@ -696,7 +696,7 @@ The pane is a shell argument string, never source pasted into the program.
 
 ### Wait for a reply
 
-```grift
+```grift run by tests/agents.rs
 (define! p (pane (first (arguments))))
 (line p "question")
 (shows p "the answer is 42" 5)
@@ -705,7 +705,7 @@ The pane is a shell argument string, never source pasted into the program.
 
 ### Read a marked command
 
-```grift
+```grift run by tests/agents.rs
 (define! p (pane (first (arguments))))
 (define! before (capture p))
 (line p "go")
@@ -717,7 +717,7 @@ The pane is a shell argument string, never source pasted into the program.
 
 ### Read an unmarked command
 
-```grift
+```grift run by tests/agents.rs
 (define! p (pane (first (arguments))))
 (line p "true; printf '\\nEND-OF-RUN %s\\n' \"$?\"")
 (string (shows p "\nEND-OF-RUN 0\n" 5))
@@ -725,14 +725,14 @@ The pane is a shell argument string, never source pasted into the program.
 
 ### Read a program exit
 
-```grift
+```grift run by tests/agents.rs
 (define! p (pane (first (arguments))))
 (get (get (until-ended p 5) "program") "exited")
 ```
 
 ### Fall back after a deadline
 
-```grift
+```grift run by tests/agents.rs
 (define! p (pane (first (arguments))))
 (catch-kind! (shows p "never-arrives" 1) timeout failure
   (press p "C-c")

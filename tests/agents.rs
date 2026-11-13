@@ -8,18 +8,8 @@
 // They script `/bin/sh` over a Unix socket (WINDOWS.md, "What PR 8 found").
 #![cfg(unix)]
 mod support;
-#[path = "support/unbound.rs"]
-mod unbound;
 use std::time::{Duration, Instant};
 use support::*;
-
-/// The names any program sees: fux's, its libraries' and grift's.
-fn known(name: &str) -> bool {
-    fux::script::Word::named(name).is_some()
-        || fux::script::docs().is_ok_and(|docs| docs.iter().any(|doc| doc.name == name))
-        || fux::script::language().is_ok_and(|names| names.iter().any(|n| n == name))
-        || fux::script::HOST.iter().any(|(host, _)| *host == name)
-}
 
 /// The pane an answer is about: the first word of its first line.
 fn id(out: &str) -> String {
@@ -82,8 +72,10 @@ fn shows_after(server: &Server, answer: &str, text: &str) -> Result<String, Stri
 fn block(after: &str, lang: &str) -> Result<String, String> {
     let docs = include_str!("../docs/agents.md");
     let (_, from) = docs.split_once(after).ok_or(format!("no {after:?}"))?;
-    let fence = format!("```{lang}\n");
+    // Its fence may say more after the language (docs.rs reads it).
+    let fence = format!("```{lang} ");
     let (_, block) = from.split_once(&fence).ok_or(format!("no {lang} block"))?;
+    let (_, block) = block.split_once('\n').ok_or("no block")?;
     let (block, _) = block.split_once("```").ok_or("no end")?;
     let lines = block.lines().map(|l| l.strip_prefix("  ").unwrap_or(l));
     Ok(lines.map(|l| format!("{l}\n")).collect())
@@ -1123,8 +1115,7 @@ fn a_pane_gets_the_fux_running_it() -> Outcome {
 
 /// The docs' recipes run as written, as programs: a quiet screen, a
 /// reply's text, a shell command's end and a program's exit, and a
-/// deadline's fallback, each in a pane of its own; and every program the
-/// guide shows checks.
+/// deadline's fallback, each in a pane of its own.
 #[test]
 fn the_docs_recipes_run_as_written() -> Outcome {
     let server = Server::start("")?;
@@ -1163,16 +1154,6 @@ fn the_docs_recipes_run_as_written() -> Outcome {
         if i == 5 {
             server.exits(&pane)?;
         }
-    }
-    // A later program may call what an earlier one defined, as the guide says.
-    let mut shown = String::new();
-    for program in include_str!("../docs/agents.md")
-        .split("```grift\n")
-        .skip(1)
-    {
-        shown.push_str(program.split("```").next().unwrap_or_default());
-        let unbound = unbound::unbound(&shown, &known)?;
-        assert!(unbound.is_empty(), "{program}: {unbound:?}");
     }
     Ok(())
 }
