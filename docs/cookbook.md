@@ -428,7 +428,7 @@ binds `edit-history` on `C-a e` too, a function of its own on `C-a v`, and a
 map `C-a g` of its own that repeats, so `C-a g h h h` moves a border
 three cells. `escape-delay-ms` is one of the settings the README lists.
 
-```grift
+```grift config
 ; ~/.config/fux/config.grift
 (move-keys "C-b" "C-a")
 (set "escape-delay-ms" 35)
@@ -464,7 +464,7 @@ goes in a list beside it, and it takes those values before the line. This
 binding asks for a line and types it into the pane focused when the key was
 pressed.
 
-```grift
+```grift config
 (bind-key "C-b p" (code! (lambda! ()
   (prompt (me) "command" ""
     (list (list (focused (me))) (code! (lambda! (target line-value)
@@ -477,7 +477,7 @@ A config's `require!` reads beside it: this one, beside a copy of fux's
 list holds what the action needs and the code it runs: `confirm` calls the
 code with those values alone.
 
-```grift
+```grift config
 ; ~/.config/fux/config.grift
 (require! "recipes/confirm.grift")
 (bind-key "C-b X" (code! (lambda! ()
@@ -492,7 +492,7 @@ draws the bar over the bottom one until it ends, and a bell or a
 program's notification shows in its corner for five seconds. This
 config gives the bar its own row below the panes again.
 
-```grift
+```grift config
 ; ~/.config/fux/config.grift
 (set "bar" (quote! ("bottom" ("workspace" "tabs") ("pane") #false)))
 ```

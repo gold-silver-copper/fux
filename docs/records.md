@@ -342,7 +342,7 @@ its pane closed. Uncaught, it ends the program with that status, stdout getting 
 why on stderr; nothing after it runs. Caught by `catch-kind!`, the failure's `values` hold the message
 and then the answer:
 
-```grift
+```grift not run: it needs a pane 3 that does not change
 (catch-kind! (wait (timeout (changed (capture (pane 3))) 5)) timeout failure
   (second (get failure "values")))
 ```

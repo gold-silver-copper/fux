@@ -299,7 +299,7 @@ and preferences together; one that fails keeps the whole bundled state
 and shows why. An old `config.fux` is not read, nor is a session saved before
 grift: write them again in grift.
 
-```grift
+```grift config
 (move-keys "C-b" "C-a")
 (set "shell" (list "/bin/sh" "-l"))
 (set "terminal-clipboard" #false)
