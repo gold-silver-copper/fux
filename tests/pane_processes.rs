@@ -717,6 +717,40 @@ fn a_connection_ends_with_its_server_though_its_client_reads_nothing() -> Outcom
     Ok(())
 }
 
+/// 13a. A client gone while its request waits (killed, Ctrl-C, a timeout)
+///      ends its connection's process, and so the wait, whatever it waited
+///      for: a pane to change, text to show, a pane to go quiet, or events.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_gone_while_its_request_waits_ends_its_connection() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    let seen = server.version("%1")?;
+    for wait in [
+        format!("(wait (changed {}))", fux::script::quoted(&seen)),
+        r#"(shows (pane 1) "never shown" 3600)"#.to_owned(),
+        "(quiet (pane 1) 3600)".to_owned(),
+        r#"(events (pane 1) "")"#.to_owned(),
+    ] {
+        let before = connections(pid);
+        let mut client = started(&server, &[&wait])?;
+        let mut conn = None;
+        eventually("its connection", || {
+            conn = (connections(pid).into_iter()).find(|conn| !before.contains(conn));
+            Ok(conn.is_some())
+        })?;
+        let conn = conn.ok_or("its connection")?;
+        // Its request is taken, and waits.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(client.try_wait().map_err(e)?.is_none(), "{wait} waits");
+        client.kill().map_err(e)?;
+        client.wait().map_err(e)?;
+        eventually(&format!("{wait}: its connection gone"), || Ok(!alive(conn)))?;
+    }
+    assert!(alive(pid), "the server");
+    Ok(())
+}
+
 /// 14. A close sent to a pane is a close though its server is gone by the
 ///     time it reads it: a run stopped while a pane's process was stopped
 ///     leaves no pane once that process goes on (D-124 (1)).

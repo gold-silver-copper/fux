@@ -1288,6 +1288,86 @@ mod tests {
         Ok(())
     }
 
+    /// A client gone while its request waits for its answer is told its
+    /// server (`Shut`), whatever the request waits for there, whether it
+    /// closed or only shut its side: so the wait ends with it.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_gone_while_its_request_waits_is_told_its_server() -> Result<(), String> {
+        use crate::link::{End, Expect, FromConn, Read, ToConn};
+        use fux_wire::protocol::{Asked, Frame, Hello, PROTOCOL, Role};
+        use fuxix::poll::{Events, PollFd};
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let e = |error: std::io::Error| error.to_string();
+        let hello = Hello {
+            protocol: PROTOCOL,
+            version: "0".into(),
+            role: Role::Command,
+        };
+        let asked = Asked {
+            after: None,
+            request: fux_wire::command::Command::Inspect {
+                scope: fux_wire::inspect::Scope::All,
+                projection: fux_wire::inspect::Projection::Facts,
+            }
+            .into(),
+            context: fux_wire::protocol::Context {
+                of: None,
+                cwd: std::path::PathBuf::new(),
+                pane: None,
+                server: None,
+                client: None,
+            },
+        };
+        for closes in [true, false] {
+            let (client, mut theirs) = UnixStream::pair().map_err(e)?;
+            let (server, link) = UnixStream::pair().map_err(e)?;
+            let mut server = End::new(server).map_err(e)?;
+            let link = End::new(link).map_err(e)?;
+            let conn = std::thread::spawn(move || super::serve(client, link, Vec::new()));
+            // What its process says next, given long enough.
+            let next = |server: &mut End| -> Result<FromConn, String> {
+                let mut buffer = [0u8; 4096];
+                loop {
+                    if let Some(said) = server.next_message().map_err(|e| e.to_string())? {
+                        return Ok(said);
+                    }
+                    let mut fds = [PollFd::new(&server.stream, Events::IN)];
+                    let ready = fuxix::poll::poll(&mut fds, Some(Duration::from_secs(20)));
+                    if ready == Ok(0) || server.read(&mut buffer) == Read::Closed {
+                        return Err(format!("its process said nothing (closes: {closes})"));
+                    }
+                }
+            };
+            theirs.write_all(&hello.encode()).map_err(e)?;
+            theirs.write_all(&asked.encode()).map_err(e)?;
+            assert!(
+                matches!(next(&mut server)?, FromConn::Frame { .. }),
+                "hello"
+            );
+            server.send(&ToConn::Expect(Expect::Asked));
+            server.flush_all().map_err(|errno| errno.to_string())?;
+            assert!(
+                matches!(next(&mut server)?, FromConn::Frame { .. }),
+                "asked"
+            );
+            // Its request waits from here on: its server answers nothing.
+            match closes {
+                true => drop(theirs),
+                false => {
+                    theirs.shutdown(std::net::Shutdown::Write).map_err(e)?;
+                    std::mem::forget(theirs);
+                }
+            }
+            let said = next(&mut server);
+            drop(server);
+            conn.join().map_err(|_| "its process panicked")??;
+            assert!(matches!(said, Ok(FromConn::Shut)), "{said:?}");
+        }
+        Ok(())
+    }
+
     /// A screen it can't compose, refused memory, paints nothing: what the
     /// client shows stays, and its connection ends, saying why.
     #[cfg(feature = "checks")]
