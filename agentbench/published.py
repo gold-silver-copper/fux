@@ -14,7 +14,9 @@ GUIDE = Path(__file__).resolve().parent.parent / "docs" / "agents.md"
 
 def block(label, language="grift"):
     section = GUIDE.read_text().split(label, 1)[1]
-    source = section.split("```" + language + "\n", 1)[1].split("```", 1)[0]
+    # A fence may carry words after its language ("grift not run: ..."), which say how the docs test checks it.
+    fence = section.split("```" + language, 1)[1]
+    source = fence.split("\n", 1)[1].split("```", 1)[0]
     return "\n".join(line.removeprefix("  ") for line in source.splitlines()) + "\n"
 
 
