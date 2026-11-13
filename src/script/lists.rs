@@ -44,6 +44,23 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
         }
     };
     let fields: Vec<(String, Value<Fux>)> = match value {
+        // A record of grift's own, as `word` makes: each item a field, a
+        // list of its name and its value.
+        Value::List(list) if !list.items().is_empty() && list.items().iter().all(field) => {
+            let fields = list.items().iter().filter_map(|item| {
+                if let Value::List(pair) = item
+                    && let [Value::Symbol(key), value] = pair.items()
+                {
+                    Some(((**key).clone(), value.clone()))
+                } else {
+                    None
+                }
+            });
+            let fields: Vec<_> = fields.collect();
+            let names: Vec<&str> = fields.iter().map(|(key, _)| key.as_str()).collect();
+            line(path, &names);
+            fields
+        }
         Value::List(list) => {
             for item in list.items() {
                 records(&format!("{path}[]"), item, out);
@@ -74,6 +91,13 @@ fn records(path: &str, value: &Value<Fux>, out: &mut Vec<String>) {
     for (key, value) in &fields {
         records(&format!("{path}.{key}"), value, out);
     }
+}
+
+/// Whether `item` is a field of a record of grift's own: a list of a
+/// name and a value.
+#[cfg(unix)]
+fn field(item: &Value<Fux>) -> bool {
+    matches!(item, Value::List(pair) if matches!(pair.items(), [Value::Symbol(_), _]))
 }
 
 /// docs/records.txt lists every record a program reads, each with its
@@ -181,13 +205,30 @@ fn records_list_is_current() -> Result<(), Box<dyn std::error::Error>> {
             format!("(capture (client {}))", super::quoted(&client.to_string())),
         ),
     ];
-    let held = held.into_iter().chain([
-        ("word", "(word \"first\")".to_owned()),
-        ("dictionary", "(dictionary)".to_owned()),
-    ]);
     for (path, code) in held {
         for value in evaluate(&code, None, asks, &mut Vec::new())? {
             records(path, &value, &mut lines);
+        }
+    }
+    // A word's record and the dictionary's are grift's own, which print
+    // as text here: their fields' names.
+    for (path, code) in [
+        ("word", "(map first (word \"first\"))"),
+        ("dictionary[]", "(map first (first (dictionary)))"),
+    ] {
+        for value in evaluate(code, None, asks, &mut Vec::new())? {
+            let Value::List(names) = value else {
+                return Err(format!("{path}: {value:?}").into());
+            };
+            let names = names.items().iter().map(|name| {
+                if let Value::Symbol(name) = name {
+                    Ok(name.as_str())
+                } else {
+                    Err(format!("{path}: {name:?}"))
+                }
+            });
+            let names = names.collect::<Result<Vec<_>, _>>()?;
+            lines.push(format!("{path}: {}", names.join(" ")));
         }
     }
     let version = format!("%1:0.0.0.0.0:{run}")
