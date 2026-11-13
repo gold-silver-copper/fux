@@ -1,5 +1,6 @@
 //! fux-vt's bounds tests' counting allocator (`THREATS.md` 3.4): the
-//! system's, counting the bytes live and their peak for each thread apart.
+//! system's, counting the bytes live, their peak and the bytes ever made,
+//! for each thread apart.
 //! A test binary makes it its `#[global_allocator]`; a probe resets the
 //! peak, does its work, and reads both on the thread that did it, so what
 //! the test harness's other threads allocate meanwhile (a "running for over
@@ -21,6 +22,8 @@ thread_local! {
     static LIVE: Cell<usize> = const { Cell::new(0) };
     /// The most `LIVE` has been since the last reset.
     static PEAK: Cell<usize> = const { Cell::new(0) };
+    /// The bytes this thread has ever made, freed since or not.
+    static MADE: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The system's allocator, counting what each thread holds.
@@ -36,6 +39,11 @@ impl ThreadPeak {
     pub fn peak(&self) -> usize {
         PEAK.try_with(Cell::get).unwrap_or(0)
     }
+    /// The bytes this thread has ever made, freed since or not: the work
+    /// its allocations were, where the peak says only what it held at once.
+    pub fn made(&self) -> usize {
+        MADE.try_with(Cell::get).unwrap_or(0)
+    }
     /// Starts this thread's peak again from what it holds now.
     pub fn reset_peak(&self) {
         let _ = PEAK.try_with(|peak| peak.set(self.live()));
@@ -44,6 +52,7 @@ impl ThreadPeak {
 
 /// Counts `bytes` more live on this thread, and its peak.
 fn made(bytes: usize) {
+    let _ = MADE.try_with(|made| made.set(made.get().saturating_add(bytes)));
     let _ = LIVE.try_with(|live| {
         let now = live.get().saturating_add(bytes);
         live.set(now);
@@ -125,6 +134,9 @@ mod tests {
         let mut grown = std::hint::black_box(Vec::<u8>::with_capacity(1 << 20));
         grown.reserve_exact(2 << 20);
         assert!(ALLOCATOR.peak().saturating_sub(base) >= (1 << 20) + (2 << 20));
+        let made = ALLOCATOR.made();
+        drop(std::hint::black_box(vec![1u8; 1 << 20]));
+        assert!(ALLOCATOR.made().saturating_sub(made) >= 1 << 20);
         Ok(())
     }
 }
