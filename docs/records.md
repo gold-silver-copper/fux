@@ -184,7 +184,9 @@ batch from it (`(next-events (all) CURSOR 0)`) starts after that observation; a 
 requires another snapshot. OS observations happen during the turn but are not simultaneous OS
 snapshots. Each pane reports from its own process, so a snapshot holds each pane as the server last
 heard from it: it claims no moment the panes shared, and one pane's facts may be newer than
-another's. A pane version does not certify process metadata or client focus.
+another's. So a pane's `rows` and `columns` may still be its size before the last layout change, the
+tab's already the new one, until the pane reports: read a pane's size from its capture, which waits
+for that report. A pane version does not certify process metadata or client focus.
 
 A snapshot is one observation, never truncated or combined from several turns; narrower scopes are
 separate observations. Records nest at most 32 deep.
