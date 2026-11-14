@@ -85,9 +85,7 @@ pub fn reconcile(
     record: &crate::record::Record,
     live: &BTreeMap<PaneId, Live>,
 ) -> BTreeMap<PaneId, Fate> {
-    let recorded: Vec<PaneId> = (crate::record::panes(&record.workspaces).iter())
-        .map(|pane| pane.id)
-        .collect();
+    let recorded: Vec<PaneId> = (record.tree.panes().iter()).map(|pane| pane.id).collect();
     let of = |id: &PaneId, recorded: bool| Some((*id, fate(recorded, live.get(id))?));
     (recorded.iter().filter_map(|id| of(id, true)))
         .chain((live.keys().filter(|id| !recorded.contains(id))).filter_map(|id| of(id, false)))
@@ -353,7 +351,7 @@ pub fn own(server: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record::{Child, Pane, Record, Tab, Workspace};
+    use crate::record::{Pane, Record, Tab, Tree, Workspace};
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     /// A record of a run with panes `ids` in one tab.
@@ -388,11 +386,15 @@ mod tests {
         Ok(Record {
             run: fux_wire::command::Run::now().ok_or("a clock")?,
             ids: Vec::new(),
-            workspaces: vec![Workspace {
-                id: fux_wire::id::WsId::of(1),
-                name: None,
-                children: vec![Child::Tab(tab)],
-            }],
+            tree: Tree {
+                top: vec![fux_wire::id::WsId::of(1)],
+                workspaces: vec![Workspace {
+                    id: fux_wire::id::WsId::of(1),
+                    name: None,
+                    children: vec![fux_wire::command::AnyRef::Tab(tab.id)],
+                }],
+                tabs: vec![tab],
+            },
             ended: false,
         })
     }

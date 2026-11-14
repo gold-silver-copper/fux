@@ -1,47 +1,82 @@
-//! A run's record (D-124 (3)): its tree, written down whole by its server
-//! on every change of it, before the change is told, so that a server that
+//! A run's record (D-124 (3)): its tree, written down by its server on
+//! every change of it, before the change is told, so that a server that
 //! takes the run back after a crash finds every id, name and layout anyone
 //! saw. Its recovery state, read by no one else: fux's own, changing with
 //! it (`socket::panes`).
-use fux_wire::command::Run;
+//!
+//! It is one file of the structure, `run`, and one file for each name
+//! (D-175). The structure is flat: the workspaces and the tabs are two
+//! lists of rows, each workspace naming its children by their ids, so no
+//! depth of nesting is read or written by going into it. It holds no name,
+//! only each name's number (`NameId`): a name's text is in the file
+//! `name.S.N`, written once, when the name is given, and the structure,
+//! written whole on every change of the tree, costs what its rows do,
+//! whatever the names weigh. `S` is the process of the server that wrote
+//! the file: two servers that find themselves on one run (D-171) never
+//! write one file.
+//!
+//! The order keeps every crash recoverable: a new name's file is written
+//! before the structure that names it, and a name no longer used is
+//! removed after the structure that dropped it. So the structure there
+//! never names a file that is not; what a crash leaves over is a name file
+//! no structure names, which the server that takes the run back removes
+//! once the run is known to be its own (`sweep`, `Session::commit`).
+use fux_wire::command::{AnyRef, Run};
 use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-/// What a run is: its identity, the ids it gave last, and its workspaces,
-/// at the top in order; and whether it ended (a stop, or its last pane's
-/// close): then no server takes it back, and the next to find it ends what
-/// is left of it (`server::serve`).
+/// What a run is: its identity, the ids it gave last, and its tree; and
+/// whether it ended (a stop, or its last pane's close): then no server
+/// takes it back, and the next to find it ends what is left of it
+/// (`server::serve`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub run: Run,
     pub ids: Vec<u32>,
-    pub workspaces: Vec<Workspace>,
+    pub tree: Tree,
     pub ended: bool,
 }
-wired!(struct Record { run, ids, workspaces, ended });
+wired!(struct Record { run, ids, tree, ended });
 
-/// A workspace and what it holds, in order.
+/// A run's tree: the workspaces at the top, in order, then every
+/// workspace and every tab, a row each.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tree {
+    pub top: Vec<WsId>,
+    pub workspaces: Vec<Workspace>,
+    pub tabs: Vec<Tab>,
+}
+wired!(struct Tree { top, workspaces, tabs });
+
+/// A name's number: the process id of the server that wrote its file, and
+/// which of that server's names it is. No two servers alive at once give
+/// one number, so none writes over another's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NameId {
+    pub server: u32,
+    pub number: u64,
+}
+wired!(struct NameId { server, number });
+
+/// A workspace: its name's number, and what it holds, tabs and
+/// workspaces, in order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Workspace {
     pub id: WsId,
-    pub name: Option<String>,
-    pub children: Vec<Child>,
+    pub name: Option<NameId>,
+    pub children: Vec<AnyRef>,
 }
 wired!(struct Workspace { id, name, children });
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Child {
-    Tab(Tab),
-    Workspace(Workspace),
-}
-wired!(Child { Tab(t), Workspace(w) });
 
 /// A tab: its layout, its revision, how it is sized, its zoomed pane, and
 /// its panes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
     pub id: TabId,
-    pub name: Option<String>,
+    pub name: Option<NameId>,
     pub nodes: Vec<Node>,
     pub revision: Option<u64>,
     pub fixed: bool,
@@ -56,7 +91,7 @@ wired!(struct Tab { id, name, nodes, revision, fixed, size, zoomed, panes });
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pane {
     pub id: PaneId,
-    pub name: Option<String>,
+    pub name: Option<NameId>,
     /// Its role: a shell, which closes as it ends, or a program, which
     /// stays.
     pub shell: bool,
@@ -83,9 +118,9 @@ impl Tab {
 /// record itself could not be written to say so (`Session::end_run`).
 pub const ENDED: &str = "ended";
 
-/// The record at `path`, whole, if one is there: what a crashed server
-/// left.
-pub fn read(path: &std::path::Path) -> Result<Option<Record>, String> {
+/// The structure at `path`, whole, if one is there: what a crashed server
+/// left. Its names are read apart (`read_names`).
+pub fn read(path: &Path) -> Result<Option<Record>, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -97,14 +132,71 @@ pub fn read(path: &std::path::Path) -> Result<Option<Record>, String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Where name `id`'s text is kept in `panes`, a run's directory.
+pub fn name_file(panes: &Path, id: NameId) -> PathBuf {
+    panes.join(format!("{NAME}{id}"))
+}
+
+/// As its file is named, after `name.`: `S.N`.
+impl std::fmt::Display for NameId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.server, self.number)
+    }
+}
+
+/// What every name's file is named by, before its number.
+const NAME: &str = "name.";
+
+/// The text of each name `tree` has, by its number, read from `panes`:
+/// one that is not there, or is no text, makes the record unreadable.
+pub fn read_names(panes: &Path, tree: &Tree) -> Result<BTreeMap<NameId, Rc<str>>, String> {
+    let mut names = BTreeMap::new();
+    for (_, id) in tree.named() {
+        let path = name_file(panes, id);
+        let text = std::fs::read(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        names.insert(id, Rc::from(text));
+    }
+    Ok(names)
+}
+
+/// Removes from `panes` each name file but those of `kept`: what a crash
+/// left between a name's writing and the structure's, or between the
+/// structure's and an old name's removal, and a part of one, too; and
+/// every one, as a run's end is forgotten. What can't be removed is left,
+/// and logged: no structure names it.
+pub fn sweep(panes: &Path, kept: &BTreeSet<NameId>) {
+    let Ok(entries) = std::fs::read_dir(panes) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(number) = name.to_str().and_then(|name| name.strip_prefix(NAME)) else {
+            continue;
+        };
+        let id = number.split_once('.').and_then(|(server, number)| {
+            Some(NameId {
+                server: server.parse().ok()?,
+                number: number.parse().ok()?,
+            })
+        });
+        let kept = id.is_some_and(|id| kept.contains(&id) && id.to_string() == number);
+        if !kept && let Err(error) = std::fs::remove_file(entry.path()) {
+            log!("{}: {error}", entry.path().display());
+        }
+    }
+}
+
 /// Writes `bytes`, a record, to `path`, whole: to a file beside it renamed
 /// over it, so that a crash leaves the last one or this one, never a
 /// part. No `fsync`: a machine's crash ends the panes anyway.
-pub fn write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut new = path.as_os_str().to_owned();
     new.push(".new");
-    let new = std::path::PathBuf::from(new);
+    let new = PathBuf::from(new);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     let mut file = fuxix::file::private_file(&mut options).open(&new)?;
@@ -115,16 +207,91 @@ pub fn write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&new, path)
 }
 
-/// The panes a record holds.
-pub fn panes(workspaces: &[Workspace]) -> Vec<&Pane> {
-    let mut panes = Vec::new();
-    for ws in workspaces {
-        for child in &ws.children {
-            match child {
-                Child::Tab(tab) => panes.extend(&tab.panes),
-                Child::Workspace(inner) => panes.extend(self::panes(std::slice::from_ref(inner))),
-            }
-        }
+impl Tree {
+    /// The panes it holds.
+    pub fn panes(&self) -> Vec<&Pane> {
+        self.tabs.iter().flat_map(|tab| &tab.panes).collect()
     }
-    panes
+
+    /// Each name's number, with what it names.
+    pub fn named(&self) -> impl Iterator<Item = (AnyRef, NameId)> + '_ {
+        let workspaces = (self.workspaces.iter()).map(|ws| (AnyRef::Workspace(ws.id), ws.name));
+        let tabs = self.tabs.iter().flat_map(|tab| {
+            let panes = tab
+                .panes
+                .iter()
+                .map(|pane| (AnyRef::Pane(pane.id), pane.name));
+            std::iter::once((AnyRef::Tab(tab.id), tab.name)).chain(panes)
+        });
+        (workspaces.chain(tabs)).filter_map(|(of, name)| Some((of, name?)))
+    }
+}
+
+/// What a record is written from, and whether it was handed out to be
+/// changed since it was last written down (`settled`): every change goes
+/// through `DerefMut`, so none is missed, and one that changed nothing
+/// costs an encoding, not a write.
+pub struct Tracked<T> {
+    value: T,
+    stale: bool,
+}
+
+impl<T> Tracked<T> {
+    /// `value`, not written down yet.
+    pub fn new(value: T) -> Tracked<T> {
+        Tracked { value, stale: true }
+    }
+    /// Whether it may have changed since it was last written down.
+    pub fn stale(this: &Tracked<T>) -> bool {
+        this.stale
+    }
+    /// It is written down as it is.
+    pub fn settled(this: &mut Tracked<T>) {
+        this.stale = false;
+    }
+}
+
+/// What changes nothing a record holds, reached without marking the tree
+/// changed: the journal and who acts in it, what a close moved, which
+/// tabs are to be sized and what size a pane was asked to take, who typed
+/// last. Each is asked on every request or after every event, and none
+/// is in the record (`Parts::record`).
+impl Tracked<crate::workspace::Parts> {
+    pub(crate) fn actor(&mut self, actor: fux_wire::events::Actor) -> fux_wire::events::Actor {
+        self.value.actor(actor)
+    }
+    pub(crate) fn journal_mut(&mut self) -> &mut crate::journal::Journal {
+        self.value.journal_mut()
+    }
+    pub(crate) fn take_displaced(&mut self) -> Vec<(fux_wire::id::ClientId, String)> {
+        self.value.take_displaced()
+    }
+    pub(crate) fn take_changed(&mut self) -> Vec<TabId> {
+        self.value.take_changed()
+    }
+    pub(crate) fn typed(&mut self, tab: TabId, client: fux_wire::id::ClientId) {
+        self.value.typed(tab, client);
+    }
+    pub(crate) fn laid_out(&mut self, tab: TabId) {
+        self.value.laid_out(tab);
+    }
+    /// Whether pane `pane` is to be told to take `size` (`Copy::ask_size`):
+    /// what it was asked is not what it is at, which alone is recorded.
+    pub(crate) fn ask_size(&mut self, pane: PaneId, size: fux_vt::Size) -> bool {
+        (self.value.pane_mut(pane)).is_some_and(|pane| pane.ask_size(size))
+    }
+}
+
+impl<T> std::ops::Deref for Tracked<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> std::ops::DerefMut for Tracked<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.stale = true;
+        &mut self.value
+    }
 }

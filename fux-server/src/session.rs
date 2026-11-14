@@ -4,9 +4,10 @@ use crate::copy::Copy as Pane;
 use crate::journal::{Detach, ViewChange};
 use crate::link::{Answered, Ask, Begin, FromPane, Hosting, Link, Remote, ToPane};
 use crate::pane::{self, Runs};
+use crate::record::{NameId, Tracked};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Form, Pending, Waiting, Watches};
-use crate::workspace::{Child as _, Destination, Fit, Killing, Parts, Split, Tab, Workspace};
+use crate::workspace::{Destination, Fit, Parts, Split, Tab, Workspace};
 use fux_vt::Size;
 use fux_vt::keys::Direction;
 use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
@@ -22,6 +23,9 @@ use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+#[cfg(test)]
+mod flat;
 mod inspect;
 use std::time::{Duration, Instant};
 
@@ -221,7 +225,7 @@ enum Done {
 pub struct Session {
     /// Its workspaces, tabs and panes, and the journal of what happened to
     /// them, which events read.
-    pub parts: Parts,
+    pub parts: Tracked<Parts>,
     pub views: BTreeMap<ClientId, View>,
     /// The socket a started pane is told to reach its server by, if panes
     /// start real processes; tests of the state alone start none.
@@ -276,10 +280,27 @@ pub struct Session {
     asked_pane: u64,
     /// The events its journal keeps.
     entries: command::JournalEntries,
-    /// Its run's record as last written (`write_record`), and whether it
-    /// is still written: not once the run ends (`end_run`), which the
-    /// record then says.
+    /// Its run's record as last written (`commit`), and whether it is
+    /// still written: not once the run ends (`end_run`), which the record
+    /// then says.
     recorded: Vec<u8>,
+    /// What that record says beside its tree: the run, the ids given last
+    /// and whether it ended. None till one is written.
+    recorded_head: Option<(command::Run, Vec<u32>, bool)>,
+    /// The name files that record names (`record::name_file`): for each
+    /// workspace, tab or pane named there, its name's number and text.
+    named: BTreeMap<AnyRef, (NameId, Rc<str>)>,
+    /// The server its name files are numbered as (`NameId`): its process.
+    names_as: u32,
+    /// A pane said another server holds the run (`holder`): never undone.
+    held: bool,
+    /// How many times its record was made (`commit`), for the tests of
+    /// when it is.
+    #[cfg(test)]
+    pub(crate) encoded: u64,
+    /// It took its run back and has written no record since: with the
+    /// first it writes, the name files no structure names go (`commit`).
+    unswept: bool,
     recording: bool,
     ended: bool,
     /// What it tells its panes while a change may still be undone
@@ -461,7 +482,7 @@ impl Session {
         journal: command::JournalEntries,
     ) -> Self {
         Self {
-            parts: Parts::new(journal),
+            parts: Tracked::new(Parts::new(journal)),
             views: BTreeMap::new(),
             launch: launch.then_some(socket),
             exe: std::env::current_exe().ok(),
@@ -477,6 +498,13 @@ impl Session {
             asked_pane: 0,
             entries: journal,
             recorded: Vec::new(),
+            recorded_head: None,
+            named: BTreeMap::new(),
+            names_as: std::process::id(),
+            held: false,
+            #[cfg(test)]
+            encoded: 0,
+            unswept: false,
             recording: true,
             ended: false,
             staged: None,
@@ -1274,7 +1302,8 @@ impl Session {
     fn named(&self, name: &str) -> Option<AnyRef> {
         let workspaces = self.parts.every_workspace();
         let workspace = workspaces.iter().find(|w| w.name() == Some(name));
-        let tab = || (workspaces.iter().flat_map(|w| w.tabs())).find(|t| t.name() == Some(name));
+        let tabs = || workspaces.iter().flat_map(|w| self.parts.tabs_of(w.id()));
+        let tab = || tabs().find(|t| t.name() == Some(name));
         let pane = || (self.parts.panes().values()).find(|p| p.name() == Some(name));
         (workspace.map(|w| AnyRef::Workspace(w.id())))
             .or_else(|| tab().map(|t| AnyRef::Tab(t.id())))
@@ -2151,7 +2180,10 @@ impl Session {
         if !ours {
             return;
         }
-        for kept in ["run", crate::record::ENDED, "exe"] {
+        // Its names after its structure, which alone names them.
+        let _ = std::fs::remove_file(panes.join("run"));
+        crate::record::sweep(&panes, &BTreeSet::new());
+        for kept in [crate::record::ENDED, "exe"] {
             let _ = std::fs::remove_file(panes.join(kept));
         }
     }
@@ -2165,33 +2197,109 @@ impl Session {
         self.commit()
     }
 
-    /// Its run's record, written whole if it changed (`record`): before
-    /// anything that changed it is told (D-124 (3)). One that can't be
-    /// written fails, and the change it was for is undone (`transact`);
-    /// outside a change, a pane's end say, it is logged, and the record
-    /// stays as it was: a server taking the run back finds such a pane
-    /// gone.
+    /// Its run's record, written if it changed (`record`): before anything
+    /// that changed it is told (D-124 (3)). It is made again only once
+    /// the tree was handed out to change, or the run's own facts changed
+    /// (`Tracked`), and holds each name by its number: a name given since
+    /// the last record is written to its own file first, then the
+    /// structure, whole, and then the names it no longer has are removed
+    /// (D-175): once the run is known to be this server's (`owns`), and
+    /// then with every name file no structure names, the first time. Its
+    /// own names are numbered as its process, so it writes over no other
+    /// server's. So what is written follows the tree's rows, not its names'
+    /// lengths, and a crash at any step leaves a structure whose names are
+    /// all there.
+    ///
+    /// One that can't be written fails, and the change it was for is
+    /// undone (`transact`); outside a change, a pane's end say, it is
+    /// logged, and the record stays as it was: a server taking the run
+    /// back finds such a pane gone.
     fn commit(&mut self) -> Result<(), Error> {
         let Some(socket) = self.launch.as_ref().filter(|_| self.recording) else {
             return Ok(());
         };
+        let head = (self.run, self.ids.given(), self.ended);
+        if !Tracked::stale(&self.parts) && self.recorded_head.as_ref() == Some(&head) {
+            return Ok(());
+        }
+        let panes = crate::socket::panes(socket);
+        #[cfg(test)]
+        {
+            self.encoded = self.encoded.saturating_add(1);
+        }
+        // Each name as the last record has it keeps its number, and its
+        // file; another takes the next number, and is written.
+        let server = self.names_as;
+        let own = |(id, _): &(NameId, Rc<str>)| (id.server == server).then_some(id.number);
+        let last = self.named.values().filter_map(own).max();
+        let mut next = last.map_or(0, |last| last.saturating_add(1));
+        let (mut named, mut fresh) = (BTreeMap::new(), Vec::new());
+        let tree = self.parts.record(&mut |of, text| {
+            let id = match self.named.get(&of) {
+                Some((id, had)) if had == text => *id,
+                Some(_) | None => {
+                    let id = NameId {
+                        server,
+                        number: next,
+                    };
+                    next = next.saturating_add(1);
+                    fresh.push((id, text.clone()));
+                    id
+                }
+            };
+            named.insert(of, (id, text.clone()));
+            id
+        });
         let record = crate::record::Record {
-            run: self.run,
-            ids: self.ids.given(),
-            workspaces: self.parts.record(),
-            ended: self.ended,
+            run: head.0,
+            ids: head.1.clone(),
+            tree,
+            ended: head.2,
         };
         let bytes = fux_wire::wire::encode(&record);
         if bytes == self.recorded {
+            Tracked::settled(&mut self.parts);
+            self.recorded_head = Some(head);
             return Ok(());
         }
-        let path = crate::socket::panes(socket).join("run");
-        match crate::record::write(&path, &bytes) {
+        let path = panes.join("run");
+        let written = (fresh.iter())
+            .try_for_each(|(id, text)| {
+                crate::record::write(&crate::record::name_file(&panes, *id), text.as_bytes())
+            })
+            .and_then(|()| crate::record::write(&path, &bytes));
+        match written {
             Ok(()) => {
+                let kept: BTreeSet<NameId> = named.values().map(|(id, _)| *id).collect();
+                // Nothing is removed till the run is known to be this
+                // server's: every pane it reached for has answered or is
+                // gone, and none said another server holds it. Till then
+                // a name file it does not name may be that server's, just
+                // written. Then what it no longer names goes, and once,
+                // what its last server's crash left over with it.
+                match self.owns() {
+                    true if std::mem::take(&mut self.unswept) => {
+                        crate::record::sweep(&panes, &kept);
+                    }
+                    true => {
+                        let old = self.named.values().filter(|(id, _)| !kept.contains(id));
+                        for (id, _) in old {
+                            let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
+                        }
+                    }
+                    false => self.unswept = true,
+                }
+                self.named = named;
                 self.recorded = bytes;
+                self.recorded_head = Some(head);
+                Tracked::settled(&mut self.parts);
                 Ok(())
             }
             Err(error) => {
+                // The names written for it are no record's.
+                for (id, _) in &fresh {
+                    let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
+                }
                 let why = format!(
                     "the run's record, {}, could not be written ({error}): nothing changed",
                     path.display()
@@ -2202,6 +2310,20 @@ impl Session {
                 Err(fail(Code::Client, why))
             }
         }
+    }
+
+    /// Whether the run is known to be this server's alone: no pane it
+    /// reached for as it took the run back is still to answer, and none
+    /// said another server holds it. A run it began is its own.
+    fn owns(&self) -> bool {
+        self.awaited.is_empty() && self.holder.is_none() && !self.held
+    }
+
+    /// Pane `id` says the server with pid `by` holds it: this one leaves
+    /// the run (`server::Server::leave`).
+    fn held_by(&mut self, id: PaneId, by: i32) {
+        self.held = true;
+        self.holder = Some((id, by));
     }
 
     /// Makes a change (`change`), told only once its record is written: one
@@ -2339,7 +2461,16 @@ impl Session {
             ));
         };
         let panes = crate::socket::panes(&socket);
-        let recorded = crate::record::panes(&record.workspaces);
+        // Read whole before any pane is asked: a record with a name gone,
+        // or one that is no tree, refuses the run with nothing changed.
+        let names = crate::record::read_names(&panes, &record.tree)
+            .map_err(|e| fail(Code::Start, format!("its record's names: {e}")))?;
+        let recorded = record.tree.panes();
+        let name = |pane: &crate::record::Pane| pane.name.and_then(|n| names.get(&n).cloned());
+        let copies: BTreeMap<PaneId, Pane> = (recorded.iter())
+            .map(|pane| (pane.id, Pane::recorded(pane, name(pane))))
+            .collect();
+        let parts = Parts::restore(self.entries, &record.tree, &names, copies)?;
         let mut sockets = crate::takeover::sockets(&panes);
         for pane in &recorded {
             (sockets.entry(pane.id)).or_insert_with(|| panes.join(pane.id.number().to_string()));
@@ -2354,16 +2485,23 @@ impl Session {
         // From here the run is this server's.
         self.run = record.run;
         self.ids = Ids::after(&past(&record.ids, sockets.keys()));
-        let copies: BTreeMap<PaneId, Pane> = (recorded.iter())
-            .map(|pane| (pane.id, Pane::recorded(pane)))
-            .collect();
         let gone: Vec<PaneId> = (recorded.iter())
             .filter(|pane| !asked.contains_key(&pane.id) && pane.ended.is_none())
             .map(|pane| pane.id)
             .collect();
         // As it is written: written again only once it differs.
         self.recorded = fux_wire::wire::encode(&record);
-        self.parts = Parts::restore(self.entries, &record.workspaces, copies)?;
+        self.recorded_head = None;
+        self.named = (record.tree.named())
+            .filter_map(|(of, id)| Some((of, (id, names.get(&id)?.clone()))))
+            .collect();
+        // What a crash left between a name's writing and the structure's
+        // goes with a record written once the run is this server's
+        // (`owns`), not now: a pane may yet say another server holds the
+        // run (`holder`), and this one then leaves it having removed
+        // nothing of that server's.
+        self.unswept = true;
+        self.parts = Tracked::new(parts);
         self.awaited = asked;
         for id in gone {
             log!("{id}: its own process is gone");
@@ -2438,9 +2576,7 @@ impl Session {
             Answer::Live(Live::Held(by)) if crate::takeover::own(by) => {
                 log!("{id}: what was to be ended there is this server's own pane: left");
             }
-            Answer::Live(Live::Held(by)) if crate::takeover::holds(by) => {
-                self.holder = Some((id, by));
-            }
+            Answer::Live(Live::Held(by)) if crate::takeover::holds(by) => self.held_by(id, by),
             Answer::Live(Live::Held(_)) | Answer::Closed => self.end_stray(id, now),
             Answer::Live(
                 Live::Closing | Live::Greeted(_) | Live::Unbegun(_) | Live::OtherRun | Live::Silent,
@@ -2625,10 +2761,10 @@ impl Session {
                     return;
                 };
                 if let Some(pane) = self.parts.pane_mut(id) {
-                    let name = pane.name().map(str::to_owned);
+                    let name = pane.given_name().cloned();
                     *pane = Pane::greeted(*greeting);
-                    if let Some(name) = name {
-                        pane.rename(name);
+                    if name.is_some() {
+                        pane.renamed(name);
                     }
                 }
                 self.linked(id, link, now);
@@ -2685,7 +2821,7 @@ impl Session {
                 self.awaited.remove(&id);
                 self.reach_again(id, now);
             }
-            Some(Fate::Refuse(by)) => self.holder = Some((id, by)),
+            Some(Fate::Refuse(by)) => self.held_by(id, by),
             Some(Fate::Await) | None => {}
         }
     }
@@ -2702,11 +2838,20 @@ impl Session {
         for id in ids {
             let shown = !self.viewers(AnyRef::Pane(id)).is_empty();
             let hosting = self.hosting(id);
+            // Read first: a pane told nothing new is not reached for to
+            // change, nor the tree's record made again for it.
+            let Some(pane) = self.parts.panes().get(&id) else {
+                continue;
+            };
+            let told_shown = pane.shown != shown;
+            let hosting = hosting.filter(|h| pane.hosting.as_ref() != Some(h));
+            if !told_shown && hosting.is_none() {
+                continue;
+            }
             let Some(pane) = self.parts.pane_mut(id) else {
                 continue;
             };
-            let told_shown = std::mem::replace(&mut pane.shown, shown) != shown;
-            let hosting = hosting.filter(|h| pane.hosting.as_ref() != Some(h));
+            pane.shown = shown;
             if let Some(hosting) = &hosting {
                 pane.hosting = Some(hosting.clone());
             }
@@ -2760,7 +2905,12 @@ impl Session {
             let Some(area) = self.area_of(tab) else {
                 continue;
             };
-            if let Ok(size) = Size::new(area.h(), area.w()) {
+            // Only a size it is not at yet: the tree is not reached for
+            // to change it otherwise, nor its record made again.
+            let at = self.tab(tab).map(Tab::fit);
+            if let Ok(size) = Size::new(area.h(), area.w())
+                && matches!(at, Some(Fit::Clients(last)) if last != size)
+            {
                 self.parts.shown_on(tab, size);
             }
             if let Some(t) = self.tab(tab) {
@@ -2774,9 +2924,7 @@ impl Session {
         // Each pane is told a size it was not told yet; it resizes as it
         // reads its program's output, and tells so (`Told::Resized`).
         for (id, size) in sizes {
-            if let Some(pane) = self.parts.pane_mut(id)
-                && pane.ask_size(size)
-            {
+            if self.parts.ask_size(id, size) {
                 let actor = self.parts.journal().current_actor();
                 self.tell_pane(id, ToPane::Resize { size, actor }, now);
             }
@@ -2866,10 +3014,10 @@ impl Session {
         self.after_close(now);
     }
 
-    /// Removes a tab and whatever panes are in it, killed as `killing`
-    /// kills it (`Parts::remove_tab`).
-    fn remove_tab(&mut self, tab: TabId, killing: Killing, now: Instant) {
-        for gone in self.parts.remove_tab(tab, killing) {
+    /// Removes a tab and whatever panes are in it, killed
+    /// (`Parts::remove_tab`).
+    fn remove_tab(&mut self, tab: TabId, now: Instant) {
+        for gone in self.parts.remove_tab(tab) {
             self.end_pane(gone.id(), true, now);
         }
     }
@@ -3030,7 +3178,7 @@ impl Session {
     /// kept then stays, its record saying it ended, and the next start
     /// tells each again (`untold`).
     pub fn shutdown(&mut self, now: Instant) {
-        for pane in self.parts.close_all() {
+        for pane in self.parts.remove_workspace(None) {
             self.end_pane(pane.id(), true, now);
         }
         let awaited = std::mem::take(&mut self.awaited);
@@ -3616,21 +3764,32 @@ impl Session {
         Ok(acted(version))
     }
 
-    /// `kill`: a pane closed, or every pane in `scope` (`tabs_of`), tab by
-    /// tab.
+    /// `kill`: a pane closed, a tab, or a workspace and all in it (with
+    /// none, everything) in one pass (`Parts::remove_workspace`).
     fn kill(&mut self, scope: Option<AnyRef>, now: Instant) -> Result<(), Error> {
         if let Some(AnyRef::Pane(pane)) = scope {
             self.pane(pane)?;
             self.close_pane(pane, None, now);
             return Ok(());
         }
-        let killing = match scope {
-            None => Killing::All,
-            Some(AnyRef::Workspace(ws)) => Killing::Within(ws),
-            Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => Killing::None,
-        };
-        for tab in self.tabs_of(scope)? {
-            self.remove_tab(tab, killing, now);
+        // That it is there, as its tabs are found.
+        let tabs = self.tabs_of(scope)?;
+        match scope {
+            Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => {
+                for tab in tabs {
+                    self.remove_tab(tab, now);
+                }
+            }
+            // A workspace and all in it, or everything, in one pass.
+            Some(AnyRef::Workspace(_)) | None => {
+                let ws = match scope {
+                    Some(AnyRef::Workspace(ws)) => Some(ws),
+                    Some(AnyRef::Tab(_) | AnyRef::Pane(_)) | None => None,
+                };
+                for gone in self.parts.remove_workspace(ws) {
+                    self.end_pane(gone.id(), true, now);
+                }
+            }
         }
         self.after_close(now);
         Ok(())
@@ -3938,7 +4097,7 @@ impl Session {
                 .map(AnyRef::Pane)
                 .collect(),
             (_, Some(AnyRef::Workspace(w))) => (self.workspace(w).into_iter())
-                .flat_map(|w| w.stack().children().iter().map(crate::workspace::Child::id))
+                .flat_map(|w| w.stack().children().iter().copied())
                 .collect(),
             (_, _) => (self.parts.workspaces().iter())
                 .map(|w| AnyRef::Workspace(w.id()))
@@ -4017,8 +4176,7 @@ impl Session {
                     "name" => ws.name().map_or(Json::Null, Json::str),
                     "label" => Json::str(format!("{}", ws.display_label())),
                     "children" => {
-                        let children = ws.stack().children().iter();
-                        let ids = children.map(crate::workspace::Child::id).collect();
+                        let ids = ws.stack().children().to_vec();
                         return Ok(Body::Handles(ids));
                     }
                     "parent" => match self.parts.parent(id).flatten() {
@@ -5084,10 +5242,10 @@ mod tests {
     /// neighbour.
     #[test]
     fn each_client_has_one_current_and_last_at_every_node() -> TestResult {
-        use crate::workspace::{Child, Shown, Stack};
-        fn holds<C: Child>(stack: &Stack<C>, client: ClientId) -> Result<(), String> {
+        use crate::workspace::{Shown, Stack};
+        fn holds<I: Copy + Eq>(stack: &Stack<I>, client: ClientId) -> Result<(), String> {
             let Shown { current, last } = stack.shown(client).ok_or("not shown")?;
-            let child = |id| stack.get(id).is_some();
+            let child = |id| stack.holds(id);
             (child(current) && last.is_none_or(|l| l != current && child(l)))
                 .then_some(())
                 .ok_or_else(|| "a current or last that is not a child".into())
@@ -5097,7 +5255,7 @@ mod tests {
                 holds(s.parts.stack(), client)?;
                 for ws in s.parts.every_workspace() {
                     holds(ws.stack(), client)?;
-                    for tab in ws.tabs() {
+                    for tab in s.parts.tabs_of(ws.id()) {
                         let Shown { current, last } = tab.seat(client).ok_or("no seat")?.focus;
                         let ok =
                             tab.holds(current) && last.is_none_or(|l| l != current && tab.holds(l));
@@ -6804,7 +6962,7 @@ mod tests {
         let mut again = started()?;
         run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
         let made = (again.parts.workspaces().iter())
-            .flat_map(|w| w.tabs())
+            .flat_map(|w| again.parts.tabs_of(w.id()))
             .last();
         // The same tree, each pane by its place in the layout.
         let shape = |root: &Tree| {
@@ -8522,7 +8680,8 @@ mod tests {
         )?;
         run(&mut s, "(sequence! (move (pane \"%1\") \"right\") #inert)")?;
         let holding = |s: &Session, pane| {
-            let tabs = s.parts.workspaces().iter().flat_map(|w| w.tabs());
+            let workspaces = s.parts.workspaces();
+            let tabs = (workspaces.iter()).flat_map(|w| s.parts.tabs_of(w.id()));
             tabs.filter(|t| t.holds(pane)).count()
         };
         assert_eq!(holding(&s, PaneId::of(1)), 1);
@@ -10215,7 +10374,7 @@ mod tests {
                 .map(|ws| {
                     (
                         ws.name().map(str::to_owned),
-                        ws.tabs()
+                        (s.parts.tabs_of(ws.id()))
                             .map(|tab| {
                                 (
                                     tab.name().map(str::to_owned),
@@ -10350,7 +10509,7 @@ mod tests {
                 .parts
                 .workspaces()
                 .iter()
-                .flat_map(|w| w.tabs())
+                .flat_map(|w| again.parts.tabs_of(w.id()))
                 .collect::<Vec<_>>();
             let fits = tabs
                 .iter()
@@ -10385,7 +10544,7 @@ mod tests {
         let mut again = started()?;
         run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
         let made = (again.parts.workspaces().iter())
-            .flat_map(|w| w.tabs())
+            .flat_map(|w| again.parts.tabs_of(w.id()))
             .last();
         Ok(made.map(|t| rects(&again, t.id())).unwrap_or_default())
     }
@@ -10677,7 +10836,7 @@ mod tests {
             let mut again = started()?;
             run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
             let made = (again.parts.workspaces().iter())
-                .flat_map(|w| w.tabs())
+                .flat_map(|w| again.parts.tabs_of(w.id()))
                 .last();
             let (Some(root), Some(made)) = (s.root(tab), made.map(Tab::root)) else {
                 return Err(format!("{change}: no layout").into());

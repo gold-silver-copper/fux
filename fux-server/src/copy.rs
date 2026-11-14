@@ -33,7 +33,7 @@ pub struct Copy {
     id: PaneId,
     /// Given by `name` or `rename`, and kept across respawns: the server's
     /// own.
-    name: Option<String>,
+    name: Option<std::rc::Rc<str>>,
     title: Said,
     pub runs: Runs,
     options: PaneOptions,
@@ -119,7 +119,7 @@ impl Copy {
     /// Pane `recorded`, as its run's record keeps it, its own process gone
     /// while no server ran: as it ended, if it had; else running, at the
     /// respawns it was at, its screen blank.
-    pub fn recorded(recorded: &crate::record::Pane) -> Copy {
+    pub fn recorded(recorded: &crate::record::Pane, name: Option<std::rc::Rc<str>>) -> Copy {
         let launch = crate::pane::Launch {
             argv: recorded.argv.clone(),
             cwd: recorded.cwd.clone(),
@@ -129,7 +129,7 @@ impl Copy {
             false => Runs::Explicit(launch),
         };
         let mut copy = Copy::new(recorded.id, runs, recorded.size, recorded.options);
-        copy.name = recorded.name.clone();
+        copy.name = name;
         copy.respawns = recorded.respawns;
         copy.counts.respawns = recorded.respawns;
         copy.read_error.clone_from(&recorded.read_error);
@@ -163,12 +163,13 @@ impl Copy {
         copy
     }
 
-    /// It as its run's record keeps it (`Copy::recorded`).
-    pub fn record(&self) -> crate::record::Pane {
+    /// It as its run's record keeps it (`Copy::recorded`), its name there
+    /// by number `name`.
+    pub fn record(&self, name: Option<crate::record::NameId>) -> crate::record::Pane {
         let launch = self.runs.launch();
         crate::record::Pane {
             id: self.id,
-            name: self.name.clone(),
+            name,
             shell: matches!(self.runs, Runs::Shell(_)),
             argv: launch.argv.clone(),
             cwd: launch.cwd.clone(),
@@ -187,13 +188,19 @@ impl Copy {
         self.name.as_deref()
     }
     /// Its name as it was, put back: none too.
-    pub(crate) fn renamed(&mut self, name: Option<String>) {
+    pub(crate) fn renamed(&mut self, name: Option<std::rc::Rc<str>>) {
         self.name = name;
     }
+    /// Its name, as it is kept: shared, not copied, by what holds it too.
+    pub(crate) fn given_name(&self) -> Option<&std::rc::Rc<str>> {
+        self.name.as_ref()
+    }
     /// Names it `name`: whether that is another.
-    pub(crate) fn rename(&mut self, name: String) -> bool {
-        let other = self.name.as_ref() != Some(&name);
-        self.name = Some(name);
+    pub(crate) fn rename(&mut self, name: &str) -> bool {
+        let other = self.name.as_deref() != Some(name);
+        if other {
+            self.name = Some(name.into());
+        }
         other
     }
     pub fn title(&self) -> &Said {
