@@ -901,7 +901,7 @@ fn name_files(server: &Server) -> Vec<String> {
 /// 15b. A server killed between writing a name and writing the structure
 ///     that names it leaves a run the next start takes back, with the
 ///     names anyone saw; the name's file, which no structure names, goes
-///     (D-175). The moment is held, not raced: a structure is written to
+///     with the first record the new server writes (D-175). The moment is held, not raced: a structure is written to
 ///     `run.new` first, and a FIFO put there holds the server at its
 ///     opening, the name's file written, till it is killed.
 #[cfg(unix)]
@@ -943,14 +943,15 @@ fn a_server_killed_between_a_name_and_the_structure_is_taken_back() -> Outcome {
         listing.contains(" one ") && !listing.contains(" two "),
         "{listing}"
     );
-    assert_eq!(name_files(server), recorded, "the name no structure names");
-    // And it is the run still: the pane's program runs, and takes a name.
+    // And it is the run still, and this server's: its pane takes a name,
+    // and with that record the file no structure names goes.
     server.ok(&[&rename("three")])?;
     assert!(
         server
             .ok(&["(listing (list-session))"])?
             .contains(" three ")
     );
+    assert_eq!(name_files(server).len(), recorded.len(), "a name, a file");
     Ok(())
 }
 

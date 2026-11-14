@@ -17,7 +17,7 @@
 //! removed after the structure that dropped it. So the structure there
 //! never names a file that is not; what a crash leaves over is a name file
 //! no structure names, which the server that takes the run back removes
-//! (`sweep`).
+//! with the first record it writes (`sweep`).
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
@@ -144,8 +144,9 @@ pub fn read_names(panes: &Path, tree: &Tree) -> Result<BTreeMap<u64, Rc<str>>, S
 
 /// Removes from `panes` each name file but those of `kept`: what a crash
 /// left between a name's writing and the structure's, or between the
-/// structure's and an old name's removal, and a part of one, too. What
-/// can't be removed is left, and logged: no structure names it.
+/// structure's and an old name's removal, and a part of one, too; and
+/// every one, as a run's end is forgotten. What can't be removed is left,
+/// and logged: no structure names it.
 pub fn sweep(panes: &Path, kept: &BTreeSet<u64>) {
     let Ok(entries) = std::fs::read_dir(panes) else {
         return;

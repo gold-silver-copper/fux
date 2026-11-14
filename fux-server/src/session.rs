@@ -290,6 +290,9 @@ pub struct Session {
     /// The name files that record names (`record::name_file`): for each
     /// workspace, tab or pane named there, its name's number and text.
     named: BTreeMap<AnyRef, (u64, Rc<str>)>,
+    /// It took its run back and has written no record since: with the
+    /// first it writes, the name files no structure names go (`commit`).
+    unswept: bool,
     recording: bool,
     ended: bool,
     /// What it tells its panes while a change may still be undone
@@ -489,6 +492,7 @@ impl Session {
             recorded: Vec::new(),
             recorded_head: None,
             named: BTreeMap::new(),
+            unswept: false,
             recording: true,
             ended: false,
             staged: None,
@@ -2187,7 +2191,8 @@ impl Session {
     /// (`Tracked`), and holds each name by its number: a name given since
     /// the last record is written to its own file first, then the
     /// structure, whole, and then the names it no longer has are removed
-    /// (D-175). So what is written follows the tree's rows, not its names'
+    /// (D-175), with every name file no structure names if this is the
+    /// first record written since the run was taken back. So what is written follows the tree's rows, not its names'
     /// lengths, and a crash at any step leaves a structure whose names are
     /// all there.
     ///
@@ -2243,6 +2248,11 @@ impl Session {
         match written {
             Ok(()) => {
                 let kept: BTreeSet<u64> = named.values().map(|(id, _)| *id).collect();
+                // A run taken back is this server's once it writes there:
+                // then what its last server's crash left over goes too.
+                if std::mem::take(&mut self.unswept) {
+                    crate::record::sweep(&panes, &kept);
+                }
                 for (id, _) in self.named.values().filter(|(id, _)| !kept.contains(id)) {
                     let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
                 }
@@ -2438,9 +2448,11 @@ impl Session {
         self.named = (record.tree.named())
             .filter_map(|(of, id)| Some((of, (id, names.get(&id)?.clone()))))
             .collect();
-        // What a crash left between a name's writing and the structure's.
-        let kept: BTreeSet<u64> = names.keys().copied().collect();
-        crate::record::sweep(&panes, &kept);
+        // What a crash left between a name's writing and the structure's
+        // goes with the first record written here, not now: a pane may yet
+        // say another server holds the run (`holder`), and this one then
+        // leaves it having removed nothing of that server's.
+        self.unswept = true;
         self.parts = Tracked::new(parts);
         self.awaited = asked;
         for id in gone {

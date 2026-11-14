@@ -176,8 +176,9 @@ fn large(kept: &Path, bytes: u64) -> Result<Vec<(std::ffi::OsString, u64)>, Stri
 /// the tree writes it again: with a workspace named in 1 MiB, a split
 /// writes the structure alone, in fewer bytes than that one name. A name
 /// replaced leaves no file, a server taking the run back reads each name
-/// from its file, and removes the name files no structure names: what a
-/// crash between a name's writing and the structure's leaves.
+/// from its file, and removes the name files no structure names, what a
+/// crash between a name's writing and the structure's leaves, with the
+/// first record it writes.
 #[cfg(unix)]
 #[test]
 fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
@@ -222,10 +223,12 @@ fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
         Some(long.len())
     );
     assert_eq!(again.parts.panes().len(), 2);
-    assert!(!crate::record::name_file(&kept, 77).exists());
     assert_eq!(large(&kept, NAME)?, named, "taken back, not written again");
-    // Named anew: the old name's file goes once the structure names the new.
+    // Named anew: the old name's file goes once the structure names the
+    // new, and what the crash left with it, the run being this server's.
+    assert!(crate::record::name_file(&kept, 77).exists());
     ask(&mut again, &rename("short"))?;
+    assert!(!crate::record::name_file(&kept, 77).exists());
     assert_eq!(large(&kept, NAME)?, []);
     let names = std::fs::read_dir(&kept)?
         .flatten()
