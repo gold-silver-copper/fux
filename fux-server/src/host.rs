@@ -1906,18 +1906,53 @@ struct Peer {
     owes: Option<u64>,
 }
 
+/// What its server said on `end`, its link, is taken in, in order, read
+/// first if `read`: whether the link closed. What it said before it went
+/// is taken first: a close it sent last is a close, not a crash.
+fn heed(
+    end: &mut crate::link::End,
+    host: &mut Host,
+    buffer: &mut [u8],
+    (waiting, clock): (&mut bool, &mut Clock),
+    now: Instant,
+    read: bool,
+) -> bool {
+    let mut closed = read && end.try_read(buffer) == crate::link::Read::Closed;
+    loop {
+        match end.next_message::<ToPane>() {
+            Ok(Some(ToPane::Taken)) => *waiting = false,
+            Ok(Some(message)) => {
+                if matches!(message, ToPane::Typed { .. }) {
+                    clock.next = now;
+                }
+                host.handle(message, now);
+            }
+            Ok(None) => break,
+            Err(error) => {
+                log!("{}: its server sent a bad frame: {error}", host.id());
+                closed = true;
+                break;
+            }
+        }
+    }
+    closed
+}
+
 /// The loop of a pane's own process (`fux __pane`), listening at its
 /// socket on `listener`, until it is closed and its program is gone: it
-/// starts as the first word of its server, the first to reach it, says,
-/// and reads its program's terminal, its link, its children's ends and
-/// what reaches its socket: a connection's process showing its screen, or,
-/// its server gone without closing it (a crash), a server of its run taking
-/// it back (D-124), one at a time.
+/// starts as a server's first word says (`ToPane::Begin`), waiting for one
+/// however many reach it and say something else, each told it has not
+/// begun (`Taking::Unbegun`); and then reads its program's terminal, its
+/// link, its children's ends and what reaches its socket: a connection's
+/// process showing its screen, or a server of its run that takes it back
+/// once its own is gone without closing it (a crash, D-124), each answered
+/// in words (`Taking`), one at a time.
 pub fn serve(
     mut listener: crate::socket::PaneListener,
     socket: Option<PathBuf>,
+    own_socket: crate::socket::Own,
 ) -> Result<(), String> {
-    use crate::link::{End, FromSide, Read, ToSide};
+    use crate::link::{End, FromSide, Read, Taking, ToSide};
     use fuxix::poll::{Events, PollFd};
     if let Err(errno) = fuxix::process::adopt_orphans() {
         log!("adopting orphans: {errno}");
@@ -1925,17 +1960,60 @@ pub fn serve(
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| format!("the signal pipe: {e}"))?;
     crate::socket::load_terminals();
-    let stream = crate::socket::pane_first(&mut listener)?;
-    let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
-    // A server gone before its first word started nothing: it ends, and
-    // the next server finds it gone.
-    let first = end.wait::<ToPane>().map_err(|e| format!("its link: {e}"))?;
-    let Some(ToPane::Begin(begin)) = first else {
-        if let Some(socket) = &socket {
-            let _ = std::fs::remove_file(socket);
+    crate::socket::pane_listen(&listener)?;
+    let own = i32::try_from(std::process::id()).unwrap_or(0);
+    // Its own socket's file, the one its server bound for it: what it
+    // removes as it ends, and no file put there since.
+    let unlink = |socket: &Option<PathBuf>| {
+        if let Some(socket) = socket {
+            crate::socket::unlink_own(&own_socket, socket);
         }
-        return Err("its server's first word was not its start".to_owned());
     };
+    // A server gone before its first word started nothing, and nothing is
+    // lost by waiting for the next: the one that takes its run back begins
+    // it from the run's record, where it was written before it was started.
+    // Each that reaches it is read to its end: what follows the word it
+    // answered is heeded, a close after a taking (its run ending) or its
+    // start after it said it has not begun.
+    let (mut end, begin) = 'begun: loop {
+        let stream = crate::socket::pane_next(&mut listener)?;
+        let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
+        loop {
+            match end.wait::<ToPane>() {
+                Ok(Some(ToPane::Begin(begin))) => break 'begun (end, begin),
+                // Ended before it began, by a server whose run has it no
+                // more, or ends: it started nothing.
+                Ok(Some(ToPane::Close { .. })) => {
+                    end.send(&FromPane::Taking(Taking::Closing));
+                    let _ = end.flush_all();
+                    unlink(&socket);
+                    return Ok(());
+                }
+                Ok(Some(ToPane::Take { .. } | ToPane::Who)) => {
+                    end.send(&FromPane::Taking(Taking::Unbegun { pid: own }));
+                    let _ = end.flush_all();
+                }
+                // One that says no more, or what no server says first: gone.
+                Ok(
+                    Some(
+                        ToPane::Resize { .. }
+                        | ToPane::Host(_)
+                        | ToPane::Shown(_)
+                        | ToPane::Typed { .. }
+                        | ToPane::Ask { .. }
+                        | ToPane::Taken
+                        | ToPane::Join { .. }
+                        | ToPane::Drop { .. },
+                    )
+                    | None,
+                )
+                | Err(_) => break,
+            }
+        }
+    };
+    crate::socket::pane_begun(&listener)?;
+    // The server that holds its link, as it said it is.
+    let mut server = begin.server;
     let mut host = match Host::begin(*begin, Instant::now()) {
         Ok(host) => host,
         Err(why) => {
@@ -1970,10 +2048,9 @@ pub fn serve(
     loop {
         let now = Instant::now();
         // Closed, it waits for no server: none finds it, as it ends.
-        if host.closed.is_some()
-            && let Some(at) = socket.take()
-        {
-            let _ = std::fs::remove_file(at);
+        if host.closed.is_some() && socket.is_some() {
+            unlink(&socket);
+            socket = None;
         }
         let due = clock.due(now) <= now;
         let mut sent = false;
@@ -1992,8 +2069,11 @@ pub fn serve(
                         && due
                         && let Some(drawn) = host.drawn(watch)
                     {
-                        peer.end.send(&FromSide::Drawn(Box::new(drawn)));
-                        (watch.waiting, sent) = (true, true);
+                        // Refused the memory for it, it is drawn again at
+                        // the next turn that is due.
+                        if peer.end.try_send(&FromSide::Drawn(Box::new(drawn))).is_ok() {
+                            (watch.waiting, sent) = (true, true);
+                        }
                     }
                     let _ = peer.end.flush();
                 }
@@ -2004,8 +2084,16 @@ pub fn serve(
                 drop(std::mem::take(&mut reports));
                 continue;
             };
-            for report in std::mem::take(&mut reports) {
-                end.send(&report);
+            // One the OS gives no memory to send stays, with those after
+            // it, for the next turn.
+            let mut reports = std::mem::take(&mut reports).into_iter();
+            while let Some(report) = reports.next() {
+                if end.try_send(&report).is_err() {
+                    let mut kept: Vec<FromPane> = std::iter::once(report).chain(reports).collect();
+                    kept.append(&mut host.out);
+                    host.out = kept;
+                    break;
+                }
             }
             if let Some(offer) = host.offer() {
                 end.send(&FromPane::Offer(offer));
@@ -2031,9 +2119,7 @@ pub fn serve(
         }
         if host.finished() {
             host.finish();
-            if let Some(socket) = &socket {
-                let _ = std::fs::remove_file(socket);
-            }
+            unlink(&socket);
             return Ok(());
         }
         let timer = host.timer();
@@ -2097,31 +2183,17 @@ pub fn serve(
         let now = Instant::now();
         if !linked.is_empty()
             && let Some(end) = &mut link
+            && heed(
+                end,
+                &mut host,
+                &mut buffer,
+                (&mut waiting, &mut clock),
+                now,
+                true,
+            )
         {
-            // What it said before it went is taken first: a close it sent
-            // last is a close, not a crash.
-            let mut closed = end.read(&mut buffer) == Read::Closed;
-            loop {
-                match end.next_message::<ToPane>() {
-                    Ok(Some(ToPane::Taken)) => waiting = false,
-                    Ok(Some(message)) => {
-                        if matches!(message, ToPane::Typed { .. }) {
-                            clock.next = now;
-                        }
-                        host.handle(message, now);
-                    }
-                    Ok(None) => break,
-                    Err(error) => {
-                        log!("{}: its server sent a bad frame: {error}", host.id());
-                        closed = true;
-                        break;
-                    }
-                }
-            }
-            if closed {
-                (link, waiting) = (None, false);
-                host.forget();
-            }
+            (link, waiting) = (None, false);
+            host.forget();
         }
         if !reaped.is_empty() {
             while children.next().is_some() {}
@@ -2130,10 +2202,9 @@ pub fn serve(
         if !reached.is_empty() {
             while let Ok(reached) = crate::socket::accept(&mut listener) {
                 let ours = crate::socket::peer(&reached).is_ok_and(|peer| peer.user.is_current());
-                if ours
-                    && host.closed.is_none()
-                    && let Ok(end) = crate::socket::serve(reached).and_then(End::new)
-                {
+                // One that is closing takes them too: a server that asks
+                // for it is told so, in words.
+                if ours && let Ok(end) = crate::socket::serve(reached).and_then(End::new) {
                     peers.push(Peer {
                         end,
                         side: None,
@@ -2184,26 +2255,74 @@ pub fn serve(
                 match &mut peer.side {
                     // Its first word.
                     None => match peer.end.next_message::<ToPane>() {
-                        Ok(Some(ToPane::Take { run }))
-                            if run == host.run && link.is_none() && host.closed.is_none() =>
-                        {
-                            // Its last server's screen is owed this one
-                            // whole, and nothing waits for that one's word.
-                            host.forget();
-                            waiting = false;
-                            clock.next = now;
-                            peer.end
-                                .send(&FromPane::Greeting(Box::new(host.greeting())));
-                            taken = true;
-                            break;
-                        }
-                        Ok(Some(ToPane::Who)) => {
-                            peer.end
-                                .send(&FromPane::Greeting(Box::new(host.greeting())));
+                        // A server that takes it, or ends it. Its own
+                        // link is read to its end first: a server that
+                        // crashed, whose end it had not yet read, holds it
+                        // no more; one that still does is named.
+                        Ok(Some(asked @ (ToPane::Take { .. } | ToPane::Close { .. }))) => {
+                            if let Some(end) = &mut link
+                                && heed(
+                                    end,
+                                    &mut host,
+                                    &mut buffer,
+                                    (&mut waiting, &mut clock),
+                                    now,
+                                    true,
+                                )
+                            {
+                                (link, waiting) = (None, false);
+                                host.forget();
+                            }
+                            let taking = match &asked {
+                                ToPane::Take { run, server } => Some((*run, *server)),
+                                ToPane::Close { .. }
+                                | ToPane::Begin(_)
+                                | ToPane::Resize { .. }
+                                | ToPane::Host(_)
+                                | ToPane::Shown(_)
+                                | ToPane::Typed { .. }
+                                | ToPane::Ask { .. }
+                                | ToPane::Taken
+                                | ToPane::Who
+                                | ToPane::Join { .. }
+                                | ToPane::Drop { .. } => None,
+                            };
+                            let answer = match taking {
+                                Some((run, _)) if run != host.run => Taking::OtherRun,
+                                Some(_) | None if link.is_some() => Taking::Held { server },
+                                Some(_) | None if host.closed.is_some() => Taking::Closing,
+                                Some((_, by)) => {
+                                    // Its last server's screen is owed this
+                                    // one whole, and nothing waits for that
+                                    // one's word.
+                                    host.forget();
+                                    waiting = false;
+                                    clock.next = now;
+                                    server = by;
+                                    taken = true;
+                                    Taking::Greets(Box::new(host.greeting()))
+                                }
+                                None => {
+                                    host.handle(asked, now);
+                                    Taking::Closing
+                                }
+                            };
+                            peer.end.send(&FromPane::Taking(answer));
+                            if taken {
+                                break;
+                            }
                             let _ = peer.end.flush_all();
                             done = true;
                         }
-                        Ok(Some(ToPane::Join { run })) if run == host.run => {
+                        Ok(Some(ToPane::Who)) => {
+                            let greets = Taking::Greets(Box::new(host.greeting()));
+                            peer.end.send(&FromPane::Taking(greets));
+                            let _ = peer.end.flush_all();
+                            done = true;
+                        }
+                        Ok(Some(ToPane::Join { run }))
+                            if run == host.run && host.closed.is_none() =>
+                        {
                             peer.side = Some(None);
                         }
                         Ok(None) => break,
@@ -2233,9 +2352,19 @@ pub fn serve(
             }
             closed |= done;
             // Its server's link now, or gone: a body it was sending ends
-            // where it is.
+            // where it is. What that server said after it asked, read with
+            // it, is taken in now: one that asked for it and closed it at
+            // once (a run ending) closes it.
             if taken {
-                link = Some(peer.end);
+                let closed = heed(
+                    &mut peer.end,
+                    &mut host,
+                    &mut buffer,
+                    (&mut waiting, &mut clock),
+                    now,
+                    false,
+                );
+                link = (!closed).then_some(peer.end);
             } else if !closed {
                 kept.push(peer);
             } else if let Some(token) = peer.sends {
@@ -2264,7 +2393,10 @@ pub fn serve(
         if !host.input {
             for peer in &mut peers {
                 if let Some(token) = peer.owes.take() {
-                    peer.end.send(&FromSide::Took { token });
+                    if peer.end.try_send(&FromSide::Took { token }).is_err() {
+                        peer.owes = Some(token);
+                        continue;
+                    }
                     let _ = peer.end.flush();
                 }
             }
@@ -2441,6 +2573,7 @@ mod tests {
             hosting: Hosting::default(),
             socket: None,
             exe: None,
+            server: 0,
         };
         Ok(Host::begin(begin, Instant::now())?)
     }
@@ -2476,6 +2609,7 @@ mod tests {
             hosting: Hosting::default(),
             socket: None,
             exe: None,
+            server: 0,
         };
         let mut host = Host::begin(begin, Instant::now())?;
         let said = vec![0xff; fux_vt::OSC_PAYLOAD_LIMIT];

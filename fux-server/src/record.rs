@@ -8,14 +8,17 @@ use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
 
 /// What a run is: its identity, the ids it gave last, and its workspaces,
-/// at the top in order.
+/// at the top in order; and whether it ended (a stop, or its last pane's
+/// close): then no server takes it back, and the next to find it ends what
+/// is left of it (`server::serve`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub run: Run,
     pub ids: Vec<u32>,
     pub workspaces: Vec<Workspace>,
+    pub ended: bool,
 }
-wired!(struct Record { run, ids, workspaces });
+wired!(struct Record { run, ids, workspaces, ended });
 
 /// A workspace and what it holds, in order.
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +78,10 @@ impl Tab {
         self.fixed
     }
 }
+
+/// The file beside a run's record that says the run ended, where the
+/// record itself could not be written to say so (`Session::end_run`).
+pub const ENDED: &str = "ended";
 
 /// The record at `path`, whole, if one is there: what a crashed server
 /// left.

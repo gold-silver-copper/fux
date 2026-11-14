@@ -99,6 +99,17 @@ pub fn panes(socket: &Path) -> PathBuf {
     PathBuf::from(panes)
 }
 
+/// What reaching for a pane's socket found (`reach`).
+pub enum Reach {
+    /// A process listens there: a link to it.
+    Listening(Stream),
+    /// None does: its process ended.
+    NoListener,
+    /// One does, with no room for another now: it takes none of those
+    /// waiting (stopped, say).
+    Busy,
+}
+
 /// The socket a command uses: `socket` if given, else `FUX_SOCKET`, else
 /// `server.sock` in fux's directory.
 pub fn socket_path(socket: Option<&Path>) -> Result<SocketPath, Error> {

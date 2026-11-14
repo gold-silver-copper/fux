@@ -1260,7 +1260,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         let hungry = errands.iter().any(Errand::hungry);
         let takes = !shut && !posting && !matches!(want, Want::Answer | Want::Nothing);
         let idle = want == Want::Answer && (waits || typing.is_some());
-        if idle && decoder.buffered() >= READ && !(ended || shut || closing) {
+        if idle && !posting && decoder.buffered() >= READ && !(ended || shut || closing) {
             out.push_with(|frames| fux_wire::protocol::ToCommand::Exit(AHEAD).encode_into(frames));
             decoder = Decoder::default();
             link.send(&FromConn::Shut);

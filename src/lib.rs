@@ -134,7 +134,7 @@ fn serve(args: &[String]) -> ExitCode {
 /// which names the pipe it makes).
 fn pane(args: &[String]) -> ExitCode {
     let served = socket::pane_listener(args)
-        .and_then(|(listener, socket)| fux_server::host::serve(listener, socket));
+        .and_then(|(listener, socket, own)| fux_server::host::serve(listener, socket, own));
     match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

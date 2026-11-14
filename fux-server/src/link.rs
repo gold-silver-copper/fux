@@ -45,8 +45,11 @@ pub struct Begin {
     pub hosting: Hosting,
     pub socket: Option<PathBuf>,
     pub exe: Option<PathBuf>,
+    /// The pid of the server that begins it, which it names to another
+    /// that asks for it while this one holds it (`Taking::Held`).
+    pub server: i32,
 }
-wired!(struct Begin { id, run, shell, argv, cwd, size, options, hosting, socket, exe });
+wired!(struct Begin { id, run, shell, argv, cwd, size, options, hosting, socket, exe, server });
 
 /// What a pane's host's terminal said of itself (`outer`): its colours, its
 /// palette, and what it draws.
@@ -229,12 +232,13 @@ pub enum ToPane {
     Close {
         closed: bool,
     },
-    /// A server of run `run` takes it back (`Link::take`).
+    /// The server with pid `server`, of run `run`, takes it back
+    /// (`Asked`): answered in words, always (`Taking`).
     Take {
         run: Run,
+        server: i32,
     },
-    /// Who it is, asked of one waiting (`Link::who`): it greets, and is
-    /// not taken.
+    /// Who it is, asked of one waiting: it greets, and is not taken.
     Who,
     /// A connection's process of run `run`, which talks to it from now on
     /// (`ToSide`).
@@ -255,7 +259,7 @@ wired!(ToPane {
     Ask { ask, actor, what },
     Taken,
     Close { closed },
-    Take { run },
+    Take { run, server },
     Who,
     Join { run },
     Drop { token },
@@ -372,8 +376,9 @@ wired!(Making { Capture { pane, token, placed }, Client { client, scene }, Keys 
 pub enum FromPane {
     /// It started, its program too, or why not: its first word.
     Begun(Option<String>),
-    /// What it is, as a server takes it back: its first word then.
-    Greeting(Box<Greeting>),
+    /// Its answer to a server that reached its socket, to take it, to ask
+    /// who it is or to end it: its first word then.
+    Taking(Taking),
     /// It told this, as `actor`, which left it at `counts`; with the last
     /// of what it told at once, the facts that left it with.
     Told {
@@ -448,7 +453,7 @@ impl Offered {
 }
 wired!(FromPane {
     Begun(b),
-    Greeting(g),
+    Taking(t),
     Told { told, actor, counts, facts },
     Update(u),
     Alert { bell, notified },
@@ -459,6 +464,30 @@ wired!(FromPane {
     Retired(t),
     Offer(o),
 });
+
+/// What a pane's process answers a server that reaches its socket: to one
+/// that takes it back (`ToPane::Take`), asks who it is (`ToPane::Who`) or
+/// ends it (`ToPane::Close` as a first word). Always in words: a
+/// connection it closes without one means its process ended, never that it
+/// would not say.
+#[derive(Clone, Debug)]
+pub enum Taking {
+    /// What it is: taken by the one that asked to take it, its link from
+    /// now on.
+    Greets(Box<Greeting>),
+    /// It has not begun: no server's first word reached it. It waits for
+    /// one (`ToPane::Begin`), from any server of its run.
+    Unbegun { pid: i32 },
+    /// It is closed, and ends once its program is gone; one asked to end
+    /// says so too.
+    Closing,
+    /// It is a pane of another run.
+    OtherRun,
+    /// The server with pid `server` still holds its link, read to its end
+    /// before this was said.
+    Held { server: i32 },
+}
+wired!(Taking { Greets(g), Unbegun { pid }, Closing, OtherRun, Held { server } });
 
 /// A message in one frame, as `Frame` has it.
 struct Message<T>(T);
@@ -764,6 +793,12 @@ pub struct Remote {
     /// Its link took none of what was last written to it: its process reads
     /// nothing (stopped, say). What would go to it waits upstream then.
     pub stalled: bool,
+    /// Questions asked of it while its link took nothing more, each by its
+    /// number: they wait here for their asker, not in the queue to it, and
+    /// go once its link takes what was queued, in order; one whose asker
+    /// went first is let go (`Link::unask`). So what a pane that reads
+    /// nothing is owed does not grow with those who gave up asking.
+    pub parked: Vec<(u64, ToPane)>,
     /// The program whose handle the server copied from it (Windows,
     /// D-134), till another takes its place or the pane ends.
     pub adopted: Option<fuxix::process::Pid>,
@@ -782,7 +817,16 @@ impl Remote {
         for message in std::mem::take(&mut self.later) {
             self.end.send(&message);
         }
+        for (_, question) in std::mem::take(&mut self.parked) {
+            self.end.send(&question);
+        }
         let _ = self.end.flush();
+    }
+
+    /// Whether its link has not taken all it was sent: what is asked of it
+    /// now waits (`parked`).
+    fn backed_up(&self) -> bool {
+        self.stalled || !self.end.out.is_empty() || !self.parked.is_empty()
     }
 }
 
@@ -806,6 +850,8 @@ impl Link {
                     let kind = std::mem::discriminant(&message);
                     remote.later.retain(|m| std::mem::discriminant(m) != kind);
                     remote.later.push(message);
+                } else if let (ToPane::Ask { ask, .. }, true) = (&message, remote.backed_up()) {
+                    remote.parked.push((*ask, message));
                 } else {
                     remote.end.send(&message);
                 }
@@ -815,6 +861,41 @@ impl Link {
                 Link::told(id, host, inbox);
             }
         }
+    }
+
+    /// Question `ask`'s asker is gone: if it still waits here it is let
+    /// go, never sent; the body its keys waited for, if it was one's.
+    /// False if its pane was sent it.
+    pub fn unask(&mut self, ask: u64) -> Option<Option<u64>> {
+        let Link::Remote(remote) = self else {
+            return None;
+        };
+        let mut body = None;
+        remote.parked.retain(|(parked, question)| {
+            if *parked != ask {
+                return true;
+            }
+            body = Some(match question {
+                ToPane::Ask {
+                    what: Ask::Keys { body, .. },
+                    ..
+                } => *body,
+                ToPane::Begin(_)
+                | ToPane::Resize { .. }
+                | ToPane::Host(_)
+                | ToPane::Shown(_)
+                | ToPane::Typed { .. }
+                | ToPane::Ask { .. }
+                | ToPane::Taken
+                | ToPane::Close { .. }
+                | ToPane::Take { .. }
+                | ToPane::Who
+                | ToPane::Join { .. }
+                | ToPane::Drop { .. } => None,
+            });
+            false
+        });
+        body
     }
 
     /// What host `host`, held here, has to tell, its screen too, into
@@ -841,23 +922,26 @@ impl Link {
         begin: Begin,
     ) -> Result<Link, String> {
         let (pid, stream) = crate::socket::start_pane(exe, socket)?;
+        Link::begin(stream, pid, true, begin)
+    }
+
+    /// Begins the pane whose process `pid` waits at the other end of
+    /// `stream` for its first word, and waits for its answer: this
+    /// server's child if `child`, else one a crashed server started and
+    /// never began (`Taking::Unbegun`), begun from its run's record.
+    pub fn begin(
+        stream: crate::socket::Stream,
+        pid: fuxix::process::Pid,
+        child: bool,
+        begin: Begin,
+    ) -> Result<Link, String> {
         let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
         end.send(&ToPane::Begin(Box::new(begin)));
         if let Err(error) = end.flush_all() {
             return Err(format!("its process left before it began: {error}"));
         }
         let began = end.wait::<FromPane>();
-        let mut remote = Remote {
-            end,
-            pid,
-            child: true,
-            closed: false,
-            ended: None,
-            first: Vec::new(),
-            later: Vec::new(),
-            stalled: false,
-            adopted: None,
-        };
+        let mut remote = Remote::new(end, pid, child);
         match began.map_err(|e| format!("its process: {e}"))? {
             Some(FromPane::Begun(None)) => {
                 // Its first facts come with it, so that nothing reads its
@@ -870,98 +954,29 @@ impl Link {
             None => Err("its process ended before it began".to_owned()),
         }
     }
+}
 
-    /// Takes back the pane whose process listens at `socket`, waiting for
-    /// a server since its own crashed (D-124): what it says it is, if it is
-    /// a pane of run `run` and speaks this pane protocol, and its link. One
-    /// no process listens for is gone; one that answers but can't be taken
-    /// is not (`Untaken`).
-    pub fn take(socket: &std::path::Path, run: Run) -> Result<(Link, Greeting), Untaken> {
-        let stream =
-            crate::socket::connect(socket).map_err(|e| match crate::socket::none_listens(&e) {
-                true => Untaken::Gone(e.to_string()),
-                false => Untaken::Unknown(format!("reaching it: {e}")),
-            })?;
-        let maker = crate::socket::listener_pid(&stream);
-        let unknown = |why: String| Untaken::Unknown(why);
-        let mut end = End::new(stream).map_err(|e| unknown(format!("its link: {e}")))?;
-        end.send(&ToPane::Take { run });
-        end.flush_all()
-            .map_err(|e| unknown(format!("its link: {e}")))?;
-        let greeting = match end.wait::<FromPane>() {
-            Ok(Some(FromPane::Greeting(greeting))) => greeting,
-            Ok(Some(_)) => return Err(unknown("its first word was no greeting".to_owned())),
-            Ok(None) => return Err(unknown("it is no pane of this run".to_owned())),
-            Err(error) => return Err(unknown(format!("its link: {error}"))),
-        };
-        if greeting.protocol != PANE_PROTOCOL {
-            return Err(unknown(format!(
-                "it speaks pane protocol {}, not {PANE_PROTOCOL}",
-                greeting.protocol
-            )));
-        }
-        let pid = fuxix::process::Pid::from_i32(greeting.pid)
-            .ok_or_else(|| unknown(format!("its greeting names pid {}", greeting.pid)))?;
-        // Where the system names the process that listens, the greeting
-        // must name that one: the pid a takeover adopts a program from.
-        if maker.is_some_and(|maker| maker != pid) {
-            return Err(unknown(format!(
-                "its greeting names pid {pid}, and the system another"
-            )));
-        }
-        let mut remote = Remote {
+impl Remote {
+    /// The link `end` to the pane process `pid`, just begun or taken.
+    pub fn new(end: End, pid: fuxix::process::Pid, child: bool) -> Remote {
+        Remote {
             end,
             pid,
-            child: false,
+            child,
             closed: false,
             ended: None,
             first: Vec::new(),
             later: Vec::new(),
             stalled: false,
+            parked: Vec::new(),
             adopted: None,
-        };
-        remote.first = first(&mut remote.end).map_err(unknown)?;
-        Ok((Link::Remote(remote), *greeting))
-    }
-
-    /// The pid of the pane process waiting at `socket`, as the system says
-    /// (`SO_PEERCRED`), else as it says itself; none if none answers.
-    pub fn who(socket: &std::path::Path) -> Option<i32> {
-        let (pid, stream) = crate::socket::reach_named(socket)?;
-        if let Some(pid) = pid {
-            return Some(pid.as_i32());
-        }
-        let mut end = End::new(stream).ok()?;
-        end.send(&ToPane::Who);
-        end.flush_all().ok()?;
-        match end.wait::<FromPane>() {
-            Ok(Some(FromPane::Greeting(greeting))) => Some(greeting.pid),
-            Ok(_) | Err(_) => None,
         }
     }
 }
 
-/// Why a pane waiting for a server was not taken back.
-#[derive(Debug)]
-pub enum Untaken {
-    /// No process listens at its socket: it ended.
-    Gone(String),
-    /// One does, and could not be taken: it may still run.
-    Unknown(String),
-}
-
-impl std::fmt::Display for Untaken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Untaken::Gone(why) => write!(f, "gone: {why}"),
-            Untaken::Unknown(why) => f.write_str(why),
-        }
-    }
-}
-
-/// What a pane says as it begins or is taken back, up to its first facts,
-/// which it sends once a frame it is part way through is whole: what it
-/// told before them too, in order.
+/// What a pane says as it begins, up to its first facts, which it sends
+/// once a frame it is part way through is whole: what it told before them
+/// too, in order.
 fn first(end: &mut End) -> Result<Vec<FromPane>, String> {
     let mut said = Vec::new();
     loop {
@@ -978,7 +993,7 @@ fn first(end: &mut End) -> Result<Vec<FromPane>, String> {
 }
 
 /// The messages between a server and its panes' processes: a server takes
-/// back only panes of its own (`Link::take`).
+/// back only panes of its own (`takeover`).
 pub const PANE_PROTOCOL: u32 = 2;
 
 /// What a pane waiting for a server says of itself as one takes it back:

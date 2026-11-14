@@ -1140,6 +1140,41 @@ fn whole(pending: &[u8]) -> Result<Option<usize>, Error> {
 mod tests {
     use super::*;
 
+    /// Inputs longer than a frame are cut into pieces that each fit one,
+    /// every piece but the last saying more follows; a paste cut stays one
+    /// paste, and what the pieces carry is what was given, cut between
+    /// characters.
+    #[test]
+    fn inputs_are_cut_into_pieces_that_say_whether_more_follows() {
+        use crate::command::Input;
+        let text: String = std::iter::repeat_n("é界", PIECE / 5 * 3).collect();
+        let inputs = vec![
+            Input::Text("ls".into()),
+            Input::Paste(text.clone()),
+            Input::Bytes(vec![7; PIECE + 3]),
+        ];
+        let pieces = cut_inputs(inputs);
+        assert!(pieces.len() >= 4, "{} pieces", pieces.len());
+        let (mut pasted, mut bytes, mut pastes) = (String::new(), 0usize, 0usize);
+        for (n, piece) in pieces.iter().enumerate() {
+            assert_eq!(Input::go_on(piece), n + 1 < pieces.len());
+            assert!(sends_whole(&Piece(piece.clone())), "piece {n} is no frame");
+            for input in piece {
+                match input {
+                    Input::Pasting(part) => pasted.push_str(part),
+                    Input::Paste(part) => {
+                        pasted.push_str(part);
+                        pastes += 1;
+                    }
+                    Input::Bytes(given) => bytes += given.len(),
+                    Input::Text(_) | Input::Key(_) | Input::More => {}
+                }
+            }
+        }
+        assert_eq!((pasted, pastes, bytes), (text, 1, PIECE + 3));
+        assert_eq!(cut_inputs(vec![Input::Text("ls".into())]).len(), 1);
+    }
+
     #[test]
     fn observation_wait_reads_its_whole_limit() -> Result<(), Box<dyn std::error::Error>> {
         use crate::command::{AnyRef, Limit, Since, Wait};

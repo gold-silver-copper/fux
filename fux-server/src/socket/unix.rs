@@ -385,18 +385,30 @@ pub fn start_pane(exe: &Path, socket: &Path) -> Result<(fuxix::process::Pid, Str
     // One a process still listens at is a pane's, whatever the record
     // says: never let go as debris. One no one does was left by a pane
     // that ended.
-    if UnixStream::connect(socket).is_ok() {
-        return Err(format!(
-            "a pane's process listens at {} already",
-            socket.display()
-        ));
+    // Asked without waiting: one that listens and takes no one (stopped,
+    // its backlog full) listens all the same.
+    match reach(socket).map_err(at("reaching for"))? {
+        super::Reach::Listening(_) | super::Reach::Busy => {
+            return Err(format!(
+                "a pane's process listens at {} already",
+                socket.display()
+            ));
+        }
+        super::Reach::NoListener => {}
     }
     let _ = std::fs::remove_file(socket);
     let listener = UnixListener::bind(socket).map_err(at("binding its socket"))?;
     std::fs::set_permissions(socket, PermissionsExt::from_mode(0o600)).map_err(at("its socket"))?;
+    // The file just bound, as the pane's process is told it: what it may
+    // remove as it ends, whatever is at the path by then (`own`).
+    let (device, inode) = fs::symlink_metadata(socket)
+        .map(|meta| identity(&meta))
+        .map_err(at("its socket"))?;
     let mut command = std::process::Command::new(exe);
     command
         .arg(crate::link::PANE)
+        .arg(device.to_string())
+        .arg(inode.to_string())
         .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
             listener,
         )))
@@ -413,13 +425,16 @@ pub fn start_pane(exe: &Path, socket: &Path) -> Result<(fuxix::process::Pid, Str
     Ok((pid, stream))
 }
 
-/// A pane process's socket, on its stdin, and the path it was bound at
-/// (`args`: none on Unix).
-pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>), String> {
+/// A pane process's socket, on its stdin, the path it was bound at, and
+/// that file as its server bound it (`args`: its device and inode, as
+/// `start_pane` says them), which it alone may remove (`Own`).
+pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>, Own), String> {
     use std::os::fd::AsFd;
-    if !args.is_empty() {
-        return Err("it takes no words".to_owned());
-    }
+    let bound = match args {
+        [device, inode] => device.parse::<u64>().ok().zip(inode.parse::<u64>().ok()),
+        _ => None,
+    };
+    let bound = bound.ok_or("it takes its socket's device and inode")?;
     let listener = std::io::stdin()
         .as_fd()
         .try_clone_to_owned()
@@ -427,28 +442,116 @@ pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>),
         .map_err(|e| format!("its socket: {e}"))?;
     let socket =
         (listener.local_addr().ok()).and_then(|address| address.as_pathname().map(Path::to_owned));
-    Ok((listener, socket))
+    // The file at its path now is its own only if it is the one bound: a
+    // path replaced since (its run's directory made anew before this
+    // process ran) is another's, and never removed by it.
+    let own = (socket.as_deref())
+        .and_then(|path| Pinned::new(path).ok())
+        .filter(|pinned| pinned.identity == bound);
+    Ok((listener, socket, Own(own)))
 }
 
-/// Its server, the first to reach a pane's process at `listener`, waited
-/// for; `listener` read without waiting from then on.
-pub fn pane_first(listener: &mut PaneListener) -> Result<Stream, String> {
-    // Listened on again, by it: one that reaches it is told its pid, not
-    // the server's that made the socket (`SO_PEERCRED`).
-    fuxix::socket::listen(&*listener, 16).map_err(|e| format!("its socket: {e}"))?;
+/// A pane's process listens at `listener` itself, again: one that reaches
+/// it is told its pid, not the server's that made the socket
+/// (`SO_PEERCRED`).
+pub fn pane_listen(listener: &PaneListener) -> Result<(), String> {
+    fuxix::socket::listen(listener, PANE_BACKLOG).map_err(|e| format!("its socket: {e}"))
+}
+
+/// How many may wait at a pane's socket untaken: one more finds it busy
+/// (`Reach::Busy`).
+const PANE_BACKLOG: i32 = 16;
+
+/// The next to reach a pane's process at `listener`, waited for: its
+/// server, till it has begun.
+pub fn pane_next(listener: &mut PaneListener) -> Result<Stream, String> {
     let (stream, _) = listener.accept().map_err(|e| format!("its server: {e}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("its socket: {e}"))?;
     Ok(stream)
 }
 
-/// The pid of what listens at `socket`, as the system says (`SO_PEERCRED`)
-/// if it does, and a link to it; none if nothing does.
-pub fn reach_named(socket: &Path) -> Option<(Option<fuxix::process::Pid>, Stream)> {
-    let stream = UnixStream::connect(socket).ok()?;
-    let pid = fuxix::socket::peer(&stream).ok().and_then(|peer| peer.pid);
-    Some((pid, stream))
+/// A pane's process has begun: `listener` is read without waiting from
+/// now on.
+pub fn pane_begun(listener: &PaneListener) -> Result<(), String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("its socket: {e}"))
+}
+
+/// Reaches for what listens at `socket`, without waiting: a link to it; or
+/// that nothing listens there (no such file, or one no process listens
+/// at); or that one does and has no room for another now (its backlog is
+/// full: `EAGAIN`). Any other failure says nothing of what is there, and
+/// is the error. macOS and the BSDs refuse a connect to a full backlog as
+/// they do one to no listener, so a pane that full is found gone there:
+/// it takes more connections than a pane's backlog holds, each left
+/// untaken by a pane that stays stopped.
+pub fn reach(socket: &Path) -> io::Result<super::Reach> {
+    let fd = fuxix::socket::stream()?;
+    fuxix::io::set_nonblocking(&fd, true)?;
+    match fuxix::socket::connect(&fd, socket) {
+        Ok(()) => Ok(super::Reach::Listening(UnixStream::from(fd))),
+        Err(fuxix::Errno::AGAIN) => Ok(super::Reach::Busy),
+        Err(errno) => {
+            let error = io::Error::from(errno);
+            let none = matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            );
+            if none {
+                Ok(super::Reach::NoListener)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+/// The process at the other end of `stream`, as the system names it:
+/// the one that listens there (`SO_PEERCRED`), where it names one (not on
+/// macOS).
+pub fn peer_pid(stream: &Stream) -> Option<fuxix::process::Pid> {
+    fuxix::socket::peer(stream).ok()?.pid
+}
+
+/// A pane's process's own socket file, the one its server bound for it
+/// (`start_pane`, `pane_listener`): what it may remove as it ends. A file
+/// put at the same path since is another's. None where the file at its
+/// path was not that one as the process began.
+pub struct Own(Option<Pinned>);
+
+/// Removes the socket file at `path` if it is still the one `own` names;
+/// one that could not be named is left.
+pub fn unlink_own(own: &Own, path: &Path) {
+    if own.0.as_ref().is_some_and(|own| own.still_at(path)) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// The socket's locks, taken again by a server that stopped and let them
+/// go as it stopped listening (`hold_again`).
+pub struct Held {
+    _starting: File,
+    _lock: File,
+}
+
+/// Takes the locks of the socket at `path` again, as a starting server
+/// does, for a server that stopped to let go of what its run kept: none if
+/// another server holds the socket now, whose run's the files there are.
+/// A server that starts meanwhile waits for it, as for one starting.
+pub fn hold_again(path: &Path) -> Option<Held> {
+    let (starting, _) = lock_file(path, ".starting").ok()?;
+    starting.lock().ok()?;
+    let (lock, _) = lock_file(path, ".lock").ok()?;
+    lock.try_lock().ok()?;
+    Some(Held {
+        _starting: starting,
+        _lock: lock,
+    })
+}
+
+/// Whether the process `pid` still runs (`gone`).
+pub fn runs(pid: fuxix::process::Pid) -> bool {
+    !gone(pid)
 }
 
 /// Whether `error` says this process has every descriptor its limit
@@ -487,12 +590,6 @@ pub fn run_pinned(exe: &Path) -> std::io::Result<()> {
     Err(std::process::Command::new(exe)
         .args(std::env::args_os().skip(1))
         .exec())
-}
-
-/// Whether a connect that failed so says nothing listens there: on Unix,
-/// every failure does.
-pub fn none_listens(_error: &std::io::Error) -> bool {
-    true
 }
 
 /// The pid of the process listening at the other end of `stream`, where

@@ -512,8 +512,12 @@ with no limit of its own. A size no screen can have, past what a grid holds, fai
 handler catches. Some of fux's own code refuses too, and goes on. A client joining a reply's parts (a capture
 too large for its memory, say) fails that request `out-of-memory`, and the next is served. Any process of fux
 reading a frame's texts and lists, the server too, takes the refusal as a frame it can't read: that
-connection or link ends, with the reason. A connection's or a pane's process joining the pieces of a paste,
-a screen or a capture ends that connection or link the same way. A pane refused memory reading its program's
+connection or link ends, with the reason. A connection's process joining the pieces of a screen or a
+capture ends that connection the same way. Keys and pastes are joined nowhere: what is longer than a frame
+goes to its pane a piece at a time, each sent once the pane's terminal took the one before, so a paste to a
+program that reads nothing waits in the client that sent it, and that client's later keys wait behind it;
+if the client goes, the paste ends where it is, closed. `input` is told once a piece. A pane holds one
+frame of answers to its program's own queries, and reads that program's output no more till it reads them. A pane refused memory reading its program's
 output, or for a resize, loses only what that was for, and counts it (`lost`, `memory`). Every other allocation
 fux's own code makes is infallible, and a refusal there aborts that process: what a decoded frame is
 made of beyond its texts and lists, what waits to be written to a socket, the server's tree and journal, a
