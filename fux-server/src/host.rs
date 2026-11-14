@@ -1826,6 +1826,7 @@ fn heed(
 pub fn serve(
     mut listener: crate::socket::PaneListener,
     socket: Option<PathBuf>,
+    own_socket: crate::socket::Own,
 ) -> Result<(), String> {
     use crate::link::{End, FromSide, Read, Taking, ToSide};
     use fuxix::poll::{Events, PollFd};
@@ -1837,12 +1838,11 @@ pub fn serve(
     crate::socket::load_terminals();
     crate::socket::pane_listen(&listener)?;
     let own = i32::try_from(std::process::id()).unwrap_or(0);
-    // Its own socket's file, as it is now: what it removes as it ends, and
-    // no file put there since.
-    let own_socket = socket.as_deref().map(crate::socket::own);
+    // Its own socket's file, the one its server bound for it: what it
+    // removes as it ends, and no file put there since.
     let unlink = |socket: &Option<PathBuf>| {
-        if let (Some(own), Some(socket)) = (&own_socket, socket) {
-            crate::socket::unlink_own(own, socket);
+        if let Some(socket) = socket {
+            crate::socket::unlink_own(&own_socket, socket);
         }
     };
     // A server gone before its first word started nothing, and nothing is

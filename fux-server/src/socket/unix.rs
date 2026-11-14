@@ -385,18 +385,30 @@ pub fn start_pane(exe: &Path, socket: &Path) -> Result<(fuxix::process::Pid, Str
     // One a process still listens at is a pane's, whatever the record
     // says: never let go as debris. One no one does was left by a pane
     // that ended.
-    if UnixStream::connect(socket).is_ok() {
-        return Err(format!(
-            "a pane's process listens at {} already",
-            socket.display()
-        ));
+    // Asked without waiting: one that listens and takes no one (stopped,
+    // its backlog full) listens all the same.
+    match reach(socket).map_err(at("reaching for"))? {
+        super::Reach::Listening(_) | super::Reach::Busy => {
+            return Err(format!(
+                "a pane's process listens at {} already",
+                socket.display()
+            ));
+        }
+        super::Reach::NoListener => {}
     }
     let _ = std::fs::remove_file(socket);
     let listener = UnixListener::bind(socket).map_err(at("binding its socket"))?;
     std::fs::set_permissions(socket, PermissionsExt::from_mode(0o600)).map_err(at("its socket"))?;
+    // The file just bound, as the pane's process is told it: what it may
+    // remove as it ends, whatever is at the path by then (`own`).
+    let (device, inode) = fs::symlink_metadata(socket)
+        .map(|meta| identity(&meta))
+        .map_err(at("its socket"))?;
     let mut command = std::process::Command::new(exe);
     command
         .arg(crate::link::PANE)
+        .arg(device.to_string())
+        .arg(inode.to_string())
         .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
             listener,
         )))
@@ -413,13 +425,16 @@ pub fn start_pane(exe: &Path, socket: &Path) -> Result<(fuxix::process::Pid, Str
     Ok((pid, stream))
 }
 
-/// A pane process's socket, on its stdin, and the path it was bound at
-/// (`args`: none on Unix).
-pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>), String> {
+/// A pane process's socket, on its stdin, the path it was bound at, and
+/// that file as its server bound it (`args`: its device and inode, as
+/// `start_pane` says them), which it alone may remove (`Own`).
+pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>, Own), String> {
     use std::os::fd::AsFd;
-    if !args.is_empty() {
-        return Err("it takes no words".to_owned());
-    }
+    let bound = match args {
+        [device, inode] => device.parse::<u64>().ok().zip(inode.parse::<u64>().ok()),
+        _ => None,
+    };
+    let bound = bound.ok_or("it takes its socket's device and inode")?;
     let listener = std::io::stdin()
         .as_fd()
         .try_clone_to_owned()
@@ -427,7 +442,13 @@ pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>),
         .map_err(|e| format!("its socket: {e}"))?;
     let socket =
         (listener.local_addr().ok()).and_then(|address| address.as_pathname().map(Path::to_owned));
-    Ok((listener, socket))
+    // The file at its path now is its own only if it is the one bound: a
+    // path replaced since (its run's directory made anew before this
+    // process ran) is another's, and never removed by it.
+    let own = (socket.as_deref())
+        .and_then(|path| Pinned::new(path).ok())
+        .filter(|pinned| pinned.identity == bound);
+    Ok((listener, socket, Own(own)))
 }
 
 /// A pane's process listens at `listener` itself, again: one that reaches
@@ -492,16 +513,11 @@ pub fn peer_pid(stream: &Stream) -> Option<fuxix::process::Pid> {
     fuxix::socket::peer(stream).ok()?.pid
 }
 
-/// A pane's process's own socket file, as it was when the process began:
-/// what it may remove as it ends. A file put at the same path since (a
-/// later run's pane of the same number, its run's directory made anew
-/// while this process was slow to end) is another's.
+/// A pane's process's own socket file, the one its server bound for it
+/// (`start_pane`, `pane_listener`): what it may remove as it ends. A file
+/// put at the same path since is another's. None where the file at its
+/// path was not that one as the process began.
 pub struct Own(Option<Pinned>);
-
-/// The socket file at `path`, this process's own (`Own`).
-pub fn own(path: &Path) -> Own {
-    Own(Pinned::new(path).ok())
-}
 
 /// Removes the socket file at `path` if it is still the one `own` names;
 /// one that could not be named is left.

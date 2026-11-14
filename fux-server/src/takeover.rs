@@ -337,10 +337,17 @@ pub fn waiting(panes: &Path) -> Vec<(PaneId, Option<i32>)> {
 }
 
 /// Whether the server with pid `server`, which a pane named as holding
-/// its link, still runs: one that ended since holds nothing, and its pane
-/// reads its link's end next.
+/// its link, is another server that still runs: one that ended since
+/// holds nothing, and its pane reads its link's end next; and this server
+/// is never another to itself (`own`).
 pub fn holds(server: i32) -> bool {
-    fuxix::process::Pid::from_i32(server).is_some_and(crate::socket::runs)
+    !own(server) && fuxix::process::Pid::from_i32(server).is_some_and(crate::socket::runs)
+}
+
+/// Whether `server`, which a pane named as holding its link, is this very
+/// process: a pane it holds, asked as though it did not, is its own.
+pub fn own(server: i32) -> bool {
+    i32::try_from(std::process::id()).is_ok_and(|own| own == server)
 }
 
 #[cfg(test)]

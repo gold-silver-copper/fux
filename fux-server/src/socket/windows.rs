@@ -333,7 +333,11 @@ const PANE_START: Duration = Duration::from_secs(10);
 pub fn start_pane(exe: &Path, socket: &Path) -> Result<(Pid, Stream), String> {
     let name = pipe_name(socket).map_err(|e| e.to_string())?;
     // One a process still listens at is a pane's: never let go as debris.
-    if fuxix::socket::connect(&name).is_ok() {
+    // Asked without waiting: one with no instance free listens all the same.
+    if matches!(
+        fuxix::socket::connect_now(&name),
+        Ok(_) | Err(fuxix::Errno::AGAIN)
+    ) {
         return Err(format!(
             "a pane's process listens at {} already",
             socket.display()
@@ -386,7 +390,7 @@ fn listens(said: &Stream) -> Result<(), String> {
 /// A pane process's pipe, made here, and the marker path `args` names,
 /// which also names the pipe; its server told, on stdout, that it listens.
 /// A name any process holds already is refused.
-pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>), String> {
+pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>, Own), String> {
     use std::io::Write;
     let [socket] = args else {
         return Err("it takes its socket's path".to_owned());
@@ -397,7 +401,7 @@ pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>),
     let mut stdout = std::io::stdout();
     (stdout.write_all(b"\n").and_then(|()| stdout.flush()))
         .map_err(|e| format!("telling its server: {e}"))?;
-    Ok((listener, Some(socket)))
+    Ok((listener, Some(socket), Own))
 }
 
 /// A pane's process made its pipe itself (`pane_listener`): nothing more
@@ -455,11 +459,6 @@ pub fn peer_pid(stream: &Stream) -> Option<Pid> {
 /// A pane's process's own marker file (`start_pane`): it holds its pipe's
 /// name while it runs, so no other pane's marker is at that path.
 pub struct Own;
-
-/// The marker at `path`, this process's own (`Own`).
-pub fn own(_path: &Path) -> Own {
-    Own
-}
 
 /// Removes the marker at `path`.
 pub fn unlink_own(_own: &Own, path: &Path) {
