@@ -14,6 +14,21 @@ fn copy_within<T: Copy>(slice: &mut [T], src: Range<usize>, dest: usize) -> Opti
     fits.then(|| slice.copy_within(src, dest))
 }
 
+/// Appends `more` to `bytes`, or says the OS gave no room for it: `bytes`
+/// is then as it was. For bytes another party sends, which fux joins only
+/// as far as memory is given (`fux_wire::protocol::Joining`).
+pub fn try_extend(bytes: &mut Vec<u8>, more: &[u8]) -> Result<(), crate::Error> {
+    #[cfg(feature = "checks")]
+    if crate::check::refusing() {
+        return Err(crate::Error::Capacity);
+    }
+    bytes
+        .try_reserve(more.len())
+        .map_err(|_| crate::Error::Capacity)?;
+    bytes.extend_from_slice(more);
+    Ok(())
+}
+
 /// A queue of bytes. Taking from the front moves an offset, not the bytes
 /// behind it; the space taken is reclaimed when the queue empties, or on the
 /// next push once at least as much has been taken as is left, so each byte

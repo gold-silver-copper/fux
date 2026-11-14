@@ -365,10 +365,17 @@ impl Conn {
     /// Passes its process the frames queued for its client.
     fn queue_out(&mut self) {
         if !self.out.is_empty() {
-            let bytes = self.out.as_slice().to_vec();
-            self.out.take(bytes.len());
+            // Each message one frame, the most its process takes of one.
+            let mut rest = self.out.as_slice();
+            while !rest.is_empty() {
+                let (bytes, after) = rest
+                    .split_at_checked(crate::link::BYTES)
+                    .unwrap_or((rest, &[]));
+                self.link.send(&crate::link::ToConn::Bytes(bytes.to_vec()));
+                rest = after;
+            }
+            self.out.take(self.out.len());
             self.out.shrink(CONN_KEEP);
-            self.link.send(&crate::link::ToConn::Bytes(bytes));
             self.pending = true;
         }
     }
