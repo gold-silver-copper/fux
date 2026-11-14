@@ -173,34 +173,55 @@ fn a_pane_process_killed_ends_its_pane_alone() -> Outcome {
     Ok(())
 }
 
-/// 2. A pane flooding what it answers its program, under a cap of its
-///    own process's memory: that process ends alone.
+/// 2. A program that asks its terminal what it is, far more than its
+///    pane's process may hold the answers to (a cap of its memory), and
+///    reads none till it has asked it all, having written megabytes
+///    before it reads: its pane holds a frame of answers, reads it no
+///    more till it reads, answers its server meanwhile, and its process
+///    lives. That process grew with every answer, and ended at its cap.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_flood_under_a_cap_ends_its_pane_process_alone() -> Outcome {
+fn a_flood_of_queries_none_reads_leaves_its_pane_process_flat_and_answering() -> Outcome {
     let server = Server::start("")?;
     let flood = pane(&server, "a", &["sleep", "1000"])?;
-    let shell = pane(&server, "b", &["sh"])?;
     let own = own_process(&server, &flood)?;
-    cap(own, 64 << 20)?;
-    // It asks its terminal what it is, and never reads the answers.
-    let asks = r#"q=$(printf '\033[c%.0s' $(seq 200)); yes "$q""#;
+    let cap_bytes = 16 << 20;
+    cap(own, cap_bytes)?;
+    let before = peak_kib(own)?;
+    let go = kept(&server).join("read-now");
+    // 4 MB of queries, each answered with more than six times its
+    // length: more than the cap; cut where a query ends, so that what is
+    // printed after is text. A reader takes the answers once told to.
+    let asks = format!(
+        r#"stty raw -echo; (until [ -e {go} ]; do sleep 0.05; done; cat </dev/tty >/dev/null) & q=$(printf '\033[c%.0s' $(seq 200)); yes "$q" | head -c 4000000; printf 'ASKED-%s' ALL; sleep 1000"#,
+        go = go.display()
+    );
     let respawn = vec![format!(
         "(respawn (kill-first {}))",
         program(
             &format!("(pane {})", fux::script::quoted(&flood)),
-            &["sh", "-c", asks]
+            &["sh", "-c", &asks]
         )
     )];
     server.ok(&respawn)?;
-    eventually("its process to end", || Ok(!alive(own)))?;
-    assert!(
-        server
-            .pid()
-            .is_some_and(|p| alive(i32::try_from(p).unwrap_or(0)))
-    );
-    server.type_line(&shell, "echo still-here")?;
-    server.shows(&shell, "still-here")?;
+    // Its pane answers its server while its program floods it.
+    for (rows, cols) in [(10, 40), (12, 50)] {
+        let resize = format!(
+            "(resize (size (pane {}) {cols} {rows}))",
+            fux::script::quoted(&flood)
+        );
+        let _ = server.fux(&[&resize])?;
+        server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(&flood))])?;
+    }
+    std::fs::write(&go, b"").map_err(e)?;
+    let capture = format!("(capture (pane {}))", fux::script::quoted(&flood));
+    eventually("all it asked to be read", || {
+        Ok(server.ok(&[&capture])?.contains("ASKED-ALL"))
+    })?;
+    assert!(alive(own), "its pane's process ended");
+    assert_eq!(own_process(&server, &flood)?, own);
+    let grew = peak_kib(own)?.saturating_sub(before);
+    assert!(grew < 8 << 10, "its pane's process grew {grew} KiB");
     Ok(())
 }
 

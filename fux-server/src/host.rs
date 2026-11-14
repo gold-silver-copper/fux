@@ -2045,8 +2045,13 @@ pub fn serve(
             .flatten()
             .min();
         let timeout = at.map(|at| at.saturating_duration_since(now));
+        // A program whose output is not read now is still written what
+        // waits for it, and read again once it took enough
+        // (`Pane::reads_output`).
+        let reads = host.pane().reads_output();
+        let unread = (host.pane().process().child()).filter(|_| !reads && host.input);
         let reading = match host.pane().process() {
-            Process::Reading(child) => (!host.pane().has_unread()).then_some(child),
+            Process::Reading(child) => (reads && !host.pane().has_unread()).then_some(child),
             Process::Absent
             | Process::HungUp(_)
             | Process::ReadFailed(..)
@@ -2065,7 +2070,8 @@ pub fn serve(
         let settling = host.settling();
         let program = (reading
             .map(|child| fds.push(PollFd::new(&child.master, writes(host.input)))))
-        .or_else(|| settling.map(|child| fds.push(PollFd::new(&child.master, Events::IN))));
+        .or_else(|| settling.map(|child| fds.push(PollFd::new(&child.master, Events::IN))))
+        .or_else(|| unread.map(|child| fds.push(PollFd::new(&child.master, Events::OUT))));
         // One that holds a piece not yet taken is read no further, and
         // only its end is learned.
         let peered: Vec<_> = (peers.iter())
@@ -2146,7 +2152,8 @@ pub fn serve(
                     host.write_input();
                 }
                 if program.intersects(Events::IN | Events::HUP | Events::ERR) {
-                    read_program(&mut host, &mut buffer, &mut clock, now);
+                    let hung = program.intersects(Events::HUP | Events::ERR);
+                    read_program(&mut host, &mut buffer, &mut clock, hung, now);
                 }
             }
         }
@@ -2279,14 +2286,19 @@ fn read_master(master: &fuxix::pty::Master, bytes: &mut [u8]) -> Result<usize, f
     fuxix::io::read(master, bytes)
 }
 
-/// Reads its program's terminal, `READ` at most, into its screen.
-fn read_program(host: &mut Host, buffer: &mut [u8], clock: &mut Clock, now: Instant) {
+/// Reads its program's terminal, `READ` at most, into its screen: not
+/// while its output is not read (`Pane::reads_output`), unless its
+/// terminal hung up (`hung`), which is then read to its end, as nothing
+/// will read what waits for the program.
+fn read_program(host: &mut Host, buffer: &mut [u8], clock: &mut Clock, hung: bool, now: Instant) {
+    let ending = hung && !host.pane().reads_output();
     let mut total = 0usize;
     let ended = loop {
         let Process::Reading(child) = host.pane().process() else {
             return;
         };
-        if total >= READ || host.pane().has_unread() {
+        let waits = host.pane().has_unread() || !host.pane().reads_output();
+        if total >= READ || waits && !ending {
             break false;
         }
         match fuxix::io::read(&child.master, buffer) {

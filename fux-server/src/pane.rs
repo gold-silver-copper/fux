@@ -21,6 +21,14 @@ pub const FRAME_TIMEOUT: Duration = Duration::from_secs(1);
 /// held frame or a program's last output, which can be more, is read a
 /// slice a turn, the rest waiting as after a budget stop (`Pane::unread`).
 pub const SLICE: usize = 16 << 10;
+/// The most replies to its program's own queries a pane holds for a
+/// program that does not read them: a frame. At that, it reads no more of
+/// the program's output till the program reads its input
+/// (`Pane::reads_output`), as a terminal's own buffer would fill: a program
+/// that floods queries and never reads the answers stalls itself. One
+/// turn's slice of output is parsed whole, so what waits is under this
+/// plus the replies to one `SLICE` of output.
+pub const REPLIES: usize = fux_wire::protocol::MAX_FRAME;
 
 /// Why a pane cannot be made.
 #[derive(Debug)]
@@ -47,6 +55,11 @@ impl std::error::Error for Error {}
 pub struct InputQueue {
     bytes: ByteQueue,
     touched: bool,
+    /// The bytes queued, front first, as runs of one kind: replies to its
+    /// program's own queries, or not (what was typed, what fux reports).
+    runs: VecDeque<(bool, usize)>,
+    /// How many of the bytes queued are replies.
+    replies: usize,
 }
 
 /// A pane's runs of losses, each over at a success of its kind: a copy made, a picture placed whole, a
@@ -102,6 +115,46 @@ impl InputQueue {
         let bytes = bytes.as_ref();
         self.bytes.push(bytes);
         self.touched |= !bytes.is_empty();
+        self.note(false, bytes.len());
+    }
+    /// Queues `replies`, its program's own queries answered, counted as
+    /// such (`replies`): false if the OS gave no memory for them, and none
+    /// is queued.
+    fn reply(&mut self, replies: &[u8]) -> bool {
+        let queued = (self.bytes).push_with(|out| fux_vt::bytes::try_extend(out, replies));
+        if queued.is_err() {
+            return false;
+        }
+        self.touched |= !replies.is_empty();
+        self.note(true, replies.len());
+        true
+    }
+    /// `len` bytes were queued, replies if `reply`. Refused the memory to
+    /// say so, they count as what was queued before them.
+    fn note(&mut self, reply: bool, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let room = self.runs.try_reserve(1).is_ok();
+        let reply = match self.runs.back_mut() {
+            Some((kind, run)) if *kind == reply || !room => {
+                *run = run.saturating_add(len);
+                *kind
+            }
+            Some(_) | None if room => {
+                self.runs.push_back((reply, len));
+                reply
+            }
+            Some(_) | None => false,
+        };
+        if reply {
+            self.replies = self.replies.saturating_add(len);
+        }
+    }
+    /// How many of the bytes it holds are replies to its program's own
+    /// queries.
+    pub fn replies(&self) -> usize {
+        self.replies
     }
     /// Queues what `write` appends to its vector as a piece, in place.
     fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) {
@@ -111,6 +164,7 @@ impl InputQueue {
             out.len().saturating_sub(start)
         });
         self.touched |= len > 0;
+        self.note(false, len);
     }
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
@@ -126,6 +180,22 @@ impl InputQueue {
     /// `n` bytes of the front were written: its terminal took them.
     fn advance(&mut self, n: usize) {
         self.bytes.take(n);
+        let mut left = n;
+        while let Some((reply, run)) = self.runs.front_mut() {
+            let taken = left.min(*run);
+            (left, *run) = (left.saturating_sub(taken), run.saturating_sub(taken));
+            if *reply {
+                self.replies = self.replies.saturating_sub(taken);
+            }
+            if *run > 0 {
+                break;
+            }
+            self.runs.pop_front();
+        }
+        if self.bytes.is_empty() {
+            self.runs.clear();
+            self.replies = 0;
+        }
     }
     /// Lets everything queued go, as its program ends unread: how many
     /// bytes, which its ender tells.
@@ -254,6 +324,8 @@ impl Title {
 struct Sink<'a, 't> {
     /// The replies to one read, queued together after it.
     replies: Vec<u8>,
+    /// Replies the OS gave no memory to keep: lost, and counted.
+    unkept: u64,
     /// Where its bells, notifications, titles and commands' starts and
     /// ends go: the session's journal, in order.
     tell: &'a mut Teller<'t>,
@@ -284,7 +356,9 @@ impl Sink<'_, '_> {
 
 impl fux_vt::Sink for Sink<'_, '_> {
     fn reply(&mut self, bytes: &[u8]) {
-        self.replies.extend_from_slice(bytes);
+        if fux_vt::bytes::try_extend(&mut self.replies, bytes).is_err() {
+            self.unkept = self.unkept.saturating_add(1);
+        }
     }
     /// A colour query (OSC 10, 11) is answered if the colour is known.
     fn event(&mut self, event: Event<'_>) {
@@ -1024,6 +1098,9 @@ impl Pane {
             self.unread.bytes.extend_from_slice(bytes);
             return;
         }
+        if !self.reads_output() {
+            return self.wait_unread(bytes.to_vec(), 0, now);
+        }
         if let Some(at) = self.read(bytes, now, tell) {
             self.wait_unread(bytes.get(at..).unwrap_or_default().to_vec(), 0, now);
         }
@@ -1042,7 +1119,21 @@ impl Pane {
     /// waits: since it began to wait, so that it is due on the server's
     /// next turn, whenever that reads the clock.
     pub fn unread_due(&self) -> Option<Instant> {
-        (self.has_unread() || self.draining).then_some(self.unread.since)
+        (self.reads_output() && (self.has_unread() || self.draining)).then_some(self.unread.since)
+    }
+
+    /// Whether its program's output is read now, from its terminal and of
+    /// what waits here (`has_unread`): not while the replies to its own
+    /// queries that wait for it to read are `REPLIES` or more. What it is
+    /// sent is written to it all the while (`write_input`), so it has only
+    /// to read to be read again. A program that is gone, or whose
+    /// terminal none reads, is read to its end: nothing will take the
+    /// replies.
+    pub(crate) fn reads_output(&self) -> bool {
+        self.input.replies() < REPLIES
+            || self.exiting.is_some()
+            || self.draining
+            || crate::host::refuses_input(self).is_some()
     }
 
     /// Whether the screen is part way through a frame drawn in
@@ -1074,6 +1165,9 @@ impl Pane {
     /// one may, until the next call does: the rest of a frame first, as
     /// the frame was read.
     fn read_unread(&mut self, now: Instant, tell: &mut Teller<'_>) {
+        if !self.reads_output() {
+            return;
+        }
         let bytes = std::mem::take(&mut self.unread.bytes);
         let start = std::mem::take(&mut self.unread.at);
         let unread = bytes.get(start..).unwrap_or_default();
@@ -1161,6 +1255,11 @@ impl Pane {
         let Some((held, ..)) = self.frame.take() else {
             return;
         };
+        // Not read now (`reads_output`): all of it waits, a frame still.
+        if !self.reads_output() {
+            self.frame_read(held.len(), tell);
+            return self.wait_unread(held, 0, now);
+        }
         match self.parse(&held, false, tell) {
             // No output waits while a frame is held: it is the first.
             Some((taken, _)) => {
@@ -1189,6 +1288,7 @@ impl Pane {
         let refused = self.parser.refused();
         let mut sink = Sink {
             replies: Vec::new(),
+            unkept: 0,
             pictures: Vec::new(),
             tell,
             title: &mut self.title,
@@ -1223,8 +1323,9 @@ impl Pane {
         if begun.is_none() && slice.len() < bytes.len() {
             begun = Some((read, fux_vt::Stop::Budget));
         }
-        if !sink.replies.is_empty() {
-            self.input.push(&sink.replies);
+        let mut unkept = sink.unkept;
+        if !self.input.reply(&sink.replies) {
+            unkept = unkept.saturating_add(1);
         }
         if let Some(scheme) = sink.told {
             self.scheme_told = Some(scheme);
@@ -1242,7 +1343,7 @@ impl Pane {
                 }),
             }
         }
-        let memory = self.parser.refused().saturating_sub(refused);
+        let memory = (self.parser.refused().saturating_sub(refused)).saturating_add(unkept);
         self.reading.refused |= memory > 0;
         self.lose(Losses {
             memory,
@@ -1801,6 +1902,77 @@ pub(crate) mod tests {
                 assert_eq!(pane.screen().pictures().next().is_some(), bytes == 4096);
             }
         }
+        Ok(())
+    }
+
+    /// A program that floods its terminal with queries and reads no answer
+    /// is read no more once a frame of answers waits for it (`REPLIES`):
+    /// what waits stays under that and the answers to one slice of output,
+    /// however much it goes on to write. Its pane goes on meanwhile (a
+    /// resize is taken), and once the program reads, its output is read
+    /// again from where it stopped. Every answer was queued, where a
+    /// program that read none grew its pane's process without end.
+    #[test]
+    fn a_program_that_reads_no_answers_is_read_no_more_at_a_frame_of_them()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(5, 20, 1 << 10)?;
+        pane.output(b"\x1b[c");
+        let answer = pane.input.drain_all().len();
+        assert!(answer > 3, "an answer longer than its query");
+        let slice: Vec<u8> = std::iter::repeat_n(b"\x1b[c", SLICE / 3)
+            .flatten()
+            .copied()
+            .collect();
+        let bound = REPLIES + (SLICE / 3) * answer;
+        // As its host reads it: its terminal while its output is read and
+        // none waits, else what waits, when that is due.
+        let (mut read, flood) = (0usize, 4usize << 20);
+        for _ in 0..flood / slice.len() {
+            if pane.reads_output() && !pane.has_unread() {
+                pane.output(&slice);
+                read += slice.len();
+            } else if pane.unread_due().is_some() {
+                pane.read_unread();
+            }
+            assert!(pane.input().replies() < bound, "{}", pane.input().replies());
+        }
+        assert!(!pane.reads_output() && pane.unread_due().is_none());
+        assert!(pane.input().replies() >= REPLIES);
+        assert!(read / 3 * answer < bound, "{read} bytes of a flood read");
+        // What its terminal held as it stopped waits, unread.
+        let waiting = pane.input().replies();
+        pane.output(&slice);
+        assert!(pane.has_unread() && pane.unread_due().is_none());
+        assert_eq!(pane.input().replies(), waiting);
+        pane.resize(size(3, 10));
+        assert_eq!(<(u16, u16)>::from(pane.size()), (3, 10));
+        // Its program reads: what waited is read, and answered.
+        pane.input.drain_all();
+        assert!(pane.reads_output() && pane.unread_due().is_some());
+        pane.read_unread();
+        assert_eq!(pane.input().replies(), (SLICE / 3) * answer);
+        Ok(())
+    }
+
+    /// Only answers to its own queries stop a program's output being read:
+    /// what is typed to one that writes before it reads, however much,
+    /// does not, or neither would ever go on. Answers are counted where
+    /// they are in the queue, as each is written.
+    #[test]
+    fn what_is_typed_never_stops_output_being_read() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(5, 20, 1 << 10)?;
+        pane.push(vec![b'x'; 2 * REPLIES]);
+        assert!(pane.reads_output());
+        pane.output(b"\x1b[c");
+        let answer = pane.input().replies();
+        assert!(answer > 0);
+        pane.push(b"typed");
+        pane.input.advance(2 * REPLIES);
+        assert_eq!(pane.input().replies(), answer);
+        pane.input.advance(answer - 1);
+        assert_eq!(pane.input().replies(), 1);
+        pane.input.advance(1);
+        assert_eq!((pane.input().replies(), pane.input().len()), (0, 5));
         Ok(())
     }
 
