@@ -448,7 +448,155 @@ frames! {
         Detach = 5,
         /// Its answer to the server's `Read` of this number.
         Answer(asked: u64, value: crate::callback::Data) = 9,
+        /// A piece of a paste longer than a frame takes: the first is the
+        /// paste to its server (`Act::Paste`), its text kept by the
+        /// client's connection; the rest, while its last input is
+        /// `Input::More`, follow it, and its server never sees them.
+        Piece(inputs: Vec<crate::command::Input>) = PIECE_KIND,
     }
+}
+
+/// The kind of a piece of a body, after the frame it belongs to.
+const PIECE_KIND: u8 = 20;
+
+/// A piece of a request's inputs after the first, which its request
+/// carries: sent after it while the piece before ends in `Input::More`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Piece(pub Vec<crate::command::Input>);
+
+impl Wire for Piece {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        self.0.put(out);
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        Wire::get(r).map(Piece)
+    }
+}
+
+#[cfg(test)]
+impl crate::wire::Reach for Piece {}
+
+impl OneKind for Piece {
+    const KIND: u8 = PIECE_KIND;
+}
+
+/// The most text or bytes one piece of a body carries: half a frame, the
+/// rest left for its other inputs and what is said with it on its way.
+pub const PIECE: usize = MAX_PAYLOAD / 2;
+
+/// `inputs` cut into pieces, each one frame with room to spare: a text, a
+/// paste or bytes longer than `PIECE` is cut (a paste's parts but the last
+/// as `Input::Pasting`, so that it stays one paste), and every piece but
+/// the last ends in `Input::More`. Inputs that fit are one piece, as they
+/// are.
+pub fn pieces(inputs: Vec<crate::command::Input>) -> Vec<Vec<crate::command::Input>> {
+    use crate::command::Input;
+    /// Where `len` bytes are cut, `room` left in the piece they begin in:
+    /// each part's end but the last's, moved back to where `boundary` lets
+    /// a part end.
+    fn cuts(len: usize, mut room: usize, boundary: impl Fn(usize) -> usize) -> Vec<usize> {
+        let (mut ends, mut at) = (Vec::new(), 0usize);
+        while len.saturating_sub(at) > room {
+            let end = boundary(at.saturating_add(room)).max(at);
+            ends.push(end);
+            (at, room) = (end, PIECE);
+        }
+        ends
+    }
+    let (mut pieces, mut piece, mut held) = (Vec::new(), Vec::new(), 0usize);
+    for input in inputs {
+        let room = PIECE.saturating_sub(held);
+        // What is cut: its bytes, where a part may end, and a part of it.
+        type Part<'a> = Box<dyn Fn(&[u8], bool) -> Input + 'a>;
+        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+        let (bytes, chars, part): (&[u8], bool, Part<'_>) = match &input {
+            Input::Text(t) => (t.as_bytes(), true, Box::new(|b, _| Input::Text(text(b)))),
+            Input::Paste(t) => (
+                t.as_bytes(),
+                true,
+                Box::new(|b, last| match last {
+                    true => Input::Paste(text(b)),
+                    false => Input::Pasting(text(b)),
+                }),
+            ),
+            Input::Pasting(t) => (t.as_bytes(), true, Box::new(|b, _| Input::Pasting(text(b)))),
+            Input::Bytes(given) => (given, false, Box::new(|b, _| Input::Bytes(b.to_vec()))),
+            Input::Key(_) | Input::More => (&[], false, Box::new(|_, _| Input::More)),
+        };
+        if bytes.len() <= room {
+            drop(part);
+            // A key is a few bytes, counted as a few.
+            held = held.saturating_add(bytes.len().max(16));
+            piece.push(input);
+            continue;
+        }
+        let whole = std::str::from_utf8(bytes).ok().filter(|_| chars);
+        let boundary = |mut at: usize| {
+            while whole.is_some_and(|text| !text.is_char_boundary(at)) {
+                at = at.saturating_sub(1);
+            }
+            at
+        };
+        let ends = cuts(bytes.len(), room, boundary);
+        let mut from = 0usize;
+        for end in ends {
+            if let Some(cut) = bytes.get(from..end).filter(|cut| !cut.is_empty()) {
+                piece.push(part(cut, false));
+            }
+            piece.push(Input::More);
+            pieces.push(std::mem::take(&mut piece));
+            from = end;
+        }
+        let last = bytes.get(from..).unwrap_or_default();
+        held = last.len();
+        piece.push(part(last, true));
+    }
+    pieces.push(piece);
+    pieces
+}
+
+/// `asked` as its client sends it: one frame if it is one, with room for
+/// what is said with it on its way; else its inputs cut in pieces
+/// (`pieces`), the first in the request and the rest in `Piece` frames
+/// after it. A request too long with no inputs to cut goes as it is, and
+/// is refused `too-long` where it arrives.
+pub fn encode_asked(asked: &Asked) -> Vec<u8> {
+    use crate::command::{ClientAction, Command, Request};
+    if sends_whole(asked) {
+        return asked.encode();
+    }
+    let mut first = asked.clone();
+    let (Request::Do(Command::SendKeys { inputs, .. })
+    | Request::Do(Command::Client {
+        action: ClientAction::Keys(inputs),
+        ..
+    })) = &mut first.request
+    else {
+        return asked.encode();
+    };
+    let mut rest = pieces(std::mem::take(inputs)).into_iter();
+    *inputs = rest.next().unwrap_or_default();
+    let mut out = first.encode();
+    for piece in rest {
+        Piece(piece).encode_into(&mut out);
+    }
+    out
+}
+
+/// `frame` as an attached client sends it: a paste longer than a frame
+/// takes in pieces (`AttachedFrame::Piece`), anything else as it is.
+pub fn encode_attached(frame: &AttachedFrame) -> Vec<u8> {
+    if let AttachedFrame::Act(act) = frame
+        && let Act::Paste(text) = &**act
+        && !sends_whole(frame)
+    {
+        let mut out = Vec::new();
+        for piece in pieces(vec![crate::command::Input::Paste(text.clone())]) {
+            AttachedFrame::Piece(piece).encode_into(&mut out);
+        }
+        return out;
+    }
+    frame.encode()
 }
 
 wire! {

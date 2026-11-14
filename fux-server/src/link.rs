@@ -116,7 +116,7 @@ pub enum Typed {
     Key(Keystroke),
     Paste(String),
     /// A paste whose text its client's connection sends the pane itself,
-    /// as body `0` (`ToSide::Body`).
+    /// in pieces, as body `0` (`ToSide::Body`).
     Body(u64),
     Focus(bool),
     Mouse(MouseEvent),
@@ -127,8 +127,8 @@ wired!(Typed { Key(k), Paste(t), Body(b), Focus(g), Mouse(m) });
 #[derive(Clone, Debug)]
 pub enum Ask {
     /// Keys for its program, if it is still at `seen`: `inputs`, or with a
-    /// `body`, those its asker's connection sends it as that body
-    /// (`ToSide::Body`), which it waits for.
+    /// `body`, those its asker's connection sends it, in pieces, as that
+    /// body (`ToSide::Body`), which it waits for.
     Keys {
         inputs: Vec<Input>,
         seen: Option<Version>,
@@ -297,8 +297,11 @@ pub enum ToSide {
     Watch,
     /// The last screen it was sent is taken: it may be sent the next.
     Taken,
-    /// Body `token`, which a question its server asked waits for: the
-    /// connection's client's inputs (`Ask::Keys`, `Typed::Body`).
+    /// A piece of body `token`, which a question its server asked waits
+    /// for (`Ask::Keys`, `Typed::Body`): the connection's client's inputs,
+    /// one frame of them, on a link of its own. The next piece, which
+    /// follows one ending in `Input::More`, is sent once this one is taken
+    /// (`FromSide::Took`): a body stays with its sender, a piece at a time.
     Body { token: u64, inputs: Vec<Input> },
     /// The capture held as `token` (`Ask::Capture`), taken.
     Fetch { token: u64 },
@@ -314,8 +317,14 @@ pub enum FromSide {
         token: u64,
         captured: Option<Box<Captured>>,
     },
+    /// The piece of body `token` last sent is taken: by a pane, its
+    /// program's terminal took it all, or it is refused and let go; by a
+    /// client's connection, its client took it. Not that anything read it.
+    Took {
+        token: u64,
+    },
 }
-wired!(FromSide { Drawn(d), Held { token, captured } });
+wired!(FromSide { Drawn(d), Held { token, captured }, Took { token } });
 
 /// What the server knows of a pane's capture that its pane does not: its
 /// place, name and label as it is captured, and the journal's cursor as
@@ -980,7 +989,8 @@ pub enum ToConn {
     /// screens, which it gets from the panes (`render::Scene`).
     Scene(Box<crate::render::Scene>),
     /// Its client's body `body` (`FromConn::Frame`) goes to `panes`, as
-    /// their server's `token`.
+    /// their server's `token`, a piece at a time; to none, it is let go,
+    /// the pieces its client still sends too. Every body is answered so.
     Deliver {
         body: u64,
         token: u64,

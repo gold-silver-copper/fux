@@ -119,12 +119,30 @@ pub struct Host {
     /// programs, a respawn's screen being sent whole.
     revision: u64,
     whole: u64,
-    /// Bodies its asker's connections sent (`ToSide::Body`), the questions
-    /// that wait for theirs, and the captures it holds for its askers'
-    /// connections to fetch (`ToSide::Fetch`): each by its token.
-    bodies: BTreeMap<u64, Vec<Input>>,
+    /// The questions its server asked that wait for a body, which their
+    /// asker's connection sends in pieces (`ToSide::Body`), and the
+    /// captures it holds for its askers' connections to fetch
+    /// (`ToSide::Fetch`): each by its token. It keeps no body: a piece is
+    /// typed as it is taken, one body at a time (`typing`).
     awaiting: BTreeMap<u64, Awaiting>,
     held: BTreeMap<u64, Box<fux_wire::answer::Captured>>,
+    /// The body being typed into it, between its first piece and its last.
+    typing: Option<Typing>,
+}
+
+/// A body under way: what it answers once its last piece is typed, and the
+/// paste a piece left open, which its next goes on with.
+struct Typing {
+    token: u64,
+    /// The question its keys answer; a client's paste answers none.
+    ask: Option<u64>,
+    actor: Actor,
+    seen: Option<Version>,
+    /// Where it was as its first piece came: what it acted at.
+    at: Version,
+    paste: Option<fux_vt::keys::encode::PasteEncoder>,
+    /// It was refused as it began, and said so: its pieces are let go.
+    refused: bool,
 }
 
 /// What waits for a body: a question's keys, or a client's paste.
@@ -208,8 +226,8 @@ impl Host {
             dirty: true,
             revision: 0,
             whole: 0,
-            bodies: BTreeMap::new(),
             awaiting: BTreeMap::new(),
+            typing: None,
             held: BTreeMap::new(),
         })
     }
@@ -323,7 +341,7 @@ impl Host {
             }
             ToPane::Close { closed } => self.close(closed, now),
             ToPane::Drop { token } => {
-                self.bodies.remove(&token);
+                self.cut(token);
                 self.held.remove(&token);
                 if let Some(Awaiting::Keys { ask, .. }) = self.awaiting.remove(&token) {
                     let refusal = Refusal {
@@ -916,6 +934,12 @@ impl Host {
     /// Keys, a paste, a focus change or a mouse report a client typed into
     /// it, as its program asked for them; told to `client` if refused.
     fn typed(&mut self, client: ClientId, typed: Typed) {
+        // Its text comes from its client's connection, and is refused, if
+        // it is, as its first piece comes (`piece`).
+        if let Typed::Body(token) = typed {
+            self.awaiting.insert(token, Awaiting::Paste { client });
+            return;
+        }
         let pane = &self.pane;
         if let Some(refused) = refuses_input(pane) {
             // A focus change for a program that takes no input is no news.
@@ -927,7 +951,6 @@ impl Host {
         }
         let screen = pane.screen();
         let mut bytes = Vec::new();
-        let mut retired = None;
         match typed {
             Typed::Key(stroke) => {
                 fux_vt::keys::encode::key_bytes(stroke, screen.key_mode(), &mut bytes);
@@ -936,19 +959,7 @@ impl Host {
                 let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
                 fux_vt::keys::encode::paste(&text, bracketed, &mut bytes);
             }
-            Typed::Body(token) => {
-                let Some(inputs) = self.bodies.remove(&token) else {
-                    self.awaiting.insert(token, Awaiting::Paste { client });
-                    return;
-                };
-                retired = Some(token);
-                let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
-                for input in inputs {
-                    if let Input::Paste(text) = input {
-                        fux_vt::keys::encode::paste(&text, bracketed, &mut bytes);
-                    }
-                }
-            }
+            Typed::Body(_) => {}
             Typed::Focus(gained) => {
                 bytes.extend_from_slice(screen.focus_report(gained).unwrap_or_default());
             }
@@ -958,9 +969,6 @@ impl Host {
                     bytes.extend(reports.flatten());
                 }
             }
-        }
-        if let Some(token) = retired {
-            self.report(FromPane::Retired(token));
         }
         if !bytes.is_empty() {
             self.pane_mut()
@@ -981,18 +989,12 @@ impl Host {
                 seen,
                 body: Some(token),
                 ..
-            } => match self.bodies.remove(&token) {
-                Some(inputs) => {
-                    self.report(FromPane::Retired(token));
-                    self.send_keys(&inputs, seen)
-                }
-                None => {
-                    let actor = self.actor;
-                    self.awaiting
-                        .insert(token, Awaiting::Keys { ask, actor, seen });
-                    return None;
-                }
-            },
+            } => {
+                let actor = self.actor;
+                self.awaiting
+                    .insert(token, Awaiting::Keys { ask, actor, seen });
+                return None;
+            }
             Ask::Mouse { mouse, row, col } => self.send_mouse(mouse, row, col),
             Ask::Signal(signal) => self.signal(signal),
             Ask::Respawn { kill, argv } => match self.respawn(ask, kill, argv, now) {
@@ -1049,6 +1051,21 @@ impl Host {
     /// (`bytes`): if `seen`, only if it is still at that version as they
     /// are queued, else none, failing `stale`.
     fn send_keys(&mut self, inputs: &[Input], seen: Option<Version>) -> Result<Answered, Error> {
+        let now = self.takes_keys(seen)?;
+        let (mut bytes, mut paste) = (Vec::new(), None);
+        let pasted = encode(&self.pane, inputs, &mut paste, &mut bytes);
+        close(paste, &mut bytes);
+        let kind = match pasted {
+            true => Sent::Paste,
+            false => Sent::Keys,
+        };
+        self.pane_mut().send(&bytes, kind, seen);
+        Ok(Answered::Acted(now))
+    }
+
+    /// Whether its program takes keys now, sent it at `seen` if that is
+    /// given: the version it is at, or why not.
+    fn takes_keys(&self, seen: Option<Version>) -> Result<Version, Error> {
         let now = self.version();
         if let Some(seen) = seen {
             if !self.pane.counts().had(seen.counts) {
@@ -1066,13 +1083,7 @@ impl Host {
         if let Some(refused) = refuses_input(&self.pane) {
             return Err(refused);
         }
-        let bytes = bytes(&self.pane, inputs);
-        let kind = match inputs.iter().any(|input| matches!(input, Input::Paste(_))) {
-            true => Sent::Paste,
-            false => Sent::Keys,
-        };
-        self.pane_mut().send(&bytes, kind, seen);
-        Ok(Answered::Acted(now))
+        Ok(now)
     }
 
     /// `send-mouse`: `mouse` at `row` and `col`, encoded as its program
@@ -1328,7 +1339,6 @@ impl Host {
         self.told.clear();
         self.out.clear();
         // What its last server's askers wanted is no one's now.
-        self.bodies.clear();
         self.awaiting.clear();
         self.held.clear();
         self.sent_facts = None;
@@ -1381,28 +1391,106 @@ impl Host {
         }
     }
 
-    /// Body `token` came from its asker's connection: what waits for it
-    /// goes on, else it waits for that.
-    pub fn body(&mut self, token: u64, inputs: Vec<Input>) {
-        match self.awaiting.remove(&token) {
-            Some(Awaiting::Keys { ask, actor, seen }) => {
-                self.report(FromPane::Retired(token));
-                let previous = std::mem::replace(&mut self.actor, actor);
-                let answer = self
-                    .send_keys(&inputs, seen)
-                    .unwrap_or_else(|error| Answered::Refused(Refusal::from(error)));
-                self.report(FromPane::Answer { ask, answer });
-                self.actor = previous;
-            }
-            Some(Awaiting::Paste { client }) => {
-                self.bodies.insert(token, inputs);
-                let previous = std::mem::replace(&mut self.actor, Actor::Client(client));
-                self.typed(client, Typed::Body(token));
-                self.actor = previous;
-            }
+    /// Whether a piece of body `token` is taken now: the body under way,
+    /// or, with none, one a question its server asked waits for. Any other
+    /// stays with its sender: a body no question asked for is never taken.
+    pub fn takes(&self, token: u64) -> bool {
+        match &self.typing {
+            Some(typing) => typing.token == token,
+            None => self.awaiting.contains_key(&token),
+        }
+    }
+
+    /// A piece of body `token` (`takes`) came from its asker's connection:
+    /// typed, its paste left open if it goes on; with its last, what
+    /// waited for the body is answered. A body refused as it begins is
+    /// refused once, and the rest of it let go.
+    pub fn piece(&mut self, token: u64, inputs: &[Input]) {
+        let mut typing = match self.typing.take() {
+            Some(typing) => typing,
             None => {
-                self.bodies.insert(token, inputs);
+                let (ask, actor, seen, client) = match self.awaiting.remove(&token) {
+                    Some(Awaiting::Keys { ask, actor, seen }) => (Some(ask), actor, seen, None),
+                    Some(Awaiting::Paste { client }) => {
+                        (None, Actor::Client(client), None, Some(client))
+                    }
+                    None => return,
+                };
+                let at = self.version();
+                let refused = self.takes_keys(seen).err();
+                let typing = Typing {
+                    token,
+                    ask,
+                    actor,
+                    seen,
+                    at,
+                    paste: None,
+                    refused: refused.is_some(),
+                };
+                match (refused, ask, client) {
+                    (Some(error), Some(ask), _) => self.report(FromPane::Answer {
+                        ask,
+                        answer: Answered::Refused(Refusal::from(error)),
+                    }),
+                    (Some(error), None, Some(client)) => {
+                        let why = error.to_string();
+                        self.report(FromPane::Refused { client, why });
+                    }
+                    (Some(_), None, None) | (None, ..) => {}
+                }
+                typing
             }
+        };
+        if !typing.refused {
+            let mut bytes = Vec::new();
+            let pasted = encode(&self.pane, inputs, &mut typing.paste, &mut bytes);
+            let previous = std::mem::replace(&mut self.actor, typing.actor);
+            match (typing.ask, pasted) {
+                // A client's paste is typed, as its keys are.
+                (None, _) => (self.pane_mut()).push_with(|_, out| out.extend_from_slice(&bytes)),
+                (Some(_), true) => self.pane_mut().send(&bytes, Sent::Paste, typing.seen),
+                (Some(_), false) => self.pane_mut().send(&bytes, Sent::Keys, typing.seen),
+            }
+            self.actor = previous;
+        }
+        match Input::go_on(inputs) {
+            true => self.typing = Some(typing),
+            false => self.typed_all(typing, false),
+        }
+    }
+
+    /// Body `typing` is over: whole, or `cut` short, its sender gone. A
+    /// paste it left open is closed, and what waited for it is answered.
+    fn typed_all(&mut self, typing: Typing, cut: bool) {
+        let mut bytes = Vec::new();
+        close(typing.paste, &mut bytes);
+        if !bytes.is_empty() {
+            let previous = std::mem::replace(&mut self.actor, typing.actor);
+            (self.pane_mut()).push_with(|_, out| out.extend_from_slice(&bytes));
+            self.actor = previous;
+        }
+        self.report(FromPane::Retired(typing.token));
+        let (Some(ask), false) = (typing.ask, typing.refused) else {
+            return;
+        };
+        let answer = match cut {
+            false => Answered::Acted(typing.at),
+            true => Answered::Refused(Refusal {
+                code: Code::Indeterminate,
+                message: format!(
+                    "{}: its asker went before the rest of its keys came; what came was typed",
+                    self.pane.id()
+                ),
+            }),
+        };
+        self.report(FromPane::Answer { ask, answer });
+    }
+
+    /// The sender of body `token` is gone, or wants it no more: if it is
+    /// under way it ends here, a paste it left open closed.
+    pub fn cut(&mut self, token: u64) {
+        if let Some(typing) = self.typing.take_if(|typing| typing.token == token) {
+            self.typed_all(typing, true);
         }
     }
 
@@ -1695,25 +1783,49 @@ pub(crate) fn ended(pane: PaneId, status: Ended) -> Error {
     fail(Code::NotRunning, told)
 }
 
-/// `inputs` as `p`'s program takes them: keys and pastes encoded as it
-/// asked for them, text and bytes as they are.
-fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
+/// Appends `inputs` to `out` as `p`'s program takes them: keys and pastes
+/// encoded as it asked for them, text and bytes as they are. A paste goes
+/// through `paste`, which a piece that leaves one open (`Input::Pasting`)
+/// leaves for the next, so that a paste in pieces is one paste. Whether
+/// any of it was pasted.
+fn encode(
+    p: &Pane,
+    inputs: &[Input],
+    paste: &mut Option<fux_vt::keys::encode::PasteEncoder>,
+    out: &mut Vec<u8>,
+) -> bool {
+    use fux_vt::keys::encode::PasteEncoder;
     let screen = p.screen();
-    let mut bytes = Vec::new();
+    let mut pasted = false;
     for input in inputs {
         match input {
             Input::Key(key) => {
-                fux_vt::keys::encode::key_bytes((*key).into(), screen.key_mode(), &mut bytes)
+                fux_vt::keys::encode::key_bytes((*key).into(), screen.key_mode(), out)
             }
-            Input::Text(text) => bytes.extend_from_slice(text.as_bytes()),
-            Input::Paste(text) => {
+            Input::Text(text) => out.extend_from_slice(text.as_bytes()),
+            Input::Paste(text) | Input::Pasting(text) => {
+                pasted = true;
                 let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
-                fux_vt::keys::encode::paste(text, bracketed, &mut bytes);
+                let encoder = paste.get_or_insert_with(|| PasteEncoder::new(bracketed));
+                // Refused memory, this much of the paste is lost, and its
+                // bracket still closes.
+                let _ = encoder.push(text.as_bytes(), out);
+                if matches!(input, Input::Paste(_)) {
+                    close(paste.take(), out);
+                }
             }
-            Input::Bytes(given) => bytes.extend_from_slice(given),
+            Input::Bytes(given) => out.extend_from_slice(given),
+            Input::More => {}
         }
     }
-    bytes
+    pasted
+}
+
+/// Ends the paste `paste` left open, if one is: its bracket closed.
+fn close(paste: Option<fux_vt::keys::encode::PasteEncoder>, out: &mut Vec<u8>) {
+    if let Some(mut paste) = paste {
+        let _ = paste.finish(out);
+    }
 }
 
 /// How a turn's read of what a program left went (`left_turn`).
@@ -1783,9 +1895,15 @@ impl Clock {
 struct Peer {
     end: crate::link::End,
     side: Option<Option<Watch>>,
-    /// The pieces of a paste's body a connection's process sends it, the
-    /// one message it still joins.
-    pieces: fux_wire::protocol::Joining,
+    /// A piece of a body it sent, not yet taken (`Host::takes`): it is
+    /// read no further till it is, so it holds one piece here at most.
+    held: Option<(u64, Vec<Input>)>,
+    /// The body it is sending, between its first piece and its last: cut
+    /// short if it goes (`Host::cut`).
+    sends: Option<u64>,
+    /// The piece of this body taken from it, till the program's terminal
+    /// took it all: it is told then (`FromSide::Took`).
+    owes: Option<u64>,
 }
 
 /// The loop of a pane's own process (`fux __pane`), listening at its
@@ -1948,12 +2066,18 @@ pub fn serve(
         let program = (reading
             .map(|child| fds.push(PollFd::new(&child.master, writes(host.input)))))
         .or_else(|| settling.map(|child| fds.push(PollFd::new(&child.master, Events::IN))));
+        // One that holds a piece not yet taken is read no further, and
+        // only its end is learned.
         let peered: Vec<_> = (peers.iter())
             .map(|peer| {
-                fds.push(PollFd::new(
-                    &peer.end.stream,
-                    writes(!peer.end.out.is_empty()),
-                ))
+                let mut events = match peer.held {
+                    None => Events::IN,
+                    Some(_) => Events::NONE,
+                };
+                if !peer.end.out.is_empty() {
+                    events |= Events::OUT;
+                }
+                fds.push(PollFd::new(&peer.end.stream, events))
             })
             .collect();
         match fds.poll(timeout) {
@@ -2007,7 +2131,9 @@ pub fn serve(
                     peers.push(Peer {
                         end,
                         side: None,
-                        pieces: fux_wire::protocol::Joining::default(),
+                        held: None,
+                        sends: None,
+                        owes: None,
                     });
                 }
             }
@@ -2033,11 +2159,21 @@ pub fn serve(
                 kept.push(peer);
                 continue;
             }
-            // What it said before it went is taken first, all of it: a body
-            // sent last is a body.
-            let mut closed = peer.end.read(&mut buffer) == Read::Closed;
+            // What it said before it went is taken first; a frame at a time
+            // from one that sends a body, which waits for each piece to be
+            // taken.
+            let mut closed = match peer.held {
+                None => {
+                    let limit = fux_wire::protocol::MAX_FRAME;
+                    peer.end.read_up_to(&mut buffer, limit) == Read::Closed
+                }
+                Some(_) => events.intersects(Events::HUP | Events::ERR),
+            };
             let (mut taken, mut done) = (false, false);
             loop {
+                if peer.held.is_some() {
+                    break;
+                }
                 match &mut peer.side {
                     // Its first word.
                     None => match peer.end.next_message::<ToPane>() {
@@ -2066,14 +2202,16 @@ pub fn serve(
                         Ok(None) => break,
                         Ok(Some(_)) | Err(_) => done = true,
                     },
-                    Some(watch) => match peer.end.next_long::<ToSide>(&mut peer.pieces) {
+                    Some(watch) => match peer.end.next_message::<ToSide>() {
                         Ok(Some(ToSide::Watch)) => *watch = Some(Watch::default()),
                         Ok(Some(ToSide::Taken)) => {
                             if let Some(watch) = watch {
                                 watch.waiting = false;
                             }
                         }
-                        Ok(Some(ToSide::Body { token, inputs })) => host.body(token, inputs),
+                        Ok(Some(ToSide::Body { token, inputs })) => {
+                            peer.held = Some((token, inputs));
+                        }
                         Ok(Some(ToSide::Fetch { token })) => {
                             let captured = host.fetch(token);
                             peer.end.send(&FromSide::Held { token, captured });
@@ -2087,16 +2225,42 @@ pub fn serve(
                 }
             }
             closed |= done;
-            // Its server's link now, or gone.
+            // Its server's link now, or gone: a body it was sending ends
+            // where it is.
             if taken {
                 link = Some(peer.end);
             } else if !closed {
                 kept.push(peer);
+            } else if let Some(token) = peer.sends {
+                host.cut(token);
             }
         }
         peers = kept;
+        // One piece in flight for the pane, whoever sends: the next is
+        // taken, from the body under way or one a question waits for, once
+        // the program's terminal took the last.
+        if peers.iter().all(|peer| peer.owes.is_none()) && !host.input {
+            let next = (peers.iter_mut())
+                .find(|peer| matches!(&peer.held, Some((token, _)) if host.takes(*token)));
+            if let Some(peer) = next
+                && let Some((token, inputs)) = peer.held.take()
+            {
+                host.piece(token, &inputs);
+                peer.sends = fux_wire::command::Input::go_on(&inputs).then_some(token);
+                peer.owes = Some(token);
+                clock.next = now;
+            }
+        }
         if host.input {
             host.write_input();
+        }
+        if !host.input {
+            for peer in &mut peers {
+                if let Some(token) = peer.owes.take() {
+                    peer.end.send(&FromSide::Took { token });
+                    let _ = peer.end.flush();
+                }
+            }
         }
         if let Some((at, timer)) = host.timer()
             && at <= Instant::now()

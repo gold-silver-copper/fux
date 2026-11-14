@@ -392,6 +392,19 @@ wire! {
         Paste(text: String),
         /// Bytes as they are: part of a key's sequence or of a character.
         Bytes(bytes: Vec<u8>),
+        /// The text of a paste that goes on in the input after it, in this
+        /// piece or the next: one paste to its program, however many pieces
+        /// it came in. No command line writes it (`protocol::pieces`).
+        Pasting(text: String),
+        /// The last of a piece: its inputs go on in the piece after it.
+        More,
+    }
+}
+
+impl Input {
+    /// Whether `inputs` are a piece of a body that goes on in another.
+    pub fn go_on(inputs: &[Input]) -> bool {
+        matches!(inputs.last(), Some(Input::More))
     }
 }
 
