@@ -977,9 +977,7 @@ wired!(Expect {
 /// From a client's connection's own process to the server.
 #[derive(Debug)]
 pub enum FromConn {
-    /// It waits for its client at the server's socket: its first word.
-    Waiting,
-    /// It took its client there.
+    /// It took its client at the server's socket: a spare's first word.
     Accepted,
     /// A whole frame its client sent, decoded as the frame expected: sent
     /// again as it came, for the server to take, but for its inputs or
@@ -993,7 +991,7 @@ pub enum FromConn {
     /// it no more.
     Bad(String),
 }
-wired!(FromConn { Waiting, Accepted, Frame { frame, body }, Flushed, Shut, Bad(why) });
+wired!(FromConn { Accepted, Frame { frame, body }, Flushed, Shut, Bad(why) });
 
 /// How the server starts a client's connection's own process, before its
 /// client comes: `fux __conn`, its link on stdin, the server's socket on

@@ -31,6 +31,11 @@ const READ: usize = 256 * 1024;
 /// as it is refused.
 const AHEAD: &str = "more than 256 KiB sent while a request waited: \
                      a request is sent once the one before it is answered";
+/// What a client is told whose server went without a last word for it:
+/// said by its connection's process, which outlives its server.
+const SERVER_GONE: &str = "the server process ended without a word (it was killed, or crashed, \
+                           or it stopped as this client came); `fux '(start)'`, or `fux` in a \
+                           terminal, takes back the run of one that did not stop";
 /// The least time between two paints for a client, as a flood is painted.
 /// A keystroke's echo (`Clock::echo`) and panes gone quiet (`QUIET`) are
 /// painted sooner.
@@ -791,11 +796,6 @@ pub fn wait(listener: std::os::unix::net::UnixListener, server: Stream) -> Resul
     let mut link = End::new(server).map_err(|e| format!("its server: {e}"))?;
     let mut buffer = [0u8; 4096];
     let mut said = Vec::new();
-    // Its server takes no more clients itself from now on.
-    link.send(&FromConn::Waiting);
-    if link.flush_all().is_err() {
-        return Ok(());
-    }
     loop {
         let mut fds = [
             PollFd::new(&listener, Events::IN),
@@ -837,11 +837,20 @@ pub fn wait(listener: std::os::unix::net::UnixListener, server: Stream) -> Resul
         };
         if let Some(why) = crate::socket::stranger(fuxix::socket::peer(&client)) {
             log!("{why}");
+            crate::socket::refuse(client, &why);
             continue;
         }
         drop(listener);
-        let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-        fuxix::io::redirect_stdout(&null).map_err(|e| format!("its stdout: {e}"))?;
+        // Its client is told why it is not served, should that fail.
+        let detached = std::fs::File::open("/dev/null")
+            .map_err(|e| format!("/dev/null: {e}"))
+            .and_then(|null| {
+                fuxix::io::redirect_stdout(&null).map_err(|e| format!("its stdout: {e}"))
+            });
+        if let Err(why) = detached {
+            crate::socket::refuse(client, &format!("this connection's process failed: {why}"));
+            return Err(why);
+        }
         link.send(&FromConn::Accepted);
         return serve(client, link, said);
     }
@@ -854,12 +863,27 @@ pub fn taken(client: Stream, server: Stream) -> Result<(), String> {
     serve(client, link, Vec::new())
 }
 
-/// The loop of a client's connection's own process: its client on
-/// `client`, its server on `link`, which said `said` before, until either
-/// goes.
-pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), String> {
+/// A client's connection's own process at work (`serve_on`): its client
+/// on `client`, its server on `link`, which said `said` before. One that
+/// fails tells its client why before it closes (`Exit`, which every stage
+/// reads), as much as the client takes at once: no connection its process
+/// ends closes without a word.
+pub fn serve(client: Stream, link: End, said: Vec<ToConn>) -> Result<(), String> {
+    let served = serve_on(&client, link, said);
+    if let Err(why) = &served {
+        let why = format!("this connection's process failed: {why}");
+        let mut out = ByteQueue::default();
+        out.push_with(|frames| fux_wire::protocol::ToCommand::Exit(&why).encode_into(frames));
+        let _ = write(&client, &mut out);
+    }
+    served
+}
+
+/// The loop of a client's connection's own process, until its client or
+/// its server goes.
+fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), String> {
     use fuxix::poll::{Events, PollFd};
-    crate::socket::nonblocking(&client).map_err(|e| format!("its client: {e}"))?;
+    crate::socket::nonblocking(client).map_err(|e| format!("its client: {e}"))?;
     let mut decoder = Decoder::default();
     let mut out = ByteQueue::default();
     let mut composer = Composer::new(Instant::now());
@@ -972,7 +996,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             composer.paint(&mut out, now)?;
         }
         // What waits for its client, as far as it takes it.
-        if !write(&client, &mut out) {
+        if !write(client, &mut out) {
             return Ok(());
         }
         if out.is_empty() {
@@ -990,8 +1014,13 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 return Ok(());
             }
         }
+        // Its server out of reach, what it would say to it is let go: its
+        // link then reads to its end, what its server said before it went
+        // is taken, and its client is told (`gone`, below), so that one in
+        // hand whose server went before it heard of it (a spare's, taken as
+        // its server stopped) is not just closed.
         if link.flush().is_err() {
-            return Ok(());
+            link.out.take(link.out.len());
         }
         // Its client is read while its stage takes its frames, and while
         // its request waits on someone else, to hear its end.
@@ -1018,7 +1047,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // more: a hang-up, told unasked, would wake every wait.
         let watched = !gone || !out.is_empty();
         if watched {
-            fds.push(PollFd::new(&client, theirs));
+            fds.push(PollFd::new(client, theirs));
         }
         // Where its server's link is among those waited on, the rest after.
         let ours_at = usize::from(watched);
@@ -1085,7 +1114,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 let into = buffer
                     .get_mut(..room.saturating_sub(read))
                     .unwrap_or_default();
-                match fuxix::io::read(&client, into) {
+                match fuxix::io::read(client, into) {
                     Ok(n) if n > 0 => {
                         read = read.saturating_add(n);
                         decoder.push(buffer.get(..n).unwrap_or_default());
@@ -1225,8 +1254,15 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // before: what it holds for its client is let go, but what one
         // write takes. A crashed server's clients have nothing left to be
         // served.
+        // Gone with no last word for its client (`Close`), its server
+        // ended, or let it go, without one: its client is told that much.
         if gone {
-            let _ = write(&client, &mut out);
+            if !closing {
+                out.push_with(|frames| {
+                    fux_wire::protocol::ToCommand::Exit(SERVER_GONE).encode_into(frames)
+                });
+            }
+            let _ = write(client, &mut out);
             return Ok(());
         }
     }
@@ -1341,7 +1377,64 @@ mod tests {
         super::serve(client, End::new(link).map_err(e)?, Vec::new())?;
         let mut got = Vec::new();
         theirs.read_to_end(&mut got).map_err(e)?;
-        assert_eq!(got, b"the reply");
+        // And then that its server went, which had no last word for it.
+        let said = got.strip_prefix(b"the reply").ok_or("no reply")?;
+        let mut decoder = Decoder::default();
+        decoder.push(said);
+        assert!(matches!(
+            decoder.frame(),
+            Ok(Some(fux_wire::protocol::ToCommand::Exit(_)))
+        ));
+        Ok(())
+    }
+
+    /// A spare that took a client as its server stopped, its `Accepted`
+    /// not yet sent when its server let its link go, can't reach its
+    /// server with a client in hand: it tells that client its server went,
+    /// and does not just close it.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_taken_as_its_server_went_is_told_so() -> Result<(), String> {
+        use crate::link::{End, FromConn};
+        use fux_wire::protocol::Greeting;
+        use std::io::Read;
+        use std::os::unix::net::UnixStream;
+        let e = |error: std::io::Error| error.to_string();
+        let (client, mut theirs) = UnixStream::pair().map_err(e)?;
+        let (server, link) = UnixStream::pair().map_err(e)?;
+        // As `wait` leaves it: its first word said, not yet written.
+        let mut link = End::new(link).map_err(e)?;
+        link.send(&FromConn::Accepted);
+        drop(server);
+        super::serve(client, link, Vec::new())?;
+        let mut got = Vec::new();
+        theirs.read_to_end(&mut got).map_err(e)?;
+        let mut decoder = Decoder::default();
+        decoder.push(&got);
+        // Its client, which has had no greeting, reads it as one.
+        assert!(matches!(decoder.frame(), Ok(Some(Greeting::Exit(_)))));
+        Ok(())
+    }
+
+    /// A connection's process that fails tells its client why before it
+    /// closes: here its server sent it what is no message.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_that_fails_tells_its_client_why() -> Result<(), String> {
+        use fux_wire::protocol::ToCommand;
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        let e = |error: std::io::Error| error.to_string();
+        let (client, mut theirs) = UnixStream::pair().map_err(e)?;
+        let (mut server, link) = UnixStream::pair().map_err(e)?;
+        server.write_all(&[0, 0, 0, 0]).map_err(e)?;
+        let failed = super::serve(client, crate::link::End::new(link).map_err(e)?, Vec::new());
+        assert!(failed.is_err(), "it took what is no message");
+        let mut got = Vec::new();
+        theirs.read_to_end(&mut got).map_err(e)?;
+        let mut decoder = Decoder::default();
+        decoder.push(&got);
+        assert!(matches!(decoder.frame(), Ok(Some(ToCommand::Exit(_)))));
         Ok(())
     }
 
@@ -1479,7 +1572,8 @@ mod tests {
         conn.join().map_err(|_| "its process panicked")??;
         let mut got = Vec::new();
         theirs.read_to_end(&mut got).map_err(|e| e.to_string())?;
-        assert_eq!(got, b"the answer");
+        // Then, its server gone with no last word, that it went.
+        assert!(got.starts_with(b"the answer"), "{got:?}");
         Ok(())
     }
 

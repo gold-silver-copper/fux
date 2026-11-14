@@ -92,6 +92,12 @@ impl Sealed for Pipe {
 
 impl Source for Pipe {}
 
+/// Nothing on Windows, where no signal ends a process that writes past a
+/// limit: the write fails with its error already.
+pub fn mute(_signal: Signal) -> Result<()> {
+    Ok(())
+}
+
 /// Tells every pipe that asked for `signal` it came, from any thread, and
 /// wakes the poll: each raise posts its own wake, so none is lost. Fails
 /// only if the wake can't be posted (the system's error).

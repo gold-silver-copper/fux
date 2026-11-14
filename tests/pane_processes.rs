@@ -1223,3 +1223,220 @@ fn a_client_that_aborts_puts_its_terminal_back() -> Outcome {
     );
     Ok(())
 }
+
+/// Sets `pid`'s soft limit `which` to `soft` (`prlimit`, util-linux), its
+/// hard one kept.
+#[cfg(target_os = "linux")]
+fn limit(pid: i32, which: &str, soft: u64) -> Outcome {
+    let out = std::process::Command::new("prlimit")
+        .args(["--pid", &pid.to_string(), &format!("--{which}={soft}:")])
+        .output()
+        .map_err(e)?;
+    match out.status.success() {
+        true => Ok(()),
+        false => Err(String::from_utf8_lossy(&out.stderr).into_owned()),
+    }
+}
+
+/// The connection's process that waits at `pid`'s socket for the next
+/// client (`Server::spare`).
+#[cfg(target_os = "linux")]
+fn spare(pid: i32) -> Result<i32, String> {
+    let mut found = None;
+    eventually("a connection waiting for a client", || {
+        let taken = connections(pid);
+        found = (children(pid, "__conn").into_iter()).find(|conn| !taken.contains(conn));
+        Ok(found.is_some())
+    })?;
+    found.ok_or_else(|| "a connection waiting for a client".into())
+}
+
+/// Three clients, one after another, of a server that has met a limit
+/// (`ulimit`): the one its waiting connection's process takes may be
+/// served; each one refused is told `cause`, and two are, the second by a
+/// server that was ready to tell again.
+#[cfg(target_os = "linux")]
+fn refused_naming(server: &Server, cause: &str) -> Outcome {
+    let mut refused = 0u32;
+    for _ in 0..3 {
+        let asked = within(server, 30, &["(length (panes (all)))"])?;
+        if asked.status != 0 {
+            assert!(asked.stderr.contains(cause), "{}", asked.stderr);
+            refused = refused.saturating_add(1);
+        }
+    }
+    assert!(refused >= 2, "{refused} refused");
+    Ok(())
+}
+
+/// A server with every descriptor its limit allows takes the client that
+/// waits with the one it kept back, and tells it so: the client fails at
+/// once naming the cause, not after waiting for an answer that never
+/// comes; and the next is told too.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_out_of_descriptors_tells_a_client_so() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    spare(pid)?;
+    no_descriptor_free(pid)?;
+    refused_naming(&server, "Too many open files")
+}
+
+/// Lowers `pid`'s descriptor limit so that no number is free below it: to
+/// the least number it has not open.
+#[cfg(target_os = "linux")]
+fn no_descriptor_free(pid: i32) -> Outcome {
+    let mut open: Vec<u64> = (std::fs::read_dir(format!("/proc/{pid}/fd")).map_err(e)?)
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .collect();
+    open.sort_unstable();
+    let free = (0u64..).zip(&open).find(|(n, fd)| n != *fd);
+    let free = free.map_or(u64::try_from(open.len()).map_err(e)?, |(n, _)| n);
+    limit(pid, "nofile", free)
+}
+
+/// So is a client its waiting connection's process would have taken, had
+/// it not been stopped: left to that process once, it is told by the
+/// server, which does not wait on it for good.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_out_of_descriptors_tells_a_client_its_stopped_connection_left() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    let stopped = spare(pid)?;
+    signal(stopped, Signal::Stop);
+    no_descriptor_free(pid)?;
+    let asked = within(&server, 30, &["(length (panes (all)))"]);
+    signal(stopped, Signal::Cont);
+    let asked = asked?;
+    assert!(
+        asked.stderr.contains("Too many open files"),
+        "{}",
+        asked.stderr
+    );
+    Ok(())
+}
+
+/// A server that can start no process tells a client it can give none so,
+/// which fails at once naming the cause, not with a connection reset.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_out_of_processes_tells_a_client_so() -> Outcome {
+    // A limit on processes does not hold root.
+    if fuxix::process::geteuid() == 0 {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    spare(pid)?;
+    limit(pid, "nproc", 1)?;
+    refused_naming(&server, "starting a connection's process")
+}
+
+/// A connection's process that waits at the socket and is stopped holds up
+/// no client: the server takes there what it has not taken.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stopped_waiting_connection_holds_up_no_client() -> Outcome {
+    let server = Server::start("")?;
+    let stopped = spare(server_pid(&server)?)?;
+    signal(stopped, Signal::Stop);
+    let asked = within(&server, 30, &["(length (panes (all)))"]);
+    signal(stopped, Signal::Cont);
+    let asked = asked?;
+    assert_eq!(asked.status, 0, "{}", asked.stderr);
+    Ok(())
+}
+
+/// A write past a file-size limit (`ulimit -f`) fails as a write, where it
+/// is told, and ends no process of fux: a tree change whose record can't be
+/// written so is refused, and the server lives; a client whose output
+/// can't be says so.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_past_the_file_size_limit_is_refused_not_fatal() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    let shell = pane(&server, "a", &["sh"])?;
+    limit(pid, "fsize", 16)?;
+    let refused = server.fux(&[&format!(
+        "(sequence! (rename (pane {}) \"renamed\") #inert)",
+        fux::script::quoted(&shell)
+    )])?;
+    assert_ne!(refused.status, 0);
+    assert!(
+        refused.stderr.contains("could not be written"),
+        "{}",
+        refused.stderr
+    );
+    let listing = server.ok(&["(listing (list-session))"])?;
+    assert!(!listing.contains(" renamed "), "{listing}");
+    assert!(alive(pid), "the server");
+    let saved = server.dir.join("saved");
+    let dump = (server.command("/bin/sh"))
+        .args(["-c", "ulimit -f 0 && exec \"$0\" \"$@\" > \"$SAVED\""])
+        .args([fux(), "(dump (all))"])
+        .env("SAVED", &saved)
+        .output()
+        .map_err(e)?;
+    let said = String::from_utf8_lossy(&dump.stderr);
+    assert!(
+        said.contains("writing the output"),
+        "{:?} {said}",
+        dump.status
+    );
+    Ok(())
+}
+
+/// A client whose request waits, and its connection's process.
+#[cfg(target_os = "linux")]
+fn waiting_client(server: &Server) -> Result<(std::process::Child, i32), String> {
+    let pid = server_pid(server)?;
+    let before = connections(pid);
+    let waits = started(server, &["(shows (pane 1) \"never shown\" 600)"])?;
+    let mut conn = None;
+    eventually("its connection", || {
+        conn = (connections(pid).into_iter()).find(|conn| !before.contains(conn));
+        Ok(conn.is_some())
+    })?;
+    Ok((waits, conn.ok_or("its connection")?))
+}
+
+/// A client whose server is killed while its request waits is told the
+/// server's process ended, and how its run is taken back: its connection's
+/// process, which outlives its server, says so.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_whose_server_is_killed_says_it_ended() -> Outcome {
+    let server = Server::start("")?;
+    let _reap = reap_run(&server)?;
+    let (waits, _) = waiting_client(&server)?;
+    signal(server_pid(&server)?, Signal::Kill);
+    let out = waits.wait_with_output().map_err(e)?;
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("the server process ended") && said.contains("`fux '(start)'`"),
+        "{said}"
+    );
+    Ok(())
+}
+
+/// A client whose connection's process alone is killed does not say its
+/// server ended, which serves on: it says its connection's process did,
+/// and how to tell whether a server runs.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_whose_connection_process_is_killed_blames_no_server() -> Outcome {
+    let server = Server::start("")?;
+    let (waits, conn) = waiting_client(&server)?;
+    signal(conn, Signal::Kill);
+    let out = waits.wait_with_output().map_err(e)?;
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("connection process") && !said.contains("the server process ended"),
+        "{said}"
+    );
+    server.ok(&["(length (panes (all)))"])?;
+    Ok(())
+}

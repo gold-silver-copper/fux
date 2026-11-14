@@ -204,3 +204,32 @@ pub fn stranger(peer: fuxix::Result<fuxix::socket::Peer>) -> Option<String> {
         )),
     }
 }
+
+/// Tells the client on `accepted`, which is given no connection's process,
+/// why, as the greeting that ends a connection (`Greeting::Exit`), then
+/// closes it: the server's own word, for a client it takes and can't serve
+/// (no process or descriptor for it, or not its user's). As much as the
+/// connection takes at once, which a new one's whole greeting is.
+pub fn refuse(accepted: Accepted, why: &str) {
+    use fux_wire::protocol::{Frame, Greeting};
+    if let Ok(stream) = serve(accepted) {
+        let _ = fuxix::io::write_what_fits(&stream, &Greeting::Exit(why).encode());
+    }
+}
+
+/// Copies the file `from` to `to`, there whole or not at all: written
+/// beside it and renamed, so one that can't be written whole (a full disk,
+/// a file-size limit) leaves nothing a later start would run. Why it could
+/// not, naming `to`.
+pub(crate) fn copy_whole(from: &Path, to: &Path) -> io::Result<()> {
+    let mut new = to.as_os_str().to_owned();
+    new.push(".new");
+    let new = PathBuf::from(new);
+    std::fs::copy(from, &new)
+        .and_then(|_| std::fs::rename(&new, to))
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&new);
+            let why = format!("copying fux to {}: {error}", to.display());
+            io::Error::new(error.kind(), why)
+        })
+}

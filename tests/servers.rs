@@ -564,6 +564,107 @@ fn reads_no_answers(command: fux_wire::command::Command) -> Outcome {
     Ok(())
 }
 
+/// All `server` sent a client that sent `bytes`, and then shut its sending
+/// side if `shut`, to its end.
+fn sent_back(
+    server: &Server,
+    bytes: &[u8],
+    shut: bool,
+) -> Result<fux_wire::protocol::Decoder, String> {
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+    stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+    stream.write_all(bytes).map_err(e)?;
+    if shut {
+        stream.shutdown(std::net::Shutdown::Write).map_err(e)?;
+    }
+    let mut got = Vec::new();
+    // A reset ends it as a close does: what came before it is read.
+    let _ = stream.read_to_end(&mut got);
+    let mut decoder = fux_wire::protocol::Decoder::default();
+    decoder.push(&got);
+    Ok(decoder)
+}
+
+/// A client that shuts its sending side and reads on is told its
+/// connection ends, not just closed: before any Hello; and after one, and
+/// a request, once that request is answered.
+#[test]
+fn a_client_that_shuts_its_side_is_told_its_connection_ends() -> Outcome {
+    use fux_wire::command::{Command, Request};
+    use fux_wire::protocol::{Asked, Context, Frame, Greeting, Hello, PROTOCOL, Role, ToCommand};
+    let server = Server::start("")?;
+    let mut silent = sent_back(&server, b"", true)?;
+    assert!(
+        matches!(silent.frame::<Greeting>(), Ok(Some(Greeting::Exit(_)))),
+        "no word for a client that said nothing"
+    );
+    let hello = Hello {
+        protocol: PROTOCOL,
+        version: "0".into(),
+        role: Role::Command,
+    };
+    let asked = Asked {
+        after: None,
+        request: Request::Do(Command::Inspect {
+            scope: fux_wire::inspect::Scope::All,
+            projection: fux_wire::inspect::Projection::Facts,
+        }),
+        context: Context::default(),
+    };
+    let mut asking = sent_back(&server, &[hello.encode(), asked.encode()].concat(), true)?;
+    assert!(matches!(
+        asking.frame::<Greeting>(),
+        Ok(Some(Greeting::Hello(_)))
+    ));
+    let mut frames = Vec::new();
+    while let Some(frame) = asking.frame::<ToCommand>().map_err(e)? {
+        frames.push(match frame {
+            ToCommand::Part(_) => "part",
+            ToCommand::PartsEnd => "end",
+            ToCommand::Exit(_) => "exit",
+        });
+    }
+    assert_eq!(frames.first(), Some(&"part"), "{frames:?}");
+    assert_eq!(
+        frames.get(frames.len().saturating_sub(2)..),
+        Some(&["end", "exit"][..]),
+        "its answer, then why its connection ends"
+    );
+    Ok(())
+}
+
+/// A client that sends what is no frame is told why before its connection
+/// closes, whatever it sent before: as its first bytes, and after a Hello
+/// the server answered. Only the server's log said so, and the client saw
+/// its connection closed.
+#[test]
+fn a_client_that_sends_no_frame_is_told_why() -> Outcome {
+    use fux_wire::protocol::{Frame, Greeting, Hello, PROTOCOL, Role, ToCommand};
+    let server = Server::start("")?;
+    let answered = |bytes: &[u8]| sent_back(&server, bytes, false);
+    let mut first = answered(b"\0\0\0\0")?;
+    assert!(
+        matches!(first.frame::<Greeting>(), Ok(Some(Greeting::Exit(_)))),
+        "no word for what is no frame"
+    );
+    let hello = Hello {
+        protocol: PROTOCOL,
+        version: "0".into(),
+        role: Role::Command,
+    };
+    let mut later = answered(&[hello.encode(), b"\0\0\0\0".to_vec()].concat())?;
+    assert!(matches!(
+        later.frame::<Greeting>(),
+        Ok(Some(Greeting::Hello(_)))
+    ));
+    assert!(
+        matches!(later.frame::<ToCommand>(), Ok(Some(ToCommand::Exit(_)))),
+        "no word for what is no frame after a Hello"
+    );
+    Ok(())
+}
+
 /// `dump` writes a workspace as a program, and running that program
 /// makes it again.
 #[test]
