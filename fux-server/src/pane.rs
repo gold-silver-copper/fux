@@ -206,6 +206,11 @@ impl InputQueue {
     pub fn pasting(&self) -> bool {
         self.pasting
     }
+    /// How many bytes wait for its program in all: queued, and behind a
+    /// paste that is open.
+    pub fn waiting(&self) -> usize {
+        self.len().saturating_add(self.behind.len())
+    }
     /// `len` bytes were queued, replies if `reply`. Refused the memory to
     /// say so, they count as what was queued before them.
     fn note(&mut self, reply: bool, len: usize) {

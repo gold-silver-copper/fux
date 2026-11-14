@@ -305,6 +305,9 @@ pub struct Session {
     /// have not written them yet: one that is not reading is opened no
     /// other on (`ClientAction::Open`). The server's, which hears of it.
     pub prompted: std::collections::BTreeSet<ClientId>,
+    /// The panes with a frame of input their program has not read
+    /// (`FromPane::Full`): what is typed into one is held by its typist.
+    full: std::collections::BTreeSet<PaneId>,
     /// What panes used up of what connections held them for (`Retired`):
     /// the server lets each go of its connection.
     pub retired: Vec<(PaneId, u64)>,
@@ -492,6 +495,7 @@ impl Session {
             closing: Vec::new(),
             closed: Vec::new(),
             prompted: std::collections::BTreeSet::new(),
+            full: std::collections::BTreeSet::new(),
             body: None,
             deliveries: Vec::new(),
             retired: Vec::new(),
@@ -685,13 +689,32 @@ impl Session {
         }
     }
 
-    /// Whether what client `client` types waits: its focused pane's process
-    /// takes nothing of what it was sent (stopped, say: `Remote::stalled`).
-    /// It stays with the client's connection, never queued here.
+    /// Whether client `client` is to hold back what it types
+    /// (`ToAttached::Hold`): its focused pane's process takes nothing
+    /// (`typing_waits`), or has a frame of input its program has not read
+    /// (`FromPane::Full`). What is typed then stays with the client.
+    pub fn typing_holds(&self, client: ClientId) -> bool {
+        self.typing_waits(client)
+            || (self.focused(client))
+                .is_some_and(|pane| self.full.contains(&pane) && self.links.contains_key(&pane))
+    }
+
+    /// Whether what client `client` types waits, unread by the server: its
+    /// focused pane's process takes nothing of what it was sent (stopped,
+    /// say: `Remote::stalled`), or a frame of what was said to it waits
+    /// here already. It stays with the client and its connection, never
+    /// queued here past that.
     pub fn typing_waits(&self, client: ClientId) -> bool {
         let pane = self.focused(client);
         pane.and_then(|pane| self.links.get(&pane))
-            .is_some_and(|link| matches!(link, Link::Remote(remote) if remote.stalled))
+            .is_some_and(|link| match link {
+                // Or takes it slower than it is typed: a frame of what was
+                // said to it waits here already.
+                Link::Remote(remote) => {
+                    remote.stalled || remote.end.out.len() >= fux_wire::protocol::MAX_FRAME
+                }
+                Link::Local(_) => false,
+            })
     }
 
     /// Where its run's panes listen, and keep what outlives its server
@@ -1046,6 +1069,12 @@ impl Session {
             FromPane::Refused { client, why } => self.notify_to(client, why, true),
             FromPane::Retired(token) => self.retired.push((id, token)),
             FromPane::Offer(_) => {}
+            FromPane::Full(true) => {
+                self.full.insert(id);
+            }
+            FromPane::Full(false) => {
+                self.full.remove(&id);
+            }
         }
     }
 
@@ -4557,7 +4586,8 @@ pub(crate) mod testing {
                     | ToAttached::Exit(_)
                     | ToAttached::Welcome(..)
                     | ToAttached::Read(..)
-                    | ToAttached::More,
+                    | ToAttached::More
+                    | ToAttached::Hold(_),
                 )
                 | super::Outgoing::Owed(..)
                 | super::Outgoing::Keys(..)
@@ -9688,6 +9718,77 @@ mod tests {
         assert_eq!(queued(&mut s, id)?, b"\x1b[200~half\x1b[201~");
         assert!(s.answered_yet(ask), "its asker is told it was cut short");
         assert!(!host(&mut s, id, |h| h.takes(token))?);
+        Ok(())
+    }
+
+    /// A pane says when a frame of what was typed waits unread for its
+    /// program, once, and when none waits any more; meanwhile a client
+    /// that types into it is to hold back what it types, and no other is
+    /// (D-187). What was typed queued in the pane without end.
+    #[test]
+    fn a_pane_with_a_frame_typed_and_unread_has_its_typists_hold_back() -> TestResult {
+        use crate::link::{FromPane, ToPane, Typed};
+        let (mut s, client) = super::testing::attached(10, 40)?;
+        let id = s.focused(client).ok_or("its pane")?;
+        let now = Instant::now();
+        let key = || Typed::Key(fux_vt::keys::KeyPress::char('k').into());
+        let fulls = |reports: &[FromPane]| -> Vec<bool> {
+            (reports.iter())
+                .filter_map(|report| match report {
+                    FromPane::Full(full) => Some(*full),
+                    _ => None,
+                })
+                .collect()
+        };
+        // One byte short of a frame: not full.
+        let said = host(&mut s, id, |h| {
+            for _ in 1..crate::pane::BEHIND {
+                h.handle(
+                    ToPane::Typed {
+                        client,
+                        typed: key(),
+                    },
+                    now,
+                );
+            }
+            h.take()
+        })?;
+        assert_eq!(fulls(&said), []);
+        assert!(!s.typing_holds(client));
+        let said = host(&mut s, id, |h| {
+            h.handle(
+                ToPane::Typed {
+                    client,
+                    typed: key(),
+                },
+                now,
+            );
+            let mut said = h.take();
+            // More typed while it is full says nothing more.
+            h.handle(
+                ToPane::Typed {
+                    client,
+                    typed: key(),
+                },
+                now,
+            );
+            said.append(&mut h.take());
+            said
+        })?;
+        assert_eq!(fulls(&said), [true]);
+        s.heard(id, FromPane::Full(true));
+        s.pump(now);
+        assert!(s.typing_holds(client));
+        // Its program reads it all: no longer.
+        let said = host(&mut s, id, |h| {
+            let read = h.pane_mut().drain_input().len();
+            assert_eq!(read, crate::pane::BEHIND + 1);
+            h.take()
+        })?;
+        assert_eq!(fulls(&said), [false]);
+        s.heard(id, FromPane::Full(false));
+        s.pump(now);
+        assert!(!s.typing_holds(client));
         Ok(())
     }
 

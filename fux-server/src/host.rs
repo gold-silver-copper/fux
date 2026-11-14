@@ -128,6 +128,9 @@ pub struct Host {
     held: BTreeMap<u64, Box<fux_wire::answer::Captured>>,
     /// The body being typed into it, between its first piece and its last.
     typing: Option<Typing>,
+    /// Its server was told a frame of input waits unread for its program
+    /// (`FromPane::Full`), and not yet that none does.
+    full: bool,
 }
 
 /// The questions that wait for a body, each by its token: a list, which
@@ -263,6 +266,7 @@ impl Host {
             whole: 0,
             awaiting: Waiting::default(),
             typing: None,
+            full: false,
             held: BTreeMap::new(),
         })
     }
@@ -295,6 +299,18 @@ impl Host {
     /// whose reading takes more than one call of the parser, so that what
     /// the frame does is told whole, with the counts it leaves.
     pub fn take(&mut self) -> Vec<FromPane> {
+        // Full at a frame of input unread, and no longer once none waits:
+        // said as it changes, so that those who type into it hold back
+        // what they type instead of its piling up here.
+        let waits = self.pane.input().waiting();
+        let full = match self.full {
+            true => waits > 0,
+            false => waits >= crate::pane::BEHIND,
+        };
+        if full != self.full {
+            self.full = full;
+            self.report(FromPane::Full(full));
+        }
         if self.pane.mid_frame() {
             return Vec::new();
         }

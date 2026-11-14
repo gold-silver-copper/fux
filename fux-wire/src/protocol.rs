@@ -938,6 +938,13 @@ frames! {
         /// what it types keeps its order behind the paste, and what else
         /// it has to say (an `Answer`, a detach) is said meanwhile.
         More = 21,
+        /// Whether it holds back what it types (`true`), till told
+        /// otherwise: a frame of input waits unread for the program of the
+        /// pane it types into, or that pane's process takes nothing. It
+        /// sends what adds input again once told `false`, in the order it
+        /// came; what it holds meanwhile is its own terminal's, which it
+        /// stops reading once it holds enough.
+        Hold(held: bool) = 22,
     }
 }
 

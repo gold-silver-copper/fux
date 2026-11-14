@@ -2602,7 +2602,7 @@ fn two_pastes_sent_at_once_to_the_same_two_panes_both_arrive() -> Outcome {
         fux::script::quoted(tab.trim())
     );
     let mut senders = Vec::new();
-    for byte in [b'x', b'y'] {
+    for byte in *b"xy" {
         let mut sending = started(&server, &[&paste])?;
         let mut stdin = sending.stdin.take().ok_or("its stdin")?;
         stdin.write_all(&vec![byte; SENT]).map_err(e)?;
@@ -2627,6 +2627,73 @@ fn two_pastes_sent_at_once_to_the_same_two_panes_both_arrive() -> Outcome {
     for mut sending in senders {
         let out = sending.wait().map_err(e)?;
         assert!(out.success(), "a paste failed");
+    }
+    Ok(())
+}
+
+/// 32. Megabytes typed at a program that isn't reading (a terminal that
+///     pastes as plain keys) wait in the terminal: a frame of them reaches
+///     the pane, which says so; its typist is told to hold back, holds a
+///     little and reads its terminal no more; and when the program reads,
+///     it gets every byte. No fux process grows with what was typed (D-187;
+///     all of it queued in the pane's process).
+#[cfg(target_os = "linux")]
+#[test]
+fn megabytes_typed_at_a_program_that_reads_nothing_wait_in_the_terminal() -> Outcome {
+    const TYPED: usize = 4 << 20;
+    let server = Server::start("")?;
+    let mut terminal = Terminal::attach(&server, 24, 80, &[])?;
+    terminal.wait_for("$")?;
+    let pid = server_pid(&server)?;
+    let own = own_process(&server, &support::focused(&server)?)?;
+    let conns = connections(pid);
+    let (go, got) = (server.dir.join("go"), server.dir.join("got"));
+    let script = format!(
+        "stty raw -echo; printf RAW-%s NOW; until [ -e {go} ]; do sleep 0.05; done; \
+         head -c {TYPED} | wc -c > {got}.part; mv {got}.part {got}; stty sane\n",
+        go = go.display(),
+        got = got.display()
+    );
+    let run = server.dir.join("run.sh");
+    std::fs::write(&run, script).map_err(e)?;
+    terminal.type_bytes(format!("sh {}\r", run.display()).as_bytes())?;
+    terminal.wait_for("RAW-NOW")?;
+    let before = (peak_kib(own)?, peak_kib(pid)?);
+    // Typed from a thread of its own: it waits, as the terminal does.
+    let typing = std::thread::spawn(move || {
+        let typed = terminal.type_bytes(&vec![b'k'; TYPED]);
+        (terminal, typed)
+    });
+    // A frame of it has reached the pane, whose program reads none of it.
+    eventually("a frame of what was typed in its pane", || {
+        Ok(peak_kib(own)?.saturating_sub(before.0) >= 1 << 10)
+    })?;
+    assert!(
+        !typing.is_finished(),
+        "all of it was taken, none reading it"
+    );
+    std::fs::write(&go, b"").map_err(e)?;
+    let (mut terminal, typed) = typing.join().map_err(|_| "its typing panicked")?;
+    typed?;
+    let mut read = String::new();
+    for _ in 0..12 {
+        let all = eventually("all that was typed, read", || {
+            terminal.pump();
+            read = std::fs::read_to_string(&got).unwrap_or_default();
+            Ok(!read.is_empty())
+        });
+        if all.is_ok() {
+            break;
+        }
+    }
+    assert_eq!(read.trim(), TYPED.to_string());
+    let grew = |pid: i32, before: u64| peak_kib(pid).map(|peak| peak.saturating_sub(before));
+    let (pane, served) = (grew(own, before.0)?, grew(pid, before.1)?);
+    assert!(pane < 3 << 10, "its pane's process grew {pane} KiB");
+    assert!(served < 3 << 10, "the server grew {served} KiB");
+    for conn in conns {
+        let held = peak_kib(conn).unwrap_or(0);
+        assert!(held < 16 << 10, "a connection's process held {held} KiB");
     }
     Ok(())
 }

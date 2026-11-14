@@ -180,6 +180,9 @@ struct Conn {
     out: ByteQueue,
     /// Its process has bytes its client has not taken yet, or is owed
     /// some (`owed`).
+    /// Its attached client was last told to hold back what it types
+    /// (`ToAttached::Hold`).
+    holds: bool,
     pending: bool,
     /// What its client is owed as state, not yet passed to its process:
     /// the latest clipboard copy and title, the bell, a prompt, each as
@@ -332,6 +335,7 @@ impl Conn {
             link: crate::link::End::new(link)?,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
+            holds: false,
             pending: false,
             owed: Owing::default(),
             bad: None,
@@ -712,7 +716,8 @@ impl Conn {
             | ToAttached::Ended(_)
             | ToAttached::Keys(_)
             | ToAttached::Read(..)
-            | ToAttached::More => self.send(frame),
+            | ToAttached::More
+            | ToAttached::Hold(_) => self.send(frame),
         }
     }
 
@@ -723,6 +728,15 @@ impl Conn {
         // passed before: till then the latest of each waits here, so a
         // link that takes nothing is passed nothing more of it.
         let taken = self.link.out.is_empty();
+        // Its client is told as it is to hold back what it types, or no
+        // longer (`Session::typing_holds`).
+        if let Some(client) = self.attached().map(|attached| attached.client) {
+            let holds = session.typing_holds(client);
+            if holds != self.holds {
+                self.holds = holds;
+                self.send(&ToAttached::Hold(holds));
+            }
+        }
         self.queue_out();
         if taken {
             self.settle();

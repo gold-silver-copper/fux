@@ -506,7 +506,9 @@ impl Run {
                 bytes,
             ) => panic!("not the session's to owe: {bytes:?}"),
             // Asked of a client by its connection, never by the session.
-            Outgoing::To(_, ToAttached::More) => panic!("a piece asked for by the session"),
+            Outgoing::To(_, ToAttached::More | ToAttached::Hold(_)) => {
+                panic!("its connection's or its server's to say, not the session's")
+            }
             Outgoing::To(client, ToAttached::Exit(_)) => self.detach(client),
             // Sent only as a client attaches, by the server.
             Outgoing::To(_, ToAttached::Welcome(..)) => {

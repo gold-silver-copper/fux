@@ -996,7 +996,8 @@ impl Keyboard {
             ToAttached::Welcome(..)
             | ToAttached::Paint(_)
             | ToAttached::Exit(_)
-            | ToAttached::More => {}
+            | ToAttached::More
+            | ToAttached::Hold(_) => {}
         }
         acts.extend(self.release());
         acts
@@ -1556,6 +1557,9 @@ impl Output {
 struct Pasting {
     /// A paste is sent whose last piece is not yet taken.
     open: bool,
+    /// The server said to hold back what is typed (`ToAttached::Hold`):
+    /// the program typed into has a frame of input it has not read.
+    held: bool,
     /// Its pieces not yet sent, each a frame.
     pieces: std::collections::VecDeque<Vec<u8>>,
     behind: Vec<Dispatch>,
@@ -1576,9 +1580,26 @@ impl Pasting {
         next
     }
 
+    /// Whether what it would send waits: behind a paste of its own, or
+    /// held back as its server said.
+    fn waits(&self) -> bool {
+        self.open || self.held
+    }
+
+    /// Whether it holds as much as it will: its terminal is read no more
+    /// till some of it is sent, so that what is typed or pasted as plain
+    /// keys at a program that isn't reading waits in the terminal, as it
+    /// would with no fux between them.
+    fn full(&self) -> bool {
+        self.behind.len() >= Self::MOST
+    }
+
+    /// The most acts it holds back before it stops reading its terminal.
+    const MOST: usize = 4096;
+
     /// `acts`, after what waited behind a paste now taken.
     fn order(&mut self, mut acts: Vec<Dispatch>) -> Vec<Dispatch> {
-        if self.open {
+        if self.waits() {
             return acts;
         }
         let mut all = std::mem::take(&mut self.behind);
@@ -1589,7 +1610,7 @@ impl Pasting {
     /// `out`, if it goes now: anything with no paste on its way, and an
     /// answer always. What does not waits behind the paste.
     fn admit(&mut self, out: Dispatch) -> Option<Dispatch> {
-        if !self.open || matches!(out, Dispatch::Answer(..)) {
+        if !self.waits() || matches!(out, Dispatch::Answer(..)) {
             return Some(out);
         }
         self.behind.push(out);
@@ -1656,6 +1677,7 @@ fn attached(
                         return ended;
                     }
                 }
+                (ToAttached::Hold(held), _) => pasting.held = held,
                 (ToAttached::Welcome(me, run), None) => {
                     if !terminal {
                         (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
@@ -1677,7 +1699,7 @@ fn attached(
         // Before admission, resizes stay local. Once admitted, send the
         // latest one before dispatching any job that fences this connection.
         if keyboard.is_some()
-            && !pasting.open
+            && !pasting.waits()
             && let Some(size) = pending_resize.take()
         {
             if let Err(ended) = tell(
@@ -1763,7 +1785,7 @@ fn attached(
         let (wake, typed) = match &keyboard {
             Some(keyboard) => (
                 add(PollFd::new(keyboard.wake(), PollFlags::IN)),
-                terminal
+                (terminal && !pasting.full())
                     .then(|| add(PollFd::new(&stdin, PollFlags::IN)))
                     .flatten(),
             ),
@@ -1892,7 +1914,8 @@ fn last_frames(
                 | ToAttached::Open(_)
                 | ToAttached::Keys(_)
                 | ToAttached::Read(..)
-                | ToAttached::More => {}
+                | ToAttached::More
+                | ToAttached::Hold(_) => {}
             }
         }
         if !matches!(read_more(stream, decoder), Ok(true)) {
@@ -1925,7 +1948,7 @@ mod tests {
         assert_eq!(sent(&mut pasting, typed.clone()), typed);
         pasting.sent(vec![b"piece two".to_vec()].into_iter());
         let behind = vec![key('l'), key('s'), Dispatch::Fence, answer.clone()];
-        assert_eq!(sent(&mut pasting, behind), [answer.clone()]);
+        assert_eq!(sent(&mut pasting, behind), std::slice::from_ref(&answer));
         // Its second piece asked for: still on its way.
         assert_eq!(pasting.taken(), Some(b"piece two".to_vec()));
         assert_eq!(sent(&mut pasting, vec![key('x')]), []);
@@ -1935,6 +1958,22 @@ mod tests {
             sent(&mut pasting, vec![key('y')]),
             [key('l'), key('s'), Dispatch::Fence, key('x'), key('y')]
         );
+        // Told to hold back what it types: the same, till told otherwise;
+        // and with as much held as it holds, its terminal is read no more.
+        pasting.held = true;
+        assert_eq!(
+            sent(&mut pasting, vec![key('a'), answer.clone(), key('b')]),
+            std::slice::from_ref(&answer)
+        );
+        assert!(!pasting.full());
+        let many = (0..Pasting::MOST).map(|_| key('k')).collect();
+        assert_eq!(sent(&mut pasting, many), []);
+        assert!(pasting.full());
+        pasting.held = false;
+        let after = sent(&mut pasting, Vec::new());
+        assert_eq!(after.len(), Pasting::MOST + 2);
+        assert_eq!(after.first(), Some(&key('a')));
+        assert!(!pasting.full());
     }
 
     /// A client refused memory while it joins a reply's parts fails that

@@ -703,7 +703,8 @@ impl Client {
                 | ToAttached::Open(_)
                 | ToAttached::Keys(_)
                 | ToAttached::Read(..)
-                | ToAttached::More) => {
+                | ToAttached::More
+                | ToAttached::Hold(_)) => {
                     if let Some(keyboard) = &mut self.keyboard {
                         acts.extend(keyboard.frame(frame));
                     }

@@ -416,6 +416,11 @@ pub enum FromPane {
     /// Windows alone, before the facts naming a new program, and again to
     /// a server that takes it back.
     Offer(Offered),
+    /// Whether a frame of input or more waits unread for its program
+    /// (`true`), said once as it comes to that and once (`false`) when
+    /// none waits any more: those who type into it hold back meanwhile
+    /// (`ToAttached::Hold`).
+    Full(bool),
 }
 
 /// A pane's program as its process offers its server a copy of its
@@ -463,6 +468,7 @@ wired!(FromPane {
     Answer { ask, answer },
     Retired(t),
     Offer(o),
+    Full(f),
 });
 
 /// What a pane's process answers a server that reaches its socket: to one
