@@ -1565,17 +1565,16 @@ fn a_pane_never_begun_is_begun_from_its_record() -> Outcome {
     Ok(())
 }
 
-/// The record's workspace `ws` without the tab that holds `pane`.
-fn without(ws: &mut fux_server::record::Workspace, pane: fux_wire::id::PaneId) {
-    use fux_server::record::Child;
-    ws.children.retain(|child| match child {
-        Child::Tab(tab) => tab.panes.iter().all(|p| p.id != pane),
-        Child::Workspace(_) => true,
-    });
-    for child in &mut ws.children {
-        if let Child::Workspace(inner) = child {
-            without(inner, pane);
-        }
+/// The record's tree without the tab that holds `pane`.
+fn without(tree: &mut fux_server::record::Tree, pane: fux_wire::id::PaneId) {
+    use fux_wire::command::AnyRef;
+    let holds = |tab: &fux_server::record::Tab| tab.panes.iter().any(|p| p.id == pane);
+    let gone: Vec<AnyRef> = (tree.tabs.iter().filter(|tab| holds(tab)))
+        .map(|tab| AnyRef::Tab(tab.id))
+        .collect();
+    tree.tabs.retain(|tab| !holds(tab));
+    for ws in &mut tree.workspaces {
+        ws.children.retain(|child| !gone.contains(child));
     }
 }
 
@@ -1595,11 +1594,7 @@ fn a_pane_process_its_record_lacks_is_ended() -> Outcome {
     let (own, program) = (own_process(server, &stray)?, program_pid(server, &stray)?);
     crash(server)?;
     let id: fux_wire::id::PaneId = stray.parse().map_err(|_| format!("{stray}: no pane"))?;
-    rerecord(server, |record| {
-        for ws in &mut record.workspaces {
-            without(ws, id);
-        }
-    })?;
+    rerecord(server, |record| without(&mut record.tree, id))?;
     let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
     assert_eq!(taken.status, 0, "{}", taken.stderr);
     eventually("the process its record lacks and its program gone", || {

@@ -25,7 +25,6 @@ use fux_server::outer;
 use fux_server::render::{Grid, compose_into, paint_into};
 use fux_server::session::{Outgoing, Session};
 use fux_server::view::Mode;
-use fux_server::workspace::Child as _;
 use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::keys::{Key, Keystroke};
 use fux_wire::act::Act;
@@ -788,7 +787,7 @@ fn check(run: &Run) {
     // Every pane is in exactly one tab's layout, and every pane there is.
     let mut seen: BTreeMap<PaneId, usize> = BTreeMap::new();
     for ws in s.parts.every_workspace() {
-        for tab in ws.tabs() {
+        for tab in s.parts.tabs_of(ws.id()) {
             for pane in tab.root().panes() {
                 assert!(
                     s.parts.panes().contains_key(&pane),

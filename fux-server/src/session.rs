@@ -4,9 +4,10 @@ use crate::copy::Copy as Pane;
 use crate::journal::{Detach, ViewChange};
 use crate::link::{Answered, Ask, Begin, FromPane, Hosting, Link, Remote, ToPane};
 use crate::pane::{self, Runs};
+use crate::record::Tracked;
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Form, Pending, Waiting, Watches};
-use crate::workspace::{Child as _, Destination, Fit, Killing, Parts, Split, Tab, Workspace};
+use crate::workspace::{Destination, Fit, Killing, Parts, Split, Tab, Workspace};
 use fux_vt::Size;
 use fux_vt::keys::Direction;
 use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
@@ -22,6 +23,7 @@ use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 mod inspect;
 use std::time::{Duration, Instant};
 
@@ -221,7 +223,7 @@ enum Done {
 pub struct Session {
     /// Its workspaces, tabs and panes, and the journal of what happened to
     /// them, which events read.
-    pub parts: Parts,
+    pub parts: Tracked<Parts>,
     pub views: BTreeMap<ClientId, View>,
     /// The socket a started pane is told to reach its server by, if panes
     /// start real processes; tests of the state alone start none.
@@ -276,10 +278,16 @@ pub struct Session {
     asked_pane: u64,
     /// The events its journal keeps.
     entries: command::JournalEntries,
-    /// Its run's record as last written (`write_record`), and whether it
-    /// is still written: not once the run ends (`end_run`), which the
-    /// record then says.
+    /// Its run's record as last written (`commit`), and whether it is
+    /// still written: not once the run ends (`end_run`), which the record
+    /// then says.
     recorded: Vec<u8>,
+    /// What that record says beside its tree: the run, the ids given last
+    /// and whether it ended. None till one is written.
+    recorded_head: Option<(command::Run, Vec<u32>, bool)>,
+    /// The name files that record names (`record::name_file`): for each
+    /// workspace, tab or pane named there, its name's number and text.
+    named: BTreeMap<AnyRef, (u64, Rc<str>)>,
     recording: bool,
     ended: bool,
     /// What it tells its panes while a change may still be undone
@@ -461,7 +469,7 @@ impl Session {
         journal: command::JournalEntries,
     ) -> Self {
         Self {
-            parts: Parts::new(journal),
+            parts: Tracked::new(Parts::new(journal)),
             views: BTreeMap::new(),
             launch: launch.then_some(socket),
             exe: std::env::current_exe().ok(),
@@ -477,6 +485,8 @@ impl Session {
             asked_pane: 0,
             entries: journal,
             recorded: Vec::new(),
+            recorded_head: None,
+            named: BTreeMap::new(),
             recording: true,
             ended: false,
             staged: None,
@@ -1274,7 +1284,8 @@ impl Session {
     fn named(&self, name: &str) -> Option<AnyRef> {
         let workspaces = self.parts.every_workspace();
         let workspace = workspaces.iter().find(|w| w.name() == Some(name));
-        let tab = || (workspaces.iter().flat_map(|w| w.tabs())).find(|t| t.name() == Some(name));
+        let tabs = || workspaces.iter().flat_map(|w| self.parts.tabs_of(w.id()));
+        let tab = || tabs().find(|t| t.name() == Some(name));
         let pane = || (self.parts.panes().values()).find(|p| p.name() == Some(name));
         (workspace.map(|w| AnyRef::Workspace(w.id())))
             .or_else(|| tab().map(|t| AnyRef::Tab(t.id())))
@@ -2151,7 +2162,10 @@ impl Session {
         if !ours {
             return;
         }
-        for kept in ["run", crate::record::ENDED, "exe"] {
+        // Its names after its structure, which alone names them.
+        let _ = std::fs::remove_file(panes.join("run"));
+        crate::record::sweep(&panes, &BTreeSet::new());
+        for kept in [crate::record::ENDED, "exe"] {
             let _ = std::fs::remove_file(panes.join(kept));
         }
     }
@@ -2165,33 +2179,82 @@ impl Session {
         self.commit()
     }
 
-    /// Its run's record, written whole if it changed (`record`): before
-    /// anything that changed it is told (D-124 (3)). One that can't be
-    /// written fails, and the change it was for is undone (`transact`);
-    /// outside a change, a pane's end say, it is logged, and the record
-    /// stays as it was: a server taking the run back finds such a pane
-    /// gone.
+    /// Its run's record, written if it changed (`record`): before anything
+    /// that changed it is told (D-124 (3)). It is made again only once
+    /// the tree was handed out to change, or the run's own facts changed
+    /// (`Tracked`), and holds each name by its number: a name given since
+    /// the last record is written to its own file first, then the
+    /// structure, whole, and then the names it no longer has are removed
+    /// (D-175). So what is written follows the tree's rows, not its names'
+    /// lengths, and a crash at any step leaves a structure whose names are
+    /// all there.
+    ///
+    /// One that can't be written fails, and the change it was for is
+    /// undone (`transact`); outside a change, a pane's end say, it is
+    /// logged, and the record stays as it was: a server taking the run
+    /// back finds such a pane gone.
     fn commit(&mut self) -> Result<(), Error> {
         let Some(socket) = self.launch.as_ref().filter(|_| self.recording) else {
             return Ok(());
         };
+        let head = (self.run, self.ids.given(), self.ended);
+        if !Tracked::stale(&self.parts) && self.recorded_head.as_ref() == Some(&head) {
+            return Ok(());
+        }
+        let panes = crate::socket::panes(socket);
+        // Each name as the last record has it keeps its number, and its
+        // file; another takes the next number, and is written.
+        let last = self.named.values().map(|(id, _)| *id).max();
+        let mut next = last.map_or(0, |last| last.saturating_add(1));
+        let (mut named, mut fresh) = (BTreeMap::new(), Vec::new());
+        let tree = self.parts.record(&mut |of, text| {
+            let id = match self.named.get(&of) {
+                Some((id, had)) if had == text => *id,
+                Some(_) | None => {
+                    let id = next;
+                    next = next.saturating_add(1);
+                    fresh.push((id, text.clone()));
+                    id
+                }
+            };
+            named.insert(of, (id, text.clone()));
+            id
+        });
         let record = crate::record::Record {
-            run: self.run,
-            ids: self.ids.given(),
-            workspaces: self.parts.record(),
-            ended: self.ended,
+            run: head.0,
+            ids: head.1.clone(),
+            tree,
+            ended: head.2,
         };
         let bytes = fux_wire::wire::encode(&record);
         if bytes == self.recorded {
+            Tracked::settled(&mut self.parts);
+            self.recorded_head = Some(head);
             return Ok(());
         }
-        let path = crate::socket::panes(socket).join("run");
-        match crate::record::write(&path, &bytes) {
+        let path = panes.join("run");
+        let written = (fresh.iter())
+            .try_for_each(|(id, text)| {
+                crate::record::write(&crate::record::name_file(&panes, *id), text.as_bytes())
+            })
+            .and_then(|()| crate::record::write(&path, &bytes));
+        match written {
             Ok(()) => {
+                let kept: BTreeSet<u64> = named.values().map(|(id, _)| *id).collect();
+                for (id, _) in self.named.values().filter(|(id, _)| !kept.contains(id)) {
+                    let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
+                }
+                self.named = named;
                 self.recorded = bytes;
+                self.recorded_head = Some(head);
+                Tracked::settled(&mut self.parts);
                 Ok(())
             }
             Err(error) => {
+                // The names written for it are no record's.
+                for (id, _) in &fresh {
+                    let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
+                }
                 let why = format!(
                     "the run's record, {}, could not be written ({error}): nothing changed",
                     path.display()
@@ -2339,7 +2402,16 @@ impl Session {
             ));
         };
         let panes = crate::socket::panes(&socket);
-        let recorded = crate::record::panes(&record.workspaces);
+        // Read whole before any pane is asked: a record with a name gone,
+        // or one that is no tree, refuses the run with nothing changed.
+        let names = crate::record::read_names(&panes, &record.tree)
+            .map_err(|e| fail(Code::Start, format!("its record's names: {e}")))?;
+        let recorded = record.tree.panes();
+        let name = |pane: &crate::record::Pane| pane.name.and_then(|n| names.get(&n).cloned());
+        let copies: BTreeMap<PaneId, Pane> = (recorded.iter())
+            .map(|pane| (pane.id, Pane::recorded(pane, name(pane))))
+            .collect();
+        let parts = Parts::restore(self.entries, &record.tree, &names, copies)?;
         let mut sockets = crate::takeover::sockets(&panes);
         for pane in &recorded {
             (sockets.entry(pane.id)).or_insert_with(|| panes.join(pane.id.number().to_string()));
@@ -2354,16 +2426,20 @@ impl Session {
         // From here the run is this server's.
         self.run = record.run;
         self.ids = Ids::after(&past(&record.ids, sockets.keys()));
-        let copies: BTreeMap<PaneId, Pane> = (recorded.iter())
-            .map(|pane| (pane.id, Pane::recorded(pane)))
-            .collect();
         let gone: Vec<PaneId> = (recorded.iter())
             .filter(|pane| !asked.contains_key(&pane.id) && pane.ended.is_none())
             .map(|pane| pane.id)
             .collect();
         // As it is written: written again only once it differs.
         self.recorded = fux_wire::wire::encode(&record);
-        self.parts = Parts::restore(self.entries, &record.workspaces, copies)?;
+        self.recorded_head = None;
+        self.named = (record.tree.named())
+            .filter_map(|(of, id)| Some((of, (id, names.get(&id)?.clone()))))
+            .collect();
+        // What a crash left between a name's writing and the structure's.
+        let kept: BTreeSet<u64> = names.keys().copied().collect();
+        crate::record::sweep(&panes, &kept);
+        self.parts = Tracked::new(parts);
         self.awaited = asked;
         for id in gone {
             log!("{id}: its own process is gone");
@@ -2625,10 +2701,10 @@ impl Session {
                     return;
                 };
                 if let Some(pane) = self.parts.pane_mut(id) {
-                    let name = pane.name().map(str::to_owned);
+                    let name = pane.given_name().cloned();
                     *pane = Pane::greeted(*greeting);
-                    if let Some(name) = name {
-                        pane.rename(name);
+                    if name.is_some() {
+                        pane.renamed(name);
                     }
                 }
                 self.linked(id, link, now);
@@ -3938,7 +4014,7 @@ impl Session {
                 .map(AnyRef::Pane)
                 .collect(),
             (_, Some(AnyRef::Workspace(w))) => (self.workspace(w).into_iter())
-                .flat_map(|w| w.stack().children().iter().map(crate::workspace::Child::id))
+                .flat_map(|w| w.stack().children().iter().copied())
                 .collect(),
             (_, _) => (self.parts.workspaces().iter())
                 .map(|w| AnyRef::Workspace(w.id()))
@@ -4017,8 +4093,7 @@ impl Session {
                     "name" => ws.name().map_or(Json::Null, Json::str),
                     "label" => Json::str(format!("{}", ws.display_label())),
                     "children" => {
-                        let children = ws.stack().children().iter();
-                        let ids = children.map(crate::workspace::Child::id).collect();
+                        let ids = ws.stack().children().to_vec();
                         return Ok(Body::Handles(ids));
                     }
                     "parent" => match self.parts.parent(id).flatten() {
@@ -5084,10 +5159,10 @@ mod tests {
     /// neighbour.
     #[test]
     fn each_client_has_one_current_and_last_at_every_node() -> TestResult {
-        use crate::workspace::{Child, Shown, Stack};
-        fn holds<C: Child>(stack: &Stack<C>, client: ClientId) -> Result<(), String> {
+        use crate::workspace::{Shown, Stack};
+        fn holds<I: Copy + Eq>(stack: &Stack<I>, client: ClientId) -> Result<(), String> {
             let Shown { current, last } = stack.shown(client).ok_or("not shown")?;
-            let child = |id| stack.get(id).is_some();
+            let child = |id| stack.holds(id);
             (child(current) && last.is_none_or(|l| l != current && child(l)))
                 .then_some(())
                 .ok_or_else(|| "a current or last that is not a child".into())
@@ -5097,7 +5172,7 @@ mod tests {
                 holds(s.parts.stack(), client)?;
                 for ws in s.parts.every_workspace() {
                     holds(ws.stack(), client)?;
-                    for tab in ws.tabs() {
+                    for tab in s.parts.tabs_of(ws.id()) {
                         let Shown { current, last } = tab.seat(client).ok_or("no seat")?.focus;
                         let ok =
                             tab.holds(current) && last.is_none_or(|l| l != current && tab.holds(l));
@@ -6804,7 +6879,7 @@ mod tests {
         let mut again = started()?;
         run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
         let made = (again.parts.workspaces().iter())
-            .flat_map(|w| w.tabs())
+            .flat_map(|w| again.parts.tabs_of(w.id()))
             .last();
         // The same tree, each pane by its place in the layout.
         let shape = |root: &Tree| {
@@ -8522,7 +8597,8 @@ mod tests {
         )?;
         run(&mut s, "(sequence! (move (pane \"%1\") \"right\") #inert)")?;
         let holding = |s: &Session, pane| {
-            let tabs = s.parts.workspaces().iter().flat_map(|w| w.tabs());
+            let workspaces = s.parts.workspaces();
+            let tabs = (workspaces.iter()).flat_map(|w| s.parts.tabs_of(w.id()));
             tabs.filter(|t| t.holds(pane)).count()
         };
         assert_eq!(holding(&s, PaneId::of(1)), 1);
@@ -10215,7 +10291,7 @@ mod tests {
                 .map(|ws| {
                     (
                         ws.name().map(str::to_owned),
-                        ws.tabs()
+                        (s.parts.tabs_of(ws.id()))
                             .map(|tab| {
                                 (
                                     tab.name().map(str::to_owned),
@@ -10350,7 +10426,7 @@ mod tests {
                 .parts
                 .workspaces()
                 .iter()
-                .flat_map(|w| w.tabs())
+                .flat_map(|w| again.parts.tabs_of(w.id()))
                 .collect::<Vec<_>>();
             let fits = tabs
                 .iter()
@@ -10385,7 +10461,7 @@ mod tests {
         let mut again = started()?;
         run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
         let made = (again.parts.workspaces().iter())
-            .flat_map(|w| w.tabs())
+            .flat_map(|w| again.parts.tabs_of(w.id()))
             .last();
         Ok(made.map(|t| rects(&again, t.id())).unwrap_or_default())
     }
@@ -10677,7 +10753,7 @@ mod tests {
             let mut again = started()?;
             run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
             let made = (again.parts.workspaces().iter())
-                .flat_map(|w| w.tabs())
+                .flat_map(|w| again.parts.tabs_of(w.id()))
                 .last();
             let (Some(root), Some(made)) = (s.root(tab), made.map(Tab::root)) else {
                 return Err(format!("{change}: no layout").into());

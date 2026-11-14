@@ -26,7 +26,6 @@ use crate::link::Hosting;
 use crate::pane::Said;
 use crate::session::{Outgoing, Session};
 use crate::view::{ClientKind, View};
-use crate::workspace::Child;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
 use fux_vt::keys::decode::Reply;
