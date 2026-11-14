@@ -1514,16 +1514,24 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // not come yet hold back what follows them.
         loop {
             if let Some(token) = keys {
-                let Some(mut inputs) = listening.as_mut().and_then(|l| l.piece(token)) else {
+                if let Some(mut inputs) = listening.as_mut().and_then(|l| l.piece(token)) {
+                    if !Input::go_on(&inputs) {
+                        keys = None;
+                    }
+                    inputs.retain(|input| !matches!(input, Input::More));
+                    let frame = ToAttached::Keys(inputs);
+                    out.push_with(|frames| frame.encode_into(frames));
+                    continue;
+                }
+                // Where its client's own paste goes is said at once, though
+                // keys for it are still coming: its client, which types
+                // those keys as it gets them, is read again only once that
+                // paste is sent, and would take no more keys meanwhile.
+                let own = (backlog.iter()).position(|m| matches!(m, ToConn::Deliver { .. }));
+                let Some(deliver) = own.and_then(|at| backlog.remove(at)) else {
                     break;
                 };
-                if !Input::go_on(&inputs) {
-                    keys = None;
-                }
-                inputs.retain(|input| !matches!(input, Input::More));
-                let frame = ToAttached::Keys(inputs);
-                out.push_with(|frames| frame.encode_into(frames));
-                continue;
+                backlog.push_front(deliver);
             }
             let Some(message) = backlog.pop_front() else {
                 break;
