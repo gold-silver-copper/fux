@@ -1387,10 +1387,11 @@ impl Server {
         let eligible = self.conns.get(index).is_some_and(|conn| {
             matches!(&conn.stage, Stage::Blocked(asked) if !matches!(self.unprocessed(asked), Some(1..)))
         });
-        if eligible && let Some(conn) = self.conns.get_mut(index) {
-            if let Stage::Blocked(asked) = conn.put(Stage::Command) {
-                self.ordered_request(index, *asked, now);
-            }
+        if eligible
+            && let Some(conn) = self.conns.get_mut(index)
+            && let Stage::Blocked(asked) = conn.put(Stage::Command)
+        {
+            self.ordered_request(index, *asked, now);
         }
     }
 
