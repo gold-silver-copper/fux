@@ -16,7 +16,7 @@ repository = "https://github.com/gold-silver-copper/fux"
 in-process = ["fux-wire/testing"]
 # Allocation refusal tests, enabled explicitly so workspace tests do not
 # also run fux-vt's large bounds suites.
-checks = ["fux-vt/checks"]
+checks = ["fux-vt/checks", "fux-wire/checks"]
 
 # No fuxth here: the server never runs the interpreter (D-2).
 # `tests/no_interpreter.rs` checks the whole tree.
