@@ -717,6 +717,101 @@ fn a_connection_ends_with_its_server_though_its_client_reads_nothing() -> Outcom
     Ok(())
 }
 
+/// 13a. A client gone while its request waits (killed, Ctrl-C, a timeout)
+///      ends its connection's process, and so the wait. The request asks
+///      an attached client what only it knows, which that client, the
+///      test's own, never answers: the question come to it, the request is
+///      known to wait.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_gone_while_its_request_waits_ends_its_connection() -> Outcome {
+    use fux_wire::command::{ClientRead, Request};
+    use fux_wire::protocol::{
+        Asked, Attach, Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached,
+    };
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    // A client of `role`, greeted: its connection's process has it.
+    let greeted = |role| -> Result<(UnixStream, Decoder), String> {
+        let mut client = UnixStream::connect(&server.socket).map_err(e)?;
+        client.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+        let hello = Hello {
+            protocol: PROTOCOL,
+            version: "0".into(),
+            role,
+        };
+        client.write_all(&hello.encode()).map_err(e)?;
+        let mut decoder = Decoder::default();
+        while decoder.frame::<Greeting>().map_err(e)?.is_none() {
+            more(&mut client, &mut decoder)?;
+        }
+        Ok((client, decoder))
+    };
+    let (mut asked, mut frames) = greeted(Role::Attach)?;
+    let attach = Attach::of(sized(10, 40)?, server.state.preferences.presentation());
+    asked.write_all(&attach.encode()).map_err(e)?;
+    let me = loop {
+        match frames.frame::<ToAttached>().map_err(e)? {
+            Some(ToAttached::Welcome(me, _)) => break me,
+            Some(_) => {}
+            None => more(&mut asked, &mut frames)?,
+        }
+    };
+    let before = connections(pid);
+    let (mut client, _) = greeted(Role::Command)?;
+    let mut conn = None;
+    eventually("its connection", || {
+        conn = (connections(pid).into_iter()).find(|conn| !before.contains(conn));
+        Ok(conn.is_some())
+    })?;
+    let conn = conn.ok_or("its connection")?;
+    let request = Asked {
+        after: None,
+        request: Request::Read {
+            client: me,
+            read: ClientRead::Keys,
+        },
+        context: Context {
+            of: None,
+            cwd: PathBuf::new(),
+            pane: None,
+            server: None,
+            client: None,
+        },
+    };
+    client.write_all(&request.encode()).map_err(e)?;
+    loop {
+        match frames.frame::<ToAttached>().map_err(e)? {
+            Some(ToAttached::Read(..)) => break,
+            Some(_) => {}
+            None => more(&mut asked, &mut frames)?,
+        }
+    }
+    // Gone as a killed client is: its socket closed.
+    drop(client);
+    eventually("its connection gone", || Ok(!alive(conn)))?;
+    assert!(alive(pid), "the server");
+    Ok(())
+}
+
+/// More of what `stream` was sent, into `decoder`.
+#[cfg(target_os = "linux")]
+fn more(
+    stream: &mut std::os::unix::net::UnixStream,
+    decoder: &mut fux_wire::protocol::Decoder,
+) -> Outcome {
+    use std::io::Read;
+    let mut buffer = [0u8; 4096];
+    let n = stream.read(&mut buffer).map_err(e)?;
+    if n == 0 {
+        return Err("the server closed its socket".into());
+    }
+    decoder.push(buffer.get(..n).unwrap_or_default());
+    Ok(())
+}
+
 /// 14. A close sent to a pane is a close though its server is gone by the
 ///     time it reads it: a run stopped while a pane's process was stopped
 ///     leaves no pane once that process goes on (D-124 (1)).

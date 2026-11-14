@@ -55,15 +55,16 @@ impl Events {
     /// A read or write failed, for a reason other than the stream's end.
     pub const ERR: Self = Self(4);
     /// The other end is gone: a read came to the end and nothing read is
-    /// left, or nothing read is asked for ([`Events::WATCH`]), or a write
+    /// left, or only its end is asked for (`HUP`, not `IN`), or a write
     /// found no reader.
+    ///
+    /// Asked for without `IN`, it is what a source not read yet is waited
+    /// for to learn of its end, which only a read that ends tells: a read
+    /// is kept in flight, and what it reads is kept for later, up to a
+    /// bound (`crate::io`).
     pub const HUP: Self = Self(8);
     /// Never told on Windows: a source borrowed is always open.
     pub const NVAL: Self = Self(16);
-    /// What a source not read yet is waited for, to learn of its end, which
-    /// only a read that ends tells: `ERR` and `HUP` keep a read in flight,
-    /// and what it reads is kept for later, up to a bound (`crate::io`).
-    pub const WATCH: Self = Self(4 | 8);
 
     /// Whether any event of `other` is here.
     pub fn intersects(self, other: Self) -> bool {

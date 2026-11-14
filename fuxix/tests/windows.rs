@@ -469,14 +469,14 @@ fn a_watched_stream_learns_its_end_past_the_bytes_it_holds() -> Outcome {
             ));
         }
         let mut fds = [
-            PollFd::new(&ours, Events::WATCH),
+            PollFd::new(&ours, Events::HUP | Events::ERR),
             PollFd::new(&theirs, Events::OUT),
         ];
         fuxix::poll::poll(&mut fds, Some(Duration::from_secs(5))).map_err(text)?;
         written = written.saturating_add(write_what_fits(&theirs, rest).map_err(text)?);
     }
     drop(theirs);
-    let mut fds = [PollFd::new(&ours, Events::WATCH)];
+    let mut fds = [PollFd::new(&ours, Events::HUP | Events::ERR)];
     fuxix::poll::poll(&mut fds, Some(Duration::from_secs(10))).map_err(text)?;
     let told = fds.first().map_or(Events::NONE, PollFd::revents);
     if !told.intersects(Events::HUP) {

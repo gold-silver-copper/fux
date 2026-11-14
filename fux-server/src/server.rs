@@ -181,6 +181,23 @@ enum Stage {
 }
 
 impl Stage {
+    /// Whether its request waits on someone else, with no answer on its
+    /// way: for a pane to change, for events, for a client's own answer, or
+    /// behind an attached client's frames. One its pane answers (keys, a
+    /// capture) does not: that answer is on its way.
+    fn waits(&self) -> bool {
+        match self {
+            Stage::Blocked(_) => true,
+            Stage::Waiting(waiting) => !matches!(**waiting, Waiting::Asked(_)),
+            Stage::Hello
+            | Stage::Attaching
+            | Stage::Command
+            | Stage::Attached(_)
+            | Stage::Closing
+            | Stage::Dead => false,
+        }
+    }
+
     /// Whether what the client sends is read.
     fn reads(&self) -> bool {
         match self {
@@ -380,7 +397,7 @@ impl Conn {
             self.stage,
             Stage::Command | Stage::Blocked(_) | Stage::Waiting(_)
         );
-        match mem::replace(&mut self.stage, next) {
+        match self.put(next) {
             Stage::Attached(attached) => {
                 session.detach(attached.client, Detach::Disconnected, now);
                 // Its terminal's cursor overrides are given back as its own.
@@ -407,6 +424,19 @@ impl Conn {
             (_, Some(expect)) => self.tell_process(&crate::link::ToConn::Expect(expect)),
             (_, None) => {}
         }
+    }
+
+    /// Its stage is `next` from now on, and the one it had is given back.
+    /// Nothing else changes its stage, so its process is always told when
+    /// a request begins to wait on someone else, and when it does no more:
+    /// it reads its client meanwhile, to hear its end (`conn::serve`).
+    fn put(&mut self, next: Stage) -> Stage {
+        let waited = self.stage.waits();
+        let was = mem::replace(&mut self.stage, next);
+        if self.stage.waits() != waited {
+            self.tell_process(&crate::link::ToConn::Waits(!waited));
+        }
+        was
     }
 
     /// Encodes a frame straight into the output.
@@ -1038,9 +1068,13 @@ impl Server {
             // Its process's link is read, what its client sent and whether
             // the client took what it was sent, but while what its client
             // types waits for a pane (`Server::held`).
-            // Held, it is watched for its end alone (`PollFlags::WATCH`).
+            // Held, it is not read, and only its end is to be learned.
+            // Windows tells that of a read kept in flight, which `HUP` and
+            // `ERR` ask for; Unix is asked nothing: Linux tells a hang-up
+            // unasked, and macOS nothing till the link is read again.
             let mut flags = match held.get(i).copied().unwrap_or(false) {
-                true => PollFlags::WATCH,
+                true if cfg!(windows) => PollFlags::HUP | PollFlags::ERR,
+                true => PollFlags::NONE,
                 false => PollFlags::IN,
             };
             if !conn.out.is_empty() || !conn.link.out.is_empty() {
@@ -1353,11 +1387,11 @@ impl Server {
         let eligible = self.conns.get(index).is_some_and(|conn| {
             matches!(&conn.stage, Stage::Blocked(asked) if !matches!(self.unprocessed(asked), Some(1..)))
         });
-        if eligible && let Some(conn) = self.conns.get_mut(index) {
-            let stage = mem::replace(&mut conn.stage, Stage::Command);
-            if let Stage::Blocked(asked) = stage {
-                self.ordered_request(index, *asked, now);
-            }
+        if eligible
+            && let Some(conn) = self.conns.get_mut(index)
+            && let Stage::Blocked(asked) = conn.put(Stage::Command)
+        {
+            self.ordered_request(index, *asked, now);
         }
     }
 
@@ -2203,6 +2237,83 @@ mod tests {
             accept_logged: None,
         };
         Ok((server, peers, client))
+    }
+
+    /// A request held behind an attached client's frames, whose own client
+    /// goes while it is held, is held no more: its connection's process
+    /// says so, and its connection ends, though the attached client never
+    /// sends those frames.
+    #[test]
+    fn a_fenced_request_whose_client_is_gone_is_dropped() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::io::Write;
+        let (mut server, peers, client) = ordered_fixture()?;
+        // Its process is told what to expect before its client sends it.
+        let worker = server.conns.get_mut(0).ok_or("worker")?;
+        worker.link.flush_all()?;
+        let mut theirs = peers.first().ok_or("its client")?;
+        theirs.write_all(&key_request(server.session.run, client, u64::MAX).encode())?;
+        // Held by its server, it was taken by its process, which waits.
+        heard(&mut server, 0)?;
+        let stage = server.conns.first().map(|c| &c.stage);
+        assert!(matches!(stage, Some(Stage::Blocked(_))));
+        // Its process is told that it waits, as the server's loop sends
+        // what it queued: from then on its client is read, and its end
+        // heard on every OS. Only its sending side is shut, which no OS
+        // tells of unasked.
+        let worker = server.conns.get_mut(0).ok_or("worker")?;
+        worker.link.flush_all()?;
+        theirs.shutdown(std::net::Shutdown::Write)?;
+        heard(&mut server, 0)?;
+        let stage = server.conns.first().map(|c| &c.stage);
+        assert!(matches!(stage, Some(Stage::Dead)));
+        Ok(())
+    }
+
+    /// A capture held behind an attached client's frames, let go once
+    /// they are handled, waits on no one else from then on: its pane
+    /// answers it. Its process is told so, and reads its client no more.
+    #[test]
+    fn a_fenced_capture_let_go_tells_its_process_it_waits_no_more()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::link::ToConn;
+        let (mut server, _peers, client) = ordered_fixture()?;
+        let mut asked = key_request(server.session.run, client, 1);
+        asked.request = fux_wire::command::Command::CapturePane {
+            target: PaneId::of(1),
+            history: None,
+            view: fux_wire::command::CaptureView::default(),
+        }
+        .into();
+        let worker = server.conns.get_mut(0).ok_or("worker")?;
+        worker.decoder.push(&asked.encode());
+        server.serve_conn(0, PollFlags::IN, Instant::now());
+        let waits = |server: &Server| -> Vec<bool> {
+            let said = server.conns.first().map(|c| c.link.queued::<ToConn>());
+            (said.into_iter().flatten())
+                .filter_map(|said| {
+                    if let ToConn::Waits(waits) = said {
+                        Some(waits)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(waits(&server), [true], "held");
+        let resize = AttachedFrame::Resize(fux_vt::Size::new(10, 40)?).encode();
+        server
+            .conns
+            .get_mut(1)
+            .ok_or("source")?
+            .decoder
+            .push(&resize);
+        server.serve_conn(1, PollFlags::IN, Instant::now());
+        server.serve_conn(0, PollFlags::IN, Instant::now());
+        let stage = server.conns.first().map(|c| &c.stage);
+        assert!(!matches!(stage, Some(Stage::Blocked(_))), "let go");
+        assert_eq!(waits(&server), [true, false], "let go");
+        Ok(())
     }
 
     fn key_request(run: fux_wire::command::Run, client: ClientId, frames: u64) -> Asked {

@@ -24,8 +24,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// The most it reads from its client before it looks at its server.
+/// The most it reads from its client before it looks at its server, and
+/// the most it holds of what its client sent ahead of its stage.
 const READ: usize = 256 * 1024;
+/// What a client that sent that much ahead of a request that waits is told
+/// as it is refused.
+const AHEAD: &str = "more than 256 KiB sent while a request waited: \
+                     a request is sent once the one before it is answered";
 /// The least time between two paints for a client, as a flood is painted.
 /// A keystroke's echo (`Clock::echo`) and panes gone quiet (`QUIET`) are
 /// painted sooner.
@@ -860,6 +865,12 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     let mut composer = Composer::new(Instant::now());
     let mut want = Want::Hello;
     let (mut answered, mut shut, mut closing) = (false, false, false);
+    // Its client's request waits on someone else, its server said: no
+    // answer is on its way.
+    let mut waits = false;
+    // Its client hung up, told unasked while it was not read: not a side
+    // shut, which leaves its answers a reader.
+    let mut gone = false;
     // Bytes its server sent its client, not all written yet: its server is
     // told once they are (`Flushed`). Its own paints and replies are no
     // news to it.
@@ -925,13 +936,34 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 }
             }
         }
+        // Whether its stage takes its client's frames now, and whether its
+        // request waits on someone else, nothing to be written meanwhile:
+        // its server said so (`Waits`), or it is keys an attached client
+        // is to take. Its client is read then too, to hear its end, and
+        // what it sent ahead is held, `READ` at most: one that sent that
+        // much ahead is refused, told why (`AHEAD`), and from then on a
+        // client gone, which its server ends. With an answer on its way
+        // its client is not read: what it sent ahead stays in its socket.
+        let takes = !shut && !matches!(want, Want::Answer | Want::Nothing);
+        let idle = want == Want::Answer && (waits || typing.is_some());
+        if idle && decoder.buffered() >= READ && !(ended || shut || closing) {
+            out.push_with(|frames| fux_wire::protocol::ToCommand::Exit(AHEAD).encode_into(frames));
+            decoder = Decoder::default();
+            link.send(&FromConn::Shut);
+            (ended, told_shut) = (true, true);
+        }
         // Its client sends no more: said once what it sent is taken, or
-        // can't be, a frame left whole for its stage or a part of one.
+        // can't be, a frame left whole for its stage or a part of one. With
+        // a request under way it is said at once if that waits on someone
+        // else, or its client hung up; with an answer on its way, only once
+        // that is written: a client that shut its side reads it still.
         let taken = decoder.buffered() == 0 || !decoder.ready().unwrap_or(true);
-        if ended
-            && !told_shut
-            && (taken && !matches!(want, Want::Nothing | Want::Answer) || want == Want::Answer)
-        {
+        let tells = match want {
+            Want::Answer => idle || gone,
+            Want::Nothing => false,
+            Want::Hello | Want::Frames(_) => taken,
+        };
+        if ended && !told_shut && tells {
             link.send(&FromConn::Shut);
             told_shut = true;
         }
@@ -961,7 +993,9 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         if link.flush().is_err() {
             return Ok(());
         }
-        let reads = !shut && !ended && !matches!(want, Want::Answer | Want::Nothing);
+        // Its client is read while its stage takes its frames, and while
+        // its request waits on someone else, to hear its end.
+        let listens = !(ended || shut || closing) && (takes || idle);
         let wake = composer.due(out.is_empty());
         // An errand with no link left to wait on goes on at once.
         let timeout = match errands.iter().any(|errand| errand.links().is_empty()) {
@@ -969,19 +1003,26 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             false => wake.map(|at| at.saturating_duration_since(now)),
         };
         let mut fds = poll.list();
-        // Not read, its client is watched for its end (`Events::WATCH`), till
-        // that is seen: then nothing more is to be heard of it.
-        let mut theirs = match ended {
-            true => Events::NONE,
-            false => Events::WATCH,
+        // Not read, only its hang-up is to be learned, till it is: Linux
+        // tells one unasked; Windows of a read kept in flight, which `HUP`
+        // and `ERR` ask for; macOS not, and there a write to it fails.
+        let mut theirs = match listens {
+            true => Events::IN,
+            false if cfg!(windows) && !gone => Events::HUP | Events::ERR,
+            false => Events::NONE,
         };
-        if reads {
-            theirs |= Events::IN;
-        }
         if !out.is_empty() {
             theirs |= Events::OUT;
         }
-        fds.push(PollFd::new(&client, theirs));
+        // Hung up and nothing left to write it, its client is waited on no
+        // more: a hang-up, told unasked, would wake every wait.
+        let watched = !gone || !out.is_empty();
+        if watched {
+            fds.push(PollFd::new(&client, theirs));
+        }
+        // Where its server's link is among those waited on, the rest after.
+        let ours_at = usize::from(watched);
+        let rest = ours_at.saturating_add(1);
         let ours = match link.out.is_empty() {
             true => Events::IN,
             false => Events::IN | Events::OUT,
@@ -1023,13 +1064,28 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         }
         let ready: Vec<Events> = fds.revents().collect();
         let now = Instant::now();
-        // A client seen to end is read to that end whatever its stage, so
-        // that its server is told (`Shut`).
-        let client_ready = ready.first().copied().unwrap_or(Events::NONE);
-        if reads && !client_ready.is_empty() || client_ready.intersects(Events::WATCH) {
+        // A client read is read to its end, so that its server is told
+        // (`Shut`): as much at once as `READ` for a stage that takes its
+        // frames, and for a request that waits no more than brings what is
+        // held to `READ`. One not read that hung up is gone.
+        let client_ready = match watched {
+            true => ready.first().copied().unwrap_or(Events::NONE),
+            false => Events::NONE,
+        };
+        if !listens && client_ready.intersects(Events::HUP | Events::ERR) {
+            (ended, gone) = (true, true);
+        }
+        if listens && !client_ready.is_empty() {
+            let room = match takes {
+                true => READ,
+                false => READ.saturating_sub(decoder.buffered()),
+            };
             let mut read = 0usize;
-            while read < READ {
-                match fuxix::io::read(&client, &mut buffer) {
+            while read < room {
+                let into = buffer
+                    .get_mut(..room.saturating_sub(read))
+                    .unwrap_or_default();
+                match fuxix::io::read(&client, into) {
                     Ok(n) if n > 0 => {
                         read = read.saturating_add(n);
                         decoder.push(buffer.get(..n).unwrap_or_default());
@@ -1043,12 +1099,12 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 }
             }
         }
-        let heard: Vec<(PaneId, bool)> = (sides.iter().zip(ready.iter().skip(2)))
+        let heard: Vec<(PaneId, bool)> = (sides.iter().zip(ready.iter().skip(rest)))
             .map(|(id, flags)| (*id, !flags.is_empty()))
             .collect();
         composer.heard(&mut buffer, &heard, now);
         // Bodies other connections sent its client.
-        let mut at = sides.len().saturating_add(2);
+        let mut at = sides.len().saturating_add(rest);
         if let (Some(listen), Some((_, run))) = (&mut listening, &composer.panes) {
             let readable: Vec<bool> = (ready.iter().skip(at).take(listened))
                 .map(|flags| !flags.is_empty())
@@ -1078,7 +1134,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         }
         errands = going;
         let mut gone = false;
-        if ready.get(1).is_some_and(|f| !f.is_empty()) {
+        if ready.get(ours_at).is_some_and(|f| !f.is_empty()) {
             gone = link.read(&mut buffer) == Read::Closed;
             loop {
                 match link.next_message::<ToConn>() {
@@ -1135,7 +1191,8 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                         unflushed = true;
                     }
                     ToConn::Expect(expect) => want = Want::Frames(expect),
-                    ToConn::Answered => answered = true,
+                    ToConn::Answered => (answered, waits) = (true, false),
+                    ToConn::Waits(now) => waits = now,
                     ToConn::Hello { panes, run } => composer.panes = Some((panes, run)),
                     ToConn::Scene(scene) => composer.scene(*scene),
                     ToConn::Deliver { body, token, panes } => {
@@ -1285,6 +1342,193 @@ mod tests {
         let mut got = Vec::new();
         theirs.read_to_end(&mut got).map_err(e)?;
         assert_eq!(got, b"the reply");
+        Ok(())
+    }
+
+    /// A client whose request waits for its answer, which its server never
+    /// gives: its end of its socket, its server's end of its process's
+    /// link, and its process.
+    #[cfg(unix)]
+    type Waits = (
+        std::os::unix::net::UnixStream,
+        crate::link::End,
+        std::thread::JoinHandle<Result<(), String>>,
+    );
+
+    #[cfg(unix)]
+    fn waiting() -> Result<Waits, String> {
+        let (theirs, mut server, conn) = asked(false)?;
+        server.send(&crate::link::ToConn::Waits(true));
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        Ok((theirs, server, conn))
+    }
+
+    /// A client whose request its process took and its server has: one
+    /// that sent it and shut its side at once, if `shut`. Nothing says yet
+    /// that the request waits.
+    #[cfg(unix)]
+    fn asked(shut: bool) -> Result<Waits, String> {
+        use crate::link::{End, Expect, FromConn, ToConn};
+        use fux_wire::protocol::{Asked, Frame, Hello, PROTOCOL, Role};
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let e = |error: std::io::Error| error.to_string();
+        let hello = Hello {
+            protocol: PROTOCOL,
+            version: "0".into(),
+            role: Role::Command,
+        };
+        let asked = Asked {
+            after: None,
+            request: fux_wire::command::Command::Inspect {
+                scope: fux_wire::inspect::Scope::All,
+                projection: fux_wire::inspect::Projection::Facts,
+            }
+            .into(),
+            context: fux_wire::protocol::Context {
+                of: None,
+                cwd: std::path::PathBuf::new(),
+                pane: None,
+                server: None,
+                client: None,
+            },
+        };
+        let (client, mut theirs) = UnixStream::pair().map_err(e)?;
+        let (server, link) = UnixStream::pair().map_err(e)?;
+        let mut server = End::new(server).map_err(e)?;
+        let link = End::new(link).map_err(e)?;
+        let conn = std::thread::spawn(move || super::serve(client, link, Vec::new()));
+        theirs.write_all(&hello.encode()).map_err(e)?;
+        theirs.write_all(&asked.encode()).map_err(e)?;
+        if shut {
+            theirs.shutdown(std::net::Shutdown::Write).map_err(e)?;
+        }
+        let hello = said(&mut server)?;
+        assert!(matches!(hello, FromConn::Frame { .. }), "hello");
+        server.send(&ToConn::Expect(Expect::Asked));
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        let asked = said(&mut server)?;
+        assert!(matches!(asked, FromConn::Frame { .. }), "asked");
+        Ok((theirs, server, conn))
+    }
+
+    /// What a connection's process says its server next, given long enough.
+    #[cfg(unix)]
+    fn said(server: &mut crate::link::End) -> Result<crate::link::FromConn, String> {
+        use fuxix::poll::{Events, PollFd};
+        let mut buffer = [0u8; 4096];
+        loop {
+            if let Some(said) = server.next_message().map_err(|e| e.to_string())? {
+                return Ok(said);
+            }
+            let mut fds = [PollFd::new(&server.stream, Events::IN)];
+            let ready = fuxix::poll::poll(&mut fds, Some(Duration::from_secs(20)));
+            if ready == Ok(0) || server.read(&mut buffer) == crate::link::Read::Closed {
+                return Err("its process said nothing".into());
+            }
+        }
+    }
+
+    /// A client gone while its request waits for its answer is told its
+    /// server (`Shut`), whatever the request waits for there, whether it
+    /// closed or only shut its side, and though it sent as much ahead as is
+    /// held of it but a byte: so the wait ends with it.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_gone_while_its_request_waits_is_told_its_server() -> Result<(), String> {
+        use crate::link::FromConn;
+        use std::io::Write;
+        let e = |error: std::io::Error| error.to_string();
+        for (closes, ahead) in [(true, 0), (false, 0), (false, super::READ - 1)] {
+            let (mut theirs, mut server, conn) = waiting()?;
+            theirs.write_all(&vec![0u8; ahead]).map_err(e)?;
+            if !closes {
+                theirs.shutdown(std::net::Shutdown::Write).map_err(e)?;
+            }
+            // One that only shut its side still reads till its wait ended.
+            let reading = (!closes).then_some(theirs);
+            let said = said(&mut server);
+            drop((server, reading));
+            conn.join().map_err(|_| "its process panicked")??;
+            assert!(
+                matches!(said, Ok(FromConn::Shut)),
+                "{said:?} (closes: {closes}, ahead: {ahead})"
+            );
+        }
+        Ok(())
+    }
+
+    /// A client that sent its request and shut its side, as a script
+    /// piping one in does, is not said gone while the answer is on its way
+    /// (a pane's, say): only once it is written, which the client reads.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_that_shut_its_side_is_gone_only_once_answered() -> Result<(), String> {
+        use crate::link::{FromConn, ToConn};
+        use std::io::Read;
+        // Its end was read with its request, before that was taken.
+        let (mut theirs, mut server, conn) = asked(true)?;
+        server.send(&ToConn::Bytes(b"the answer".to_vec()));
+        server.send(&ToConn::Answered);
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        let first = said(&mut server)?;
+        assert!(matches!(first, FromConn::Flushed), "{first:?}");
+        let then = said(&mut server)?;
+        assert!(matches!(then, FromConn::Shut), "{then:?}");
+        drop(server);
+        conn.join().map_err(|_| "its process panicked")??;
+        let mut got = Vec::new();
+        theirs.read_to_end(&mut got).map_err(|e| e.to_string())?;
+        assert_eq!(got, b"the answer");
+        Ok(())
+    }
+
+    /// A client that hung up with an answer on its way is not read, and is
+    /// said gone all the same where its hang-up is told unasked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_client_that_hung_up_before_its_answer_is_told_its_server() -> Result<(), String> {
+        let (theirs, mut server, conn) = asked(false)?;
+        drop(theirs);
+        let said = said(&mut server);
+        drop(server);
+        conn.join().map_err(|_| "its process panicked")??;
+        assert!(matches!(said, Ok(crate::link::FromConn::Shut)), "{said:?}");
+        Ok(())
+    }
+
+    /// A client that sends ahead, while its request waits, as much as is
+    /// held of it is refused (one whose answer is on its way is only read
+    /// no more, `tests/servers.rs`): told why (an `Exit`), and its server told it
+    /// is gone, which ends its wait and its process. No more of it is held
+    /// than that.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_that_sends_too_much_ahead_is_refused_and_told_why() -> Result<(), String> {
+        use crate::link::FromConn;
+        use fux_wire::protocol::ToCommand;
+        use std::io::{Read, Write};
+        let e = |error: std::io::Error| error.to_string();
+        let (mut theirs, mut server, conn) = waiting()?;
+        // More than is held: what is over stays in its socket, unread.
+        theirs
+            .write_all(&vec![0u8; super::READ + 4096])
+            .map_err(e)?;
+        let said = said(&mut server);
+        assert!(matches!(said, Ok(FromConn::Shut)), "{said:?}");
+        drop(server);
+        conn.join().map_err(|_| "its process panicked")??;
+        // Its last word, before its socket's end (told as a reset, with
+        // bytes of its own left unread there).
+        let mut got = Vec::new();
+        let mut buffer = [0u8; 4096];
+        while let Ok(n @ 1..) = theirs.read(&mut buffer) {
+            got.extend_from_slice(buffer.get(..n).unwrap_or_default());
+        }
+        let mut decoder = Decoder::default();
+        decoder.push(&got);
+        let last = decoder.frame::<ToCommand>().map_err(|e| e.to_string())?;
+        assert!(matches!(last, Some(ToCommand::Exit(_))), "{last:?}");
         Ok(())
     }
 

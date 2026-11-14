@@ -260,12 +260,14 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   handle leaves that program unreaped by the server (it gets the console's close event).
 - **Signals:** `process::delivery(signal, shell)` is the D-136 table (Unix: always `Group`), used in
   `host.rs`. "Killed" is not on the wire: an end by fux's kill is `Exited(KILLED)`.
-- **Reads stay armed:** the server's held links and `__conn`'s unread clients are polled for
-  `Events::WATCH`: on Unix nothing (exactly as before; `HUP` would not do, as macOS's `poll` watches a
-  descriptor asked for it and not one asked for nothing), on Windows `HUP | ERR`, which keeps a read
-  in flight and sets what it reads aside (256 KiB at most, the read buffer included), so the peer's end is told past
-  bytes not yet taken. `__conn` then reads its client to the end and sends `Shut`. A peer that filled
-  the bound and its pipe before it ended is seen only once it is read. On Windows `Events::NONE` tells
+- **Reads stay armed:** the server's held links, the server's link in a client whose terminal has
+  no room, and `__conn`'s client while an answer is on its way (D-159) are not read, and are polled on Windows for `HUP | ERR`, which keeps a read in flight and
+  sets what it reads aside (256 KiB at most, the read buffer included), so the peer's end is told past
+  bytes not yet taken. A peer that filled the bound and its pipe before it ended is seen only once it
+  is read. On Unix they are polled for nothing (`HUP` would not do, as macOS's `poll` watches a
+  descriptor asked for it and not one asked for nothing): Linux tells a hang-up unasked, macOS
+  nothing till they are read again. Each use says so itself; there is no `Events::WATCH`, which was
+  empty on Unix, so a test against it was never true. On Windows `Events::NONE` tells
   nothing at all, so a loop done with a stream doesn't spin on its end.
 - **The end rule:** after `Chld` a pane keeps polling its master (`fuxix::pty::SETTLE`, 100 ms; none
   on Unix) until the pipe breaks; with the built-in ConPTY, which doesn't break it, the time running
@@ -318,8 +320,8 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of exactly the handed instance (portable-pty's
   `src/win/procthreadattr.rs`), so nothing else made inheritable meanwhile leaks into the child.
 - A source polled with `Events::NONE` never arms a read, so a stream's `HUP` and `ERR` (learned only
-  from a read or write that ends) are never told for it. PR 7 polls what it doesn't read for
-  `Events::WATCH`.
+  from a read or write that ends) are never told for it. What is not read is polled for
+  `HUP | ERR`.
 - A stream dropped with its read in flight cancels that read, but the read's 64 KiB buffer is freed
   only when some later poll takes the cancelled read's packet. A server that drops many streams and
   stops polling holds that memory until it polls again.

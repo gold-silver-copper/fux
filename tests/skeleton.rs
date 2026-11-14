@@ -82,10 +82,28 @@ fn a_pane_is_told_it_runs_in_fux() -> Outcome {
 }
 
 /// A client that sends its command and then shuts its side of the socket,
-/// as a script piping one in does, still gets the output and the status.
+/// as a script piping one in does, still gets the output and the status:
+/// of a command its server answers, and of one a pane answers.
 #[test]
 fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     use fux_wire::command::Command;
+    let listing = Command::Inspect {
+        scope: fux_wire::inspect::Scope::All,
+        projection: fux_wire::inspect::Projection::Facts,
+    };
+    let capture = Command::CapturePane {
+        target: fux_wire::id::PaneId::of(1),
+        history: None,
+        view: fux_wire::command::CaptureView::default(),
+    };
+    for command in [listing, capture] {
+        answered_though_its_side_is_shut(command)?;
+    }
+    Ok(())
+}
+
+/// `command`, sent by a client that then shuts its side, is answered.
+fn answered_though_its_side_is_shut(command: fux_wire::command::Command) -> Outcome {
     use fux_wire::protocol::{
         Asked, Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Reply, Role, ToCommand,
     };
@@ -102,11 +120,7 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     };
     let request = Asked {
         after: None,
-        request: Command::Inspect {
-            scope: fux_wire::inspect::Scope::All,
-            projection: fux_wire::inspect::Projection::Facts,
-        }
-        .into(),
+        request: command.into(),
         context: Context {
             of: None,
             cwd: std::path::PathBuf::new(),
@@ -137,11 +151,16 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     }
     let reply = reply.ok_or("no reply")?.map_err(e)?;
     assert_eq!(reply.end(), fux_wire::protocol::End::Done);
-    let fux_wire::protocol::Response::Returned(fux_wire::protocol::Body::Snapshot(snapshot)) =
-        &reply.response
-    else {
-        return Err(format!("not a listing: {:?}", reply));
-    };
-    assert!(snapshot.panes.iter().all(|p| p.name.is_none()));
+    match &reply.response {
+        fux_wire::protocol::Response::Returned(fux_wire::protocol::Body::Snapshot(snapshot)) => {
+            assert!(snapshot.panes.iter().all(|p| p.name.is_none()));
+        }
+        fux_wire::protocol::Response::Returned(fux_wire::protocol::Body::Capture(_)) => {}
+        other @ (fux_wire::protocol::Response::Returned(_)
+        | fux_wire::protocol::Response::Failed { .. }
+        | fux_wire::protocol::Response::Answered(_)) => {
+            return Err(format!("not its answer: {other:?}"));
+        }
+    }
     Ok(())
 }
