@@ -2285,9 +2285,12 @@ mod tests {
         let waits = |server: &Server| -> Vec<bool> {
             let said = server.conns.first().map(|c| c.link.queued::<ToConn>());
             (said.into_iter().flatten())
-                .filter_map(|said| match said {
-                    ToConn::Waits(waits) => Some(waits),
-                    _ => None,
+                .filter_map(|said| {
+                    if let ToConn::Waits(waits) = said {
+                        Some(waits)
+                    } else {
+                        None
+                    }
                 })
                 .collect()
         };
