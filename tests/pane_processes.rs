@@ -1961,8 +1961,23 @@ fn a_pane_with_no_room_at_its_socket_is_told_its_run_ended_once_it_has() -> Outc
 /// The pid of the server that serves `server`'s socket now: the one that
 /// took its run back, which is no child of the test's.
 fn serving(server: &Server) -> Result<i32, String> {
-    let pid = server.ok(&["(get (status) \"server-process-id\")"])?;
-    pid.trim().parse().map_err(|_| format!("its server: {pid}"))
+    // Where the system names no socket's peer (macOS), `status` has no
+    // such field: the one process that holds the socket is the server, as
+    // the cookbook finds it there (`lsof -t SOCKET`).
+    let status = server.fux(&["(get (status) \"server-process-id\")"])?;
+    let pid = match status.status {
+        0 => status.stdout,
+        _ => {
+            let listed = std::process::Command::new("lsof")
+                .arg("-t")
+                .arg(&server.socket)
+                .output()
+                .map_err(e)?;
+            String::from_utf8_lossy(&listed.stdout).into_owned()
+        }
+    };
+    let first = pid.lines().next().unwrap_or_default().trim();
+    first.parse().map_err(|_| format!("its server: {pid:?}"))
 }
 
 /// A pane's number.
@@ -2160,5 +2175,78 @@ fn a_stopped_server_removes_nothing_under_another_servers_lock() -> Outcome {
     assert_eq!(taken.status, 0, "{}", taken.stderr);
     assert_eq!(server.ok(&["(length (panes (all)))"])?.trim(), "0");
     server.ok(&["(sequence! (kill-server) #inert)"])?;
+    Ok(())
+}
+
+/// The servers started on `server`'s socket (`fux __serve SOCKET …`) that
+/// wait for a lock, as the system lists them (`/proc/locks`).
+#[cfg(target_os = "linux")]
+fn waiting_for_a_lock(server: &Server) -> Vec<i32> {
+    let socket = server.socket.to_string_lossy().into_owned();
+    let starting: Vec<i32> = (processes().into_iter())
+        .filter(|(_, _, args)| args.contains("__serve") && args.contains(&socket))
+        .map(|(pid, ..)| pid)
+        .collect();
+    let locks = std::fs::read_to_string("/proc/locks").unwrap_or_default();
+    (locks.lines())
+        .filter(|line| line.contains("->"))
+        .filter_map(|line| line.split_whitespace().find_map(|word| word.parse().ok()))
+        .filter(|pid| starting.contains(pid))
+        .collect()
+}
+
+/// 40. A start held up behind another reads what is beside the socket
+///     again once it has the socket's locks: a run found ended before
+///     them, and dealt with since by the server ahead (finished, a new run
+///     begun and recorded, its mark removed, that server then crashed), is
+///     not taken for the old one, and its panes are taken back, not ended
+///     (D-169; the mark read before the locks was acted on after them).
+///     The test is the server ahead: it holds the lock a starting server
+///     waits for, and changes what is there while the start waits.
+///     Linux: it is where the system says who waits for a lock.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_start_held_up_reads_the_run_again_under_the_locks() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let sleeper = pane(server, "w", &["sleep", "1027"])?;
+    let _reap = reap_run(server)?;
+    let (own, program) = (
+        own_process(server, &sleeper)?,
+        program_pid(server, &sleeper)?,
+    );
+    crash(server)?;
+    let mark = kept(server).join(fux_server::record::ENDED);
+    std::fs::write(&mark, b"").map_err(e)?;
+    let mut path = server.socket.clone().into_os_string();
+    path.push(".starting");
+    let ahead = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(e)?;
+    ahead.lock().map_err(e)?;
+    let start = server
+        .command(fux())
+        .arg("(sequence! (start) #inert)")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    eventually("the start waiting for the lock", || {
+        Ok(!waiting_for_a_lock(server).is_empty())
+    })?;
+    // The server ahead is done: the run there is a live one's, recorded,
+    // with its pane, and no mark of an end.
+    std::fs::remove_file(&mark).map_err(e)?;
+    drop(ahead);
+    let done = start.wait_with_output().map_err(e)?;
+    let said = String::from_utf8_lossy(&done.stderr);
+    assert!(done.status.success(), "{said}");
+    assert_eq!(capture(server, &sleeper)?.status, 0);
+    assert_eq!(own_process(server, &sleeper)?, own);
+    assert!(alive(program), "its program was ended");
     Ok(())
 }

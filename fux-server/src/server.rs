@@ -771,6 +771,12 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
     // Last of what can fail: once it listens, a server that started
     // with it finds it there (`socket::bind_socket`).
     let listening = Listening::open(socket)?;
+    // Read again under the socket's locks: what was there before them a
+    // server that started first may have dealt with since (an ended run
+    // finished, a new one begun and recorded, its mark removed). A start
+    // held up behind that one must not take the new run for the old.
+    let recorded = panes.join("run").exists();
+    let marked = panes.join(crate::record::ENDED).exists();
     // Under the socket's lock, the one server of the socket: a run whose
     // server crashed is taken back before anyone is served; else a new one
     // begins.
