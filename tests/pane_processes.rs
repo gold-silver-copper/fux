@@ -1715,16 +1715,17 @@ fn a_run_a_live_server_holds_is_left_to_it() -> Outcome {
     })
 }
 
-/// 29b. A second server on a run a live server holds writes and removes
-///     nothing where the run is kept, though it has something to record
-///     before it hears who holds the run (D-175). The first server is
-///     stopped, a name's file of its own written and its structure not
-///     yet (made, as its numbers are its process's); one of its panes'
-///     processes is killed, so the second server, taking the run, finds a
-///     pane gone before the other pane says who holds it. It leaves: the
-///     record is as the first server wrote it, and its files all there.
+/// 29b. A second server on a run a live server holds removes none of that
+///     server's name files, and the record it writes before it hears who
+///     holds the run reads whole (D-175). The first server is stopped, a
+///     name's file of its own written and its structure not yet (made, as
+///     its numbers are its process's); one of its panes' processes is
+///     killed, so the second server, taking the run, finds a pane gone
+///     and records that before the other pane says who holds it. It
+///     leaves: its record names files of its own, and the first server's
+///     are all there.
 #[test]
-fn a_second_server_writes_nothing_in_a_run_the_first_holds() -> Outcome {
+fn a_second_server_leaves_a_whole_record_and_the_firsts_name_files() -> Outcome {
     let server = Server::start("")?;
     let stays = pane(&server, "w", &["sleep", "1017"])?;
     let goes = pane(&server, "w", &["sleep", "1018"])?;
@@ -1756,13 +1757,40 @@ fn a_second_server_writes_nothing_in_a_run_the_first_holds() -> Outcome {
         Ok(std::fs::read_to_string(&log).is_ok_and(|said| said.contains(&held)))
     })?;
     eventually("the second server gone", || Ok(!server.socket.exists()))?;
-    // It found a pane gone, which it would record: not in a run that may
-    // be another server's.
-    assert_eq!(std::fs::read(&record).map_err(e)?, before, "its record");
-    assert_eq!(name_files(&server), names, "the first server's names");
+    // It found a pane gone, and recorded that: a record that reads whole,
+    // its names in files of the second server's own, beside the first's.
+    assert_ne!(std::fs::read(&record).map_err(e)?, before, "its record");
+    let read = fux_server::record::read(&record)?.ok_or("no record")?;
+    let named = fux_server::record::read_names(&kept(&server), &read.tree)?;
+    assert!(named.values().any(|name| &**name == "held"), "{named:?}");
+    let left = name_files(&server);
+    assert!(names.iter().all(|name| left.contains(name)), "{left:?}");
     signal(pid, Signal::Cont);
     signal(pid, Signal::Term);
     eventually("the first server gone", || Ok(!alive(pid)))
+}
+
+/// 29c. A server that took a run back and is stopped before a pane has
+///     answered it (the pane's process is stopped) records the run's end
+///     all the same (D-174): the record says the run ended, and stays,
+///     its pane not known to have been told.
+#[test]
+fn a_server_stopped_before_a_pane_answered_records_its_runs_end() -> Outcome {
+    let server = Server::start("")?;
+    let sleeper = pane(&server, "w", &["sleep", "1019"])?;
+    let _reap = reap_run(&server)?;
+    let own = own_process(&server, &sleeper)?;
+    signal(own, Signal::Stop);
+    let _resume = Resumed(own);
+    crash(&server)?;
+    let taken = within(&server, 30, &["(sequence! (start) #inert)"])?;
+    assert_eq!(taken.status, 0, "{}", taken.stderr);
+    let serving = serving(&server)?;
+    signal(serving, Signal::Term);
+    eventually("the second server gone", || Ok(!alive(serving)))?;
+    let record = fux_server::record::read(&kept(&server).join("run"))?.ok_or("no record")?;
+    assert!(record.ended, "the run's end is recorded");
+    Ok(())
 }
 
 /// A process a test stopped, let go on as the test ends.
