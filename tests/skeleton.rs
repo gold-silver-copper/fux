@@ -156,7 +156,11 @@ fn answered_though_its_side_is_shut(command: fux_wire::command::Command) -> Outc
             assert!(snapshot.panes.iter().all(|p| p.name.is_none()));
         }
         fux_wire::protocol::Response::Returned(fux_wire::protocol::Body::Capture(_)) => {}
-        other => return Err(format!("not its answer: {other:?}")),
+        other @ (fux_wire::protocol::Response::Returned(_)
+        | fux_wire::protocol::Response::Failed { .. }
+        | fux_wire::protocol::Response::Answered(_)) => {
+            return Err(format!("not its answer: {other:?}"));
+        }
     }
     Ok(())
 }

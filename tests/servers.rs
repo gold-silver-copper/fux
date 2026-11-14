@@ -498,9 +498,9 @@ fn reads_no_answers(command: fux_wire::command::Command) -> Outcome {
     while sent < MOST {
         match stream.write(ls.get(at..).unwrap_or_default()) {
             Ok(n) => {
-                at += n;
+                at = at.saturating_add(n);
                 if at == ls.len() {
-                    (sent, at) = (sent + 1, 0);
+                    (sent, at) = (sent.saturating_add(1), 0);
                 }
             }
             // Full: stalled for good if no room comes in a second.
@@ -542,10 +542,10 @@ fn reads_no_answers(command: fux_wire::command::Command) -> Outcome {
             }
             while let Some(frame) = decoder.frame::<ToCommand>().map_err(e)? {
                 if let ToCommand::PartsEnd = frame {
-                    answered += 1;
+                    answered = answered.saturating_add(1);
                 }
             }
-            if answered == sent + usize::from(at > 0) {
+            if answered == sent.saturating_add(usize::from(at > 0)) {
                 return Ok(answered);
             }
         }
@@ -558,7 +558,7 @@ fn reads_no_answers(command: fux_wire::command::Command) -> Outcome {
     let answered = answers.join().map_err(|_| "the reader panicked")??;
     assert_eq!(
         answered,
-        sent + usize::from(at > 0),
+        sent.saturating_add(usize::from(at > 0)),
         "every request answered"
     );
     Ok(())
