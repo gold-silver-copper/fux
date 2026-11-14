@@ -89,6 +89,7 @@ jobs:
           cargo clippy -p fux-server --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
           cargo test -p fux-server --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
           # The client refused memory as it joins a reply.
+          cargo clippy -p fux --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
           cargo test -p fux --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
 
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),

@@ -490,7 +490,36 @@ impl<T: Wire> Frame<'_> for Sending<'_, T> {
 /// The most bytes for a client the server sends its connection's process
 /// in one message (`ToConn::Bytes`), which is then one frame: what is left
 /// of a frame's payload is far more than the message's own few bytes.
-pub const BYTES: usize = MAX_PAYLOAD.saturating_sub(64);
+pub const BYTES: usize = MAX_PAYLOAD.saturating_sub(fux_wire::protocol::ENVELOPE);
+
+/// The most a pane's launch, its program's words and its directory, may
+/// take in its reports: a quarter of a frame. Its reports repeat its
+/// launch (its facts, its greeting), and the server joins none, so each is
+/// one frame by what it is made of: its launch, and what its program said,
+/// each no more than fux-vt keeps of a string (`OSC_PAYLOAD_LIMIT`, made
+/// text at most three times that), a title or a notification told and
+/// again among its facts.
+pub const LAUNCH: usize = MAX_PAYLOAD / 4;
+
+/// Whether a pane may run `argv` in `cwd`: they take no more than `LAUNCH`
+/// in its reports, as its facts say them.
+pub fn launch_fits(
+    argv: &fux_wire::command::Program,
+    cwd: &std::path::Path,
+) -> Result<(), fux_wire::code::Error> {
+    let words = fux_wire::json::Json::Array(argv.iter().map(fux_wire::json::Json::str).collect());
+    let bytes = (fux_wire::wire::encode(&words).len()).saturating_add(cwd.as_os_str().len());
+    if bytes <= LAUNCH {
+        return Ok(());
+    }
+    Err(fux_wire::code::fail(
+        Code::TooLong,
+        format!(
+            "a program's words and directory of {bytes} bytes are more than a pane may be \
+             started with ({LAUNCH} bytes): its reports to the server, one frame each, repeat them"
+        ),
+    ))
+}
 
 /// One end of a link: its socket, what came that is not yet taken, one
 /// frame of it at most (`next_message`), and what is to go that the socket

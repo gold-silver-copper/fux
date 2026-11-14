@@ -32,6 +32,10 @@ pub const GRIFT: u32 = 77;
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
 pub const MAX_PAYLOAD: usize = MAX_FRAME - 1;
+/// Room left in a frame a client sends, or bytes its server sends it, for
+/// what the server and the client's connection's process say with it as
+/// they pass it on: a few bytes, so far less than this.
+pub const ENVELOPE: usize = 64;
 /// The kind of a piece of a longer frame's payload, followed by more
 /// pieces and then the frame's own kind with the last of it.
 const MORE: u8 = 19;
@@ -226,6 +230,14 @@ pub trait Frame<'a>: Sized {
             out.extend_from_slice(piece);
         }
     }
+}
+
+/// Whether `frame`, which a client would send, is one its server takes:
+/// one frame, with room for what is said with it on its way
+/// (`ENVELOPE`). A client asks before it sends what has no reply to say
+/// `too-long` with (a screen of its own, shown).
+pub fn sends_whole<'a>(frame: &impl Frame<'a>) -> bool {
+    put(frame, &mut Vec::new()) <= MAX_PAYLOAD.saturating_sub(ENVELOPE)
 }
 
 /// Appends `frame` to `out`, whatever its length, the payload written in

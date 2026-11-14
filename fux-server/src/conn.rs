@@ -1344,7 +1344,6 @@ fn write(client: &Stream, out: &mut ByteQueue) -> bool {
 mod tests {
     use super::{Composer, Screen};
     use fux_vt::bytes::ByteQueue;
-    use fux_wire::id::PaneId;
     use fux_wire::protocol::{Decoder, ToAttached};
     use std::time::{Duration, Instant};
 
@@ -1774,7 +1773,7 @@ mod tests {
             projection: fux_wire::inspect::Projection::Facts,
         };
         let keys = Command::SendKeys {
-            to: To::Now(fux_wire::command::AnyRef::Pane(PaneId::of(1))),
+            to: To::Now(fux_wire::command::AnyRef::Pane(fux_wire::id::PaneId::of(1))),
             inputs: vec![Input::Paste(long())],
         };
         let (mut theirs, mut server, conn) = served()?;
