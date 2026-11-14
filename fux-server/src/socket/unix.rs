@@ -460,7 +460,10 @@ pub fn pane_begun(listener: &PaneListener) -> Result<(), String> {
 /// that nothing listens there (no such file, or one no process listens
 /// at); or that one does and has no room for another now (its backlog is
 /// full: `EAGAIN`). Any other failure says nothing of what is there, and
-/// is the error.
+/// is the error. macOS and the BSDs refuse a connect to a full backlog as
+/// they do one to no listener, so a pane that full is found gone there:
+/// it takes more connections than a pane's backlog holds, each left
+/// untaken by a pane that stays stopped.
 pub fn reach(socket: &Path) -> io::Result<super::Reach> {
     let fd = fuxix::socket::stream()?;
     fuxix::io::set_nonblocking(&fd, true)?;
@@ -480,6 +483,54 @@ pub fn reach(socket: &Path) -> io::Result<super::Reach> {
             }
         }
     }
+}
+
+/// The process at the other end of `stream`, as the system names it:
+/// the one that listens there (`SO_PEERCRED`), where it names one (not on
+/// macOS).
+pub fn peer_pid(stream: &Stream) -> Option<fuxix::process::Pid> {
+    fuxix::socket::peer(stream).ok()?.pid
+}
+
+/// A pane's process's own socket file, as it was when the process began:
+/// what it may remove as it ends. A file put at the same path since (a
+/// later run's pane of the same number, its run's directory made anew
+/// while this process was slow to end) is another's.
+pub struct Own(Option<Pinned>);
+
+/// The socket file at `path`, this process's own (`Own`).
+pub fn own(path: &Path) -> Own {
+    Own(Pinned::new(path).ok())
+}
+
+/// Removes the socket file at `path` if it is still the one `own` names;
+/// one that could not be named is left.
+pub fn unlink_own(own: &Own, path: &Path) {
+    if own.0.as_ref().is_some_and(|own| own.still_at(path)) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// The socket's locks, taken again by a server that stopped and let them
+/// go as it stopped listening (`hold_again`).
+pub struct Held {
+    _starting: File,
+    _lock: File,
+}
+
+/// Takes the locks of the socket at `path` again, as a starting server
+/// does, for a server that stopped to let go of what its run kept: none if
+/// another server holds the socket now, whose run's the files there are.
+/// A server that starts meanwhile waits for it, as for one starting.
+pub fn hold_again(path: &Path) -> Option<Held> {
+    let (starting, _) = lock_file(path, ".starting").ok()?;
+    starting.lock().ok()?;
+    let (lock, _) = lock_file(path, ".lock").ok()?;
+    lock.try_lock().ok()?;
+    Some(Held {
+        _starting: starting,
+        _lock: lock,
+    })
 }
 
 /// Whether the process `pid` still runs (`gone`).

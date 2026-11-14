@@ -428,11 +428,11 @@ pub fn pane_next(listener: &mut PaneListener) -> Result<Stream, String> {
 
 /// Reaches for what listens on the pipe the path `socket` names: a link
 /// to it; or that nothing does (no such pipe); or that one does and has no
-/// instance free (`fuxix::socket::connect` waited a second for one). Any
+/// instance free, found at once (`fuxix::socket::connect_now`). Any
 /// other failure says nothing of what is there, and is the error.
 pub fn reach(socket: &Path) -> std::io::Result<super::Reach> {
     let name = pipe_name(socket).map_err(std::io::Error::other)?;
-    match fuxix::socket::connect(&name) {
+    match fuxix::socket::connect_now(&name) {
         Ok(stream) => Ok(super::Reach::Listening(stream)),
         Err(fuxix::Errno::AGAIN) => Ok(super::Reach::Busy),
         Err(errno) => {
@@ -444,6 +444,47 @@ pub fn reach(socket: &Path) -> std::io::Result<super::Reach> {
             }
         }
     }
+}
+
+/// The process that listens at the other end of `stream`, as the system
+/// names it (`listener_pid`).
+pub fn peer_pid(stream: &Stream) -> Option<Pid> {
+    listener_pid(stream)
+}
+
+/// A pane's process's own marker file (`start_pane`): it holds its pipe's
+/// name while it runs, so no other pane's marker is at that path.
+pub struct Own;
+
+/// The marker at `path`, this process's own (`Own`).
+pub fn own(_path: &Path) -> Own {
+    Own
+}
+
+/// Removes the marker at `path`.
+pub fn unlink_own(_own: &Own, path: &Path) {
+    let _ = fs::remove_file(path);
+}
+
+/// The socket's locks, taken again by a server that stopped and let them
+/// go as it stopped listening (`hold_again`).
+pub struct Held {
+    _starting: File,
+    _lock: File,
+}
+
+/// Takes the locks of the socket at `path` again, as a starting server
+/// does, for a server that stopped to let go of what its run kept: none if
+/// another server holds the socket now, whose run's the files there are.
+pub fn hold_again(path: &Path) -> Option<Held> {
+    let (starting, _) = lock_file(path, ".starting").ok()?;
+    starting.lock().ok()?;
+    let (lock, _) = lock_file(path, ".lock").ok()?;
+    lock.try_lock().ok()?;
+    Some(Held {
+        _starting: starting,
+        _lock: lock,
+    })
 }
 
 /// Whether the process `pid` still runs.

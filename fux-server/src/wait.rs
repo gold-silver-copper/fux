@@ -52,6 +52,15 @@ pub enum Waiting {
         client: ClientId,
         asked: u64,
     },
+    /// A request that found pane `pane` not linked yet, its process not
+    /// heard from since the run was taken back (`Session::linked_pane`):
+    /// made again once that pane is awaited no more (linked, or found
+    /// gone), as though asked then.
+    Awaited {
+        pane: PaneId,
+        request: Box<fux_wire::command::Request>,
+        origin: crate::session::Origin,
+    },
 }
 
 impl Waiting {
@@ -71,7 +80,7 @@ impl Waiting {
         match self {
             Waiting::Events(read) => Some(read.deadline),
             Waiting::Change(watch) => watch.deadline.map(|(at, _)| at),
-            Waiting::Asked(_) | Waiting::Read { .. } => None,
+            Waiting::Asked(_) | Waiting::Read { .. } | Waiting::Awaited { .. } => None,
         }
     }
 
@@ -85,6 +94,22 @@ impl Waiting {
                 let why = format!("{client} detached before it answered");
                 Reply::failed(fux_wire::code::Code::NoClient, why)
             }),
+            Waiting::Awaited {
+                pane,
+                request,
+                origin,
+            } => {
+                if session.awaited.contains_key(pane) {
+                    return None;
+                }
+                match session.begin((**request).clone(), origin, now) {
+                    crate::session::Begun::Done(reply) => Some(reply),
+                    crate::session::Begun::Waiting(next) => {
+                        *self = *next;
+                        self.answer(session, now)
+                    }
+                }
+            }
         }
     }
 }

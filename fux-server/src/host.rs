@@ -1837,30 +1837,54 @@ pub fn serve(
     crate::socket::load_terminals();
     crate::socket::pane_listen(&listener)?;
     let own = i32::try_from(std::process::id()).unwrap_or(0);
+    // Its own socket's file, as it is now: what it removes as it ends, and
+    // no file put there since.
+    let own_socket = socket.as_deref().map(crate::socket::own);
+    let unlink = |socket: &Option<PathBuf>| {
+        if let (Some(own), Some(socket)) = (&own_socket, socket) {
+            crate::socket::unlink_own(own, socket);
+        }
+    };
     // A server gone before its first word started nothing, and nothing is
     // lost by waiting for the next: the one that takes its run back begins
     // it from the run's record, where it was written before it was started.
-    let (mut end, begin) = loop {
+    // Each that reaches it is read to its end: what follows the word it
+    // answered is heeded, a close after a taking (its run ending) or its
+    // start after it said it has not begun.
+    let (mut end, begin) = 'begun: loop {
         let stream = crate::socket::pane_next(&mut listener)?;
         let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
-        match end.wait::<ToPane>() {
-            Ok(Some(ToPane::Begin(begin))) => break (end, begin),
-            // Ended before it began, by a server its run no longer has it
-            // in: it started nothing.
-            Ok(Some(ToPane::Close { .. })) => {
-                end.send(&FromPane::Taking(Taking::Closing));
-                let _ = end.flush_all();
-                if let Some(socket) = &socket {
-                    let _ = std::fs::remove_file(socket);
+        loop {
+            match end.wait::<ToPane>() {
+                Ok(Some(ToPane::Begin(begin))) => break 'begun (end, begin),
+                // Ended before it began, by a server whose run has it no
+                // more, or ends: it started nothing.
+                Ok(Some(ToPane::Close { .. })) => {
+                    end.send(&FromPane::Taking(Taking::Closing));
+                    let _ = end.flush_all();
+                    unlink(&socket);
+                    return Ok(());
                 }
-                return Ok(());
+                Ok(Some(ToPane::Take { .. } | ToPane::Who)) => {
+                    end.send(&FromPane::Taking(Taking::Unbegun { pid: own }));
+                    let _ = end.flush_all();
+                }
+                // One that says no more, or what no server says first: gone.
+                Ok(
+                    Some(
+                        ToPane::Resize { .. }
+                        | ToPane::Host(_)
+                        | ToPane::Shown(_)
+                        | ToPane::Typed { .. }
+                        | ToPane::Ask { .. }
+                        | ToPane::Taken
+                        | ToPane::Join { .. }
+                        | ToPane::Drop { .. },
+                    )
+                    | None,
+                )
+                | Err(_) => break,
             }
-            Ok(Some(ToPane::Take { .. } | ToPane::Who)) => {
-                end.send(&FromPane::Taking(Taking::Unbegun { pid: own }));
-                let _ = end.flush_all();
-            }
-            // One that said nothing, or what no server says first: gone.
-            Ok(Some(_) | None) | Err(_) => {}
         }
     };
     crate::socket::pane_begun(&listener)?;
@@ -1900,10 +1924,9 @@ pub fn serve(
     loop {
         let now = Instant::now();
         // Closed, it waits for no server: none finds it, as it ends.
-        if host.closed.is_some()
-            && let Some(at) = socket.take()
-        {
-            let _ = std::fs::remove_file(at);
+        if host.closed.is_some() && socket.is_some() {
+            unlink(&socket);
+            socket = None;
         }
         let due = clock.due(now) <= now;
         let mut sent = false;
@@ -1961,9 +1984,7 @@ pub fn serve(
         }
         if host.finished() {
             host.finish();
-            if let Some(socket) = &socket {
-                let _ = std::fs::remove_file(socket);
-            }
+            unlink(&socket);
             return Ok(());
         }
         let timer = host.timer();

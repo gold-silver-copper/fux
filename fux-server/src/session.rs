@@ -242,18 +242,28 @@ pub struct Session {
     /// panes closed, till their processes end (`Session::ending`).
     pub links: BTreeMap<PaneId, Link>,
     pub ending: Vec<(PaneId, Link)>,
-    /// The pane processes of a run taken back that had not answered as it
-    /// was (`takeover`), each asked, or with no room at its socket and so
-    /// not asked yet (none): a pane the run has is placed as its record
-    /// keeps it, and linked when its process speaks; one it has not is
-    /// ended then.
+    /// The pane processes found as the run was taken back (`takeover`),
+    /// each asked to be taken, or with no room at its socket and so not
+    /// asked yet (none), till it answers: a pane the run has is placed as
+    /// its record keeps it, and linked when its process speaks; one it has
+    /// not is ended then.
     pub awaited: BTreeMap<PaneId, Option<crate::takeover::Asked>>,
-    /// When those not asked yet are reached for again.
+    /// The pane processes no run has, by the numbers of their sockets,
+    /// each told to end (`ToPane::Close`, its first word), or not told
+    /// yet for want of room at its socket (none): kept till each says it
+    /// closes, or is gone.
+    pub strays: BTreeMap<PaneId, Option<crate::takeover::Asked>>,
+    /// When those not asked or told yet are reached for again.
     pub reach_at: Option<Instant>,
-    /// A pane that answered after the run was taken back that another
-    /// server, by its pid, holds it: this one leaves the run to that one
-    /// (`Server::run`).
+    /// A pane that answered that another server, by its pid, holds it:
+    /// this one leaves the run to that one (`Server::run`).
     pub holder: Option<(PaneId, i32)>,
+    /// The pane a request found not linked yet (`linked_pane`), so that
+    /// the request waits for it instead of failing (`begin`).
+    waits_on: std::cell::Cell<Option<PaneId>>,
+    /// Whether, as the run ended, a pane process could not be told
+    /// (`shutdown`): what the run kept then stays for the next start.
+    pub untold: bool,
     /// What panes told that is still to be taken in (`Session::pump`), in
     /// order.
     inbox: std::collections::VecDeque<(PaneId, FromPane)>,
@@ -327,36 +337,22 @@ const AWAY: &str = "its pane's own process ended while no server ran";
 /// that had no room at its socket (`Session::reach_awaited`).
 const REACH_REST: Duration = Duration::from_millis(100);
 
-/// How many times a pane that names a server that ended as holding it is
-/// asked again as its run is taken back, before it is awaited instead: it
-/// reads that server's end before each answer, so the second is its last.
-const HELD_ASKS: usize = 3;
-
 /// The descriptors a server needs free to serve one client beside its
 /// panes: its client's connection and that connection's link, the next
 /// connection's link, its record as it is written, and the file a child's
 /// output points at.
 const SERVING: usize = 5;
 
-/// Why a run is not taken back while the server with pid `by` holds its
-/// pane `id`.
-fn held(id: PaneId, by: i32, socket: &std::path::Path) -> String {
-    format!(
-        "{id} is held by the fux server with pid {by}, which still serves the run on {}: \
-         this one does not take its panes, and changed nothing",
-        socket.display()
-    )
-}
-
 /// Whether this server can hold the run on `socket` it takes back: a link
 /// to each of its `panes` pane processes (`sockets` are asked at first:
-/// the run's, and those it has no more, each let go once ended), the one
-/// it keeps back for a client it can't accept (D-163) and what serving one
-/// client takes (`SERVING`). Found by opening that many, which are let go
-/// again: the system has no other say that every fux process can ask
-/// without `unsafe`. Refused with both numbers before any pane is asked.
+/// the run's, and those it has no more, each let go once ended) and what
+/// serving one client takes (`SERVING`); the one it keeps back for a
+/// client it can't accept (D-163) is held already. Found by opening that
+/// many, which are let go again: the system has no other say that every
+/// fux process can ask without `unsafe`. Refused with both numbers before
+/// any pane is asked.
 fn descriptors_for(socket: &std::path::Path, panes: usize, sockets: usize) -> Result<(), Error> {
-    let needed = sockets.max(panes).saturating_add(1).saturating_add(SERVING);
+    let needed = sockets.max(panes).saturating_add(SERVING);
     let mut opened = Vec::new();
     for _ in 0..needed {
         match std::fs::File::open(crate::socket::NULL) {
@@ -366,9 +362,9 @@ fn descriptors_for(socket: &std::path::Path, panes: usize, sockets: usize) -> Re
                     Code::Start,
                     format!(
                         "the run on {} has {panes} panes, and taking it back takes {needed} \
-                         descriptors (one a pane process found, one kept back, {SERVING} to \
-                         serve a client): this server could open only {} more (`ulimit -n`); \
-                         nothing was taken, and a server with room takes it back",
+                         more descriptors (one a pane process found, {SERVING} to serve a \
+                         client): this server could open only {} more (`ulimit -n`); nothing \
+                         was taken, and a server with room takes it back",
                         socket.display(),
                         opened.len()
                     ),
@@ -481,8 +477,11 @@ impl Session {
             making: None,
             orphans: Vec::new(),
             awaited: BTreeMap::new(),
+            strays: BTreeMap::new(),
             reach_at: None,
             holder: None,
+            waits_on: std::cell::Cell::new(None),
+            untold: false,
             placed: Placement::default(),
             laid: BTreeMap::new(),
             ids: Ids::default(),
@@ -634,6 +633,25 @@ impl Session {
         self.parts.panes().get(&id).ok_or(Error::NoPane(id))
     }
 
+    /// Pane `id`, for a request that reads what its own process says or
+    /// asks something of it. One whose process has not answered since the
+    /// run was taken back (`awaited`) is not read as its record keeps it:
+    /// the request waits for it (`begin`).
+    pub(crate) fn linked_pane(&self, id: PaneId) -> Result<&Pane, Error> {
+        let pane = self.pane(id)?;
+        if self.awaited.contains_key(&id) {
+            self.waits_on.set(Some(id));
+            return Err(fail(
+                Code::NotRunning,
+                format!(
+                    "{id}: its own process has not answered this server yet, which took its \
+                     run back: what is asked of it waits till it does"
+                ),
+            ));
+        }
+        Ok(pane)
+    }
+
     // ------------------------------------------------------------ panes
 
     /// Says `message` to pane `id`'s own process, if it has one.
@@ -674,17 +692,7 @@ impl Session {
     /// number, which its answer carries (`Waiting::Asked`). A pane whose
     /// own process is gone is asked nothing: what it can't do, it is told.
     pub(crate) fn ask_pane(&mut self, id: PaneId, what: Ask, now: Instant) -> Result<u64, Error> {
-        let pane = self.pane(id)?;
-        if self.awaited.contains_key(&id) {
-            return Err(fail(
-                Code::NotRunning,
-                format!(
-                    "{id}: its own process has not answered since this server took its run \
-                     back (it is stopped, or takes no one at its socket): it is linked as \
-                     soon as it does"
-                ),
-            ));
-        }
+        let pane = self.linked_pane(id)?;
         if !self.links.contains_key(&id) {
             return Err(pane.refuses_input().unwrap_or_else(|| lost(id)));
         }
@@ -2093,14 +2101,18 @@ impl Session {
     /// Its run ends: its record says so before any pane is told, so that
     /// no server takes back the run, or the panes still ending, and one
     /// that finds it so after a crash ends what is left (`server::serve`).
-    /// None is written again. A record that can't be written is removed:
-    /// with none, the next start ends the panes it finds waiting.
+    /// None is written again. A record that can't be written (a full
+    /// disk) is marked ended by a file beside it, `ended`, which says the
+    /// same of whatever record is there.
     pub fn end_run(&mut self) {
         self.ended = true;
         if let Err(error) = self.commit() {
             log!("{error}");
             if let Some(panes) = self.panes() {
-                let _ = std::fs::remove_file(panes.join("run"));
+                let mark = crate::record::write(&panes.join(crate::record::ENDED), b"");
+                if let Err(error) = mark {
+                    log!("marking the run ended: {error}");
+                }
             }
         }
         self.recording = false;
@@ -2109,12 +2121,33 @@ impl Session {
     /// Its run is over and its panes told: what it kept goes, its record
     /// first, then the fux it ran, so that a crash between leaves no
     /// record whose fux is gone, which no start could read
-    /// (`server::serve`).
+    /// (`server::serve`). Only while the record there is still this run's,
+    /// ended: the caller holds the socket's locks, so no other server
+    /// writes there meanwhile.
     pub fn forget_run(&mut self) {
-        if let Some(panes) = self.panes() {
-            for kept in ["run", "exe"] {
-                let _ = std::fs::remove_file(panes.join(kept));
-            }
+        let Some(panes) = self.panes() else {
+            return;
+        };
+        let ours = match crate::record::read(&panes.join("run")) {
+            Ok(Some(record)) => record.run == self.run,
+            // None there: a run that began and ended with no record made.
+            Ok(None) => true,
+            Err(_) => false,
+        };
+        if !ours {
+            return;
+        }
+        for kept in ["run", crate::record::ENDED, "exe"] {
+            let _ = std::fs::remove_file(panes.join(kept));
+        }
+    }
+
+    /// Writes its run's record now, though nothing changed it: a run just
+    /// begun that still has an earlier run's pane processes to end is
+    /// found, should its server crash, with a record that lacks them.
+    pub fn record_now(&mut self) {
+        if let Err(error) = self.commit() {
+            log!("{error}");
         }
     }
 
@@ -2263,31 +2296,28 @@ impl Session {
     }
 
     /// Takes back the run `record` holds, whose server crashed (D-124), by
-    /// making the pane processes found match it (`takeover::reconcile`).
-    /// Each of its panes is at its place, with its name, its ids and
-    /// versions going on:
+    /// making the pane processes found match it (`takeover::reconcile`),
+    /// each as it answers, in the server's loop (`awaited_heard`): nothing
+    /// here waits for a pane. Each of its panes is at its place at once,
+    /// with its name, its ids and versions going on, as its record keeps
+    /// it; then
     /// - one whose process greets is linked;
     /// - one whose process never began is begun, from its record;
-    /// - one whose process is gone stays as its record keeps it: ended, if
-    ///   it had, else its program lost as though its process had died
+    /// - one no process listens for stays as its record keeps it: ended,
+    ///   if it had, else its program lost as though its process had died
     ///   under this server (`pane_lost`), and then its role's rule, as a
     ///   shell that ended meanwhile closes;
-    /// - one whose process has not answered in `wait` (stopped, say) is
-    ///   placed as its record keeps it, and linked when it speaks
-    ///   (`awaited`): it holds up no other.
+    /// - one whose process does not answer (stopped, say) stays placed,
+    ///   and what is asked of it waits (`linked_pane`): it holds up no
+    ///   other.
     ///
     /// A pane process the record lacks is ended: its close was recorded
-    /// before it was told. A pane another server still holds refuses the
-    /// run, naming that server, as does a socket that can't be reached for
-    /// or too few descriptors: nothing is changed then, and no record
-    /// written. Its journal starts afresh, this server's own (D-124 (5)).
-    pub fn resume(
-        &mut self,
-        record: crate::record::Record,
-        wait: Duration,
-        now: Instant,
-    ) -> Result<(), Error> {
-        use crate::takeover::{Fate, Live};
+    /// before it was told. A pane another server still holds makes this
+    /// one leave the run, as it says so (`holder`). A socket that can't be
+    /// reached for, or too few descriptors, refuses the run with nothing
+    /// changed. Its record is written again only once something changes
+    /// it. Its journal starts afresh, this server's own (D-124 (5)).
+    pub fn resume(&mut self, record: crate::record::Record, now: Instant) -> Result<(), Error> {
         let Some(socket) = self.launch.clone() else {
             return Err(fail(
                 Code::Start,
@@ -2305,92 +2335,29 @@ impl Session {
             run: record.run,
             server: own_pid(),
         };
-        let reaching =
-            |error: std::io::Error| fail(Code::Start, format!("reaching for its panes: {error}"));
-        let mut found = crate::takeover::gather(&sockets, &take, wait).map_err(reaching)?;
-        // One held by a server that ended since reads its link's end next:
-        // it is asked again, and awaited if it still says so.
-        for _ in 0..HELD_ASKS {
-            let again: BTreeMap<PaneId, std::path::PathBuf> = (found.live.iter())
-                .filter(|(_, live)| matches!(live, Live::Held(by) if !crate::takeover::holds(*by)))
-                .filter_map(|(id, _)| Some((*id, sockets.get(id)?.clone())))
-                .collect();
-            if again.is_empty() {
-                break;
-            }
-            let asked = crate::takeover::gather(&again, &take, wait).map_err(reaching)?;
-            for id in again.keys() {
-                found.live.remove(id);
-            }
-            found.live.extend(asked.live);
-            found.asked.extend(asked.asked);
-        }
-        for live in found.live.values_mut() {
-            if matches!(live, Live::Held(by) if !crate::takeover::holds(*by)) {
-                *live = Live::Silent;
-            }
-        }
-        let fates = crate::takeover::reconcile(&record, &found.live);
-        if let Some((id, by)) = fates.iter().find_map(|(id, fate)| match fate {
-            Fate::Refuse(by) => Some((*id, *by)),
-            Fate::Take | Fate::Begin | Fate::Lost | Fate::Await | Fate::End => None,
-        }) {
-            return Err(fail(Code::Start, held(id, by, &socket)));
-        }
+        let asked = crate::takeover::ask_all(&sockets, &take)
+            .map_err(|e| fail(Code::Start, format!("reaching for its panes: {e}")))?;
         // From here the run is this server's.
         self.run = record.run;
         self.ids = Ids::after(&record.ids);
-        let mut copies = BTreeMap::new();
-        for recorded in &recorded {
-            let id = recorded.id;
-            let greeted = match (fates.get(&id), found.live.get(&id)) {
-                (Some(Fate::Take), Some(Live::Greeted(greeting))) => Some(greeting.clone()),
-                _ => None,
-            };
-            let copy = match greeted {
-                Some(greeting) => {
-                    let mut copy = Pane::greeted(*greeting);
-                    if let Some(name) = &recorded.name {
-                        copy.rename(name.clone());
-                    }
-                    copy
-                }
-                None => Pane::recorded(recorded),
-            };
-            copies.insert(id, copy);
-        }
-        let ended: BTreeSet<PaneId> = (recorded.iter())
-            .filter(|pane| pane.ended.is_some())
+        let copies: BTreeMap<PaneId, Pane> = (recorded.iter())
+            .map(|pane| (pane.id, Pane::recorded(pane)))
+            .collect();
+        let gone: Vec<PaneId> = (recorded.iter())
+            .filter(|pane| !asked.contains_key(&pane.id) && pane.ended.is_none())
             .map(|pane| pane.id)
             .collect();
+        // As it is written: written again only once it differs.
+        self.recorded = fux_wire::wire::encode(&record);
         self.parts = Parts::restore(self.entries, &record.workspaces, copies)?;
-        for (id, fate) in fates {
-            let asked = found.asked.remove(&id);
-            let placed = self.parts.panes().contains_key(&id);
-            match fate {
-                Fate::Take => match asked.and_then(crate::takeover::Asked::link) {
-                    Some(link) => self.linked(id, link, now),
-                    None => self.pane_lost(id, "its pane's own process ended as it was taken", now),
-                },
-                Fate::Begin => self.begin_recorded(id, found.live.get(&id), now),
-                Fate::Lost => {
-                    log!("{id}: its own process is gone");
-                    if !ended.contains(&id) {
-                        self.pane_lost(id, AWAY, now);
-                    }
-                }
-                Fate::Await => drop(self.awaited.insert(id, asked)),
-                // One that was closing as its server crashed: closed.
-                Fate::End if placed => self.close_pane(id, None, now),
-                Fate::End => {
-                    log!("{id}: its run has it no more: its process is ended");
-                    self.end_unrecorded(id, found.live.get(&id), asked, now);
-                }
-                Fate::Refuse(_) => {}
-            }
+        self.awaited = asked;
+        for id in gone {
+            log!("{id}: its own process is gone");
+            self.pane_lost(id, AWAY, now);
         }
         let shells: Vec<(PaneId, Ended)> = (self.parts.panes().values())
             .filter(|pane| matches!(pane.runs, Runs::Shell(_)))
+            .filter(|pane| !self.awaited.contains_key(&pane.id()))
             .filter_map(|pane| Some((pane.id(), pane.exit_status()?)))
             .collect();
         for (id, ended) in shells {
@@ -2401,42 +2368,61 @@ impl Session {
             self.program_ended(id, end, now);
         }
         self.rest_reach(now);
-        self.recorded.clear();
         self.settle(now);
         Ok(())
     }
 
-    /// Ends the process of pane `id`, which its run has no more, found as
-    /// `live` says and asked on `asked`: one that greeted is told to close
-    /// on that link, and kept till it ends (`ending`); one that never
-    /// began is told on a link of its own, and not waited for; one that
-    /// has not answered is ended when it speaks (`awaited`); one closing
-    /// ends by itself.
-    fn end_unrecorded(
-        &mut self,
-        id: PaneId,
-        live: Option<&crate::takeover::Live>,
-        asked: Option<crate::takeover::Asked>,
-        now: Instant,
-    ) {
-        use crate::takeover::Live;
-        match live {
-            Some(Live::Greeted(_)) => {
-                if let Some(link) = asked.and_then(crate::takeover::Asked::link) {
-                    self.unlink(id, link, true, now);
-                }
+    /// Takes on the pane processes no run has (`asked`, each told to end
+    /// as it was reached, or not yet), found where a run that ended kept
+    /// its panes: kept till each says it closes or is gone (`strays`).
+    pub fn end_strays(&mut self, asked: BTreeMap<PaneId, Option<crate::takeover::Asked>>) {
+        self.strays.extend(asked);
+        self.rest_reach(Instant::now());
+    }
+
+    /// Tells the process at pane socket `id`, which no run has, to end, on
+    /// a link of its own, and keeps it till it says it closes (`strays`).
+    fn end_stray(&mut self, id: PaneId, now: Instant) {
+        let close = ToPane::Close { closed: true };
+        let asked = self
+            .socket_of(id)
+            .map(|socket| crate::takeover::Asked::ask(&socket, &close));
+        match asked {
+            Some(Ok((Some(asked), _))) => drop(self.strays.insert(id, Some(asked))),
+            // None listens: it is gone.
+            Some(Ok((None, false))) | None => {}
+            Some(Ok((None, true))) => drop(self.strays.insert(id, None)),
+            Some(Err(error)) => {
+                log!("{id}: reaching for its own process: {error}; again after a rest");
+                self.strays.insert(id, None);
             }
-            Some(Live::Unbegun(_)) => {
-                let close = ToPane::Close { closed: true };
-                let told = (self.socket_of(id))
-                    .and_then(|socket| crate::takeover::Asked::ask(&socket, &close).ok());
-                drop(told);
+        }
+        self.rest_reach(now);
+    }
+
+    /// The process at pane socket `id`, told to end, said something, or
+    /// its link closed: one that closes is done with; one a running server
+    /// holds is that server's, and this one leaves (`holder`); one whose
+    /// link closed with no word is reached for again.
+    pub fn stray_heard(&mut self, id: PaneId, buffer: &mut [u8], now: Instant) {
+        use crate::takeover::{Answer, Live};
+        let Some(Some(asked)) = self.strays.get_mut(&id) else {
+            return;
+        };
+        let Some(answer) = asked.hear(id, buffer) else {
+            return;
+        };
+        self.strays.remove(&id);
+        match answer {
+            Answer::Live(Live::Held(by)) if crate::takeover::holds(by) => {
+                self.holder = Some((id, by));
             }
-            Some(Live::Silent) => {
-                self.awaited.insert(id, asked);
-                self.rest_reach(now);
-            }
-            Some(Live::Closing | Live::OtherRun | Live::Held(_)) | None => {}
+            Answer::Live(Live::Held(_)) | Answer::Closed => self.end_stray(id, now),
+            Answer::Live(
+                Live::Closing | Live::Greeted(_) | Live::Unbegun(_) | Live::OtherRun | Live::Silent,
+            )
+            | Answer::Began
+            | Answer::NotBegun(_) => {}
         }
     }
 
@@ -2445,70 +2431,51 @@ impl Session {
         Some(self.panes()?.join(id.number().to_string()))
     }
 
-    /// Begins pane `id`, whose process a crashed server started and never
-    /// began, as its copy, made from the run's record, says: on a link of
-    /// its own, as its first server would have. One that can't begin is
-    /// lost, saying why.
-    fn begin_recorded(&mut self, id: PaneId, live: Option<&crate::takeover::Live>, now: Instant) {
-        let begun = (|| {
-            let Some(crate::takeover::Live::Unbegun(pid)) = live else {
-                return Err("it did not say it waits to begin".to_owned());
-            };
-            let pid = fuxix::process::Pid::from_i32(*pid).ok_or("its process named no pid")?;
-            let pane = self.parts.panes().get(&id).ok_or("it is not placed")?;
-            let launch = pane.runs.launch();
-            let begin = Begin {
-                id,
-                run: self.run,
-                shell: matches!(pane.runs, Runs::Shell(_)),
-                argv: launch.argv.clone(),
-                cwd: launch.cwd.clone(),
-                size: pane.size(),
-                options: pane.options(),
-                hosting: Hosting::default(),
-                socket: self.launch.clone(),
-                exe: self.exe.clone(),
-                server: own_pid(),
-            };
-            let socket = self.socket_of(id).ok_or("its run has no socket")?;
-            let stream = match crate::socket::reach(&socket).map_err(|e| e.to_string())? {
-                crate::socket::Reach::Listening(stream) => stream,
-                crate::socket::Reach::NoListener => return Err("its process ended".to_owned()),
-                crate::socket::Reach::Busy => return Err("its socket has no room".to_owned()),
-            };
-            Link::begin(stream, pid, false, begin)
-        })();
-        match begun {
-            Ok(link) => {
-                log!("{id}: begun from its run's record: its last server never began it");
-                self.linked(id, link, now);
-            }
-            Err(why) => {
-                log!("{id}: it never began, and could not be begun: {why}");
-                let how = format!("its program never started, and could not be: {why}");
-                self.pane_lost(id, &how, now);
-            }
-        }
+    /// What pane `id`, never begun, begins as: as its copy, made from the
+    /// run's record, says, as its first server would have begun it.
+    fn begin_of(&self, id: PaneId) -> Option<Begin> {
+        let pane = self.parts.panes().get(&id)?;
+        let launch = pane.runs.launch();
+        Some(Begin {
+            id,
+            run: self.run,
+            shell: matches!(pane.runs, Runs::Shell(_)),
+            argv: launch.argv.clone(),
+            cwd: launch.cwd.clone(),
+            size: pane.size(),
+            options: pane.options(),
+            hosting: Hosting::default(),
+            socket: self.launch.clone(),
+            exe: self.exe.clone(),
+            server: own_pid(),
+        })
     }
 
-    /// Sets when the pane processes not yet asked, for want of room at
-    /// their sockets, are reached for again: a rest from now, if any is.
+    /// Sets when the pane processes not yet asked or told, for want of
+    /// room at their sockets, are reached for again: a rest from now, if
+    /// any is.
     fn rest_reach(&mut self, now: Instant) {
-        self.reach_at = (self.awaited.values())
+        self.reach_at = (self.awaited.values().chain(self.strays.values()))
             .any(Option::is_none)
             .then(|| crate::after(now, REACH_REST));
     }
 
-    /// The rest is over (`reach_at`): each pane process not asked yet is
-    /// reached for again.
+    /// The rest is over (`reach_at`): each pane process not asked or told
+    /// yet is reached for again.
     pub fn reach_awaited(&mut self, now: Instant) {
-        let unasked: Vec<PaneId> = (self.awaited.iter())
-            .filter(|(_, asked)| asked.is_none())
-            .map(|(id, _)| *id)
-            .collect();
-        for id in unasked {
+        let unasked = |of: &BTreeMap<PaneId, Option<crate::takeover::Asked>>| -> Vec<PaneId> {
+            (of.iter())
+                .filter(|(_, asked)| asked.is_none())
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        for id in unasked(&self.awaited) {
             self.awaited.remove(&id);
             self.reach_again(id, now);
+        }
+        for id in unasked(&self.strays) {
+            self.strays.remove(&id);
+            self.end_stray(id, now);
         }
         self.rest_reach(now);
     }
@@ -2528,9 +2495,7 @@ impl Session {
             Some(Ok((Some(asked), _))) => drop(self.awaited.insert(id, Some(asked))),
             Some(Ok((None, false))) | None => {
                 log!("{id}: its own process is gone");
-                if (self.parts.panes().get(&id)).is_some_and(|pane| pane.exit_status().is_none()) {
-                    self.pane_lost(id, AWAY, now);
-                }
+                self.lost_away(id, AWAY, now);
             }
             Some(Ok((None, true))) => drop(self.awaited.insert(id, None)),
             Some(Err(error)) => {
@@ -2541,10 +2506,32 @@ impl Session {
         self.rest_reach(now);
     }
 
+    /// Pane `id`, awaited no more, is found without its process, `how`:
+    /// lost, if its run has it and its program had not ended; and then its
+    /// role's rule, as a shell that had ended closes.
+    fn lost_away(&mut self, id: PaneId, how: &str, now: Instant) {
+        let Some(pane) = self.parts.panes().get(&id) else {
+            return;
+        };
+        match pane.exit_status() {
+            None => self.pane_lost(id, how, now),
+            Some(ended) if matches!(pane.runs, Runs::Shell(_)) => {
+                let end = pane::End {
+                    ended,
+                    left: pane::Left::default(),
+                };
+                self.program_ended(id, end, now);
+                self.settle(now);
+            }
+            Some(_) => {}
+        }
+    }
+
     /// The process of pane `id`, awaited since its run was taken back,
     /// said something, or its link closed (`Server::run`): once its answer
-    /// is whole, what `takeover::fate` says of it is done, as it would
-    /// have been had it answered as the run was taken.
+    /// is whole, what `takeover::fate` says of it is done. Nothing here
+    /// waits for the pane: one told to begin answers as one that greets
+    /// does, later.
     pub fn awaited_heard(&mut self, id: PaneId, buffer: &mut [u8], now: Instant) {
         use crate::takeover::{Answer, Fate, Live};
         let Some(Some(asked)) = self.awaited.get_mut(&id) else {
@@ -2553,15 +2540,53 @@ impl Session {
         let Some(answer) = asked.hear(id, buffer) else {
             return;
         };
-        let asked = self.awaited.remove(&id).flatten();
+        let placed = self.parts.panes().contains_key(&id);
         let live = match answer {
             Answer::Live(live) => live,
+            Answer::Began => {
+                let link = self.awaited.remove(&id).flatten();
+                if let Some(link) = link.and_then(crate::takeover::Asked::link) {
+                    log!("{id}: begun from its run's record: its last server never began it");
+                    self.linked(id, link, now);
+                    self.touch();
+                    self.settle(now);
+                }
+                return;
+            }
+            Answer::NotBegun(why) => {
+                self.awaited.remove(&id);
+                log!("{id}: it never began, and could not be begun: {why}");
+                let how = format!("its program never started, and could not be: {why}");
+                return self.lost_away(id, &how, now);
+            }
             // Its link closed with no word: never lost by that alone.
-            Answer::Closed => return self.reach_again(id, now),
+            Answer::Closed => {
+                self.awaited.remove(&id);
+                return self.reach_again(id, now);
+            }
         };
-        let placed = self.parts.panes().contains_key(&id);
         match crate::takeover::fate(placed, Some(&live)) {
+            // Begun on the link it answered on, which it still reads: it
+            // stays awaited till it says it began.
+            Some(Fate::Begin) => {
+                let pid = match live {
+                    Live::Unbegun(pid) => fuxix::process::Pid::from_i32(pid),
+                    Live::Greeted(_)
+                    | Live::Closing
+                    | Live::OtherRun
+                    | Live::Held(_)
+                    | Live::Silent => None,
+                };
+                match (pid, self.begin_of(id), self.awaited.get_mut(&id)) {
+                    (Some(pid), Some(begin), Some(Some(asked))) => asked.begin(begin, pid),
+                    _ => {
+                        self.awaited.remove(&id);
+                        self.lost_away(id, "its pane's own process named no pid", now);
+                    }
+                }
+            }
             Some(Fate::Take) => {
+                let asked = self.awaited.remove(&id).flatten();
                 let (Live::Greeted(greeting), Some(link)) =
                     (live, asked.and_then(crate::takeover::Asked::link))
                 else {
@@ -2574,27 +2599,56 @@ impl Session {
                         pane.rename(name);
                     }
                 }
-                log!("{id}: its own process answered: it is linked");
                 self.linked(id, link, now);
-                self.touch();
-                self.settle(now);
-            }
-            Some(Fate::Begin) => {
-                self.begin_recorded(id, Some(&live), now);
+                // A shell that ended while no server ran closes.
+                let shell = (self.parts.panes().get(&id))
+                    .filter(|pane| matches!(pane.runs, Runs::Shell(_)))
+                    .and_then(Pane::exit_status);
+                if let Some(ended) = shell {
+                    let end = pane::End {
+                        ended,
+                        left: pane::Left::default(),
+                    };
+                    self.program_ended(id, end, now);
+                }
                 self.touch();
                 self.settle(now);
             }
             Some(Fate::Lost) => {
-                if (self.parts.panes().get(&id)).is_some_and(|pane| pane.exit_status().is_none()) {
-                    self.pane_lost(id, AWAY, now);
+                self.awaited.remove(&id);
+                self.lost_away(id, AWAY, now);
+            }
+            // One that was closing as its server crashed: closed.
+            Some(Fate::End) if placed => {
+                self.awaited.remove(&id);
+                self.close_pane(id, None, now);
+            }
+            // One its run has no more: ended. Greeted, it is this
+            // server's, told on its link and kept till it ends; else it is
+            // told on a link of its own.
+            Some(Fate::End) => {
+                log!("{id}: its run has it no more: its process is ended");
+                let asked = self.awaited.remove(&id).flatten();
+                match (live, asked.and_then(crate::takeover::Asked::link)) {
+                    (Live::Greeted(_), Some(link)) => self.unlink(id, link, true, now),
+                    (Live::Closing, _) => {}
+                    (
+                        Live::Greeted(_)
+                        | Live::Unbegun(_)
+                        | Live::OtherRun
+                        | Live::Held(_)
+                        | Live::Silent,
+                        _,
+                    ) => self.end_stray(id, now),
                 }
             }
-            Some(Fate::End) if placed => self.close_pane(id, None, now),
-            Some(Fate::End) => self.end_unrecorded(id, Some(&live), asked, now),
             // Held by a server that ended since: it reads its link's end
             // next, and is asked again. By one that runs: this server
             // leaves the run to it.
-            Some(Fate::Refuse(by)) if !crate::takeover::holds(by) => self.reach_again(id, now),
+            Some(Fate::Refuse(by)) if !crate::takeover::holds(by) => {
+                self.awaited.remove(&id);
+                self.reach_again(id, now);
+            }
             Some(Fate::Refuse(by)) => self.holder = Some((id, by)),
             Some(Fate::Await) | None => {}
         }
@@ -2935,12 +2989,17 @@ impl Session {
     /// Everything the server shuts down: every pane is hung up. One whose
     /// process has not answered since the run was taken back is told to
     /// close after what it was asked, and not waited for: it closes when
-    /// it reads that.
+    /// it reads that. One not reached yet, for want of room at its socket,
+    /// can't be told: what the run kept then stays, its record saying it
+    /// ended, and the next start tells it (`untold`).
     pub fn shutdown(&mut self, now: Instant) {
         for pane in self.parts.close_all() {
             self.end_pane(pane.id(), true, now);
         }
-        for asked in std::mem::take(&mut self.awaited).into_values().flatten() {
+        let awaited = std::mem::take(&mut self.awaited);
+        let strays = std::mem::take(&mut self.strays);
+        self.untold = awaited.values().chain(strays.values()).any(Option::is_none);
+        for asked in awaited.into_values().flatten() {
             asked.leave(&ToPane::Close { closed: true });
         }
         self.reach_at = None;
@@ -2953,8 +3012,29 @@ impl Session {
     /// which the server asks for its answer until it has one. Event reads
     /// use the same bounded wait; commands run at once.
     pub fn begin(&mut self, request: Request, origin: &Origin, now: Instant) -> Begun {
-        self.transact(now, |s| s.begin_request(request, origin, now))
-            .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)))
+        // While panes are still to be heard from, a request may find one:
+        // it is kept, to be made again once that pane answered.
+        let again = (!self.awaited.is_empty() && self.body.is_none()).then(|| request.clone());
+        self.waits_on.set(None);
+        let asked = self.asked_pane;
+        let begun = self
+            .transact(now, |s| s.begin_request(request, origin, now))
+            .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)));
+        // It failed for a pane not linked yet, having asked no pane
+        // anything: it waits for that pane, and is made then, as though
+        // asked then. Its asker's going ends the wait (D-159).
+        match (self.waits_on.take(), again) {
+            (Some(pane), Some(request))
+                if self.asked_pane == asked && matches!(begun, Begun::Done(_)) =>
+            {
+                Begun::Waiting(Box::new(Waiting::Awaited {
+                    pane,
+                    request: Box::new(request),
+                    origin: origin.clone(),
+                }))
+            }
+            _ => begun,
+        }
     }
 
     /// `begin`'s work: what fails before a request runs is its error.
@@ -3002,7 +3082,9 @@ impl Session {
             }
         };
         let watches = match wait.since {
-            command::Since::Now(AnyRef::Pane(id)) => Watches::Pane((id, self.pane(id)?.counts())),
+            command::Since::Now(AnyRef::Pane(id)) => {
+                Watches::Pane((id, self.linked_pane(id)?.counts()))
+            }
             command::Since::Now(target) => Watches::Panes(
                 (self.panes_of(Some(target))?.into_iter())
                     .map(|id| Ok((id, self.pane(id)?.counts())))

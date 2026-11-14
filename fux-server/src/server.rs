@@ -736,9 +736,18 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
             return crate::socket::run_pinned(&exe)
                 .map_err(|error| Error::Refused(format!("running {}: {error}", exe.display())));
         }
-        // With no record there is no run: pane processes found waiting
-        // there are ended under the lock, below.
-        true | false => {}
+        true => {}
+        // A run that ended and could not say so in its record says so
+        // beside it: what is left of it is ended under the lock, below.
+        false if panes.join(crate::record::ENDED).exists() => {}
+        false if !crate::takeover::waiting(&panes).is_empty() => {
+            let why = format!(
+                "the record of the run on {} is gone",
+                socket.path().display()
+            );
+            return Err(Error::Refused(stranded(&panes, &why)));
+        }
+        false => {}
     }
     // The run's own fux, from here on: what it says, it says once.
     if let Some(text) = crate::socket::prepare_terminals(notice) {
@@ -761,41 +770,51 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
     // Under the socket's lock, the one server of the socket: a run whose
     // server crashed is taken back before anyone is served; else a new one
     // begins.
-    let wait = crate::takeover::TAKE_WAIT;
+    let marked = panes.join(crate::record::ENDED).exists();
     match crate::record::read(&panes.join("run"))
         .map_err(|e| Error::Refused(stranded(&panes, &e)))?
     {
-        // A run that ended, whose server went before it let go of what it
-        // kept (a crash as it stopped): this one finishes that, and
-        // begins a new run.
-        Some(record) if record.ended => {
-            end_waiting(&panes, socket.path(), wait)?;
-            fs::remove_file(panes.join("run")).map_err(Error::Setup)?;
-            pin(&panes, &exe).map_err(Error::Setup)?;
-        }
         // What refuses the run changed nothing, and says so itself: the
         // run can be taken back still.
-        Some(record) => {
-            session
-                .resume(record, wait, Instant::now())
-                .map_err(|e| Error::Refused(format!("taking the run back: {e}")))?;
-            // Said to who started it: which panes it does not hold yet.
-            if !session.awaited.is_empty() {
-                let silent: Vec<String> = session.awaited.keys().map(PaneId::to_string).collect();
-                notice(&format!(
-                    "the run is taken back, but for the pane processes that have not answered \
-                     (stopped, say): {}; each is linked when it answers",
-                    silent.join(", ")
-                ));
+        Some(record) if !record.ended && !marked => session
+            .resume(record, Instant::now())
+            .map_err(|e| Error::Refused(format!("taking the run back: {e}")))?,
+        // A run that ended, whose server went before it let go of what it
+        // kept (a crash as it stopped) or could not tell every pane: each
+        // pane process still there is told to end, and a new run begins.
+        // One not told yet, for want of room at its socket, keeps its
+        // socket till it is.
+        Some(_) | None if marked || panes.join("run").exists() => {
+            let close = crate::link::ToPane::Close { closed: true };
+            let asked = crate::takeover::ask_all(&crate::takeover::sockets(&panes), &close)
+                .map_err(|error| {
+                    Error::Refused(format!(
+                        "reaching for the pane processes that wait at {}: {error}",
+                        panes.display()
+                    ))
+                })?;
+            let untold: Vec<PaneId> = (asked.iter())
+                .filter(|(_, asked)| asked.is_none())
+                .map(|(id, _)| *id)
+                .collect();
+            for kept in ["run", crate::record::ENDED] {
+                match fs::remove_file(panes.join(kept)) {
+                    Err(error) if error.kind() != ErrorKind::NotFound => {
+                        return Err(Error::Setup(error));
+                    }
+                    Ok(()) | Err(_) => {}
+                }
+            }
+            pin(&panes, &exe, &untold).map_err(Error::Setup)?;
+            let strays = !asked.is_empty();
+            session.end_strays(asked);
+            // Should this server crash before they are gone, the next
+            // finds a run whose record lacks them, and ends them.
+            if strays {
+                session.record_now();
             }
         }
-        // No run: a pane process that waits there is no one's (its run's
-        // record went, or its close was recorded as its run's last and it
-        // was never told), and is ended.
-        None => {
-            end_waiting(&panes, socket.path(), wait)?;
-            pin(&panes, &exe).map_err(Error::Setup)?;
-        }
+        Some(_) | None => pin(&panes, &exe, &[]).map_err(Error::Setup)?,
     }
     // A server starts with nothing in it: the first client to attach
     // starts its first shell, on its screen, and a request makes a pane
@@ -826,34 +845,43 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
 /// a server taking it back runs too: installing fux neither upgrades nor
 /// strands it (D-124 (7)). A link to this fux where one can be made, else a
 /// copy of it.
-fn pin(panes: &std::path::Path, exe: &std::path::Path) -> std::io::Result<()> {
+fn pin(panes: &std::path::Path, exe: &std::path::Path, keep: &[PaneId]) -> std::io::Result<()> {
     // The fux of a run that ended, when it is this very one (it was run to
     // finish that run's end): kept, as it can't be linked or copied from
-    // itself once removed, and the rest let go.
-    if exe.exists() && std::env::current_exe().ok().as_deref() == Some(exe) {
-        for entry in fs::read_dir(panes)?.flatten() {
-            let path = entry.path();
-            let removed = match path == exe {
-                true => Ok(()),
-                false if entry.file_type().is_ok_and(|kind| kind.is_dir()) => {
-                    fs::remove_dir_all(&path)
-                }
-                false => fs::remove_file(&path),
-            };
-            match removed {
-                Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
-                Ok(()) | Err(_) => {}
-            }
+    // itself once removed.
+    let own = exe.exists() && std::env::current_exe().ok().as_deref() == Some(exe);
+    let kept: Vec<std::ffi::OsString> = (keep.iter())
+        .map(|id| id.number().to_string().into())
+        .collect();
+    // What a run that stopped, or never began, left there is no one's:
+    // all of it goes, but the sockets of the pane processes not yet told
+    // to end (`keep`), which are reached for there.
+    let entries = match fs::read_dir(panes) {
+        Ok(entries) => Some(entries),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    for entry in entries.into_iter().flatten().flatten() {
+        let path = entry.path();
+        if (own && path == exe) || kept.contains(&entry.file_name()) {
+            continue;
         }
-        return Ok(());
+        let removed = match entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            true => fs::remove_dir_all(&path),
+            false => fs::remove_file(&path),
+        };
+        match removed {
+            Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
+            Ok(()) | Err(_) => {}
+        }
     }
-    // What a run that stopped, or never began, left there is no one's.
-    match fs::remove_dir_all(panes) {
-        Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
-        Ok(()) | Err(_) => {}
+    if !panes.exists() {
+        fuxix::file::private_dir(panes)?;
     }
-    fuxix::file::private_dir(panes)?;
-    crate::socket::keep_executable(exe)
+    match own {
+        true => Ok(()),
+        false => crate::socket::keep_executable(exe),
+    }
 }
 
 /// What `found`, which is no directory, is.
@@ -866,50 +894,9 @@ fn kind_of(found: &fs::Metadata) -> &'static str {
     }
 }
 
-/// Ends the pane processes that wait at `panes` with no run to be part of
-/// (`takeover::end_waiting`); refused, with nothing more done, while a
-/// server still holds one of them, or if one's socket can't be reached
-/// for.
-fn end_waiting(
-    panes: &std::path::Path,
-    socket: &std::path::Path,
-    wait: Duration,
-) -> Result<(), Error> {
-    match crate::takeover::end_waiting(panes, wait) {
-        Ok(None) => Ok(()),
-        Ok(Some((pane, by))) => Err(Error::Refused(format!(
-            "{pane} is held by the fux server with pid {by}, which still serves a run on {}: \
-             this one does not start beside it",
-            socket.display()
-        ))),
-        Err(error) => Err(Error::Refused(format!(
-            "reaching for the pane processes that wait at {}: {error}",
-            panes.display()
-        ))),
-    }
-}
-
-/// The pane processes waiting at `panes` for a server, by their panes and
-/// their pids, as each says; one that listens and has not said in `wait`
-/// (stopped, say) is named with no pid.
-fn waiting(panes: &std::path::Path, wait: Duration) -> Vec<(PaneId, Option<i32>)> {
-    use crate::takeover::Live;
-    let sockets = crate::takeover::sockets(panes);
-    let Ok(found) = crate::takeover::gather(&sockets, &crate::link::ToPane::Who, wait) else {
-        return Vec::new();
-    };
-    (found.live.into_iter())
-        .map(|(id, live)| match live {
-            Live::Greeted(greeting) => (id, Some(greeting.pid)),
-            Live::Unbegun(pid) => (id, Some(pid)),
-            Live::Closing | Live::OtherRun | Live::Held(_) | Live::Silent => (id, None),
-        })
-        .collect()
-}
-
 /// Why a run cannot be taken back, `why`, and its panes that wait.
 fn stranded(panes: &std::path::Path, why: &str) -> String {
-    let waiting: Vec<String> = (waiting(panes, crate::takeover::TAKE_WAIT).into_iter())
+    let waiting: Vec<String> = (crate::takeover::waiting(panes).into_iter())
         .map(|(pane, pid)| match pid {
             Some(pid) => format!("{pane} (pid {pid})"),
             None => format!("{pane}"),
@@ -977,6 +964,9 @@ enum Slot {
     /// The link to a pane's process asked as its run was taken back, its
     /// answer still to come (`Session::awaited`).
     Awaited(PaneId),
+    /// The link to a pane process no run has, told to end
+    /// (`Session::strays`).
+    Stray(PaneId),
 }
 
 impl Server {
@@ -1017,12 +1007,16 @@ impl Server {
                         let buffer = self.read_buffer.as_mut_slice();
                         self.session.awaited_heard(id, buffer, now);
                     }
+                    Slot::Stray(id) => {
+                        let buffer = self.read_buffer.as_mut_slice();
+                        self.session.stray_heard(id, buffer, now);
+                    }
                 }
             }
             self.ready = ready;
-            // A pane that answered late says another server holds it: two
-            // servers took one run (its lock's file was removed under the
-            // first). This one leaves it as it is, to that one.
+            // A pane says another server holds it: two servers took one
+            // run (its lock's file was removed under the first). This one
+            // leaves it to that one.
             if let Some((pane, by)) = self.session.holder.take() {
                 self.leave(pane, by);
                 return;
@@ -1258,13 +1252,15 @@ impl Server {
                 add(PollFd::new(&remote.end.stream, flags), Slot::Pane(*id));
             }
         }
-        for (id, asked) in &self.session.awaited {
+        let awaited = (self.session.awaited.iter()).map(|(id, asked)| (Slot::Awaited(*id), asked));
+        let strays = (self.session.strays.iter()).map(|(id, asked)| (Slot::Stray(*id), asked));
+        for (slot, asked) in awaited.chain(strays) {
             if let Some(asked) = asked {
                 let mut flags = PollFlags::IN;
                 if !asked.end.out.is_empty() {
                     flags |= PollFlags::OUT;
                 }
-                add(PollFd::new(&asked.end.stream, flags), Slot::Awaited(*id));
+                add(PollFd::new(&asked.end.stream, flags), slot);
             }
         }
         // A connection with frames waiting is served this round: the poll
@@ -1296,8 +1292,10 @@ impl Server {
     }
 
     /// Leaves the run to the server with pid `by`, which pane `pane` says
-    /// holds it: every client is told, and nothing of the run is touched,
-    /// neither its record nor its panes.
+    /// holds it: every client is told, and this server ends, telling no
+    /// pane to close and letting go of nothing the run keeps. Its record
+    /// is as this server last wrote it: unchanged, unless a client changed
+    /// the run before the pane answered, or a pane was found gone.
     fn leave(&mut self, pane: PaneId, by: i32) {
         let why = format!(
             "{pane} is held by the fux server with pid {by}, which serves this run too: \
@@ -2065,11 +2063,23 @@ impl Server {
             std::thread::sleep(Duration::from_millis(2));
         }
         // The run is over, and its panes' sockets gone with them: so are
-        // its record, then its fux, and where it kept them, unless the next
-        // run's server made it again.
-        self.session.forget_run();
-        if let Some(socket) = self.session.socket() {
-            let _ = fs::remove_dir(crate::socket::panes(socket));
+        // its record, then its fux, and where it kept them. Under the
+        // socket's locks, which it let go as it stopped listening: with
+        // another server there now, what is there is that one's run's, or
+        // that one's to end. And not while a pane process could not be told:
+        // the record, which says the run ended, stays for the next start
+        // to tell it.
+        let Some(socket) = self.session.socket().map(std::path::Path::to_owned) else {
+            return;
+        };
+        if self.session.untold {
+            log!("a pane process could not be told its run ended: the next start tells it");
+            return;
+        }
+        if let Some(held) = crate::socket::hold_again(&socket) {
+            self.session.forget_run();
+            let _ = fs::remove_dir(crate::socket::panes(&socket));
+            drop(held);
         }
     }
 }

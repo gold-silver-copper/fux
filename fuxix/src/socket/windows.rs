@@ -309,12 +309,25 @@ pub fn peer(pipe: impl AsHandle, connected: SystemTime) -> Result<Peer> {
 /// `ERROR_FILE_NOT_FOUND`. The server may only identify the client, never
 /// act as it.
 pub fn connect(name: &str) -> Result<Stream> {
-    Stream::new(checked(name)?.0)
+    Stream::new(checked(name, BUSY)?.0)
 }
 
-/// The pipe `name` opened and found to be ours ([`connect`]), and when.
-fn checked(name: &str) -> Result<(OwnedHandle, SystemTime)> {
-    let pipe = open(&wide(name)?)?;
+/// [`connect`], without waiting: with every instance taken it fails with
+/// [`Errno::AGAIN`] at once, as a full listener's connect does on Unix,
+/// for a caller that must not wait on the pipe's server (one that takes
+/// no client: stopped, say).
+pub fn connect_now(name: &str) -> Result<Stream> {
+    Stream::new(checked(name, 0)?.0)
+}
+
+/// How long [`connect`] waits for an instance of a pipe whose every one
+/// is taken, in ms.
+const BUSY: u32 = 1000;
+
+/// The pipe `name` opened, waiting `busy` ms at most for an instance, and
+/// found to be ours ([`connect`]), and when.
+fn checked(name: &str, busy: u32) -> Result<(OwnedHandle, SystemTime)> {
+    let pipe = open(&wide(name)?, busy)?;
     let opened = SystemTime::now();
     if !peer(&pipe, opened)?.user.is_current() || !owned_by_us(&pipe)? {
         return Err(Errno::ACCES);
@@ -481,12 +494,11 @@ pub(crate) fn only_ours(object: &OwnedHandle) -> Result<bool> {
     Ok(true)
 }
 
-/// Opens the pipe `name` (NUL-ended), waiting up to `BUSY` ms in all for an
+/// Opens the pipe `name` (NUL-ended), waiting up to `wait` ms in all for an
 /// instance while every one is taken. A wait that fails but for its time
 /// running out or the pipe being gone or busy again ends it with that
 /// error, rather than trying again at once till the time is up.
-fn open(name: &[u16]) -> Result<OwnedHandle> {
-    const BUSY: u32 = 1000;
+fn open(name: &[u16], wait: u32) -> Result<OwnedHandle> {
     let flags = FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
     let busy = Errno::from_code(ERROR_PIPE_BUSY);
     let start = std::time::Instant::now();
@@ -509,8 +521,8 @@ fn open(name: &[u16]) -> Result<OwnedHandle> {
             return Ok(unsafe { OwnedHandle::from_raw_handle(raw) });
         }
         let errno = Errno::last();
-        let gone = u32::try_from(start.elapsed().as_millis()).unwrap_or(BUSY);
-        let left = BUSY.saturating_sub(gone);
+        let gone = u32::try_from(start.elapsed().as_millis()).unwrap_or(wait);
+        let left = wait.saturating_sub(gone);
         if errno != busy || left == 0 {
             return Err(if errno == busy { Errno::AGAIN } else { errno });
         }

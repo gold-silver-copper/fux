@@ -79,6 +79,10 @@ impl Tab {
     }
 }
 
+/// The file beside a run's record that says the run ended, where the
+/// record itself could not be written to say so (`Session::end_run`).
+pub const ENDED: &str = "ended";
+
 /// The record at `path`, whole, if one is there: what a crashed server
 /// left.
 pub fn read(path: &std::path::Path) -> Result<Option<Record>, String> {
