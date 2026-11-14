@@ -182,7 +182,13 @@ struct Conn {
     /// some (`owed`).
     /// Its attached client was last told to hold back what it types
     /// (`ToAttached::Hold`).
-    holds: bool,
+    holds: std::collections::BTreeSet<PaneId>,
+    /// The pane its attached client was last told it focuses
+    /// (`ToAttached::Focus`).
+    focus: Option<PaneId>,
+    /// As much as a read brings of its client's frames waited to be
+    /// handled, and some still does (`hold`).
+    behind: bool,
     pending: bool,
     /// What its client is owed as state, not yet passed to its process:
     /// the latest clipboard copy and title, the bell, a prompt, each as
@@ -335,7 +341,9 @@ impl Conn {
             link: crate::link::End::new(link)?,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
-            holds: false,
+            holds: std::collections::BTreeSet::new(),
+            focus: None,
+            behind: false,
             pending: false,
             owed: Owing::default(),
             bad: None,
@@ -724,7 +732,8 @@ impl Conn {
             | ToAttached::Keys(_)
             | ToAttached::Read(..)
             | ToAttached::More
-            | ToAttached::Hold(_) => self.send(frame),
+            | ToAttached::Hold(..)
+            | ToAttached::Focus(_) => self.send(frame),
         }
     }
 
@@ -738,15 +747,28 @@ impl Conn {
         let Some(client) = self.attached().map(|attached| attached.client) else {
             return;
         };
-        let behind = match self.holds {
+        // The pane it focuses, which what it types is for.
+        let focus = session.focused(client);
+        if focus != self.focus {
+            self.focus = focus;
+            self.send(&ToAttached::Focus(focus));
+        }
+        self.behind = match self.behind {
             true => self.decoder.buffered() > 0,
             false => self.decoder.buffered() >= CONN_READ,
         };
-        let holds = behind || session.typing_holds(client);
-        if holds != self.holds {
-            self.holds = holds;
-            self.send(&ToAttached::Hold(holds));
+        let mut holds = session.typing_holds(client);
+        if self.behind {
+            holds.extend(focus);
         }
+        let (was, now) = (std::mem::take(&mut self.holds), holds);
+        for pane in was.difference(&now) {
+            self.send(&ToAttached::Hold(*pane, false));
+        }
+        for pane in now.difference(&was) {
+            self.send(&ToAttached::Hold(*pane, true));
+        }
+        self.holds = now;
     }
 
     /// Passes its process what waits for its client, as far as its link
@@ -1933,7 +1955,13 @@ impl Server {
                     // A paste's pieces stay with its client's connection,
                     // which sends the server the paste for the first
                     // (`conn::next_frame`): one that comes here has none.
-                    Some(AttachedFrame::Piece(_)) => {}
+                    Some(AttachedFrame::Piece(_) | AttachedFrame::PieceFor(..)) => {}
+                    // Typed into that pane, and sent later than typed.
+                    Some(AttachedFrame::For(pane, act)) => {
+                        session.give_body(body);
+                        session.act_for(attached.client, pane, *act, now);
+                        session.give_body(None);
+                    }
                     None => return Ok(false),
                 }
                 if let Some(attached) = conn.attached() {

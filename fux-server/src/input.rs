@@ -145,7 +145,8 @@ impl Session {
     /// Types into the client's focused pane: a key or a paste, as its
     /// program asked (`put_in`).
     fn type_in(&mut self, client: ClientId, typed: Typed, now: Instant) -> bool {
-        let Some(pane) = self.focused(client) else {
+        // The pane it was typed into, if its client says (`act_for`).
+        let Some(pane) = self.typed_into(client) else {
             return false;
         };
         self.typed(client);
@@ -173,8 +174,33 @@ impl Session {
             self.notify_to(client, why, true);
             return true;
         }
+        self.typists.insert((pane, client));
         self.tell_pane(pane, crate::link::ToPane::Typed { client, typed }, now);
         false
+    }
+
+    /// The pane what client `client` types now is for: the one it says it
+    /// typed it into, if that pane is still there, else the one it
+    /// focuses.
+    fn typed_into(&self, client: ClientId) -> Option<fux_wire::id::PaneId> {
+        match self.typing_for {
+            Some(pane) => self.parts.panes().contains_key(&pane).then_some(pane),
+            None => self.focused(client),
+        }
+    }
+
+    /// `act`, a key or a paste client `client` typed into pane `pane` and
+    /// sends now, though it may focus another (`AttachedFrame::For`).
+    pub fn act_for(
+        &mut self,
+        client: ClientId,
+        pane: fux_wire::id::PaneId,
+        act: Act,
+        now: Instant,
+    ) {
+        self.typing_for = Some(pane);
+        self.acts(client, vec![act], now);
+        self.typing_for = None;
     }
 
     fn paste(&mut self, client: ClientId, text: String, now: Instant) {
@@ -190,7 +216,7 @@ impl Session {
         match self.body_token() {
             Some((body, token)) => {
                 let runs_in = self.views.get(&client).and_then(|v| v.runs_in);
-                let pane = self.focused(client).filter(|p| runs_in != Some(*p));
+                let pane = self.typed_into(client).filter(|p| runs_in != Some(*p));
                 // With no pane to take it, or one that was not told to
                 // wait for it, its connection lets it go: a piece sent a
                 // pane that waits for none would never be taken.

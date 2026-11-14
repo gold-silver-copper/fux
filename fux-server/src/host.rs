@@ -302,7 +302,10 @@ impl Host {
         // Full at a frame of input unread, and no longer once none waits:
         // said as it changes, so that those who type into it hold back
         // what they type instead of its piling up here.
-        let waits = self.pane.input().waiting();
+        // What was typed, not its program's own queries answered: a
+        // program that asks without reading stalls only itself (D-177).
+        let input = self.pane.input();
+        let waits = input.waiting().saturating_sub(input.replies());
         let full = match self.full {
             true => waits > 0,
             false => waits >= crate::pane::BEHIND,

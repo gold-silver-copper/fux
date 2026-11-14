@@ -94,7 +94,17 @@ fn recorder(server: &Server, first: &str) -> Result<(i32, std::path::PathBuf), S
 
 /// Waits until the file holds exactly `expected`.
 fn received(out: &std::path::Path, expected: &[u8]) -> Outcome {
+    received_by(None, out, expected)
+}
+
+/// `received`, `client` doing meanwhile what the server asks of it, as a
+/// client's own loop does: a paste it sends after another waits to be told
+/// that one is taken (`ToAttached::More`).
+fn received_by(mut client: Option<&mut Client>, out: &std::path::Path, expected: &[u8]) -> Outcome {
     eventually("everything received", || {
+        if let Some(client) = &mut client {
+            client.pump()?;
+        }
         Ok(std::fs::read(out).unwrap_or_default().len() >= expected.len())
     })
     .map_err(|error| {
@@ -191,7 +201,7 @@ fn input_waits_while_its_program_does_not_read() -> Outcome {
         expected.extend(key.to_string().bytes());
     }
     signal(cat, fuxix::process::Signal::Cont);
-    received(&out, &expected)?;
+    received_by(Some(&mut client), &out, &expected)?;
 
     // Eighty pastes of 2000 bytes.
     stop(cat)?;
@@ -201,7 +211,7 @@ fn input_waits_while_its_program_does_not_read() -> Outcome {
         expected.extend(text);
     }
     signal(cat, fuxix::process::Signal::Cont);
-    received(&out, &expected)
+    received_by(Some(&mut client), &out, &expected)
 }
 
 /// Frames a client sends faster than a tick handles them wait for its

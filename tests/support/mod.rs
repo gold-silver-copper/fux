@@ -500,12 +500,15 @@ pub struct Client {
     greeted: bool,
     /// Its keys, once the server has said its id.
     keyboard: Option<Keyboard>,
-    /// What it sends behind a paste of its own, as the real client does.
-    pasting: fux::client::Pasting,
+    /// What it types that waits for a pane, as the real client's does.
+    gate: fux::client::Gate,
     frames: u64,
     /// Bytes typed before then, typed once it has.
     typed: Vec<u8>,
     pub id: Option<String>,
+    /// Each time it was told to hold back what it types into a pane, or
+    /// no longer.
+    pub holds: Vec<(String, bool)>,
     pub terminal: fux_vt::Parser,
     pub rows: u16,
     pub cols: u16,
@@ -562,10 +565,11 @@ impl Client {
             read_only,
             greeted: false,
             keyboard: None,
-            pasting: fux::client::Pasting::default(),
+            gate: fux::client::Gate::default(),
             frames: 0,
             typed: Vec::new(),
             id: None,
+            holds: Vec::new(),
             terminal: terminal(rows, cols)?,
             rows,
             cols,
@@ -607,18 +611,24 @@ impl Client {
     }
 
     fn acts(&mut self, acts: Vec<Dispatch>) -> Outcome {
-        for out in self.pasting.order(acts) {
-            let Some(out) = self.pasting.admit(out) else {
-                continue;
+        use fux::client::Pass;
+        self.gate.take(acts);
+        while let Some(pass) = self.gate.pass() {
+            let (to, out) = match pass {
+                Pass::Now(out) => (None, out),
+                Pass::For(pane, act) => (Some(pane), Dispatch::Send(act)),
             };
             match out {
-                // A paste goes as the real client sends it: its first
-                // piece, the rest as each is asked for.
-                Dispatch::Send(act @ Act::Paste(_)) => {
-                    let frame = AttachedFrame::Act(Box::new(act));
-                    let mut pieces = fux_wire::protocol::encode_attached(&frame).into_iter();
+                // What is typed goes as the real client sends it: for the
+                // pane it was typed into, a paste's first piece now and
+                // the rest as each is asked for.
+                Dispatch::Send(act @ (Act::Key(_) | Act::Paste(_))) => {
+                    let pasted = matches!(act, Act::Paste(_));
+                    let mut pieces = fux_wire::protocol::encode_typed(act, to).into_iter();
                     self.write(&pieces.next().unwrap_or_default())?;
-                    self.pasting.sent(pieces);
+                    if pasted {
+                        self.gate.sent(pieces);
+                    }
                     self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
                 }
                 Dispatch::Send(act) => self.act(act)?,
@@ -714,11 +724,15 @@ impl Client {
                     self.id = Some(me.to_string());
                 }
                 ToAttached::More => {
-                    if let Some(piece) = self.pasting.taken() {
+                    if let Some(piece) = self.gate.taken() {
                         self.write(&piece)?;
                     }
                 }
-                ToAttached::Hold(held) => self.pasting.held = held,
+                ToAttached::Hold(pane, held) => {
+                    self.holds.push((pane.to_string(), held));
+                    self.gate.hold(pane, held);
+                }
+                ToAttached::Focus(pane) => self.gate.focus(pane),
                 frame @ (ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)

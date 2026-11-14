@@ -308,6 +308,12 @@ pub struct Session {
     /// The panes with a frame of input their program has not read
     /// (`FromPane::Full`): what is typed into one is held by its typist.
     full: std::collections::BTreeSet<PaneId>,
+    /// Who typed into which pane since it last had no input unread: those
+    /// are told to hold back once it has a frame of it (`typing_holds`).
+    pub(crate) typists: std::collections::BTreeSet<(PaneId, ClientId)>,
+    /// The pane what a client typed is for, while an act that names one
+    /// is applied (`AttachedFrame::For`): not the one it focuses now.
+    pub(crate) typing_for: Option<PaneId>,
     /// What panes used up of what connections held them for (`Retired`):
     /// the server lets each go of its connection.
     pub retired: Vec<(PaneId, u64)>,
@@ -496,6 +502,8 @@ impl Session {
             closed: Vec::new(),
             prompted: std::collections::BTreeSet::new(),
             full: std::collections::BTreeSet::new(),
+            typists: std::collections::BTreeSet::new(),
+            typing_for: None,
             body: None,
             deliveries: Vec::new(),
             retired: Vec::new(),
@@ -689,14 +697,21 @@ impl Session {
         }
     }
 
-    /// Whether client `client` is to hold back what it types
-    /// (`ToAttached::Hold`): its focused pane's process takes nothing
-    /// (`typing_waits`), or has a frame of input its program has not read
-    /// (`FromPane::Full`). What is typed then stays with the client.
-    pub fn typing_holds(&self, client: ClientId) -> bool {
-        self.typing_waits(client)
-            || (self.focused(client))
-                .is_some_and(|pane| self.full.contains(&pane) && self.links.contains_key(&pane))
+    /// The panes client `client` is to hold back what it types into
+    /// (`ToAttached::Hold`): the one it focuses, if that pane's process
+    /// takes nothing or slower than it is typed (`typing_waits`); and each
+    /// it typed into that has a frame of what was typed unread by its
+    /// program (`FromPane::Full`). What is typed into those stays with the
+    /// client; one that only shows such a pane is told nothing.
+    pub fn typing_holds(&self, client: ClientId) -> std::collections::BTreeSet<PaneId> {
+        let waits = (self.focused(client)).filter(|_| self.typing_waits(client));
+        (self.typists.iter())
+            .filter(|(pane, typist)| {
+                *typist == client && self.full.contains(pane) && self.links.contains_key(pane)
+            })
+            .map(|(pane, _)| *pane)
+            .chain(waits)
+            .collect()
     }
 
     /// Whether what client `client` types waits, unread by the server: its
@@ -1074,6 +1089,7 @@ impl Session {
             }
             FromPane::Full(false) => {
                 self.full.remove(&id);
+                self.typists.retain(|(pane, _)| *pane != id);
             }
         }
     }
@@ -4587,7 +4603,8 @@ pub(crate) mod testing {
                     | ToAttached::Welcome(..)
                     | ToAttached::Read(..)
                     | ToAttached::More
-                    | ToAttached::Hold(_),
+                    | ToAttached::Hold(..)
+                    | ToAttached::Focus(_),
                 )
                 | super::Outgoing::Owed(..)
                 | super::Outgoing::Keys(..)
@@ -9732,6 +9749,12 @@ mod tests {
         let id = s.focused(client).ok_or("its pane")?;
         let now = Instant::now();
         let key = || Typed::Key(fux_vt::keys::KeyPress::char('k').into());
+        // Another client shows the same pane, and types nothing.
+        let watcher = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+        assert_eq!(s.focused(watcher), Some(id));
+        // One key typed as a client's is: its server knows who typed.
+        let stroke = fux_vt::keys::KeyPress::char('k').into();
+        s.acts(client, vec![fux_wire::act::Act::Key(stroke)], now);
         let fulls = |reports: &[FromPane]| -> Vec<bool> {
             (reports.iter())
                 .filter_map(|report| match report {
@@ -9752,7 +9775,7 @@ mod tests {
         };
         // One byte short of a frame: not full.
         let said = host(&mut s, id, |h| {
-            for _ in 1..crate::pane::BEHIND {
+            for _ in 2..crate::pane::BEHIND {
                 h.handle(
                     ToPane::Typed {
                         client,
@@ -9764,7 +9787,7 @@ mod tests {
             h.take()
         })?;
         assert_eq!(fulls(&said), []);
-        assert!(!s.typing_holds(client));
+        assert!(s.typing_holds(client).is_empty());
         let said = host(&mut s, id, |h| {
             h.handle(
                 ToPane::Typed {
@@ -9788,7 +9811,8 @@ mod tests {
         assert_eq!(fulls(&said), [true]);
         s.heard(id, FromPane::Full(true));
         s.pump(now);
-        assert!(s.typing_holds(client));
+        assert_eq!(s.typing_holds(client), [id].into());
+        assert!(s.typing_holds(watcher).is_empty(), "it typed nothing");
         // Its program reads it all: no longer.
         let said = host(&mut s, id, |h| {
             let read = h.pane_mut().drain_input().len();
@@ -9798,7 +9822,23 @@ mod tests {
         assert_eq!(fulls(&said), [false]);
         s.heard(id, FromPane::Full(false));
         s.pump(now);
-        assert!(!s.typing_holds(client));
+        assert!(s.typing_holds(client).is_empty());
+        // Answers to its program's own queries, a frame of them unread,
+        // are not what was typed: nobody is told to hold back for them.
+        let said = host(&mut s, id, |h| {
+            // A slice of its output a call: as many calls as bring a
+            // frame of answers.
+            let queries: Vec<u8> = std::iter::repeat_n(*b"\x1b[c", 1024).flatten().collect();
+            for _ in 0..10_000 {
+                if h.pane().input().replies() >= crate::pane::BEHIND {
+                    break;
+                }
+                h.output(&queries, now);
+            }
+            assert!(h.pane().input().replies() >= crate::pane::BEHIND);
+            h.take()
+        })?;
+        assert_eq!(fulls(&said), []);
         Ok(())
     }
 
