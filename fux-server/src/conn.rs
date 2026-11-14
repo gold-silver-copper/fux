@@ -292,7 +292,34 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
             let frame = decoder
                 .frame::<AttachedFrame>()
                 .map_err(|e| e.to_string())?;
-            frame.map(|mut frame| {
+            frame.map(|frame| attached_sent(frame, bodies))
+        }
+        Want::Answer | Want::Nothing => None,
+    };
+    Ok(frame)
+}
+
+/// Whether an attached client's `frame` adds to what a pane's program
+/// reads, or sizes what it draws on: taken in the order it came, after a
+/// paste of its client's that is still on its way. Anything else (an
+/// answer, a detach, what its screens show) is taken at once.
+fn adds_input(frame: &AttachedFrame) -> bool {
+    use fux_wire::act::Act;
+    match frame {
+        AttachedFrame::Act(act) => match **act {
+            Act::Key(_) | Act::Paste(_) | Act::Mouse(_) | Act::Focus(_) => true,
+            Act::Presentation(_) | Act::Reply(_) | Act::Screen { .. } | Act::Notice { .. } => false,
+        },
+        AttachedFrame::Resize(_) | AttachedFrame::Piece(_) => true,
+        AttachedFrame::Detach | AttachedFrame::Answer(..) => false,
+    }
+}
+
+/// An attached client's `frame`, to send its server (`next_frame`).
+fn attached_sent(mut frame: AttachedFrame, bodies: bool) -> Sent {
+    {
+        {
+            {
                 use fux_wire::act::Act;
                 let mut body = None;
                 if let (true, AttachedFrame::Act(act)) = (bodies, &mut frame)
@@ -320,11 +347,9 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
                     typed,
                     body,
                 }
-            })
+            }
         }
-        Want::Answer | Want::Nothing => None,
-    };
-    Ok(frame)
+    }
 }
 
 /// The pane `id` of run `run` reached at its socket in `panes`, its first
@@ -510,6 +535,9 @@ struct Post {
     links: Vec<(End, bool)>,
     /// The piece in flight ends in `Input::More`.
     more: bool,
+    /// Its attached client was asked for the piece after the one in flight
+    /// (`ToAttached::More`), which was taken.
+    asked: bool,
     /// The client its keys are for, if they are a client's, and whether
     /// that client's connection went before it took them all.
     keys: Option<ClientId>,
@@ -519,7 +547,7 @@ struct Post {
 impl Post {
     /// Sends `inputs`, its next piece, to each link.
     fn send(&mut self, inputs: &[Input]) {
-        self.more = Input::go_on(inputs);
+        (self.more, self.asked) = (Input::go_on(inputs), false);
         let message = ToSide::Body {
             token: self.token,
             inputs: inputs.to_vec(),
@@ -607,6 +635,7 @@ impl Errand {
                     lost: end.is_none(),
                     links: end.into_iter().map(|end| (end, false)).collect(),
                     more: false,
+                    asked: false,
                     keys: Some(client),
                 };
                 post.send(inputs);
@@ -1133,6 +1162,9 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     // are not taken while one is kept or being sent (`Post`).
     let mut body: Option<(u64, Vec<Input>)> = None;
     let mut numbered = 0u64;
+    // A frame of its attached client's that adds input, read while a paste
+    // of its was on its way: taken once that is sent (`adds_input`).
+    let mut ahead: Option<AttachedFrame> = None;
     // What it let go of a request longer than a frame, still coming.
     let mut long = 0usize;
     // What it does at panes' sockets, and whether one of them makes its
@@ -1150,21 +1182,68 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     let mut backlog: std::collections::VecDeque<ToConn> = said.into();
     loop {
         let now = Instant::now();
-        // The next piece of the body it sends, once the last is taken.
-        if let Some(post) = (errands.iter_mut())
-            .filter(|errand| errand.hungry())
-            .find_map(Errand::post)
+        let attached = want == Want::Frames(Expect::Attached);
+        // Its client gone with a body of its on its way, the body ends
+        // where it is: its links closed, a paste left open is closed.
+        let busy = body.is_some() || errands.iter_mut().any(|e| e.post().is_some());
+        if busy && ended && !decoder.ready().unwrap_or(false) {
+            body = None;
+            errands.retain_mut(|errand| errand.post().is_none());
+        }
+        // The next piece of the body it sends, once the last is taken: a
+        // command's client sends them one after another, and they are read
+        // as they are wanted.
+        if !attached
+            && let Some(post) = (errands.iter_mut())
+                .filter(|errand| errand.hungry())
+                .find_map(Errand::post)
         {
             match decoder.frame::<Piece>() {
                 Ok(Some(Piece(inputs))) => post.send(&inputs),
-                // Its client gone, or sending no more, the body ends where
-                // it is: its links closed, a paste left open is closed.
-                Ok(None) if ended => errands.retain(|errand| !errand.hungry()),
                 Ok(None) => {}
                 Err(error) => {
                     link.send(&FromConn::Bad(error.to_string()));
                     (want, shut) = (Want::Nothing, true);
                     errands.retain(|errand| !errand.hungry());
+                }
+            }
+        }
+        // An attached client is asked for each piece as it is wanted, and
+        // is read all the while its paste is kept or on its way: what adds
+        // no input (an answer to a question its own paste may have set
+        // off, a detach) goes on at once; what does waits its turn behind
+        // the paste, one frame of it held here, the rest unread.
+        while attached
+            && ahead.is_none()
+            && !shut
+            && (body.is_some() || errands.iter_mut().any(|e| e.post().is_some()))
+        {
+            let mut hungry = (errands.iter_mut())
+                .filter(|errand| errand.hungry())
+                .find_map(Errand::post);
+            if let Some(post) = &mut hungry
+                && !post.asked
+            {
+                post.asked = true;
+                out.push_with(|frames| ToAttached::More.encode_into(frames));
+            }
+            match (decoder.frame::<AttachedFrame>(), hungry) {
+                (Ok(Some(AttachedFrame::Piece(inputs))), Some(post)) => post.send(&inputs),
+                (Ok(Some(frame)), _) if adds_input(&frame) => ahead = Some(frame),
+                (Ok(Some(frame)), _) => {
+                    let frame = FromConn::Frame {
+                        frame: frame.encode(),
+                        body: None,
+                    };
+                    if !link.send_whole(&frame) {
+                        link.send(&FromConn::Bad(too_long(fux_wire::protocol::MAX_FRAME)));
+                        (want, shut) = (Want::Nothing, true);
+                    }
+                }
+                (Ok(None), _) => break,
+                (Err(error), _) => {
+                    link.send(&FromConn::Bad(error.to_string()));
+                    (want, shut) = (Want::Nothing, true);
                 }
             }
         }
@@ -1191,7 +1270,12 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                     Ok(None) | Err(_) => {}
                 }
             }
-            match next_frame(&mut decoder, want, composer.panes.is_some()) {
+            // What waited behind its paste comes first.
+            let next = match ahead.take() {
+                Some(frame) => Ok(Some(attached_sent(frame, composer.panes.is_some()))),
+                None => next_frame(&mut decoder, want, composer.panes.is_some()),
+            };
+            match next {
                 Ok(Some(Sent {
                     frame,
                     typed,
@@ -1324,7 +1408,8 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // Its client is read while its stage takes its frames, and while
         // its request waits on someone else, to hear its end.
         // And for the next piece of a body it sends, once the last is taken.
-        let listens = !(ended || shut || closing) && (takes || idle || hungry);
+        let aside = want == Want::Frames(Expect::Attached) && posting && ahead.is_none() && !shut;
+        let listens = !(ended || shut || closing) && (takes || idle || hungry || aside);
         let wake = composer.due(out.is_empty());
         // An errand with no link left to wait on goes on at once.
         let timeout = match (errands.iter()).any(|e| e.links().is_empty() && !e.hungry()) {
@@ -1410,7 +1495,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             errands.retain_mut(|errand| errand.post().is_none());
         }
         if listens && !client_ready.is_empty() {
-            let room = match takes || hungry {
+            let room = match takes || hungry || aside {
                 true => READ,
                 false => READ.saturating_sub(decoder.buffered()),
             };
@@ -1527,11 +1612,20 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 // keys for it are still coming: its client, which types
                 // those keys as it gets them, is read again only once that
                 // paste is sent, and would take no more keys meanwhile.
-                let own = (backlog.iter()).position(|m| matches!(m, ToConn::Deliver { .. }));
-                let Some(deliver) = own.and_then(|at| backlog.remove(at)) else {
+                // And what is state, whose latest is all that counts (its
+                // scene, what its client is owed), is taken as it comes:
+                // only what its server said in order after the keys (its
+                // client's answer to them is asked for next) waits here.
+                let free = (backlog.iter()).position(|m| {
+                    matches!(
+                        m,
+                        ToConn::Deliver { .. } | ToConn::Scene(_) | ToConn::Owed { .. }
+                    )
+                });
+                let Some(now) = free.and_then(|at| backlog.remove(at)) else {
                     break;
                 };
-                backlog.push_front(deliver);
+                backlog.push_front(now);
             }
             let Some(message) = backlog.pop_front() else {
                 break;
@@ -1564,6 +1658,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                             token,
                             links,
                             more: false,
+                            asked: false,
                             keys: None,
                             lost: false,
                         };
@@ -2026,6 +2121,61 @@ mod tests {
         let link = End::new(link).map_err(e)?;
         let conn = std::thread::spawn(move || super::serve(client, link, Vec::new()));
         Ok((theirs, server, conn))
+    }
+
+    /// While keys for its client are still to come from their sender, what
+    /// its client is owed as state still reaches it, the latest of each:
+    /// only what its server said in order after the keys waits for them
+    /// (a thousand copies sat behind them, none reaching the client).
+    #[cfg(unix)]
+    #[test]
+    fn what_a_client_is_owed_reaches_it_though_keys_for_it_are_still_to_come() -> Result<(), String>
+    {
+        use crate::link::{Owed, ToConn};
+        use fux_wire::protocol::{Frame, Hello, Role, ToAttached};
+        use std::io::{Read, Write};
+        let e = |error: std::io::Error| error.to_string();
+        let (mut theirs, mut server, conn) = served()?;
+        theirs
+            .write_all(&Hello::ours(Role::Attach).encode())
+            .map_err(e)?;
+        said(&mut server)?;
+        // Keys no connection sends: they wait, and what follows them does.
+        server.send(&ToConn::Keys { token: 9 });
+        let after = ToAttached::Paint(b"after the keys"[..].into()).encode();
+        server.send(&ToConn::Bytes(after));
+        for n in 0..1000 {
+            let copy = format!("copy{n}").into_bytes();
+            server.send(&ToConn::Owed {
+                kind: Owed::Clipboard,
+                bytes: ToAttached::Paint(copy.into()).encode(),
+                last: true,
+            });
+        }
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .map_err(e)?;
+        let mut decoder = Decoder::default();
+        let mut buffer = [0u8; 4096];
+        let mut got = Vec::new();
+        while !got.iter().any(|paint| paint == "copy999") {
+            let n = theirs.read(&mut buffer).map_err(e)?;
+            assert!(n > 0, "its process closed: {got:?}");
+            decoder.push(buffer.get(..n).unwrap_or_default());
+            while let Some(ToAttached::Paint(bytes)) = decoder.frame().map_err(|e| e.to_string())? {
+                got.push(String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+        // Not each copy, and nothing of what waits behind the keys.
+        assert!(got.len() < 1000, "{} paints", got.len());
+        assert!(
+            !got.iter().any(|paint| paint == "after the keys"),
+            "{got:?}"
+        );
+        drop(server);
+        conn.join().map_err(|_| "its process panicked")??;
+        Ok(())
     }
 
     /// Pieces of a longer message sent before a `Hello`, where no long

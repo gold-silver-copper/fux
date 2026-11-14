@@ -687,20 +687,20 @@ pub fn encode_asked(asked: &Asked) -> Vec<u8> {
     out
 }
 
-/// `frame` as an attached client sends it: a paste longer than a frame
-/// takes in pieces (`AttachedFrame::Piece`), anything else as it is.
-pub fn encode_attached(frame: &AttachedFrame) -> Vec<u8> {
+/// `frame` as an attached client sends it, each of its frames encoded: a
+/// paste longer than a frame takes in pieces (`AttachedFrame::Piece`), the
+/// first to send at once and each further one as it is asked for
+/// (`ToAttached::More`); anything else as its one frame.
+pub fn encode_attached(frame: &AttachedFrame) -> Vec<Vec<u8>> {
     if let AttachedFrame::Act(act) = frame
         && let Act::Paste(text) = &**act
         && !sends_whole(frame)
     {
-        let mut out = Vec::new();
-        for piece in cut_inputs(vec![crate::command::Input::Paste(text.clone())]) {
-            AttachedFrame::Piece(piece).encode_into(&mut out);
-        }
-        return out;
+        return (cut_inputs(vec![crate::command::Input::Paste(text.clone())]).into_iter())
+            .map(|piece| AttachedFrame::Piece(piece).encode())
+            .collect();
     }
-    frame.encode()
+    vec![frame.encode()]
 }
 
 wire! {
@@ -928,6 +928,13 @@ frames! {
         /// What only it knows, asked for a request: it sends its `Answer`
         /// with this number.
         Read(asked: u64, read: crate::command::ClientRead) = 13,
+        /// The next piece of the paste it is sending is wanted now: it
+        /// sends one `AttachedFrame::Piece`. A client sends a paste's first
+        /// piece and then each further one only as it is asked for, so it
+        /// is never part way through writing one while the paste waits for
+        /// a program that isn't reading, and what else it has to say (an
+        /// `Answer`, a detach) is said meanwhile.
+        More = 21,
     }
 }
 

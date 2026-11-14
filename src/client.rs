@@ -993,7 +993,10 @@ impl Keyboard {
                 acts.push(Dispatch::Answer(asked, value));
             }
             // The attachment's own: `attached` reads them.
-            ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
+            ToAttached::Welcome(..)
+            | ToAttached::Paint(_)
+            | ToAttached::Exit(_)
+            | ToAttached::More => {}
         }
         acts.extend(self.release());
         acts
@@ -1570,6 +1573,13 @@ fn attached(
     let mut pending_resize = None;
     let mut acts = Vec::new();
     let mut frames = 0u64;
+    // A paste longer than a frame takes: its pieces after the first, each
+    // sent as the server asks for it (`ToAttached::More`), so that this
+    // loop is never part way through writing one while the paste waits
+    // for a program that isn't reading. What is typed meanwhile waits
+    // behind it, here (`behind`): only what adds no input is sent.
+    let mut pasting: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+    let mut behind: Vec<Dispatch> = Vec::new();
     const STREAM: Option<usize> = Some(0);
     const WINCH: Option<usize> = Some(1);
     const STOPS: Option<usize> = Some(2);
@@ -1587,6 +1597,16 @@ fn attached(
                 }
                 (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
                 (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
+                // The next piece of the paste is wanted: its taker reads
+                // it as it is written.
+                (ToAttached::More, _) => {
+                    if let Some(piece) = pasting.pop_front()
+                        && let Err(ended) =
+                            tell(stream, decoder, true, output.as_deref_mut(), &piece)
+                    {
+                        return ended;
+                    }
+                }
                 (ToAttached::Welcome(me, run), None) => {
                     if !terminal {
                         (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
@@ -1608,6 +1628,7 @@ fn attached(
         // Before admission, resizes stay local. Once admitted, send the
         // latest one before dispatching any job that fences this connection.
         if keyboard.is_some()
+            && pasting.is_empty()
             && let Some(size) = pending_resize.take()
         {
             if let Err(ended) = tell(
@@ -1615,14 +1636,31 @@ fn attached(
                 decoder,
                 true,
                 output.as_deref_mut(),
-                &AttachedFrame::Resize(size),
+                &AttachedFrame::Resize(size).encode(),
             ) {
                 return ended;
             }
             frames = next_frame(frames)?;
         }
         let mut runs = Vec::new();
-        for out in std::mem::take(&mut acts) {
+        // What waited behind a paste goes first, once the paste is sent.
+        let todo = match pasting.is_empty() {
+            true => {
+                let mut todo = std::mem::take(&mut behind);
+                todo.append(&mut acts);
+                todo
+            }
+            false => std::mem::take(&mut acts),
+        };
+        for out in todo {
+            let adds_input = matches!(
+                &out,
+                Dispatch::Send(Act::Key(_) | Act::Paste(_) | Act::Mouse(_) | Act::Focus(_))
+            );
+            if adds_input && !pasting.is_empty() {
+                behind.push(out);
+                continue;
+            }
             let act = match out {
                 Dispatch::Run(job) => {
                     runs.push(job);
@@ -1637,15 +1675,18 @@ fn attached(
                 Dispatch::Send(act) => AttachedFrame::Act(Box::new(act)),
                 Dispatch::Answer(asked, value) => AttachedFrame::Answer(asked, value),
             };
+            let mut encoded = fux_wire::protocol::encode_attached(&act).into_iter();
+            let first = encoded.next().unwrap_or_default();
             if let Err(ended) = tell(
                 stream,
                 decoder,
                 keyboard.is_some(),
                 output.as_deref_mut(),
-                &act,
+                &first,
             ) {
                 return ended;
             }
+            pasting.extend(encoded);
             frames = next_frame(frames)?;
         }
         // A job runs after every frame read with the keys that made it is
@@ -1774,9 +1815,9 @@ fn tell(
     decoder: &mut Frames,
     welcomed: bool,
     output: Option<&mut Output>,
-    frame: &AttachedFrame,
+    frame: &[u8],
 ) -> Result<(), Result<String, Error>> {
-    match send_bytes(stream, &fux_wire::protocol::encode_attached(frame)) {
+    match send_bytes(stream, frame) {
         Ok(()) => Ok(()),
         // Not sent at all: the server goes on as it was.
         Err(error @ Error::Protocol(_)) => Err(Err(error)),
@@ -1812,7 +1853,8 @@ fn last_frames(
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)
                 | ToAttached::Keys(_)
-                | ToAttached::Read(..) => {}
+                | ToAttached::Read(..)
+                | ToAttached::More => {}
             }
         }
         if !matches!(read_more(stream, decoder), Ok(true)) {

@@ -2498,3 +2498,63 @@ fn a_pane_process_refused_all_memory_lives_through_floods_and_side_links() -> Ou
     assert_eq!(own_process(&server, &flood)?, own);
     Ok(())
 }
+
+/// 30. A client answers a question while a paste of its own waits: the
+///     first byte of a 2 MiB paste sets its pane's program to ask the
+///     client that pastes it what keys it has (`keys`), before it reads the
+///     rest. The client, which sends each further piece only as it is asked
+///     for, is free to answer, and its connection reads the answer though
+///     the paste is still on its way; then the program reads all of it
+///     (D-175; the client sat in the write of the whole paste, its
+///     connection read nothing of its client's, and all three waited for
+///     ever).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_answers_a_question_while_its_own_paste_waits() -> Outcome {
+    const SENT: usize = 2 << 20;
+    let server = Server::start("")?;
+    let mut terminal = Terminal::attach(&server, 24, 80, &[])?;
+    terminal.wait_for("$")?;
+    let listing = server.ok(&["(listing (list-session))"])?;
+    let client: String = (listing.split("client ").nth(1))
+        .map(|rest| {
+            rest.chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect()
+        })
+        .ok_or("its client")?;
+    let (asked, got) = (server.dir.join("asked"), server.dir.join("got"));
+    let script = format!(
+        "stty raw -echo; printf RAW-%s NOW; dd bs=1 count=1 >/dev/null 2>&1; \
+         \"$FUX\" '(keys (client \"{client}\"))' > {asked}.part 2>&1; mv {asked}.part {asked}; \
+         head -c {rest} | wc -c > {got}.part; mv {got}.part {got}; stty sane\n",
+        asked = asked.display(),
+        got = got.display(),
+        rest = SENT - 1
+    );
+    let run = server.dir.join("run.sh");
+    std::fs::write(&run, script).map_err(e)?;
+    terminal.type_bytes(format!("sh {}\r", run.display()).as_bytes())?;
+    terminal.wait_for("RAW-NOW")?;
+    let mut paste = b"\x1b[200~".to_vec();
+    paste.resize(paste.len() + SENT, b'y');
+    paste.extend_from_slice(b"\x1b[201~");
+    terminal.type_bytes(&paste)?;
+    eventually("its answer, while its paste waited", || {
+        terminal.pump();
+        Ok(asked.exists())
+    })?;
+    let mut read = String::new();
+    for _ in 0..6 {
+        let all = eventually("all it pasted, read", || {
+            terminal.pump();
+            read = std::fs::read_to_string(&got).unwrap_or_default();
+            Ok(!read.is_empty())
+        });
+        if all.is_ok() {
+            break;
+        }
+    }
+    assert_eq!(read.trim(), (SENT - 1).to_string());
+    Ok(())
+}

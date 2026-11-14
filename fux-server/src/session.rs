@@ -4556,7 +4556,8 @@ pub(crate) mod testing {
                     ToAttached::Paint(_)
                     | ToAttached::Exit(_)
                     | ToAttached::Welcome(..)
-                    | ToAttached::Read(..),
+                    | ToAttached::Read(..)
+                    | ToAttached::More,
                 )
                 | super::Outgoing::Owed(..)
                 | super::Outgoing::Keys(..)

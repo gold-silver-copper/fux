@@ -857,7 +857,8 @@ mod tests {
                     | ToAttached::Ended(_)
                     | ToAttached::Open(_)
                     | ToAttached::Keys(_)
-                    | ToAttached::Read(..),
+                    | ToAttached::Read(..)
+                    | ToAttached::More,
                 )
                 | Outgoing::Keys(..)
                 | Outgoing::Shutdown { .. } => None,

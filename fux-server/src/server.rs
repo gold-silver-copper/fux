@@ -711,7 +711,8 @@ impl Conn {
             ToAttached::Welcome(..)
             | ToAttached::Ended(_)
             | ToAttached::Keys(_)
-            | ToAttached::Read(..) => self.send(frame),
+            | ToAttached::Read(..)
+            | ToAttached::More => self.send(frame),
         }
     }
 
