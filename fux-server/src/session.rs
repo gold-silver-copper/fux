@@ -9736,7 +9736,17 @@ mod tests {
             (reports.iter())
                 .filter_map(|report| match report {
                     FromPane::Full(full) => Some(*full),
-                    _ => None,
+                    FromPane::Begun(_)
+                    | FromPane::Taking(_)
+                    | FromPane::Told { .. }
+                    | FromPane::Update(_)
+                    | FromPane::Alert { .. }
+                    | FromPane::Copied(_)
+                    | FromPane::Notice { .. }
+                    | FromPane::Refused { .. }
+                    | FromPane::Answer { .. }
+                    | FromPane::Retired(_)
+                    | FromPane::Offer(_) => None,
                 })
                 .collect()
         };

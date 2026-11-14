@@ -479,7 +479,14 @@ impl Conn {
     /// its client is; whether its client is gone, or shut its side.
     fn hear(&mut self, buffer: &mut [u8]) -> bool {
         use crate::link::FromConn;
-        self.gone |= self.link.read_up_to(buffer, CONN_READ) == crate::link::Read::Closed;
+        // Read no further while as much as one read brings of its client's
+        // frames waits to be handled: they are handled a few a turn, and
+        // small ones (keys) come many to a read, so that what a client
+        // types faster than it is handled stays with its connection and
+        // with it, not here.
+        if self.decoder.buffered() < CONN_READ {
+            self.gone |= self.link.read_up_to(buffer, CONN_READ) == crate::link::Read::Closed;
+        }
         let mut closed = self.gone;
         loop {
             match self.link.next_message::<FromConn>() {
@@ -721,6 +728,27 @@ impl Conn {
         }
     }
 
+    /// Tells its attached client as it is to hold back what it types, or
+    /// no longer (`ToAttached::Hold`): the pane it types into has a frame
+    /// unread or takes nothing (`Session::typing_holds`), or it types
+    /// faster than its frames are handled here, as much as a read brings
+    /// waiting (`hear`), till none does. Each turn, before the server
+    /// waits.
+    fn hold(&mut self, session: &Session) {
+        let Some(client) = self.attached().map(|attached| attached.client) else {
+            return;
+        };
+        let behind = match self.holds {
+            true => self.decoder.buffered() > 0,
+            false => self.decoder.buffered() >= CONN_READ,
+        };
+        let holds = behind || session.typing_holds(client);
+        if holds != self.holds {
+            self.holds = holds;
+            self.send(&ToAttached::Hold(holds));
+        }
+    }
+
     /// Passes its process what waits for its client, as far as its link
     /// takes it; one whose process is gone is dead.
     fn flush(&mut self, session: &mut Session, now: Instant) {
@@ -728,15 +756,6 @@ impl Conn {
         // passed before: till then the latest of each waits here, so a
         // link that takes nothing is passed nothing more of it.
         let taken = self.link.out.is_empty();
-        // Its client is told as it is to hold back what it types, or no
-        // longer (`Session::typing_holds`).
-        if let Some(client) = self.attached().map(|attached| attached.client) {
-            let holds = session.typing_holds(client);
-            if holds != self.holds {
-                self.holds = holds;
-                self.send(&ToAttached::Hold(holds));
-            }
-        }
         self.queue_out();
         if taken {
             self.settle();
@@ -1116,6 +1135,9 @@ impl Server {
             }
             // Long work in the turn must not extend the poll's deadline.
             let timeout = next.map(|at| at.saturating_duration_since(Instant::now()));
+            for conn in &mut self.conns {
+                conn.hold(&self.session);
+            }
             let mut ready = mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
             for &(slot, flags) in &ready {
@@ -1359,7 +1381,11 @@ impl Server {
             // Windows tells that of a read kept in flight, which `HUP` and
             // `ERR` ask for; Unix is asked nothing: Linux tells a hang-up
             // unasked, and macOS nothing till the link is read again.
-            let mut flags = match held.get(i).copied().unwrap_or(false) {
+            // Nor while as much as a read brings waits to be handled
+            // (`Conn::hear`).
+            let unread =
+                held.get(i).copied().unwrap_or(false) || conn.decoder.buffered() >= CONN_READ;
+            let mut flags = match unread {
                 true if cfg!(windows) => PollFlags::HUP | PollFlags::ERR,
                 true => PollFlags::NONE,
                 false => PollFlags::IN,
