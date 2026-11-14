@@ -35,6 +35,10 @@ pub enum Outgoing {
     /// (`send-keys` to a client), its screen ended by the server, or its
     /// detach, saying why.
     To(ClientId, ToAttached<'static>),
+    /// Bytes for a client's terminal that are state, not a backlog: a
+    /// clipboard copy, the bell. One that is not reading is owed the
+    /// latest, or one, not each (`link::Owed`).
+    Owed(ClientId, crate::link::Owed, Vec<u8>),
     /// Keys for a client, as typed at its terminal: the body another
     /// client's connection keeps by this number and sends its connection.
     Keys(ClientId, u64),
@@ -273,6 +277,10 @@ pub struct Session {
     /// the panes; and the last token given.
     body: Option<u64>,
     pub deliveries: Vec<(u64, u64, Vec<PaneId>)>,
+    /// The clients a prompt or chooser was sent that their connections
+    /// have not written them yet: one that is not reading is opened no
+    /// other on (`ClientAction::Open`). The server's, which hears of it.
+    pub prompted: std::collections::BTreeSet<ClientId>,
     /// What panes used up of what connections held them for (`Retired`):
     /// the server lets each go of its connection.
     pub retired: Vec<(PaneId, u64)>,
@@ -390,6 +398,7 @@ impl Session {
             unrecorded: None,
             closing: Vec::new(),
             closed: Vec::new(),
+            prompted: std::collections::BTreeSet::new(),
             body: None,
             deliveries: Vec::new(),
             retired: Vec::new(),
@@ -1819,6 +1828,7 @@ impl Session {
             self.view_event(id, ViewChange::Detached(why));
         }
         self.views.remove(&id);
+        self.prompted.remove(&id);
         self.parts.forget(id);
         self.settle(now);
     }
@@ -2553,8 +2563,9 @@ impl Session {
             let encoded = fux_wire::json::base64(text.as_bytes());
             let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
             self.outbox.extend(
-                recipients
-                    .map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
+                recipients.map(|client| {
+                    Outgoing::Owed(client, crate::link::Owed::Clipboard, osc.clone())
+                }),
             );
         }
     }
@@ -3184,6 +3195,17 @@ impl Session {
         let view = || self.views.get(&client).ok_or(Error::NoClient(client));
         let to = match *action {
             ClientAction::Open(ref screen) => {
+                // One prompt waits for a client that takes nothing; the
+                // next is its opener's to try again, not queued behind it.
+                if self.prompted.contains(&client) {
+                    return Err(fail(
+                        Code::NotRun,
+                        format!(
+                            "{client} isn't reading: a prompt or chooser opened on it before \
+                             waits for it still, and one waits at a time"
+                        ),
+                    ));
+                }
                 self.outbox
                     .push(Outgoing::To(client, ToAttached::Open(screen.clone())));
                 return Ok(Reply::default());
@@ -4019,6 +4041,7 @@ pub(crate) mod testing {
                     | ToAttached::Welcome(..)
                     | ToAttached::Read(..),
                 )
+                | super::Outgoing::Owed(..)
                 | super::Outgoing::Keys(..)
                 | super::Outgoing::Shutdown { .. }) => {
                     kept.push(other);
@@ -5835,7 +5858,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         let id = PaneId::of(1);
         let copied = |s: &Session| {
-            (s.outbox.iter()).any(|o| matches!(o, Outgoing::To(to, ToAttached::Paint(b)) if *to == c && **b == *b"\x1b]52;c;aGk=\x07"))
+            (s.outbox.iter()).any(|o| matches!(o, Outgoing::Owed(to, crate::link::Owed::Clipboard, b) if *to == c && **b == *b"\x1b]52;c;aGk=\x07"))
         };
         s.out(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07");
         assert!(!copied(&s), "held");
@@ -7533,12 +7556,13 @@ mod tests {
         let copies = |s: &Session| {
             (s.outbox.iter())
                 .filter_map(|o| match o {
-                    Outgoing::To(c, ToAttached::Paint(b))
-                        if *c == client && b.starts_with(b"\x1b]52;c;") =>
-                    {
-                        Some(b.to_vec())
+                    Outgoing::Owed(c, crate::link::Owed::Clipboard, b) if *c == client => {
+                        Some(b.clone())
                     }
-                    Outgoing::To(..) | Outgoing::Keys(..) | Outgoing::Shutdown(..) => None,
+                    Outgoing::To(..)
+                    | Outgoing::Owed(..)
+                    | Outgoing::Keys(..)
+                    | Outgoing::Shutdown(..) => None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -7661,9 +7685,9 @@ mod tests {
         assert!(
             s.outbox
                 .iter()
-                .any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && b.starts_with(b"\x1b]52;c;")))
+                .any(|out| matches!(out, Outgoing::Owed(c, crate::link::Owed::Clipboard, b) if *c == client && b.starts_with(b"\x1b]52;c;")))
         );
-        assert!(s.outbox.iter().any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(bytes)) if *c == client && bytes.as_ref() == crate::outer::BELL)));
+        assert!(s.outbox.iter().any(|out| matches!(out, Outgoing::Owed(c, crate::link::Owed::Bell, bytes) if *c == client && bytes == crate::outer::BELL)));
         assert_eq!(s.before_paint(client), b"\x1b]2;initial\x1b\\");
         Ok(())
     }
@@ -7770,10 +7794,11 @@ mod tests {
             s.outbox
                 .iter()
                 .filter_map(|o| match o {
-                    Outgoing::To(c, ToAttached::Paint(b)) if b.starts_with(b"\x1b]52;c;") => {
-                        Some(*c)
-                    }
-                    Outgoing::To(..) | Outgoing::Keys(..) | Outgoing::Shutdown(..) => None,
+                    Outgoing::Owed(c, crate::link::Owed::Clipboard, _) => Some(*c),
+                    Outgoing::To(..)
+                    | Outgoing::Owed(..)
+                    | Outgoing::Keys(..)
+                    | Outgoing::Shutdown(..) => None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -8422,6 +8447,25 @@ mod tests {
         ] {
             assert!(run(&mut s, code).is_err(), "{code}");
         }
+        Ok(())
+    }
+
+    /// A client a prompt waits for, which its connection has not written
+    /// it (it is not reading), is opened no other on: its opener is told
+    /// so, where the second was queued behind the first.
+    #[test]
+    fn a_second_prompt_for_a_client_that_isnt_reading_is_refused() -> TestResult {
+        let (mut s, c) = attached(10, 40)?;
+        let choose = "(sequence! (choose (client \"c1\") \"title\" (list (list 1 \"inert\")) () (list 0) (code! (lambda! (argument-3665 argument-3666) #inert))) #inert)";
+        s.prompted.insert(c);
+        let refused = run(&mut s, choose).err().ok_or("it was opened")?;
+        assert!(refused.contains("c1 isn't reading"), "{refused}");
+        assert!(matches!(
+            s.views.get(&c).map(|v| &v.mode),
+            Some(Mode::Normal)
+        ));
+        s.prompted.remove(&c);
+        run(&mut s, choose)?;
         Ok(())
     }
 

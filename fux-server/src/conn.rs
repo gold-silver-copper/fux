@@ -10,7 +10,9 @@
 //! only its connection. It ends with its server: a server that crashes
 //! leaves it nothing to serve, and what it still holds for its client is
 //! let go.
-use crate::link::{Drawn, End, Expect, FromConn, FromSide, Making, Read, ToConn, ToPane, ToSide};
+use crate::link::{
+    Drawn, End, Expect, FromConn, FromSide, Making, Owed, Read, ToConn, ToPane, ToSide,
+};
 use crate::render::{Grid, Scene, Sixels, Visible};
 use crate::socket::Stream;
 use fux_vt::bytes::ByteQueue;
@@ -822,6 +824,69 @@ fn framed(run: Option<Run>, response: Response) -> Vec<u8> {
     out.as_slice().to_vec()
 }
 
+/// What its client is owed that is state, while the client takes nothing
+/// (`ToConn::Owed`): the latest clipboard copy and title, one bell, one
+/// prompt, each as frames for the client. A client that stops reading is
+/// owed these however many came, so its connection grows by none of them;
+/// they are written, in this order, once it took what was written before.
+#[derive(Default)]
+struct Pending {
+    /// The pieces of the one coming, till its last.
+    coming: Vec<u8>,
+    clipboard: Option<Vec<u8>>,
+    title: Option<Vec<u8>>,
+    bell: Option<Vec<u8>>,
+    prompt: Option<Vec<u8>>,
+}
+
+impl Pending {
+    /// A piece of what its client is owed of `kind`: whole at `last`, it
+    /// takes the place of the one of its kind that waited.
+    fn owe(&mut self, kind: Owed, bytes: &[u8], last: bool) {
+        self.coming.extend_from_slice(bytes);
+        if !last {
+            return;
+        }
+        let whole = Some(std::mem::take(&mut self.coming));
+        match kind {
+            Owed::Clipboard => self.clipboard = whole,
+            Owed::Title => self.title = whole,
+            Owed::Bell => self.bell = whole,
+            Owed::Prompt => self.prompt = whole,
+        }
+    }
+
+    /// Writes what waits into `out`, and waits for nothing more: whether
+    /// anything did.
+    fn settle(&mut self, out: &mut ByteQueue) -> bool {
+        let mut any = false;
+        for owed in [
+            self.clipboard.take(),
+            self.title.take(),
+            self.bell.take(),
+            self.prompt.take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            out.push(&owed);
+            any = true;
+        }
+        any
+    }
+
+    /// Bytes held: those waiting, and the pieces of one coming.
+    #[cfg(test)]
+    fn held(&self) -> usize {
+        [&self.clipboard, &self.title, &self.bell, &self.prompt]
+            .into_iter()
+            .flatten()
+            .map(Vec::len)
+            .sum::<usize>()
+            .saturating_add(self.coming.len())
+    }
+}
+
 /// What a client's frame did to its screen (`next_frame`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Typed {
@@ -1042,6 +1107,8 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     crate::socket::nonblocking(client).map_err(|e| format!("its client: {e}"))?;
     let mut decoder = Decoder::default();
     let mut out = ByteQueue::default();
+    // What its client is owed as state, while it takes nothing.
+    let mut pending = Pending::default();
     let mut composer = Composer::new(Instant::now());
     let mut want = Want::Hello;
     let (mut answered, mut shut, mut closing) = (false, false, false);
@@ -1203,6 +1270,10 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // What waits for its client, as far as it takes it.
         if !write(client, &mut out) {
             return Ok(());
+        }
+        // It took all that was written: what it is owed as state is next.
+        if out.is_empty() && pending.settle(&mut out) {
+            continue;
         }
         if out.is_empty() {
             out.shrink(64 << 10);
@@ -1441,8 +1512,15 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             };
             {
                 match message {
+                    // In the order its server said them: what waited
+                    // goes before what follows it.
                     ToConn::Bytes(bytes) => {
+                        pending.settle(&mut out);
                         out.push(&bytes);
+                        unflushed = true;
+                    }
+                    ToConn::Owed { kind, bytes, last } => {
+                        pending.owe(kind, &bytes, last);
                         unflushed = true;
                     }
                     ToConn::Expect(expect) => want = Want::Frames(expect),
@@ -1530,6 +1608,40 @@ mod tests {
     use fux_vt::bytes::ByteQueue;
     use fux_wire::protocol::{Decoder, ToAttached};
     use std::time::{Duration, Instant};
+
+    /// A client that takes nothing is owed the latest clipboard copy and
+    /// title, one bell and one prompt, however many of each came: what its
+    /// connection holds for it does not grow with their number (it queued
+    /// each one, 105 MB of prompts), and once it reads it is written those,
+    /// in that order, and owed nothing more.
+    #[test]
+    fn a_client_that_takes_nothing_is_owed_the_latest_of_each_not_all() {
+        use crate::link::Owed;
+        let mut pending = super::Pending::default();
+        let mut most = 0;
+        let long: String = std::iter::repeat_n('x', 4096).collect();
+        for n in 0..50_000u32 {
+            let copy = format!("copy {n} {long}");
+            // A copy longer than one message comes in pieces.
+            let (first, rest) = (copy.as_bytes())
+                .split_at_checked(copy.len() / 2)
+                .unwrap_or_default();
+            pending.owe(Owed::Clipboard, first, false);
+            pending.owe(Owed::Clipboard, rest, true);
+            pending.owe(Owed::Title, format!("title {n}").as_bytes(), true);
+            pending.owe(Owed::Bell, b"\x07", true);
+            pending.owe(Owed::Prompt, format!("prompt {n}").as_bytes(), true);
+            most = most.max(pending.held());
+        }
+        assert!(most < 2 * 4200, "held {most} bytes at most");
+        let mut out = ByteQueue::default();
+        assert!(pending.settle(&mut out));
+        let written = String::from_utf8_lossy(out.as_slice()).into_owned();
+        let expected = format!("copy 49999 {long}title 49999\x07prompt 49999");
+        assert_eq!(written, expected);
+        assert_eq!(pending.held(), 0);
+        assert!(!pending.settle(&mut out), "owed nothing more");
+    }
 
     /// What a client was sent: its paints' bytes.
     fn painted(out: &ByteQueue) -> Vec<u8> {

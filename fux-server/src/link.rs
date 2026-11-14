@@ -1063,6 +1063,14 @@ pub enum ToConn {
     Detached,
     /// Its last word is sent: it ends once its client has it all.
     Close,
+    /// Frames for its client that are state, not a backlog: a client that
+    /// is not reading is owed the latest of each kind, never each one
+    /// (`conn::Pending`). In pieces of one frame at most, whole at `last`.
+    Owed {
+        kind: Owed,
+        bytes: Vec<u8>,
+        last: bool,
+    },
 }
 wired!(ToConn {
     Bytes(b),
@@ -1078,7 +1086,25 @@ wired!(ToConn {
     Typed { token },
     Make(m),
     Detached,
-    Close
+    Close,
+    Owed { kind, bytes, last }
+});
+
+/// What a client is owed as state (`ToConn::Owed`): a clipboard copy and a
+/// title, the latest of which is the one that counts; the bell, rung once
+/// however often it rang; a prompt or chooser to open, one at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owed {
+    Clipboard,
+    Title,
+    Bell,
+    Prompt,
+}
+wired!(Owed {
+    Clipboard,
+    Title,
+    Bell,
+    Prompt
 });
 
 /// The frames a connection's client sends next.

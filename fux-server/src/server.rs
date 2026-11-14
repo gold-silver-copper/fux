@@ -380,6 +380,33 @@ impl Conn {
         }
     }
 
+    /// Passes its process `frames`, which its client is owed as state
+    /// (`ToConn::Owed`), after the frames queued before them: each message
+    /// one frame, the most its process takes of one.
+    fn owe(&mut self, kind: crate::link::Owed, frames: &[u8]) {
+        self.queue_out();
+        let mut rest = frames;
+        while !rest.is_empty() {
+            let (bytes, after) = rest
+                .split_at_checked(crate::link::BYTES)
+                .unwrap_or((rest, &[]));
+            self.link.send(&crate::link::ToConn::Owed {
+                kind,
+                bytes: bytes.to_vec(),
+                last: after.is_empty(),
+            });
+            rest = after;
+        }
+        self.pending = true;
+    }
+
+    /// `bytes` for its client's terminal, owed it as state of `kind`.
+    fn owe_paint(&mut self, kind: crate::link::Owed, bytes: &[u8]) {
+        let mut frames = ByteQueue::default();
+        Attached::paint(&mut frames, bytes);
+        self.owe(kind, frames.as_slice());
+    }
+
     /// What its process said: its client's frames, into `decoder`, and how
     /// its client is; whether its client is gone, or shut its side.
     fn hear(&mut self, buffer: &mut [u8]) -> bool {
@@ -614,9 +641,10 @@ impl Conn {
         match frame {
             ToAttached::Paint(bytes) => Attached::paint(&mut self.out, bytes),
             ToAttached::Exit(text) => self.exit(session, Detach::Detached, text, now),
+            // One prompt waits for a client that takes nothing, not each.
+            ToAttached::Open(_) => self.owe(crate::link::Owed::Prompt, &frame.encode()),
             ToAttached::Welcome(..)
             | ToAttached::Ended(_)
-            | ToAttached::Open(_)
             | ToAttached::Keys(_)
             | ToAttached::Read(..) => self.send(frame),
         }
@@ -1252,6 +1280,12 @@ impl Server {
                     continue;
                 }
                 Outgoing::To(client, frame) => (client, frame),
+                Outgoing::Owed(client, kind, bytes) => {
+                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                        conn.owe_paint(kind, &bytes);
+                    }
+                    continue;
+                }
                 Outgoing::Keys(client, token) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
                         conn.keys.insert(token);
@@ -1261,6 +1295,10 @@ impl Server {
                 }
             };
             if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                // Till its connection wrote it all, a prompt waits for it.
+                if matches!(frame, ToAttached::Open(_)) {
+                    self.session.prompted.insert(client);
+                }
                 conn.tell(&mut self.session, &frame, now);
             }
         }
@@ -1280,7 +1318,7 @@ impl Server {
             // The title and bell marks first: the bar shows the marks.
             let before = session.before_paint(client);
             if !before.is_empty() {
-                Attached::paint(&mut conn.out, &before);
+                conn.owe_paint(crate::link::Owed::Title, &before);
             }
             if let Some(scene) = render::scene(session, client) {
                 conn.tell_process(&crate::link::ToConn::Scene(Box::new(scene)));
@@ -1503,6 +1541,10 @@ impl Server {
             return;
         };
         let mut closed = conn.hear(self.read_buffer.as_mut_slice());
+        // Its client took all it was sent: no prompt waits for it.
+        if let (false, Some(attached)) = (conn.pending, conn.attached()) {
+            self.session.prompted.remove(&attached.client);
+        }
         // Held apart while the frames it lends are handled.
         let mut decoder = mem::take(&mut conn.decoder);
         let mut frames = 0usize;
@@ -1770,7 +1812,7 @@ impl Server {
             .session
             .outbox
             .iter()
-            .any(|o| matches!(o, Outgoing::To(..)))
+            .any(|o| matches!(o, Outgoing::To(..) | Outgoing::Owed(..)))
         {
             self.send_frames(now);
         }
@@ -2219,6 +2261,91 @@ mod tests {
             },
             peer,
         ))
+    }
+
+    /// A client that stops reading gets, once it reads again, the last
+    /// clipboard copy and title it was sent while it did not, one bell and
+    /// its prompt: not every one, queued (each of a thousand, before).
+    /// Till it has read, a prompt waits for it, and once it has, none does.
+    #[test]
+    fn a_client_that_stopped_reading_gets_the_latest_of_what_it_is_owed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::link::Owed;
+        use std::io::Read as _;
+        let (mut server, mut peer) = server()?;
+        let client = (server.conns.first_mut().and_then(|c| c.attached()))
+            .map(|a| a.client)
+            .ok_or("its client")?;
+        // What its attach asked its terminal is not this test's.
+        server.session.outbox.clear();
+        // More than its socket holds: its connection has bytes it did not
+        // take, from here on.
+        let filler = vec![b'x'; 8 << 20];
+        {
+            let conn = server.conns.first_mut().ok_or("its connection")?;
+            Attached::paint(&mut conn.out, &filler);
+            conn.queue_out();
+            conn.link.flush_all().map_err(|e| e.to_string())?;
+        }
+        let prompt = |title: &str| {
+            ToAttached::Open(fux_wire::callback::Open::Prompt(
+                fux_wire::callback::Prompt {
+                    title: title.to_owned(),
+                    line: fux_wire::act::Line::new(String::new()),
+                    action: None,
+                },
+            ))
+        };
+        for n in 0..1000 {
+            let copy = format!("\x1b]52;c;copy{n}\x07").into_bytes();
+            (server.session.outbox).push(Outgoing::Owed(client, Owed::Clipboard, copy));
+            let bell = crate::outer::BELL.to_vec();
+            (server.session.outbox).push(Outgoing::Owed(client, Owed::Bell, bell));
+            server.send_frames(Instant::now());
+            let conn = server.conns.first_mut().ok_or("its connection")?;
+            conn.owe_paint(Owed::Title, format!("\x1b]2;title{n}\x1b\\").as_bytes());
+        }
+        (server.session.outbox).push(Outgoing::To(client, prompt("the prompt")));
+        server.send_frames(Instant::now());
+        assert!(server.session.prompted.contains(&client), "a prompt waits");
+        {
+            let conn = server.conns.first_mut().ok_or("its connection")?;
+            conn.link.flush_all().map_err(|e| e.to_string())?;
+        }
+        // It reads again: all it was sent, up to its prompt.
+        peer.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut decoder = Decoder::default();
+        let mut buffer = vec![0u8; 1 << 16];
+        let (mut filled, mut owed, mut opened) = (0usize, Vec::new(), 0);
+        while opened == 0 {
+            let n = peer.read(&mut buffer)?;
+            assert!(n > 0, "its connection closed");
+            decoder.push(buffer.get(..n).unwrap_or_default());
+            loop {
+                match decoder.frame::<ToAttached>()? {
+                    Some(ToAttached::Paint(bytes)) if bytes.first() == Some(&b'x') => {
+                        filled += bytes.len();
+                    }
+                    Some(ToAttached::Paint(bytes)) => {
+                        owed.push(String::from_utf8_lossy(&bytes).into_owned());
+                    }
+                    Some(ToAttached::Open(_)) => opened += 1,
+                    Some(other) => return Err(format!("{other:?}").into()),
+                    None => break,
+                }
+            }
+        }
+        assert_eq!(filled, filler.len());
+        assert_eq!(
+            owed,
+            ["\x1b]52;c;copy999\x07", "\x1b]2;title999\x1b\\", "\x07"]
+        );
+        // Its connection says it took it all: no prompt waits for it.
+        while server.session.prompted.contains(&client) {
+            heard(&mut server, 0)?;
+            assert!(server.conns.first().is_some_and(|c| !c.gone), "it went");
+        }
+        Ok(())
     }
 
     /// A command's connection gone while its question waits: the question
