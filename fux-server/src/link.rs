@@ -476,7 +476,7 @@ impl<T: Wire> Frame<'_> for Message<T> {
             .map(Message)
             .map_err(fux_wire::protocol::Error::Wire)
     }
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
+    fn write(&self, out: &mut impl fux_wire::wire::Sink) -> u8 {
         self.0.put(out);
         MESSAGE
     }
@@ -490,7 +490,7 @@ impl<T: Wire> Frame<'_> for Sending<'_, T> {
     fn decode(kind: u8, _: &[u8]) -> Result<Self, fux_wire::protocol::Error> {
         Err(fux_wire::protocol::Error::UnexpectedKind(kind))
     }
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
+    fn write(&self, out: &mut impl fux_wire::wire::Sink) -> u8 {
         self.0.put(out);
         MESSAGE
     }
@@ -546,6 +546,9 @@ pub enum Read {
     More,
     /// The other end is gone: what it said before is still to take.
     Closed,
+    /// The OS refused room for more (`End::try_read`): what was not read
+    /// is still in the socket.
+    Refused,
 }
 
 impl End {
@@ -565,6 +568,33 @@ impl End {
     pub fn send(&mut self, message: &impl Wire) {
         let message = Sending(message);
         self.out.push_with(|out| message.encode_into(out));
+    }
+
+    /// `send`, once the OS gave room for all of `message` as it is queued:
+    /// refused, nothing of it is queued. What it writes within that room
+    /// allocates nothing; a pane's own process, which must not die of a
+    /// refusal, sends so.
+    pub fn try_send(&mut self, message: &impl Wire) -> Result<(), fux_wire::protocol::Error> {
+        let message = Sending(message);
+        let bytes = message.encoded_len();
+        let refused = fux_wire::protocol::Error::Memory(bytes);
+        match (self.out).try_push_with(bytes, |out| message.try_encode_into(out)) {
+            Ok(queued) => queued,
+            Err(_) => Err(refused),
+        }
+    }
+
+    /// `try_send`, of a message that is one frame, as the server takes
+    /// them: whether it was queued, one longer not.
+    pub fn try_send_whole(
+        &mut self,
+        message: &impl Wire,
+    ) -> Result<bool, fux_wire::protocol::Error> {
+        let whole = MAX_PAYLOAD.saturating_add(5);
+        if Sending(message).encoded_len() > whole {
+            return Ok(false);
+        }
+        self.try_send(message).map(|()| true)
     }
 
     /// Queues `message` if it is one frame, as the server takes them:
@@ -616,8 +646,25 @@ impl End {
 
     /// `read`, till `limit` bytes are read, the rest left for the next.
     pub fn read_up_to(&mut self, buffer: &mut [u8], limit: usize) -> Read {
+        self.read_as(buffer, limit, false)
+    }
+
+    /// `read`, with room made for each read before it is made: one the OS
+    /// refuses room for is not made (`Read::Refused`), and what it would
+    /// have read stays in the socket for a later one. For a pane's own
+    /// process, which must not die of a refusal.
+    pub fn try_read(&mut self, buffer: &mut [u8]) -> Read {
+        self.read_as(buffer, usize::MAX, true)
+    }
+
+    /// Reads till `limit` bytes are read or the socket would wait; if
+    /// `refusable`, each read only once there is room for it.
+    fn read_as(&mut self, buffer: &mut [u8], limit: usize, refusable: bool) -> Read {
         let mut read = 0usize;
         while read < limit {
+            if refusable && self.decoder.try_reserve(buffer.len()).is_err() {
+                return Read::Refused;
+            }
             match fuxix::io::read(&self.stream, buffer) {
                 Ok(0) => return Read::Closed,
                 Ok(n) => {
@@ -1077,6 +1124,43 @@ pub const TAKEN: &str = "taken";
 mod tests {
     use super::{BYTES, Message, Sending, ToConn};
     use fux_wire::protocol::{Decoder, Frame};
+
+    /// An end refused memory queues nothing of what it would send, and
+    /// leaves in its socket what it would read; both go on once memory is
+    /// given.
+    #[cfg(all(unix, feature = "checks"))]
+    #[test]
+    fn an_end_refused_memory_sends_and_reads_nothing_and_goes_on()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{End, Read};
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        let (mut ours, mut theirs) = (End::new(ours)?, End::new(theirs)?);
+        fux_vt::refuse_next(1);
+        assert!(ours.try_send(&ToConn::Answered).is_err());
+        assert!(ours.out.is_empty());
+        fux_vt::refuse_next(1);
+        assert!(ours.try_send_whole(&ToConn::Answered).is_err());
+        assert!(ours.out.is_empty());
+        assert!(ours.try_send_whole(&ToConn::Answered)?);
+        let long = ToConn::Bytes(vec![7; BYTES * 2]);
+        assert!(!ours.try_send_whole(&long)?);
+        ours.try_send(&ToConn::Close)?;
+        ours.flush_all()?;
+        let mut buffer = [0u8; 4096];
+        fux_vt::refuse_next(1);
+        assert_eq!(theirs.try_read(&mut buffer), Read::Refused);
+        assert!(matches!(theirs.next_message::<ToConn>(), Ok(None)));
+        assert_eq!(theirs.try_read(&mut buffer), Read::More);
+        assert!(matches!(
+            theirs.next_message::<ToConn>(),
+            Ok(Some(ToConn::Answered))
+        ));
+        assert!(matches!(
+            theirs.next_message::<ToConn>(),
+            Ok(Some(ToConn::Close))
+        ));
+        Ok(())
+    }
 
     /// As many of a client's bytes as the server sends its connection's
     /// process at once are one frame, which that process, joining nothing

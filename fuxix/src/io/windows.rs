@@ -136,9 +136,21 @@ impl Op {
                 Some(unsafe { OwnedHandle::from_raw_handle(raw) })
             }
         };
+        // The buffer, if the OS gives it: a stream it refuses is not made,
+        // and its process (a pane's, as a connection reaches it) goes on.
+        // Asked for exactly, it is boxed as it is.
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(BUFFER).is_err() {
+            return Err(Errno::from_code(
+                windows_sys::Win32::Foundation::ERROR_NOT_ENOUGH_MEMORY,
+            ));
+        }
+        bytes.resize(BUFFER, 0);
+        // The `Op` itself, a few words, is the one allocation left that
+        // can't refuse: `Arc` has no way to ask.
         Ok(Arc::new(Op {
             overlapped: UnsafeCell::new(OVERLAPPED::default()),
-            bytes: UnsafeCell::new(vec![0; BUFFER].into_boxed_slice()),
+            bytes: UnsafeCell::new(bytes.into_boxed_slice()),
             kind,
             event,
             state: Mutex::new(State::default()),
@@ -245,8 +257,15 @@ impl Op {
             return false;
         }
         let mut ahead = std::mem::take(&mut state.ahead);
-        ahead.extend(self.bytes(state).get(start..end).unwrap_or_default());
+        // Refused the room, nothing is set aside: the read stays as it is.
+        let room = ahead.try_reserve(end.saturating_sub(start));
+        if room.is_ok() {
+            ahead.extend(self.bytes(state).get(start..end).unwrap_or_default());
+        }
         state.ahead = ahead;
+        if room.is_err() {
+            return false;
+        }
         (state.start, state.end) = (0, 0);
         true
     }
