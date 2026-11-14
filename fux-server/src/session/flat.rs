@@ -112,13 +112,13 @@ fn two_thousand_nested_workspaces_fit_a_small_stack() -> TestResult {
 }
 
 /// At 20,000 deep, the depth F015 was found past. The tree's own work
-/// there is under half a second; the minute this takes is the journal's,
+/// there is under half a second; the minute or two this takes is the journal's,
 /// which still keeps with each entry every workspace that held its place
 /// (F013, F016), so making or closing a chain of workspaces costs it the
 /// square of the depth. Run by name till the journal keeps no such chain.
 #[cfg(unix)]
 #[test]
-#[ignore = "about a minute, all of it the journal's parent chains (F013): `cargo test -p fux-server --lib -- --ignored twenty_thousand`"]
+#[ignore = "a minute or two, all of it the journal's parent chains (F013): `cargo test -p fux-server --lib -- --ignored twenty_thousand`"]
 fn twenty_thousand_nested_workspaces_fit_a_small_stack() -> TestResult {
     nested_on_a_small_stack(20_000)
 }
