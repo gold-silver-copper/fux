@@ -2389,14 +2389,14 @@ fn a_program_that_writes_ten_megabytes_before_it_reads_gets_all_it_was_sent() ->
 /// 29. A pane's process given no more memory once it is warm, every
 ///     allocation refused (its address space held to what it has): its
 ///     program floods it with output while it is sent keys over and over,
-///     each on a link of its own, opened and closed; it lives, the same
-///     process, and once it is given memory again it serves, its flood
-///     read to its end (owner answer 2: a pane's process never ends for
-///     memory; it aborted on the first keys it could not queue). The keys
-///     sent meanwhile are refused or wait: each is given two seconds and
-///     let go, as its asker would. Not yet so, and so not asked here: a
-///     pane refused memory as it draws its screen for a client that
-///     begins to show it, or as it is captured, still ends (D-180).
+///     each on a link of its own, opened and closed, and clients attach,
+///     are sent its screen and leave; it lives, the same process, and once
+///     it is given memory again it serves, its flood read to its end
+///     (owner answer 2: a pane's process never ends for memory; it aborted
+///     on the first keys it could not queue). What is asked of it
+///     meanwhile is refused or waits: each is given two seconds and let
+///     go, as its asker would. Not yet so, and so not asked here: a pane
+///     refused memory as it makes a capture still ends (D-180).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_pane_process_refused_all_memory_lives_through_floods_and_side_links() -> Outcome {
@@ -2430,6 +2430,9 @@ fn a_pane_process_refused_all_memory_lives_through_floods_and_side_links() -> Ou
     );
     for _ in 0..12 {
         let _ = within(&server, 2, &[&keys])?;
+        if let Ok(mut client) = server.attach_to(24, 80, "a") {
+            let _ = client.pump();
+        }
         assert!(alive(own), "its pane's process ended, refused memory");
     }
     limit(own, "as", u64::MAX)?;

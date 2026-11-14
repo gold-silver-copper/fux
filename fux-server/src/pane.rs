@@ -1114,15 +1114,29 @@ impl Pane {
     /// ([`Pane::read_unread`]).
     fn output(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         self.keep_terminal_size();
+        // Output it can't keep for a later turn, refused the memory, is
+        // lost, and counted as what the screen lost for memory is.
+        let lost = Losses {
+            memory: 1,
+            ..Losses::default()
+        };
         if self.has_unread() {
-            self.unread.bytes.extend_from_slice(bytes);
+            if fux_vt::bytes::try_extend(&mut self.unread.bytes, bytes).is_err() {
+                self.lose(lost);
+            }
             return;
         }
-        if !self.reads_output() {
-            return self.wait_unread(bytes.to_vec(), 0, now);
-        }
-        if let Some(at) = self.read(bytes, now, tell) {
-            self.wait_unread(bytes.get(at..).unwrap_or_default().to_vec(), 0, now);
+        let rest = match self.reads_output() {
+            false => bytes,
+            true => match self.read(bytes, now, tell) {
+                Some(at) => bytes.get(at..).unwrap_or_default(),
+                None => return,
+            },
+        };
+        let mut kept = Vec::new();
+        match fux_vt::bytes::try_extend(&mut kept, rest) {
+            Ok(()) => self.wait_unread(kept, 0, now),
+            Err(_) => self.lose(lost),
         }
     }
 

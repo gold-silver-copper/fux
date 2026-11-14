@@ -124,10 +124,38 @@ pub struct Host {
     /// captures it holds for its askers' connections to fetch
     /// (`ToSide::Fetch`): each by its token. It keeps no body: a piece is
     /// typed as it is taken, one body at a time (`typing`).
-    awaiting: BTreeMap<u64, Awaiting>,
+    awaiting: Waiting,
     held: BTreeMap<u64, Box<fux_wire::answer::Captured>>,
     /// The body being typed into it, between its first piece and its last.
     typing: Option<Typing>,
+}
+
+/// The questions that wait for a body, each by its token: a list, which
+/// takes one more only if the OS gives it room (`insert`).
+#[derive(Default)]
+struct Waiting(Vec<(u64, Awaiting)>);
+
+impl Waiting {
+    /// `awaiting` waits for body `token`: false if the OS gave no memory
+    /// to keep it, and it does not.
+    fn insert(&mut self, token: u64, awaiting: Awaiting) -> bool {
+        if self.0.try_reserve(1).is_err() {
+            return false;
+        }
+        self.0.retain(|(waiting, _)| *waiting != token);
+        self.0.push((token, awaiting));
+        true
+    }
+    fn has(&self, token: u64) -> bool {
+        self.0.iter().any(|(waiting, _)| *waiting == token)
+    }
+    fn remove(&mut self, token: u64) -> Option<Awaiting> {
+        let at = self.0.iter().position(|(waiting, _)| *waiting == token)?;
+        Some(self.0.swap_remove(at).1)
+    }
+    fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// A body under way: what it answers once its last piece is typed, and the
@@ -226,7 +254,7 @@ impl Host {
             dirty: true,
             revision: 0,
             whole: 0,
-            awaiting: BTreeMap::new(),
+            awaiting: Waiting::default(),
             typing: None,
             held: BTreeMap::new(),
         })
@@ -343,7 +371,7 @@ impl Host {
             ToPane::Drop { token } => {
                 self.cut(token);
                 self.held.remove(&token);
-                if let Some(Awaiting::Keys { ask, .. }) = self.awaiting.remove(&token) {
+                if let Some(Awaiting::Keys { ask, .. }) = self.awaiting.remove(token) {
                     let refusal = Refusal {
                         code: fux_wire::code::Code::Indeterminate,
                         message: format!("{}: its asker went before its keys came", self.pane.id()),
@@ -937,7 +965,12 @@ impl Host {
         // Its text comes from its client's connection, and is refused, if
         // it is, as its first piece comes (`piece`).
         if let Typed::Body(token) = typed {
-            self.awaiting.insert(token, Awaiting::Paste { client });
+            // Refused the memory to wait for it, its pieces are never
+            // taken, and stay with its sender.
+            if !(self.awaiting).insert(token, Awaiting::Paste { client }) {
+                let why = no_memory().to_string();
+                self.report(FromPane::Refused { client, why });
+            }
             return;
         }
         let pane = &self.pane;
@@ -991,9 +1024,11 @@ impl Host {
                 ..
             } => {
                 let actor = self.actor;
-                self.awaiting
-                    .insert(token, Awaiting::Keys { ask, actor, seen });
-                return None;
+                let waits = (self.awaiting).insert(token, Awaiting::Keys { ask, actor, seen });
+                match waits {
+                    true => return None,
+                    false => Err(no_memory()),
+                }
             }
             Ask::Mouse { mouse, row, col } => self.send_mouse(mouse, row, col),
             Ask::Signal(signal) => self.signal(signal),
@@ -1399,7 +1434,7 @@ impl Host {
     pub fn takes(&self, token: u64) -> bool {
         match &self.typing {
             Some(typing) => typing.token == token,
-            None => self.awaiting.contains_key(&token),
+            None => self.awaiting.has(token),
         }
     }
 
@@ -1411,7 +1446,7 @@ impl Host {
         let mut typing = match self.typing.take() {
             Some(typing) => typing,
             None => {
-                let (ask, actor, seen, client) = match self.awaiting.remove(&token) {
+                let (ask, actor, seen, client) = match self.awaiting.remove(token) {
                     Some(Awaiting::Keys { ask, actor, seen }) => (Some(ask), actor, seen, None),
                     Some(Awaiting::Paste { client }) => {
                         (None, Actor::Client(client), None, Some(client))
@@ -2082,6 +2117,7 @@ pub fn serve(
     let mut link = Some(end);
     let mut again: Option<Instant> = None;
     let mut peers: Vec<Peer> = Vec::new();
+    let mut spare: Vec<Peer> = Vec::new();
     // It was refused the memory to send something this turn or the last.
     let mut starved = false;
     // It was refused the memory to read what was said to it: it rests
@@ -2258,7 +2294,12 @@ pub fn serve(
                 let ours = crate::socket::peer(&reached).is_ok_and(|peer| peer.user.is_current());
                 // One that is closing takes them too: a server that asks
                 // for it is told so, in words.
-                if ours && let Ok(end) = crate::socket::serve(reached).and_then(End::new) {
+                // With no memory to keep one more, it is let go: it reaches
+                // the pane again when there is.
+                if ours
+                    && peers.try_reserve(1).is_ok()
+                    && let Ok(end) = crate::socket::serve(reached).and_then(End::new)
+                {
                     peers.push(Peer {
                         end,
                         side: None,
@@ -2283,10 +2324,16 @@ pub fn serve(
             }
         }
         // What reached it: each peer's words, in order, then its end.
-        let mut kept = Vec::with_capacity(peers.len());
+        // Those kept go into the list emptied last turn, so that a turn
+        // asks for no memory once the list is as long as its peers are many.
+        let mut kept = std::mem::take(&mut spare);
+        if kept.try_reserve(peers.len()).is_err() {
+            (spare, rest) = (kept, true);
+            continue;
+        }
         // One reached this turn has no entry yet: it is kept, unread.
         let events = peered.into_iter().chain(std::iter::repeat(Events::NONE));
-        for (mut peer, events) in std::mem::take(&mut peers).into_iter().zip(events) {
+        for (mut peer, events) in peers.drain(..).zip(events) {
             if events.is_empty() {
                 kept.push(peer);
                 continue;
@@ -2427,7 +2474,7 @@ pub fn serve(
                 host.cut(token);
             }
         }
-        peers = kept;
+        spare = std::mem::replace(&mut peers, kept);
         // One piece in flight for the pane, whoever sends: the next is
         // taken, from the body under way or one a question waits for, once
         // the program's terminal took the last.
