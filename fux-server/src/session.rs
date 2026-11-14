@@ -1706,6 +1706,7 @@ impl Session {
     /// A new pane, its ID taken from `ids`, running what `new` says.
     fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>) -> Result<(Pane, Begin), Error> {
         let start = new.start;
+        crate::link::launch_fits(start.argv(), new.cwd)?;
         let launch = pane::Launch {
             argv: start.argv().clone(),
             cwd: new.cwd.to_path_buf(),

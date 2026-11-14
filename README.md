@@ -459,7 +459,10 @@ is neither set. An auto-started server logs to `fux.log` beside it.
 - Every peer must run as the server's own user (`SO_PEERCRED` on Linux,
   `getpeereid` on macOS); others, root included, are refused.
 - Frames are length-prefixed and at most 1 MiB, checked before anything
-  is made for one.
+  is made for one. The server takes one frame at a time and joins none:
+  a longer request fails `too-long` in its client's own connection
+  process, and pieces sent where no long message is taken end the
+  connection, with the reason.
 
 Anyone who can open the socket can run anything as you: as with tmux,
 the socket's permissions are the access control. fux has no confinement:

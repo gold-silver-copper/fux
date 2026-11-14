@@ -15,7 +15,7 @@ use fux::client_state::ClientState;
 use fux::screens::Dispatch;
 use fux_wire::act::Act;
 use fux_wire::protocol::{
-    Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached,
+    Attach, AttachedFrame, Decoder, Frame, Greeting, Hello, Joining, PROTOCOL, Role, ToAttached,
 };
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -490,6 +490,9 @@ impl Drop for Server {
 pub struct Client {
     stream: UnixStream,
     decoder: Decoder,
+    /// The pieces of a frame longer than one (keys sent it), which it joins
+    /// as fux's own client does.
+    pieces: Joining,
     socket: fux_server::socket::SocketPath,
     state: ClientState,
     read_only: bool,
@@ -551,6 +554,7 @@ impl Client {
         Ok(Client {
             stream,
             decoder: Decoder::default(),
+            pieces: Joining::default(),
             socket: server.socket_path()?,
             state: server.state.clone(),
             read_only,
@@ -679,7 +683,7 @@ impl Client {
             }
         }
         while self.greeted
-            && let Some(frame) = self.decoder.frame().map_err(e)?
+            && let Some(frame) = self.decoder.long(&mut self.pieces).map_err(e)?
         {
             match frame {
                 ToAttached::Paint(bytes) => {

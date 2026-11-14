@@ -67,6 +67,13 @@ impl Display {
         let Some(act) = screen.panel(modes).map(ScreenAct::Show) else {
             return Vec::new();
         };
+        // One a program opens with more text than a frame holds (a
+        // prompt's title or start, a chooser's rows) is not opened: shown,
+        // it would be a frame the server takes none of.
+        if !sends(&act) {
+            let text = NOT_OPENED.to_owned();
+            return vec![Act::Notice { text, error: true }];
+        }
         self.opening = opening;
         self.screen = screen;
         vec![Act::Screen { opening, act }]
@@ -350,15 +357,47 @@ impl Screen {
                 std::iter::once(HIDE).chain(job.map(Effect::Run)).collect()
             }
             LineAct::Edit(edit) => {
-                let refused = prompt.line.edit(&edit).err();
+                // Text typed or pasted may take the line, which the server
+                // is shown whole, past the one frame it takes: the line
+                // then stays as it was, and says so, as a list does.
+                let was =
+                    matches!(edit, fux_wire::act::Edit::Insert(_)).then(|| prompt.line.clone());
+                let mut refused = prompt.line.edit(&edit).err();
                 *self = Self::Prompt(prompt);
-                let shown = self
-                    .panel(modes)
-                    .map(|p| Effect::Screen(ScreenAct::Show(p)));
+                let mut shown = self.panel(modes).map(ScreenAct::Show);
+                if let (Some(was), Self::Prompt(prompt)) = (was, &mut *self)
+                    && shown.as_ref().is_some_and(|show| !sends(show))
+                {
+                    prompt.line = was;
+                    refused = Some(TOO_LONG.to_owned());
+                    shown = self.panel(modes).map(ScreenAct::Show);
+                }
+                let shown = shown.map(Effect::Screen);
                 shown.into_iter().chain(refused.map(refusal)).collect()
             }
         }
     }
+}
+
+/// What a line says of text that would make it longer than the server
+/// takes.
+const TOO_LONG: &str = "the line would be longer than one frame (1 MiB), the most the server takes \
+                        of one: nothing was typed";
+
+/// What a client says of a screen it was to open that is longer than the
+/// server takes.
+const NOT_OPENED: &str = "a prompt or chooser longer than one frame (1 MiB), the most the server \
+                          takes of one, was not opened";
+
+/// Whether the server takes a client's screen shown as `show`: it is one
+/// frame.
+fn sends(show: &ScreenAct) -> bool {
+    use fux_wire::protocol::AttachedFrame;
+    let act = Act::Screen {
+        opening: u64::MAX,
+        act: show.clone(),
+    };
+    fux_wire::protocol::sends_whole(&AttachedFrame::Act(Box::new(act)))
 }
 
 /// A line's refusal of an edit, told as an error's notice.
@@ -476,6 +515,71 @@ mod tests {
             [Effect::Screen(ScreenAct::Hide)]
         );
         Ok(())
+    }
+
+    /// A paste that would take a line being typed past the one frame the
+    /// server takes of it is refused whole, saying so, and the line stays
+    /// as it was; one that fits is typed. Shown that long, the client's
+    /// connection ended: its server takes one frame.
+    #[test]
+    fn a_paste_that_takes_a_line_past_a_frame_is_refused() -> Result<(), String> {
+        use fux_wire::protocol::MAX_FRAME;
+        let mut screen = Screen::Prompt(Prompt {
+            title: "rename".into(),
+            line: Line::new("kept".into()),
+            action: None,
+        });
+        let modes = Modes::default();
+        let long: String = std::iter::repeat_n('x', MAX_FRAME).collect();
+        let told = screen.paste(&modes, &long);
+        let shown = screen.panel(&modes).map(ScreenAct::Show);
+        assert!(shown.as_ref().is_some_and(sends), "its line is no frame");
+        let shown = shown.map(Effect::Screen);
+        let refused = refusal(TOO_LONG.to_owned());
+        assert_eq!(told, shown.into_iter().chain([refused]).collect::<Vec<_>>());
+        let half: String = std::iter::repeat_n('x', MAX_FRAME / 2).collect();
+        assert_eq!(screen.paste(&modes, &half).len(), 1, "a refusal");
+        let Screen::Prompt(prompt) = &screen else {
+            return Err("its prompt closed".into());
+        };
+        assert_eq!(prompt.line.before().len(), 4 + MAX_FRAME / 2);
+        Ok(())
+    }
+
+    /// A prompt or a chooser a program opens with more text than one frame
+    /// holds, the most the server takes of a client's screen, is not
+    /// opened, and the client says so: shown, it ended the client's
+    /// connection.
+    #[test]
+    fn a_screen_longer_than_a_frame_is_not_opened() {
+        let long = || std::iter::repeat_n('x', fux_wire::protocol::MAX_FRAME).collect::<String>();
+        let prompt = |title: String, start: String| {
+            Screen::Prompt(Prompt {
+                title,
+                line: Line::new(start),
+                action: None,
+            })
+        };
+        let mut rows = list();
+        if let Screen::List(list) = &mut rows {
+            list.title = long();
+        }
+        let refused = [Act::Notice {
+            text: NOT_OPENED.to_owned(),
+            error: true,
+        }];
+        for screen in [
+            prompt(long(), String::new()),
+            prompt("t".into(), long()),
+            rows,
+        ] {
+            let mut display = Display::default();
+            assert_eq!(display.open(screen, &Modes::default()), refused);
+            assert_eq!(display.screen, Screen::default());
+        }
+        let mut display = Display::default();
+        let opened = display.open(prompt("t".into(), "start".into()), &Modes::default());
+        assert!(matches!(opened.as_slice(), [Act::Screen { .. }]));
     }
 
     /// A paste where no line is typed goes nowhere, and says so.

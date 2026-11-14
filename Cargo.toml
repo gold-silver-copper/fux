@@ -26,6 +26,8 @@ include = ["/src/**", "/tests/**", "/README.md", "/WINDOWS.md", "/docs/records.t
 # (`InProcess`), with fux-server's own `in-process` items: for the fuzz
 # targets.
 in-process = ["fux-server/in-process"]
+# `fux_vt::refuse_next`, for the tests of what a refusal of memory leaves.
+checks = ["fux-vt/checks"]
 
 [dependencies]
 fux-server = { path = "fux-server", version = "0.37.0" }

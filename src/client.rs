@@ -15,8 +15,8 @@ use fux_wire::command::ClientRead;
 use fux_wire::command::Command;
 use fux_wire::command::Request;
 use fux_wire::protocol::{
-    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
-    Reply, Role, ToAttached, ToCommand,
+    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Joining, Mismatch,
+    PROTOCOL, Reply, Role, ToAttached, ToCommand,
 };
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
@@ -83,6 +83,10 @@ impl Error {
             Error::Socket(socket::Error::NoServer(_)) | Error::Connect { .. } => Code::NoServer,
             Error::Mismatch { .. } | Error::Unfollowed { .. } => Code::Mismatch,
             Error::Output(_) => Code::Output,
+            Error::Protocol(
+                fux_wire::protocol::Error::Memory(_)
+                | fux_wire::protocol::Error::Wire(fux_wire::wire::Error::Memory(_)),
+            ) => Code::Memory,
             Error::Socket(_)
             | Error::Refused(_)
             | Error::Protocol(_)
@@ -215,13 +219,37 @@ fn open(socket: &SocketPath) -> Result<(Client, Option<fuxix::process::Pid>), Er
     .map_err(failed)
 }
 
+/// What the server sends, as its client reads it: frames, and the pieces of
+/// a message longer than one, which the client, having asked for it, joins
+/// as far as the OS gives it memory.
+#[derive(Default)]
+struct Frames {
+    decoder: Decoder,
+    pieces: Joining,
+}
+
+impl Frames {
+    fn push(&mut self, bytes: &[u8]) {
+        self.decoder.push(bytes);
+    }
+
+    /// Whether `frame` has something to say without more bytes.
+    fn ready(&self) -> Result<bool, fux_wire::protocol::Error> {
+        self.decoder.ready_long()
+    }
+
+    fn frame<'a, F: Frame<'a>>(&'a mut self) -> Result<Option<F>, fux_wire::protocol::Error> {
+        self.decoder.long(&mut self.pieces)
+    }
+}
+
 /// A connection to the server at `socket` as `role`, greeted, with the
 /// server's version.
-fn connect(socket: &SocketPath, role: Role) -> Result<(Client, Decoder, String), Error> {
+fn connect(socket: &SocketPath, role: Role) -> Result<(Client, Frames, String), Error> {
     let (mut stream, server) = open(socket)?;
     let ours = Hello::ours(role);
     let sent = send(&mut stream, &ours);
-    let mut decoder = Decoder::default();
+    let mut decoder = Frames::default();
     // A refusal may close the connection before the Hello is written: its
     // reason is still there to read.
     let answer = read_frame(&mut stream, &mut decoder, Some(ANSWER));
@@ -268,7 +296,7 @@ fn send<'a>(stream: &mut Client, frame: &impl Frame<'a>) -> Result<(), Error> {
 /// read; none once it has closed.
 fn read_frame<'d, F: Frame<'d>>(
     stream: &mut Client,
-    decoder: &'d mut Decoder,
+    decoder: &'d mut Frames,
     timeout: Option<Duration>,
 ) -> Result<Option<F>, Error> {
     wait_at_most(stream, timeout);
@@ -283,7 +311,7 @@ fn read_frame<'d, F: Frame<'d>>(
 /// What the server sent next, read into `decoder`: false once it has
 /// closed. A reset is its end too: it closed with something of ours
 /// unread.
-fn read_more(stream: &mut Client, decoder: &mut Decoder) -> Result<bool, Error> {
+fn read_more(stream: &mut Client, decoder: &mut Frames) -> Result<bool, Error> {
     let mut buffer = [0u8; 16 * 1024];
     loop {
         match stream.read(&mut buffer) {
@@ -308,7 +336,7 @@ fn read_more(stream: &mut Client, decoder: &mut Decoder) -> Result<bool, Error> 
 /// is.
 pub(crate) struct Requests {
     stream: Client,
-    decoder: Decoder,
+    decoder: Frames,
 }
 
 impl Requests {
@@ -340,13 +368,25 @@ impl Requests {
                 },
             );
         }
-        let mut parts = Vec::new();
+        // Its reply, joined from its parts as far as the OS gives memory:
+        // a refusal is this request's failure, said once the rest of the
+        // reply is read and let go, so that the next request meets its own.
+        let mut parts = Joining::default();
+        let mut refused = None;
         loop {
             while let Some(frame) = self.decoder.frame()? {
                 match frame {
-                    ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
+                    ToCommand::Part(_) if refused.is_some() => {}
+                    ToCommand::Part(bytes) => {
+                        if let Err(error) = parts.push(&bytes) {
+                            (parts, refused) = (Joining::default(), Some(error));
+                        }
+                    }
                     ToCommand::PartsEnd => {
-                        let reply = fux_wire::wire::Reader::new(&parts).whole::<Reply>();
+                        if let Some(error) = refused {
+                            return Err(error.into());
+                        }
+                        let reply = fux_wire::wire::Reader::new(parts.as_slice()).whole::<Reply>();
                         return Ok(reply.map_err(fux_wire::protocol::Error::Wire)?);
                     }
                     ToCommand::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
@@ -368,7 +408,7 @@ impl Requests {
     #[cfg(test)]
     #[cfg(unix)]
     pub(crate) fn over(stream: Client) -> Requests {
-        let decoder = Decoder::default();
+        let decoder = Frames::default();
         Requests { stream, decoder }
     }
 
@@ -1502,7 +1542,7 @@ fn next_frame(frames: u64) -> Result<u64, Error> {
 fn attached(
     socket: &SocketPath,
     stream: &mut Client,
-    decoder: &mut Decoder,
+    decoder: &mut Frames,
     signals: &Signals,
     attaching: &Attaching,
     mut output: Option<&mut Output>,
@@ -1718,7 +1758,7 @@ fn attached(
 /// the failed write the end.
 fn tell(
     stream: &mut Client,
-    decoder: &mut Decoder,
+    decoder: &mut Frames,
     welcomed: bool,
     output: Option<&mut Output>,
     frame: &AttachedFrame,
@@ -1737,7 +1777,7 @@ fn tell(
 /// `Welcome`), or `None` if the server said nothing more.
 fn last_frames(
     stream: &mut Client,
-    decoder: &mut Decoder,
+    decoder: &mut Frames,
     welcomed: bool,
     mut output: Option<&mut Output>,
 ) -> Option<Result<String, Error>> {
@@ -1771,6 +1811,42 @@ fn last_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client refused memory while it joins a reply's parts fails that
+    /// request, with the out-of-memory code: it aborted. Given the memory,
+    /// it reads the same reply.
+    #[cfg(all(unix, feature = "checks"))]
+    #[test]
+    fn refused_memory_joining_a_reply_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        let (mine, mut server) = std::os::unix::net::UnixStream::pair()?;
+        let reply: Reply = fux_wire::protocol::Body::Empty.into();
+        let mut answer = fux_vt::bytes::ByteQueue::default();
+        fux_wire::protocol::split_into(
+            &fux_wire::wire::encode(&reply),
+            ToCommand::Part,
+            &mut answer,
+        );
+        answer.push_with(|frames| ToCommand::PartsEnd.encode_into(frames));
+        // Two answers, each read by the request it is met with.
+        server.write_all(answer.as_slice())?;
+        server.write_all(answer.as_slice())?;
+        let asked = Asked {
+            after: None,
+            request: fux_wire::command::Command::Inspect {
+                scope: fux_wire::inspect::Scope::All,
+                projection: fux_wire::inspect::Projection::Facts,
+            }
+            .into(),
+            context: Context::default(),
+        };
+        let mut requests = Requests::over(mine);
+        fux_vt::refuse_next(1);
+        let refused = requests.ask(&asked, None);
+        fux_vt::refuse_next(0);
+        assert_eq!(refused.err().map(|e| e.code()), Some(Code::Memory));
+        assert_eq!(requests.ask(&asked, None)?, reply);
+        Ok(())
+    }
 
     /// A socket no server is at, absolute on each OS.
     const NOWHERE: &str = if cfg!(windows) {
@@ -1918,7 +1994,7 @@ mod tests {
             }
         }
         let sent: AttachedFrame =
-            read_frame(&mut view, &mut Decoder::default(), Some(ANSWER))?.ok_or("presentation")?;
+            read_frame(&mut view, &mut Frames::default(), Some(ANSWER))?.ok_or("presentation")?;
         let AttachedFrame::Act(act) = sent else {
             return Err("expected attached act".into());
         };
@@ -1930,7 +2006,7 @@ mod tests {
         assert_eq!(p.slots.text(0), Some("inert"));
         assert_ne!(fuxix::poll::poll(&mut requests, Some(ANSWER))?, 0);
         let (mut peer, _) = listener.accept()?;
-        let mut decoder = Decoder::default();
+        let mut decoder = Frames::default();
         let _: Hello = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("hello")?;
         send(&mut peer, &Greeting::Hello(ours()))?;
         let asked: Asked = read_frame(&mut peer, &mut decoder, Some(ANSWER))?.ok_or("request")?;
@@ -2627,7 +2703,7 @@ mod tests {
         let (client, mut peer) = Client::pair()?;
         let mut client = client;
         server(&mut peer);
-        let mut decoder = Decoder::default();
+        let mut decoder = Frames::default();
         let answer = read_frame(&mut client, &mut decoder, Some(wait));
         greeted(&ours(), None, answer, Ok(()))
     }

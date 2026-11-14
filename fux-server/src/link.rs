@@ -24,7 +24,7 @@ use fux_wire::command::{
 use fux_wire::events::Actor;
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::inspect::Facts;
-use fux_wire::protocol::{Decoder, Frame};
+use fux_wire::protocol::{Decoder, Frame, Joining, MAX_PAYLOAD};
 use fux_wire::wire::{Reader, Wire};
 use std::path::PathBuf;
 
@@ -516,8 +516,43 @@ impl<T: Wire> Frame<'_> for Sending<'_, T> {
     }
 }
 
-/// One end of a link: its socket, what came that is not yet taken, and
-/// what is to go that the socket did not take yet.
+/// The most bytes for a client the server sends its connection's process
+/// in one message (`ToConn::Bytes`), which is then one frame: what is left
+/// of a frame's payload is far more than the message's own few bytes.
+pub const BYTES: usize = MAX_PAYLOAD.saturating_sub(fux_wire::protocol::ENVELOPE);
+
+/// The most a pane's launch, its program's words and its directory, may
+/// take in its reports: a quarter of a frame. Its reports repeat its
+/// launch (its facts, its greeting), and the server joins none, so each is
+/// one frame by what it is made of: its launch, and what its program said,
+/// each no more than fux-vt keeps of a string (`OSC_PAYLOAD_LIMIT`, made
+/// text at most three times that), a title or a notification told and
+/// again among its facts.
+pub const LAUNCH: usize = MAX_PAYLOAD / 4;
+
+/// Whether a pane may run `argv` in `cwd`: they take no more than `LAUNCH`
+/// in its reports, as its facts say them.
+pub fn launch_fits(
+    argv: &fux_wire::command::Program,
+    cwd: &std::path::Path,
+) -> Result<(), fux_wire::code::Error> {
+    let words = fux_wire::json::Json::Array(argv.iter().map(fux_wire::json::Json::str).collect());
+    let bytes = (fux_wire::wire::encode(&words).len()).saturating_add(cwd.as_os_str().len());
+    if bytes <= LAUNCH {
+        return Ok(());
+    }
+    Err(fux_wire::code::fail(
+        Code::TooLong,
+        format!(
+            "a program's words and directory of {bytes} bytes are more than a pane may be \
+             started with ({LAUNCH} bytes): its reports to the server, one frame each, repeat them"
+        ),
+    ))
+}
+
+/// One end of a link: its socket, what came that is not yet taken, one
+/// frame of it at most (`next_message`), and what is to go that the socket
+/// did not take yet.
 pub struct End {
     pub stream: Stream,
     decoder: Decoder,
@@ -544,10 +579,27 @@ impl End {
         })
     }
 
-    /// Queues `message`, sent as the socket takes it (`flush`).
+    /// Queues `message`, sent as the socket takes it (`flush`). One longer
+    /// than a frame goes in pieces, which only an end that asked for
+    /// something long joins (`next_long`); any other refuses the first.
     pub fn send(&mut self, message: &impl Wire) {
         let message = Sending(message);
         self.out.push_with(|out| message.encode_into(out));
+    }
+
+    /// Queues `message` if it is one frame, as the server takes them:
+    /// whether it was queued.
+    pub fn send_whole(&mut self, message: &impl Wire) -> bool {
+        let message = Sending(message);
+        self.out.push_with(|out| {
+            let start = out.len();
+            message.encode_into(out);
+            let whole = out.len().saturating_sub(start) <= MAX_PAYLOAD.saturating_add(5);
+            if !whole {
+                out.truncate(start);
+            }
+            whole
+        })
     }
 
     /// Writes what is queued as far as the socket takes it: whether all of
@@ -604,18 +656,29 @@ impl End {
     /// tests.
     #[cfg(test)]
     pub fn queued<T: Wire>(&self) -> Vec<T> {
-        let mut decoder = Decoder::default();
+        let (mut decoder, mut joining) = (Decoder::default(), Joining::default());
         decoder.push(self.out.as_slice());
         let mut queued = Vec::new();
-        while let Ok(Some(message)) = decoder.frame::<Message<T>>() {
+        while let Ok(Some(message)) = decoder.long::<Message<T>>(&mut joining) {
             queued.push(message.0);
         }
         queued
     }
 
-    /// The next whole message come, if one is.
+    /// The next whole message come, if one is: one frame. A piece of a
+    /// longer one is an error, and the link is then unusable.
     pub fn next_message<T: Wire>(&mut self) -> Result<Option<T>, fux_wire::protocol::Error> {
         Ok(self.decoder.frame::<Message<T>>()?.map(|m| m.0))
+    }
+
+    /// `next_message`, for what this end asked for and may be long (a
+    /// pane's screen or capture) and, for now, a paste's body: its pieces
+    /// joined into `joining`, as far as the OS gives memory.
+    pub fn next_long<T: Wire>(
+        &mut self,
+        joining: &mut Joining,
+    ) -> Result<Option<T>, fux_wire::protocol::Error> {
+        Ok(self.decoder.long::<Message<T>>(joining)?.map(|m| m.0))
     }
 
     /// Waits for the next whole message: for a link's first word alone,
@@ -961,3 +1024,26 @@ wired!(FromConn { Accepted, Frame { frame, body }, Flushed, Shut, Bad(why) });
 /// taken`, for a client the server took itself, on stdout (`conn::serve`).
 pub const CONN: &str = "__conn";
 pub const TAKEN: &str = "taken";
+
+#[cfg(test)]
+mod tests {
+    use super::{BYTES, Message, Sending, ToConn};
+    use fux_wire::protocol::{Decoder, Frame};
+
+    /// As many of a client's bytes as the server sends its connection's
+    /// process at once are one frame, which that process, joining nothing
+    /// its server sends, takes.
+    #[test]
+    fn a_full_message_of_a_clients_bytes_is_one_frame() {
+        let mut sent = Vec::new();
+        Sending(&ToConn::Bytes(vec![7; BYTES])).encode_into(&mut sent);
+        let mut decoder = Decoder::default();
+        decoder.push(&sent);
+        let taken = decoder.frame::<Message<ToConn>>();
+        assert!(
+            matches!(&taken, Ok(Some(Message(ToConn::Bytes(bytes)))) if bytes.len() == BYTES),
+            "{:?}",
+            taken.map(|message| message.map(|m| m.0))
+        );
+    }
+}

@@ -364,6 +364,9 @@ impl Host {
                 format!("{id} runs a shell; respawn restarts a program a pane was started with");
             return Err(fail(Code::NotRun, message));
         };
+        if let Some(argv) = &argv {
+            crate::link::launch_fits(argv, &launch.cwd)?;
+        }
         if self.respawning.is_some() {
             let message =
                 format!("{id} is respawning already: what its program left is still being read");
@@ -1780,6 +1783,9 @@ impl Clock {
 struct Peer {
     end: crate::link::End,
     side: Option<Option<Watch>>,
+    /// The pieces of a paste's body a connection's process sends it, the
+    /// one message it still joins.
+    pieces: fux_wire::protocol::Joining,
 }
 
 /// What its server said on `end`, its link, is taken in, in order, read
@@ -2058,7 +2064,11 @@ pub fn serve(
                 // One that is closing takes them too: a server that asks
                 // for it is told so, in words.
                 if ours && let Ok(end) = crate::socket::serve(reached).and_then(End::new) {
-                    peers.push(Peer { end, side: None });
+                    peers.push(Peer {
+                        end,
+                        side: None,
+                        pieces: fux_wire::protocol::Joining::default(),
+                    });
                 }
             }
         }
@@ -2164,7 +2174,7 @@ pub fn serve(
                         Ok(None) => break,
                         Ok(Some(_)) | Err(_) => done = true,
                     },
-                    Some(watch) => match peer.end.next_message::<ToSide>() {
+                    Some(watch) => match peer.end.next_long::<ToSide>(&mut peer.pieces) {
                         Ok(Some(ToSide::Watch)) => *watch = Some(Watch::default()),
                         Ok(Some(ToSide::Taken)) => {
                             if let Some(watch) = watch {
@@ -2376,6 +2386,72 @@ mod tests {
             server: 0,
         };
         Ok(Host::begin(begin, Instant::now())?)
+    }
+
+    /// A pane started with as much as one may be (`link::LAUNCH`, in words
+    /// of one byte, which take the most room), whose program then says as
+    /// much as is kept of a title and of a notification, neither UTF-8 so
+    /// each three times as long as text: every report it sends its server,
+    /// which joins none, is one frame. More words than that are refused,
+    /// `too-long`. A report over a frame went in pieces, which its server
+    /// took as a bad frame, and let the pane go.
+    #[test]
+    fn a_panes_reports_are_one_frame_each_whatever_it_runs_and_says() -> TestResult {
+        use crate::link::{LAUNCH, launch_fits};
+        use fux_wire::protocol::MAX_PAYLOAD;
+        let words = |n: usize| command::Program::new("/bin/sh".into(), vec!["x".to_owned(); n]);
+        let root = std::path::Path::new("/");
+        let mut most = LAUNCH;
+        while launch_fits(&words(most)?, root).is_err() {
+            most = most / 8 * 7;
+        }
+        // As many words as a launch has bytes are more than it has.
+        let over = launch_fits(&words(LAUNCH)?, root);
+        assert_eq!(over.err().map(|e| e.code()), Some(Code::TooLong));
+        let begin = Begin {
+            id: PaneId::of(1),
+            run: Run::now().ok_or("a clock")?,
+            shell: false,
+            argv: words(most)?,
+            cwd: root.into(),
+            size: Size::new(24, 80)?,
+            options: crate::pane::tests::options(1 << 10)?,
+            hosting: Hosting::default(),
+            socket: None,
+            exe: None,
+            server: 0,
+        };
+        let mut host = Host::begin(begin, Instant::now())?;
+        let said = vec![0xff; fux_vt::OSC_PAYLOAD_LIMIT];
+        let mut output = Vec::new();
+        for start in [&b"\x1b]2;"[..], b"\x1b]9;"] {
+            output.extend_from_slice(start);
+            output.extend_from_slice(&said);
+            output.push(7);
+        }
+        host.output(&output, Instant::now());
+        while host.pane().has_unread() {
+            host.fire(Timer::Unread, Instant::now());
+        }
+        let told = host.take();
+        let titled = told.iter().any(|report| {
+            matches!(report, FromPane::Told { told: Told::Title(title), .. }
+                if title.as_str().len() > 2 * fux_vt::OSC_PAYLOAD_LIMIT)
+        });
+        assert!(titled, "no title of three times what was sent");
+        let mut sizes: Vec<usize> = (told.iter())
+            .map(|report| fux_wire::wire::encode(report).len())
+            .collect();
+        sizes.extend(
+            host.update()
+                .map(|update| fux_wire::wire::encode(&update).len()),
+        );
+        sizes.push(fux_wire::wire::encode(&host.greeting()).len());
+        let largest = sizes.iter().copied().max().unwrap_or(0);
+        assert!(largest > LAUNCH, "its launch is in none: {sizes:?}");
+        // A message's own few bytes beside its report's.
+        assert!(largest.saturating_add(64) <= MAX_PAYLOAD, "{sizes:?}");
+        Ok(())
     }
 
     /// A frame whose reading takes more than one call of the parser is

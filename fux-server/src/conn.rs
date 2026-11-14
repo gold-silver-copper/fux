@@ -18,7 +18,7 @@ use fux_wire::answer::PaneResults;
 use fux_wire::command::{Input, Run};
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::protocol::{
-    Asked, Attach, AttachedFrame, Decoder, Frame, Hello, Response, ToAttached,
+    Asked, Attach, AttachedFrame, Decoder, Frame, Hello, Joining, Response, ToAttached,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -97,6 +97,8 @@ impl Clock {
 /// has a process, and its screen, as the pane last sent it.
 struct Side {
     end: Option<End>,
+    /// The pieces of a screen longer than a frame, which it asked for.
+    pieces: Joining,
     mirror: Option<fux_vt::Parser>,
 }
 
@@ -112,7 +114,11 @@ impl Side {
                 end.send(&ToSide::Watch);
                 end
             });
-        Side { end, mirror: None }
+        Side {
+            end,
+            pieces: Joining::default(),
+            mirror: None,
+        }
     }
 
     /// Paints `drawn`, the pane's screen as it sent it, onto its copy.
@@ -239,8 +245,16 @@ struct Sent {
 /// again as it came, but for its body, if `bodies` (a server that starts
 /// pane processes; `ToConn::Hello`): none if more bytes are needed, or none
 /// is expected. An attached client's frame says whether it typed (its echo
-/// is painted at once) or resized (its terminal is painted whole).
-fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<Sent>, String> {
+/// is painted at once) or resized (its terminal is painted whole). A
+/// `Hello` and an `Attach` are one frame, and a piece is refused; a request
+/// and an attached client's frame may carry keys or a paste, so their
+/// pieces are joined, into `pieces`.
+fn next_frame(
+    decoder: &mut Decoder,
+    pieces: &mut Joining,
+    want: Want,
+    bodies: bool,
+) -> Result<Option<Sent>, String> {
     fn again<'a, F: Frame<'a>>(frame: Option<F>) -> Option<Sent> {
         frame.map(|frame| Sent {
             frame: frame.encode(),
@@ -254,7 +268,7 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
             again(decoder.frame::<Attach>().map_err(|e| e.to_string())?)
         }
         Want::Frames(Expect::Asked) => {
-            let asked = decoder.frame::<Asked>().map_err(|e| e.to_string())?;
+            let asked = (decoder.long::<Asked>(pieces)).map_err(|e| e.to_string())?;
             asked.map(|mut asked| {
                 use fux_wire::command::{Command, Request};
                 let body = match &mut asked.request {
@@ -279,7 +293,7 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
         }
         Want::Frames(Expect::Attached) => {
             let frame = decoder
-                .frame::<AttachedFrame>()
+                .long::<AttachedFrame>(pieces)
                 .map_err(|e| e.to_string())?;
             frame.map(|mut frame| {
                 let mut body = None;
@@ -335,7 +349,7 @@ fn reach(socket: &std::path::Path, run: Run) -> Option<End> {
 struct Listening {
     listener: crate::socket::Listener,
     path: PathBuf,
-    peers: Vec<(End, bool)>,
+    peers: Vec<(End, bool, Joining)>,
 }
 
 impl Drop for Listening {
@@ -369,12 +383,12 @@ impl Listening {
             while let Ok(reached) = crate::socket::accept(&mut self.listener) {
                 let ours = crate::socket::peer(&reached).is_ok_and(|peer| peer.user.is_current());
                 if let (true, Ok(end)) = (ours, crate::socket::serve(reached).and_then(End::new)) {
-                    self.peers.push((end, false));
+                    self.peers.push((end, false, Joining::default()));
                 }
             }
         }
         let mut kept = Vec::new();
-        for ((mut end, mut joined), readable) in std::mem::take(&mut self.peers)
+        for ((mut end, mut joined, mut pieces), readable) in std::mem::take(&mut self.peers)
             .into_iter()
             .zip(ready.iter().skip(1).chain(std::iter::repeat(&false)))
         {
@@ -392,7 +406,7 @@ impl Listening {
                     }
                     continue;
                 }
-                match end.next_message::<ToSide>() {
+                match end.next_long::<ToSide>(&mut pieces) {
                     Ok(Some(ToSide::Body { token, inputs })) => {
                         bodies.insert(token, inputs);
                     }
@@ -404,7 +418,7 @@ impl Listening {
                 }
             }
             if !gone {
-                kept.push((end, joined));
+                kept.push((end, joined, pieces));
             }
         }
         self.peers = kept;
@@ -430,6 +444,8 @@ enum Errand {
         end: Option<End>,
         pane: PaneId,
         placed: crate::link::Placed,
+        /// The pieces of the capture, which it asked for.
+        pieces: Joining,
     },
     /// A client's screen to compose from `scene` and its panes' first
     /// screens, as they come: its client's reply once each came, or its
@@ -437,7 +453,7 @@ enum Errand {
     Compose {
         client: ClientId,
         scene: Box<Scene>,
-        waiting: Vec<(PaneId, End)>,
+        waiting: Vec<(PaneId, End, Joining)>,
         sides: BTreeMap<PaneId, Side>,
     },
 }
@@ -475,7 +491,12 @@ impl Errand {
                     end.send(&ToSide::Fetch { token });
                     end
                 });
-                Errand::Fetch { end, pane, placed }
+                Errand::Fetch {
+                    end,
+                    pane,
+                    placed,
+                    pieces: Joining::default(),
+                }
             }
             Making::Client { client, scene } => {
                 let mut waiting = Vec::new();
@@ -485,12 +506,13 @@ impl Errand {
                         id,
                         Side {
                             end: None,
+                            pieces: Joining::default(),
                             mirror: None,
                         },
                     );
                     if let Some(mut end) = join(panes, run, id) {
                         end.send(&ToSide::Watch);
-                        waiting.push((id, end));
+                        waiting.push((id, end, Joining::default()));
                     }
                 }
                 Errand::Compose {
@@ -519,7 +541,7 @@ impl Errand {
             Errand::Fetch { end, .. } => end.iter().map(|end| (end, flags(end, true))).collect(),
             Errand::Compose { waiting, .. } => waiting
                 .iter()
-                .map(|(_, end)| (end, flags(end, true)))
+                .map(|(_, end, _)| (end, flags(end, true)))
                 .collect(),
         }
     }
@@ -539,13 +561,18 @@ impl Errand {
                 Some(Ok(true)) => Some(None),
                 Some(Err(_)) | None => Some(Some(typed(run, Some(*client)))),
             },
-            Errand::Fetch { end, pane, placed } => {
+            Errand::Fetch {
+                end,
+                pane,
+                placed,
+                pieces,
+            } => {
                 let Some(end) = end else {
                     return Some(Some(reply(run, Err(gone_capture(*pane)))));
                 };
                 let gone = end.flush().is_err()
                     || ready.first().copied().unwrap_or(false) && end.read(buffer) == Read::Closed;
-                match end.next_message::<FromSide>() {
+                match end.next_long::<FromSide>(pieces) {
                     Ok(Some(FromSide::Held {
                         captured: Some(mut captured),
                         ..
@@ -566,10 +593,12 @@ impl Errand {
                 sides,
             } => {
                 let mut left = Vec::new();
-                for ((id, mut end), readable) in std::mem::take(waiting).into_iter().zip(ready) {
+                for ((id, mut end, mut pieces), readable) in
+                    std::mem::take(waiting).into_iter().zip(ready)
+                {
                     let gone =
                         end.flush().is_err() || *readable && end.read(buffer) == Read::Closed;
-                    match end.next_message::<FromSide>() {
+                    match end.next_long::<FromSide>(&mut pieces) {
                         Ok(Some(FromSide::Drawn(drawn))) => {
                             if let Some(side) = sides.get_mut(&id) {
                                 side.take(*drawn, id);
@@ -577,7 +606,7 @@ impl Errand {
                         }
                         Ok(Some(FromSide::Held { .. })) | Err(_) => {}
                         Ok(None) if gone => {}
-                        Ok(None) => left.push((id, end)),
+                        Ok(None) => left.push((id, end, pieces)),
                     }
                 }
                 *waiting = left;
@@ -596,6 +625,16 @@ impl Errand {
     }
 }
 
+/// What a client is told whose frame, its keys or paste apart, is `bytes`
+/// long and so no one frame for its server.
+fn too_long(bytes: usize) -> String {
+    format!(
+        "a request of {bytes} bytes, its keys or paste apart, is longer than one frame \
+         ({} bytes), the most the server takes",
+        fux_wire::protocol::MAX_FRAME
+    )
+}
+
 fn gone_capture(pane: PaneId) -> String {
     format!("{pane}'s capture is gone: its own process ended")
 }
@@ -604,7 +643,7 @@ fn gone_capture(pane: PaneId) -> String {
 /// did not reach the client `lost`.
 fn typed(run: Run, lost: Option<ClientId>) -> Vec<u8> {
     framed(
-        run,
+        Some(run),
         match lost {
             None => Response::Answered(PaneResults::Many(Vec::new())),
             Some(client) => Response::Failed {
@@ -624,16 +663,13 @@ fn reply(run: Run, captured: Result<Box<fux_wire::answer::Captured>, String>) ->
             message,
         },
     };
-    framed(run, response)
+    framed(Some(run), response)
 }
 
 /// A reply its connection makes itself, framed for its client.
-fn framed(run: Run, response: Response) -> Vec<u8> {
+fn framed(run: Option<Run>, response: Response) -> Vec<u8> {
     use fux_wire::protocol::{Reply, ToCommand};
-    let reply = Reply {
-        run: Some(run),
-        response,
-    };
+    let reply = Reply { run, response };
     let bytes = fux_wire::wire::encode(&reply);
     let mut out = ByteQueue::default();
     fux_wire::protocol::split_into(&bytes, ToCommand::Part, &mut out);
@@ -764,7 +800,9 @@ impl Composer {
             };
             let closed = readable && end.read(buffer) == Read::Closed;
             let mut drawn = Vec::new();
-            while let Ok(Some(FromSide::Drawn(screen))) = end.next_message::<FromSide>() {
+            while let Ok(Some(FromSide::Drawn(screen))) =
+                end.next_long::<FromSide>(&mut side.pieces)
+            {
                 drawn.push(screen);
             }
             if !drawn.is_empty() {
@@ -885,6 +923,8 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     use fuxix::poll::{Events, PollFd};
     crate::socket::nonblocking(client).map_err(|e| format!("its client: {e}"))?;
     let mut decoder = Decoder::default();
+    // The pieces of its client's keys or paste, the one long thing it takes.
+    let mut pieces = Joining::default();
     let mut out = ByteQueue::default();
     let mut composer = Composer::new(Instant::now());
     let mut want = Want::Hello;
@@ -925,14 +965,32 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         let now = Instant::now();
         // What its client sent, as far as its stage lets it be taken.
         loop {
-            match next_frame(&mut decoder, want, composer.panes.is_some()) {
+            match next_frame(&mut decoder, &mut pieces, want, composer.panes.is_some()) {
                 Ok(Some(Sent { frame, typed, body })) => {
-                    let body = body.map(|inputs| {
-                        numbered = numbered.wrapping_add(1);
-                        bodies.insert(numbered, inputs);
-                        numbered
-                    });
-                    link.send(&FromConn::Frame { frame, body });
+                    // Its server takes one frame: a longer one stays here,
+                    // and its client is told so.
+                    let bytes = frame.len();
+                    let number = body.as_ref().map(|_| numbered.wrapping_add(1));
+                    let frame = FromConn::Frame {
+                        frame,
+                        body: number,
+                    };
+                    if !link.send_whole(&frame) {
+                        let why = too_long(bytes);
+                        if want == Want::Frames(Expect::Asked) {
+                            let run = composer.panes.as_ref().map(|(_, run)| *run);
+                            let code = fux_wire::code::Code::TooLong;
+                            out.push(&framed(run, Response::Failed { code, message: why }));
+                            continue;
+                        }
+                        link.send(&FromConn::Bad(why));
+                        (want, shut) = (Want::Nothing, true);
+                        break;
+                    }
+                    if let (Some(number), Some(inputs)) = (number, body) {
+                        numbered = number;
+                        bodies.insert(number, inputs);
+                    }
                     match typed {
                         Typed::Key => {
                             composer.clock.echo = composer.scene.as_ref().and_then(|s| s.focus);
@@ -972,7 +1030,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         let idle = want == Want::Answer && (waits || typing.is_some());
         if idle && decoder.buffered() >= READ && !(ended || shut || closing) {
             out.push_with(|frames| fux_wire::protocol::ToCommand::Exit(AHEAD).encode_into(frames));
-            decoder = Decoder::default();
+            (decoder, pieces) = (Decoder::default(), Joining::default());
             link.send(&FromConn::Shut);
             (ended, told_shut) = (true, true);
         }
@@ -981,7 +1039,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // a request under way it is said at once if that waits on someone
         // else, or its client hung up; with an answer on its way, only once
         // that is written: a client that shut its side reads it still.
-        let taken = decoder.buffered() == 0 || !decoder.ready().unwrap_or(true);
+        let taken = decoder.buffered() == 0 || !decoder.ready_long().unwrap_or(true);
         let tells = match want {
             Want::Answer => idle || gone,
             Want::Nothing => false,
@@ -1075,7 +1133,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             .map_or(0, |l| l.peers.len().saturating_add(1));
         if let Some(listening) = &listening {
             fds.push(PollFd::new(&listening.listener, Events::IN));
-            for (end, _) in &listening.peers {
+            for (end, ..) in &listening.peers {
                 fds.push(PollFd::new(&end.stream, Events::IN));
             }
         }
@@ -1623,6 +1681,162 @@ mod tests {
         decoder.push(&got);
         let last = decoder.frame::<ToCommand>().map_err(|e| e.to_string())?;
         assert!(matches!(last, Some(ToCommand::Exit(_))), "{last:?}");
+        Ok(())
+    }
+
+    /// A client's connection's process as a test serves it: the client's
+    /// end, its server's, and its thread.
+    #[cfg(unix)]
+    type Served = (
+        std::os::unix::net::UnixStream,
+        crate::link::End,
+        std::thread::JoinHandle<Result<(), String>>,
+    );
+
+    #[cfg(unix)]
+    fn served() -> Result<Served, String> {
+        use crate::link::End;
+        use std::os::unix::net::UnixStream;
+        let e = |error: std::io::Error| error.to_string();
+        let (client, theirs) = UnixStream::pair().map_err(e)?;
+        let (server, link) = UnixStream::pair().map_err(e)?;
+        let server = End::new(server).map_err(e)?;
+        let link = End::new(link).map_err(e)?;
+        let conn = std::thread::spawn(move || super::serve(client, link, Vec::new()));
+        Ok((theirs, server, conn))
+    }
+
+    /// Pieces of a longer message sent before a `Hello`, where no long
+    /// message is taken, are refused at the first: its server is told why,
+    /// which it tells the client as it ends it (`Exit`), and its process
+    /// reads its client no more, so of 64 MiB of pieces it takes two at
+    /// most (the one it refused, and what its one read and the socket hold);
+    /// it joined them all, as long as they came.
+    #[cfg(unix)]
+    #[test]
+    fn pieces_sent_before_a_hello_are_refused_and_read_no_more() -> Result<(), String> {
+        use crate::link::{FromConn, ToConn};
+        use fux_wire::protocol::MAX_FRAME;
+        use std::io::Write;
+        let (mut theirs, mut server, conn) = served()?;
+        let length = u32::try_from(MAX_FRAME).map_err(|e| e.to_string())?;
+        // The kind of a piece (`MORE`), then its bytes.
+        let mut piece = length.to_be_bytes().to_vec();
+        piece.push(19);
+        piece.resize(MAX_FRAME + 4, b'x');
+        let sending = std::thread::spawn(move || {
+            let sent = (0..64).take_while(|_| theirs.write_all(&piece).is_ok());
+            let sent = sent.count();
+            let _ = theirs.shutdown(std::net::Shutdown::Write);
+            sent
+        });
+        let said = said(&mut server)?;
+        // Its server ends it, its last word sent.
+        server.send(&ToConn::Close);
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        conn.join().map_err(|_| "its process panicked")??;
+        let sent = sending.join().map_err(|_| "the client panicked")?;
+        assert!(
+            matches!(&said, FromConn::Bad(why) if why.contains("a piece of a longer message")),
+            "{said:?}"
+        );
+        assert!(sent <= 2, "it took {sent} pieces");
+        Ok(())
+    }
+
+    /// A request longer than one frame, its keys apart, fails `too-long`
+    /// in its client's own connection's process: its server is sent none
+    /// of it, and takes the client's next request. Keys longer than a
+    /// frame stay with that process, and their request goes on without
+    /// them.
+    #[cfg(unix)]
+    #[test]
+    fn a_request_longer_than_a_frame_fails_in_its_connections_process() -> Result<(), String> {
+        use crate::link::{Expect, FromConn, ToConn};
+        use fux_wire::command::{Command, Input, To};
+        use fux_wire::protocol::{
+            Asked, Context, Frame, Hello, MAX_FRAME, Reply, Response, Role, ToCommand,
+        };
+        use std::io::{Read, Write};
+        let e = |error: std::io::Error| error.to_string();
+        let asked = |request: Command, cwd: String| Asked {
+            after: None,
+            request: request.into(),
+            context: Context {
+                cwd: cwd.into(),
+                ..Context::default()
+            },
+        };
+        let long = || std::iter::repeat_n('x', MAX_FRAME * 2).collect::<String>();
+        let inspect = Command::Inspect {
+            scope: fux_wire::inspect::Scope::All,
+            projection: fux_wire::inspect::Projection::Facts,
+        };
+        let keys = Command::SendKeys {
+            to: To::Now(fux_wire::command::AnyRef::Pane(fux_wire::id::PaneId::of(1))),
+            inputs: vec![Input::Paste(long())],
+        };
+        let (mut theirs, mut server, conn) = served()?;
+        theirs
+            .write_all(&Hello::ours(Role::Command).encode())
+            .map_err(e)?;
+        let hello = said(&mut server)?;
+        assert!(matches!(hello, FromConn::Frame { .. }), "{hello:?}");
+        let run = "1-2".parse().map_err(|()| "a run")?;
+        server.send(&ToConn::Hello {
+            panes: "/nowhere".into(),
+            run,
+        });
+        server.send(&ToConn::Expect(Expect::Asked));
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        // Read as it is written: neither side waits on the other's socket.
+        let mut reading = theirs.try_clone().map_err(e)?;
+        let writing = std::thread::spawn(move || {
+            let sent = theirs.write_all(&asked(inspect, long()).encode());
+            sent.and_then(|()| theirs.write_all(&asked(keys, String::new()).encode()))
+        });
+        // What its server is sent is the second request alone, one frame,
+        // its keys kept back.
+        let next = said(&mut server)?;
+        let FromConn::Frame { frame, body } = next else {
+            return Err(format!("{next:?}"));
+        };
+        assert!(
+            frame.len() < 4096 && body.is_some(),
+            "{} bytes",
+            frame.len()
+        );
+        // And its reply to the first, which its process made itself.
+        let mut decoder = Decoder::default();
+        let mut reply = Vec::new();
+        let mut buffer = [0u8; 4096];
+        'reply: loop {
+            while let Some(frame) = decoder.frame().map_err(|e| e.to_string())? {
+                match frame {
+                    ToCommand::Part(bytes) => reply.extend_from_slice(&bytes),
+                    ToCommand::PartsEnd => break 'reply,
+                    ToCommand::Exit(why) => return Err(why.to_owned()),
+                }
+            }
+            match reading.read(&mut buffer).map_err(e)? {
+                0 => return Err("its process closed before its reply".into()),
+                n => decoder.push(buffer.get(..n).unwrap_or_default()),
+            }
+        }
+        let reply: Reply = fux_wire::wire::Reader::new(&reply)
+            .whole()
+            .map_err(|e| e.to_string())?;
+        let code = match &reply.response {
+            Response::Failed { code, .. } => Some(*code),
+            Response::Returned(_) | Response::Answered(_) => None,
+        };
+        assert_eq!(code, Some(fux_wire::code::Code::TooLong), "{reply:?}");
+        writing
+            .join()
+            .map_err(|_| "the client panicked")?
+            .map_err(e)?;
+        drop(server);
+        conn.join().map_err(|_| "its process panicked")??;
         Ok(())
     }
 
