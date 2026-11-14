@@ -1133,6 +1133,8 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     // are not taken while one is kept or being sent (`Post`).
     let mut body: Option<(u64, Vec<Input>)> = None;
     let mut numbered = 0u64;
+    // What it let go of a request longer than a frame, still coming.
+    let mut long = 0usize;
     // What it does at panes' sockets, and whether one of them makes its
     // client's reply, which its client's next request waits for.
     let mut errands: Vec<Errand> = Vec::new();
@@ -1172,6 +1174,22 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         loop {
             if body.is_some() || errands.iter_mut().any(|errand| errand.post().is_some()) {
                 break;
+            }
+            // A request that comes in pieces is longer than a frame: its
+            // pieces are let go as they come, none joined, and its client
+            // is told how long it was.
+            if want == Want::Frames(Expect::Asked) {
+                match decoder.skip_long(&mut long) {
+                    Ok(Some(bytes)) => {
+                        let run = composer.panes.as_ref().map(|(_, run)| *run);
+                        let code = fux_wire::code::Code::TooLong;
+                        let message = too_long(bytes);
+                        out.push(&framed(run, Response::Failed { code, message }));
+                        continue;
+                    }
+                    Ok(None) if long > 0 => break,
+                    Ok(None) | Err(_) => {}
+                }
             }
             match next_frame(&mut decoder, want, composer.panes.is_some()) {
                 Ok(Some(Sent {
@@ -2089,7 +2107,8 @@ mod tests {
         let mut reading = theirs.try_clone().map_err(e)?;
         let writing = std::thread::spawn(move || {
             let sent = theirs.write_all(&asked(inspect, long()).encode());
-            sent.and_then(|()| theirs.write_all(&asked(keys, String::new()).encode()))
+            let keys = fux_wire::protocol::encode_asked(&asked(keys, String::new()));
+            sent.and_then(|()| theirs.write_all(&keys))
         });
         // What its server is sent is the second request alone, one frame,
         // its keys kept back.
@@ -2102,6 +2121,15 @@ mod tests {
             "{} bytes",
             frame.len()
         );
+        // Its server names no pane for the keys: the pieces its client
+        // still sends are read and let go, so its client is not left
+        // writing them.
+        server.send(&ToConn::Deliver {
+            body: body.unwrap_or_default(),
+            token: 1,
+            panes: Vec::new(),
+        });
+        server.flush_all().map_err(|errno| errno.to_string())?;
         // And its reply to the first, which its process made itself.
         let mut decoder = Decoder::default();
         let mut reply = Vec::new();

@@ -23,7 +23,7 @@ use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 78;
+pub const PROTOCOL: u32 = 79;
 
 /// The first protocol whose command line is grift: an older server's binary
 /// reads none.
@@ -1085,6 +1085,28 @@ impl Decoder {
         joining.push(payload)?;
         joining.whole = true;
         F::decode(*kind, &joining.pieces).map(Some)
+    }
+
+    /// Lets go of the pieces of a longer message that come next, and of
+    /// its last frame once that has come, joining nothing: for a reader
+    /// that takes one frame and tells its sender how long the message was.
+    /// `gone` counts what was let go of a message still coming, across
+    /// calls; the message's length, once all of it is let go.
+    pub fn skip_long(&mut self, gone: &mut usize) -> Result<Option<usize>, Error> {
+        loop {
+            let Some(whole) = whole(self.buffer.as_slice())? else {
+                return Ok(None);
+            };
+            let piece = self.buffer.as_slice().get(4) == Some(&MORE);
+            if !piece && *gone == 0 {
+                return Ok(None);
+            }
+            self.buffer.take_front(whole);
+            *gone = gone.saturating_add(whole.saturating_sub(5));
+            if !piece {
+                return Ok(Some(std::mem::take(gone)));
+            }
+        }
     }
 
     /// Bytes held: whole frames not yet taken, and a frame not yet

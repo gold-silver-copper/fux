@@ -979,7 +979,7 @@ fn first(end: &mut End) -> Result<Vec<FromPane>, String> {
 
 /// The messages between a server and its panes' processes: a server takes
 /// back only panes of its own (`Link::take`).
-pub const PANE_PROTOCOL: u32 = 1;
+pub const PANE_PROTOCOL: u32 = 2;
 
 /// What a pane waiting for a server says of itself as one takes it back:
 /// enough to make its copy again, its screen and facts coming after.

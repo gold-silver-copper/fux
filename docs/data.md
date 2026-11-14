@@ -28,7 +28,7 @@ Saved sessions are one grift program over a quoted recipe. Restore with `fux --f
 
 Errors are grift contexts with `kind`, `values`, and `trace`. Catch by kind, for example
 `(catch-kind! (kill (pane 999)) no-pane failure #inert)`. Diagnostics go to stderr.
-The native transport is protocol 78; the command language and printed data use grift.
+The native transport is protocol 79; the command language and printed data use grift.
 Native error kinds:
 
 `cancelled`, `no-server`, `mismatch`, `client`, `no-pane`, `no-tab`, `no-workspace`, `no-client`, `no-target`, `stray-pane`, `no-field`, `journal-loss`, `nothing-there`, `name-taken`, `bad-value`, `usage`, `not-running`, `still-running`, `not-run`, `only-shell`, `stale`, `no-marks`, `start`, `size`, `mouse`, `signal`, `indeterminate`, `not-headless`, `own-server`, `people-attached`, `timeout`, `closed`, `not-here`, `not-config`, `config`, `bad-binding`, `read`, `unset-variable`, `output`, `nested`, `not-a-key`, `type-error`, `range-error`, `arity-error`, `too-long`, `unused`, `unbound-symbol`, `bad-name`, `out-of-memory`, `ids-exhausted`, `fail`, `read-error`, `contract-error`, `parse-error`.

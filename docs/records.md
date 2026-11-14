@@ -529,8 +529,8 @@ that had taken effect by then, as an uncaught failure lists them on stderr.
 ## `status`
 
 ```text
-((socket "/run/user/1000/fux/server.sock") (release "0.37.0") (protocol 78)
- (server-release "0.37.0") (server-protocol 78) (server-process-id 4242) (compatible #true))
+((socket "/run/user/1000/fux/server.sock") (release "0.37.0") (protocol 79)
+ (server-release "0.37.0") (server-protocol 79) (server-process-id 4242) (compatible #true))
 ```
 
 `(status)` returns an ordinary record with these locally readable fields, including `(compatible
