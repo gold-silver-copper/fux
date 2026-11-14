@@ -1,4 +1,4 @@
-//! Taking a run back (D-124, D-166): the run's record is the truth, and
+//! Taking a run back (D-124, D-171): the run's record is the truth, and
 //! the server that takes it makes the pane processes still there match it,
 //! one pane at a time. Each is reached at its socket without waiting
 //! (`socket::reach`) and asked (`Asked`); what it answers, or that it has

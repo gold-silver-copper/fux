@@ -1489,7 +1489,7 @@ fn capturing(server: &Server, pane: &str) -> Result<std::process::Child, String>
 ///     start nor the other panes: `start` waits for no pane, the rest is
 ///     served, and what is asked of the stopped pane waits till it
 ///     answers, and is answered then; a run that ends meanwhile ends it
-///     once it reads (D-166, D-167; it hung the start, and every client).
+///     once it reads (D-171, D-172; it hung the start, and every client).
 #[test]
 fn a_stopped_pane_holds_up_only_what_is_asked_of_it() -> Outcome {
     let started = Server::start("")?;
@@ -1545,7 +1545,7 @@ fn a_stopped_pane_holds_up_only_what_is_asked_of_it() -> Outcome {
 ///     server killed between the two, a few ms into a `new-tab`) is begun
 ///     by the server that takes the run back, from its record: that
 ///     process runs its program, and the run is not refused for it
-///     (D-166). The state is made, not raced (`unbegun`).
+///     (D-171). The state is made, not raced (`unbegun`).
 #[test]
 fn a_pane_never_begun_is_begun_from_its_record() -> Outcome {
     let started = Server::start("")?;
@@ -1582,7 +1582,7 @@ fn without(ws: &mut fux_server::record::Workspace, pane: fux_wire::id::PaneId) {
 /// 28. A pane process the run's record lacks (its close was recorded, and
 ///     the server killed before it told the pane) is ended by the server
 ///     that takes the run back: no process is left that no word lists
-///     (D-166). The state is made, not raced: the record of a crashed run
+///     (D-171). The state is made, not raced: the record of a crashed run
 ///     with one pane's tab taken out.
 #[test]
 fn a_pane_process_its_record_lacks_is_ended() -> Outcome {
@@ -1617,7 +1617,7 @@ fn a_pane_process_its_record_lacks_is_ended() -> Outcome {
 ///     server's lock and socket files removed under it (a cleaner of idle
 ///     files), the server a `start` makes leaves the run as its panes say
 ///     who holds them, naming that server, and writes nothing; the panes
-///     go on, held as before (D-166).
+///     go on, held as before (D-171).
 #[test]
 fn a_run_a_live_server_holds_is_left_to_it() -> Outcome {
     let server = Server::start("")?;
@@ -1653,7 +1653,7 @@ fn a_run_a_live_server_holds_is_left_to_it() -> Outcome {
 /// 30. What is beside the socket where a run keeps its panes and is no
 ///     directory is said to be that, with its path and what it is; it is
 ///     not read as a run that can't be taken back, and not replaced
-///     (D-166).
+///     (D-171).
 #[test]
 fn a_file_where_a_run_keeps_its_panes_is_refused_as_one() -> Outcome {
     let server = Server::start("")?;
@@ -1679,7 +1679,7 @@ fn a_file_where_a_run_keeps_its_panes_is_refused_as_one() -> Outcome {
 /// 31. A server with too few descriptors for the run's panes and a client
 ///     refuses to take the run back, saying how
 ///     many it takes and how many it could open, before it takes any pane:
-///     a server with room then takes all of it (D-168; it took the run,
+///     a server with room then takes all of it (D-173; it took the run,
 ///     said so, and served no one).
 #[test]
 fn a_takeover_with_too_few_descriptors_is_refused() -> Outcome {
@@ -1718,7 +1718,7 @@ fn a_takeover_with_too_few_descriptors_is_refused() -> Outcome {
 
 /// 32. A run whose end was recorded and whose server crashed before it
 ///     told its panes and let go of what it kept: the next `start` ends
-///     those pane processes and serves, a new run with no pane (D-169).
+///     those pane processes and serves, a new run with no pane (D-174).
 ///     Said by its record, or, where that could not be written, by the
 ///     file beside it. The state is made, not raced: a crashed run's
 ///     record marked ended, or the mark put beside it.
@@ -1824,7 +1824,7 @@ fn vacate(server: &Server, pane: &str) -> Outcome {
 /// 33. A pane never begun whose process reads nothing (stopped) as its run
 ///     is taken back and then ends: told to close after it was asked to be
 ///     taken, it ends once it reads both; it does not answer the first and
-///     drop the second (D-166, D-169).
+///     drop the second (D-171, D-174).
 #[test]
 fn a_pane_never_begun_ends_with_its_run_once_it_reads() -> Outcome {
     let started = Server::start("")?;
@@ -1853,7 +1853,7 @@ fn a_pane_never_begun_ends_with_its_run_once_it_reads() -> Outcome {
 ///     at its socket saying it has not begun and then reading no more (a
 ///     process stopped just then; here the test itself, as that process),
 ///     the server sends its start and goes on serving the other panes;
-///     what is asked of that pane waits (D-166; the server waited for its
+///     what is asked of that pane waits (D-171; the server waited for its
 ///     answer, and served no one).
 #[test]
 fn beginning_a_pane_never_begun_holds_up_no_one() -> Outcome {
@@ -1920,7 +1920,7 @@ fn fill(socket: &std::path::Path) -> Result<Vec<std::os::fd::OwnedFd>, String> {
 ///     full) can't be told its run ended: what the run kept stays, its
 ///     record saying it ended, and the next start tells the pane once it
 ///     has room; its socket is not removed before, and no process is left
-///     that nothing reaches (D-169; it was dropped untold, and its socket
+///     that nothing reaches (D-174; it was dropped untold, and its socket
 ///     deleted). Linux: macOS refuses a full backlog as it does no
 ///     listener.
 #[cfg(target_os = "linux")]
@@ -1989,7 +1989,7 @@ fn number(pane: &str) -> Result<u32, String> {
 ///     still to end (stopped: told, and not heard to close): the new run's
 ///     panes are numbered past it, so none is ever at its path; making one
 ///     waits for nothing; and once the old process reads and ends, the new
-///     run and its server go on (D-169; the new run's first pane took the
+///     run and its server go on (D-174; the new run's first pane took the
 ///     old one's number and path: making it froze the server while the old
 ///     process was stopped, and the close meant for the old one then
 ///     reached the new, whose answer made the server leave its own run).
@@ -2044,7 +2044,7 @@ fn a_new_runs_panes_are_numbered_past_a_pane_still_to_end() -> Outcome {
 /// 38. A pane's process removes, as it ends, only the socket file its
 ///     server bound for it: with another file at its path before it ever
 ///     ran (its run's directory made anew meanwhile), it leaves that one
-///     (D-169; it took whatever was at its path as it began for its own).
+///     (D-174; it took whatever was at its path as it began for its own).
 ///     Each is told to close before it runs, and ends as it reads that.
 #[test]
 fn a_pane_removes_only_the_socket_file_its_server_bound() -> Outcome {
@@ -2075,7 +2075,7 @@ fn a_pane_removes_only_the_socket_file_its_server_bound() -> Outcome {
 
 /// 39. A pane closed by its user while it begins from its run's record is
 ///     told to close once it has begun: it is not linked as a pane no tab
-///     has (D-166). The test is what listens at its socket: it says it has
+///     has (D-171). The test is what listens at its socket: it says it has
 ///     not begun, takes its start, and only after the pane is closed has a
 ///     real pane's process begin as told, passing on what that one says.
 #[test]
@@ -2150,7 +2150,7 @@ fn a_pane_closed_while_it_begins_is_told_to_close() -> Outcome {
 ///     other server has the socket: with the socket's lock held by another
 ///     (here the test, as a server started meanwhile), it removes neither
 ///     the record nor the run's fux, which are that one's to deal with;
-///     the next start finds the run ended and begins anew (D-169; it
+///     the next start finds the run ended and begins anew (D-174; it
 ///     removed them whoever's they were by then).
 #[test]
 fn a_stopped_server_removes_nothing_under_another_servers_lock() -> Outcome {
@@ -2200,7 +2200,7 @@ fn waiting_for_a_lock(server: &Server) -> Vec<i32> {
 ///     them, and dealt with since by the server ahead (finished, a new run
 ///     begun and recorded, its mark removed, that server then crashed), is
 ///     not taken for the old one, and its panes are taken back, not ended
-///     (D-169; the mark read before the locks was acted on after them).
+///     (D-174; the mark read before the locks was acted on after them).
 ///     The test is the server ahead: it holds the lock a starting server
 ///     waits for, and changes what is there while the start waits.
 ///     Linux: it is where the system says who waits for a lock.
