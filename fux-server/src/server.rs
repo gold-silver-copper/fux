@@ -2257,7 +2257,13 @@ mod tests {
         heard(&mut server, 0)?;
         let stage = server.conns.first().map(|c| &c.stage);
         assert!(matches!(stage, Some(Stage::Blocked(_))));
-        theirs.shutdown(std::net::Shutdown::Both)?;
+        // Its process is told that it waits, as the server's loop sends
+        // what it queued: from then on its client is read, and its end
+        // heard on every OS. Only its sending side is shut, which no OS
+        // tells of unasked.
+        let worker = server.conns.get_mut(0).ok_or("worker")?;
+        worker.link.flush_all()?;
+        theirs.shutdown(std::net::Shutdown::Write)?;
         heard(&mut server, 0)?;
         let stage = server.conns.first().map(|c| &c.stage);
         assert!(matches!(stage, Some(Stage::Dead)));
