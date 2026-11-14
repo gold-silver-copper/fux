@@ -775,9 +775,20 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
         }
         // What refuses the run changed nothing, and says so itself: the
         // run can be taken back still.
-        Some(record) => session
-            .resume(record, wait, Instant::now())
-            .map_err(|e| Error::Refused(format!("taking the run back: {e}")))?,
+        Some(record) => {
+            session
+                .resume(record, wait, Instant::now())
+                .map_err(|e| Error::Refused(format!("taking the run back: {e}")))?;
+            // Said to who started it: which panes it does not hold yet.
+            if !session.awaited.is_empty() {
+                let silent: Vec<String> = session.awaited.keys().map(PaneId::to_string).collect();
+                notice(&format!(
+                    "the run is taken back, but for the pane processes that have not answered \
+                     (stopped, say): {}; each is linked when it answers",
+                    silent.join(", ")
+                ));
+            }
+        }
         // No run: a pane process that waits there is no one's (its run's
         // record went, or its close was recorded as its run's last and it
         // was never told), and is ended.

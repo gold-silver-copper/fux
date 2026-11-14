@@ -97,6 +97,9 @@ pub struct Asked {
     /// The process that listens, where the system names it (Windows).
     maker: Option<fuxix::process::Pid>,
     greeting: Option<Box<Greeting>>,
+    /// Whether its first facts follow its greeting: asked to be taken, it
+    /// is linked, and sends them; asked who it is, it is not.
+    facts: bool,
     /// What it said after its greeting, up to its first facts.
     said: Vec<FromPane>,
 }
@@ -128,6 +131,7 @@ impl Asked {
             end,
             maker,
             greeting: None,
+            facts: matches!(word, ToPane::Take { .. }),
             said: Vec::new(),
         };
         Ok((Some(asked), false))
@@ -153,6 +157,9 @@ impl Asked {
                     if let Err(why) = self.check(id, &greeting) {
                         log!("{id}: what listens at its socket is not it: {why}");
                         return Some(Answer::Live(Live::OtherRun));
+                    }
+                    if !self.facts {
+                        return Some(Answer::Live(Live::Greeted(greeting)));
                     }
                     self.greeting = Some(greeting);
                 }
@@ -408,9 +415,28 @@ mod tests {
     #[test]
     fn the_record_decides_each_panes_fate() -> TestResult {
         let record = record(&[1, 2, 3, 4, 5, 6])?;
+        let greeting = Greeting {
+            protocol: PANE_PROTOCOL,
+            id: PaneId::of(6),
+            pid: 72,
+            run: record.run,
+            respawns: 0,
+            shell: true,
+            argv: fux_wire::command::Program::new("/bin/sh".into(), Vec::new())?,
+            cwd: "/".into(),
+            options: crate::pane::tests::options(1 << 10)?,
+            size: fux_vt::Size::new(24, 80)?,
+            title: crate::pane::Said::default(),
+            counts: fux_wire::command::Counts::default(),
+            ended: None,
+            hung_up: false,
+            read_error: None,
+        };
         let live = BTreeMap::from([
             // %1 is gone: it has none.
             (PaneId::of(2), Live::Unbegun(70)),
+            (PaneId::of(6), Live::Greeted(Box::new(greeting.clone()))),
+            (PaneId::of(11), Live::Greeted(Box::new(greeting))),
             (PaneId::of(3), Live::Silent),
             (PaneId::of(4), Live::Closing),
             (PaneId::of(5), Live::OtherRun),
@@ -427,10 +453,11 @@ mod tests {
             (PaneId::of(3), Fate::Await),
             (PaneId::of(4), Fate::End),
             (PaneId::of(5), Fate::Lost),
-            (PaneId::of(6), Fate::Lost),
+            (PaneId::of(6), Fate::Take),
             (PaneId::of(7), Fate::End),
             (PaneId::of(8), Fate::End),
             (PaneId::of(9), Fate::End),
+            (PaneId::of(11), Fate::End),
         ]);
         assert_eq!(fates, expected);
         // Held, recorded or not: the run is refused, naming the server,
