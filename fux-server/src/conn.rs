@@ -1014,8 +1014,13 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 return Ok(());
             }
         }
+        // Its server out of reach, what it would say to it is let go: its
+        // link then reads to its end, what its server said before it went
+        // is taken, and its client is told (`gone`, below), so that one in
+        // hand whose server went before it heard of it (a spare's, taken as
+        // its server stopped) is not just closed.
         if link.flush().is_err() {
-            return Ok(());
+            link.out.take(link.out.len());
         }
         // Its client is read while its stage takes its frames, and while
         // its request waits on someone else, to hear its end.
@@ -1380,6 +1385,34 @@ mod tests {
             decoder.frame(),
             Ok(Some(fux_wire::protocol::ToCommand::Exit(_)))
         ));
+        Ok(())
+    }
+
+    /// A spare that took a client as its server stopped, its `Accepted`
+    /// not yet sent when its server let its link go, can't reach its
+    /// server with a client in hand: it tells that client its server went,
+    /// and does not just close it.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_taken_as_its_server_went_is_told_so() -> Result<(), String> {
+        use crate::link::{End, FromConn};
+        use fux_wire::protocol::Greeting;
+        use std::io::Read;
+        use std::os::unix::net::UnixStream;
+        let e = |error: std::io::Error| error.to_string();
+        let (client, mut theirs) = UnixStream::pair().map_err(e)?;
+        let (server, link) = UnixStream::pair().map_err(e)?;
+        // As `wait` leaves it: its first word said, not yet written.
+        let mut link = End::new(link).map_err(e)?;
+        link.send(&FromConn::Accepted);
+        drop(server);
+        super::serve(client, link, Vec::new())?;
+        let mut got = Vec::new();
+        theirs.read_to_end(&mut got).map_err(e)?;
+        let mut decoder = Decoder::default();
+        decoder.push(&got);
+        // Its client, which has had no greeting, reads it as one.
+        assert!(matches!(decoder.frame(), Ok(Some(Greeting::Exit(_)))));
         Ok(())
     }
 
