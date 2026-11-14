@@ -571,7 +571,8 @@ pub const PIECE: usize = MAX_PAYLOAD / 2;
 
 /// `inputs` cut into pieces, each one frame with room to spare: a text, a
 /// paste or bytes longer than `PIECE` is cut (a paste's parts but the last
-/// as `Input::Pasting`, so that it stays one paste), and every piece but
+/// as `Input::Pasting`, so that it stays one paste), a run of keys is cut
+/// between keys, each counted as the wire has it, and every piece but
 /// the last ends in `Input::More`. Inputs that fit are one piece, as they
 /// are.
 pub fn cut_inputs(inputs: Vec<crate::command::Input>) -> Vec<Vec<crate::command::Input>> {
@@ -588,6 +589,9 @@ pub fn cut_inputs(inputs: Vec<crate::command::Input>) -> Vec<Vec<crate::command:
         }
         ends
     }
+    /// More than a text's, a paste's or bytes' kind and length take on the
+    /// wire, counted with each.
+    const HEAD: usize = 16;
     let (mut pieces, mut piece, mut held) = (Vec::new(), Vec::new(), 0usize);
     for input in inputs {
         let room = PIECE.saturating_sub(held);
@@ -608,13 +612,28 @@ pub fn cut_inputs(inputs: Vec<crate::command::Input>) -> Vec<Vec<crate::command:
             Input::Bytes(given) => (given, false, Box::new(|b, _| Input::Bytes(b.to_vec()))),
             Input::Key(_) | Input::More => (&[], false, Box::new(|_, _| Input::More)),
         };
-        if bytes.len() <= room {
+        // What it takes of a piece: a key as the wire has it; what is cut
+        // by its bytes, and more than what says their kind and length.
+        let takes = match &input {
+            Input::Key(_) | Input::More => crate::wire::encode(&input).len(),
+            Input::Text(_) | Input::Paste(_) | Input::Pasting(_) | Input::Bytes(_) => {
+                bytes.len().saturating_add(HEAD)
+            }
+        };
+        if takes <= room || bytes.is_empty() {
             drop(part);
-            // A key is a few bytes, counted as a few.
-            held = held.saturating_add(bytes.len().max(16));
+            // An input with nothing to cut begins the next piece, once
+            // this one is full: keys are cut between them.
+            if takes > room && !piece.is_empty() {
+                piece.push(Input::More);
+                pieces.push(std::mem::take(&mut piece));
+                held = 0;
+            }
+            held = held.saturating_add(takes);
             piece.push(input);
             continue;
         }
+        let room = room.saturating_sub(HEAD);
         let whole = std::str::from_utf8(bytes).ok().filter(|_| chars);
         let boundary = |mut at: usize| {
             while whole.is_some_and(|text| !text.is_char_boundary(at)) {
@@ -633,7 +652,7 @@ pub fn cut_inputs(inputs: Vec<crate::command::Input>) -> Vec<Vec<crate::command:
             from = end;
         }
         let last = bytes.get(from..).unwrap_or_default();
-        held = last.len();
+        held = last.len().saturating_add(HEAD);
         piece.push(part(last, true));
     }
     pieces.push(piece);
@@ -1173,6 +1192,47 @@ mod tests {
         }
         assert_eq!((pasted, pastes, bytes), (text, 1, PIECE + 3));
         assert_eq!(cut_inputs(vec![Input::Text("ls".into())]).len(), 1);
+    }
+
+    /// Keys have nothing to cut, so a long run of them is cut between
+    /// keys: 200,000 presses, and keys among texts, go in pieces that each
+    /// fit a frame, every key there, in order (they went as one piece of
+    /// any length, which no reader takes).
+    #[test]
+    fn a_long_run_of_keys_is_cut_between_keys() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::command::Input;
+        let keys = ["a", "Enter", "C-x", "Down"];
+        let mut inputs = Vec::new();
+        // The keys alone, then a text among more of them.
+        for n in 0..201_000usize {
+            if n == 200_000 {
+                inputs.push(Input::Text(std::iter::repeat_n('t', PIECE / 3).collect()));
+            }
+            let key = keys.get(n % keys.len()).ok_or("a key")?;
+            inputs.push(Input::Key(key.parse().map_err(|_| "a key press")?));
+        }
+        let pieces = cut_inputs(inputs.clone());
+        assert!(pieces.len() > 1, "one piece");
+        // What the pieces carry, a text cut in two joined again.
+        let mut joined: Vec<Input> = Vec::new();
+        for (n, piece) in pieces.iter().enumerate() {
+            assert_eq!(Input::go_on(piece), n + 1 < pieces.len());
+            assert!(sends_whole(&Piece(piece.clone())), "piece {n} is no frame");
+            for input in piece {
+                match (joined.last_mut(), input) {
+                    (_, Input::More) => {}
+                    (Some(Input::Text(before)), Input::Text(more)) => before.push_str(more),
+                    (_, other) => joined.push(other.clone()),
+                }
+            }
+        }
+        assert!(
+            joined == inputs,
+            "{} inputs of {}",
+            joined.len(),
+            inputs.len()
+        );
+        Ok(())
     }
 
     #[test]
