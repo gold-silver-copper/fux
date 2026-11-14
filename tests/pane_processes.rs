@@ -1715,16 +1715,16 @@ fn a_run_a_live_server_holds_is_left_to_it() -> Outcome {
     })
 }
 
-/// 29b. A second server on a run a live server holds removes none of that
-///     server's name files, though it writes a record before it hears who
-///     holds the run (D-175). The first server is stopped, a name's file
-///     of its own written and its structure not yet (made, as its numbers
-///     are its process's); one of its panes' processes is killed, so the
-///     second server, taking the run, finds a pane gone and records that
-///     at once, before the other pane says who holds it. It leaves, and
-///     the first server's files are all there.
+/// 29b. A second server on a run a live server holds writes and removes
+///     nothing where the run is kept, though it has something to record
+///     before it hears who holds the run (D-175). The first server is
+///     stopped, a name's file of its own written and its structure not
+///     yet (made, as its numbers are its process's); one of its panes'
+///     processes is killed, so the second server, taking the run, finds a
+///     pane gone before the other pane says who holds it. It leaves: the
+///     record is as the first server wrote it, and its files all there.
 #[test]
-fn a_second_server_that_writes_removes_no_name_file_of_the_firsts() -> Outcome {
+fn a_second_server_writes_nothing_in_a_run_the_first_holds() -> Outcome {
     let server = Server::start("")?;
     let stays = pane(&server, "w", &["sleep", "1017"])?;
     let goes = pane(&server, "w", &["sleep", "1018"])?;
@@ -1756,11 +1756,9 @@ fn a_second_server_that_writes_removes_no_name_file_of_the_firsts() -> Outcome {
         Ok(std::fs::read_to_string(&log).is_ok_and(|said| said.contains(&held)))
     })?;
     eventually("the second server gone", || Ok(!server.socket.exists()))?;
-    assert_ne!(
-        std::fs::read(&record).map_err(e)?,
-        before,
-        "the second server recorded the pane it found gone"
-    );
+    // It found a pane gone, which it would record: not in a run that may
+    // be another server's.
+    assert_eq!(std::fs::read(&record).map_err(e)?, before, "its record");
     assert_eq!(name_files(&server), names, "the first server's names");
     signal(pid, Signal::Cont);
     signal(pid, Signal::Term);

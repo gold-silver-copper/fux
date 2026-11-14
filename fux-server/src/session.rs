@@ -294,6 +294,9 @@ pub struct Session {
     names_as: u32,
     /// A pane said another server holds the run (`holder`): never undone.
     held: bool,
+    /// A pane of the run it took back greeted it: that pane had read the
+    /// link of the server that held it to its end, so that server is gone.
+    greeted: bool,
     /// How many times its record was made (`commit`), for the tests of
     /// when it is.
     #[cfg(test)]
@@ -502,6 +505,7 @@ impl Session {
             named: BTreeMap::new(),
             names_as: std::process::id(),
             held: false,
+            greeted: false,
             #[cfg(test)]
             encoded: 0,
             unswept: false,
@@ -2203,10 +2207,12 @@ impl Session {
     /// (`Tracked`), and holds each name by its number: a name given since
     /// the last record is written to its own file first, then the
     /// structure, whole, and then the names it no longer has are removed
-    /// (D-175): once the run is known to be this server's (`owns`), and
-    /// then with every name file no structure names, the first time. Its
-    /// own names are numbered as its process, so it writes over no other
-    /// server's. So what is written follows the tree's rows, not its names'
+    /// (D-175), with every name file no structure names, the first time
+    /// since the run was taken back. None of it while the run may be
+    /// another server's (`owns`): then nothing is written or removed
+    /// where the run is kept, and a change that needs its record fails,
+    /// undone, to be made again once a pane answers. Its own names are
+    /// numbered as its process, so it writes over no other server's. So what is written follows the tree's rows, not its names'
     /// lengths, and a crash at any step leaves a structure whose names are
     /// all there.
     ///
@@ -2262,6 +2268,37 @@ impl Session {
             self.recorded_head = Some(head);
             return Ok(());
         }
+        // Nothing is written where the run may be another server's
+        // (`owns`): what this one read of it may be stale by now, and a
+        // record made from that would name what the other has removed.
+        // What happened meanwhile (a pane found gone, a program's end) is
+        // kept, and written once the run is known to be this server's; a
+        // change asked for is not made, and waits (`begin`).
+        if !self.owns() {
+            if self.staged.is_none() {
+                return Ok(());
+            }
+            let waits = self.awaited.keys().next().copied();
+            let why = match (self.holder, waits) {
+                (Some((pane, by)), _) => format!(
+                    "{pane} is held by the fux server with pid {by}, which serves this run: \
+                     this server leaves the run to it, and changed nothing"
+                ),
+                (None, Some(pane)) => format!(
+                    "{pane}: its own process has not answered this server yet, which took \
+                     its run back and does not know yet that no other server holds it: \
+                     nothing is changed till it does; a request that changes the run waits, \
+                     and one that asked a pane something first, or carries its keys as a \
+                     body, is refused till then"
+                ),
+                (None, None) => "another server holds this run: nothing changed".to_owned(),
+            };
+            if let Some(pane) = waits {
+                self.waits_on.set(Some(pane));
+            }
+            self.unrecorded = Some(fail(Code::NotRunning, why.clone()));
+            return Err(fail(Code::NotRunning, why));
+        }
         let path = panes.join("run");
         let written = (fresh.iter())
             .try_for_each(|(id, text)| {
@@ -2271,23 +2308,16 @@ impl Session {
         match written {
             Ok(()) => {
                 let kept: BTreeSet<NameId> = named.values().map(|(id, _)| *id).collect();
-                // Nothing is removed till the run is known to be this
-                // server's: every pane it reached for has answered or is
-                // gone, and none said another server holds it. Till then
-                // a name file it does not name may be that server's, just
-                // written. Then what it no longer names goes, and once,
-                // what its last server's crash left over with it.
-                match self.owns() {
-                    true if std::mem::take(&mut self.unswept) => {
-                        crate::record::sweep(&panes, &kept);
-                    }
-                    true => {
-                        let old = self.named.values().filter(|(id, _)| !kept.contains(id));
-                        for (id, _) in old {
-                            let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
-                        }
-                    }
-                    false => self.unswept = true,
+                // The run is this server's (`owns`): what it no longer
+                // names goes, and with the first record it writes since
+                // it took the run back, what its last server's crash left
+                // over.
+                if std::mem::take(&mut self.unswept) {
+                    crate::record::sweep(&panes, &kept);
+                }
+                let old = self.named.values().filter(|(id, _)| !kept.contains(id));
+                for (id, _) in old {
+                    let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
                 }
                 self.named = named;
                 self.recorded = bytes;
@@ -2312,11 +2342,15 @@ impl Session {
         }
     }
 
-    /// Whether the run is known to be this server's alone: no pane it
-    /// reached for as it took the run back is still to answer, and none
-    /// said another server holds it. A run it began is its own.
+    /// Whether the run is known to be this server's alone. A run it began
+    /// is. One it took back is once a pane greeted it (the pane had read
+    /// its last server's link to its end: that server is gone), or once
+    /// none it reached for is still to answer; and never once a pane said
+    /// another server holds it. Till then the server writes nothing where
+    /// the run is kept, and removes nothing (`commit`).
     fn owns(&self) -> bool {
-        self.awaited.is_empty() && self.holder.is_none() && !self.held
+        let heard = self.greeted || self.awaited.is_empty();
+        heard && self.holder.is_none() && !self.held
     }
 
     /// Pane `id` says the server with pid `by` holds it: this one leaves
@@ -2501,6 +2535,7 @@ impl Session {
         // run (`holder`), and this one then leaves it having removed
         // nothing of that server's.
         self.unswept = true;
+        self.greeted = false;
         self.parts = Tracked::new(parts);
         self.awaited = asked;
         for id in gone {
@@ -2760,6 +2795,7 @@ impl Session {
                 else {
                     return;
                 };
+                self.greeted = true;
                 if let Some(pane) = self.parts.pane_mut(id) {
                     let name = pane.given_name().cloned();
                     *pane = Pane::greeted(*greeting);

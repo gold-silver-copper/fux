@@ -20,7 +20,10 @@
 //! removed after the structure that dropped it. So the structure there
 //! never names a file that is not; what a crash leaves over is a name file
 //! no structure names, which the server that takes the run back removes
-//! once the run is known to be its own (`sweep`, `Session::commit`).
+//! with the first record it writes (`sweep`). It writes none, and removes
+//! nothing, till the run is known to be its own (`Session::commit`): two
+//! servers on one run (D-171) never make a structure from what the other
+//! has changed since.
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;

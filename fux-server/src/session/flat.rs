@@ -314,18 +314,21 @@ fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
     Ok(())
 }
 
-/// Two servers on one run (D-171: the first's lock file removed under it)
-/// write and remove no name file of each other's. The second takes the
-/// run back while a pane has not answered it, so it does not know yet
-/// that the run is its own; the first, alive, then gives a name, and the
-/// second, asked for one too, writes its record. The first's new name is
-/// there still, as it wrote it, and so is the second's, in a file of its
-/// own number; and the first's next record is one a third server reads,
-/// names and all. Once the second's sweep took the first's file, and its
-/// next number was the first's too: the run could not be taken back.
+/// Two servers on one run (D-171: the first's lock file removed under it):
+/// the second writes and removes nothing where the run is kept till it
+/// knows the run is its own. It takes the run back while a pane has not
+/// answered it; the first, alive, then names its workspace anew, and
+/// removes the old name's file. A change asked of the second is not made,
+/// and waits for the pane; what the second would record of itself stays
+/// in its memory. So the record there is the first's, as it wrote it, and
+/// a third server reads it, names and all, with no write of the first's
+/// to repair it. (Once the second wrote a structure from what it had
+/// read, naming the file the first had removed: the run could not be
+/// taken back. Before that, its sweep took the first's new file.) What a
+/// server kept meanwhile it writes once the run is its own.
 #[cfg(unix)]
 #[test]
-fn a_second_server_on_a_run_removes_and_overwrites_no_name_of_the_firsts() -> TestResult {
+fn a_second_server_writes_nothing_till_the_run_is_its_own() -> TestResult {
     let (options, journal) = defaults()?;
     let dir = scratch("two")?;
     let (mut first, kept) = recording(&dir, journal)?;
@@ -341,36 +344,61 @@ fn a_second_server_on_a_run_removes_and_overwrites_no_name_of_the_firsts() -> Te
     // The pane's own process, as the second finds it: it listens, and has
     // not answered.
     let socket = kept.join(pane.number().to_string());
-    let _silent = std::os::unix::net::UnixListener::bind(&socket)?;
+    let silent = std::os::unix::net::UnixListener::bind(&socket)?;
+    let files = |kept: &Path| -> Result<Vec<std::ffi::OsString>, std::io::Error> {
+        let mut files: Vec<_> = (std::fs::read_dir(kept)?.flatten())
+            .map(|entry| entry.file_name())
+            .collect();
+        files.sort();
+        Ok(files)
+    };
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
     let (mut second, _) = recording(&dir, journal)?;
     second.names_as = first.names_as.wrapping_add(1);
     second.resume(record, Instant::now())?;
     assert!(!second.owns(), "a pane has not answered");
-    // The first names its workspace anew, after the second read the record.
+    // The first names its workspace anew, after the second read the
+    // record: the file of the name the second still has is gone.
     ask(&mut first, &rename(AnyRef::Workspace(ws), "three"))?;
-    let named = |s: &Session, of: AnyRef| {
-        let (id, _) = s.named.get(&of).ok_or("no such name")?;
-        Ok::<_, String>(crate::record::name_file(&kept, *id))
-    };
-    let firsts = named(&first, AnyRef::Workspace(ws))?;
-    // The second writes a record, with a name of its own.
-    ask(&mut second, &rename(AnyRef::Tab(tab), "two"))?;
-    let seconds = named(&second, AnyRef::Tab(tab))?;
-    assert_ne!(firsts, seconds, "a file each");
-    assert_eq!(std::fs::read_to_string(&firsts)?, "three");
-    assert_eq!(std::fs::read_to_string(&seconds)?, "two");
-    // The second leaves, as a pane would tell it to. The first goes on:
-    // its next record is the run's, and a server reads it whole.
+    let (written, there) = (std::fs::read(kept.join("run"))?, files(&kept)?);
+    // A change asked of the second is not made: it waits for the pane.
+    let origin = Origin::Cli(Caller::default());
+    let asked = Request::Do(rename(AnyRef::Tab(tab), "two"));
+    let begun = second.begin(asked, &origin, Instant::now());
+    assert!(matches!(begun, Begun::Waiting(_)), "it waits");
+    assert_eq!(second.parts.tab(tab).and_then(|(_, tab)| tab.name()), None);
+    // Nor is what it changes of itself written: a tab's name, given past
+    // any request, stands for a pane found gone or a program's end.
+    second.parts.give_tab_name(tab, "kept".to_owned());
+    second.settle(Instant::now());
+    assert_eq!(
+        std::fs::read(kept.join("run"))?,
+        written,
+        "the first's record"
+    );
+    assert_eq!(files(&kept)?, there, "no file made or removed");
+    // The second leaves, and the first's server ends with nothing more
+    // written: a third reads the run as the first left it.
     drop(second);
-    ask(&mut first, &rename(AnyRef::Tab(tab), "four"))?;
     drop(first);
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
     let (mut third, _) = recording(&dir, journal)?;
+    third.names_as = third.names_as.wrapping_add(2);
     third.resume(record, Instant::now())?;
     assert_eq!(third.workspace(ws).and_then(|ws| ws.name()), Some("three"));
-    let tab_name = third.parts.tab(tab).and_then(|(_, tab)| tab.name());
-    assert_eq!(tab_name, Some("four"));
+    // What the third keeps while the pane is silent, it writes once the
+    // pane is found gone and the run is its own.
+    third.parts.give_tab_name(tab, "late".to_owned());
+    third.settle(Instant::now());
+    assert_eq!(std::fs::read(kept.join("run"))?, written, "not yet");
+    drop(silent);
+    std::fs::remove_file(&socket)?;
+    third.awaited.clear();
+    assert!(third.owns());
+    third.settle(Instant::now());
+    let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
+    let names = crate::record::read_names(&kept, &record.tree)?;
+    assert!(names.values().any(|name| &**name == "late"), "{names:?}");
     drop(third);
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
