@@ -504,7 +504,9 @@ one whose server's process ended (killed, or refused memory), by the connection'
 how its run is taken back (`fux '(start)'`). A connection that closes with no reason at all lost that
 process, not necessarily its server: `fux '(status)'` says whether a server runs. What nests too deep to
 cross the wire (a callback's lists past 64, records past 32) fails `too-long`, whether the word or
-the server refuses it. A layout is a flat list of nodes, so it nests as deep as its panes take it,
+the server refuses it. So does a request longer than one frame (1 MiB), its keys or paste apart
+(a name, a directory or a program of that length): its client's own connection process refuses it,
+and the server is sent none of it. A layout is a flat list of nodes, so it nests as deep as its panes take it,
 with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
 handler catches; where fux's own code asks for it, the process aborts.
 [`codes.txt`](codes.txt) lists every kind with its exit status.
