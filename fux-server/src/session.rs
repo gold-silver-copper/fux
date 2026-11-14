@@ -297,9 +297,9 @@ pub struct Session {
     /// The next number of its own for a name's file: never one it gave,
     /// nor one a server of its process number gave in the record it read.
     next_name: u64,
-    /// The name files its last record names are its own, written as the
-    /// run's one server (`owns`): none else removes them.
-    own_names: bool,
+    /// The first number it gave a name's file itself: one before it is of
+    /// an earlier server of its process number (`mine`).
+    own_from: u64,
     /// How many times its record was made (`commit`), for the tests of
     /// when it is.
     #[cfg(test)]
@@ -509,7 +509,7 @@ impl Session {
             names_as: std::process::id(),
             held: false,
             next_name: 0,
-            own_names: true,
+            own_from: 0,
             #[cfg(test)]
             encoded: 0,
             unswept: false,
@@ -2213,11 +2213,11 @@ impl Session {
     /// structure, whole, and then the names it no longer has are removed
     /// (D-175), with every name file no structure names, the first time
     /// since the run was taken back. While the run may be another
-    /// server's (`owns`) it removes nothing, and each record it writes
-    /// holds every name in a file of its own, written with it: two
-    /// servers on one run each leave a record that reads whole, whatever
-    /// the other removed. Its own names are numbered as its process, and
-    /// no number is given twice, so it writes over no file a structure
+    /// server's (`owns`) it removes none but its own, and a record it
+    /// writes on a run it took back names files of its own alone, each
+    /// name it read written to one, once: it names no file another
+    /// server removes. Its own names are numbered as its process, and no
+    /// number is given twice, so it writes over no file a structure
     /// names. So what is written follows the tree's rows, not its names'
     /// lengths, and a crash at any step leaves a structure whose names are
     /// all there.
@@ -2241,7 +2241,7 @@ impl Session {
         }
         // Each name as the last record has it keeps its number, and its
         // file; another takes the next number, and is written.
-        let (mut tree, mut named, mut fresh) = self.numbered(true);
+        let (mut tree, mut named, mut fresh) = self.numbered(false);
         let record = |tree| crate::record::Record {
             run: head.0,
             ids: head.1.clone(),
@@ -2254,15 +2254,14 @@ impl Session {
             self.recorded_head = Some(head);
             return Ok(());
         }
-        // A record is to be written. The names it would keep are in files
-        // this server can't count on unless it wrote them as the run's
-        // one server: those it read as it took the run back, and those it
-        // wrote while the run might be another's, that server may remove
-        // (its own, once it names them no more; any, as it sweeps). So it
-        // then writes every name anew, to files of its own numbers, and
-        // its structure names those alone: what it writes is whole.
-        if !self.own_names {
-            (tree, named, fresh) = self.numbered(false);
+        // A record is to be written. The names it read as it took the
+        // run back are in files another server wrote, which that one
+        // removes once its own structure names them no more: this one's
+        // must not name them. So each such name is written once, to a
+        // file of this server's own, which it keeps from then on, and
+        // its structure names its own files alone.
+        if self.named.values().any(|(id, _)| !self.mine(*id)) {
+            (tree, named, fresh) = self.numbered(true);
             bytes = fux_wire::wire::encode(&record(tree));
         }
         let path = panes.join("run");
@@ -2276,36 +2275,35 @@ impl Session {
         match written {
             Ok(()) => {
                 let kept: BTreeSet<NameId> = named.values().map(|(id, _)| *id).collect();
-                // Nothing is removed till the run is known to be this
-                // server's (`owns`): a name file it does not name may be
-                // another server's, which that one's structure names.
-                // Then what it no longer names goes, and once, what its
-                // last server's crash, or a server that left, left over.
+                // What it wrote itself and names no more goes at once.
+                // Nothing else is removed till the run is known to be
+                // this server's (`owns`): a name file it does not name
+                // may be another server's, which that one's structure
+                // names. Then, once, goes what its last server, that
+                // one's crash, or a server that left, left over.
                 let owns = self.owns();
+                let old = self.named.values().filter(|(id, _)| !kept.contains(id));
+                for (id, _) in old.filter(|(id, _)| owns || self.mine(*id)) {
+                    let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
+                }
                 match owns {
                     true if std::mem::take(&mut self.unswept) => {
                         crate::record::sweep(&panes, &kept);
                     }
-                    true => {
-                        let old = self.named.values().filter(|(id, _)| !kept.contains(id));
-                        for (id, _) in old {
-                            let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
-                        }
-                    }
+                    true => {}
                     false => self.unswept = true,
                 }
-                self.own_names = owns;
                 self.named = named;
                 self.recorded = bytes;
                 self.recorded_head = Some(head);
                 Tracked::settled(&mut self.parts);
                 Ok(())
             }
+            // What was written of it stays: a name's file no structure
+            // names, its number not given again, which goes as the files
+            // no structure names do. Nothing is removed for a write that
+            // failed but what that write was making (`record::write`).
             Err(error) => {
-                // The names written for it are no record's.
-                for (id, _) in &fresh {
-                    let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
-                }
                 let why = format!(
                     "the run's record, {}, could not be written ({error}): nothing changed",
                     path.display()
@@ -2318,14 +2316,21 @@ impl Session {
         }
     }
 
+    /// Whether name `id`'s file is one this server wrote: of its process's
+    /// number, and not from before it took the run back.
+    fn mine(&self, id: NameId) -> bool {
+        id.server == self.names_as && id.number >= self.own_from
+    }
+
     /// The tree as its record holds it, each name by a number, the names
-    /// by what they name, and those to be written: with `keep`, a name as
-    /// the last record has it keeps its number, and its file; any other,
-    /// and without it every one, takes the next number of this server's.
+    /// by what they name, and those to be written: a name as the last
+    /// record has it keeps its number, and its file; any other, and with
+    /// `own` any whose file this server did not write itself (`mine`),
+    /// takes the next number of this server's.
     #[expect(clippy::type_complexity, reason = "three lists, made together")]
     fn numbered(
         &self,
-        keep: bool,
+        own: bool,
     ) -> (
         crate::record::Tree,
         BTreeMap<AnyRef, (NameId, Rc<str>)>,
@@ -2334,7 +2339,7 @@ impl Session {
         let (server, mut number) = (self.names_as, self.next_name);
         let (mut named, mut fresh) = (BTreeMap::new(), Vec::new());
         let tree = self.parts.record(&mut |of, text| {
-            let id = match self.named.get(&of).filter(|_| keep) {
+            let id = match self.named.get(&of).filter(|(id, _)| !own || self.mine(*id)) {
                 Some((id, had)) if had == text => *id,
                 Some(_) | None => {
                     let id = NameId { server, number };
@@ -2543,12 +2548,12 @@ impl Session {
         // The names it read are in other servers' files, or in files of
         // its own number an earlier server wrote: it counts on none, and
         // numbers its own past them.
-        self.own_names = false;
         let past = (self.named.values())
             .filter(|(id, _)| id.server == self.names_as)
             .map(|(id, _)| id.number.saturating_add(1))
             .max();
         self.next_name = self.next_name.max(past.unwrap_or(0));
+        self.own_from = self.next_name;
         self.parts = Tracked::new(parts);
         self.awaited = asked;
         for id in gone {

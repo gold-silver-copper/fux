@@ -22,11 +22,13 @@
 //! no structure names, which the server that takes the run back removes
 //! with the first record it writes as the run's one server (`sweep`).
 //!
-//! Two servers on one run (D-171) each leave a record that reads whole:
-//! a server removes nothing till the run is known to be its own, and till
-//! then every record it writes holds each name in a new file of its own
-//! (`Session::commit`). So neither's structure names a file the other
-//! removes.
+//! Two servers on one run (D-171, after the first's lock file was removed
+//! under it) are kept from each other's files as far as this goes: a
+//! server removes none but its own till the run is known to be its own,
+//! and the record it writes on a run it took back names files of its own
+//! alone, each name it read copied to one, once (`Session::commit`). A
+//! narrow race is left (D-175): a record there may then name a removed
+//! file, till a server of the run writes again.
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
@@ -197,20 +199,26 @@ pub fn sweep(panes: &Path, kept: &BTreeSet<NameId>) {
 
 /// Writes `bytes`, a record, to `path`, whole: to a file beside it renamed
 /// over it, so that a crash leaves the last one or this one, never a
-/// part. No `fsync`: a machine's crash ends the panes anyway.
+/// part. That file is this process's own (`PATH.new.PID`): two servers
+/// writing one path write no file of each other's, and one that fails
+/// removes its own alone. No `fsync`: a machine's crash ends the panes
+/// anyway.
 pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut new = path.as_os_str().to_owned();
-    new.push(".new");
+    new.push(format!(".new.{}", std::process::id()));
     let new = PathBuf::from(new);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    let mut file = fuxix::file::private_file(&mut options).open(&new)?;
-    file.write_all(bytes)?;
-    // Closed first: on Windows a file open with no delete sharing (as
-    // private files are) can't be renamed.
-    drop(file);
-    std::fs::rename(&new, path)
+    let written = (fuxix::file::private_file(&mut options).open(&new))
+        // Closed before it is renamed: on Windows a file open with no
+        // delete sharing (as private files are) can't be.
+        .and_then(|mut file| file.write_all(bytes))
+        .and_then(|()| std::fs::rename(&new, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&new);
+    }
+    written
 }
 
 impl Tree {

@@ -848,7 +848,8 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
         "(sequence! (rename (pane {}) \"one\") #inert)",
         fux::script::quoted(&shell)
     )])?;
-    let blocked = kept(server).join("run.new");
+    // Where its server writes a record first, before it renames it.
+    let blocked = kept(server).join(format!("run.new.{}", server_pid(server)?));
     std::fs::create_dir(&blocked).map_err(e)?;
     let refused = server.fux(&[&format!(
         "(sequence! (rename (pane {}) \"two\") #inert)",
@@ -903,7 +904,7 @@ fn name_files(server: &Server) -> Vec<String> {
 ///     that names it leaves a run the next start takes back, with the
 ///     names anyone saw; the name's file, which no structure names, goes
 ///     with the first record the new server writes (D-175). The moment is held, not raced: a structure is written to
-///     `run.new` first, and a FIFO put there holds the server at its
+///     `run.new.PID` first, and a FIFO put there holds the server at its
 ///     opening, the name's file written, till it is killed.
 #[cfg(unix)]
 #[test]
@@ -921,7 +922,7 @@ fn a_server_killed_between_a_name_and_the_structure_is_taken_back() -> Outcome {
     let recorded = name_files(server);
     // Found while it answers: held at the FIFO, it answers no one.
     let serving = serving(server)?;
-    let held = kept(server).join("run.new");
+    let held = kept(server).join(format!("run.new.{serving}"));
     let made = std::process::Command::new("mkfifo").arg(&held).status();
     assert!(
         made.map_err(|error| format!("mkfifo: {error}"))?.success(),
@@ -964,7 +965,7 @@ fn a_pane_is_recorded_before_its_program_starts() -> Outcome {
     let server = Server::start("")?;
     let pid = server_pid(&server)?;
     let panes = children(pid, "__pane").len();
-    let blocked = kept(&server).join("run.new");
+    let blocked = kept(&server).join(format!("run.new.{pid}"));
     std::fs::create_dir(&blocked).map_err(e)?;
     let refused = server.fux(&[format!(
         "(new-tab {})",

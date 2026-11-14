@@ -406,6 +406,8 @@ fn two_servers_on_a_run_each_leave_a_record_that_reads_whole() -> TestResult {
 /// one that has (D-172): a client attaches, which takes an id the record
 /// holds, and the record is written. And stopped then, it records the
 /// run's end (D-174): no start takes the run back.
+/// What it writes meanwhile does not grow with its changes: a long name it
+/// read is copied to a file of its own once, not with each record.
 #[cfg(unix)]
 #[test]
 fn a_server_not_yet_known_to_own_its_run_attaches_clients_and_records_its_end() -> TestResult {
@@ -414,6 +416,14 @@ fn a_server_not_yet_known_to_own_its_run_attaches_clients_and_records_its_end() 
     let (mut first, kept) = recording(&dir, journal)?;
     nest(&mut first, None, 1, options)?;
     let pane = *first.parts.panes().keys().next().ok_or("no pane")?;
+    const LONG: u64 = 1 << 18;
+    let long: String = std::iter::repeat_n('n', usize::try_from(LONG)?).collect();
+    let named = (first.parts.tabs_in(None).first()).map(|(ws, _)| *ws);
+    let long_name = Command::Rename {
+        target: AnyRef::Workspace(named.ok_or("no workspace")?),
+        name: long,
+    };
+    ask(&mut first, &long_name)?;
     let _silent = std::os::unix::net::UnixListener::bind(kept.join(pane.number().to_string()))?;
     drop(first);
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
@@ -426,6 +436,36 @@ fn a_server_not_yet_known_to_own_its_run_attaches_clients_and_records_its_end() 
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
     assert_ne!(record.ids, before, "the client's id is recorded");
     assert!(!record.ended);
+    // Meanwhile a name it read is copied once, to a file of its own, and
+    // no later record copies it again; a name of its own it replaces
+    // leaves no file. The last server's file stays till the run is known
+    // to be this one's.
+    let (ws, tab) = (again.parts.tabs_in(None).first())
+        .map(|(ws, tab)| (*ws, tab.id()))
+        .ok_or("no tab")?;
+    let rename = |target: AnyRef, name: &str| Command::Rename {
+        target,
+        name: name.to_owned(),
+    };
+    ask(&mut again, &rename(AnyRef::Tab(tab), "t0"))?;
+    let copies = large(&kept, LONG)?;
+    assert_eq!(
+        copies.len(),
+        2,
+        "the last server's, and its own: {copies:?}"
+    );
+    for change in 1..=5 {
+        ask(&mut again, &rename(AnyRef::Tab(tab), &format!("t{change}")))?;
+    }
+    assert_eq!(large(&kept, LONG)?, copies, "copied once");
+    let other: String = std::iter::repeat_n('m', usize::try_from(LONG)?).collect();
+    ask(&mut again, &rename(AnyRef::Workspace(ws), &other))?;
+    assert_eq!(large(&kept, LONG)?.len(), 2, "its own old copy went");
+    assert_eq!(
+        read_whole(&kept)?.len(),
+        2,
+        "the workspace's name and the tab's"
+    );
     again.end_run();
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
     assert!(record.ended, "its end is recorded");
