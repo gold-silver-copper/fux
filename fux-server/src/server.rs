@@ -1335,11 +1335,15 @@ impl Server {
                     continue;
                 }
                 // Out of descriptors of its own, or something else that
-                // persists: the listener, readable still, rests. A client
-                // the descriptor kept back takes is told first.
+                // persists: the listener, readable still, rests. With no
+                // spare, which has descriptors of its own and takes what
+                // waits, the client is told, taken with the descriptor
+                // kept back.
                 Err(e) => {
                     let why = unserved("accept", &e);
-                    let told = crate::socket::out_of_descriptors(&e) && listening.refuse(&why);
+                    let told = self.spare.is_none()
+                        && crate::socket::out_of_descriptors(&e)
+                        && listening.refuse(&why);
                     self.rest(&why, now);
                     match told {
                         true => continue,

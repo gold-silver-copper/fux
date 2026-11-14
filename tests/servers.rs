@@ -564,6 +564,49 @@ fn reads_no_answers(command: fux_wire::command::Command) -> Outcome {
     Ok(())
 }
 
+/// A client that sends what is no frame is told why before its connection
+/// closes, whatever it sent before: as its first bytes, and after a Hello
+/// the server answered. Only the server's log said so, and the client saw
+/// its connection closed.
+#[test]
+fn a_client_that_sends_no_frame_is_told_why() -> Outcome {
+    use fux_wire::protocol::{Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToCommand};
+    use std::io::{Read, Write};
+    let server = Server::start("")?;
+    // All the server sent a client that sent `bytes`, to its end.
+    let answered = |bytes: &[u8]| -> Result<Decoder, String> {
+        let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+        stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+        stream.write_all(bytes).map_err(e)?;
+        let mut got = Vec::new();
+        // A reset ends it as a close does: what came before it is read.
+        let _ = stream.read_to_end(&mut got);
+        let mut decoder = Decoder::default();
+        decoder.push(&got);
+        Ok(decoder)
+    };
+    let mut first = answered(b"\0\0\0\0")?;
+    assert!(
+        matches!(first.frame::<Greeting>(), Ok(Some(Greeting::Exit(_)))),
+        "no word for what is no frame"
+    );
+    let hello = Hello {
+        protocol: PROTOCOL,
+        version: "0".into(),
+        role: Role::Command,
+    };
+    let mut later = answered(&[hello.encode(), b"\0\0\0\0".to_vec()].concat())?;
+    assert!(matches!(
+        later.frame::<Greeting>(),
+        Ok(Some(Greeting::Hello(_)))
+    ));
+    assert!(
+        matches!(later.frame::<ToCommand>(), Ok(Some(ToCommand::Exit(_)))),
+        "no word for what is no frame after a Hello"
+    );
+    Ok(())
+}
+
 /// `dump` writes a workspace as a program, and running that program
 /// makes it again.
 #[test]

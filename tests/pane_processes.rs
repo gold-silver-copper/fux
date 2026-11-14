@@ -1223,3 +1223,161 @@ fn a_client_that_aborts_puts_its_terminal_back() -> Outcome {
     );
     Ok(())
 }
+
+/// Sets `pid`'s soft limit `which` to `soft` (`prlimit`, util-linux), its
+/// hard one kept.
+#[cfg(target_os = "linux")]
+fn limit(pid: i32, which: &str, soft: u64) -> Outcome {
+    let out = std::process::Command::new("prlimit")
+        .args(["--pid", &pid.to_string(), &format!("--{which}={soft}:")])
+        .output()
+        .map_err(e)?;
+    match out.status.success() {
+        true => Ok(()),
+        false => Err(String::from_utf8_lossy(&out.stderr).into_owned()),
+    }
+}
+
+/// The connection's process that waits at `pid`'s socket for the next
+/// client (`Server::spare`).
+#[cfg(target_os = "linux")]
+fn spare(pid: i32) -> Result<i32, String> {
+    let mut found = None;
+    eventually("a connection waiting for a client", || {
+        let taken = connections(pid);
+        found = (children(pid, "__conn").into_iter()).find(|conn| !taken.contains(conn));
+        Ok(found.is_some())
+    })?;
+    found.ok_or_else(|| "a connection waiting for a client".into())
+}
+
+/// Three clients, one after another, of a server that has met a limit
+/// (`ulimit`): the one its waiting connection's process takes may be
+/// served; each one refused is told `cause`, and two are, the second by a
+/// server that was ready to tell again.
+#[cfg(target_os = "linux")]
+fn refused_naming(server: &Server, cause: &str) -> Outcome {
+    let mut refused = 0u32;
+    for _ in 0..3 {
+        let asked = within(server, 30, &["(length (panes (all)))"])?;
+        if asked.status != 0 {
+            assert!(asked.stderr.contains(cause), "{}", asked.stderr);
+            refused = refused.saturating_add(1);
+        }
+    }
+    assert!(refused >= 2, "{refused} refused");
+    Ok(())
+}
+
+/// A server with every descriptor its limit allows takes the client that
+/// waits with the one it kept back, and tells it so: the client fails at
+/// once naming the cause, not after waiting for an answer that never
+/// comes; and the next is told too.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_out_of_descriptors_tells_a_client_so() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    spare(pid)?;
+    // No number is free below its limit: the least it has not open.
+    let mut open: Vec<u64> = (std::fs::read_dir(format!("/proc/{pid}/fd")).map_err(e)?)
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .collect();
+    open.sort_unstable();
+    let free = (0u64..).zip(&open).find(|(n, fd)| n != *fd);
+    let free = free.map_or(u64::try_from(open.len()).map_err(e)?, |(n, _)| n);
+    limit(pid, "nofile", free)?;
+    refused_naming(&server, "Too many open files")
+}
+
+/// A server that can start no process tells a client it can give none so,
+/// which fails at once naming the cause, not with a connection reset.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_out_of_processes_tells_a_client_so() -> Outcome {
+    // A limit on processes does not hold root.
+    if fuxix::process::geteuid() == 0 {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    spare(pid)?;
+    limit(pid, "nproc", 1)?;
+    refused_naming(&server, "starting a connection's process")
+}
+
+/// A connection's process that waits at the socket and is stopped holds up
+/// no client: the server takes there what it has not taken.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stopped_waiting_connection_holds_up_no_client() -> Outcome {
+    let server = Server::start("")?;
+    let stopped = spare(server_pid(&server)?)?;
+    signal(stopped, Signal::Stop);
+    let asked = within(&server, 30, &["(length (panes (all)))"]);
+    signal(stopped, Signal::Cont);
+    let asked = asked?;
+    assert_eq!(asked.status, 0, "{}", asked.stderr);
+    Ok(())
+}
+
+/// A write past a file-size limit (`ulimit -f`) fails as a write, where it
+/// is told, and ends no process of fux: a tree change whose record can't be
+/// written so is refused, and the server lives; a client whose output
+/// can't be says so.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_past_the_file_size_limit_is_refused_not_fatal() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    let shell = pane(&server, "a", &["sh"])?;
+    limit(pid, "fsize", 16)?;
+    let refused = server.fux(&[&format!(
+        "(sequence! (rename (pane {}) \"renamed\") #inert)",
+        fux::script::quoted(&shell)
+    )])?;
+    assert_ne!(refused.status, 0);
+    assert!(
+        refused.stderr.contains("could not be written"),
+        "{}",
+        refused.stderr
+    );
+    let listing = server.ok(&["(listing (list-session))"])?;
+    assert!(!listing.contains(" renamed "), "{listing}");
+    assert!(alive(pid), "the server");
+    let saved = server.dir.join("saved");
+    let dump = (server.command("/bin/sh"))
+        .args(["-c", "ulimit -f 0 && exec \"$0\" \"$@\" > \"$SAVED\""])
+        .args([fux(), "(dump (all))"])
+        .env("SAVED", &saved)
+        .output()
+        .map_err(e)?;
+    let said = String::from_utf8_lossy(&dump.stderr);
+    assert!(
+        said.contains("writing the output"),
+        "{:?} {said}",
+        dump.status
+    );
+    Ok(())
+}
+
+/// A client whose server is killed while its request waits says the
+/// server's process ended, and how its run is taken back: every close the
+/// server makes has a word, so one without is its end.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_whose_server_is_killed_says_it_ended() -> Outcome {
+    let server = Server::start("")?;
+    let _reap = reap_run(&server)?;
+    let pid = server_pid(&server)?;
+    let before = connections(pid);
+    let waits = started(&server, &["(shows (pane 1) \"never shown\" 600)"])?;
+    eventually("its connection", || {
+        Ok(connections(pid).iter().any(|conn| !before.contains(conn)))
+    })?;
+    signal(pid, Signal::Kill);
+    let out = waits.wait_with_output().map_err(e)?;
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("`fux '(start)'`"), "{said}");
+    Ok(())
+}

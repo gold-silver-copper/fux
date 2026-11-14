@@ -1364,6 +1364,28 @@ mod tests {
         Ok(())
     }
 
+    /// A connection's process that fails tells its client why before it
+    /// closes: here its server sent it what is no message.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_that_fails_tells_its_client_why() -> Result<(), String> {
+        use fux_wire::protocol::ToCommand;
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        let e = |error: std::io::Error| error.to_string();
+        let (client, mut theirs) = UnixStream::pair().map_err(e)?;
+        let (mut server, link) = UnixStream::pair().map_err(e)?;
+        server.write_all(&[0, 0, 0, 0]).map_err(e)?;
+        let failed = super::serve(client, crate::link::End::new(link).map_err(e)?, Vec::new());
+        assert!(failed.is_err(), "it took what is no message");
+        let mut got = Vec::new();
+        theirs.read_to_end(&mut got).map_err(e)?;
+        let mut decoder = Decoder::default();
+        decoder.push(&got);
+        assert!(matches!(decoder.frame(), Ok(Some(ToCommand::Exit(_)))));
+        Ok(())
+    }
+
     /// A client whose request waits for its answer, which its server never
     /// gives: its end of its socket, its server's end of its process's
     /// link, and its process.
