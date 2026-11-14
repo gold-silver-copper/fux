@@ -2634,11 +2634,12 @@ fn two_pastes_sent_at_once_to_the_same_two_panes_both_arrive() -> Outcome {
 }
 
 /// 32. Megabytes typed at a program that isn't reading (a terminal that
-///     pastes as plain keys) wait in the terminal: a frame of them reaches
-///     the pane, which says so; its typist is told to hold back, holds a
-///     little and reads its terminal no more; and when the program reads,
-///     it gets every byte. No fux process grows with what was typed (D-187;
-///     all of it queued in the pane's process).
+///     pastes as plain keys) wait with the client that typed them: a frame
+///     of them reaches the pane, which says so; its typist is told to hold
+///     back what it types into that pane, and keeps it; and when the
+///     program reads, it gets every byte. Neither the pane's process, the
+///     server nor the connection's grows with what was typed (D-187; all
+///     of it queued in the pane's process).
 #[cfg(target_os = "linux")]
 #[test]
 fn megabytes_typed_at_a_program_that_reads_nothing_wait_in_the_terminal() -> Outcome {
@@ -2661,7 +2662,7 @@ fn megabytes_typed_at_a_program_that_reads_nothing_wait_in_the_terminal() -> Out
     terminal.type_bytes(format!("sh {}\r", run.display()).as_bytes())?;
     terminal.wait_for("RAW-NOW")?;
     let before = (peak_kib(own)?, peak_kib(pid)?);
-    // Typed from a thread of its own: it waits, as the terminal does.
+    // Typed from a thread of its own, as fast as its client reads it.
     let typing = std::thread::spawn(move || {
         let typed = terminal.type_bytes(&vec![b'k'; TYPED]);
         (terminal, typed)
@@ -2670,10 +2671,6 @@ fn megabytes_typed_at_a_program_that_reads_nothing_wait_in_the_terminal() -> Out
     eventually("a frame of what was typed in its pane", || {
         Ok(peak_kib(own)?.saturating_sub(before.0) >= 1 << 10)
     })?;
-    assert!(
-        !typing.is_finished(),
-        "all of it was taken, none reading it"
-    );
     std::fs::write(&go, b"").map_err(e)?;
     let (mut terminal, typed) = typing.join().map_err(|_| "its typing panicked")?;
     typed?;

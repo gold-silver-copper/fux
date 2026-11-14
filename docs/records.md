@@ -528,8 +528,9 @@ and what it could not read or say for want of memory it reads or says again afte
 refused memory, as it draws its screen for a client that shows it (more so with pictures), as it makes a
 capture, and in the small things it builds to say what it is (its first words to a server, its facts).
 What is typed at an attached terminal flows too: once a frame of it waits unread for a pane's program, the
-clients typing into that pane hold back what they type, sending only their answers, and a client that holds
-4,096 keys reads its terminal no more, so megabytes typed or pasted as plain keys wait in the terminal. While
+clients that typed into that pane keep what they type into it, and send it once the program reads, to that
+pane wherever their focus is by then. Nothing else of theirs waits: a client's bindings (a change of focus,
+a detach), its mouse and what it types into another pane go on at once, whatever paste or program is stuck. While
 a paste that came in pieces is open, whatever else its program is to read (another client's keys, the
 answers to its own queries) waits behind the paste's closing bracket, a frame of it at most. Every other allocation
 fux's own code makes is infallible, and a refusal there aborts that process: what a decoded frame is
