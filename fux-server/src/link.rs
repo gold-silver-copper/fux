@@ -1203,6 +1203,90 @@ mod tests {
         Ok(())
     }
 
+    /// A thousand questions to a pane whose process reads nothing, each
+    /// given up by its asker, leave nothing more queued to it: once its
+    /// link takes no more, a question waits with its asker and goes with
+    /// it (D-179; they queued in the server, one for each who had asked).
+    /// One whose asker stays is sent once the pane reads again.
+    #[cfg(unix)]
+    #[test]
+    fn questions_to_a_pane_that_reads_nothing_leave_with_their_askers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{Ask, End, Link, Read, Remote, ToPane};
+        use fux_wire::command::Input;
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        let mut theirs = End::new(theirs)?;
+        let mut link = Link::Remote(Remote {
+            end: End::new(ours)?,
+            pid: fuxix::process::Pid::from_i32(1).ok_or("a pid")?,
+            child: false,
+            closed: false,
+            ended: None,
+            first: Vec::new(),
+            later: Vec::new(),
+            stalled: false,
+            parked: Vec::new(),
+            adopted: None,
+        });
+        let id = fux_wire::id::PaneId::of(1);
+        let (now, mut inbox) = (std::time::Instant::now(), std::collections::VecDeque::new());
+        let question = |ask: u64, bytes: usize| ToPane::Ask {
+            ask,
+            actor: fux_wire::events::Actor::Outside,
+            what: Ask::Keys {
+                inputs: vec![Input::Text(std::iter::repeat_n('k', bytes).collect())],
+                seen: None,
+                body: None,
+            },
+        };
+        // What the server does each turn: what it holds for (queued, parked).
+        fn held(link: &mut Link) -> (usize, usize) {
+            match link {
+                Link::Remote(remote) => {
+                    remote.flush();
+                    (remote.end.out.len(), remote.parked.len())
+                }
+                Link::Local(_) => (0, 0),
+            }
+        }
+        // Asked till its socket takes no more: what is queued then is the
+        // most there ever is.
+        let mut asked = 0u64;
+        while held(&mut link).1 == 0 {
+            asked += 1;
+            assert!(asked < 10_000, "its socket took everything");
+            link.send(id, question(asked, 16 << 10), now, &mut inbox);
+        }
+        let (queued, _) = held(&mut link);
+        let first_parked = asked;
+        assert_eq!(link.unask(first_parked), Some(None));
+        for _ in 0..1_000 {
+            asked += 1;
+            link.send(id, question(asked, 16 << 10), now, &mut inbox);
+            assert_eq!(held(&mut link), (queued, 1), "question {asked}");
+            assert_eq!(link.unask(asked), Some(None));
+            assert_eq!(held(&mut link), (queued, 0));
+        }
+        // One sent before its link stopped is the pane's to answer.
+        assert_eq!(link.unask(1), None);
+        // An asker that stays: its question goes once the pane reads.
+        asked += 1;
+        link.send(id, question(asked, 5), now, &mut inbox);
+        let mut buffer = vec![0u8; 64 << 10];
+        let mut last = 0;
+        while held(&mut link) != (0, 0) || last != asked {
+            assert_ne!(theirs.read(&mut buffer), Read::Closed);
+            while let Some(ToPane::Ask { ask, .. }) = theirs.next_message::<ToPane>()? {
+                assert!(
+                    ask < first_parked || ask == asked,
+                    "a question let go was sent: {ask}"
+                );
+                last = ask;
+            }
+        }
+        Ok(())
+    }
+
     /// As many of a client's bytes as the server sends its connection's
     /// process at once are one frame, which that process, joining nothing
     /// its server sends, takes.

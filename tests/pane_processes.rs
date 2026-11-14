@@ -2287,3 +2287,148 @@ fn a_start_held_up_reads_the_run_again_under_the_locks() -> Outcome {
     assert!(alive(program), "its program was ended");
     Ok(())
 }
+
+/// 27. A server killed while a paste is on its way: the paste's sender,
+///     which still holds what its pane has not taken, is told its server
+///     ended and how the run is taken back, and fails; `start` then takes
+///     the run back, its program still running (D-175; the sender had
+///     been answered at once, its paste queued in the pane's process).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_killed_mid_paste_tells_its_sender_and_its_run_is_taken_back() -> Outcome {
+    use std::io::Write;
+    let run = Server::start("")?;
+    let _stop = Stop(&run);
+    let server = &run;
+    let sleeper = pane(server, "a", &["sleep", "1000"])?;
+    let own = own_process(server, &sleeper)?;
+    let program = program_pid(server, &sleeper)?;
+    let links = |pid: i32| std::fs::read_dir(format!("/proc/{pid}/fd")).map(Iterator::count);
+    let before = links(own).map_err(e)?;
+    let mut sending = started(
+        server,
+        &[&format!(
+            "(send-keys (paste {} (input)))",
+            support::reference(&sleeper)
+        )],
+    )?;
+    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+    stdin.write_all(&vec![b'x'; 32 << 20]).map_err(e)?;
+    drop(stdin);
+    // Its connection reached the pane with a piece, which the pane's
+    // program, reading nothing, leaves the rest behind.
+    eventually("a piece on its way", || Ok(links(own).map_err(e)? > before))?;
+    assert!(sending.try_wait().map_err(e)?.is_none(), "it waits");
+    let pid = server_pid(server)?;
+    signal(pid, Signal::Kill);
+    let out = sending.wait_with_output().map_err(e)?;
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(!out.status.success(), "{said}");
+    assert!(
+        said.contains("ended without a word") && said.contains("(start)"),
+        "{said}"
+    );
+    server.ok(&["(sequence! (start) #inert)"])?;
+    server.version(&sleeper)?;
+    assert!(alive(program), "its program ended with the server");
+    assert_eq!(own_process(server, &sleeper)?, own);
+    Ok(())
+}
+
+/// 28. A program that writes 10 MB before it reads, a megabyte sent it
+///     meanwhile, gets all of it: what waits to be written to it never
+///     stops its output being read, nor the other way (D-177; a terminal
+///     that stops one for the other deadlocks here).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_program_that_writes_ten_megabytes_before_it_reads_gets_all_it_was_sent() -> Outcome {
+    use std::io::Write;
+    const SENT: usize = 1 << 20;
+    let server = Server::start("")?;
+    let got = server.dir.join("got");
+    // Raw, so that what it is sent is neither a line nor echoed; it says
+    // so, reads one byte (the go), writes, and only then reads the rest.
+    let script = format!(
+        "stty raw -echo; printf RAW-%s NOW; dd bs=1 count=1 >/dev/null 2>&1; \
+         head -c 10000000 /dev/zero | tr '\\0' x; printf WROTE-%s ALL; \
+         head -c {SENT} | wc -c > {part}; mv {part} {got}; sleep 1000",
+        part = server.dir.join("part").display(),
+        got = got.display()
+    );
+    let writer = pane(&server, "a", &["sh", "-c", &script])?;
+    server.shows(&writer, "RAW-NOW")?;
+    let mut sending = started(
+        &server,
+        &[&format!(
+            "(send-keys (paste {} (input)))",
+            support::reference(&writer)
+        )],
+    )?;
+    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+    stdin.write_all(&vec![b'y'; SENT + 1]).map_err(e)?;
+    drop(stdin);
+    let mut kept = String::new();
+    for _ in 0..12 {
+        let read = eventually("all it was sent, read", || {
+            kept = std::fs::read_to_string(&got).unwrap_or_default();
+            Ok(!kept.is_empty())
+        });
+        if read.is_ok() {
+            break;
+        }
+    }
+    assert_eq!(kept.trim(), SENT.to_string());
+    assert!(sending.wait().map_err(e)?.success(), "its paste failed");
+    assert!(
+        capture(&server, &writer)?.stdout.contains("WROTE-ALL"),
+        "its output was not read to its end"
+    );
+    Ok(())
+}
+
+/// 29. A pane's process given no more memory once it is warm, every
+///     allocation refused: its program floods it with output and is typed
+///     at, clients attach, show it and leave, it is captured; it lives, the
+///     same process, and serves again (owner answer 2: a pane's process
+///     never ends for memory; it aborted on what it queued and sent).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pane_process_refused_all_memory_lives_through_floods_and_side_links() -> Outcome {
+    let server = Server::start("")?;
+    let go = server.dir.join("go");
+    let script = format!(
+        "stty raw -echo; printf WARM-%s NOW; until [ -e {go} ]; do sleep 0.05; done; \
+         (cat >/dev/null) & yes flood-of-output | head -c 8000000; printf DONE-%s ALL; sleep 1000",
+        go = go.display()
+    );
+    let flood = pane(&server, "a", &["sh", "-c", &script])?;
+    let own = own_process(&server, &flood)?;
+    // Warm: shown to a client, captured, typed at.
+    let mut client = server.attach_to(24, 80, "a")?;
+    client.wait_for("WARM-NOW")?;
+    server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(&flood))])?;
+    drop(client);
+    cap(own, 0)?;
+    std::fs::write(&go, b"").map_err(e)?;
+    let keys = format!(
+        "(send-keys (text (pane {}) {}))",
+        fux::script::quoted(&flood),
+        fux::script::quoted(&"k".repeat(4000))
+    );
+    // Refused or served, each is answered: what counts is that its process
+    // is there after.
+    for _ in 0..20 {
+        let _ = server.fux(&[&keys])?;
+        let _ = capture(&server, &flood)?;
+        if let Ok(mut client) = server.attach_to(24, 80, "a") {
+            let _ = client.pump();
+        }
+        assert!(alive(own), "its pane's process ended, refused memory");
+    }
+    eventually("its flood read to its end", || {
+        Ok(capture(&server, &flood)?.stdout.contains("DONE-ALL"))
+    })?;
+    assert!(alive(own));
+    assert_eq!(own_process(&server, &flood)?, own);
+    Ok(())
+}

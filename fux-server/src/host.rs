@@ -1889,6 +1889,10 @@ impl Clock {
     }
 }
 
+/// How long a pane's process rests before it tries again to say what the
+/// OS gave it no memory to say.
+const STARVED: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// One that reached a pane's socket (`serve`), and what it is once its
 /// first word says: a server of its run taking it back, or a connection's
 /// process, watching its screen once it asks.
@@ -2043,6 +2047,8 @@ pub fn serve(
     let mut link = Some(end);
     let mut again: Option<Instant> = None;
     let mut peers: Vec<Peer> = Vec::new();
+    // It was refused the memory to send something this turn or the last.
+    let mut starved = false;
     let mut poll = fuxix::poll::Poll::default();
     let mut socket = socket;
     loop {
@@ -2071,8 +2077,9 @@ pub fn serve(
                     {
                         // Refused the memory for it, it is drawn again at
                         // the next turn that is due.
-                        if peer.end.try_send(&FromSide::Drawn(Box::new(drawn))).is_ok() {
-                            (watch.waiting, sent) = (true, true);
+                        match peer.end.try_send(&FromSide::Drawn(Box::new(drawn))) {
+                            Ok(()) => (watch.waiting, sent) = (true, true),
+                            Err(_) => starved = true,
                         }
                     }
                     let _ = peer.end.flush();
@@ -2089,6 +2096,7 @@ pub fn serve(
             let mut reports = std::mem::take(&mut reports).into_iter();
             while let Some(report) = reports.next() {
                 if end.try_send(&report).is_err() {
+                    starved = true;
                     let mut kept: Vec<FromPane> = std::iter::once(report).chain(reports).collect();
                     kept.append(&mut host.out);
                     host.out = kept;
@@ -2130,7 +2138,12 @@ pub fn serve(
             .into_iter()
             .flatten()
             .min();
-        let timeout = at.map(|at| at.saturating_duration_since(now));
+        let mut timeout = at.map(|at| at.saturating_duration_since(now));
+        // Refused the memory to say something, it tries again after a
+        // rest: nothing else would wake it to.
+        if std::mem::take(&mut starved) {
+            timeout = Some(timeout.map_or(STARVED, |wait| wait.min(STARVED)));
+        }
         // A program whose output is not read now is still written what
         // waits for it, and read again once it took enough
         // (`Pane::reads_output`).
@@ -2395,6 +2408,7 @@ pub fn serve(
                 if let Some(token) = peer.owes.take() {
                     if peer.end.try_send(&FromSide::Took { token }).is_err() {
                         peer.owes = Some(token);
+                        starved = true;
                         continue;
                     }
                     let _ = peer.end.flush();
