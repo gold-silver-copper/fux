@@ -3,7 +3,9 @@
 //! A frame is `u32 length | u8 kind | payload`, big-endian, where `length`
 //! counts the kind byte and the payload. A frame is at most `MAX_FRAME`; a
 //! longer one goes as `MORE` frames, each a piece of its payload, then a
-//! frame of its kind with the last piece, which the `Decoder` joins.
+//! frame of its kind with the last piece. A `Decoder` holds one frame and
+//! refuses a piece; only a reader that asked for something long joins
+//! them, into a `Joining` it holds for that (`Decoder::long`).
 //!
 //! Each frame is decoded once, as the type of frame allowed where it
 //! arrives: by a server, a `Hello`, then an `Attach` and `AttachedFrame`s,
@@ -44,6 +46,11 @@ pub enum Error {
     UnexpectedKind(u8),
     /// A payload that does not read as its frame's.
     Wire(crate::wire::Error),
+    /// A piece of a longer message, where a message is one frame at most.
+    Piece,
+    /// The OS refused the memory to join a message of more than this many
+    /// bytes.
+    Memory(usize),
 }
 
 impl std::fmt::Display for Error {
@@ -55,6 +62,17 @@ impl std::fmt::Display for Error {
             Error::Empty => f.write_str("an empty frame"),
             Error::UnexpectedKind(kind) => write!(f, "unexpected frame kind {kind}"),
             Error::Wire(error) => write!(f, "a frame's payload: {error}"),
+            Error::Piece => write!(
+                f,
+                "a piece of a longer message, where a message is one frame \
+                 ({MAX_FRAME} bytes) at most"
+            ),
+            Error::Memory(bytes) => {
+                write!(
+                    f,
+                    "the OS refused memory to join a message of over {bytes} bytes"
+                )
+            }
         }
     }
 }
@@ -686,16 +704,48 @@ impl<T: OneKind> Frame<'_> for T {
     }
 }
 
-/// Accumulates bytes from a stream and yields whole frames, a frame sent
-/// in pieces joined. A frame header claiming more than `MAX_FRAME` is
-/// refused as soon as it arrives.
+/// Accumulates bytes from a stream and yields whole frames, one at a time:
+/// it holds no more of a message than one frame, and can't join the pieces
+/// of a longer one (`frame` refuses a piece; `long` needs a `Joining`). A
+/// frame header claiming more than `MAX_FRAME` is refused as soon as it
+/// arrives.
 #[derive(Default)]
 pub struct Decoder {
     buffer: ByteQueue,
-    /// The pieces of a longer frame so far (`MORE`).
+}
+
+/// The pieces of one long message, joined as they come: held only by a
+/// reader that asked for something long (a client its reply, a connection's
+/// process a pane's screen or capture), never by the server. It grows as
+/// the OS gives it memory, and a refusal is an error, not an abort.
+#[derive(Default)]
+pub struct Joining {
     pieces: Vec<u8>,
-    /// The last frame joined from pieces, which its decoded value borrows.
-    joined: Vec<u8>,
+    /// `pieces` is a whole message, lent as the frame last decoded: let go
+    /// before the next is joined.
+    whole: bool,
+}
+
+impl Joining {
+    /// Adds `piece` to the message, if the OS gives the memory.
+    pub fn push(&mut self, piece: &[u8]) -> Result<(), Error> {
+        fux_vt::bytes::try_extend(&mut self.pieces, piece)
+            .map_err(|_| Error::Memory(self.pieces.len()))
+    }
+
+    /// The pieces joined so far.
+    pub fn as_slice(&self) -> &[u8] {
+        &self.pieces
+    }
+
+    /// Bytes held.
+    pub fn len(&self) -> usize {
+        self.pieces.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pieces.is_empty()
+    }
 }
 
 impl Decoder {
@@ -709,8 +759,14 @@ impl Decoder {
     }
 
     /// Whether `frame` has something to say without more bytes: a whole
-    /// frame held, its pieces before it, or an error.
+    /// frame held, or an error.
     pub fn ready(&self) -> Result<bool, Error> {
+        Ok(whole(self.buffer.as_slice())?.is_some())
+    }
+
+    /// Whether `long` yields a frame or an error without more bytes: a
+    /// whole frame held, its pieces before it; not pieces alone.
+    pub fn ready_long(&self) -> Result<bool, Error> {
         let mut pending = self.buffer.as_slice();
         while let Some(length) = whole(pending)? {
             if pending.get(4) != Some(&MORE) {
@@ -723,10 +779,31 @@ impl Decoder {
 
     /// The next whole frame, decoded as one of `F`, its payload lent from
     /// the decoder; `Ok(None)` if more bytes are needed; an error for a
-    /// frame that is oversized, malformed or not one of `F`, and the stream
-    /// is then unusable.
+    /// frame that is oversized, malformed, not one of `F`, or a piece of a
+    /// longer message (`Error::Piece`), and the stream is then unusable.
     pub fn frame<'a, F: Frame<'a>>(&'a mut self) -> Result<Option<F>, Error> {
-        self.joined = Vec::new();
+        let Some(whole) = whole(self.buffer.as_slice())? else {
+            return Ok(None);
+        };
+        let frame = self.buffer.take_front(whole);
+        // A whole frame has its kind byte.
+        match frame.get(4..).and_then(<[u8]>::split_first) {
+            Some((&MORE, _)) => Err(Error::Piece),
+            Some((kind, payload)) => F::decode(*kind, payload).map(Some),
+            None => Err(Error::Empty),
+        }
+    }
+
+    /// `frame`, for a reader that asked for something long: a message sent
+    /// in pieces is joined into `joining`, as far as the OS gives memory
+    /// (`Error::Memory`), and lent from it.
+    pub fn long<'a, F: Frame<'a>>(
+        &'a mut self,
+        joining: &'a mut Joining,
+    ) -> Result<Option<F>, Error> {
+        if std::mem::take(&mut joining.whole) {
+            joining.pieces = Vec::new();
+        }
         let whole = loop {
             let Some(whole) = whole(self.buffer.as_slice())? else {
                 return Ok(None);
@@ -735,8 +812,7 @@ impl Decoder {
                 break whole;
             }
             let piece = self.buffer.take_front(whole);
-            self.pieces
-                .extend_from_slice(piece.get(5..).unwrap_or_default());
+            joining.push(piece.get(5..).unwrap_or_default())?;
         };
         let frame = self.buffer.take_front(whole);
         // A whole frame has its kind byte.
@@ -744,18 +820,18 @@ impl Decoder {
             .get(4..)
             .and_then(<[u8]>::split_first)
             .unwrap_or((&0, &[]));
-        if self.pieces.is_empty() {
+        if joining.pieces.is_empty() {
             return F::decode(*kind, payload).map(Some);
         }
-        self.joined = std::mem::take(&mut self.pieces);
-        self.joined.extend_from_slice(payload);
-        F::decode(*kind, &self.joined).map(Some)
+        joining.push(payload)?;
+        joining.whole = true;
+        F::decode(*kind, &joining.pieces).map(Some)
     }
 
     /// Bytes held: whole frames not yet taken, and a frame not yet
     /// complete.
     pub fn buffered(&self) -> usize {
-        self.buffer.len().saturating_add(self.pieces.len())
+        self.buffer.len()
     }
 }
 
@@ -1019,19 +1095,25 @@ mod tests {
             pending = pending.get(length..).unwrap_or_default();
         }
         assert_eq!(kinds, [MORE, MORE, 3, 5]);
-        let mut decoder = Decoder::default();
+        let (mut decoder, mut joining) = (Decoder::default(), Joining::default());
         let (first, last) = bytes.split_at_checked(bytes.len() - 7).ok_or("short")?;
         decoder.push(first);
-        assert!(!decoder.ready()?);
-        assert!(decoder.frame::<AttachedFrame>()?.is_none());
+        assert!(!decoder.ready_long()?);
+        assert!(decoder.long::<AttachedFrame>(&mut joining)?.is_none());
         decoder.push(last);
-        assert!(decoder.ready()?);
-        assert_eq!(decoder.frame::<AttachedFrame>()?, Some(long));
+        assert!(decoder.ready_long()?);
+        assert_eq!(decoder.long::<AttachedFrame>(&mut joining)?, Some(long));
         assert_eq!(
-            decoder.frame::<AttachedFrame>()?,
+            decoder.long::<AttachedFrame>(&mut joining)?,
             Some(AttachedFrame::Detach)
         );
-        assert_eq!(decoder.buffered(), 0);
+        assert_eq!((decoder.buffered(), joining.len()), (0, 0));
+        // A reader that did not ask for something long refuses the first
+        // piece, and holds no more than it.
+        let mut decoder = Decoder::default();
+        decoder.push(&bytes);
+        assert!(decoder.ready()?);
+        assert_eq!(decoder.frame::<AttachedFrame>(), Err(Error::Piece));
         let mut decoder = Decoder::default();
         // Any length past the limit will do.
         let over = u32::try_from(MAX_FRAME + 1).unwrap_or(u32::MAX);

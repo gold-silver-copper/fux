@@ -1780,6 +1780,9 @@ impl Clock {
 struct Peer {
     end: crate::link::End,
     side: Option<Option<Watch>>,
+    /// The pieces of a paste's body a connection's process sends it, the
+    /// one message it still joins.
+    pieces: fux_wire::protocol::Joining,
 }
 
 /// The loop of a pane's own process (`fux __pane`), listening at its
@@ -1998,7 +2001,11 @@ pub fn serve(
                     && host.closed.is_none()
                     && let Ok(end) = crate::socket::serve(reached).and_then(End::new)
                 {
-                    peers.push(Peer { end, side: None });
+                    peers.push(Peer {
+                        end,
+                        side: None,
+                        pieces: fux_wire::protocol::Joining::default(),
+                    });
                 }
             }
         }
@@ -2056,7 +2063,7 @@ pub fn serve(
                         Ok(None) => break,
                         Ok(Some(_)) | Err(_) => done = true,
                     },
-                    Some(watch) => match peer.end.next_message::<ToSide>() {
+                    Some(watch) => match peer.end.next_long::<ToSide>(&mut peer.pieces) {
                         Ok(Some(ToSide::Watch)) => *watch = Some(Watch::default()),
                         Ok(Some(ToSide::Taken)) => {
                             if let Some(watch) = watch {

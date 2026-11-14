@@ -24,6 +24,9 @@ pub enum Error {
     Bad(&'static str),
     /// Bytes after the value.
     Trailing,
+    /// The OS refused the memory to hold a text or a list of this many
+    /// bytes.
+    Memory(usize),
 }
 
 impl std::fmt::Display for Error {
@@ -34,6 +37,7 @@ impl std::fmt::Display for Error {
             Error::NotUtf8 => f.write_str("a text that is not UTF-8"),
             Error::Bad(what) => write!(f, "{what} out of range"),
             Error::Trailing => f.write_str("bytes after the value"),
+            Error::Memory(bytes) => write!(f, "the OS refused memory for its {bytes} bytes"),
         }
     }
 }
@@ -57,7 +61,9 @@ impl<'a> Reader<'a> {
         if count > self.0.len() {
             return Err(Error::Truncated);
         }
-        let mut out = Vec::with_capacity(count);
+        let mut out = Vec::new();
+        out.try_reserve_exact(count)
+            .map_err(|_| Error::Memory(count.saturating_mul(size_of::<T>())))?;
         for _ in 0..count {
             out.push(read(self)?);
         }
@@ -243,7 +249,12 @@ impl Wire for String {
         let len = length(r)?;
         let bytes = r.bytes(len)?;
         let text = std::str::from_utf8(bytes).map_err(|_| Error::NotUtf8)?;
-        Ok(text.to_owned())
+        let mut owned = String::new();
+        owned
+            .try_reserve_exact(text.len())
+            .map_err(|_| Error::Memory(text.len()))?;
+        owned.push_str(text);
+        Ok(owned)
     }
 }
 
