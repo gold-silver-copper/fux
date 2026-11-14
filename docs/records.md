@@ -494,7 +494,12 @@ that ended without the text) and `respawned-during-wait` (`grows`). A
 program may raise any kind: `(raise (error (quote! my-kind) 1 2))`.
 
 fux sets no limits of its own: memory, time and steps are the user's and the OS's to bound (`ulimit`,
-cgroups, `timeout`), and a program that loops is stopped as any program is. What nests too deep to
+cgroups, `timeout`), and a program that loops is stopped as any program is. At its descriptor or
+process limit a server refuses a new client with the cause
+(`the server can serve no new client now: …`), and a change whose record would pass its file-size
+limit is refused with nothing changed. A connection that closes with no reason given means the
+server's process ended (it was killed, or refused memory): the client says so, and `fux '(start)'`
+takes its run back. What nests too deep to
 cross the wire (a callback's lists past 64, records past 32) fails `too-long`, whether the word or
 the server refuses it. A layout is a flat list of nodes, so it nests as deep as its panes take it,
 with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
