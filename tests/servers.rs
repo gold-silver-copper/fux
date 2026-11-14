@@ -452,7 +452,7 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
 
 /// So is one whose requests a pane answers, a capture or keys: an answer
 /// on its way is no wait its client is refused for sending ahead of
-/// (D-159).
+/// (D-160).
 #[test]
 fn a_client_that_reads_no_answers_from_a_pane_is_read_no_more() -> Outcome {
     use fux_wire::command::{AnyRef, Command, Input, To};

@@ -261,7 +261,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
 - **Signals:** `process::delivery(signal, shell)` is the D-136 table (Unix: always `Group`), used in
   `host.rs`. "Killed" is not on the wire: an end by fux's kill is `Exited(KILLED)`.
 - **Reads stay armed:** the server's held links, the server's link in a client whose terminal has
-  no room, and `__conn`'s client while an answer is on its way (D-158) are not read, and are polled on Windows for `HUP | ERR`, which keeps a read in flight and
+  no room, and `__conn`'s client while an answer is on its way (D-159) are not read, and are polled on Windows for `HUP | ERR`, which keeps a read in flight and
   sets what it reads aside (256 KiB at most, the read buffer included), so the peer's end is told past
   bytes not yet taken. A peer that filled the bound and its pipe before it ended is seen only once it
   is read. On Unix they are polled for nothing (`HUP` would not do, as macOS's `poll` watches a

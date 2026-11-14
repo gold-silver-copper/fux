@@ -795,14 +795,15 @@ pub(super) fn replayed(
         .transpose()?
         .flatten();
     let mut built = match subject {
-        Some(subject) => Value::App(Fux::Opts(modifying(subject)?)),
-        None => Value::App(Fux::Opts(std::rc::Rc::default())),
+        Some(subject) => owned(modifying(subject)?),
+        None => Opts::default(),
     };
     for (opt, arguments) in steps {
-        let mut given = std::iter::once(built.clone()).chain(arguments);
+        // `changed` and `expect` make a request of their own.
         if matches!(opt, Opt::Changed | Opt::Expect) {
-            given.next();
+            built = Opts::default();
         }
+        let mut given = arguments.into_iter();
         let mut next = || {
             let value = given.next().ok_or_else(|| {
                 fail(
@@ -813,20 +814,18 @@ pub(super) fn replayed(
             run = super::same_run(run, super::checked_scope(&value)?)?;
             Ok(value)
         };
-        built = Value::App(Fux::Opts(modify(opt, &mut next)?));
+        add(opt, &mut built, &mut next)?;
         if given.next().is_some() {
             let why = format!("too many values: {}", Word::Opt(opt).row().effect);
             return Err(fail(Code::StackUnderflow, why));
         }
     }
-    if let Value::App(Fux::Opts(opts)) = &mut built {
-        let version = match opts.on {
-            Some(On::Version(v) | On::Changed(v) | On::Seen(v)) => Some(v.run),
-            _ => None,
-        };
-        std::rc::Rc::make_mut(opts).of = super::same_run(run, version)?;
-    }
-    Ok(built)
+    let version = match built.on {
+        Some(On::Version(v) | On::Changed(v) | On::Seen(v)) => Some(v.run),
+        _ => None,
+    };
+    built.of = super::same_run(run, version)?;
+    Ok(Value::App(Fux::Opts(std::rc::Rc::new(built))))
 }
 
 /// The closed choice of split or resize axis.
@@ -952,6 +951,19 @@ fn modify(
         true => Opts::default(),
         false => owned(modifying(next()?)?),
     };
+    add(opt, &mut built, next)?;
+    Ok(std::rc::Rc::new(built))
+}
+
+/// One more step on `built`, in place: `opt`, refused when its slot is
+/// already given, and its values from `next`. Both ways options are made
+/// (a word run, and grift data read back) add each step through here, so
+/// neither copies what was built before it.
+fn add(
+    opt: Opt,
+    built: &mut Opts,
+    next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
+) -> Result<(), Failure> {
     if !matches!(
         opt,
         Opt::Arg | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes | Opt::In
@@ -969,9 +981,9 @@ fn modify(
         arguments.push(value.clone());
         Ok(value)
     };
-    apply(opt, &mut built, &mut taken)?;
+    apply(opt, built, &mut taken)?;
     built.steps.push((opt, arguments));
-    Ok(std::rc::Rc::new(built))
+    Ok(())
 }
 
 /// `opt`, its values from `next`, on `built`.
