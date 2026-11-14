@@ -8,7 +8,7 @@
 //! that watches it does so with a one-shot wait on the same event. It has
 //! `UnixStream`'s method names, and what is `UnixStream` on Unix is this
 //! here.
-use super::{Peer, checked, peer};
+use super::{BUSY, Peer, checked, peer};
 use crate::errno::{Errno, Result};
 use crate::poll::{Events, Source, Wait, sealed::Sealed, woken};
 use std::cell::UnsafeCell;
@@ -103,7 +103,7 @@ impl Client {
     /// Connects to the pipe `name`, checked as [`super::connect`] checks
     /// it and failing as that does.
     pub fn connect(name: &str) -> Result<Client> {
-        let (handle, connected) = checked(name)?;
+        let (handle, connected) = checked(name, BUSY)?;
         let inner = Inner {
             handle,
             read: UnsafeCell::new(OVERLAPPED::default()),

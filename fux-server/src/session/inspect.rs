@@ -52,7 +52,7 @@ impl Session {
 
     /// One pane's facts observation, alone: what a capture holds.
     pub fn observed(&self, id: PaneId) -> Result<inspect::Pane, Error> {
-        let pane = self.pane(id)?;
+        let pane = self.linked_pane(id)?;
         let (_, tab) = self.locate(id).ok_or(Error::NoPane(id))?;
         let at = self.tab(tab).and_then(|t| self.sized(t).rect(id));
         self.observe(pane, tab, at, &Projection::Facts)
@@ -62,7 +62,7 @@ impl Session {
     /// `observe` reads it from, as `inspect::Pane::fields` gives it: a
     /// version or program read lays out no tab and reads no pictures.
     pub(super) fn observed_field(&self, id: PaneId, field: &str) -> Result<Option<Body>, Error> {
-        let pane = self.pane(id)?;
+        let pane = self.linked_pane(id)?;
         let tab = || self.locate(id).map(|(_, tab)| tab).ok_or(Error::NoPane(id));
         let at = || Ok::<_, Error>(self.tab(tab()?).and_then(|t| self.sized(t).rect(id)));
         let place = |at: Option<u16>| at.map_or(Json::Null, Json::int);

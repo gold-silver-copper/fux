@@ -333,7 +333,11 @@ const PANE_START: Duration = Duration::from_secs(10);
 pub fn start_pane(exe: &Path, socket: &Path) -> Result<(Pid, Stream), String> {
     let name = pipe_name(socket).map_err(|e| e.to_string())?;
     // One a process still listens at is a pane's: never let go as debris.
-    if fuxix::socket::connect(&name).is_ok() {
+    // Asked without waiting: one with no instance free listens all the same.
+    if matches!(
+        fuxix::socket::connect_now(&name),
+        Ok(_) | Err(fuxix::Errno::AGAIN)
+    ) {
         return Err(format!(
             "a pane's process listens at {} already",
             socket.display()
@@ -386,7 +390,7 @@ fn listens(said: &Stream) -> Result<(), String> {
 /// A pane process's pipe, made here, and the marker path `args` names,
 /// which also names the pipe; its server told, on stdout, that it listens.
 /// A name any process holds already is refused.
-pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>), String> {
+pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>, Own), String> {
     use std::io::Write;
     let [socket] = args else {
         return Err("it takes its socket's path".to_owned());
@@ -397,12 +401,23 @@ pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>),
     let mut stdout = std::io::stdout();
     (stdout.write_all(b"\n").and_then(|()| stdout.flush()))
         .map_err(|e| format!("telling its server: {e}"))?;
-    Ok((listener, Some(socket)))
+    Ok((listener, Some(socket), Own))
 }
 
-/// Its server, the first to reach a pane's process at `listener`, waited
-/// for.
-pub fn pane_first(listener: &mut PaneListener) -> Result<Stream, String> {
+/// A pane's process made its pipe itself (`pane_listener`): nothing more
+/// to listen on.
+pub fn pane_listen(_listener: &PaneListener) -> Result<(), String> {
+    Ok(())
+}
+
+/// A pane's process has begun: its pipe is read without waiting already.
+pub fn pane_begun(_listener: &PaneListener) -> Result<(), String> {
+    Ok(())
+}
+
+/// The next to reach a pane's process at `listener`, waited for: its
+/// server, till it has begun.
+pub fn pane_next(listener: &mut PaneListener) -> Result<Stream, String> {
     use fuxix::poll::{Events, PollFd};
     loop {
         match listener.accept() {
@@ -415,19 +430,65 @@ pub fn pane_first(listener: &mut PaneListener) -> Result<Stream, String> {
     }
 }
 
-/// The pid of what listens on the pipe the path `socket` names, as the
-/// system says (the maker of its first instance), and a link to it; none if nothing
-/// does.
-pub fn reach_named(socket: &Path) -> Option<(Option<Pid>, Stream)> {
-    let stream = connect(socket).ok()?;
-    let pid = listener_pid(&stream);
-    Some((pid, stream))
+/// Reaches for what listens on the pipe the path `socket` names: a link
+/// to it; or that nothing does (no such pipe); or that one does and has no
+/// instance free, found at once (`fuxix::socket::connect_now`). Any
+/// other failure says nothing of what is there, and is the error.
+pub fn reach(socket: &Path) -> std::io::Result<super::Reach> {
+    let name = pipe_name(socket).map_err(std::io::Error::other)?;
+    match fuxix::socket::connect_now(&name) {
+        Ok(stream) => Ok(super::Reach::Listening(stream)),
+        Err(fuxix::Errno::AGAIN) => Ok(super::Reach::Busy),
+        Err(errno) => {
+            let error = std::io::Error::from(errno);
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(super::Reach::NoListener)
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
-/// Whether a connect that failed so says nothing listens there: only a
-/// pipe that is not there does; one refused or busy may still run.
-pub fn none_listens(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::NotFound
+/// The process that listens at the other end of `stream`, as the system
+/// names it (`listener_pid`).
+pub fn peer_pid(stream: &Stream) -> Option<Pid> {
+    listener_pid(stream)
+}
+
+/// A pane's process's own marker file (`start_pane`): it holds its pipe's
+/// name while it runs, so no other pane's marker is at that path.
+pub struct Own;
+
+/// Removes the marker at `path`.
+pub fn unlink_own(_own: &Own, path: &Path) {
+    let _ = fs::remove_file(path);
+}
+
+/// The socket's locks, taken again by a server that stopped and let them
+/// go as it stopped listening (`hold_again`).
+pub struct Held {
+    _starting: File,
+    _lock: File,
+}
+
+/// Takes the locks of the socket at `path` again, as a starting server
+/// does, for a server that stopped to let go of what its run kept: none if
+/// another server holds the socket now, whose run's the files there are.
+pub fn hold_again(path: &Path) -> Option<Held> {
+    let (starting, _) = lock_file(path, ".starting").ok()?;
+    starting.lock().ok()?;
+    let (lock, _) = lock_file(path, ".lock").ok()?;
+    lock.try_lock().ok()?;
+    Some(Held {
+        _starting: starting,
+        _lock: lock,
+    })
+}
+
+/// Whether the process `pid` still runs.
+pub fn runs(pid: Pid) -> bool {
+    fuxix::process::identity(pid).is_ok()
 }
 
 /// The pid of the process that made the pipe `stream` is connected to: a
@@ -585,7 +646,7 @@ pub fn dial(socket: &SocketPath) -> std::io::Result<Client> {
             Err(fuxix::Errno::AGAIN) => return Err(std::io::ErrorKind::TimedOut.into()),
             Err(errno) => {
                 let error = std::io::Error::from(errno);
-                return Err(match none_listens(&error) {
+                return Err(match error.kind() == std::io::ErrorKind::NotFound {
                     true => std::io::ErrorKind::ConnectionRefused.into(),
                     false => error,
                 });
