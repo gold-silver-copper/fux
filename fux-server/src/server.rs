@@ -2077,12 +2077,12 @@ impl Server {
         let Some(socket) = self.session.socket().map(std::path::Path::to_owned) else {
             return;
         };
-        // A close not all written to a pane that takes none of it now is
-        // lost as this process ends: that pane is not told either.
-        let unsent = (self.session.ending.iter()).any(
-            |(_, link)| matches!(link, Link::Remote(remote) if !remote.closed && !remote.end.out.is_empty()),
-        );
-        if self.session.untold || unsent {
+        // A pane told to close whose link is still open has not ended, and
+        // is not known to have read it (stopped, say, with the close, or a
+        // part of it, unread): it is not known to be told either.
+        let open = (self.session.ending.iter())
+            .any(|(_, link)| matches!(link, Link::Remote(remote) if !remote.closed));
+        if self.session.untold || open {
             log!("a pane process is not known to be told its run ended: the next start tells it");
             return;
         }

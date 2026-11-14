@@ -1446,9 +1446,10 @@ fn a_client_whose_connection_process_is_killed_blames_no_server() -> Outcome {
     Ok(())
 }
 
-/// Kills the server as a crash does, and waits till it is gone.
+/// Kills the server that serves now, as a crash does, and waits till it
+/// is gone.
 fn crash(server: &Server) -> Outcome {
-    let pid = server_pid(server)?;
+    let pid = serving(server)?;
     signal(pid, Signal::Kill);
     eventually("the server gone", || Ok(!alive(pid)))
 }
@@ -1522,12 +1523,18 @@ fn a_stopped_pane_holds_up_only_what_is_asked_of_it() -> Outcome {
     crash(server)?;
     let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
     assert_eq!(taken.status, 0, "{}", taken.stderr);
+    let ending = serving(server)?;
     let stop = within(server, 30, &["(sequence! (kill-server) #inert)"])?;
     assert_eq!(stop.status, 0, "{}", stop.stderr);
-    eventually("the run's record gone", || {
-        Ok(!kept(server).join("run").exists())
-    })?;
+    eventually("the server that ended the run gone", || Ok(!alive(ending)))?;
+    // Not known to have read that its run ended, it keeps the run's record
+    // there, which says so: a start meanwhile is not refused for a record
+    // that is gone, and begins a new run beside it.
+    assert!(kept(server).join("run").exists(), "its record went");
     assert!(alive(stopped), "the stopped pane's process ended unread");
+    let again = within(server, 30, &["(sequence! (start) #inert)"])?;
+    assert_eq!(again.status, 0, "{}", again.stderr);
+    assert_eq!(server.ok(&["(length (panes (all)))"])?.trim(), "0");
     signal(stopped, Signal::Cont);
     eventually("the pane that stopped ended with its run", || {
         Ok(!alive(stopped) && !alive(program))
@@ -1742,7 +1749,13 @@ fn a_run_that_ended_as_its_server_crashed_is_finished_by_the_next_start() -> Out
             "0",
             "{said}"
         );
-        // A pane of the new run starts where the old one's listened.
+        // The new run is recorded, and the old one's end forgotten only
+        // then: a crash between would have found the end still marked.
+        let kept = kept(server);
+        assert!(
+            kept.join("run").exists() && !kept.join(fux_server::record::ENDED).exists(),
+            "{said}: the new run's record, and no mark of the old one's end"
+        );
         pane(server, "w", &["sleep", "1019"])?;
     }
     Ok(())
@@ -1758,16 +1771,42 @@ fn unbegun(server: &Server, pane: &str) -> Result<i32, String> {
     let listener = UnixListener::bind(&socket).map_err(e)?;
     // The link of the server that died before it said its first word.
     let dead = UnixStream::connect(&socket).map_err(e)?;
-    let child = std::process::Command::new(kept(server).join("exe"))
+    let child = pane_process(server, listener, &socket)?;
+    drop(dead);
+    i32::try_from(child.id()).map_err(e)
+}
+
+/// A process of `server`'s run's fux as a pane's own, started as its
+/// server starts it: `listener`, bound at `socket`, on its stdin, and told
+/// which file that is.
+fn pane_process(
+    server: &Server,
+    listener: std::os::unix::net::UnixListener,
+    socket: &std::path::Path,
+) -> Result<std::process::Child, String> {
+    pane_process_bound(
+        server,
+        listener,
+        &std::fs::symlink_metadata(socket).map_err(e)?,
+    )
+}
+
+/// `pane_process`, told its socket's file is `bound`.
+fn pane_process_bound(
+    server: &Server,
+    listener: std::os::unix::net::UnixListener,
+    bound: &std::fs::Metadata,
+) -> Result<std::process::Child, String> {
+    use std::os::unix::fs::MetadataExt;
+    std::process::Command::new(kept(server).join("exe"))
         .arg("__pane")
+        .args([bound.dev().to_string(), bound.ino().to_string()])
         .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
             listener,
         )))
         .stdout(std::process::Stdio::null())
         .spawn()
-        .map_err(e)?;
-    drop(dead);
-    i32::try_from(child.id()).map_err(e)
+        .map_err(e)
 }
 
 /// A crashed run with pane `pane`'s own process and program killed: what
@@ -1799,11 +1838,10 @@ fn a_pane_never_begun_ends_with_its_run_once_it_reads() -> Outcome {
     signal(fresh, Signal::Stop);
     let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
     assert_eq!(taken.status, 0, "{}", taken.stderr);
+    let ending = serving(server)?;
     let stop = within(server, 30, &["(sequence! (kill-server) #inert)"])?;
     assert_eq!(stop.status, 0, "{}", stop.stderr);
-    eventually("the run's record gone", || {
-        Ok(!kept(server).join("run").exists())
-    })?;
+    eventually("the server that ended the run gone", || Ok(!alive(ending)))?;
     assert!(alive(fresh), "the stopped process ended unread");
     signal(fresh, Signal::Cont);
     eventually("the pane never begun ended with its run", || {
@@ -1902,7 +1940,7 @@ fn a_pane_with_no_room_at_its_socket_is_told_its_run_ended_once_it_has() -> Outc
     // finds it ended, each while the pane has no room.
     let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
     assert_eq!(taken.status, 0, "{}", taken.stderr);
-    let pid = server_pid(server)?;
+    let pid = serving(server)?;
     let stop = within(server, 30, &["(sequence! (kill-server) #inert)"])?;
     assert_eq!(stop.status, 0, "{}", stop.stderr);
     eventually("the server that ended the run gone", || Ok(!alive(pid)))?;
@@ -1920,39 +1958,177 @@ fn a_pane_with_no_room_at_its_socket_is_told_its_run_ended_once_it_has() -> Outc
     })
 }
 
-/// 36. A pane's process slow to end leaves the socket of a later run's
-///     pane of its number alone: told to close as its run was found ended,
-///     and reading that only once the new run has a pane at its path, it
-///     ends without unlinking what is there now; the new run's pane is
-///     still found by the server that takes that run back (D-169; it
-///     removed the path whatever was there, and that pane was then lost).
+/// The pid of the server that serves `server`'s socket now: the one that
+/// took its run back, which is no child of the test's.
+fn serving(server: &Server) -> Result<i32, String> {
+    let pid = server.ok(&["(get (status) \"server-process-id\")"])?;
+    pid.trim().parse().map_err(|_| format!("its server: {pid}"))
+}
+
+/// A pane's number.
+fn number(pane: &str) -> Result<u32, String> {
+    pane.trim_start_matches('%').parse().map_err(e)
+}
+
+/// 36. A run begun where another ended, with a pane process of that one
+///     still to end (stopped: told, and not heard to close): the new run's
+///     panes are numbered past it, so none is ever at its path; making one
+///     waits for nothing; and once the old process reads and ends, the new
+///     run and its server go on (D-169; the new run's first pane took the
+///     old one's number and path: making it froze the server while the old
+///     process was stopped, and the close meant for the old one then
+///     reached the new, whose answer made the server leave its own run).
 #[test]
-fn a_pane_slow_to_end_leaves_a_later_panes_socket() -> Outcome {
+fn a_new_runs_panes_are_numbered_past_a_pane_still_to_end() -> Outcome {
     let started = Server::start("")?;
     let _stop = Stop(&started);
     let server = &started;
-    let (old, old_program) = server.panes()?.into_iter().next().ok_or("its first pane")?;
+    pane(server, "w", &["sleep", "1024"])?;
+    let (old, old_program) = server.newest_pane()?;
     let _reap = reap_run(server)?;
     let old_own = parent(old_program)?;
+    let old_socket = kept(server).join(old.trim_start_matches('%'));
     signal(old_own, Signal::Stop);
     crash(server)?;
     rerecord(server, |record| record.ended = true)?;
     let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
     assert_eq!(taken.status, 0, "{}", taken.stderr);
-    let new = pane(server, "w", &["sleep", "1024"])?;
-    assert_eq!(new, old, "the new run's pane has another number");
+    let serves = serving(server)?;
+    // Made while the old process is stopped: the server answers.
+    let made = within(
+        server,
+        30,
+        &[&format!(
+            "(new-tab {})",
+            program("(size (in (options) \"w\") 80 24)", &["sleep", "1025"])
+        )],
+    )?;
+    assert_eq!(made.status, 0, "{}", made.stderr);
+    let new = id(&made.stdout);
+    assert!(
+        number(&new)? > number(&old)?,
+        "{new} is not past {old}, which is still to end"
+    );
+    assert!(old_socket.exists(), "the old pane's socket went untold");
     let _reap_new = reap_run(server)?;
     let new_own = own_process(server, &new)?;
     signal(old_own, Signal::Cont);
     eventually("the old run's pane gone", || Ok(!alive(old_own)))?;
-    let socket = kept(server).join(new.trim_start_matches('%'));
-    assert!(socket.exists(), "the new pane's socket was unlinked");
-    crash(server)?;
+    // Its own run goes on, under the same server, and is taken back whole.
+    assert_eq!(capture(server, &new)?.status, 0);
+    assert_eq!(serving(server)?, serves, "another server serves it now");
+    signal(serves, Signal::Kill);
+    eventually("the server gone", || Ok(!alive(serves)))?;
     let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
     assert_eq!(taken.status, 0, "{}", taken.stderr);
     assert_eq!(capture(server, &new)?.status, 0);
     assert_eq!(own_process(server, &new)?, new_own);
     Ok(())
+}
+
+/// 38. A pane's process removes, as it ends, only the socket file its
+///     server bound for it: with another file at its path before it ever
+///     ran (its run's directory made anew meanwhile), it leaves that one
+///     (D-169; it took whatever was at its path as it began for its own).
+///     Each is told to close before it runs, and ends as it reads that.
+#[test]
+fn a_pane_removes_only_the_socket_file_its_server_bound() -> Outcome {
+    use fux_server::link::{End, ToPane};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    let server = Server::start("")?;
+    for replaced in [false, true] {
+        let socket = server.dir.join(format!("own-{replaced}"));
+        let listener = UnixListener::bind(&socket).map_err(e)?;
+        let mut end = End::new(UnixStream::connect(&socket).map_err(e)?).map_err(e)?;
+        end.send(&ToPane::Close { closed: true });
+        end.flush_all().map_err(e)?;
+        let bound = std::fs::symlink_metadata(&socket).map_err(e)?;
+        if replaced {
+            std::fs::remove_file(&socket).map_err(e)?;
+            std::fs::write(&socket, b"another's").map_err(e)?;
+        }
+        let mut child = pane_process_bound(&server, listener, &bound)?;
+        let mut reap = Reap::default();
+        reap.0.push(i32::try_from(child.id()).map_err(e)?);
+        eventually("the pane told to close ended", || {
+            Ok(child.try_wait().map_err(e)?.is_some())
+        })?;
+        assert_eq!(socket.exists(), replaced, "replaced: {replaced}");
+    }
+    Ok(())
+}
+
+/// 39. A pane closed by its user while it begins from its run's record is
+///     told to close once it has begun: it is not linked as a pane no tab
+///     has (D-166). The test is what listens at its socket: it says it has
+///     not begun, takes its start, and only after the pane is closed has a
+///     real pane's process begin as told, passing on what that one says.
+#[test]
+fn a_pane_closed_while_it_begins_is_told_to_close() -> Outcome {
+    use fux_server::link::{End, FromPane, Taking, ToPane};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let faked = pane(server, "w", &["sleep", "1026"])?;
+    let mut reap = reap_run(server)?;
+    vacate(server, &faked)?;
+    let socket = kept(server).join(faked.trim_start_matches('%'));
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).map_err(e)?;
+    let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
+    assert_eq!(taken.status, 0, "{}", taken.stderr);
+    let (stream, _) = listener.accept().map_err(e)?;
+    let mut end = End::new(stream).map_err(e)?;
+    let asked = end.wait::<ToPane>().map_err(e)?;
+    assert!(matches!(asked, Some(ToPane::Take { .. })), "{asked:?}");
+    end.send(&FromPane::Taking(Taking::Unbegun {
+        pid: i32::try_from(std::process::id()).map_err(e)?,
+    }));
+    end.flush_all().map_err(e)?;
+    let Some(ToPane::Begin(begin)) = end.wait::<ToPane>().map_err(e)? else {
+        return Err("its start did not come".to_owned());
+    };
+    let closed = within(
+        server,
+        30,
+        &[&format!(
+            "(sequence! (kill (pane {})) #inert)",
+            fux::script::quoted(&faked)
+        )],
+    )?;
+    assert_eq!(closed.status, 0, "{}", closed.stderr);
+    // It begins all the same, as a process stopped till now would.
+    let real_socket = server.dir.join("real");
+    let real_listener = UnixListener::bind(&real_socket).map_err(e)?;
+    let mut real = pane_process(server, real_listener, &real_socket)?;
+    reap.0.push(i32::try_from(real.id()).map_err(e)?);
+    let mut to_real = End::new(UnixStream::connect(&real_socket).map_err(e)?).map_err(e)?;
+    to_real.send(&ToPane::Begin(begin));
+    to_real.flush_all().map_err(e)?;
+    loop {
+        let said = to_real.wait::<FromPane>().map_err(e)?;
+        let said = said.ok_or("the pane's process went before its first facts")?;
+        let facts = matches!(said, FromPane::Update(_));
+        end.send(&said);
+        end.flush_all().map_err(e)?;
+        if facts {
+            break;
+        }
+    }
+    // Begun, and no pane of the run: told to close on that link.
+    loop {
+        match end.wait::<ToPane>().map_err(e)? {
+            Some(ToPane::Close { .. }) => break,
+            Some(_) => {}
+            None => return Err("its link closed with no close said".to_owned()),
+        }
+    }
+    to_real.send(&ToPane::Close { closed: true });
+    to_real.flush_all().map_err(e)?;
+    eventually("the pane's process ended", || {
+        Ok(real.try_wait().map_err(e)?.is_some())
+    })
 }
 
 /// 37. A server that stopped lets go of what its run kept only while no
