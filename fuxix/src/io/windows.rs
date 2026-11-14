@@ -428,6 +428,13 @@ impl Sealed for Stream {
     fn write(&self, bytes: &[u8]) -> Result<usize> {
         self.give(bytes)
     }
+
+    /// No write of its own is in flight, and none of what it was given
+    /// is left in its buffer: one that failed writes no more.
+    fn written(&self) -> bool {
+        let write = lock(&self.write);
+        write.failed.is_some() || !write.pending && write.start >= write.end
+    }
 }
 
 impl Source for Stream {}
@@ -511,6 +518,17 @@ pub fn read(source: &(impl Source + ?Sized), buffer: &mut [u8]) -> Result<usize>
 /// fails with `BADF`.
 pub fn write(source: &(impl Source + ?Sized), bytes: &[u8]) -> Result<usize> {
     source.write(bytes)
+}
+
+/// Whether all that `source` was given to write (`write`) is written. A
+/// [`Stream`] takes bytes into its buffer and writes them from there, so
+/// `write` says how many it took, not that they are written: this says
+/// so, once no write of its is in flight and its buffer is empty (or it
+/// failed, and writes no more); a poll that asks `OUT` of it wakes then.
+/// A [`crate::pty::Master`] says it of its program's input. Any other
+/// source keeps nothing to write.
+pub fn written(source: &(impl Source + ?Sized)) -> bool {
+    source.written()
 }
 
 impl Stream {

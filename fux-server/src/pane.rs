@@ -1517,6 +1517,23 @@ impl Pane {
         wrote
     }
 
+    /// Whether its program's terminal took all that was sent it: nothing
+    /// waits here to be written, and the terminal has written all it was
+    /// given (`fuxix::io::written`: on Windows a write is taken into a
+    /// buffer first, and is in flight a while). Not that anything read
+    /// it. A program gone takes nothing more, and nothing waits for it.
+    pub(crate) fn input_taken(&self) -> bool {
+        self.input.is_empty()
+            && match &self.process {
+                Process::Reading(child) => fuxix::io::written(&child.master),
+                Process::Absent
+                | Process::HungUp(_)
+                | Process::ReadFailed(..)
+                | Process::Exited(_)
+                | Process::Respawning => true,
+            }
+    }
+
     /// Resizes the screen and the PTY. A held frame is read first: it was
     /// drawn for the old size. One longer than this turn's slice is read
     /// on at later turns, and the resize waits for its end (`resize_to`).

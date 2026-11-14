@@ -2,6 +2,14 @@
 use crate::errno::{Result, check, check_size};
 use std::os::fd::{AsFd, AsRawFd};
 
+/// Whether all that was written to `fd` (`write`) has left this process:
+/// always, here, as a write that returned gave the system what it took.
+/// On Windows a stream writes from a buffer of its own, and has not while
+/// that write is in flight.
+pub fn written(_: impl AsFd) -> bool {
+    true
+}
+
 /// Reads into `buffer`: how many bytes, 0 at the end.
 pub fn read(fd: impl AsFd, buffer: &mut [u8]) -> Result<usize> {
     // SAFETY: the descriptor is valid for the call, and `buffer` is
