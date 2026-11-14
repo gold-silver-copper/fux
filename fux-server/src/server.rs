@@ -181,6 +181,23 @@ enum Stage {
 }
 
 impl Stage {
+    /// Whether its request waits on someone else, with no answer on its
+    /// way: for a pane to change, for events, for a client's own answer, or
+    /// behind an attached client's frames. One its pane answers (keys, a
+    /// capture) does not: that answer is on its way.
+    fn waits(&self) -> bool {
+        match self {
+            Stage::Blocked(_) => true,
+            Stage::Waiting(waiting) => !matches!(**waiting, Waiting::Asked(_)),
+            Stage::Hello
+            | Stage::Attaching
+            | Stage::Command
+            | Stage::Attached(_)
+            | Stage::Closing
+            | Stage::Dead => false,
+        }
+    }
+
     /// Whether what the client sends is read.
     fn reads(&self) -> bool {
         match self {
@@ -380,6 +397,7 @@ impl Conn {
             self.stage,
             Stage::Command | Stage::Blocked(_) | Stage::Waiting(_)
         );
+        let waited = self.stage.waits();
         match mem::replace(&mut self.stage, next) {
             Stage::Attached(attached) => {
                 session.detach(attached.client, Detach::Disconnected, now);
@@ -400,10 +418,11 @@ impl Conn {
             | Stage::Closing
             | Stage::Dead => {}
         }
-        // Its process is told a request waits: it holds its client to less
-        // meanwhile (`conn::serve`).
-        if matches!(self.stage, Stage::Blocked(_) | Stage::Waiting(_)) {
-            self.tell_process(&crate::link::ToConn::Waits);
+        // Its process is told when a request waits on someone else, and
+        // when it does no more: it reads its client meanwhile, to hear its
+        // end (`conn::serve`).
+        if self.stage.waits() != waited {
+            self.tell_process(&crate::link::ToConn::Waits(!waited));
         }
         match (&self.stage, next_expects) {
             // A command client's next request is read once its answer is

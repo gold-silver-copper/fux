@@ -444,7 +444,34 @@ fn panes_and_tabs_are_lists_of_handles() -> Outcome {
 /// does; once it reads, every request is answered.
 #[test]
 fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
-    use fux_wire::command::{Command as Cmd, Request};
+    reads_no_answers(fux_wire::command::Command::Inspect {
+        scope: fux_wire::inspect::Scope::All,
+        projection: fux_wire::inspect::Projection::Facts,
+    })
+}
+
+/// So is one whose requests a pane answers, a capture or keys: an answer
+/// on its way is no wait its client is refused for sending ahead of
+/// (D-159).
+#[test]
+fn a_client_that_reads_no_answers_from_a_pane_is_read_no_more() -> Outcome {
+    use fux_wire::command::{AnyRef, Command, Input, To};
+    let pane = fux_wire::id::PaneId::of(1);
+    reads_no_answers(Command::CapturePane {
+        target: pane,
+        history: None,
+        view: fux_wire::command::CaptureView::default(),
+    })?;
+    reads_no_answers(Command::SendKeys {
+        to: To::Now(AnyRef::Pane(pane)),
+        inputs: vec![Input::Text("x".into())],
+    })
+}
+
+/// A client sends `command` over and over and reads no answer, then reads
+/// them all.
+fn reads_no_answers(command: fux_wire::command::Command) -> Outcome {
+    use fux_wire::command::Request;
     use fux_wire::protocol::{
         Asked, Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToCommand,
     };
@@ -462,10 +489,7 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
     stream.write_all(&hello.encode()).map_err(e)?;
     let ls = Asked {
         after: None,
-        request: Request::Do(Cmd::Inspect {
-            scope: fux_wire::inspect::Scope::All,
-            projection: fux_wire::inspect::Projection::Facts,
-        }),
+        request: Request::Do(command),
         context: Context::default(),
     };
     let ls = ls.encode();

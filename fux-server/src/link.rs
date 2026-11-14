@@ -905,9 +905,11 @@ pub enum ToConn {
     /// The answer to its client's request is all sent: once the client
     /// has it, its next request is read.
     Answered,
-    /// Its client's request waits: no answer comes till what it waits for
-    /// does, if ever.
-    Waits,
+    /// Whether its client's request waits on someone else, with no answer
+    /// on its way: for a pane to change, for events, for a client's own
+    /// answer, or behind an attached client's frames. Not one its pane
+    /// answers (keys, a capture): that answer is on its way.
+    Waits(bool),
     /// Its first word: where its run's panes listen, and the run, which
     /// it tells each pane it reaches (`ToPane::Join`).
     Hello { panes: PathBuf, run: Run },
@@ -946,7 +948,7 @@ wired!(ToConn {
     Bytes(b),
     Expect(e),
     Answered,
-    Waits,
+    Waits(w),
     Hello { panes, run },
     Scene(s),
     Deliver { body, token, panes },
