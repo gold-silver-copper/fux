@@ -292,6 +292,15 @@ fn send<'a>(stream: &mut Client, frame: &impl Frame<'a>) -> Result<(), Error> {
         .map_err(failed("writing to the server"))
 }
 
+/// Sends `bytes`, frames encoded: a request or a paste with what follows
+/// it of its pieces (`fux_wire::protocol::encode_asked`), which the server
+/// takes as its panes take them, so this waits as long as they do.
+fn send_bytes(stream: &mut Client, bytes: &[u8]) -> Result<(), Error> {
+    stream
+        .write_all(bytes)
+        .map_err(failed("writing to the server"))
+}
+
 /// The next frame the server sends, waiting `timeout` at most for each
 /// read; none once it has closed.
 fn read_frame<'d, F: Frame<'d>>(
@@ -358,7 +367,8 @@ impl Requests {
         // A server that takes no more of what it is sent says why and
         // closes: its reason, read after the write that failed so, is the
         // failure, not the closed pipe; and with none, that it ended.
-        if let Err(error) = send(&mut self.stream, asked) {
+        let sent = send_bytes(&mut self.stream, &fux_wire::protocol::encode_asked(asked));
+        if let Err(error) = sent {
             wait_at_most(&self.stream, Some(ANSWER));
             return Err(
                 match read_frame(&mut self.stream, &mut self.decoder, Some(ANSWER)) {
@@ -1114,9 +1124,12 @@ fn decoded(input: fux_wire::command::Input) -> Vec<Input> {
             .chars()
             .map(|c| Input::Key(KeyPress::char(c).into()))
             .collect(),
-        fux_wire::command::Input::Paste(text) => vec![Input::Paste(text)],
+        // A paste that came in pieces is a paste a piece here.
+        fux_wire::command::Input::Paste(text) | fux_wire::command::Input::Pasting(text) => {
+            vec![Input::Paste(text)]
+        }
         // A pane's alone: `send-keys` refuses them for a client.
-        fux_wire::command::Input::Bytes(_) => Vec::new(),
+        fux_wire::command::Input::Bytes(_) | fux_wire::command::Input::More => Vec::new(),
     }
 }
 
@@ -1763,7 +1776,7 @@ fn tell(
     output: Option<&mut Output>,
     frame: &AttachedFrame,
 ) -> Result<(), Result<String, Error>> {
-    match send(stream, frame) {
+    match send_bytes(stream, &fux_wire::protocol::encode_attached(frame)) {
         Ok(()) => Ok(()),
         // Not sent at all: the server goes on as it was.
         Err(error @ Error::Protocol(_)) => Err(Err(error)),

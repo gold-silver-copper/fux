@@ -729,7 +729,11 @@ impl Session {
     /// The body of the frame taken next, kept by its connection: what a
     /// request or act it makes takes for its inputs (`send_keys`, `paste`).
     pub fn give_body(&mut self, body: Option<u64>) {
-        self.body = body;
+        // One nothing took is let go by its connection, which is told so
+        // as it is told where any other goes: to no pane.
+        if let Some(unused) = std::mem::replace(&mut self.body, body) {
+            self.deliveries.push((unused, 0, Vec::new()));
+        }
     }
 
     /// A body's token: its panes are asked for it, and its connection sends
@@ -1303,7 +1307,13 @@ impl Session {
                 }
                 // A pane none can reach refuses as it would.
                 Err(error) if many => asks.push((id, self.refused(error))),
-                Err(error) => return Err(error),
+                Err(error) => {
+                    // Its connection lets the body go.
+                    if let Some((body, token)) = body {
+                        self.deliveries.push((body, token, Vec::new()));
+                    }
+                    return Err(error);
+                }
             }
         }
         if let Some((body, token)) = body {
@@ -3994,8 +4004,11 @@ pub(crate) mod testing {
                             .chars()
                             .map(|c| Input::Key(fux_vt::keys::KeyPress::char(c).into()))
                             .collect(),
-                        fux_wire::command::Input::Paste(text) => vec![Input::Paste(text)],
-                        fux_wire::command::Input::Bytes(_) => Vec::new(),
+                        fux_wire::command::Input::Paste(text)
+                        | fux_wire::command::Input::Pasting(text) => vec![Input::Paste(text)],
+                        fux_wire::command::Input::Bytes(_) | fux_wire::command::Input::More => {
+                            Vec::new()
+                        }
                     });
                     session.inputs(client, typed.collect());
                 }
@@ -9051,7 +9064,7 @@ mod tests {
             let pending = s.send_keys(to, &[], Instant::now())?;
             let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
             let inputs = vec![Input::Text("x".into())];
-            host(&mut s, id, |h| h.body(token, inputs))?;
+            host(&mut s, id, |h| h.piece(token, &inputs))?;
             assert_eq!(s.retired.pop(), Some((id, token)));
             let [(_, ask)] = pending.asks.as_slice() else {
                 return Err("one ask".into());

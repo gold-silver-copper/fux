@@ -1636,6 +1636,10 @@ impl Server {
                     Some(AttachedFrame::Answer(asked, value)) => {
                         answered = Some((attached.client, asked, value));
                     }
+                    // A paste's pieces stay with its client's connection,
+                    // which sends the server the paste for the first
+                    // (`conn::next_frame`): one that comes here has none.
+                    Some(AttachedFrame::Piece(_)) => {}
                     None => return Ok(false),
                 }
                 if let Some(attached) = conn.attached() {

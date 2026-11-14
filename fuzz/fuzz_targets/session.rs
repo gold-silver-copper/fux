@@ -529,11 +529,12 @@ impl Run {
                                 self.press(client, fux_vt::keys::KeyPress::char(c).into());
                             }
                         }
-                        fux_wire::command::Input::Paste(text) => {
+                        fux_wire::command::Input::Paste(text)
+                        | fux_wire::command::Input::Pasting(text) => {
                             self.inputs(client, vec![Input::Paste(text)]);
                         }
                         // A pane's alone: send-keys refuses them for a client.
-                        fux_wire::command::Input::Bytes(_) => {}
+                        fux_wire::command::Input::Bytes(_) | fux_wire::command::Input::More => {}
                     }
                 }
             }

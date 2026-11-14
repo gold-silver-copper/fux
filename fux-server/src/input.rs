@@ -190,9 +190,10 @@ impl Session {
         match self.body_token() {
             Some((body, token)) => {
                 let runs_in = self.views.get(&client).and_then(|v| v.runs_in);
-                if let Some(pane) = self.focused(client).filter(|p| runs_in != Some(*p)) {
-                    self.deliveries.push((body, token, vec![pane]));
-                }
+                let pane = self.focused(client).filter(|p| runs_in != Some(*p));
+                // With no pane to take it, its connection lets it go.
+                self.deliveries
+                    .push((body, token, pane.into_iter().collect()));
                 let _ = self.type_in(client, Typed::Body(token), now);
             }
             None => {

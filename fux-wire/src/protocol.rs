@@ -551,7 +551,7 @@ pub struct Piece(pub Vec<crate::command::Input>);
 
 impl Wire for Piece {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.0.put(out);
+        Wire::put(&self.0, out);
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
         Wire::get(r).map(Piece)
@@ -574,7 +574,7 @@ pub const PIECE: usize = MAX_PAYLOAD / 2;
 /// as `Input::Pasting`, so that it stays one paste), and every piece but
 /// the last ends in `Input::More`. Inputs that fit are one piece, as they
 /// are.
-pub fn pieces(inputs: Vec<crate::command::Input>) -> Vec<Vec<crate::command::Input>> {
+pub fn cut_inputs(inputs: Vec<crate::command::Input>) -> Vec<Vec<crate::command::Input>> {
     use crate::command::Input;
     /// Where `len` bytes are cut, `room` left in the piece they begin in:
     /// each part's end but the last's, moved back to where `boundary` lets
@@ -642,7 +642,7 @@ pub fn pieces(inputs: Vec<crate::command::Input>) -> Vec<Vec<crate::command::Inp
 
 /// `asked` as its client sends it: one frame if it is one, with room for
 /// what is said with it on its way; else its inputs cut in pieces
-/// (`pieces`), the first in the request and the rest in `Piece` frames
+/// (`cut_inputs`), the first in the request and the rest in `Piece` frames
 /// after it. A request too long with no inputs to cut goes as it is, and
 /// is refused `too-long` where it arrives.
 pub fn encode_asked(asked: &Asked) -> Vec<u8> {
@@ -659,7 +659,7 @@ pub fn encode_asked(asked: &Asked) -> Vec<u8> {
     else {
         return asked.encode();
     };
-    let mut rest = pieces(std::mem::take(inputs)).into_iter();
+    let mut rest = cut_inputs(std::mem::take(inputs)).into_iter();
     *inputs = rest.next().unwrap_or_default();
     let mut out = first.encode();
     for piece in rest {
@@ -676,7 +676,7 @@ pub fn encode_attached(frame: &AttachedFrame) -> Vec<u8> {
         && !sends_whole(frame)
     {
         let mut out = Vec::new();
-        for piece in pieces(vec![crate::command::Input::Paste(text.clone())]) {
+        for piece in cut_inputs(vec![crate::command::Input::Paste(text.clone())]) {
             AttachedFrame::Piece(piece).encode_into(&mut out);
         }
         return out;
