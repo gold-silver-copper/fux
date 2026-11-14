@@ -397,8 +397,7 @@ impl Conn {
             self.stage,
             Stage::Command | Stage::Blocked(_) | Stage::Waiting(_)
         );
-        let waited = self.stage.waits();
-        match mem::replace(&mut self.stage, next) {
+        match self.put(next) {
             Stage::Attached(attached) => {
                 session.detach(attached.client, Detach::Disconnected, now);
                 // Its terminal's cursor overrides are given back as its own.
@@ -418,12 +417,6 @@ impl Conn {
             | Stage::Closing
             | Stage::Dead => {}
         }
-        // Its process is told when a request waits on someone else, and
-        // when it does no more: it reads its client meanwhile, to hear its
-        // end (`conn::serve`).
-        if self.stage.waits() != waited {
-            self.tell_process(&crate::link::ToConn::Waits(!waited));
-        }
         match (&self.stage, next_expects) {
             // A command client's next request is read once its answer is
             // written (`answer`).
@@ -431,6 +424,19 @@ impl Conn {
             (_, Some(expect)) => self.tell_process(&crate::link::ToConn::Expect(expect)),
             (_, None) => {}
         }
+    }
+
+    /// Its stage is `next` from now on, and the one it had is given back.
+    /// Nothing else changes its stage, so its process is always told when
+    /// a request begins to wait on someone else, and when it does no more:
+    /// it reads its client meanwhile, to hear its end (`conn::serve`).
+    fn put(&mut self, next: Stage) -> Stage {
+        let waited = self.stage.waits();
+        let was = mem::replace(&mut self.stage, next);
+        if self.stage.waits() != waited {
+            self.tell_process(&crate::link::ToConn::Waits(!waited));
+        }
+        was
     }
 
     /// Encodes a frame straight into the output.
@@ -1382,8 +1388,7 @@ impl Server {
             matches!(&conn.stage, Stage::Blocked(asked) if !matches!(self.unprocessed(asked), Some(1..)))
         });
         if eligible && let Some(conn) = self.conns.get_mut(index) {
-            let stage = mem::replace(&mut conn.stage, Stage::Command);
-            if let Stage::Blocked(asked) = stage {
+            if let Stage::Blocked(asked) = conn.put(Stage::Command) {
                 self.ordered_request(index, *asked, now);
             }
         }
@@ -2255,6 +2260,49 @@ mod tests {
         heard(&mut server, 0)?;
         let stage = server.conns.first().map(|c| &c.stage);
         assert!(matches!(stage, Some(Stage::Dead)));
+        Ok(())
+    }
+
+    /// A capture held behind an attached client's frames, let go once
+    /// they are handled, waits on no one else from then on: its pane
+    /// answers it. Its process is told so, and reads its client no more.
+    #[test]
+    fn a_fenced_capture_let_go_tells_its_process_it_waits_no_more()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::link::ToConn;
+        let (mut server, _peers, client) = ordered_fixture()?;
+        let mut asked = key_request(server.session.run, client, 1);
+        asked.request = fux_wire::command::Command::CapturePane {
+            target: PaneId::of(1),
+            history: None,
+            view: fux_wire::command::CaptureView::default(),
+        }
+        .into();
+        let worker = server.conns.get_mut(0).ok_or("worker")?;
+        worker.decoder.push(&asked.encode());
+        server.serve_conn(0, PollFlags::IN, Instant::now());
+        let waits = |server: &Server| -> Vec<bool> {
+            let said = server.conns.first().map(|c| c.link.queued::<ToConn>());
+            (said.into_iter().flatten())
+                .filter_map(|said| match said {
+                    ToConn::Waits(waits) => Some(waits),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(waits(&server), [true], "held");
+        let resize = AttachedFrame::Resize(fux_vt::Size::new(10, 40)?).encode();
+        server
+            .conns
+            .get_mut(1)
+            .ok_or("source")?
+            .decoder
+            .push(&resize);
+        server.serve_conn(1, PollFlags::IN, Instant::now());
+        server.serve_conn(0, PollFlags::IN, Instant::now());
+        let stage = server.conns.first().map(|c| &c.stage);
+        assert!(!matches!(stage, Some(Stage::Blocked(_))), "let go");
+        assert_eq!(waits(&server), [true, false], "let go");
         Ok(())
     }
 
