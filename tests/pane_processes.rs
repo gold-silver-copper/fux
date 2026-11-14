@@ -886,6 +886,74 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
     Ok(())
 }
 
+/// The numbers of the name files a run keeps (`record::name_file`).
+fn name_files(server: &Server) -> Vec<String> {
+    let entries = std::fs::read_dir(kept(server)).into_iter().flatten();
+    let mut names: Vec<String> = (entries.flatten())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|name| name.strip_prefix("name.").map(str::to_owned))
+        .filter(|number| number.parse::<u64>().is_ok())
+        .collect();
+    names.sort();
+    names
+}
+
+/// 15b. A server killed between writing a name and writing the structure
+///     that names it leaves a run the next start takes back, with the
+///     names anyone saw; the name's file, which no structure names, goes
+///     (D-175). The moment is held, not raced: a structure is written to
+///     `run.new` first, and a FIFO put there holds the server at its
+///     opening, the name's file written, till it is killed.
+#[cfg(unix)]
+#[test]
+fn a_server_killed_between_a_name_and_the_structure_is_taken_back() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let pane = pane(server, "a", &["sleep", "1016"])?;
+    let _reap = reap_run(server)?;
+    let rename = |name: &str| {
+        let pane = fux::script::quoted(&pane);
+        format!("(sequence! (rename (pane {pane}) \"{name}\") #inert)")
+    };
+    server.ok(&[&rename("one")])?;
+    let recorded = name_files(server);
+    // Found while it answers: held at the FIFO, it answers no one.
+    let serving = serving(server)?;
+    let held = kept(server).join("run.new");
+    let made = std::process::Command::new("mkfifo").arg(&held).status();
+    assert!(
+        made.map_err(|error| format!("mkfifo: {error}"))?.success(),
+        "mkfifo {}",
+        held.display()
+    );
+    let mut renaming = server.spawn(&[&rename("two")])?;
+    let written = eventually("the new name's file written", || {
+        Ok(name_files(server).len() > recorded.len())
+    });
+    signal(serving, Signal::Kill);
+    let crashed = written.and(eventually("the server gone", || Ok(!alive(serving))));
+    let _ = end(&mut renaming);
+    std::fs::remove_file(&held).map_err(e)?;
+    crashed?;
+    let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
+    assert_eq!(taken.status, 0, "{}", taken.stderr);
+    let listing = server.ok(&["(listing (list-session))"])?;
+    assert!(
+        listing.contains(" one ") && !listing.contains(" two "),
+        "{listing}"
+    );
+    assert_eq!(name_files(server), recorded, "the name no structure names");
+    // And it is the run still: the pane's program runs, and takes a name.
+    server.ok(&[&rename("three")])?;
+    assert!(
+        server
+            .ok(&["(listing (list-session))"])?
+            .contains(" three ")
+    );
+    Ok(())
+}
+
 /// 16. A pane's id and place are recorded before its program starts: one
 ///     whose record can't be written starts nothing, and a socket a process
 ///     still listens at is never taken for debris (D-124 (3)).
