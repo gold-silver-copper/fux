@@ -144,12 +144,15 @@ fn failed<E: std::fmt::Display>(doing: &'static str) -> impl FnOnce(E) -> Error 
 }
 
 /// The connection closed with no word. A server that ends a connection
-/// says why first (`Exit`), as does a connection's process of its that
-/// fails: so one of them ended where it could say nothing, killed or
-/// refused memory. A run whose server ended so waits for the next.
+/// says why first (`Exit`), and so does a connection's process of its, for
+/// itself or for a server that went (`conn::serve`): so that process ended
+/// where it could say nothing, killed or refused memory, whether or not its
+/// server did too. Which, `status` tells.
 fn ended() -> Error {
-    let why = "the server process ended before it answered (it was killed, or crashed); \
-               `fux '(start)'` takes its run back";
+    let why = "the connection closed without a word: this client's connection process on the \
+               server's side ended (it was killed, or refused memory), and the server may have \
+               too; `fux '(status)'` says whether a server runs, and `fux '(start)'` takes back \
+               the run of one that does not";
     Error::Failed(why.to_owned())
 }
 
@@ -2683,7 +2686,7 @@ mod tests {
     }
 
     /// A server that refuses says why; one that says nothing times out;
-    /// one that hangs up did not answer.
+    /// one that hangs up without a word ended.
     // Unix alone: a socket pair stands for the server.
     #[cfg(unix)]
     #[test]

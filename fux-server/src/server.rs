@@ -60,6 +60,9 @@ struct Listening {
     /// A descriptor kept back, to let go when the server has every one its
     /// limit allows (`refuse`); none if none could be had.
     reserve: Option<fs::File>,
+    /// At that limit, a client was left to the spare a rest ago
+    /// (`Server::accept`): one still waiting was not taken by it.
+    passed: bool,
     /// Holds the lock; removes the socket once dropped, after the listener
     /// closes.
     _endpoint: Endpoint,
@@ -73,6 +76,7 @@ impl Listening {
         Ok(Listening {
             listener,
             reserve: reserve(),
+            passed: false,
             _endpoint: endpoint,
         })
     }
@@ -81,8 +85,11 @@ impl Listening {
     /// `accept` gives no client, and one that waits would wait unanswered:
     /// the descriptor kept back is let go, the next client waiting is taken
     /// with it, told `why` and closed, and one is kept back again. Whether
-    /// a client was told. A system with no descriptor left for anyone is
-    /// beyond it: the one let go is then no one's to take.
+    /// a client was told. Two cases are beyond it, and the client then
+    /// waits out its own patience: a system with no descriptor left for
+    /// anyone, where the one let go is no one's to take; and a limit
+    /// lowered on the running server to below the number of the one kept
+    /// back, which then frees no number the limit allows.
     fn refuse(&mut self, why: &str) -> bool {
         self.reserve = None;
         let taken = crate::socket::accept(&mut self.listener)
@@ -92,6 +99,10 @@ impl Listening {
         taken
     }
 }
+
+/// What a client that sends no more is told as its connection ends.
+const SENDS_NO_MORE: &str = "this client sends no more, so its connection ends: \
+                             what it asked is answered, but a request that still waited";
 
 /// A descriptor that does nothing but be held (`Listening::reserve`).
 fn reserve() -> Option<fs::File> {
@@ -556,11 +567,12 @@ impl Conn {
     /// stage reads: how the server closes any connection it ends, so that
     /// none closes without a word. One that has had its last word, or is
     /// dead, is told no more.
-    fn refuse(&mut self, session: &mut Session, why: &str, now: Instant) {
+    /// A client attached there is detached as `detach` says.
+    fn refuse(&mut self, session: &mut Session, detach: Detach, why: &str, now: Instant) {
         match self.stage {
             Stage::Hello => self.end(session, &Greeting::Exit(why), now),
             Stage::Attaching => self.end(session, &ToAttached::Exit(why), now),
-            Stage::Attached(_) => self.exit(session, Detach::Failed, why, now),
+            Stage::Attached(_) => self.exit(session, detach, why, now),
             Stage::Command | Stage::Blocked(_) | Stage::Waiting(_) => {
                 self.end(session, &ToCommand::Exit(why), now);
             }
@@ -1179,7 +1191,14 @@ impl Server {
         // The sockets go first: from now on a client finds no server. The
         // next connection's process, its link closed, ends.
         self.phase = Phase::Stopping(after(now, STOP_WAIT));
-        self.spare = None;
+        // A client the spare took just now, not yet heard of, is a
+        // connection as the rest are, told below why it ends.
+        if let Some(mut spare) = self.spare.take() {
+            (spare.link).read_up_to(self.read_buffer.as_mut_slice(), CONN_READ);
+            if let Ok(Some(crate::link::FromConn::Accepted)) = spare.link.next_message() {
+                self.conns.push(spare);
+            }
+        }
         // Every client attached is detached for it before its entry, which
         // is the journal's last.
         let exit = format!("the fux server stopped: {reason}");
@@ -1198,7 +1217,7 @@ impl Server {
         // Every connection still open ends, so no command runs on what is
         // left of the session.
         for conn in &mut self.conns {
-            conn.refuse(&mut self.session, &exit, now);
+            conn.refuse(&mut self.session, Detach::ServerStopped, &exit, now);
         }
     }
 
@@ -1321,6 +1340,11 @@ impl Server {
             let Phase::Serving { listening, .. } = &mut self.phase else {
                 return;
             };
+            // One that could not be kept back before (`Listening::refuse`)
+            // is, once it can be.
+            if listening.reserve.is_none() {
+                listening.reserve = reserve();
+            }
             let stream = match crate::socket::accept(&mut listening.listener) {
                 Ok(stream) => stream,
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
@@ -1335,15 +1359,18 @@ impl Server {
                     continue;
                 }
                 // Out of descriptors of its own, or something else that
-                // persists: the listener, readable still, rests. With no
-                // spare, which has descriptors of its own and takes what
-                // waits, the client is told, taken with the descriptor
-                // kept back.
+                // persists: the listener, readable still, rests. A spare
+                // has descriptors of its own and takes what waits; with
+                // none, or one that has not by the rest's end, the client
+                // is told, taken with the descriptor kept back.
                 Err(e) => {
                     let why = unserved("accept", &e);
-                    let told = self.spare.is_none()
-                        && crate::socket::out_of_descriptors(&e)
-                        && listening.refuse(&why);
+                    let full = crate::socket::out_of_descriptors(&e);
+                    // Left to the spare once: a client there still after
+                    // the rest, the spare did not take (it is stopped).
+                    let passes = full && self.spare.is_some() && !listening.passed;
+                    listening.passed = passes;
+                    let told = full && !passes && listening.refuse(&why);
                     self.rest(&why, now);
                     match told {
                         true => continue,
@@ -1358,10 +1385,15 @@ impl Server {
             }
             // A second hold on its client, to tell it why should its
             // process not start: the first goes to that process.
-            let started = match (&refusing, crate::socket::kept(&stream)) {
-                (Some(why), _) => Err((stream, why.clone())),
-                (None, Err(e)) => Err((stream, unserved("holding its connection", &e))),
-                (None, Ok(kept)) => self
+            let kept = match &refusing {
+                Some(why) => Err(why.clone()),
+                None => {
+                    crate::socket::kept(&stream).map_err(|e| unserved("holding its connection", &e))
+                }
+            };
+            let started = match kept {
+                Err(why) => Err((stream, why)),
+                Ok(kept) => self
                     .session
                     .exe
                     .as_deref()
@@ -1400,6 +1432,9 @@ impl Server {
             == crate::link::Read::Closed;
         match spare.link.next_message::<FromConn>() {
             Ok(Some(FromConn::Accepted)) => {
+                if let Phase::Serving { listening, .. } = &mut self.phase {
+                    listening.passed = false;
+                }
                 self.conns.push(spare);
                 let index = self.conns.len().saturating_sub(1);
                 self.read_conn(index, now);
@@ -1493,25 +1528,14 @@ impl Server {
             // had the last word.
             if let Some(why) = conn.bad.take() {
                 let why = format!("the server takes no more from this client: {why}");
-                conn.refuse(&mut self.session, &why, now);
+                conn.refuse(&mut self.session, Detach::Failed, &why, now);
             }
-            // A command client that shut its side still gets the answers
-            // to what it asked.
+            // One that sends no more, its side shut or gone, has its
+            // connection ended, a wait of its dropped (D-159), and is told
+            // so: one that only shut its side still reads, the answers to
+            // what a command client asked first and then this last word.
             if closed {
-                match conn.stage {
-                    Stage::Command => {
-                        conn.enter(&mut self.session, Stage::Closing, now);
-                        conn.tell_process(&crate::link::ToConn::Close);
-                    }
-                    // Its last word goes on to its client: its process closes
-                    // its link once it is written.
-                    Stage::Dead | Stage::Closing => {}
-                    Stage::Hello
-                    | Stage::Attaching
-                    | Stage::Attached(_)
-                    | Stage::Blocked(_)
-                    | Stage::Waiting(_) => conn.enter(&mut self.session, Stage::Dead, now),
-                }
+                conn.refuse(&mut self.session, Detach::Disconnected, SENDS_NO_MORE, now);
             }
         }
     }
@@ -2329,8 +2353,9 @@ mod tests {
         worker.link.flush_all()?;
         theirs.shutdown(std::net::Shutdown::Write)?;
         heard(&mut server, 0)?;
+        // Held no more: it ends, told why, as it may still read.
         let stage = server.conns.first().map(|c| &c.stage);
-        assert!(matches!(stage, Some(Stage::Dead)));
+        assert!(matches!(stage, Some(Stage::Closing)));
         Ok(())
     }
 
@@ -2576,7 +2601,7 @@ mod tests {
                 heard(&mut server, 0)?;
                 assert!(matches!(
                     server.conns.first().map(|c| &c.stage),
-                    Some(Stage::Dead)
+                    Some(Stage::Closing)
                 ));
             } else {
                 if ending == "eof" {
@@ -2888,6 +2913,36 @@ mod tests {
                 r#""stopped""#,
             ]
         );
+        Ok(())
+    }
+
+    /// A client the spare took as the server stops, of which the server
+    /// has not heard yet, is told why its connection ends, as the rest are:
+    /// its process is not just let go.
+    #[test]
+    fn a_client_the_spare_took_as_the_server_stops_is_told_so()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut server, _peer) = server()?;
+        let dir = fuxix::file::scratch()?.join(format!("fux-stop-{}", std::process::id()));
+        let socket = crate::socket::checked(dir.join("s"), "test")?;
+        server.phase = Phase::Serving {
+            listening: Listening::open(&socket)?,
+            resting: None,
+        };
+        let (link, theirs) = UnixStream::pair()?;
+        let mut theirs = crate::link::End::new(theirs)?;
+        theirs.send(&crate::link::FromConn::Accepted);
+        theirs.flush_all().map_err(|errno| errno.to_string())?;
+        server.spare = Some(Conn::new(link)?);
+        let before = server.conns.len();
+        server.stop("a test".into(), Actor::Server, Instant::now());
+        let conn = server.conns.get(before).ok_or("the spare's connection")?;
+        let mut decoder = Decoder::default();
+        decoder.push(&client_bytes(conn));
+        assert!(matches!(
+            decoder.frame::<Greeting>(),
+            Ok(Some(Greeting::Exit(_)))
+        ));
         Ok(())
     }
 

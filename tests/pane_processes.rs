@@ -1279,15 +1279,43 @@ fn a_server_out_of_descriptors_tells_a_client_so() -> Outcome {
     let server = Server::start("")?;
     let pid = server_pid(&server)?;
     spare(pid)?;
-    // No number is free below its limit: the least it has not open.
+    no_descriptor_free(pid)?;
+    refused_naming(&server, "Too many open files")
+}
+
+/// Lowers `pid`'s descriptor limit so that no number is free below it: to
+/// the least number it has not open.
+#[cfg(target_os = "linux")]
+fn no_descriptor_free(pid: i32) -> Outcome {
     let mut open: Vec<u64> = (std::fs::read_dir(format!("/proc/{pid}/fd")).map_err(e)?)
         .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
         .collect();
     open.sort_unstable();
     let free = (0u64..).zip(&open).find(|(n, fd)| n != *fd);
     let free = free.map_or(u64::try_from(open.len()).map_err(e)?, |(n, _)| n);
-    limit(pid, "nofile", free)?;
-    refused_naming(&server, "Too many open files")
+    limit(pid, "nofile", free)
+}
+
+/// So is a client its waiting connection's process would have taken, had
+/// it not been stopped: left to that process once, it is told by the
+/// server, which does not wait on it for good.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_out_of_descriptors_tells_a_client_its_stopped_connection_left() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    let stopped = spare(pid)?;
+    signal(stopped, Signal::Stop);
+    no_descriptor_free(pid)?;
+    let asked = within(&server, 30, &["(length (panes (all)))"]);
+    signal(stopped, Signal::Cont);
+    let asked = asked?;
+    assert!(
+        asked.stderr.contains("Too many open files"),
+        "{}",
+        asked.stderr
+    );
+    Ok(())
 }
 
 /// A server that can start no process tells a client it can give none so,
@@ -1361,23 +1389,54 @@ fn a_write_past_the_file_size_limit_is_refused_not_fatal() -> Outcome {
     Ok(())
 }
 
-/// A client whose server is killed while its request waits says the
-/// server's process ended, and how its run is taken back: every close the
-/// server makes has a word, so one without is its end.
+/// A client whose request waits, and its connection's process.
+#[cfg(target_os = "linux")]
+fn waiting_client(server: &Server) -> Result<(std::process::Child, i32), String> {
+    let pid = server_pid(server)?;
+    let before = connections(pid);
+    let waits = started(server, &["(shows (pane 1) \"never shown\" 600)"])?;
+    let mut conn = None;
+    eventually("its connection", || {
+        conn = (connections(pid).into_iter()).find(|conn| !before.contains(conn));
+        Ok(conn.is_some())
+    })?;
+    Ok((waits, conn.ok_or("its connection")?))
+}
+
+/// A client whose server is killed while its request waits is told the
+/// server's process ended, and how its run is taken back: its connection's
+/// process, which outlives its server, says so.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_client_whose_server_is_killed_says_it_ended() -> Outcome {
     let server = Server::start("")?;
     let _reap = reap_run(&server)?;
-    let pid = server_pid(&server)?;
-    let before = connections(pid);
-    let waits = started(&server, &["(shows (pane 1) \"never shown\" 600)"])?;
-    eventually("its connection", || {
-        Ok(connections(pid).iter().any(|conn| !before.contains(conn)))
-    })?;
-    signal(pid, Signal::Kill);
+    let (waits, _) = waiting_client(&server)?;
+    signal(server_pid(&server)?, Signal::Kill);
     let out = waits.wait_with_output().map_err(e)?;
     let said = String::from_utf8_lossy(&out.stderr);
-    assert!(said.contains("`fux '(start)'`"), "{said}");
+    assert!(
+        said.contains("the server process ended") && said.contains("`fux '(start)'`"),
+        "{said}"
+    );
+    Ok(())
+}
+
+/// A client whose connection's process alone is killed does not say its
+/// server ended, which serves on: it says its connection's process did,
+/// and how to tell whether a server runs.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_whose_connection_process_is_killed_blames_no_server() -> Outcome {
+    let server = Server::start("")?;
+    let (waits, conn) = waiting_client(&server)?;
+    signal(conn, Signal::Kill);
+    let out = waits.wait_with_output().map_err(e)?;
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("connection process") && !said.contains("the server process ended"),
+        "{said}"
+    );
+    server.ok(&["(length (panes (all)))"])?;
     Ok(())
 }

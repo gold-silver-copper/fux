@@ -31,6 +31,11 @@ const READ: usize = 256 * 1024;
 /// as it is refused.
 const AHEAD: &str = "more than 256 KiB sent while a request waited: \
                      a request is sent once the one before it is answered";
+/// What a client is told whose server went without a last word for it:
+/// said by its connection's process, which outlives its server.
+const SERVER_GONE: &str = "the server process ended without a word (it was killed, or crashed, \
+                           or it stopped as this client came); `fux '(start)'`, or `fux` in a \
+                           terminal, takes back the run of one that did not stop";
 /// The least time between two paints for a client, as a flood is painted.
 /// A keystroke's echo (`Clock::echo`) and panes gone quiet (`QUIET`) are
 /// painted sooner.
@@ -1244,7 +1249,14 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // before: what it holds for its client is let go, but what one
         // write takes. A crashed server's clients have nothing left to be
         // served.
+        // Gone with no last word for its client (`Close`), its server
+        // ended, or let it go, without one: its client is told that much.
         if gone {
+            if !closing {
+                out.push_with(|frames| {
+                    fux_wire::protocol::ToCommand::Exit(SERVER_GONE).encode_into(frames)
+                });
+            }
             let _ = write(client, &mut out);
             return Ok(());
         }
@@ -1360,7 +1372,14 @@ mod tests {
         super::serve(client, End::new(link).map_err(e)?, Vec::new())?;
         let mut got = Vec::new();
         theirs.read_to_end(&mut got).map_err(e)?;
-        assert_eq!(got, b"the reply");
+        // And then that its server went, which had no last word for it.
+        let said = got.strip_prefix(b"the reply").ok_or("no reply")?;
+        let mut decoder = Decoder::default();
+        decoder.push(said);
+        assert!(matches!(
+            decoder.frame(),
+            Ok(Some(fux_wire::protocol::ToCommand::Exit(_)))
+        ));
         Ok(())
     }
 
@@ -1520,7 +1539,8 @@ mod tests {
         conn.join().map_err(|_| "its process panicked")??;
         let mut got = Vec::new();
         theirs.read_to_end(&mut got).map_err(|e| e.to_string())?;
-        assert_eq!(got, b"the answer");
+        // Then, its server gone with no last word, that it went.
+        assert!(got.starts_with(b"the answer"), "{got:?}");
         Ok(())
     }
 
