@@ -67,6 +67,13 @@ impl Display {
         let Some(act) = screen.panel(modes).map(ScreenAct::Show) else {
             return Vec::new();
         };
+        // One a program opens with more text than a frame holds (a
+        // prompt's title or start, a chooser's rows) is not opened: shown,
+        // it would be a frame the server takes none of.
+        if !sends(&act) {
+            let text = NOT_OPENED.to_owned();
+            return vec![Act::Notice { text, error: true }];
+        }
         self.opening = opening;
         self.screen = screen;
         vec![Act::Screen { opening, act }]
@@ -377,6 +384,11 @@ impl Screen {
 const TOO_LONG: &str = "the line would be longer than one frame (1 MiB), the most the server takes \
                         of one: nothing was typed";
 
+/// What a client says of a screen it was to open that is longer than the
+/// server takes.
+const NOT_OPENED: &str = "a prompt or chooser longer than one frame (1 MiB), the most the server \
+                          takes of one, was not opened";
+
 /// Whether the server takes a client's screen shown as `show`: it is one
 /// frame.
 fn sends(show: &ScreenAct) -> bool {
@@ -532,6 +544,42 @@ mod tests {
         };
         assert_eq!(prompt.line.before().len(), 4 + MAX_FRAME / 2);
         Ok(())
+    }
+
+    /// A prompt or a chooser a program opens with more text than one frame
+    /// holds, the most the server takes of a client's screen, is not
+    /// opened, and the client says so: shown, it ended the client's
+    /// connection.
+    #[test]
+    fn a_screen_longer_than_a_frame_is_not_opened() {
+        let long = || std::iter::repeat_n('x', fux_wire::protocol::MAX_FRAME).collect::<String>();
+        let prompt = |title: String, start: String| {
+            Screen::Prompt(Prompt {
+                title,
+                line: Line::new(start),
+                action: None,
+            })
+        };
+        let mut rows = list();
+        if let Screen::List(list) = &mut rows {
+            list.title = long();
+        }
+        let refused = [Act::Notice {
+            text: NOT_OPENED.to_owned(),
+            error: true,
+        }];
+        for screen in [
+            prompt(long(), String::new()),
+            prompt("t".into(), long()),
+            rows,
+        ] {
+            let mut display = Display::default();
+            assert_eq!(display.open(screen, &Modes::default()), refused);
+            assert_eq!(display.screen, Screen::default());
+        }
+        let mut display = Display::default();
+        let opened = display.open(prompt("t".into(), "start".into()), &Modes::default());
+        assert!(matches!(opened.as_slice(), [Act::Screen { .. }]));
     }
 
     /// A paste where no line is typed goes nowhere, and says so.
