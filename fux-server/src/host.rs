@@ -1053,14 +1053,16 @@ impl Host {
     fn send_keys(&mut self, inputs: &[Input], seen: Option<Version>) -> Result<Answered, Error> {
         let now = self.takes_keys(seen)?;
         let (mut bytes, mut paste) = (Vec::new(), None);
-        let pasted = encode(&self.pane, inputs, &mut paste, &mut bytes);
+        let pasted = encode(&self.pane, inputs, &mut paste, &mut bytes).map_err(|_| no_memory())?;
         close(paste, &mut bytes);
         let kind = match pasted {
             true => Sent::Paste,
             false => Sent::Keys,
         };
-        self.pane_mut().send(&bytes, kind, seen);
-        Ok(Answered::Acted(now))
+        match self.pane_mut().send(&bytes, kind, seen) {
+            true => Ok(Answered::Acted(now)),
+            false => Err(no_memory()),
+        }
     }
 
     /// Whether its program takes keys now, sent it at `seen` if that is
@@ -1445,13 +1447,30 @@ impl Host {
             let mut bytes = Vec::new();
             let pasted = encode(&self.pane, inputs, &mut typing.paste, &mut bytes);
             let previous = std::mem::replace(&mut self.actor, typing.actor);
-            match (typing.ask, pasted) {
+            let queued = match (typing.ask, pasted) {
+                (_, Err(_)) => false,
                 // A client's paste is typed, as its keys are.
-                (None, _) => (self.pane_mut()).push_with(|_, out| out.extend_from_slice(&bytes)),
-                (Some(_), true) => self.pane_mut().send(&bytes, Sent::Paste, typing.seen),
-                (Some(_), false) => self.pane_mut().send(&bytes, Sent::Keys, typing.seen),
-            }
+                (None, Ok(_)) => self.pane_mut().typed(&bytes),
+                (Some(_), Ok(true)) => self.pane_mut().send(&bytes, Sent::Paste, typing.seen),
+                (Some(_), Ok(false)) => self.pane_mut().send(&bytes, Sent::Keys, typing.seen),
+            };
             self.actor = previous;
+            // The OS gave no memory for this piece: its body is refused
+            // from here, said once, and what it left open is closed.
+            if !queued {
+                typing.refused = true;
+                match (typing.ask, typing.actor) {
+                    (Some(ask), _) => self.report(FromPane::Answer {
+                        ask,
+                        answer: Answered::Refused(Refusal::from(no_memory())),
+                    }),
+                    (None, Actor::Client(client)) => {
+                        let why = no_memory().to_string();
+                        self.report(FromPane::Refused { client, why });
+                    }
+                    (None, _) => {}
+                }
+            }
         }
         match Input::go_on(inputs) {
             true => self.typing = Some(typing),
@@ -1787,38 +1806,47 @@ pub(crate) fn ended(pane: PaneId, status: Ended) -> Error {
 /// encoded as it asked for them, text and bytes as they are. A paste goes
 /// through `paste`, which a piece that leaves one open (`Input::Pasting`)
 /// leaves for the next, so that a paste in pieces is one paste. Whether
-/// any of it was pasted.
+/// any of it was pasted; or that the OS gave no memory for them.
 fn encode(
     p: &Pane,
     inputs: &[Input],
     paste: &mut Option<fux_vt::keys::encode::PasteEncoder>,
     out: &mut Vec<u8>,
-) -> bool {
+) -> Result<bool, fux_vt::Error> {
+    use fux_vt::bytes::{try_extend, try_reserve};
     use fux_vt::keys::encode::PasteEncoder;
     let screen = p.screen();
     let mut pasted = false;
     for input in inputs {
         match input {
             Input::Key(key) => {
+                // More than any key's bytes.
+                try_reserve(out, 64)?;
                 fux_vt::keys::encode::key_bytes((*key).into(), screen.key_mode(), out)
             }
-            Input::Text(text) => out.extend_from_slice(text.as_bytes()),
+            Input::Text(text) => try_extend(out, text.as_bytes())?,
             Input::Paste(text) | Input::Pasting(text) => {
                 pasted = true;
                 let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
                 let encoder = paste.get_or_insert_with(|| PasteEncoder::new(bracketed));
-                // Refused memory, this much of the paste is lost, and its
-                // bracket still closes.
-                let _ = encoder.push(text.as_bytes(), out);
+                encoder.push(text.as_bytes(), out)?;
                 if matches!(input, Input::Paste(_)) {
                     close(paste.take(), out);
                 }
             }
-            Input::Bytes(given) => out.extend_from_slice(given),
+            Input::Bytes(given) => try_extend(out, given)?,
             Input::More => {}
         }
     }
-    pasted
+    Ok(pasted)
+}
+
+/// What a pane refuses that the OS gave it no memory to queue.
+fn no_memory() -> Error {
+    fail(
+        Code::Memory,
+        "the OS gave the pane's process no memory to queue this for its program",
+    )
 }
 
 /// Ends the paste `paste` left open, if one is: its bracket closed.
@@ -1917,11 +1945,18 @@ fn heed(
     end: &mut crate::link::End,
     host: &mut Host,
     buffer: &mut [u8],
-    (waiting, clock): (&mut bool, &mut Clock),
+    (waiting, clock, rest): (&mut bool, &mut Clock, &mut bool),
     now: Instant,
     read: bool,
 ) -> bool {
-    let mut closed = read && end.try_read(buffer) == crate::link::Read::Closed;
+    let got = match read {
+        true => end.try_read(buffer),
+        false => crate::link::Read::More,
+    };
+    // Refused the memory to read it, what was said stays in its socket,
+    // and is read after a rest.
+    *rest |= got == crate::link::Read::Refused;
+    let mut closed = got == crate::link::Read::Closed;
     loop {
         match end.next_message::<ToPane>() {
             Ok(Some(ToPane::Taken)) => *waiting = false,
@@ -2049,9 +2084,15 @@ pub fn serve(
     let mut peers: Vec<Peer> = Vec::new();
     // It was refused the memory to send something this turn or the last.
     let mut starved = false;
+    // It was refused the memory to read what was said to it: it rests
+    // before it looks again, as what it did not read would wake it at once.
+    let mut rest = false;
     let mut poll = fuxix::poll::Poll::default();
     let mut socket = socket;
     loop {
+        if std::mem::take(&mut rest) {
+            std::thread::sleep(STARVED);
+        }
         let now = Instant::now();
         // Closed, it waits for no server: none finds it, as it ends.
         if host.closed.is_some() && socket.is_some() {
@@ -2200,7 +2241,7 @@ pub fn serve(
                 end,
                 &mut host,
                 &mut buffer,
-                (&mut waiting, &mut clock),
+                (&mut waiting, &mut clock, &mut rest),
                 now,
                 true,
             )
@@ -2256,7 +2297,9 @@ pub fn serve(
             let mut closed = match peer.held {
                 None => {
                     let limit = fux_wire::protocol::MAX_FRAME;
-                    peer.end.read_up_to(&mut buffer, limit) == Read::Closed
+                    let got = peer.end.try_read_up_to(&mut buffer, limit);
+                    rest |= got == Read::Refused;
+                    got == Read::Closed
                 }
                 Some(_) => events.intersects(Events::HUP | Events::ERR),
             };
@@ -2278,7 +2321,7 @@ pub fn serve(
                                     end,
                                     &mut host,
                                     &mut buffer,
-                                    (&mut waiting, &mut clock),
+                                    (&mut waiting, &mut clock, &mut rest),
                                     now,
                                     true,
                                 )
@@ -2373,7 +2416,7 @@ pub fn serve(
                     &mut peer.end,
                     &mut host,
                     &mut buffer,
-                    (&mut waiting, &mut clock),
+                    (&mut waiting, &mut clock, &mut rest),
                     now,
                     false,
                 );

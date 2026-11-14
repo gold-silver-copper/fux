@@ -110,12 +110,16 @@ impl Run {
 }
 
 impl InputQueue {
-    /// Queues `bytes` as a piece. Only the pane queues (`Pane::push`).
-    fn push(&mut self, bytes: impl AsRef<[u8]>) {
+    /// Queues `bytes` as a piece: false if the OS gave no memory for
+    /// them, and none is queued. Only the pane queues (`Pane::push`).
+    fn push(&mut self, bytes: impl AsRef<[u8]>) -> bool {
         let bytes = bytes.as_ref();
-        self.bytes.push(bytes);
+        if self.bytes.try_push(bytes).is_err() {
+            return false;
+        }
         self.touched |= !bytes.is_empty();
         self.note(false, bytes.len());
+        true
     }
     /// Queues `replies`, its program's own queries answered, counted as
     /// such (`replies`): false if the OS gave no memory for them, and none
@@ -827,8 +831,16 @@ impl<'a> PaneMut<'a> {
     }
     /// A request's `bytes` are queued for its program, and told as `kind`,
     /// with the version `expect` admitted them at, if it did.
-    pub fn send(&mut self, bytes: &[u8], kind: Sent, expected: Option<fux_wire::command::Version>) {
-        self.pane.push(bytes);
+    /// False if the OS gave no memory to queue them: none is, nor told.
+    pub fn send(
+        &mut self,
+        bytes: &[u8],
+        kind: Sent,
+        expected: Option<fux_wire::command::Version>,
+    ) -> bool {
+        if !self.pane.push(bytes) {
+            return false;
+        }
         self.queued();
         self.tell.tell(Told::Input {
             kind,
@@ -836,6 +848,14 @@ impl<'a> PaneMut<'a> {
             expected: expected.map(Box::new),
             generation: self.pane.respawns,
         });
+        true
+    }
+    /// What a client typed, `bytes`, is queued for its program: false if
+    /// the OS gave no memory for it, and none is.
+    pub fn typed(&mut self, bytes: &[u8]) -> bool {
+        let queued = self.pane.push(bytes);
+        self.queued();
+        queued
     }
     /// Its program is sent `held`'s mouse report, `report`; the button
     /// `send-mouse press` holds is `held` once it is queued.
@@ -1565,9 +1585,10 @@ impl Pane {
         std::mem::take(&mut self.untold)
     }
 
-    /// Queues `bytes` of input for its program.
-    fn push(&mut self, bytes: impl AsRef<[u8]>) {
-        self.input.push(bytes);
+    /// Queues `bytes` of input for its program: false if the OS gave no
+    /// memory for them.
+    fn push(&mut self, bytes: impl AsRef<[u8]>) -> bool {
+        self.input.push(bytes)
     }
 
     /// Queues for its program what `write` makes for its screen.

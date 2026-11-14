@@ -686,6 +686,11 @@ impl End {
         self.read_as(buffer, usize::MAX, true)
     }
 
+    /// `try_read`, till `limit` bytes are read, the rest left for the next.
+    pub fn try_read_up_to(&mut self, buffer: &mut [u8], limit: usize) -> Read {
+        self.read_as(buffer, limit, true)
+    }
+
     /// Reads till `limit` bytes are read or the socket would wait; if
     /// `refusable`, each read only once there is room for it.
     fn read_as(&mut self, buffer: &mut [u8], limit: usize, refusable: bool) -> Read {
