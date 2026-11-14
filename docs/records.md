@@ -506,9 +506,12 @@ process, not necessarily its server: `fux '(status)'` says whether a server runs
 cross the wire (a callback's lists past 64, records past 32) fails `too-long`, whether the word or
 the server refuses it. So does a request longer than one frame (1 MiB), its keys or paste apart
 (a name, a directory or a program of that length): its client's own connection process refuses it,
-and the server is sent none of it. A layout is a flat list of nodes, so it nests as deep as its panes take it,
+and the server is sent none of it. A pane's program and directory together are 256 KiB at most (a
+quarter of a frame, as its facts say them): `new-tab`, `split` or `respawn` with more fails `too-long`. A layout is a flat list of nodes, so it nests as deep as its panes take it,
 with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
-handler catches; where fux's own code asks for it, the process aborts.
+handler catches. So it is where the client joins and reads a reply (a capture too large for its memory, say):
+that request fails `out-of-memory`, and the next is served. Anywhere else fux's own code asks for memory
+(the client printing a reply, the server, a connection's or a pane's process), a refusal aborts that process.
 [`codes.txt`](codes.txt) lists every kind with its exit status.
 
 A program catches a failure by kind with `(catch-kind! EXPRESSION KIND NAME HANDLER...)`, or any with
