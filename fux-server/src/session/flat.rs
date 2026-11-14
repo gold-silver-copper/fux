@@ -189,7 +189,7 @@ fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
     let (ws, pane) = (s.parts.tabs_in(None).first())
         .map(|(ws, tab)| (*ws, tab.root().first_pane()))
         .ok_or("no tab")?;
-    let long = "n".repeat(usize::try_from(NAME)?);
+    let long: String = std::iter::repeat_n('n', usize::try_from(NAME)?).collect();
     let rename = |name: &str| Command::Rename {
         target: AnyRef::Workspace(ws),
         name: name.to_owned(),
