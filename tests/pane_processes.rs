@@ -1512,7 +1512,24 @@ fn a_stopped_pane_holds_up_no_takeover() -> Outcome {
         Ok(capture(server, &stops)?.status == 0)
     })?;
     assert_eq!(own_process(server, &stops)?, stopped);
-    Ok(())
+    // Stopped again, and its server crashed again: the run ends (a stop of
+    // the server that took it back) without waiting for it, and it ends
+    // with it once it reads what it was told.
+    let program = program_pid(server, &stops)?;
+    signal(stopped, Signal::Stop);
+    crash(server)?;
+    let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
+    assert_eq!(taken.status, 0, "{}", taken.stderr);
+    let stop = within(server, 30, &["(sequence! (kill-server) #inert)"])?;
+    assert_eq!(stop.status, 0, "{}", stop.stderr);
+    eventually("the run's record gone", || {
+        Ok(!kept(server).join("run").exists())
+    })?;
+    assert!(alive(stopped), "the stopped pane's process ended unread");
+    signal(stopped, Signal::Cont);
+    eventually("the pane that stopped ended with its run", || {
+        Ok(!alive(stopped) && !alive(program))
+    })
 }
 
 /// 27. A pane whose process its server started and never began (the

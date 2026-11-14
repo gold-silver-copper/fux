@@ -634,9 +634,18 @@ of that server's panes. Each script should clean up the targets and processes it
   on that socket takes the run back: its ids, names, layout and versions
   go on, and `FUX_PANE` still names each pane. A pane whose own process
   ended while no server ran stays as its role says: a program's ended, its
-  screen blank, a shell's closed. Its journal is new. Where
-  the run cannot be taken back (its record or its fux gone), `start`
-  refuses, naming the panes that wait and their pids. `fux '(dump (all))' > FILE` saves its layout and launches when you
+  screen blank, a shell's closed. One whose own process does not answer
+  (stopped, say) holds up neither the start nor the other panes: `start`
+  names it, a request for it fails `not-running` saying it has not
+  answered, and it is linked when it does. A pane process the run no
+  longer has (closed just as the server died) is ended. Its journal is
+  new. `start` refuses, changing nothing and saying why, where the run's
+  fux is gone or its record can't be read (it names the panes that wait
+  and their pids), where another server still holds a pane (it names that
+  server's pid), and where it has too few descriptors for the run's panes
+  (`ulimit -n`: it says how many it takes). A run whose record is gone is
+  no run: the next `start` ends the pane processes left waiting there and
+  begins a new one. `fux '(dump (all))' > FILE` saves its layout and launches when you
   choose; `fux '(start)' && fux --file FILE` makes them again on a fresh server,
   never its processes' state. That is another server run: versions from
   before it are refused.

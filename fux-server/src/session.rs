@@ -2384,10 +2384,7 @@ impl Session {
                 Fate::End if placed => self.close_pane(id, None, now),
                 Fate::End => {
                     log!("{id}: its run has it no more: its process is ended");
-                    match asked.and_then(crate::takeover::Asked::link) {
-                        Some(link) => self.unlink(id, link, true, now),
-                        None => self.end_unrecorded(id, found.live.get(&id), now),
-                    }
+                    self.end_unrecorded(id, found.live.get(&id), asked, now);
                 }
                 Fate::Refuse(_) => {}
             }
@@ -2410,25 +2407,36 @@ impl Session {
     }
 
     /// Ends the process of pane `id`, which its run has no more, found as
-    /// `live` says: one that never began is told to close, on a link of
-    /// its own; one that has not answered is ended when it speaks
-    /// (`awaited`); one closing ends by itself.
-    fn end_unrecorded(&mut self, id: PaneId, live: Option<&crate::takeover::Live>, now: Instant) {
+    /// `live` says and asked on `asked`: one that greeted is told to close
+    /// on that link, and kept till it ends (`ending`); one that never
+    /// began is told on a link of its own, and not waited for; one that
+    /// has not answered is ended when it speaks (`awaited`); one closing
+    /// ends by itself.
+    fn end_unrecorded(
+        &mut self,
+        id: PaneId,
+        live: Option<&crate::takeover::Live>,
+        asked: Option<crate::takeover::Asked>,
+        now: Instant,
+    ) {
         use crate::takeover::Live;
         match live {
+            Some(Live::Greeted(_)) => {
+                if let Some(link) = asked.and_then(crate::takeover::Asked::link) {
+                    self.unlink(id, link, true, now);
+                }
+            }
             Some(Live::Unbegun(_)) => {
                 let close = ToPane::Close { closed: true };
-                let asked = (self.socket_of(id))
+                let told = (self.socket_of(id))
                     .and_then(|socket| crate::takeover::Asked::ask(&socket, &close).ok());
-                // It answers that it closes, and ends: nothing more is
-                // asked of it, and its answer is not waited for.
-                drop(asked);
+                drop(told);
             }
             Some(Live::Silent) => {
-                self.awaited.entry(id).or_insert(None);
+                self.awaited.insert(id, asked);
                 self.rest_reach(now);
             }
-            Some(Live::Greeted(_) | Live::Closing | Live::OtherRun | Live::Held(_)) | None => {}
+            Some(Live::Closing | Live::OtherRun | Live::Held(_)) | None => {}
         }
     }
 
@@ -2582,10 +2590,7 @@ impl Session {
                 }
             }
             Some(Fate::End) if placed => self.close_pane(id, None, now),
-            Some(Fate::End) => match asked.and_then(crate::takeover::Asked::link) {
-                Some(link) => self.unlink(id, link, true, now),
-                None => self.end_unrecorded(id, Some(&live), now),
-            },
+            Some(Fate::End) => self.end_unrecorded(id, Some(&live), asked, now),
             // Held by a server that ended since: it reads its link's end
             // next, and is asked again. By one that runs: this server
             // leaves the run to it.
