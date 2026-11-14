@@ -339,6 +339,12 @@ pub fn serve(accepted: Accepted) -> std::io::Result<Stream> {
     Ok(accepted)
 }
 
+/// A second hold on `accepted`'s connection, which outlives handing the
+/// first to a child.
+pub fn kept(accepted: &Accepted) -> std::io::Result<Accepted> {
+    accepted.try_clone()
+}
+
 /// `accepted`, to hand to a child.
 pub fn hand(accepted: Accepted) -> Handed {
     accepted.into()
@@ -445,6 +451,12 @@ pub fn reach_named(socket: &Path) -> Option<(Option<fuxix::process::Pid>, Stream
     Some((pid, stream))
 }
 
+/// Whether `error` says this process has every descriptor its limit
+/// allows (`ulimit -n`), not that the whole system has none left.
+pub fn out_of_descriptors(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(fuxix::Errno::MFILE.raw())
+}
+
 /// The server's listener, made to accept without waiting.
 pub fn listening(listener: &Listener) -> std::io::Result<()> {
     listener.set_nonblocking(true)
@@ -454,7 +466,7 @@ pub fn listening(listener: &Listener) -> std::io::Result<()> {
 pub const NULL: &str = "/dev/null";
 
 /// Keeps the fux this process runs at `exe`: a link to it where one can be
-/// made, else a copy of it.
+/// made, else a copy of it, there whole or not at all.
 pub fn keep_executable(exe: &Path) -> std::io::Result<()> {
     let running = std::env::current_exe()?;
     if fs::hard_link(&running, exe).is_ok() {
@@ -465,7 +477,7 @@ pub fn keep_executable(exe: &Path) -> std::io::Result<()> {
         true => PathBuf::from("/proc/self/exe"),
         false => running,
     };
-    fs::copy(source, exe).map(drop)
+    super::copy_whole(&source, exe)
 }
 
 /// Runs `exe` in this process's place, with this process's arguments: it

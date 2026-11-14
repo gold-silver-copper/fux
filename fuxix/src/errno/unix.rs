@@ -8,6 +8,8 @@ impl Errno {
     pub const INPROGRESS: Self = Self(libc::EINPROGRESS);
     pub const SRCH: Self = Self(libc::ESRCH);
     pub const INVAL: Self = Self(libc::EINVAL);
+    /// The process has every descriptor its limit allows open.
+    pub const MFILE: Self = Self(libc::EMFILE);
     /// No room left: as `signal::notify` says, when every slot is held.
     pub(crate) const NOSPC: Self = Self(libc::ENOSPC);
     /// I/O error; a PTY master reports this when its slave closes.

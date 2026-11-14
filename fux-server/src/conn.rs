@@ -791,11 +791,6 @@ pub fn wait(listener: std::os::unix::net::UnixListener, server: Stream) -> Resul
     let mut link = End::new(server).map_err(|e| format!("its server: {e}"))?;
     let mut buffer = [0u8; 4096];
     let mut said = Vec::new();
-    // Its server takes no more clients itself from now on.
-    link.send(&FromConn::Waiting);
-    if link.flush_all().is_err() {
-        return Ok(());
-    }
     loop {
         let mut fds = [
             PollFd::new(&listener, Events::IN),
@@ -837,11 +832,20 @@ pub fn wait(listener: std::os::unix::net::UnixListener, server: Stream) -> Resul
         };
         if let Some(why) = crate::socket::stranger(fuxix::socket::peer(&client)) {
             log!("{why}");
+            crate::socket::refuse(client, &why);
             continue;
         }
         drop(listener);
-        let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-        fuxix::io::redirect_stdout(&null).map_err(|e| format!("its stdout: {e}"))?;
+        // Its client is told why it is not served, should that fail.
+        let detached = std::fs::File::open("/dev/null")
+            .map_err(|e| format!("/dev/null: {e}"))
+            .and_then(|null| {
+                fuxix::io::redirect_stdout(&null).map_err(|e| format!("its stdout: {e}"))
+            });
+        if let Err(why) = detached {
+            crate::socket::refuse(client, &format!("this connection's process failed: {why}"));
+            return Err(why);
+        }
         link.send(&FromConn::Accepted);
         return serve(client, link, said);
     }
@@ -854,12 +858,27 @@ pub fn taken(client: Stream, server: Stream) -> Result<(), String> {
     serve(client, link, Vec::new())
 }
 
-/// The loop of a client's connection's own process: its client on
-/// `client`, its server on `link`, which said `said` before, until either
-/// goes.
-pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), String> {
+/// A client's connection's own process at work (`serve_on`): its client
+/// on `client`, its server on `link`, which said `said` before. One that
+/// fails tells its client why before it closes (`Exit`, which every stage
+/// reads), as much as the client takes at once: no connection its process
+/// ends closes without a word.
+pub fn serve(client: Stream, link: End, said: Vec<ToConn>) -> Result<(), String> {
+    let served = serve_on(&client, link, said);
+    if let Err(why) = &served {
+        let why = format!("this connection's process failed: {why}");
+        let mut out = ByteQueue::default();
+        out.push_with(|frames| fux_wire::protocol::ToCommand::Exit(&why).encode_into(frames));
+        let _ = write(&client, &mut out);
+    }
+    served
+}
+
+/// The loop of a client's connection's own process, until its client or
+/// its server goes.
+fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), String> {
     use fuxix::poll::{Events, PollFd};
-    crate::socket::nonblocking(&client).map_err(|e| format!("its client: {e}"))?;
+    crate::socket::nonblocking(client).map_err(|e| format!("its client: {e}"))?;
     let mut decoder = Decoder::default();
     let mut out = ByteQueue::default();
     let mut composer = Composer::new(Instant::now());
@@ -972,7 +991,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             composer.paint(&mut out, now)?;
         }
         // What waits for its client, as far as it takes it.
-        if !write(&client, &mut out) {
+        if !write(client, &mut out) {
             return Ok(());
         }
         if out.is_empty() {
@@ -1018,7 +1037,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // more: a hang-up, told unasked, would wake every wait.
         let watched = !gone || !out.is_empty();
         if watched {
-            fds.push(PollFd::new(&client, theirs));
+            fds.push(PollFd::new(client, theirs));
         }
         // Where its server's link is among those waited on, the rest after.
         let ours_at = usize::from(watched);
@@ -1085,7 +1104,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 let into = buffer
                     .get_mut(..room.saturating_sub(read))
                     .unwrap_or_default();
-                match fuxix::io::read(&client, into) {
+                match fuxix::io::read(client, into) {
                     Ok(n) if n > 0 => {
                         read = read.saturating_add(n);
                         decoder.push(buffer.get(..n).unwrap_or_default());
@@ -1226,7 +1245,7 @@ pub fn serve(client: Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // write takes. A crashed server's clients have nothing left to be
         // served.
         if gone {
-            let _ = write(&client, &mut out);
+            let _ = write(client, &mut out);
             return Ok(());
         }
     }

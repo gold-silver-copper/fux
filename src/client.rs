@@ -143,9 +143,14 @@ fn failed<E: std::fmt::Display>(doing: &'static str) -> impl FnOnce(E) -> Error 
     move |e| Error::Failed(format!("{doing}: {e}"))
 }
 
-/// The server closed the connection before it answered.
-fn no_answer() -> Error {
-    Error::Failed("the server did not answer".to_owned())
+/// The connection closed with no word. A server that ends a connection
+/// says why first (`Exit`), as does a connection's process of its that
+/// fails: so one of them ended where it could say nothing, killed or
+/// refused memory. A run whose server ended so waits for the next.
+fn ended() -> Error {
+    let why = "the server process ended before it answered (it was killed, or crashed); \
+               `fux '(start)'` takes its run back";
+    Error::Failed(why.to_owned())
 }
 
 /// A pipe or a thread of the client's own could not be made.
@@ -238,7 +243,7 @@ fn greeted(
             sent.map(|()| theirs.version.to_owned())
         }
         (_, Err(error)) | (Err(error), Ok(())) => Err(error),
-        (Ok(None), Ok(())) => Err(no_answer()),
+        (Ok(None), Ok(())) => Err(ended()),
     }
 }
 
@@ -273,7 +278,8 @@ fn read_frame<'d, F: Frame<'d>>(
 }
 
 /// What the server sent next, read into `decoder`: false once it has
-/// closed.
+/// closed. A reset is its end too: it closed with something of ours
+/// unread.
 fn read_more(stream: &mut Client, decoder: &mut Decoder) -> Result<bool, Error> {
     let mut buffer = [0u8; 16 * 1024];
     loop {
@@ -283,6 +289,7 @@ fn read_more(stream: &mut Client, decoder: &mut Decoder) -> Result<bool, Error> 
                 decoder.push(buffer.get(..n).unwrap_or_default());
                 return Ok(true);
             }
+            Err(e) if e.kind() == ErrorKind::ConnectionReset => return Ok(false),
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 let why = "the server did not answer in time";
@@ -317,7 +324,19 @@ impl Requests {
         let out = out.filter(|_| waits);
         wait_at_most(&self.stream, None);
 
-        send(&mut self.stream, asked)?;
+        // A server that takes no more of what it is sent says why and
+        // closes: its reason, read after the write that failed so, is the
+        // failure, not the closed pipe; and with none, that it ended.
+        if let Err(error) = send(&mut self.stream, asked) {
+            wait_at_most(&self.stream, Some(ANSWER));
+            return Err(
+                match read_frame(&mut self.stream, &mut self.decoder, Some(ANSWER)) {
+                    Ok(Some(ToCommand::Exit(reason))) => Error::Refused(reason.to_owned()),
+                    Ok(None) => ended(),
+                    Ok(Some(_)) | Err(_) => error,
+                },
+            );
+        }
         let mut parts = Vec::new();
         loop {
             while let Some(frame) = self.decoder.frame()? {
@@ -337,8 +356,7 @@ impl Requests {
                 return Err(Error::Output(ErrorKind::BrokenPipe.into()));
             }
             if !read_more(&mut self.stream, &mut self.decoder)? {
-                let closed = "the server closed the connection";
-                return Err(Error::Failed(closed.to_owned()));
+                return Err(ended());
             }
         }
     }
@@ -352,7 +370,7 @@ impl Requests {
     }
 
     /// What stops it from another thread: shut down, the request under way
-    /// ends as if the server had closed the connection.
+    /// ends as if the server's process had ended.
     pub fn stopper(&self) -> Option<Client> {
         self.stream.try_clone().ok()
     }
@@ -2690,10 +2708,9 @@ mod tests {
             Some("the server did not answer in time")
         );
         let gone = answer(|peer| drop(peer.shutdown(std::net::Shutdown::Write)), wait);
-        assert_eq!(
-            gone.err().map(|e| e.to_string()).as_deref(),
-            Some("the server did not answer")
-        );
+        // Hung up without a word: its process ended, and `start` is named.
+        let gone = gone.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(gone.contains("`fux '(start)'`"), "{gone}");
         let garbled = answer(|peer| drop(peer.write_all(&[0, 0, 0, 1, 99])), wait);
         assert!(matches!(
             garbled,
@@ -2702,12 +2719,7 @@ mod tests {
             )))
         ));
         // A refusal wins over a failure to send the Hello.
-        let both = greeted(
-            &ours(),
-            None,
-            Ok(Some(Greeting::Exit("no"))),
-            Err(no_answer()),
-        );
+        let both = greeted(&ours(), None, Ok(Some(Greeting::Exit("no"))), Err(ended()));
         assert!(matches!(both, Err(Error::Refused(_))));
     }
 }

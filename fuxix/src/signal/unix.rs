@@ -57,6 +57,17 @@ const COUNT: usize = 64;
 /// A slot's descriptor while no notice holds it.
 const FREE: libc::c_int = -1;
 
+/// Catches `signal` and does nothing with it, for good: what raised it
+/// fails with its error instead of ending the process. For `Xfsz`, which
+/// by default kills a process that writes past its file-size limit: caught,
+/// the write fails as "file too large" (`EFBIG`), an error like a full
+/// disk's. Caught, not ignored, so that a program this process starts has
+/// it as [`crate::process::Dispositions`] says, and one it runs in its
+/// place (`exec`) the default.
+pub fn mute(signal: Signal) -> Result<()> {
+    install(signal)
+}
+
 /// One notice's signal and the descriptor its handler writes to. A notice
 /// takes a slot by its descriptor, then sets the signal; it gives it back
 /// by clearing the signal, then the descriptor.

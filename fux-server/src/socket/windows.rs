@@ -268,6 +268,12 @@ pub fn serve(accepted: Accepted) -> std::io::Result<Stream> {
     Ok(accepted.stream()?)
 }
 
+/// A second hold on `accepted`'s connection, which outlives handing the
+/// first to a child.
+pub fn kept(accepted: &Accepted) -> std::io::Result<Accepted> {
+    Ok(accepted.as_handle().try_clone_to_owned()?.into())
+}
+
 /// `accepted`, to hand to a child.
 pub fn hand(accepted: Accepted) -> Handed {
     accepted.into()
@@ -277,6 +283,11 @@ pub fn hand(accepted: Accepted) -> Handed {
 /// (`Server::keep_spare`): the server takes every client itself.
 pub fn spare(_listener: &Listener) -> std::io::Result<Handed> {
     Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// Windows gives a process no limit on its handles to run into.
+pub fn out_of_descriptors(_error: &std::io::Error) -> bool {
+    false
 }
 
 /// The file a process done with its stdout points it at.
@@ -430,7 +441,7 @@ pub fn listener_pid(stream: &Stream) -> Option<Pid> {
 /// executable can't be replaced on Windows, and a link to it would be
 /// the installed one (WINDOWS.md).
 pub fn keep_executable(exe: &Path) -> std::io::Result<()> {
-    fs::copy(std::env::current_exe()?, exe).map(drop)
+    super::copy_whole(&std::env::current_exe()?, exe)
 }
 
 /// Starts `exe` with this process's arguments and standard handles,

@@ -42,6 +42,10 @@ static ALLOCATOR: fux_vt_peak::ThreadPeak = fux_vt_peak::ThreadPeak;
 /// grift on stdin; `--file FILE ARGS…` runs a file; any other argument is a
 /// grift program.
 pub fn main() -> ExitCode {
+    // In every process of fux, a write past a file-size limit (`ulimit -f`)
+    // fails as a write to a full disk does, where it is told; by default
+    // its signal would end the process without a word.
+    let _ = fuxix::signal::mute(fuxix::process::Signal::Xfsz);
     if let Some(status) = internal() {
         return status;
     }
