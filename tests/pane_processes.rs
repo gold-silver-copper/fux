@@ -2444,14 +2444,16 @@ fn a_program_that_writes_ten_megabytes_before_it_reads_gets_all_it_was_sent() ->
 /// 29. A pane's process given no more memory once it is warm, every
 ///     allocation refused (its address space held to what it has): its
 ///     program floods it with output while it is sent keys over and over,
-///     each on a link of its own, opened and closed, and clients attach,
-///     are sent its screen and leave; it lives, the same process, and once
+///     each on a link of its own, opened and closed, and clients attach
+///     and leave; it lives, the same process, and once
 ///     it is given memory again it serves, its flood read to its end
 ///     (owner answer 2: a pane's process never ends for memory; it aborted
 ///     on the first keys it could not queue). What is asked of it
 ///     meanwhile is refused or waits: each is given two seconds and let
 ///     go, as its asker would. Not yet so, and so not asked here: a pane
-///     refused memory as it makes a capture still ends (D-180).
+///     refused memory as it makes a capture still ends, and one refused it
+///     as it draws its screen for a client can (D-180): this run's clients
+///     show a screen small enough to be drawn in what the pane has.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_pane_process_refused_all_memory_lives_through_floods_and_side_links() -> Outcome {

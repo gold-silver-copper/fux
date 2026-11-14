@@ -525,8 +525,13 @@ resize, it loses only what that was for, and counts it (`lost`, `memory`), as it
 set aside for its next turn; keys or a paste it can't encode or queue fail `out-of-memory` to whoever sent
 them, once, a paste it had begun closed; a connection that reaches it when it can keep no more is let go;
 and what it could not read or say for want of memory it reads or says again after a rest. It still aborts,
-refused memory, as it makes a capture, and in the small things it builds to say what it is (its first words
-to a server, its facts). Every other allocation
+refused memory, as it draws its screen for a client that shows it (more so with pictures), as it makes a
+capture, and in the small things it builds to say what it is (its first words to a server, its facts).
+What is typed at an attached terminal flows too: once a frame of it waits unread for a pane's program, the
+clients typing into that pane hold back what they type, sending only their answers, and a client that holds
+4,096 keys reads its terminal no more, so megabytes typed or pasted as plain keys wait in the terminal. While
+a paste that came in pieces is open, whatever else its program is to read (another client's keys, the
+answers to its own queries) waits behind the paste's closing bracket, a frame of it at most. Every other allocation
 fux's own code makes is infallible, and a refusal there aborts that process: what a decoded frame is
 made of beyond its texts and lists, what waits to be written to a socket in the server, a connection or a
 client, the server's tree and journal, a connection's composed screen, and a reply as the client prints it.
