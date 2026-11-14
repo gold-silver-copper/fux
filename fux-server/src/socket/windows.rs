@@ -400,9 +400,20 @@ pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>),
     Ok((listener, Some(socket)))
 }
 
-/// Its server, the first to reach a pane's process at `listener`, waited
-/// for.
-pub fn pane_first(listener: &mut PaneListener) -> Result<Stream, String> {
+/// A pane's process made its pipe itself (`pane_listener`): nothing more
+/// to listen on.
+pub fn pane_listen(_listener: &PaneListener) -> Result<(), String> {
+    Ok(())
+}
+
+/// A pane's process has begun: its pipe is read without waiting already.
+pub fn pane_begun(_listener: &PaneListener) -> Result<(), String> {
+    Ok(())
+}
+
+/// The next to reach a pane's process at `listener`, waited for: its
+/// server, till it has begun.
+pub fn pane_next(listener: &mut PaneListener) -> Result<Stream, String> {
     use fuxix::poll::{Events, PollFd};
     loop {
         match listener.accept() {
@@ -415,19 +426,29 @@ pub fn pane_first(listener: &mut PaneListener) -> Result<Stream, String> {
     }
 }
 
-/// The pid of what listens on the pipe the path `socket` names, as the
-/// system says (the maker of its first instance), and a link to it; none if nothing
-/// does.
-pub fn reach_named(socket: &Path) -> Option<(Option<Pid>, Stream)> {
-    let stream = connect(socket).ok()?;
-    let pid = listener_pid(&stream);
-    Some((pid, stream))
+/// Reaches for what listens on the pipe the path `socket` names: a link
+/// to it; or that nothing does (no such pipe); or that one does and has no
+/// instance free (`fuxix::socket::connect` waited a second for one). Any
+/// other failure says nothing of what is there, and is the error.
+pub fn reach(socket: &Path) -> std::io::Result<super::Reach> {
+    let name = pipe_name(socket).map_err(std::io::Error::other)?;
+    match fuxix::socket::connect(&name) {
+        Ok(stream) => Ok(super::Reach::Listening(stream)),
+        Err(fuxix::Errno::AGAIN) => Ok(super::Reach::Busy),
+        Err(errno) => {
+            let error = std::io::Error::from(errno);
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(super::Reach::NoListener)
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
-/// Whether a connect that failed so says nothing listens there: only a
-/// pipe that is not there does; one refused or busy may still run.
-pub fn none_listens(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::NotFound
+/// Whether the process `pid` still runs.
+pub fn runs(pid: Pid) -> bool {
+    fuxix::process::identity(pid).is_ok()
 }
 
 /// The pid of the process that made the pipe `stream` is connected to: a
@@ -585,7 +606,7 @@ pub fn dial(socket: &SocketPath) -> std::io::Result<Client> {
             Err(fuxix::Errno::AGAIN) => return Err(std::io::ErrorKind::TimedOut.into()),
             Err(errno) => {
                 let error = std::io::Error::from(errno);
-                return Err(match none_listens(&error) {
+                return Err(match error.kind() == std::io::ErrorKind::NotFound {
                     true => std::io::ErrorKind::ConnectionRefused.into(),
                     false => error,
                 });

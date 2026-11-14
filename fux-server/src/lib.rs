@@ -81,6 +81,7 @@ pub mod render;
 pub mod server;
 pub mod session;
 pub mod socket;
+pub mod takeover;
 pub mod view;
 pub mod wait;
 pub mod workspace;

@@ -1,0 +1,446 @@
+//! Taking a run back (D-124, D-166): the run's record is the truth, and
+//! the server that takes it makes the pane processes still there match it,
+//! one pane at a time. Each is reached at its socket without waiting
+//! (`socket::reach`) and asked (`Asked`); what it answers, or that it has
+//! not yet, is how it is found (`Live`); and `reconcile` says from the
+//! record and that alone what becomes of it (`Fate`). One pane that says
+//! nothing holds up no other: it is placed as its record keeps it, and
+//! linked when it speaks.
+use crate::link::{End, FromPane, Greeting, Link, PANE_PROTOCOL, Read, Remote, Taking, ToPane};
+use crate::socket::Reach;
+use fux_wire::id::PaneId;
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+/// How a pane's process was found by the server that reached for it. One
+/// no process listens for has none: it is gone.
+#[derive(Clone, Debug)]
+pub enum Live {
+    /// It said what it is, and its first facts: it is this server's now.
+    Greeted(Box<Greeting>),
+    /// It never began; its process, by its pid.
+    Unbegun(i32),
+    /// It is closed and ending.
+    Closing,
+    /// It is no pane of this run, or not the pane its socket names.
+    OtherRun,
+    /// The server with this pid holds its link still.
+    Held(i32),
+    /// It listens, and has not answered: stopped, say, or with no room for
+    /// one more at its socket.
+    Silent,
+}
+
+/// What becomes of a pane as its run is taken back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fate {
+    /// It is linked, as it greeted.
+    Take,
+    /// It is begun, from its record.
+    Begin,
+    /// Its process is gone: it stays as its record keeps it, its program
+    /// lost.
+    Lost,
+    /// It is placed from its record, and linked when it speaks.
+    Await,
+    /// It is ended: its run has it no more, or it was closing already.
+    End,
+    /// The run is not taken: the server with this pid holds the pane.
+    Refuse(i32),
+}
+
+/// What becomes of one pane: one its run's record has, if `recorded`,
+/// found as `live` says, or gone if that is none. None for one that is
+/// neither the run's nor this server's to end.
+pub fn fate(recorded: bool, live: Option<&Live>) -> Option<Fate> {
+    let Some(live) = live else {
+        return recorded.then_some(Fate::Lost);
+    };
+    Some(match (recorded, live) {
+        (_, Live::Held(server)) => Fate::Refuse(*server),
+        (true, Live::Greeted(_)) => Fate::Take,
+        (true, Live::Unbegun(_)) => Fate::Begin,
+        (true, Live::Silent) => Fate::Await,
+        // No pane of this run listens there: this run's is gone.
+        (true, Live::OtherRun) => Fate::Lost,
+        // A close the run's last server made, whose record it could not
+        // write, or one the user made of a pane not yet heard: finished.
+        (true, Live::Closing) => Fate::End,
+        // A close the user committed, recorded before its pane was told:
+        // finished. One that says nothing is ended when it speaks.
+        (false, Live::Greeted(_) | Live::Unbegun(_) | Live::Closing | Live::Silent) => Fate::End,
+        (false, Live::OtherRun) => return None,
+    })
+}
+
+/// What becomes of each pane of the run `record` holds and of each pane
+/// process found that it does not hold, by how each was found (`live`,
+/// which has none that is gone). It reads nothing else, and does nothing.
+pub fn reconcile(
+    record: &crate::record::Record,
+    live: &BTreeMap<PaneId, Live>,
+) -> BTreeMap<PaneId, Fate> {
+    let recorded: Vec<PaneId> = (crate::record::panes(&record.workspaces).iter())
+        .map(|pane| pane.id)
+        .collect();
+    let of = |id: &PaneId, recorded: bool| Some((*id, fate(recorded, live.get(id))?));
+    (recorded.iter().filter_map(|id| of(id, true)))
+        .chain((live.keys().filter(|id| !recorded.contains(id))).filter_map(|id| of(id, false)))
+        .collect()
+}
+
+/// A pane's process reached at its socket and asked: its link, and what it
+/// said so far.
+pub struct Asked {
+    pub end: End,
+    /// The process that listens, where the system names it (Windows).
+    maker: Option<fuxix::process::Pid>,
+    greeting: Option<Box<Greeting>>,
+    /// What it said after its greeting, up to its first facts.
+    said: Vec<FromPane>,
+}
+
+/// What a pane asked said, once it has.
+pub enum Answer {
+    Live(Live),
+    /// Its link closed with no word: its process ended meanwhile, or took
+    /// none of it. Never "lost" by this alone: it is reached for again.
+    Closed,
+}
+
+impl Asked {
+    /// Reaches for the pane process at `socket`, and says `word` to it,
+    /// without waiting: none if no process listens there, or one does with
+    /// no room (`Reach::Busy`), which the second says.
+    pub fn ask(socket: &Path, word: &ToPane) -> std::io::Result<(Option<Asked>, bool)> {
+        let stream = match crate::socket::reach(socket)? {
+            Reach::Listening(stream) => stream,
+            Reach::NoListener => return Ok((None, false)),
+            Reach::Busy => return Ok((None, true)),
+        };
+        let maker = crate::socket::listener_pid(&stream);
+        let mut end = End::new(stream)?;
+        end.send(word);
+        // What its socket does not take now goes as it does (`flush`).
+        let _ = end.flush();
+        let asked = Asked {
+            end,
+            maker,
+            greeting: None,
+            said: Vec::new(),
+        };
+        Ok((Some(asked), false))
+    }
+
+    /// Reads what pane `id` said: its answer, once it is whole. One that
+    /// greets has answered once its first facts came, so that nothing
+    /// reads its copy before it has them.
+    pub fn hear(&mut self, id: PaneId, buffer: &mut [u8]) -> Option<Answer> {
+        let _ = self.end.flush();
+        let closed = self.end.read(buffer) == Read::Closed;
+        loop {
+            let message = match self.end.next_message::<FromPane>() {
+                Ok(Some(message)) => message,
+                Ok(None) => break,
+                Err(error) => {
+                    log!("{id}: what listens at its socket sent a bad frame: {error}");
+                    return Some(Answer::Live(Live::OtherRun));
+                }
+            };
+            match (message, &self.greeting) {
+                (FromPane::Taking(Taking::Greets(greeting)), None) => {
+                    if let Err(why) = self.check(id, &greeting) {
+                        log!("{id}: what listens at its socket is not it: {why}");
+                        return Some(Answer::Live(Live::OtherRun));
+                    }
+                    self.greeting = Some(greeting);
+                }
+                (FromPane::Taking(taking), None) => {
+                    return Some(Answer::Live(match taking {
+                        Taking::Unbegun { pid } => Live::Unbegun(pid),
+                        Taking::Closing => Live::Closing,
+                        Taking::Held { server } => Live::Held(server),
+                        Taking::OtherRun | Taking::Greets(_) => Live::OtherRun,
+                    }));
+                }
+                (update @ FromPane::Update(_), Some(greeting)) => {
+                    self.said.push(update);
+                    return Some(Answer::Live(Live::Greeted(greeting.clone())));
+                }
+                (other, Some(_)) => self.said.push(other),
+                (_, None) => {
+                    log!("{id}: what listens at its socket answered with no answer");
+                    return Some(Answer::Live(Live::OtherRun));
+                }
+            }
+        }
+        closed.then_some(Answer::Closed)
+    }
+
+    /// Whether `greeting` is pane `id`'s, speaking this pane protocol, and
+    /// names the process the system does, where it names one: the pid a
+    /// takeover adopts a program from.
+    fn check(&self, id: PaneId, greeting: &Greeting) -> Result<(), String> {
+        if greeting.protocol != PANE_PROTOCOL {
+            return Err(format!(
+                "it speaks pane protocol {}, not {PANE_PROTOCOL}",
+                greeting.protocol
+            ));
+        }
+        if greeting.id != id {
+            return Err(format!("it says it is {}", greeting.id));
+        }
+        let pid = fuxix::process::Pid::from_i32(greeting.pid)
+            .ok_or_else(|| format!("its greeting names pid {}", greeting.pid))?;
+        if self.maker.is_some_and(|maker| maker != pid) {
+            return Err(format!(
+                "its greeting names pid {pid}, and the system another"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Its link, once it greeted (`Live::Greeted`): not this server's
+    /// child, so its link closing is all the server learns of its end.
+    pub fn link(self) -> Option<Link> {
+        let pid = fuxix::process::Pid::from_i32(self.greeting?.pid)?;
+        let mut remote = Remote::new(self.end, pid, false);
+        remote.first = self.said;
+        Some(Link::Remote(remote))
+    }
+
+    /// Says `word` after what it was asked, as far as its socket takes it
+    /// now, and lets it go: a close for one that has not answered, which
+    /// it reads when it reads what it was asked.
+    pub fn leave(mut self, word: &ToPane) {
+        self.end.send(word);
+        let _ = self.end.flush();
+    }
+}
+
+/// How long a server that takes a run back waits for its panes' answers
+/// before it serves: one that has not answered by then is placed from its
+/// record and linked when it speaks, so that a pane that reads nothing
+/// (stopped) holds up no other, nor the start. No verdict on the pane.
+pub const TAKE_WAIT: Duration = Duration::from_secs(2);
+
+/// What a round of asking found: how each pane that listens was found, and
+/// the link to each that greeted or has not answered.
+#[derive(Default)]
+pub struct Gathered {
+    pub live: BTreeMap<PaneId, Live>,
+    pub asked: BTreeMap<PaneId, Asked>,
+}
+
+/// Asks the pane process at each of `sockets` `word`, all at once, and
+/// waits for their answers, `wait` at most: one that has not answered by
+/// then is `Live::Silent`, as is one with no room at its socket. A link
+/// that closes with no word is reached for once more, which finds a
+/// process that ended gone. A socket that can't be reached for any other
+/// reason is the error, with nothing done but the asking.
+pub fn gather(
+    sockets: &BTreeMap<PaneId, std::path::PathBuf>,
+    word: &ToPane,
+    wait: Duration,
+) -> std::io::Result<Gathered> {
+    use fuxix::poll::{Events, PollFd};
+    let mut found = Gathered::default();
+    // Those asked whose answer is awaited, and whether each was asked
+    // again already.
+    let mut pending: BTreeMap<PaneId, (Asked, bool)> = BTreeMap::new();
+    for (id, socket) in sockets {
+        match Asked::ask(socket, word)? {
+            (Some(asked), _) => drop(pending.insert(*id, (asked, false))),
+            (None, true) => drop(found.live.insert(*id, Live::Silent)),
+            (None, false) => {}
+        }
+    }
+    let deadline = crate::after(Instant::now(), wait);
+    let mut buffer = [0u8; 4096];
+    let mut poll = fuxix::poll::Poll::default();
+    while !pending.is_empty() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let mut fds = poll.list();
+        let entries: Vec<_> = (pending.iter())
+            .map(|(id, (asked, _))| {
+                let events = match asked.end.out.is_empty() {
+                    true => Events::IN,
+                    false => Events::IN | Events::OUT,
+                };
+                (*id, fds.push(PollFd::new(&asked.end.stream, events)))
+            })
+            .collect();
+        match fds.poll(Some(left)) {
+            Ok(_) | Err(fuxix::Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let ready: Vec<PaneId> = (entries.into_iter())
+            .filter(|(_, entry)| !fds.events(*entry).is_empty())
+            .map(|(id, _)| id)
+            .collect();
+        for id in ready {
+            let Some((mut asked, again)) = pending.remove(&id) else {
+                continue;
+            };
+            match asked.hear(id, &mut buffer) {
+                None => drop(pending.insert(id, (asked, again))),
+                Some(Answer::Live(live @ Live::Greeted(_))) => {
+                    found.live.insert(id, live);
+                    found.asked.insert(id, asked);
+                }
+                Some(Answer::Live(live)) => drop(found.live.insert(id, live)),
+                Some(Answer::Closed) if again => drop(found.live.insert(id, Live::Silent)),
+                Some(Answer::Closed) => {
+                    let socket = sockets.get(&id).map(std::path::PathBuf::as_path);
+                    match socket.map(|socket| Asked::ask(socket, word)).transpose()? {
+                        Some((Some(asked), _)) => drop(pending.insert(id, (asked, true))),
+                        Some((None, true)) => drop(found.live.insert(id, Live::Silent)),
+                        Some((None, false)) | None => {}
+                    }
+                }
+            }
+        }
+    }
+    for (id, (asked, _)) in pending {
+        found.live.insert(id, Live::Silent);
+        found.asked.insert(id, asked);
+    }
+    Ok(found)
+}
+
+/// The sockets of the pane processes that may wait at `panes`, a run's
+/// directory, by the panes their names say: every entry named as a pane's
+/// socket is (`N`), whether a process listens there or not.
+pub fn sockets(panes: &Path) -> BTreeMap<PaneId, std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(panes) else {
+        return BTreeMap::new();
+    };
+    (entries.flatten())
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            // A pane's socket is named by its number alone, as it prints.
+            let id: PaneId = format!("%{name}").parse().ok()?;
+            (id.number().to_string() == name).then(|| (id, entry.path()))
+        })
+        .collect()
+}
+
+/// Ends every pane process that waits at `panes`, a run's directory whose
+/// run is over (it ended, or its record is gone): each is asked to close
+/// (`ToPane::Close` as its first word), and those that have not answered
+/// in `wait` are not waited for; they close when they read it. The server
+/// that still holds one, if one does: nothing is ended beside a live
+/// server's panes.
+pub fn end_waiting(panes: &Path, wait: Duration) -> std::io::Result<Option<(PaneId, i32)>> {
+    let sockets = sockets(panes);
+    let found = gather(&sockets, &ToPane::Close { closed: true }, wait)?;
+    let held = found.live.iter().find_map(|(id, live)| match live {
+        Live::Held(server) => Some((*id, *server)),
+        Live::Greeted(_) | Live::Unbegun(_) | Live::Closing | Live::OtherRun | Live::Silent => None,
+    });
+    Ok(held.filter(|(_, server)| holds(*server)))
+}
+
+/// Whether the server with pid `server`, which a pane named as holding
+/// its link, still runs: one that ended since holds nothing, and its pane
+/// reads its link's end next.
+pub fn holds(server: i32) -> bool {
+    fuxix::process::Pid::from_i32(server).is_some_and(crate::socket::runs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::record::{Child, Pane, Record, Tab, Workspace};
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A record of a run with panes `ids` in one tab.
+    fn record(ids: &[u32]) -> Result<Record, Box<dyn std::error::Error>> {
+        let size = fux_vt::Size::new(24, 80)?;
+        let panes = (ids.iter())
+            .map(|id| {
+                Ok(Pane {
+                    id: PaneId::of(*id),
+                    name: None,
+                    shell: true,
+                    argv: fux_wire::command::Program::new("/bin/sh".into(), Vec::new())?,
+                    cwd: "/".into(),
+                    options: crate::pane::tests::options(1 << 10)?,
+                    size,
+                    respawns: 0,
+                    ended: None,
+                    read_error: None,
+                })
+            })
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+        let tab = Tab {
+            id: fux_wire::id::TabId::of(1),
+            name: None,
+            nodes: Vec::new(),
+            revision: Some(0),
+            fixed: false,
+            size,
+            zoomed: None,
+            panes,
+        };
+        Ok(Record {
+            run: fux_wire::command::Run::now().ok_or("a clock")?,
+            ids: Vec::new(),
+            workspaces: vec![Workspace {
+                id: fux_wire::id::WsId::of(1),
+                name: None,
+                children: vec![Child::Tab(tab)],
+            }],
+            ended: false,
+        })
+    }
+
+    /// The record decides: a recorded pane is taken, begun, awaited or
+    /// lost by how it is found; a pane process the record lacks is ended,
+    /// a close the user committed; one that says nothing, or is closing,
+    /// is never lost; and a pane a server still holds refuses the run,
+    /// recorded or not.
+    #[test]
+    fn the_record_decides_each_panes_fate() -> TestResult {
+        let record = record(&[1, 2, 3, 4, 5, 6])?;
+        let live = BTreeMap::from([
+            // %1 is gone: it has none.
+            (PaneId::of(2), Live::Unbegun(70)),
+            (PaneId::of(3), Live::Silent),
+            (PaneId::of(4), Live::Closing),
+            (PaneId::of(5), Live::OtherRun),
+            // The record lacks these.
+            (PaneId::of(7), Live::Unbegun(71)),
+            (PaneId::of(8), Live::Silent),
+            (PaneId::of(9), Live::Closing),
+            (PaneId::of(10), Live::OtherRun),
+        ]);
+        let fates = reconcile(&record, &live);
+        let expected = BTreeMap::from([
+            (PaneId::of(1), Fate::Lost),
+            (PaneId::of(2), Fate::Begin),
+            (PaneId::of(3), Fate::Await),
+            (PaneId::of(4), Fate::End),
+            (PaneId::of(5), Fate::Lost),
+            (PaneId::of(6), Fate::Lost),
+            (PaneId::of(7), Fate::End),
+            (PaneId::of(8), Fate::End),
+            (PaneId::of(9), Fate::End),
+        ]);
+        assert_eq!(fates, expected);
+        // Held, recorded or not: the run is refused, naming the server,
+        // and neither pane is lost or ended.
+        for held in [3, 8] {
+            let mut live = live.clone();
+            live.insert(PaneId::of(held), Live::Held(4242));
+            let fates = reconcile(&record, &live);
+            assert_eq!(fates.get(&PaneId::of(held)), Some(&Fate::Refuse(4242)));
+        }
+        Ok(())
+    }
+}

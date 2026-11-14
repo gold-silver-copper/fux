@@ -8,14 +8,17 @@ use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
 
 /// What a run is: its identity, the ids it gave last, and its workspaces,
-/// at the top in order.
+/// at the top in order; and whether it ended (a stop, or its last pane's
+/// close): then no server takes it back, and the next to find it ends what
+/// is left of it (`server::serve`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub run: Run,
     pub ids: Vec<u32>,
     pub workspaces: Vec<Workspace>,
+    pub ended: bool,
 }
-wired!(struct Record { run, ids, workspaces });
+wired!(struct Record { run, ids, workspaces, ended });
 
 /// A workspace and what it holds, in order.
 #[derive(Clone, Debug, PartialEq)]

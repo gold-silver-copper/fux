@@ -430,25 +430,61 @@ pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>),
     Ok((listener, socket))
 }
 
-/// Its server, the first to reach a pane's process at `listener`, waited
-/// for; `listener` read without waiting from then on.
-pub fn pane_first(listener: &mut PaneListener) -> Result<Stream, String> {
-    // Listened on again, by it: one that reaches it is told its pid, not
-    // the server's that made the socket (`SO_PEERCRED`).
-    fuxix::socket::listen(&*listener, 16).map_err(|e| format!("its socket: {e}"))?;
+/// A pane's process listens at `listener` itself, again: one that reaches
+/// it is told its pid, not the server's that made the socket
+/// (`SO_PEERCRED`).
+pub fn pane_listen(listener: &PaneListener) -> Result<(), String> {
+    fuxix::socket::listen(listener, PANE_BACKLOG).map_err(|e| format!("its socket: {e}"))
+}
+
+/// How many may wait at a pane's socket untaken: one more finds it busy
+/// (`Reach::Busy`).
+const PANE_BACKLOG: i32 = 16;
+
+/// The next to reach a pane's process at `listener`, waited for: its
+/// server, till it has begun.
+pub fn pane_next(listener: &mut PaneListener) -> Result<Stream, String> {
     let (stream, _) = listener.accept().map_err(|e| format!("its server: {e}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("its socket: {e}"))?;
     Ok(stream)
 }
 
-/// The pid of what listens at `socket`, as the system says (`SO_PEERCRED`)
-/// if it does, and a link to it; none if nothing does.
-pub fn reach_named(socket: &Path) -> Option<(Option<fuxix::process::Pid>, Stream)> {
-    let stream = UnixStream::connect(socket).ok()?;
-    let pid = fuxix::socket::peer(&stream).ok().and_then(|peer| peer.pid);
-    Some((pid, stream))
+/// A pane's process has begun: `listener` is read without waiting from
+/// now on.
+pub fn pane_begun(listener: &PaneListener) -> Result<(), String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("its socket: {e}"))
+}
+
+/// Reaches for what listens at `socket`, without waiting: a link to it; or
+/// that nothing listens there (no such file, or one no process listens
+/// at); or that one does and has no room for another now (its backlog is
+/// full: `EAGAIN`). Any other failure says nothing of what is there, and
+/// is the error.
+pub fn reach(socket: &Path) -> io::Result<super::Reach> {
+    let fd = fuxix::socket::stream()?;
+    fuxix::io::set_nonblocking(&fd, true)?;
+    match fuxix::socket::connect(&fd, socket) {
+        Ok(()) => Ok(super::Reach::Listening(UnixStream::from(fd))),
+        Err(fuxix::Errno::AGAIN) => Ok(super::Reach::Busy),
+        Err(errno) => {
+            let error = io::Error::from(errno);
+            let none = matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            );
+            if none {
+                Ok(super::Reach::NoListener)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+/// Whether the process `pid` still runs (`gone`).
+pub fn runs(pid: fuxix::process::Pid) -> bool {
+    !gone(pid)
 }
 
 /// Whether `error` says this process has every descriptor its limit
@@ -487,12 +523,6 @@ pub fn run_pinned(exe: &Path) -> std::io::Result<()> {
     Err(std::process::Command::new(exe)
         .args(std::env::args_os().skip(1))
         .exec())
-}
-
-/// Whether a connect that failed so says nothing listens there: on Unix,
-/// every failure does.
-pub fn none_listens(_error: &std::io::Error) -> bool {
-    true
 }
 
 /// The pid of the process listening at the other end of `stream`, where
