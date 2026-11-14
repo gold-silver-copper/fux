@@ -307,10 +307,13 @@ pub struct Session {
     pub prompted: std::collections::BTreeSet<ClientId>,
     /// The panes with a frame of input their program has not read
     /// (`FromPane::Full`): what is typed into one is held by its typist.
-    full: std::collections::BTreeSet<PaneId>,
+    pub(crate) full: std::collections::BTreeSet<PaneId>,
     /// Who typed into which pane since it last had no input unread: those
     /// are told to hold back once it has a frame of it (`typing_holds`).
     pub(crate) typists: std::collections::BTreeSet<(PaneId, ClientId)>,
+    /// How much was typed into each such pane since it said so
+    /// (`input::put_in`): past a frame, no more is taken.
+    pub(crate) over: BTreeMap<PaneId, usize>,
     /// The pane what a client typed is for, while an act that names one
     /// is applied (`AttachedFrame::For`): not the one it focuses now.
     pub(crate) typing_for: Option<PaneId>,
@@ -503,6 +506,7 @@ impl Session {
             prompted: std::collections::BTreeSet::new(),
             full: std::collections::BTreeSet::new(),
             typists: std::collections::BTreeSet::new(),
+            over: BTreeMap::new(),
             typing_for: None,
             body: None,
             deliveries: Vec::new(),
@@ -1089,6 +1093,7 @@ impl Session {
             }
             FromPane::Full(false) => {
                 self.full.remove(&id);
+                self.over.remove(&id);
                 self.typists.retain(|(pane, _)| *pane != id);
             }
         }

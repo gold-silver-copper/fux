@@ -2699,3 +2699,150 @@ fn megabytes_typed_at_a_program_that_reads_nothing_wait_in_the_terminal() -> Out
     }
     Ok(())
 }
+
+/// 33. A paste to a program that isn't reading locks its client out of
+///     nothing: with 2 MiB pasted into a raw-mode program that reads
+///     none of it, more than its terminal takes, the client's bindings
+///     run at once. It changes its focus, and what it types then goes to
+///     the pane it focuses now; and it detaches (D-183; bindings waited
+///     behind the paste, and the client could only be killed).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paste_that_waits_keeps_its_client_from_no_binding() -> Outcome {
+    const PASTED: usize = 2 << 20;
+    let server = Server::start("")?;
+    let mut terminal = Terminal::attach(&server, 24, 80, &[])?;
+    terminal.wait_for("$")?;
+    let stuck = support::focused(&server)?;
+    let other = id(&server.ok(&[format!(
+        "(split {})",
+        program(
+            &format!(
+                "(axis (pane {}) \"horizontal\")",
+                fux::script::quoted(&stuck)
+            ),
+            &["sh"]
+        )
+    )])?);
+    server.shows(&other, "$")?;
+    // Its focus is where it types: the program there reads nothing.
+    let typed_into = support::focused(&server)?;
+    let (reading, idle) = match typed_into == stuck {
+        true => (&other, &stuck),
+        false => (&stuck, &other),
+    };
+    let _ = idle;
+    terminal.type_bytes(b"stty raw -echo; printf RAW-%s NOW; sleep 1000\r")?;
+    server.shows(&typed_into, "RAW-NOW")?;
+    let mut paste = b"\x1b[200~".to_vec();
+    paste.resize(paste.len() + PASTED, b'y');
+    paste.extend_from_slice(b"\x1b[201~");
+    terminal.type_bytes(&paste)?;
+    // `C-b o`: the next pane. What is typed now is for that one.
+    let marked = server.dir.join("marked");
+    terminal.type_bytes(b"\x02o")?;
+    eventually("its focus on the other pane", || {
+        terminal.pump();
+        Ok(&support::focused(&server)? == reading)
+    })?;
+    terminal.type_bytes(format!("echo there > {}\r", marked.display()).as_bytes())?;
+    eventually("what it typed, in the pane it focuses now", || {
+        terminal.pump();
+        Ok(marked.exists())
+    })?;
+    // `C-b d`: it detaches, its paste still waiting.
+    terminal.type_bytes(b"\x02d")?;
+    let status = terminal.wait_exit()?;
+    assert!(status.success(), "{status:?}");
+    Ok(())
+}
+
+/// 34. A program that floods its terminal with queries and reads no answer
+///     stalls only itself: a client that shows its pane and focuses it,
+///     typing nothing, is told to hold back nothing, and its bindings run
+///     (D-177, D-187; the answers counted as input typed, and every client
+///     focusing the pane was told to hold back).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_flood_of_queries_holds_back_no_client_that_watches() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 100)?;
+    client.ready()?;
+    let pane = support::focused(&server)?;
+    let own = own_process(&server, &pane)?;
+    let before = peak_kib(own)?;
+    let asks = r#"stty raw -echo; q=$(printf '\033[c%.0s' $(seq 200)); yes "$q" | head -c 4000000; sleep 1000"#;
+    server.type_line(&pane, asks)?;
+    // A frame of answers and more waits in its pane, unread.
+    eventually("a frame of answers unread in its pane", || {
+        client.pump()?;
+        Ok(peak_kib(own)?.saturating_sub(before) >= 1 << 10)
+    })?;
+    client.pump()?;
+    assert_eq!(client.holds, [], "told to hold back, typing nothing");
+    client.send(b"\x02d")?;
+    eventually("it detached", || {
+        client.pump()?;
+        Ok(client.exit.as_deref() == Some("detached"))
+    })
+}
+
+/// 35. A client that is told to hold back what it types, and types on all
+///     the same, grows nothing: of 8 MiB of keys sent a program that reads
+///     none, its pane's process, the server and its connection's hold a
+///     bounded part, and the client is told why no more is taken: by its
+///     server, past a frame after it was told to hold back, or by its
+///     connection, which ends it, once 4 MiB of what it typed waits there
+///     untaken (D-187).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_that_types_on_when_told_to_hold_back_grows_nothing() -> Outcome {
+    use fux_wire::act::Act;
+    use fux_wire::protocol::{AttachedFrame, Frame};
+    const KEYS: usize = 8 << 20;
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 100)?;
+    client.ready()?;
+    let pane = support::focused(&server)?;
+    server.type_line(&pane, "stty raw -echo; printf RAW-%s NOW; sleep 1000")?;
+    server.shows(&pane, "RAW-NOW")?;
+    let pid = server_pid(&server)?;
+    let own = own_process(&server, &pane)?;
+    let conns = connections(pid);
+    let before = (peak_kib(own)?, peak_kib(pid)?);
+    // Frames written as they are: no gate of its own holds them back.
+    let key = AttachedFrame::Act(Box::new(Act::Key(fux_vt::keys::KeyPress::char('k').into())));
+    let frame = key.encode();
+    let mut frames = Vec::with_capacity(frame.len() * 4096);
+    for _ in 0..4096 {
+        frames.extend_from_slice(&frame);
+    }
+    // Its connection's process, as it is read while it is there.
+    let mut held = 0u64;
+    for _ in 0..KEYS / 4096 {
+        // Ended by its connection, it can write no more.
+        if client.write(&frames).is_err() {
+            break;
+        }
+        for conn in &conns {
+            held = held.max(peak_kib(*conn).unwrap_or(0));
+        }
+    }
+    eventually("it is told why no more is taken", || {
+        let _ = client.pump();
+        let refused = (client.exits.first())
+            .is_some_and(|why| why.contains("typed that the server has not taken"));
+        Ok(refused || client.text().contains("isn't reading what is typed"))
+    })
+    .map_err(|error| format!("{error}: it was told {:?}", client.exits))?;
+    assert!(
+        client.holds.iter().any(|(_, held)| *held),
+        "never told to hold back"
+    );
+    let grew = |pid: i32, before: u64| peak_kib(pid).map(|peak| peak.saturating_sub(before));
+    let (in_pane, served) = (grew(own, before.0)?, grew(pid, before.1)?);
+    assert!(in_pane < 4 << 10, "its pane's process grew {in_pane} KiB");
+    assert!(served < 4 << 10, "the server grew {served} KiB");
+    assert!(held < 24 << 10, "a connection's process held {held} KiB");
+    Ok(())
+}

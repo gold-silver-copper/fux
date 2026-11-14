@@ -175,6 +175,25 @@ impl Session {
             return true;
         }
         self.typists.insert((pane, client));
+        // A pane with a frame typed and unread has its typists hold back
+        // (`typing_holds`): what one types all the same, past the frame
+        // that may have been on its way as it was told, is not taken, and
+        // it is told so once, so that the pane holds no more for it.
+        if self.full.contains(&pane) && matches!(typed, Typed::Key(_)) {
+            let slack = fux_wire::protocol::MAX_FRAME;
+            let over = self.over.entry(pane).or_default();
+            // More than any key's bytes.
+            let was = std::mem::replace(over, over.saturating_add(16));
+            if *over > slack {
+                if was <= slack {
+                    let why = format!(
+                        "{pane}'s program isn't reading what is typed: no more is taken till it does"
+                    );
+                    self.notify_to(client, why, true);
+                }
+                return true;
+            }
+        }
         self.tell_pane(pane, crate::link::ToPane::Typed { client, typed }, now);
         false
     }

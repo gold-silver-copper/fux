@@ -509,6 +509,9 @@ pub struct Client {
     /// Each time it was told to hold back what it types into a pane, or
     /// no longer.
     pub holds: Vec<(String, bool)>,
+    /// Every reason it was told it ends, in order: the real client stops
+    /// at the first.
+    pub exits: Vec<String>,
     pub terminal: fux_vt::Parser,
     pub rows: u16,
     pub cols: u16,
@@ -570,6 +573,7 @@ impl Client {
             typed: Vec::new(),
             id: None,
             holds: Vec::new(),
+            exits: Vec::new(),
             terminal: terminal(rows, cols)?,
             rows,
             cols,
@@ -715,7 +719,10 @@ impl Client {
                     self.painted.extend_from_slice(&bytes);
                     self.terminal.process(&bytes).map_err(e)?;
                 }
-                ToAttached::Exit(reason) => self.exit = Some(reason.to_owned()),
+                ToAttached::Exit(reason) => {
+                    self.exits.push(reason.to_owned());
+                    self.exit = Some(reason.to_owned());
+                }
                 ToAttached::Welcome(me, run) if self.keyboard.is_none() => {
                     let state = self.state.clone();
                     self.keyboard = Some(
