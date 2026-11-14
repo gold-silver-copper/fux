@@ -19,6 +19,10 @@ fn copy_within<T: Copy>(slice: &mut [T], src: Range<usize>, dest: usize) -> Opti
 /// allocates nothing, so a process that must not die of a refusal (a pane's
 /// own) reserves so before it writes.
 pub fn try_reserve(bytes: &mut Vec<u8>, additional: usize) -> Result<(), crate::Error> {
+    // Room it has already is asked of no one, so none can refuse it.
+    if bytes.capacity().saturating_sub(bytes.len()) >= additional {
+        return Ok(());
+    }
     #[cfg(feature = "checks")]
     if crate::check::refusing() {
         return Err(crate::Error::Capacity);
@@ -170,23 +174,32 @@ mod tests {
     }
 
     /// A push refused memory leaves the queue as it was, and the next one
-    /// goes on.
+    /// goes on. Only a push that needs room can be refused it: one that
+    /// fits in the room there is asks for none.
     #[cfg(feature = "checks")]
     #[test]
     fn a_push_refused_memory_leaves_the_queue_as_it_was() {
         let mut queue = ByteQueue::default();
         queue.push(b"held");
         queue.take(1);
+        // More than the room it has.
+        let more = vec![b'm'; queue.bytes.capacity() + 1];
         crate::check::refuse_next(1);
-        assert!(queue.try_push(b"more").is_err());
+        assert!(queue.try_push(&more).is_err());
         assert_eq!(queue.as_slice(), b"eld");
         crate::check::refuse_next(1);
-        let wrote = queue.try_push_with(4, |out| out.extend_from_slice(b"more"));
+        let wrote = queue.try_push_with(more.len(), |out| out.extend_from_slice(&more));
         assert!(wrote.is_err());
         assert_eq!(queue.as_slice(), b"eld");
-        assert!(queue.try_push(b"more").is_ok());
-        assert_eq!(queue.as_slice(), b"eldmore");
+        assert!(queue.try_push(&more).is_ok());
+        assert_eq!(queue.len(), 3 + more.len());
+        // Room made is not refused after.
+        assert!(queue.try_reserve(8).is_ok());
+        crate::check::refuse_next(1);
+        assert!(queue.try_push(b"fits").is_ok());
+        crate::check::refuse_next(0);
         let mut bytes = b"ab".to_vec();
+        bytes.shrink_to_fit();
         crate::check::refuse_next(1);
         assert!(try_extend(&mut bytes, b"cd").is_err());
         assert!(try_extend(&mut bytes, b"cd").is_ok());

@@ -133,7 +133,7 @@ pub struct Host {
 /// The questions that wait for a body, each by its token: a list, which
 /// takes one more only if the OS gives it room (`insert`).
 #[derive(Default)]
-struct Waiting(Vec<(u64, Awaiting)>);
+struct Waiting(Vec<(u64, Option<Awaiting>)>);
 
 impl Waiting {
     /// `awaiting` waits for body `token`: false if the OS gave no memory
@@ -143,15 +143,18 @@ impl Waiting {
             return false;
         }
         self.0.retain(|(waiting, _)| *waiting != token);
-        self.0.push((token, awaiting));
+        self.0.push((token, Some(awaiting)));
         true
     }
     fn has(&self, token: u64) -> bool {
         self.0.iter().any(|(waiting, _)| *waiting == token)
     }
     fn remove(&mut self, token: u64) -> Option<Awaiting> {
-        let at = self.0.iter().position(|(waiting, _)| *waiting == token)?;
-        Some(self.0.swap_remove(at).1)
+        let found = (self.0.iter_mut())
+            .find(|(waiting, _)| *waiting == token)
+            .and_then(|(_, awaiting)| awaiting.take());
+        self.0.retain(|(_, awaiting)| awaiting.is_some());
+        found
     }
     fn clear(&mut self) {
         self.0.clear();
@@ -169,7 +172,10 @@ struct Typing {
     /// Where it was as its first piece came: what it acted at.
     at: Version,
     paste: Option<fux_vt::keys::encode::PasteEncoder>,
-    /// It was refused as it began, and said so: its pieces are let go.
+    /// Room for what closes a paste, made as the body begins: a paste it
+    /// opens can then always be closed, whatever memory is refused after.
+    closing: Vec<u8>,
+    /// It was refused, and said so: its pieces are let go.
     refused: bool,
 }
 
@@ -1003,9 +1009,26 @@ impl Host {
                 }
             }
         }
-        if !bytes.is_empty() {
-            self.pane_mut()
-                .push_with(|_, out| out.extend_from_slice(&bytes));
+        if !bytes.is_empty() && !self.pane_mut().typed(&bytes) {
+            let why = self.not_queued().to_string();
+            // A focus change that could not be told is no news.
+            self.report(FromPane::Refused { client, why });
+        }
+    }
+
+    /// Why what was to be queued for its program was not: more than a
+    /// frame waits behind a paste that is open, or the OS gave no memory.
+    fn not_queued(&self) -> Error {
+        match self.pane.input().pasting() {
+            true => fail(
+                Code::TooLong,
+                format!(
+                    "a paste into {} is under way, and more than {} bytes wait behind it",
+                    self.pane.id(),
+                    crate::pane::BEHIND
+                ),
+            ),
+            false => no_memory(),
         }
     }
 
@@ -1096,7 +1119,7 @@ impl Host {
         };
         match self.pane_mut().send(&bytes, kind, seen) {
             true => Ok(Answered::Acted(now)),
-            false => Err(no_memory()),
+            false => Err(self.not_queued()),
         }
     }
 
@@ -1454,7 +1477,11 @@ impl Host {
                     None => return,
                 };
                 let at = self.version();
-                let refused = self.takes_keys(seen).err();
+                let mut closing = Vec::new();
+                let room = fux_vt::keys::encode::PasteEncoder::CLOSING;
+                let refused = (self.takes_keys(seen).err()).or_else(|| {
+                    (fux_vt::bytes::try_reserve(&mut closing, room).is_err()).then(no_memory)
+                });
                 let typing = Typing {
                     token,
                     ask,
@@ -1462,6 +1489,7 @@ impl Host {
                     seen,
                     at,
                     paste: None,
+                    closing,
                     refused: refused.is_some(),
                 };
                 match (refused, ask, client) {
@@ -1479,33 +1507,47 @@ impl Host {
             }
         };
         if !typing.refused {
+            // Encoded apart, then queued whole or not at all: a piece the
+            // OS gives no memory for leaves the paste before it as it was.
             let mut bytes = Vec::new();
-            let pasted = encode(&self.pane, inputs, &mut typing.paste, &mut bytes);
+            let mut paste = typing.paste.clone();
+            let pasted = encode(&self.pane, inputs, &mut paste, &mut bytes);
             let previous = std::mem::replace(&mut self.actor, typing.actor);
+            let open = paste.is_some();
             let queued = match (typing.ask, pasted) {
                 (_, Err(_)) => false,
-                // A client's paste is typed, as its keys are.
-                (None, Ok(_)) => self.pane_mut().typed(&bytes),
-                (Some(_), Ok(true)) => self.pane_mut().send(&bytes, Sent::Paste, typing.seen),
-                (Some(_), Ok(false)) => self.pane_mut().send(&bytes, Sent::Keys, typing.seen),
+                // A client's paste is typed, as its keys are: not told.
+                (None, Ok(_)) => self.pane_mut().piece(&bytes, open, None),
+                (Some(_), Ok(true)) => {
+                    let told = Some((Sent::Paste, typing.seen));
+                    self.pane_mut().piece(&bytes, open, told)
+                }
+                (Some(_), Ok(false)) => {
+                    let told = Some((Sent::Keys, typing.seen));
+                    self.pane_mut().piece(&bytes, open, told)
+                }
             };
-            self.actor = previous;
-            // The OS gave no memory for this piece: its body is refused
-            // from here, said once, and what it left open is closed.
-            if !queued {
-                typing.refused = true;
-                match (typing.ask, typing.actor) {
-                    (Some(ask), _) => self.report(FromPane::Answer {
-                        ask,
-                        answer: Answered::Refused(Refusal::from(no_memory())),
-                    }),
-                    (None, Actor::Client(client)) => {
-                        let why = no_memory().to_string();
-                        self.report(FromPane::Refused { client, why });
+            match queued {
+                true => typing.paste = paste,
+                // Its body is refused from here, said once, and the paste
+                // an earlier piece left open is closed.
+                false => {
+                    typing.refused = true;
+                    self.close_paste(&mut typing);
+                    match (typing.ask, typing.actor) {
+                        (Some(ask), _) => self.report(FromPane::Answer {
+                            ask,
+                            answer: Answered::Refused(Refusal::from(no_memory())),
+                        }),
+                        (None, Actor::Client(client)) => {
+                            let why = no_memory().to_string();
+                            self.report(FromPane::Refused { client, why });
+                        }
+                        (None, _) => {}
                     }
-                    (None, _) => {}
                 }
             }
+            self.actor = previous;
         }
         match Input::go_on(inputs) {
             true => self.typing = Some(typing),
@@ -1515,14 +1557,10 @@ impl Host {
 
     /// Body `typing` is over: whole, or `cut` short, its sender gone. A
     /// paste it left open is closed, and what waited for it is answered.
-    fn typed_all(&mut self, typing: Typing, cut: bool) {
-        let mut bytes = Vec::new();
-        close(typing.paste, &mut bytes);
-        if !bytes.is_empty() {
-            let previous = std::mem::replace(&mut self.actor, typing.actor);
-            (self.pane_mut()).push_with(|_, out| out.extend_from_slice(&bytes));
-            self.actor = previous;
-        }
+    fn typed_all(&mut self, mut typing: Typing, cut: bool) {
+        let previous = std::mem::replace(&mut self.actor, typing.actor);
+        self.close_paste(&mut typing);
+        self.actor = previous;
         self.report(FromPane::Retired(typing.token));
         let (Some(ask), false) = (typing.ask, typing.refused) else {
             return;
@@ -1538,6 +1576,20 @@ impl Host {
             }),
         };
         self.report(FromPane::Answer { ask, answer });
+    }
+
+    /// Closes the paste `typing` left open in what its program reads, if
+    /// it did, in the room made for that as the body began; what waited
+    /// behind the paste follows it.
+    fn close_paste(&mut self, typing: &mut Typing) {
+        if let Some(mut paste) = typing.paste.take() {
+            // Its room is there (`Typing::closing`): none is asked for.
+            let _ = paste.finish(&mut typing.closing);
+        }
+        if self.pane.input().pasting() {
+            let closing = std::mem::take(&mut typing.closing);
+            self.pane_mut().close_paste(&closing);
+        }
     }
 
     /// The sender of body `token` is gone, or wants it no more: if it is
@@ -1866,7 +1918,8 @@ fn encode(
                 let encoder = paste.get_or_insert_with(|| PasteEncoder::new(bracketed));
                 encoder.push(text.as_bytes(), out)?;
                 if matches!(input, Input::Paste(_)) {
-                    close(paste.take(), out);
+                    encoder.finish(out)?;
+                    *paste = None;
                 }
             }
             Input::Bytes(given) => try_extend(out, given)?,
@@ -2331,9 +2384,11 @@ pub fn serve(
             (spare, rest) = (kept, true);
             continue;
         }
-        // One reached this turn has no entry yet: it is kept, unread.
-        let events = peered.into_iter().chain(std::iter::repeat(Events::NONE));
-        for (mut peer, events) in peers.drain(..).zip(events) {
+        // Taken from the last, so that its list keeps its room, and put
+        // back in their order. One reached this turn has no entry yet: it
+        // is kept, unread.
+        while let Some(mut peer) = peers.pop() {
+            let events = peered.get(peers.len()).copied().unwrap_or(Events::NONE);
             if events.is_empty() {
                 kept.push(peer);
                 continue;
@@ -2474,6 +2529,7 @@ pub fn serve(
                 host.cut(token);
             }
         }
+        kept.reverse();
         spare = std::mem::replace(&mut peers, kept);
         // One piece in flight for the pane, whoever sends: the next is
         // taken, from the body under way or one a question waits for, once

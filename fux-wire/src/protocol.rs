@@ -1226,8 +1226,12 @@ mod tests {
     #[cfg(feature = "checks")]
     #[test]
     fn an_encoding_or_a_push_refused_memory_changes_nothing() -> Result<(), Error> {
-        let frame = ToCommand::Exit("why");
+        // Longer than the room a short vector has: only what needs room
+        // can be refused it.
+        let why: String = std::iter::repeat_n('y', 200).collect();
+        let frame = ToCommand::Exit(&why);
         let mut out = vec![1, 2, 3];
+        out.shrink_to_fit();
         fux_vt::refuse_next(1);
         let refused = frame.try_encode_into(&mut out);
         assert_eq!(refused, Err(Error::Memory(frame.encoded_len())));

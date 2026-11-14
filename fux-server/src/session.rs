@@ -9690,6 +9690,91 @@ mod tests {
         Ok(())
     }
 
+    /// While a paste that comes in pieces is open, nothing else its program
+    /// is to read is queued inside it: another client's key, a one-frame
+    /// `send-keys` and the answer to the program's own query wait behind
+    /// its closing bracket, in the order they came (D-175; a Ctrl-C typed
+    /// by another became pasted text).
+    #[test]
+    fn what_comes_while_a_paste_is_open_follows_its_closing_bracket() -> TestResult {
+        use crate::link::{ToPane, Typed};
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let to = command::To::Now(AnyRef::Pane(id));
+        let now = Instant::now();
+        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
+        s.give_body(Some(7));
+        let pending = s.send_keys(to, &[], now).map_err(|e| e.to_string())?;
+        let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
+        let [(_, ask)] = pending.asks.as_slice() else {
+            return Err("one ask".into());
+        };
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Pasting("one ".into()), Input::More]);
+        })?;
+        let other = ClientId::of(2);
+        let key = Typed::Key(fux_vt::keys::KeyPress::char('x').into());
+        host(&mut s, id, |h| {
+            h.handle(
+                ToPane::Typed {
+                    client: other,
+                    typed: key,
+                },
+                now,
+            );
+        })?;
+        s.send_keys(to, &[Input::Text("y".into())], now)
+            .map_err(|e| e.to_string())?;
+        // Its program asks what terminal it is: answered, behind the paste.
+        host(&mut s, id, |h| h.output(b"\x1b[c", now))?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~one ");
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Paste("two".into())])
+        })?;
+        assert!(s.answered_yet(*ask));
+        let rest = queued(&mut s, id)?;
+        let said = String::from_utf8_lossy(&rest).into_owned();
+        assert!(said.starts_with("two\x1b[201~xy\x1b[?"), "{said:?}");
+        assert!(said.ends_with('c'), "{said:?}");
+        Ok(())
+    }
+
+    /// A paste whose next piece the OS gives no memory for is closed where
+    /// it is, in room made before its first byte was queued, and its asker
+    /// told: its bracket is never left open (D-175).
+    #[cfg(feature = "checks")]
+    #[test]
+    fn a_paste_refused_memory_part_way_is_closed() -> TestResult {
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let to = command::To::Now(AnyRef::Pane(id));
+        let now = Instant::now();
+        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
+        s.give_body(Some(7));
+        let pending = s.send_keys(to, &[], now).map_err(|e| e.to_string())?;
+        let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
+        let [(_, ask)] = pending.asks.as_slice() else {
+            return Err("one ask".into());
+        };
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Pasting("one".into()), Input::More]);
+        })?;
+        fux_vt::refuse_next(u32::MAX);
+        let refused = host(&mut s, id, |h| {
+            h.piece(token, &[Input::Pasting("two".into()), Input::More])
+        });
+        fux_vt::refuse_next(0);
+        refused?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~one\x1b[201~");
+        assert!(s.answered_yet(*ask), "its asker is told it was refused");
+        // What is left of it is let go.
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Paste("three".into())])
+        })?;
+        assert!(queued(&mut s, id)?.is_empty());
+        Ok(())
+    }
+
     /// Questions whose asker is gone are waited for no more: an answer
     /// that comes after is let go, not kept (D-123).
     #[test]

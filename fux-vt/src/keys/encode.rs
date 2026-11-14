@@ -115,8 +115,13 @@ pub(crate) const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// Appends a paste, whole, as the pane should receive it to `out`: what a
 /// [`PasteEncoder`] makes of it in one piece. A paste the OS refuses the
-/// memory for is not sent, or is sent empty.
+/// memory for is not sent at all.
 pub fn paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
+    // Room for all of it first, its closing bracket too: never half a
+    // paste, its bracket left open.
+    if crate::bytes::try_reserve(out, text.len().saturating_add(PasteEncoder::CLOSING)).is_err() {
+        return;
+    }
     let mut encoder = PasteEncoder::new(bracketed);
     let _ = encoder.push(text.as_bytes(), out);
     let _ = encoder.finish(out);
@@ -177,7 +182,7 @@ impl PasteEncoder {
     pub fn push(&mut self, text: &[u8], out: &mut Vec<u8>) -> Result<(), crate::Error> {
         // A byte taken sends one at most, after what is held and the bracket.
         let most = (text.len().saturating_add(PASTE_START.len())).saturating_add(HELD);
-        crate::reserve(out, out.len().saturating_add(most))?;
+        crate::bytes::try_reserve(out, most)?;
         if self.bracketed && !self.opened {
             out.extend_from_slice(PASTE_START);
         }
@@ -210,12 +215,17 @@ impl PasteEncoder {
         Ok(())
     }
 
+    /// The most bytes `finish` appends: both brackets and what is held
+    /// back. One that keeps this much room in what it finishes into, from
+    /// before its paste's first byte is sent, can always close its paste
+    /// (`finish` asks for no room it has).
+    pub const CLOSING: usize = PASTE_START.len() + HELD + PASTE_END.len();
+
     /// Ends the paste: what is held back, then the closing bracket, after
     /// the opening one if nothing was taken. It is then a new paste's.
     /// Refused the memory, it leaves `out` and itself as they were.
     pub fn finish(&mut self, out: &mut Vec<u8>) -> Result<(), crate::Error> {
-        let most = (PASTE_START.len().saturating_add(HELD)).saturating_add(PASTE_END.len());
-        crate::reserve(out, out.len().saturating_add(most))?;
+        crate::bytes::try_reserve(out, Self::CLOSING)?;
         if self.bracketed && !self.opened {
             out.extend_from_slice(PASTE_START);
         }
