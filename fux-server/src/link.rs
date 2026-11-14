@@ -119,7 +119,7 @@ pub enum Typed {
     Key(Keystroke),
     Paste(String),
     /// A paste whose text its client's connection sends the pane itself,
-    /// as body `0` (`ToSide::Body`).
+    /// in pieces, as body `0` (`ToSide::Body`).
     Body(u64),
     Focus(bool),
     Mouse(MouseEvent),
@@ -130,8 +130,8 @@ wired!(Typed { Key(k), Paste(t), Body(b), Focus(g), Mouse(m) });
 #[derive(Clone, Debug)]
 pub enum Ask {
     /// Keys for its program, if it is still at `seen`: `inputs`, or with a
-    /// `body`, those its asker's connection sends it as that body
-    /// (`ToSide::Body`), which it waits for.
+    /// `body`, those its asker's connection sends it, in pieces, as that
+    /// body (`ToSide::Body`), which it waits for.
     Keys {
         inputs: Vec<Input>,
         seen: Option<Version>,
@@ -301,8 +301,11 @@ pub enum ToSide {
     Watch,
     /// The last screen it was sent is taken: it may be sent the next.
     Taken,
-    /// Body `token`, which a question its server asked waits for: the
-    /// connection's client's inputs (`Ask::Keys`, `Typed::Body`).
+    /// A piece of body `token`, which a question its server asked waits
+    /// for (`Ask::Keys`, `Typed::Body`): the connection's client's inputs,
+    /// one frame of them, on a link of its own. The next piece, which
+    /// follows one ending in `Input::More`, is sent once this one is taken
+    /// (`FromSide::Took`): a body stays with its sender, a piece at a time.
     Body { token: u64, inputs: Vec<Input> },
     /// The capture held as `token` (`Ask::Capture`), taken.
     Fetch { token: u64 },
@@ -318,8 +321,14 @@ pub enum FromSide {
         token: u64,
         captured: Option<Box<Captured>>,
     },
+    /// The piece of body `token` last sent is taken: by a pane, its
+    /// program's terminal took it all, or it is refused and let go; by a
+    /// client's connection, its client took it. Not that anything read it.
+    Took {
+        token: u64,
+    },
 }
-wired!(FromSide { Drawn(d), Held { token, captured } });
+wired!(FromSide { Drawn(d), Held { token, captured }, Took { token } });
 
 /// What the server knows of a pane's capture that its pane does not: its
 /// place, name and label as it is captured, and the journal's cursor as
@@ -496,7 +505,7 @@ impl<T: Wire> Frame<'_> for Message<T> {
             .map(Message)
             .map_err(fux_wire::protocol::Error::Wire)
     }
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
+    fn write(&self, out: &mut impl fux_wire::wire::Sink) -> u8 {
         self.0.put(out);
         MESSAGE
     }
@@ -510,7 +519,7 @@ impl<T: Wire> Frame<'_> for Sending<'_, T> {
     fn decode(kind: u8, _: &[u8]) -> Result<Self, fux_wire::protocol::Error> {
         Err(fux_wire::protocol::Error::UnexpectedKind(kind))
     }
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
+    fn write(&self, out: &mut impl fux_wire::wire::Sink) -> u8 {
         self.0.put(out);
         MESSAGE
     }
@@ -566,6 +575,9 @@ pub enum Read {
     More,
     /// The other end is gone: what it said before is still to take.
     Closed,
+    /// The OS refused room for more (`End::try_read`): what was not read
+    /// is still in the socket.
+    Refused,
 }
 
 impl End {
@@ -585,6 +597,33 @@ impl End {
     pub fn send(&mut self, message: &impl Wire) {
         let message = Sending(message);
         self.out.push_with(|out| message.encode_into(out));
+    }
+
+    /// `send`, once the OS gave room for all of `message` as it is queued:
+    /// refused, nothing of it is queued. What it writes within that room
+    /// allocates nothing; a pane's own process, which must not die of a
+    /// refusal, sends so.
+    pub fn try_send(&mut self, message: &impl Wire) -> Result<(), fux_wire::protocol::Error> {
+        let message = Sending(message);
+        let bytes = message.encoded_len();
+        let refused = fux_wire::protocol::Error::Memory(bytes);
+        match (self.out).try_push_with(bytes, |out| message.try_encode_into(out)) {
+            Ok(queued) => queued,
+            Err(_) => Err(refused),
+        }
+    }
+
+    /// `try_send`, of a message that is one frame, as the server takes
+    /// them: whether it was queued, one longer not.
+    pub fn try_send_whole(
+        &mut self,
+        message: &impl Wire,
+    ) -> Result<bool, fux_wire::protocol::Error> {
+        let whole = MAX_PAYLOAD.saturating_add(5);
+        if Sending(message).encoded_len() > whole {
+            return Ok(false);
+        }
+        self.try_send(message).map(|()| true)
     }
 
     /// Queues `message` if it is one frame, as the server takes them:
@@ -636,8 +675,30 @@ impl End {
 
     /// `read`, till `limit` bytes are read, the rest left for the next.
     pub fn read_up_to(&mut self, buffer: &mut [u8], limit: usize) -> Read {
+        self.read_as(buffer, limit, false)
+    }
+
+    /// `read`, with room made for each read before it is made: one the OS
+    /// refuses room for is not made (`Read::Refused`), and what it would
+    /// have read stays in the socket for a later one. For a pane's own
+    /// process, which must not die of a refusal.
+    pub fn try_read(&mut self, buffer: &mut [u8]) -> Read {
+        self.read_as(buffer, usize::MAX, true)
+    }
+
+    /// `try_read`, till `limit` bytes are read, the rest left for the next.
+    pub fn try_read_up_to(&mut self, buffer: &mut [u8], limit: usize) -> Read {
+        self.read_as(buffer, limit, true)
+    }
+
+    /// Reads till `limit` bytes are read or the socket would wait; if
+    /// `refusable`, each read only once there is room for it.
+    fn read_as(&mut self, buffer: &mut [u8], limit: usize, refusable: bool) -> Read {
         let mut read = 0usize;
         while read < limit {
+            if refusable && self.decoder.try_reserve(buffer.len()).is_err() {
+                return Read::Refused;
+            }
             match fuxix::io::read(&self.stream, buffer) {
                 Ok(0) => return Read::Closed,
                 Ok(n) => {
@@ -730,13 +791,20 @@ pub struct Remote {
     /// What it said as it began or was taken back, its first facts last,
     /// till its pane takes them (`Session::linked`).
     pub first: Vec<FromPane>,
-    /// What says how it is to be now (its size, host, whether it is shown),
-    /// the latest of each, while its link takes nothing more: sent once it
-    /// does, so that one that reads nothing (stopped) grows no queue here.
-    pub later: Vec<ToPane>,
     /// Its link took none of what was last written to it: its process reads
     /// nothing (stopped, say). What would go to it waits upstream then.
     pub stalled: bool,
+    /// What waits while its link takes nothing more, in the order it was
+    /// said, and goes in that order once its link took what was queued:
+    /// questions asked of it, each by its number, and what says how it is
+    /// to be now (its size, host, whether it is shown; no number). A
+    /// question waits here for its asker, not in the queue to it, and one
+    /// whose asker went first is let go (`Link::unask`). Of what says how
+    /// it is to be, only the latest of each kind since the last question
+    /// is kept: a question is answered as it was when it was asked, after
+    /// what was said before it and before what was said after. So what a
+    /// pane that reads nothing is owed grows only with those still asking.
+    pub parked: Vec<(Option<u64>, ToPane)>,
     /// The program whose handle the server copied from it (Windows,
     /// D-134), till another takes its place or the pane ends.
     pub adopted: Option<fuxix::process::Pid>,
@@ -744,7 +812,7 @@ pub struct Remote {
 
 impl Remote {
     /// Writes what is queued as far as its link takes it, and once it took
-    /// it all, what waited till then (`later`).
+    /// it all, what waited till then (`parked`), in the order it was said.
     pub fn flush(&mut self) {
         let queued = self.end.out.len();
         let all = matches!(self.end.flush(), Ok(true));
@@ -752,10 +820,57 @@ impl Remote {
         if !all {
             return;
         }
-        for message in std::mem::take(&mut self.later) {
+        for (_, message) in std::mem::take(&mut self.parked) {
             self.end.send(&message);
         }
         let _ = self.end.flush();
+    }
+
+    /// `state`, which says how it is to be now, waits its turn: in the
+    /// place of one of its kind said since the last question, if one was,
+    /// which it makes stale; else after all that waits.
+    fn park_state(&mut self, state: ToPane) {
+        let kind = std::mem::discriminant(&state);
+        let since = (self.parked.iter().rev())
+            .take_while(|(ask, _)| ask.is_none())
+            .count();
+        let from = self.parked.len().saturating_sub(since);
+        let stale = (self.parked.iter_mut().skip(from))
+            .find(|(_, waiting)| std::mem::discriminant(waiting) == kind);
+        match stale {
+            Some(stale) => stale.1 = state,
+            None => self.parked.push((None, state)),
+        }
+    }
+
+    /// Keeps, of what says how it is to be, the latest of each kind
+    /// between two questions: a question let go leaves what was said on
+    /// either side of it side by side.
+    fn tidy(&mut self) {
+        let mut kept = Vec::new();
+        if kept.try_reserve(self.parked.len()).is_err() {
+            return;
+        }
+        // From the last: one of a kind seen since the last question is
+        // stale.
+        let mut seen = Vec::new();
+        while let Some((ask, message)) = self.parked.pop() {
+            let kind = std::mem::discriminant(&message);
+            match ask {
+                Some(_) => seen.clear(),
+                None if seen.contains(&kind) => continue,
+                None => seen.push(kind),
+            }
+            kept.push((ask, message));
+        }
+        kept.reverse();
+        self.parked = kept;
+    }
+
+    /// Whether its link has not taken all it was sent: what is asked of it
+    /// now waits (`parked`).
+    fn backed_up(&self) -> bool {
+        self.stalled || !self.end.out.is_empty() || !self.parked.is_empty()
     }
 }
 
@@ -775,10 +890,12 @@ impl Link {
                     message,
                     ToPane::Resize { .. } | ToPane::Host(_) | ToPane::Shown(_)
                 );
-                if state && !remote.end.out.is_empty() {
-                    let kind = std::mem::discriminant(&message);
-                    remote.later.retain(|m| std::mem::discriminant(m) != kind);
-                    remote.later.push(message);
+                // What waits keeps the order it was said in: a size said
+                // after a question goes after it.
+                if state && (!remote.end.out.is_empty() || !remote.parked.is_empty()) {
+                    remote.park_state(message);
+                } else if let (ToPane::Ask { ask, .. }, true) = (&message, remote.backed_up()) {
+                    remote.parked.push((Some(*ask), message));
                 } else {
                     remote.end.send(&message);
                 }
@@ -788,6 +905,44 @@ impl Link {
                 Link::told(id, host, inbox);
             }
         }
+    }
+
+    /// Question `ask`'s asker is gone: if it still waits here it is let
+    /// go, never sent; the body its keys waited for, if it was one's.
+    /// False if its pane was sent it.
+    pub fn unask(&mut self, ask: u64) -> Option<Option<u64>> {
+        let Link::Remote(remote) = self else {
+            return None;
+        };
+        let mut body = None;
+        remote.parked.retain(|(parked, question)| {
+            if *parked != Some(ask) {
+                return true;
+            }
+            body = Some(match question {
+                ToPane::Ask {
+                    what: Ask::Keys { body, .. },
+                    ..
+                } => *body,
+                ToPane::Begin(_)
+                | ToPane::Resize { .. }
+                | ToPane::Host(_)
+                | ToPane::Shown(_)
+                | ToPane::Typed { .. }
+                | ToPane::Ask { .. }
+                | ToPane::Taken
+                | ToPane::Close { .. }
+                | ToPane::Take { .. }
+                | ToPane::Who
+                | ToPane::Join { .. }
+                | ToPane::Drop { .. } => None,
+            });
+            false
+        });
+        if body.is_some() {
+            remote.tidy();
+        }
+        body
     }
 
     /// What host `host`, held here, has to tell, its screen too, into
@@ -858,8 +1013,8 @@ impl Remote {
             closed: false,
             ended: None,
             first: Vec::new(),
-            later: Vec::new(),
             stalled: false,
+            parked: Vec::new(),
             adopted: None,
         }
     }
@@ -942,7 +1097,8 @@ pub enum ToConn {
     /// screens, which it gets from the panes (`render::Scene`).
     Scene(Box<crate::render::Scene>),
     /// Its client's body `body` (`FromConn::Frame`) goes to `panes`, as
-    /// their server's `token`.
+    /// their server's `token`, a piece at a time; to none, it is let go,
+    /// the pieces its client still sends too. Every body is answered so.
     Deliver {
         body: u64,
         token: u64,
@@ -968,6 +1124,14 @@ pub enum ToConn {
     Detached,
     /// Its last word is sent: it ends once its client has it all.
     Close,
+    /// Frames for its client that are state, not a backlog: a client that
+    /// is not reading is owed the latest of each kind, never each one
+    /// (`conn::Pending`). In pieces of one frame at most, whole at `last`.
+    Owed {
+        kind: Owed,
+        bytes: Vec<u8>,
+        last: bool,
+    },
 }
 wired!(ToConn {
     Bytes(b),
@@ -983,7 +1147,25 @@ wired!(ToConn {
     Typed { token },
     Make(m),
     Detached,
-    Close
+    Close,
+    Owed { kind, bytes, last }
+});
+
+/// What a client is owed as state (`ToConn::Owed`): a clipboard copy and a
+/// title, the latest of which is the one that counts; the bell, rung once
+/// however often it rang; a prompt or chooser to open, one at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owed {
+    Clipboard,
+    Title,
+    Bell,
+    Prompt,
+}
+wired!(Owed {
+    Clipboard,
+    Title,
+    Bell,
+    Prompt
 });
 
 /// The frames a connection's client sends next.
@@ -1029,6 +1211,219 @@ pub const TAKEN: &str = "taken";
 mod tests {
     use super::{BYTES, Message, Sending, ToConn};
     use fux_wire::protocol::{Decoder, Frame};
+
+    /// An end refused memory queues nothing of what it would send, and
+    /// leaves in its socket what it would read; both go on once memory is
+    /// given.
+    #[cfg(all(unix, feature = "checks"))]
+    #[test]
+    fn an_end_refused_memory_sends_and_reads_nothing_and_goes_on()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{End, Read};
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        let (mut ours, mut theirs) = (End::new(ours)?, End::new(theirs)?);
+        fux_vt::refuse_next(1);
+        assert!(ours.try_send(&ToConn::Answered).is_err());
+        assert!(ours.out.is_empty());
+        fux_vt::refuse_next(1);
+        assert!(ours.try_send_whole(&ToConn::Answered).is_err());
+        assert!(ours.out.is_empty());
+        assert!(ours.try_send_whole(&ToConn::Answered)?);
+        let long = ToConn::Bytes(vec![7; BYTES * 2]);
+        assert!(!ours.try_send_whole(&long)?);
+        ours.try_send(&ToConn::Close)?;
+        ours.flush_all()?;
+        let mut buffer = [0u8; 4096];
+        fux_vt::refuse_next(1);
+        assert_eq!(theirs.try_read(&mut buffer), Read::Refused);
+        assert!(matches!(theirs.next_message::<ToConn>(), Ok(None)));
+        assert_eq!(theirs.try_read(&mut buffer), Read::More);
+        assert!(matches!(
+            theirs.next_message::<ToConn>(),
+            Ok(Some(ToConn::Answered))
+        ));
+        assert!(matches!(
+            theirs.next_message::<ToConn>(),
+            Ok(Some(ToConn::Close))
+        ));
+        Ok(())
+    }
+
+    /// A thousand questions to a pane whose process reads nothing, each
+    /// given up by its asker, leave nothing more queued to it: once its
+    /// link takes no more, a question waits with its asker and goes with
+    /// it (D-179; they queued in the server, one for each who had asked).
+    /// One whose asker stays is sent once the pane reads again.
+    #[cfg(unix)]
+    #[test]
+    fn questions_to_a_pane_that_reads_nothing_leave_with_their_askers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{Ask, End, Link, Read, Remote, ToPane};
+        use fux_wire::command::Input;
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        let mut theirs = End::new(theirs)?;
+        let mut link = Link::Remote(Remote {
+            end: End::new(ours)?,
+            pid: fuxix::process::Pid::from_i32(1).ok_or("a pid")?,
+            child: false,
+            closed: false,
+            ended: None,
+            first: Vec::new(),
+            stalled: false,
+            parked: Vec::new(),
+            adopted: None,
+        });
+        let id = fux_wire::id::PaneId::of(1);
+        let (now, mut inbox) = (std::time::Instant::now(), std::collections::VecDeque::new());
+        let question = |ask: u64, bytes: usize| ToPane::Ask {
+            ask,
+            actor: fux_wire::events::Actor::Outside,
+            what: Ask::Keys {
+                inputs: vec![Input::Text(std::iter::repeat_n('k', bytes).collect())],
+                seen: None,
+                body: None,
+            },
+        };
+        // What the server does each turn: what it holds for (queued, parked).
+        fn held(link: &mut Link) -> (usize, usize) {
+            match link {
+                Link::Remote(remote) => {
+                    remote.flush();
+                    (remote.end.out.len(), remote.parked.len())
+                }
+                Link::Local(_) => (0, 0),
+            }
+        }
+        // Asked till its socket takes no more: what is queued then is the
+        // most there ever is.
+        let mut asked = 0u64;
+        while held(&mut link).1 == 0 {
+            asked += 1;
+            assert!(asked < 10_000, "its socket took everything");
+            link.send(id, question(asked, 16 << 10), now, &mut inbox);
+        }
+        let (queued, _) = held(&mut link);
+        let first_parked = asked;
+        assert_eq!(link.unask(first_parked), Some(None));
+        for _ in 0..1_000 {
+            asked += 1;
+            link.send(id, question(asked, 16 << 10), now, &mut inbox);
+            assert_eq!(held(&mut link), (queued, 1), "question {asked}");
+            assert_eq!(link.unask(asked), Some(None));
+            assert_eq!(held(&mut link), (queued, 0));
+        }
+        // One sent before its link stopped is the pane's to answer.
+        assert_eq!(link.unask(1), None);
+        // An asker that stays: its question goes once the pane reads.
+        asked += 1;
+        link.send(id, question(asked, 5), now, &mut inbox);
+        let mut buffer = vec![0u8; 64 << 10];
+        let mut last = 0;
+        while held(&mut link) != (0, 0) || last != asked {
+            assert_ne!(theirs.read(&mut buffer), Read::Closed);
+            while let Some(ToPane::Ask { ask, .. }) = theirs.next_message::<ToPane>()? {
+                assert!(
+                    ask < first_parked || ask == asked,
+                    "a question let go was sent: {ask}"
+                );
+                last = ask;
+            }
+        }
+        Ok(())
+    }
+
+    /// What is said to a pane whose link takes nothing more goes, once it
+    /// reads, in the order it was said: a size said after a question comes
+    /// after it, as the question was asked at the size before (a size said
+    /// later went before every question that waited). Of two sizes with no
+    /// question between them only the later is sent, and a question let go
+    /// leaves no size behind it that a later one made stale.
+    #[cfg(unix)]
+    #[test]
+    fn what_waits_for_a_pane_goes_in_the_order_it_was_said()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{Ask, End, Link, Read, Remote, ToPane};
+        use fux_wire::events::Actor;
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        let mut theirs = End::new(theirs)?;
+        let mut link = Link::Remote(Remote {
+            end: End::new(ours)?,
+            pid: fuxix::process::Pid::from_i32(1).ok_or("a pid")?,
+            child: false,
+            closed: false,
+            ended: None,
+            first: Vec::new(),
+            stalled: false,
+            parked: Vec::new(),
+            adopted: None,
+        });
+        let id = fux_wire::id::PaneId::of(1);
+        let (now, mut inbox) = (std::time::Instant::now(), std::collections::VecDeque::new());
+        let size = |cols: u16| -> Result<ToPane, Box<dyn std::error::Error>> {
+            let (rows, cols) = (std::num::NonZeroU16::MIN, std::num::NonZeroU16::new(cols));
+            Ok(ToPane::Resize {
+                size: fux_vt::Size::from((rows, cols.ok_or("columns")?)),
+                actor: Actor::Outside,
+            })
+        };
+        let question = |ask: u64| ToPane::Ask {
+            ask,
+            actor: Actor::Outside,
+            what: Ask::ClearHistory,
+        };
+        let waiting = |link: &Link| match link {
+            Link::Remote(remote) => remote.parked.len(),
+            Link::Local(_) => 0,
+        };
+        // Something its link has not taken: what is said now waits.
+        link.send(id, ToPane::Shown(true), now, &mut inbox);
+        link.send(id, size(10)?, now, &mut inbox);
+        link.send(id, size(11)?, now, &mut inbox);
+        assert_eq!(waiting(&link), 1, "two sizes, the later kept");
+        link.send(id, question(1), now, &mut inbox);
+        link.send(id, size(12)?, now, &mut inbox);
+        link.send(id, question(2), now, &mut inbox);
+        link.send(id, size(13)?, now, &mut inbox);
+        link.send(id, question(3), now, &mut inbox);
+        link.send(id, size(14)?, now, &mut inbox);
+        assert_eq!(waiting(&link), 7);
+        // Its asker gone, the sizes on either side of it are one.
+        assert_eq!(link.unask(2), Some(None));
+        assert_eq!(waiting(&link), 5);
+        if let Link::Remote(remote) = &mut link {
+            remote.flush();
+        }
+        assert_eq!(waiting(&link), 0);
+        let mut buffer = [0u8; 4096];
+        assert_ne!(theirs.read(&mut buffer), Read::Closed);
+        let mut said = Vec::new();
+        while let Some(message) = theirs.next_message::<ToPane>()? {
+            said.push(match message {
+                ToPane::Resize { size, .. } => format!("size {}", size.cols()),
+                ToPane::Ask { ask, .. } => format!("question {ask}"),
+                ToPane::Shown(_) => "shown".to_owned(),
+                other @ (ToPane::Begin(_)
+                | ToPane::Host(_)
+                | ToPane::Typed { .. }
+                | ToPane::Taken
+                | ToPane::Close { .. }
+                | ToPane::Take { .. }
+                | ToPane::Who
+                | ToPane::Join { .. }
+                | ToPane::Drop { .. }) => format!("{other:?}"),
+            });
+        }
+        let order = [
+            "shown",
+            "size 11",
+            "question 1",
+            "size 13",
+            "question 3",
+            "size 14",
+        ];
+        assert_eq!(said, order);
+        Ok(())
+    }
 
     /// As many of a client's bytes as the server sends its connection's
     /// process at once are one frame, which that process, joining nothing

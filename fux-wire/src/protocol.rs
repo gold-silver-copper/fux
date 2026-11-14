@@ -18,12 +18,12 @@ use crate::code::Code;
 use crate::command::{AnyRef, Request};
 use crate::id::{ClientId, PaneId};
 use crate::json::Json;
-use crate::wire::{Wire, wire};
+use crate::wire::{Sink, Wire, wire};
 use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 78;
+pub const PROTOCOL: u32 = 79;
 
 /// The first protocol whose command line is grift: an older server's binary
 /// reads none.
@@ -52,8 +52,8 @@ pub enum Error {
     Wire(crate::wire::Error),
     /// A piece of a longer message, where a message is one frame at most.
     Piece,
-    /// The OS refused the memory to join a message of more than this many
-    /// bytes.
+    /// The OS refused the memory to join, hold or send a message of more
+    /// than this many bytes.
     Memory(usize),
 }
 
@@ -74,7 +74,7 @@ impl std::fmt::Display for Error {
             Error::Memory(bytes) => {
                 write!(
                     f,
-                    "the OS refused memory to join a message of over {bytes} bytes"
+                    "the OS refused memory for a message of over {bytes} bytes"
                 )
             }
         }
@@ -195,7 +195,7 @@ pub trait Frame<'a>: Sized {
     fn decode(kind: u8, payload: &'a [u8]) -> Result<Self, Error>;
 
     /// Writes the payload to `out`; the kind byte.
-    fn write(&self, out: &mut Vec<u8>) -> u8;
+    fn write(&self, out: &mut impl Sink) -> u8;
 
     /// The encoded frame.
     fn encode(&self) -> Vec<u8> {
@@ -208,27 +208,112 @@ pub trait Frame<'a>: Sized {
     /// pieces that fit, all but the last as `MORE` frames.
     fn encode_into(&self, out: &mut Vec<u8>) {
         let start = out.len();
-        if put(self, out) <= MAX_PAYLOAD {
+        let payload = put(self, out);
+        if payload <= MAX_PAYLOAD {
             return;
         }
-        let kind = out.get(start.saturating_add(4)).copied().unwrap_or(MORE);
-        let payload = out
-            .get(start.saturating_add(5)..)
-            .unwrap_or_default()
-            .to_vec();
         out.truncate(start);
-        let (whole, rest) = payload.as_chunks::<MAX_PAYLOAD>();
-        let mut pieces = (whole.iter().map(<[u8; MAX_PAYLOAD]>::as_slice))
-            .chain((!rest.is_empty()).then_some(rest))
-            .peekable();
-        while let Some(piece) = pieces.next() {
-            let kind = if pieces.peek().is_some() { MORE } else { kind };
-            // A piece fits, so its length does too.
-            let length = u32::try_from(piece.len().saturating_add(1)).unwrap_or(u32::MAX);
-            out.extend_from_slice(&length.to_be_bytes());
-            out.push(kind);
-            out.extend_from_slice(piece);
+        out.reserve(framed(payload));
+        pieces(self, payload, out);
+    }
+
+    /// The bytes `encode_into` appends: the frame's, or its pieces'.
+    fn encoded_len(&self) -> usize {
+        let mut count = Count(0);
+        self.write(&mut count);
+        framed(count.0)
+    }
+
+    /// `encode_into`, once the OS gave room for all of it: refused
+    /// (`Error::Memory`), `out` is as it was. The room is reserved first,
+    /// and what is written within it allocates nothing, so a process that
+    /// must not die of a refusal (a pane's own) sends so.
+    fn try_encode_into(&self, out: &mut Vec<u8>) -> Result<(), Error> {
+        let mut count = Count(0);
+        self.write(&mut count);
+        let bytes = framed(count.0);
+        fux_vt::bytes::try_reserve(out, bytes).map_err(|_| Error::Memory(bytes))?;
+        pieces(self, count.0, out);
+        Ok(())
+    }
+}
+
+/// Counts the bytes written to it: a payload's length, before room is made
+/// for it.
+struct Count(usize);
+
+impl Sink for Count {
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        self.0 = self.0.saturating_add(bytes.len());
+    }
+}
+
+/// The bytes a payload of `payload` bytes is framed in: itself, and a header
+/// for each piece it goes in, one at least.
+fn framed(payload: usize) -> usize {
+    payload.saturating_add(payload.div_ceil(MAX_PAYLOAD).max(1).saturating_mul(5))
+}
+
+/// Writes a payload as the frames it goes in, a header before each
+/// `MAX_PAYLOAD` of it: all but the last `MORE`, the last's kind filled in
+/// once the frame said it.
+struct Pieces<'a> {
+    out: &'a mut Vec<u8>,
+    /// The payload's bytes not yet written.
+    left: usize,
+    /// Those the piece being written still takes.
+    room: usize,
+    /// Where the last piece's kind byte is.
+    kind_at: Option<usize>,
+}
+
+impl Pieces<'_> {
+    /// The next piece's header: its length, and `MORE`.
+    fn begin(&mut self) {
+        let piece = self.left.min(MAX_PAYLOAD);
+        // A piece fits, so its length does too.
+        let length = u32::try_from(piece.saturating_add(1)).unwrap_or(u32::MAX);
+        self.out.extend_from_slice(&length.to_be_bytes());
+        self.kind_at = Some(self.out.len());
+        self.out.push(MORE);
+        self.room = piece;
+    }
+}
+
+impl Sink for Pieces<'_> {
+    fn extend_from_slice(&mut self, mut bytes: &[u8]) {
+        while !bytes.is_empty() && self.left > 0 {
+            if self.room == 0 {
+                self.begin();
+            }
+            let (now, rest) = bytes
+                .split_at_checked(self.room.min(bytes.len()))
+                .unwrap_or((bytes, &[]));
+            self.out.extend_from_slice(now);
+            self.room = self.room.saturating_sub(now.len());
+            self.left = self.left.saturating_sub(now.len());
+            bytes = rest;
         }
+    }
+}
+
+/// Appends `frame`, whose payload is `payload` bytes, to `out`, in as many
+/// pieces as it takes, copying none of it twice.
+fn pieces<'a>(frame: &impl Frame<'a>, payload: usize, out: &mut Vec<u8>) {
+    let mut pieces = Pieces {
+        out,
+        left: payload,
+        room: 0,
+        kind_at: None,
+    };
+    let kind = frame.write(&mut pieces);
+    // No payload: a frame that is its kind alone.
+    if pieces.kind_at.is_none() {
+        pieces.begin();
+    }
+    let at = pieces.kind_at.and_then(|at| pieces.out.get_mut(at));
+    if let Some(at) = at {
+        *at = kind;
     }
 }
 
@@ -260,13 +345,13 @@ fn put<'a>(frame: &impl Frame<'a>, out: &mut Vec<u8>) -> usize {
 /// from the frame as they are, so that a paint is not copied.
 trait Payload<'a>: Sized {
     /// Writes it as the frame's payload.
-    fn put(&self, out: &mut Vec<u8>);
+    fn put(&self, out: &mut impl Sink);
     /// The value `payload` is, all of it.
     fn get(payload: &'a [u8]) -> Result<Self, Error>;
 }
 
 impl<T: Wire> Payload<'_> for T {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl Sink) {
         Wire::put(self, out);
     }
     fn get(payload: &[u8]) -> Result<Self, Error> {
@@ -279,7 +364,7 @@ impl<T: Wire> Payload<'_> for T {
 /// No payload: a frame that is its kind alone. Not a `Wire` value, as no
 /// value on the wire is empty (`wire::Wire for Vec`).
 impl Payload<'_> for () {
-    fn put(&self, _: &mut Vec<u8>) {}
+    fn put(&self, _: &mut impl Sink) {}
     fn get(payload: &[u8]) -> Result<Self, Error> {
         let trailing = Error::Wire(crate::wire::Error::Trailing);
         payload.is_empty().then_some(()).ok_or(trailing)
@@ -287,7 +372,7 @@ impl Payload<'_> for () {
 }
 
 impl<'a> Payload<'a> for Cow<'a, [u8]> {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl Sink) {
         out.extend_from_slice(self);
     }
     fn get(payload: &'a [u8]) -> Result<Self, Error> {
@@ -296,7 +381,7 @@ impl<'a> Payload<'a> for Cow<'a, [u8]> {
 }
 
 impl<'a> Payload<'a> for &'a str {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl Sink) {
         out.extend_from_slice(self.as_bytes());
     }
     fn get(payload: &'a [u8]) -> Result<Self, Error> {
@@ -307,7 +392,7 @@ impl<'a> Payload<'a> for &'a str {
 /// A frame of one field is the field's payload (`frames!`); one of none is
 /// `()`, and one of two `(A, B)`, wire values one after the other.
 impl<'a, T: Payload<'a>> Payload<'a> for (T,) {
-    fn put(&self, out: &mut Vec<u8>) {
+    fn put(&self, out: &mut impl Sink) {
         self.0.put(out);
     }
     fn get(payload: &'a [u8]) -> Result<Self, Error> {
@@ -352,7 +437,7 @@ macro_rules! frames {
                 }
             }
 
-            fn write(&self, out: &mut Vec<u8>) -> u8 {
+            fn write(&self, out: &mut impl Sink) -> u8 {
                 match self {
                     $(Self::$var $(($($p),+))? => {
                         $($(Payload::put($p, out);)+)?
@@ -448,7 +533,174 @@ frames! {
         Detach = 5,
         /// Its answer to the server's `Read` of this number.
         Answer(asked: u64, value: crate::callback::Data) = 9,
+        /// A piece of a paste longer than a frame takes: the first is the
+        /// paste to its server (`Act::Paste`), its text kept by the
+        /// client's connection; the rest, while its last input is
+        /// `Input::More`, follow it, and its server never sees them.
+        Piece(inputs: Vec<crate::command::Input>) = PIECE_KIND,
     }
+}
+
+/// The kind of a piece of a body, after the frame it belongs to.
+const PIECE_KIND: u8 = 20;
+
+/// A piece of a request's inputs after the first, which its request
+/// carries: sent after it while the piece before ends in `Input::More`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Piece(pub Vec<crate::command::Input>);
+
+impl Wire for Piece {
+    fn put(&self, out: &mut impl crate::wire::Sink) {
+        Wire::put(&self.0, out);
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        Wire::get(r).map(Piece)
+    }
+}
+
+#[cfg(test)]
+impl crate::wire::Reach for Piece {}
+
+impl OneKind for Piece {
+    const KIND: u8 = PIECE_KIND;
+}
+
+/// The most text or bytes one piece of a body carries: half a frame, the
+/// rest left for its other inputs and what is said with it on its way.
+pub const PIECE: usize = MAX_PAYLOAD / 2;
+
+/// `inputs` cut into pieces, each one frame with room to spare: a text, a
+/// paste or bytes longer than `PIECE` is cut (a paste's parts but the last
+/// as `Input::Pasting`, so that it stays one paste), a run of keys is cut
+/// between keys, each counted as the wire has it, and every piece but
+/// the last ends in `Input::More`. Inputs that fit are one piece, as they
+/// are.
+pub fn cut_inputs(inputs: Vec<crate::command::Input>) -> Vec<Vec<crate::command::Input>> {
+    use crate::command::Input;
+    /// Where `len` bytes are cut, `room` left in the piece they begin in:
+    /// each part's end but the last's, moved back to where `boundary` lets
+    /// a part end.
+    fn cuts(len: usize, mut room: usize, boundary: impl Fn(usize) -> usize) -> Vec<usize> {
+        let (mut ends, mut at) = (Vec::new(), 0usize);
+        while len.saturating_sub(at) > room {
+            let end = boundary(at.saturating_add(room)).max(at);
+            ends.push(end);
+            (at, room) = (end, PIECE);
+        }
+        ends
+    }
+    /// More than a text's, a paste's or bytes' kind and length take on the
+    /// wire, counted with each.
+    const HEAD: usize = 16;
+    let (mut pieces, mut piece, mut held) = (Vec::new(), Vec::new(), 0usize);
+    for input in inputs {
+        let room = PIECE.saturating_sub(held);
+        // What is cut: its bytes, where a part may end, and a part of it.
+        type Part<'a> = Box<dyn Fn(&[u8], bool) -> Input + 'a>;
+        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+        let (bytes, chars, part): (&[u8], bool, Part<'_>) = match &input {
+            Input::Text(t) => (t.as_bytes(), true, Box::new(|b, _| Input::Text(text(b)))),
+            Input::Paste(t) => (
+                t.as_bytes(),
+                true,
+                Box::new(|b, last| match last {
+                    true => Input::Paste(text(b)),
+                    false => Input::Pasting(text(b)),
+                }),
+            ),
+            Input::Pasting(t) => (t.as_bytes(), true, Box::new(|b, _| Input::Pasting(text(b)))),
+            Input::Bytes(given) => (given, false, Box::new(|b, _| Input::Bytes(b.to_vec()))),
+            Input::Key(_) | Input::More => (&[], false, Box::new(|_, _| Input::More)),
+        };
+        // What it takes of a piece: a key as the wire has it; what is cut
+        // by its bytes, and more than what says their kind and length.
+        let takes = match &input {
+            Input::Key(_) | Input::More => crate::wire::encode(&input).len(),
+            Input::Text(_) | Input::Paste(_) | Input::Pasting(_) | Input::Bytes(_) => {
+                bytes.len().saturating_add(HEAD)
+            }
+        };
+        if takes <= room || bytes.is_empty() {
+            drop(part);
+            // An input with nothing to cut begins the next piece, once
+            // this one is full: keys are cut between them.
+            if takes > room && !piece.is_empty() {
+                piece.push(Input::More);
+                pieces.push(std::mem::take(&mut piece));
+                held = 0;
+            }
+            held = held.saturating_add(takes);
+            piece.push(input);
+            continue;
+        }
+        let room = room.saturating_sub(HEAD);
+        let whole = std::str::from_utf8(bytes).ok().filter(|_| chars);
+        let boundary = |mut at: usize| {
+            while whole.is_some_and(|text| !text.is_char_boundary(at)) {
+                at = at.saturating_sub(1);
+            }
+            at
+        };
+        let ends = cuts(bytes.len(), room, boundary);
+        let mut from = 0usize;
+        for end in ends {
+            if let Some(cut) = bytes.get(from..end).filter(|cut| !cut.is_empty()) {
+                piece.push(part(cut, false));
+            }
+            piece.push(Input::More);
+            pieces.push(std::mem::take(&mut piece));
+            from = end;
+        }
+        let last = bytes.get(from..).unwrap_or_default();
+        held = last.len().saturating_add(HEAD);
+        piece.push(part(last, true));
+    }
+    pieces.push(piece);
+    pieces
+}
+
+/// `asked` as its client sends it: one frame if it is one, with room for
+/// what is said with it on its way; else its inputs cut in pieces
+/// (`cut_inputs`), the first in the request and the rest in `Piece` frames
+/// after it. A request too long with no inputs to cut goes as it is, and
+/// is refused `too-long` where it arrives.
+pub fn encode_asked(asked: &Asked) -> Vec<u8> {
+    use crate::command::{ClientAction, Command, Request};
+    if sends_whole(asked) {
+        return asked.encode();
+    }
+    let mut first = asked.clone();
+    let (Request::Do(Command::SendKeys { inputs, .. })
+    | Request::Do(Command::Client {
+        action: ClientAction::Keys(inputs),
+        ..
+    })) = &mut first.request
+    else {
+        return asked.encode();
+    };
+    let mut rest = cut_inputs(std::mem::take(inputs)).into_iter();
+    *inputs = rest.next().unwrap_or_default();
+    let mut out = first.encode();
+    for piece in rest {
+        Piece(piece).encode_into(&mut out);
+    }
+    out
+}
+
+/// `frame` as an attached client sends it, each of its frames encoded: a
+/// paste longer than a frame takes in pieces (`AttachedFrame::Piece`), the
+/// first to send at once and each further one as it is asked for
+/// (`ToAttached::More`); anything else as its one frame.
+pub fn encode_attached(frame: &AttachedFrame) -> Vec<Vec<u8>> {
+    if let AttachedFrame::Act(act) = frame
+        && let Act::Paste(text) = &**act
+        && !sends_whole(frame)
+    {
+        return (cut_inputs(vec![crate::command::Input::Paste(text.clone())]).into_iter())
+            .map(|piece| AttachedFrame::Piece(piece).encode())
+            .collect();
+    }
+    vec![frame.encode()]
 }
 
 wire! {
@@ -676,6 +928,13 @@ frames! {
         /// What only it knows, asked for a request: it sends its `Answer`
         /// with this number.
         Read(asked: u64, read: crate::command::ClientRead) = 13,
+        /// The next piece of the paste it is sending is wanted now: it
+        /// sends one `AttachedFrame::Piece`. A client sends a paste's first
+        /// piece and then each further one only as it is asked for, so it
+        /// is never part way through writing one while the paste waits for
+        /// a program that isn't reading, and what else it has to say (an
+        /// `Answer`, a detach) is said meanwhile.
+        More = 21,
     }
 }
 
@@ -710,7 +969,7 @@ impl<T: OneKind> Frame<'_> for T {
         }
     }
 
-    fn write(&self, out: &mut Vec<u8>) -> u8 {
+    fn write(&self, out: &mut impl Sink) -> u8 {
         self.put(out);
         T::KIND
     }
@@ -763,6 +1022,20 @@ impl Joining {
 impl Decoder {
     pub fn push(&mut self, bytes: &[u8]) {
         self.buffer.push(bytes);
+    }
+
+    /// `push`, if the OS gives the room (`Error::Memory`): refused, it
+    /// holds what it held.
+    pub fn try_push(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        (self.buffer.try_push(bytes)).map_err(|_| Error::Memory(self.buffer.len()))
+    }
+
+    /// Makes room for `additional` more bytes, or says the OS gave none
+    /// (`Error::Memory`): a push within it allocates nothing, so a reader
+    /// that must not die of a refusal makes room before it reads its
+    /// socket, and leaves there what it has no room for.
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), Error> {
+        (self.buffer.try_reserve(additional)).map_err(|_| Error::Memory(self.buffer.len()))
     }
 
     /// Gives back memory beyond `keep` bytes once no more is pending.
@@ -840,6 +1113,28 @@ impl Decoder {
         F::decode(*kind, &joining.pieces).map(Some)
     }
 
+    /// Lets go of the pieces of a longer message that come next, and of
+    /// its last frame once that has come, joining nothing: for a reader
+    /// that takes one frame and tells its sender how long the message was.
+    /// `gone` counts what was let go of a message still coming, across
+    /// calls; the message's length, once all of it is let go.
+    pub fn skip_long(&mut self, gone: &mut usize) -> Result<Option<usize>, Error> {
+        loop {
+            let Some(whole) = whole(self.buffer.as_slice())? else {
+                return Ok(None);
+            };
+            let piece = self.buffer.as_slice().get(4) == Some(&MORE);
+            if !piece && *gone == 0 {
+                return Ok(None);
+            }
+            self.buffer.take_front(whole);
+            *gone = gone.saturating_add(whole.saturating_sub(5));
+            if !piece {
+                return Ok(Some(std::mem::take(gone)));
+            }
+        }
+    }
+
     /// Bytes held: whole frames not yet taken, and a frame not yet
     /// complete.
     pub fn buffered(&self) -> usize {
@@ -871,6 +1166,82 @@ fn whole(pending: &[u8]) -> Result<Option<usize>, Error> {
 mod tests {
     use super::*;
 
+    /// Inputs longer than a frame are cut into pieces that each fit one,
+    /// every piece but the last saying more follows; a paste cut stays one
+    /// paste, and what the pieces carry is what was given, cut between
+    /// characters.
+    #[test]
+    fn inputs_are_cut_into_pieces_that_say_whether_more_follows() {
+        use crate::command::Input;
+        let text: String = std::iter::repeat_n("é界", PIECE / 5 * 3).collect();
+        let inputs = vec![
+            Input::Text("ls".into()),
+            Input::Paste(text.clone()),
+            Input::Bytes(vec![7; PIECE + 3]),
+        ];
+        let pieces = cut_inputs(inputs);
+        assert!(pieces.len() >= 4, "{} pieces", pieces.len());
+        let (mut pasted, mut bytes, mut pastes) = (String::new(), 0usize, 0usize);
+        for (n, piece) in pieces.iter().enumerate() {
+            assert_eq!(Input::go_on(piece), n + 1 < pieces.len());
+            assert!(sends_whole(&Piece(piece.clone())), "piece {n} is no frame");
+            for input in piece {
+                match input {
+                    Input::Pasting(part) => pasted.push_str(part),
+                    Input::Paste(part) => {
+                        pasted.push_str(part);
+                        pastes += 1;
+                    }
+                    Input::Bytes(given) => bytes += given.len(),
+                    Input::Text(_) | Input::Key(_) | Input::More => {}
+                }
+            }
+        }
+        assert_eq!((pasted, pastes, bytes), (text, 1, PIECE + 3));
+        assert_eq!(cut_inputs(vec![Input::Text("ls".into())]).len(), 1);
+    }
+
+    /// Keys have nothing to cut, so a long run of them is cut between
+    /// keys: 200,000 presses, and keys among texts, go in pieces that each
+    /// fit a frame, every key there, in order (they went as one piece of
+    /// any length, which no reader takes).
+    #[test]
+    fn a_long_run_of_keys_is_cut_between_keys() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::command::Input;
+        let keys = ["a", "Enter", "C-x", "Down"];
+        let mut inputs = Vec::new();
+        // The keys alone, then a text among more of them.
+        for n in 0..201_000usize {
+            if n == 200_000 {
+                inputs.push(Input::Text(std::iter::repeat_n('t', PIECE / 3).collect()));
+            }
+            let key = keys.get(n % keys.len()).ok_or("a key")?;
+            inputs.push(Input::Key(key.parse().map_err(|_| "a key press")?));
+        }
+        let pieces = cut_inputs(inputs.clone());
+        assert!(pieces.len() > 1, "one piece");
+        // What the pieces carry, a text cut in two joined again.
+        let mut joined: Vec<Input> = Vec::new();
+        for (n, piece) in pieces.iter().enumerate() {
+            assert_eq!(Input::go_on(piece), n + 1 < pieces.len());
+            assert!(sends_whole(&Piece(piece.clone())), "piece {n} is no frame");
+            for input in piece {
+                match (joined.last_mut(), input) {
+                    (_, Input::More) => {}
+                    (Some(Input::Text(before)), Input::Text(more)) => before.push_str(more),
+                    (_, other) => joined.push(other.clone()),
+                }
+            }
+        }
+        assert!(
+            joined == inputs,
+            "{} inputs of {}",
+            joined.len(),
+            inputs.len()
+        );
+        Ok(())
+    }
+
     #[test]
     fn observation_wait_reads_its_whole_limit() -> Result<(), Box<dyn std::error::Error>> {
         use crate::command::{AnyRef, Limit, Since, Wait};
@@ -883,6 +1254,68 @@ mod tests {
         assert_eq!(Reader::new(&bytes).whole::<Wait>()?, wait);
         let prefix = bytes.get(..bytes.len().saturating_sub(4)).ok_or("limit")?;
         assert!(Reader::new(prefix).whole::<Wait>().is_err());
+        Ok(())
+    }
+
+    /// A frame encoded into room made first is the frame as it is encoded
+    /// otherwise, a long one in the same pieces, which a reader that asked
+    /// for it joins; and its length is known before.
+    #[test]
+    fn a_frame_encoded_into_room_made_first_is_the_same_frame() -> Result<(), Error> {
+        for payload in [
+            0,
+            1,
+            MAX_PAYLOAD,
+            MAX_PAYLOAD + 1,
+            2 * MAX_PAYLOAD,
+            2 * MAX_PAYLOAD + 7,
+        ] {
+            let bytes: Vec<u8> = (0u8..251).cycle().take(payload).collect();
+            let frame = ToCommand::Part(Cow::Borrowed(&bytes));
+            let (mut plain, mut tried) = (vec![9], vec![9]);
+            frame.encode_into(&mut plain);
+            frame.try_encode_into(&mut tried)?;
+            assert!(plain == tried, "{payload}");
+            assert_eq!(frame.encoded_len(), tried.len() - 1, "{payload}");
+            let (mut decoder, mut joining) = (Decoder::default(), Joining::default());
+            decoder.push(tried.get(1..).unwrap_or_default());
+            let joined = decoder.long::<ToCommand>(&mut joining)?;
+            assert!(joined == Some(frame), "{payload}");
+        }
+        let mut bare = Vec::new();
+        ToCommand::PartsEnd.try_encode_into(&mut bare)?;
+        assert_eq!(bare, ToCommand::PartsEnd.encode());
+        Ok(())
+    }
+
+    /// Refused memory, an encoding leaves what it would append to as it
+    /// was, and a decoder holds what it held; both go on after.
+    #[cfg(feature = "checks")]
+    #[test]
+    fn an_encoding_or_a_push_refused_memory_changes_nothing() -> Result<(), Error> {
+        // Longer than the room a short vector has: only what needs room
+        // can be refused it.
+        let why: String = std::iter::repeat_n('y', 200).collect();
+        let frame = ToCommand::Exit(&why);
+        let mut out = vec![1, 2, 3];
+        out.shrink_to_fit();
+        fux_vt::refuse_next(1);
+        let refused = frame.try_encode_into(&mut out);
+        assert_eq!(refused, Err(Error::Memory(frame.encoded_len())));
+        assert_eq!(out, [1, 2, 3]);
+        frame.try_encode_into(&mut out)?;
+        let encoded = out.get(3..).unwrap_or_default().to_vec();
+        assert_eq!(encoded, frame.encode());
+        let mut decoder = Decoder::default();
+        let (half, rest) = encoded.split_at_checked(4).unwrap_or_default();
+        decoder.try_push(half)?;
+        fux_vt::refuse_next(1);
+        assert_eq!(decoder.try_push(rest), Err(Error::Memory(4)));
+        assert_eq!(decoder.buffered(), 4);
+        fux_vt::refuse_next(1);
+        assert_eq!(decoder.try_reserve(rest.len()), Err(Error::Memory(4)));
+        decoder.try_push(rest)?;
+        assert_eq!(decoder.frame::<ToCommand>()?, Some(frame));
         Ok(())
     }
 

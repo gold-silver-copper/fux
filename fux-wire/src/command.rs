@@ -76,7 +76,7 @@ impl<const MIN: usize, const MAX: usize> Number<MIN, MAX> {
 
 impl<const MIN: usize, const MAX: usize> Wire for Number<MIN, MAX> {
     fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.0.put(out);
+        Wire::put(&self.0, out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Number::new(usize::get(r)?).ok_or(Error::Bad("number"))
@@ -392,6 +392,19 @@ wire! {
         Paste(text: String),
         /// Bytes as they are: part of a key's sequence or of a character.
         Bytes(bytes: Vec<u8>),
+        /// The text of a paste that goes on in the input after it, in this
+        /// piece or the next: one paste to its program, however many pieces
+        /// it came in. No command line writes it (`protocol::cut_inputs`).
+        Pasting(text: String),
+        /// The last of a piece: its inputs go on in the piece after it.
+        More,
+    }
+}
+
+impl Input {
+    /// Whether `inputs` are a piece of a body that goes on in another.
+    pub fn go_on(inputs: &[Input]) -> bool {
+        matches!(inputs.last(), Some(Input::More))
     }
 }
 

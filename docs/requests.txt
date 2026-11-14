@@ -91,6 +91,8 @@ Input::Key key: KeyPress
 Input::Text text: String
 Input::Paste text: String
 Input::Bytes bytes: Vec<u8>
+Input::Pasting text: String
+Input::More
 CaptureView full: bool, wrapped: bool, styles: bool, source: Source, marks: bool, rows: Option<(u16, u16)>, cols: Option<(u16, u16)>, since: Option<Version>
 Source::Shown
 Source::Main

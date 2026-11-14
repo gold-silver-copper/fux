@@ -422,7 +422,8 @@ impl Session {
                 rung.push(view.id);
             }
         }
-        rung.into_iter().for_each(|client| self.ask(client, BELL));
+        let bell = |client| Outgoing::Owed(client, crate::link::Owed::Bell, BELL.to_vec());
+        self.outbox.extend(rung.into_iter().map(bell));
     }
 
     /// What client `client`'s terminal is sent before it is painted: the
@@ -843,11 +844,12 @@ mod tests {
     fn sent(s: &mut Session, c: ClientId) -> Vec<Vec<u8>> {
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut s.outbox)
             .into_iter()
-            .partition(|o| matches!(o, Outgoing::To(to, ToAttached::Paint(_)) if *to == c));
+            .partition(|o| matches!(o, Outgoing::To(to, ToAttached::Paint(_)) | Outgoing::Owed(to, ..) if *to == c));
         s.outbox = rest;
         mine.into_iter()
             .filter_map(|o| match o {
                 Outgoing::To(_, ToAttached::Paint(bytes)) => Some(bytes.into_owned()),
+                Outgoing::Owed(_, _, bytes) => Some(bytes),
                 Outgoing::To(
                     _,
                     ToAttached::Welcome(..)
@@ -855,7 +857,8 @@ mod tests {
                     | ToAttached::Ended(_)
                     | ToAttached::Open(_)
                     | ToAttached::Keys(_)
-                    | ToAttached::Read(..),
+                    | ToAttached::Read(..)
+                    | ToAttached::More,
                 )
                 | Outgoing::Keys(..)
                 | Outgoing::Shutdown { .. } => None,

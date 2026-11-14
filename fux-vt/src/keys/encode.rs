@@ -1,7 +1,7 @@
 //! Byte encodings for keys, pastes and focus changes delivered to a
 //! program, in the modes it asked for (application cursor keys, the kitty
 //! keyboard protocol, modifyOtherKeys, bracketed paste, focus reporting):
-//! [`key_bytes`] and [`paste`] take them given, as
+//! [`key_bytes`] and a [`PasteEncoder`] take them given, as
 //! [`crate::Screen::key_mode`] and [`crate::Screen::mode`] read them from
 //! the program's screen, and [`crate::Screen::focus_report`] reads its
 //! own. Mouse reports are [`crate::keys::mouse`]'s.
@@ -113,48 +113,192 @@ pub(crate) const PASTE_START: &[u8] = b"\x1b[200~";
 /// What a bracketed paste ends with (`CSI 201 ~`).
 pub(crate) const PASTE_END: &[u8] = b"\x1b[201~";
 
-/// Appends a paste as the pane should receive it to `out`: each line end
-/// (`\n` or `\r\n`) one CR, as xterm 411 sends a `\n` (`button.c`, its
-/// `pasteLiteralNL` resource off by default), though xterm sends `\r\n` as
-/// two, which a shell runs as two Enters; framed if
-/// it asked for bracketed paste, with every end marker inside the text
-/// removed (`CSI 201 ~`, ESC `[` or the C1 CSI, U+009B), as often as
-/// removing one makes another, so the text cannot end the paste early.
-/// Unbracketed, the program asked for no frame to break.
+/// Appends a paste, whole, as the pane should receive it to `out`: what a
+/// [`PasteEncoder`] makes of it in one piece. A paste the OS refuses the
+/// memory for is not sent at all.
 pub fn paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
-    let crs;
-    let text = if text.contains('\n') {
-        crs = text.replace("\r\n", "\r").replace('\n', "\r");
-        crs.as_str()
-    } else {
-        text
-    };
-    if !bracketed {
-        return out.extend_from_slice(text.as_bytes());
+    // Room for all of it first, its closing bracket too: never half a
+    // paste, its bracket left open.
+    if crate::bytes::try_reserve(out, text.len().saturating_add(PasteEncoder::CLOSING)).is_err() {
+        return;
     }
-    out.extend_from_slice(PASTE_START);
-    // A marker can only be made by removing one, so text with none goes as
-    // it is.
-    if !text.contains("201~") {
-        out.extend_from_slice(text.as_bytes());
-        return out.extend_from_slice(PASTE_END);
+    let mut encoder = PasteEncoder::new(bracketed);
+    let _ = encoder.push(text.as_bytes(), out);
+    let _ = encoder.finish(out);
+}
+
+/// The most bytes of an end marker a [`PasteEncoder`] holds back: all but
+/// its last.
+const HELD: usize = 5;
+
+/// One paste on its way to a pane's program, taken in pieces cut anywhere
+/// (inside a line end, a character or an end marker): whatever the pieces,
+/// the bytes are those of the paste taken whole. It holds no more than an
+/// end marker's bytes.
+///
+/// Each line end (`\n` or `\r\n`) goes as one CR, as xterm 411 sends a
+/// `\n` (`button.c`, its `pasteLiteralNL` resource off by default), though
+/// xterm sends `\r\n` as two, which a shell runs as two Enters. If the
+/// program asked for bracketed paste it is framed, once, and no end marker
+/// (`CSI 201 ~`, ESC `[` or the C1 CSI, U+009B) goes between the brackets,
+/// so the text cannot end the paste early: a marker in the text is
+/// removed; one that removing another would make, of bytes already sent,
+/// loses its last byte instead. Unbracketed, the program asked for no
+/// frame to break.
+#[derive(Clone, Debug)]
+pub struct PasteEncoder {
+    bracketed: bool,
+    /// The opening bracket is sent.
+    opened: bool,
+    /// The byte before was a CR: a `\n` next is the rest of its line end.
+    cr_pending: bool,
+    /// The end marker the bytes last taken begin: `matched` of its bytes,
+    /// the first `sent` of them in `out` already (what was left before a
+    /// marker removed), the rest held back till a byte says which it is.
+    marker: &'static [u8],
+    matched: usize,
+    sent: usize,
+    /// The last bytes sent between the brackets; zeros before any.
+    tail: [u8; HELD],
+}
+
+impl PasteEncoder {
+    /// A paste for a program that asked for bracketed paste, or did not.
+    pub fn new(bracketed: bool) -> Self {
+        Self {
+            bracketed,
+            opened: false,
+            cr_pending: false,
+            marker: PASTE_END,
+            matched: 0,
+            sent: 0,
+            tail: [0; HELD],
+        }
     }
-    let start = out.len();
-    for c in text.chars() {
-        out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
-        // A marker can only end where a character was just added; what is
-        // left after removing one is checked again by the characters after.
-        if c == '~' {
-            let text = out.get(start..).unwrap_or_default();
-            for marker in [PASTE_END, C1_PASTE_END] {
-                if text.ends_with(marker) {
-                    out.truncate(out.len().saturating_sub(marker.len()));
+
+    /// Appends what `text`, the paste's next bytes, adds to `out`, the
+    /// opening bracket before the first. Refused the memory, it leaves
+    /// `out` and itself as they were, to take `text` again.
+    pub fn push(&mut self, text: &[u8], out: &mut Vec<u8>) -> Result<(), crate::Error> {
+        // A byte taken sends one at most, after what is held and the bracket.
+        let most = (text.len().saturating_add(PASTE_START.len())).saturating_add(HELD);
+        crate::bytes::try_reserve(out, most)?;
+        if self.bracketed && !self.opened {
+            out.extend_from_slice(PASTE_START);
+        }
+        self.opened = true;
+        let mut rest = text;
+        while let Some((&byte, after)) = rest.split_first() {
+            // Bytes that are no part of a line end or a marker go as they are.
+            if self.matched == 0
+                && let run = (rest.iter().position(|b| self.stops(*b))).unwrap_or(rest.len())
+                && let Some((plain, after)) = rest.split_at_checked(run)
+                && !plain.is_empty()
+            {
+                self.send(plain, out);
+                self.cr_pending = false;
+                rest = after;
+                continue;
+            }
+            rest = after;
+            let was_cr = std::mem::replace(&mut self.cr_pending, byte == b'\r');
+            let byte = match byte {
+                b'\n' if was_cr => continue,
+                b'\n' => b'\r',
+                byte => byte,
+            };
+            match self.bracketed {
+                true => self.marked(byte, out),
+                false => self.send(&[byte], out),
+            }
+        }
+        Ok(())
+    }
+
+    /// The most bytes `finish` appends: both brackets and what is held
+    /// back. One that keeps this much room in what it finishes into, from
+    /// before its paste's first byte is sent, can always close its paste
+    /// (`finish` asks for no room it has).
+    pub const CLOSING: usize = PASTE_START.len() + HELD + PASTE_END.len();
+
+    /// Ends the paste: what is held back, then the closing bracket, after
+    /// the opening one if nothing was taken. It is then a new paste's.
+    /// Refused the memory, it leaves `out` and itself as they were.
+    pub fn finish(&mut self, out: &mut Vec<u8>) -> Result<(), crate::Error> {
+        crate::bytes::try_reserve(out, Self::CLOSING)?;
+        if self.bracketed && !self.opened {
+            out.extend_from_slice(PASTE_START);
+        }
+        out.extend_from_slice(self.held());
+        if self.bracketed {
+            out.extend_from_slice(PASTE_END);
+        }
+        *self = Self::new(self.bracketed);
+        Ok(())
+    }
+
+    /// Whether `byte` is one `push` looks at alone: part of a line end, or
+    /// what a marker begins with.
+    fn stops(&self, byte: u8) -> bool {
+        matches!(byte, b'\r' | b'\n') || self.bracketed && matches!(byte, 0x1b | 0xc2)
+    }
+
+    /// The bytes of a marker begun that are held back.
+    fn held(&self) -> &'static [u8] {
+        self.marker.get(self.sent..self.matched).unwrap_or_default()
+    }
+
+    /// Sends `bytes`, for which `out` has room (`push`).
+    fn send(&mut self, bytes: &[u8], out: &mut Vec<u8>) {
+        out.extend_from_slice(bytes);
+        match bytes.last_chunk::<HELD>() {
+            Some(last) => self.tail = *last,
+            None => {
+                for byte in bytes {
+                    self.tail.rotate_left(1);
+                    if let Some(last) = self.tail.last_mut() {
+                        *last = *byte;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Takes `byte` of a bracketed paste: held back while it goes on a
+    /// marker, sent with what was held once it does not, and dropped with
+    /// it as it ends one. A marker whose first bytes are sent already
+    /// loses only its last.
+    fn marked(&mut self, byte: u8, out: &mut Vec<u8>) {
+        if self.matched > 0 && self.marker.get(self.matched) == Some(&byte) {
+            if self.matched.saturating_add(1) < self.marker.len() {
+                self.matched = self.matched.saturating_add(1);
+            } else if self.sent == 0 {
+                self.rematch();
+            }
+            return;
+        }
+        let held = self.held();
+        self.send(held, out);
+        (self.matched, self.sent) = (0, 0);
+        match byte {
+            0x1b => (self.marker, self.matched) = (PASTE_END, 1),
+            0xc2 => (self.marker, self.matched) = (C1_PASTE_END, 1),
+            byte => self.send(&[byte], out),
+        }
+    }
+
+    /// A marker was removed: the bytes sent before it may begin another.
+    fn rematch(&mut self) {
+        (self.matched, self.sent) = (0, 0);
+        for marker in [PASTE_END, C1_PASTE_END] {
+            for len in (self.matched.saturating_add(1)..=HELD).rev() {
+                if (marker.get(..len)).is_some_and(|begun| self.tail.ends_with(begun)) {
+                    (self.marker, self.matched, self.sent) = (marker, len, len);
                     break;
                 }
             }
         }
     }
-    out.extend_from_slice(PASTE_END);
 }
 
 /// `CSI 201 ~` with the C1 CSI, U+009B, in UTF-8.
@@ -1410,18 +1554,19 @@ mod tests {
     fn a_bracketed_paste_cannot_end_itself_early() {
         assert_eq!(pasted("a\x1b[201~b", false), b"a\x1b[201~b");
         assert_eq!(pasted("a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~");
-        // A marker that removing another makes is removed too, however
-        // deep: a single pass left `\x1b[201~` here.
-        assert_eq!(pasted("\x1b[20\x1b[201~1~x", true), b"\x1b[200~x\x1b[201~");
-        let mut nested = String::from("x");
-        for _ in 0..5 {
-            nested = nested.replacen('x', "\x1b[20x1~", 1);
-        }
-        let nested = nested.replacen('x', "\x1b[201~", 1);
-        assert_eq!(pasted(&nested, true), b"\x1b[200~\x1b[201~");
+        // A marker that removing another makes, of bytes sent before it,
+        // loses its last byte: a single pass left `\x1b[201~` here.
+        let inner = |text: &str| {
+            let out = pasted(text, true);
+            let inner = out.strip_prefix(PASTE_START)?.strip_suffix(PASTE_END)?;
+            Some(inner.to_vec())
+        };
+        let nested = inner("\x1b[20\x1b[201~1~x");
+        assert_eq!(nested.as_deref(), Some(&b"\x1b[201x"[..]));
         // The C1 CSI, U+009B, which a terminal may read as ESC [.
         assert_eq!(pasted("a\u{9b}201~b", true), b"\x1b[200~ab\x1b[201~");
-        assert_eq!(pasted("\u{9b}20\x1b[201~1~", true), b"\x1b[200~\x1b[201~");
+        let nested = inner("\u{9b}20\x1b[201~1~");
+        assert_eq!(nested.as_deref(), Some(&b"\xc2\x9b201"[..]));
         // Text that only looks alike stays.
         for text in [
             "\x1b[200~",
@@ -1436,10 +1581,17 @@ mod tests {
             expected.extend_from_slice(PASTE_END);
             assert_eq!(pasted(text, true), expected, "{text:?}");
         }
+        // However deep one marker is nested in others, none is left.
+        let mut nested = String::from("x");
+        for _ in 0..5 {
+            nested = nested.replacen('x', "\x1b[20x1~", 1);
+        }
+        let nested = nested.replacen('x', "\x1b[201~", 1);
         let pieces = ["\x1b", "[", "2", "0", "1", "~", "\u{9b}", "x", "\x1b[201~"];
         // Every text of up to four pieces.
         let mut texts = vec![String::new()];
         let mut last = texts.clone();
+        texts.push(nested);
         for _ in 0..4 {
             last = (last.iter())
                 .flat_map(|t| pieces.iter().map(move |p| format!("{t}{p}")))
@@ -1481,6 +1633,68 @@ mod tests {
             };
             assert_eq!(out, expected, "bracketed {bracketed}");
         }
+    }
+
+    /// A paste taken in pieces, cut anywhere, is the bytes of the paste
+    /// taken whole, with one bracket each end: through a line end, a
+    /// four-byte character, both end markers and one nested in another.
+    #[test]
+    fn a_paste_in_pieces_is_the_paste_whole() -> Result<(), crate::Error> {
+        let long = "a\r\nb\n\r\r\n\u{1F600}c\x1b[201~d\u{9b}201~e\x1b[20\x1b[201~1~f\r";
+        for (text, cuts) in [(long, 1), ("\r\n\x1b[2\u{9b}201~01~\n", 2), ("", 1)] {
+            let text = text.as_bytes();
+            for bracketed in [false, true] {
+                let mut whole = Vec::new();
+                paste(&String::from_utf8_lossy(text), bracketed, &mut whole);
+                let ends = |out: &[u8]| {
+                    let at = |i: usize, m: &[u8]| out.get(i..).is_some_and(|o| o.starts_with(m));
+                    let count = |m: &[u8]| (0..out.len()).filter(|i| at(*i, m)).count();
+                    (count(PASTE_START), count(PASTE_END), count(C1_PASTE_END))
+                };
+                if bracketed {
+                    assert_eq!(ends(&whole), (1, 1, 0), "{text:?}");
+                }
+                for first in 0..=text.len() {
+                    let seconds = match cuts {
+                        1 => first..=first,
+                        _ => first..=text.len(),
+                    };
+                    for second in seconds {
+                        let mut encoder = PasteEncoder::new(bracketed);
+                        let mut out = Vec::new();
+                        let (a, rest) = text.split_at_checked(first).unwrap_or_default();
+                        let cut = second.saturating_sub(first);
+                        let (b, c) = rest.split_at_checked(cut).unwrap_or_default();
+                        for piece in [a, b, c] {
+                            encoder.push(piece, &mut out)?;
+                        }
+                        encoder.finish(&mut out)?;
+                        assert_eq!(out, whole, "{text:?} cut at {first} and {second}");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A paste whose sender went part way through a marker is ended with
+    /// what it held and its closing bracket; one refused memory is as it
+    /// was, and goes on once memory is given.
+    #[test]
+    fn a_paste_cut_short_is_closed() -> Result<(), crate::Error> {
+        let mut encoder = PasteEncoder::new(true);
+        let mut out = Vec::new();
+        encoder.push(b"a\x1b[20", &mut out)?;
+        #[cfg(feature = "checks")]
+        {
+            crate::check::refuse_next(2);
+            assert!(encoder.push(b"1", &mut out).is_err());
+            assert!(encoder.finish(&mut out).is_err());
+            assert_eq!(out, b"\x1b[200~a");
+        }
+        encoder.finish(&mut out)?;
+        assert_eq!(out, b"\x1b[200~a\x1b[20\x1b[201~");
+        Ok(())
     }
 
     #[test]

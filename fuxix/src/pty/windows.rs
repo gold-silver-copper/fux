@@ -251,6 +251,10 @@ impl Sealed for Master {
     fn write(&self, bytes: &[u8]) -> SysResult<usize> {
         crate::io::write(&self.input, bytes)
     }
+
+    fn written(&self) -> bool {
+        crate::io::written(&self.input)
+    }
 }
 
 impl Source for Master {}
