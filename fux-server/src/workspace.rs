@@ -462,7 +462,7 @@ pub(crate) struct Structure {
 /// The workspaces a kill closes as it empties them: none (it kills a pane
 /// or a tab), those within one, or every one.
 #[derive(Clone, Copy)]
-pub(crate) enum Killing {
+enum Killing {
     None,
     Within(WsId),
     All,
@@ -1288,9 +1288,9 @@ impl Parts {
         })
     }
 
-    /// Removes tab `tab`, killed as `killing` kills it, and gives back the
-    /// panes in it, closed. Each workspace it leaves empty goes too.
-    pub(crate) fn remove_tab(&mut self, tab: TabId, killing: Killing) -> Vec<Pane> {
+    /// Removes tab `tab`, killed, and gives back the panes in it, closed.
+    /// Each workspace it leaves empty goes too, emptied.
+    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Vec<Pane> {
         let Some((ws, t)) = self.tab(tab) else {
             return Vec::new();
         };
@@ -1300,11 +1300,77 @@ impl Parts {
                 let closed = PaneEvent::Closed(Close::Killed);
                 (parts.journal).push(Event::Pane(((ws, tab), pane), closed));
             }
-            parts.drop_tab(tab, Close::Killed, killing);
+            parts.drop_tab(tab, Close::Killed, Killing::None);
             (panes.into_iter())
                 .filter_map(|pane| parts.panes.remove(&pane))
                 .collect()
         })
+    }
+
+    /// Removes workspace `ws` and all in it, or with none everything,
+    /// killed, and gives back the panes there, closed: tab by tab in
+    /// order, each workspace as its last child leaves, and each that holds
+    /// `ws` that it leaves empty, emptied. In one pass: the tabs that
+    /// close in each workspace are counted once for all, not up from each
+    /// tab, what is in `ws` is known killed without asking of each, and
+    /// what each client is shown is compared once, before and after.
+    pub(crate) fn remove_workspace(&mut self, ws: Option<WsId>) -> Vec<Pane> {
+        let tabs: Vec<TabId> = (self.tabs_in(ws).into_iter())
+            .map(|(_, tab)| tab.id)
+            .collect();
+        let killing = ws.map_or(Killing::All, Killing::Within);
+        self.count_closing(ws);
+        self.viewing(|parts| {
+            let mut closed = Vec::new();
+            for tab in tabs {
+                let Some((at, panes)) = parts.tab(tab).map(|(at, t)| (at, t.root.panes())) else {
+                    continue;
+                };
+                for &pane in &panes {
+                    let closed = PaneEvent::Closed(Close::Killed);
+                    (parts.journal).push(Event::Pane(((at, tab), pane), closed));
+                }
+                if let Some(emptied) = parts.take_tab(tab, Close::Killed) {
+                    parts.drop_emptied(emptied, true, killing);
+                }
+                closed.extend(
+                    panes
+                        .into_iter()
+                        .filter_map(|pane| parts.panes.remove(&pane)),
+                );
+            }
+            closed
+        })
+    }
+
+    /// Counts, for each workspace in `ws` or holding it (with none: every
+    /// one), the tabs in it at any depth as closing (`closing`): each
+    /// workspace after those in it, then each that holds `ws`, once.
+    fn count_closing(&mut self, ws: Option<WsId>) {
+        let mut counts: BTreeMap<WsId, usize> = BTreeMap::new();
+        let mut all = 0usize;
+        for inner in self.workspaces_in(ws).into_iter().rev() {
+            let within = |child: &AnyRef| match child {
+                AnyRef::Tab(_) => 1,
+                AnyRef::Workspace(inner) => counts.get(inner).copied().unwrap_or(0),
+                AnyRef::Pane(_) => 0,
+            };
+            let tabs = (inner.children.children.iter())
+                .map(within)
+                .fold(0usize, usize::saturating_add);
+            counts.insert(inner.id, tabs);
+            if inner.parent.is_none() || Some(inner.id) == ws {
+                all = all.saturating_add(tabs);
+            }
+        }
+        let above: Vec<WsId> = ws.map_or_else(Vec::new, |ws| self.up(ws).skip(1).collect());
+        let counted = counts
+            .into_iter()
+            .chain(above.into_iter().map(|ws| (ws, all)));
+        for (ws, tabs) in counted {
+            let closing = self.closing.entry(ws).or_default();
+            closing.tabs = closing.tabs.saturating_add(tabs);
+        }
     }
 
     /// Takes tab `tab` out of its workspace, closed `why`, and each
@@ -1312,30 +1378,35 @@ impl Parts {
     /// client shown one is shown the one it was shown before, else the
     /// neighbour (`Stack::remove`).
     fn drop_tab(&mut self, tab: TabId, why: Close, killing: Killing) {
-        let Some(gone) = self.tabs.remove(&tab) else {
+        let Some(ws) = self.tabs.get(&tab).map(|tab| tab.ws) else {
             return;
         };
+        let within: Vec<WsId> = self.up(ws).collect();
+        for within in within {
+            let closing = self.closing.entry(within).or_default();
+            closing.tabs = closing.tabs.saturating_add(1);
+        }
+        if let Some(emptied) = self.take_tab(tab, why) {
+            self.drop_workspace(emptied, killing);
+        }
+    }
+
+    /// Takes tab `tab` out of its workspace, closed `why`, its row gone
+    /// and its panes no tab's: its workspace, if that leaves it empty.
+    fn take_tab(&mut self, tab: TabId, why: Close) -> Option<WsId> {
+        let gone = self.tabs.remove(&tab)?;
         let ws = gone.ws;
         for pane in gone.root.panes() {
             if self.homes.get(&pane) == Some(&tab) {
                 self.homes.remove(&pane);
             }
         }
-        let within: Vec<WsId> = self.up(ws).collect();
-        for within in within {
-            let closing = self.closing.entry(within).or_default();
-            closing.tabs = closing.tabs.saturating_add(1);
-        }
-        let Some(w) = self.workspaces.get_mut(&ws) else {
-            return;
-        };
+        let w = self.workspaces.get_mut(&ws)?;
         w.children.remove(AnyRef::Tab(tab));
         let emptied = w.children.children.is_empty();
         self.journal
             .push(Event::Tab((ws, tab), Change::Closed(why)));
-        if emptied {
-            self.drop_workspace(ws, killing);
-        }
+        emptied.then_some(ws)
     }
 
     /// Takes workspace `ws`, emptied, out of what holds it, closed, and so
@@ -1343,11 +1414,16 @@ impl Parts {
     /// it, else emptied. It goes up one level at a time: whether one is in
     /// the workspace killed is found once, and holds till that one closed.
     fn drop_workspace(&mut self, ws: WsId, killing: Killing) {
-        let mut killed = match killing {
+        let killed = match killing {
             Killing::All => true,
             Killing::Within(w) => self.within(ws, w),
             Killing::None => false,
         };
+        self.drop_emptied(ws, killed, killing);
+    }
+
+    /// `drop_workspace`, `ws` known to be killed or not (`killed`).
+    fn drop_emptied(&mut self, ws: WsId, mut killed: bool, killing: Killing) {
         let mut emptied = Some(ws);
         while let Some(ws) = emptied {
             self.step();
@@ -1414,16 +1490,6 @@ impl Parts {
             }
             Some(())
         })
-    }
-
-    /// Closes everything: the panes given back, to end.
-    pub(crate) fn close_all(&mut self) -> Vec<Pane> {
-        let tabs: Vec<TabId> = (self.tabs_in(None).into_iter())
-            .map(|(_, t)| t.id)
-            .collect();
-        tabs.into_iter()
-            .flat_map(|tab| self.remove_tab(tab, Killing::All))
-            .collect()
     }
 
     /// Names workspace `id` `name`, if there is one.

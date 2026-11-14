@@ -156,6 +156,70 @@ fn the_work_of_nesting_and_killing_grows_with_the_depth_alone() -> TestResult {
     Ok(())
 }
 
+/// A tree of `depth` workspaces, each in the one before, with a tab of one
+/// pane in every one, none of them running anything; a client attached,
+/// shown the innermost.
+fn chain_of_tabs(depth: u32, client: ClientId) -> Result<Parts, String> {
+    let (options, journal) = defaults()?;
+    let size = Size::new(24, 80).map_err(|e| e.to_string())?;
+    let pane = |id: u32| -> Result<Pane, String> {
+        let recorded = crate::record::Pane {
+            id: PaneId::of(id),
+            name: None,
+            shell: false,
+            argv: Program::new("cat".into(), Vec::new())?,
+            cwd: "/".into(),
+            options,
+            size,
+            respawns: 0,
+            ended: None,
+            read_error: None,
+        };
+        Ok(Pane::recorded(&recorded, None))
+    };
+    let mut parts = Parts::new(journal);
+    for level in 1..=depth {
+        let parent = level.checked_sub(1).filter(|above| *above > 0);
+        let made = vec![(WsId::of(level), None)];
+        let first = (TabId::of(level), None, Fit::Clients(size));
+        (parts.add_workspaces(parent.map(WsId::of), made, first, pane(level)?))
+            .map_err(|_| "no such parent")?;
+    }
+    parts.attach(client, AnyRef::Tab(TabId::of(depth)));
+    Ok(parts)
+}
+
+/// F011, with a tab in every workspace of the chain: killing the outermost
+/// reads about twice the rows at twice the depth. Each tab's close once
+/// went up through every workspace still there to count it, and compared
+/// what each client is shown, the whole tree read, before and after it:
+/// the square of the depth, whatever the journal costs.
+#[test]
+fn killing_a_chain_with_a_tab_at_every_level_grows_with_the_depth_alone() -> TestResult {
+    let client = ClientId::of(1);
+    let steps = |depth: u32| -> Result<u64, String> {
+        let mut parts = chain_of_tabs(depth, client)?;
+        assert_eq!(
+            parts.place(client).map(|((ws, _), _)| ws),
+            Some(WsId::of(depth))
+        );
+        parts.steps.set(0);
+        let closed = parts.remove_workspace(Some(WsId::of(1)));
+        assert_eq!(
+            closed.len(),
+            usize::try_from(depth).map_err(|e| e.to_string())?
+        );
+        assert!(parts.every_workspace().is_empty() && parts.place(client).is_none());
+        Ok(parts.steps.get())
+    };
+    let (once, twice) = (steps(200)?, steps(400)?);
+    assert!(
+        once > 200 && twice < once.saturating_mul(3),
+        "{once} rows read at depth 200, {twice} at 400"
+    );
+    Ok(())
+}
+
 /// The files in `kept` that hold `bytes` bytes or more, each with what
 /// tells it from one written anew in its place.
 #[cfg(unix)]

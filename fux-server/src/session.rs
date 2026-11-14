@@ -7,7 +7,7 @@ use crate::pane::{self, Runs};
 use crate::record::Tracked;
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Form, Pending, Waiting, Watches};
-use crate::workspace::{Destination, Fit, Killing, Parts, Split, Tab, Workspace};
+use crate::workspace::{Destination, Fit, Parts, Split, Tab, Workspace};
 use fux_vt::Size;
 use fux_vt::keys::Direction;
 use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
@@ -2956,10 +2956,10 @@ impl Session {
         self.after_close(now);
     }
 
-    /// Removes a tab and whatever panes are in it, killed as `killing`
-    /// kills it (`Parts::remove_tab`).
-    fn remove_tab(&mut self, tab: TabId, killing: Killing, now: Instant) {
-        for gone in self.parts.remove_tab(tab, killing) {
+    /// Removes a tab and whatever panes are in it, killed
+    /// (`Parts::remove_tab`).
+    fn remove_tab(&mut self, tab: TabId, now: Instant) {
+        for gone in self.parts.remove_tab(tab) {
             self.end_pane(gone.id(), true, now);
         }
     }
@@ -3120,7 +3120,7 @@ impl Session {
     /// kept then stays, its record saying it ended, and the next start
     /// tells each again (`untold`).
     pub fn shutdown(&mut self, now: Instant) {
-        for pane in self.parts.close_all() {
+        for pane in self.parts.remove_workspace(None) {
             self.end_pane(pane.id(), true, now);
         }
         let awaited = std::mem::take(&mut self.awaited);
@@ -3706,21 +3706,32 @@ impl Session {
         Ok(acted(version))
     }
 
-    /// `kill`: a pane closed, or every pane in `scope` (`tabs_of`), tab by
-    /// tab.
+    /// `kill`: a pane closed, a tab, or a workspace and all in it (with
+    /// none, everything) in one pass (`Parts::remove_workspace`).
     fn kill(&mut self, scope: Option<AnyRef>, now: Instant) -> Result<(), Error> {
         if let Some(AnyRef::Pane(pane)) = scope {
             self.pane(pane)?;
             self.close_pane(pane, None, now);
             return Ok(());
         }
-        let killing = match scope {
-            None => Killing::All,
-            Some(AnyRef::Workspace(ws)) => Killing::Within(ws),
-            Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => Killing::None,
-        };
-        for tab in self.tabs_of(scope)? {
-            self.remove_tab(tab, killing, now);
+        // That it is there, as its tabs are found.
+        let tabs = self.tabs_of(scope)?;
+        match scope {
+            Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => {
+                for tab in tabs {
+                    self.remove_tab(tab, now);
+                }
+            }
+            // A workspace and all in it, or everything, in one pass.
+            Some(AnyRef::Workspace(_)) | None => {
+                let ws = match scope {
+                    Some(AnyRef::Workspace(ws)) => Some(ws),
+                    Some(AnyRef::Tab(_) | AnyRef::Pane(_)) | None => None,
+                };
+                for gone in self.parts.remove_workspace(ws) {
+                    self.end_pane(gone.id(), true, now);
+                }
+            }
         }
         self.after_close(now);
         Ok(())
