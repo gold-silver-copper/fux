@@ -224,11 +224,13 @@ fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
     );
     assert_eq!(again.parts.panes().len(), 2);
     assert_eq!(large(&kept, NAME)?, named, "taken back, not written again");
-    // Named anew: the old name's file goes once the structure names the
-    // new, and what the crash left with it, the run being this server's.
-    assert!(crate::record::name_file(&kept, 77).exists());
-    ask(&mut again, &rename("short"))?;
+    // What the crash left went with the first record written here: its
+    // panes, in the first session's process, were found gone, and so
+    // recorded. (A server that finds them all there writes none till
+    // something changes: `tests/pane_processes.rs`.)
     assert!(!crate::record::name_file(&kept, 77).exists());
+    // Named anew: the old name's file goes once the structure names the new.
+    ask(&mut again, &rename("short"))?;
     assert_eq!(large(&kept, NAME)?, []);
     let names = std::fs::read_dir(&kept)?
         .flatten()
