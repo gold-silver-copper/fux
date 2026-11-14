@@ -24,6 +24,8 @@ use fux_wire::protocol::{Attach, Body, Reply, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+#[cfg(test)]
+mod flat;
 mod inspect;
 use std::time::{Duration, Instant};
 
