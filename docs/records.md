@@ -514,14 +514,23 @@ too large for its memory, say) fails that request `out-of-memory`, and the next 
 reading a frame's texts and lists, the server too, takes the refusal as a frame it can't read: that
 connection or link ends, with the reason. A connection's process joining the pieces of a screen or a
 capture ends that connection the same way. Keys and pastes are joined nowhere: what is longer than a frame
-goes to its pane a piece at a time, each sent once the pane's terminal took the one before, so a paste to a
-program that reads nothing waits in the client that sent it, and that client's later keys wait behind it;
-if the client goes, the paste ends where it is, closed. `input` is told once a piece. A pane holds one
-frame of answers to its program's own queries, and reads that program's output no more till it reads them. A pane refused memory reading its program's
-output, or for a resize, loses only what that was for, and counts it (`lost`, `memory`). Every other allocation
+goes to its pane a piece at a time, each sent once the pane's terminal took the one before, so a large
+`send-keys` or paste to a program that isn't reading blocks its sender until the program reads, as a terminal
+would, and that sender's later keys wait behind it; a short one answers at once while the terminal has room
+for it (a few thousand bytes), and waits like the rest once it has none. If the sender goes, its keys end
+where they are, a paste it had begun closed. `input` is told once a piece. A pane holds one
+frame of answers to its program's own queries, and reads that program's output no more till it reads them.
+A pane's own process refuses memory in most of what it does, and goes on: reading its program's output, or a
+resize, it loses only what that was for, and counts it (`lost`, `memory`), as it does output it could not
+set aside for its next turn; keys or a paste it can't encode or queue fail `out-of-memory` to whoever sent
+them, once, a paste it had begun closed; a connection that reaches it when it can keep no more is let go;
+and what it could not read or say for want of memory it reads or says again after a rest. It still aborts,
+refused memory, as it makes a capture, and in the small things it builds to say what it is (its first words
+to a server, its facts). Every other allocation
 fux's own code makes is infallible, and a refusal there aborts that process: what a decoded frame is
-made of beyond its texts and lists, what waits to be written to a socket, the server's tree and journal, a
-connection's composed screen, and a reply as the client prints it.
+made of beyond its texts and lists, what waits to be written to a socket in the server, a connection or a
+client, the server's tree and journal, a connection's composed screen, and a reply as the client prints it.
+The server and a connection's process may end so; a run whose server ended is taken back (`start`).
 [`codes.txt`](codes.txt) lists every kind with its exit status.
 
 A program catches a failure by kind with `(catch-kind! EXPRESSION KIND NAME HANDLER...)`, or any with

@@ -333,7 +333,17 @@ stays unknown.
   it took it (its mode line), then the next key. Keys sent to a program
   that exited or that closed its terminal (where the system says so:
   Linux) are refused (`not-running`). Keys a program does not read wait
-  for it, as many as memory holds.
+  for it, and so does whoever sends them: fux holds none of them for it.
+  A `send-keys` answers once its keys are in its pane's queue, which
+  takes them only once the program's terminal took what was sent before.
+  A terminal takes a few thousand bytes its program has not read, so a
+  short `send-keys` to a busy program still answers at once; a long one,
+  or a paste of megabytes, or one more once the terminal is full, does not
+  answer until the program reads, exactly as typing at a terminal would
+  wait. What the same sender sends after waits behind it. Give such a
+  send a `timeout`, or wait for the program first (`quiet`, `until`): a
+  sender that gives up or is killed ends its keys where they are, a paste
+  it had begun closed, and what its program already took stays taken.
 
   ```grift not run: it needs Vim in insert mode in pane 2
   (define! p (pane 2))
