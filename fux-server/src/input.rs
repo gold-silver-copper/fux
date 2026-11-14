@@ -191,10 +191,12 @@ impl Session {
             Some((body, token)) => {
                 let runs_in = self.views.get(&client).and_then(|v| v.runs_in);
                 let pane = self.focused(client).filter(|p| runs_in != Some(*p));
-                // With no pane to take it, its connection lets it go.
-                self.deliveries
-                    .push((body, token, pane.into_iter().collect()));
-                let _ = self.type_in(client, Typed::Body(token), now);
+                // With no pane to take it, or one that was not told to
+                // wait for it, its connection lets it go: a piece sent a
+                // pane that waits for none would never be taken.
+                let refused = self.type_in(client, Typed::Body(token), now);
+                let panes = pane.into_iter().filter(|_| !refused).collect();
+                self.deliveries.push((body, token, panes));
             }
             None => {
                 let _ = self.type_in(client, Typed::Paste(text), now);

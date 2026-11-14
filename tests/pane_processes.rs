@@ -2558,3 +2558,75 @@ fn a_client_answers_a_question_while_its_own_paste_waits() -> Outcome {
     assert_eq!(read.trim(), (SENT - 1).to_string());
     Ok(())
 }
+
+/// 31. Two pastes of several pieces, sent at once to the same two panes,
+///     both arrive whole at both: each pane takes the bodies in the order
+///     its server asked for them, so no pane begins one while the other
+///     begins the other, each sender then waiting for ever on the pane
+///     that held its piece back (D-186).
+#[cfg(target_os = "linux")]
+#[test]
+fn two_pastes_sent_at_once_to_the_same_two_panes_both_arrive() -> Outcome {
+    use std::io::Write;
+    const SENT: usize = 3 << 20;
+    let server = Server::start("")?;
+    let reader = |name: &str| {
+        let got = server.dir.join(name);
+        let script = format!(
+            "stty raw -echo; printf RAW-%s NOW; head -c {all} | wc -c > {got}.part; \
+             mv {got}.part {got}; sleep 1000",
+            all = SENT * 2,
+            got = got.display()
+        );
+        (got, script)
+    };
+    let (got_a, script_a) = reader("got-a");
+    let (got_b, script_b) = reader("got-b");
+    let a = pane(&server, "a", &["sh", "-c", &script_a])?;
+    let b = id(&server.ok(&[format!(
+        "(split {})",
+        program(
+            &format!("(axis (pane {}) \"horizontal\")", fux::script::quoted(&a)),
+            &["sh", "-c", &script_b]
+        )
+    )])?);
+    for pane in [&a, &b] {
+        server.shows(pane, "RAW-NOW")?;
+    }
+    let tab = server.ok(&[&format!(
+        "(sequence! (define! its-pane (pane {})) \"tab\" (get its-pane \"tab\"))",
+        fux::script::quoted(&a)
+    )])?;
+    let paste = format!(
+        "(send-keys (paste (tab {}) (input)))",
+        fux::script::quoted(tab.trim())
+    );
+    let mut senders = Vec::new();
+    for byte in [b'x', b'y'] {
+        let mut sending = started(&server, &[&paste])?;
+        let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+        stdin.write_all(&vec![byte; SENT]).map_err(e)?;
+        drop(stdin);
+        senders.push(sending);
+    }
+    let mut read = (String::new(), String::new());
+    for _ in 0..6 {
+        let all = eventually("both pastes read by both panes", || {
+            read = (
+                std::fs::read_to_string(&got_a).unwrap_or_default(),
+                std::fs::read_to_string(&got_b).unwrap_or_default(),
+            );
+            Ok(!read.0.is_empty() && !read.1.is_empty())
+        });
+        if all.is_ok() {
+            break;
+        }
+    }
+    let all = (SENT * 2).to_string();
+    assert_eq!((read.0.trim(), read.1.trim()), (all.as_str(), all.as_str()));
+    for mut sending in senders {
+        let out = sending.wait().map_err(e)?;
+        assert!(out.success(), "a paste failed");
+    }
+    Ok(())
+}

@@ -117,14 +117,19 @@ pub(crate) const PASTE_END: &[u8] = b"\x1b[201~";
 /// [`PasteEncoder`] makes of it in one piece. A paste the OS refuses the
 /// memory for is not sent at all.
 pub fn paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
-    // Room for all of it first, its closing bracket too: never half a
+    // Room for all of it first, what `push` asks and what `finish` does:
+    // then neither asks for any, and neither is refused. Never half a
     // paste, its bracket left open.
-    if crate::bytes::try_reserve(out, text.len().saturating_add(PasteEncoder::CLOSING)).is_err() {
+    let most = (text.len().saturating_add(PASTE_START.len())).saturating_add(HELD);
+    let room = most.saturating_add(PasteEncoder::CLOSING);
+    if crate::bytes::try_reserve(out, room).is_err() {
         return;
     }
+    let start = out.len();
     let mut encoder = PasteEncoder::new(bracketed);
-    let _ = encoder.push(text.as_bytes(), out);
-    let _ = encoder.finish(out);
+    if encoder.push(text.as_bytes(), out).is_err() || encoder.finish(out).is_err() {
+        out.truncate(start);
+    }
 }
 
 /// The most bytes of an end marker a [`PasteEncoder`] holds back: all but
@@ -1695,6 +1700,23 @@ mod tests {
         encoder.finish(&mut out)?;
         assert_eq!(out, b"\x1b[200~a\x1b[20\x1b[201~");
         Ok(())
+    }
+
+    /// A paste given whole is sent whole or not at all: with room for its
+    /// text and opening bracket but not for its closing one, and no more
+    /// given, nothing is sent (it sent the text, its bracket left open).
+    #[cfg(feature = "checks")]
+    #[test]
+    fn a_whole_paste_refused_memory_for_its_end_sends_nothing() {
+        let text = "pasted";
+        let mut out = Vec::with_capacity(text.len() + PASTE_START.len() + HELD);
+        out.extend_from_slice(b"$ ");
+        crate::check::refuse_next(1);
+        paste(text, true, &mut out);
+        crate::check::refuse_next(0);
+        assert_eq!(out, b"$ ");
+        paste(text, true, &mut out);
+        assert_eq!(out, b"$ \x1b[200~pasted\x1b[201~");
     }
 
     #[test]

@@ -33,6 +33,10 @@ const READ: usize = 256 * 1024;
 /// as it is refused.
 const AHEAD: &str = "more than 256 KiB sent while a request waited: \
                      a request is sent once the one before it is answered";
+/// What an attached client is told that sent that much that adds input
+/// while a paste of its own was still on its way.
+const BEHIND: &str = "more than 256 KiB typed while a paste of this client's waited: \
+                      what is typed then is sent once the paste is taken";
 /// What a client is told whose server went without a last word for it:
 /// said by its connection's process, which outlives its server.
 const SERVER_GONE: &str = "the server process ended without a word (it was killed, or crashed, \
@@ -333,9 +337,8 @@ fn attached_sent(mut frame: AttachedFrame, bodies: bool) -> Sent {
                     frame = AttachedFrame::Act(Box::new(Act::Paste(String::new())));
                 }
                 let typed = match &frame {
-                    AttachedFrame::Act(act) if matches!(**act, Act::Key(_) | Act::Paste(_)) => {
-                        Typed::Key
-                    }
+                    AttachedFrame::Act(act) if matches!(**act, Act::Paste(_)) => Typed::Paste,
+                    AttachedFrame::Act(act) if matches!(**act, Act::Key(_)) => Typed::Key,
                     AttachedFrame::Resize(_) => Typed::Resize,
                     AttachedFrame::Act(_)
                     | AttachedFrame::Detach
@@ -921,6 +924,9 @@ impl Pending {
 enum Typed {
     No,
     Key,
+    /// A paste: its client says no more that adds input till it is told
+    /// the paste is taken (`ToAttached::More`).
+    Paste,
     Resize,
 }
 
@@ -1162,9 +1168,14 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     // are not taken while one is kept or being sent (`Post`).
     let mut body: Option<(u64, Vec<Input>)> = None;
     let mut numbered = 0u64;
-    // A frame of its attached client's that adds input, read while a paste
-    // of its was on its way: taken once that is sent (`adds_input`).
-    let mut ahead: Option<AttachedFrame> = None;
+    // Frames of its attached client's that add input, read while a paste
+    // of its was on its way, and their bytes: taken in order once that is
+    // sent (`adds_input`). A client holds such frames back itself till its
+    // paste is taken, so these are few; one that sends `READ` of them is
+    // refused (`BEHIND`). Its client is read all the while, whatever waits
+    // here: what adds no input is never behind what does.
+    let mut ahead: std::collections::VecDeque<AttachedFrame> = std::collections::VecDeque::new();
+    let mut ahead_bytes = 0usize;
     // What it let go of a request longer than a frame, still coming.
     let mut long = 0usize;
     // What it does at panes' sockets, and whether one of them makes its
@@ -1212,9 +1223,9 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // is read all the while its paste is kept or on its way: what adds
         // no input (an answer to a question its own paste may have set
         // off, a detach) goes on at once; what does waits its turn behind
-        // the paste, one frame of it held here, the rest unread.
+        // the paste: its client holds it back, and what one sends all the
+        // same is held here, `READ` of it at most.
         while attached
-            && ahead.is_none()
             && !shut
             && (body.is_some() || errands.iter_mut().any(|e| e.post().is_some()))
         {
@@ -1229,7 +1240,16 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             }
             match (decoder.frame::<AttachedFrame>(), hungry) {
                 (Ok(Some(AttachedFrame::Piece(inputs))), Some(post)) => post.send(&inputs),
-                (Ok(Some(frame)), _) if adds_input(&frame) => ahead = Some(frame),
+                (Ok(Some(frame)), _) if adds_input(&frame) => {
+                    ahead_bytes = ahead_bytes.saturating_add(frame.encode().len());
+                    ahead.push_back(frame);
+                    if ahead_bytes > READ {
+                        out.push_with(|frames| ToAttached::Exit(BEHIND).encode_into(frames));
+                        link.send(&FromConn::Shut);
+                        (ended, told_shut, shut, want) = (true, true, true, Want::Nothing);
+                        ahead.clear();
+                    }
+                }
                 (Ok(Some(frame)), _) => {
                     let frame = FromConn::Frame {
                         frame: frame.encode(),
@@ -1271,8 +1291,11 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 }
             }
             // What waited behind its paste comes first.
-            let next = match ahead.take() {
-                Some(frame) => Ok(Some(attached_sent(frame, composer.panes.is_some()))),
+            let next = match ahead.pop_front() {
+                Some(frame) => {
+                    ahead_bytes = ahead_bytes.saturating_sub(frame.encode().len());
+                    Ok(Some(attached_sent(frame, composer.panes.is_some())))
+                }
                 None => next_frame(&mut decoder, want, composer.panes.is_some()),
             };
             match next {
@@ -1305,8 +1328,13 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                         numbered = number;
                         body = Some((number, inputs));
                     }
+                    // A paste its server takes whole (one that starts no
+                    // pane processes) waits for nothing: taken, as said.
+                    if typed == Typed::Paste && number.is_none() {
+                        out.push_with(|frames| ToAttached::More.encode_into(frames));
+                    }
                     match typed {
-                        Typed::Key => {
+                        Typed::Key | Typed::Paste => {
                             composer.clock.echo = composer.scene.as_ref().and_then(|s| s.focus);
                         }
                         Typed::Resize => composer.screen.known = false,
@@ -1408,7 +1436,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         // Its client is read while its stage takes its frames, and while
         // its request waits on someone else, to hear its end.
         // And for the next piece of a body it sends, once the last is taken.
-        let aside = want == Want::Frames(Expect::Attached) && posting && ahead.is_none() && !shut;
+        let aside = want == Want::Frames(Expect::Attached) && posting && !shut;
         let listens = !(ended || shut || closing) && (takes || idle || hungry || aside);
         let wake = composer.due(out.is_empty());
         // An errand with no link left to wait on goes on at once.
@@ -1539,8 +1567,15 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                 .collect();
             at = at.saturating_add(count);
             let run = composer.panes.as_ref().map(|(_, run)| *run);
+            // Its attached client's own paste, all of it taken: its client
+            // is told so, and sends what it held back behind it.
+            let own = want == Want::Frames(Expect::Attached)
+                && matches!(errand.post(), Some(post) if post.keys.is_none());
             match run.and_then(|run| errand.on(&readable, &mut buffer, run)) {
                 None if run.is_some() => going.push(errand),
+                Some(None) if own => {
+                    out.push_with(|frames| ToAttached::More.encode_into(frames));
+                }
                 None | Some(None) => {}
                 Some(Some(made)) => {
                     if errand.post().is_some() {
@@ -2121,6 +2156,86 @@ mod tests {
         let link = End::new(link).map_err(e)?;
         let conn = std::thread::spawn(move || super::serve(client, link, Vec::new()));
         Ok((theirs, server, conn))
+    }
+
+    /// While a paste of its attached client's waits for a pane that takes
+    /// nothing, its client is read all the same: keys it sends anyway are
+    /// held, and its answer to a question and its detach, sent after them,
+    /// go to its server at once (D-183). With one frame held it read its
+    /// client no more: the answer a pasted program waited for never came,
+    /// nor a detach.
+    #[cfg(unix)]
+    #[test]
+    fn a_client_whose_paste_waits_is_read_past_what_it_holds_back() -> Result<(), String> {
+        use crate::link::{Expect, FromConn, ToConn};
+        use fux_wire::act::Act;
+        use fux_wire::command::Input;
+        use fux_wire::protocol::{AttachedFrame, Frame, Hello, Role};
+        use std::io::Write;
+        let e = |error: std::io::Error| error.to_string();
+        // A pane's socket that takes what reaches it and answers nothing.
+        let panes = std::env::temp_dir().join(format!("fux-conn-test-{}", std::process::id()));
+        std::fs::create_dir_all(&panes).map_err(e)?;
+        let at = panes.join("1");
+        let _ = std::fs::remove_file(&at);
+        let pane = std::os::unix::net::UnixListener::bind(&at).map_err(e)?;
+        let (mut theirs, mut server, conn) = served()?;
+        theirs
+            .write_all(&Hello::ours(Role::Attach).encode())
+            .map_err(e)?;
+        said(&mut server)?;
+        let run = "1-2".parse().map_err(|()| "a run")?;
+        server.send(&ToConn::Hello {
+            panes: panes.clone(),
+            run,
+        });
+        server.send(&ToConn::Expect(Expect::Attached));
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        let piece = vec![Input::Pasting("first".into()), Input::More];
+        theirs
+            .write_all(&AttachedFrame::Piece(piece).encode())
+            .map_err(e)?;
+        let FromConn::Frame {
+            body: Some(body), ..
+        } = said(&mut server)?
+        else {
+            return Err("its paste, its text kept".into());
+        };
+        server.send(&ToConn::Deliver {
+            body,
+            token: 5,
+            panes: vec![fux_wire::id::PaneId::of(1)],
+        });
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        // Keys, then an answer, then a detach.
+        let key =
+            |c| AttachedFrame::Act(Box::new(Act::Key(fux_vt::keys::KeyPress::char(c).into())));
+        for frame in [
+            key('a'),
+            key('b'),
+            key('c'),
+            AttachedFrame::Answer(4, fux_wire::callback::Data::Int(1)),
+            AttachedFrame::Detach,
+        ] {
+            theirs.write_all(&frame.encode()).map_err(e)?;
+        }
+        let mut next = || -> Result<AttachedFrame, String> {
+            let FromConn::Frame { frame, .. } = said(&mut server)? else {
+                return Err("a frame of its client's".into());
+            };
+            let mut decoder = Decoder::default();
+            decoder.push(&frame);
+            decoder
+                .frame::<AttachedFrame>()
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "a whole frame".to_owned())
+        };
+        assert!(matches!(next()?, AttachedFrame::Answer(4, _)));
+        assert!(matches!(next()?, AttachedFrame::Detach));
+        drop((pane, server));
+        conn.join().map_err(|_| "its process panicked")??;
+        let _ = std::fs::remove_dir_all(&panes);
+        Ok(())
     }
 
     /// While keys for its client are still to come from their sender, what

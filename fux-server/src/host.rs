@@ -146,8 +146,9 @@ impl Waiting {
         self.0.push((token, Some(awaiting)));
         true
     }
-    fn has(&self, token: u64) -> bool {
-        self.0.iter().any(|(waiting, _)| *waiting == token)
+    /// The token asked for first, of those that wait still.
+    fn first(&self) -> Option<u64> {
+        self.0.first().map(|(waiting, _)| *waiting)
     }
     fn remove(&mut self, token: u64) -> Option<Awaiting> {
         let found = (self.0.iter_mut())
@@ -1452,12 +1453,18 @@ impl Host {
     }
 
     /// Whether a piece of body `token` is taken now: the body under way,
-    /// or, with none, one a question its server asked waits for. Any other
-    /// stays with its sender: a body no question asked for is never taken.
+    /// or, with none, the one its server asked for first of those a
+    /// question still waits for. Any other stays with its sender: a body
+    /// no question asked for is never taken, and one asked for later waits
+    /// its turn. A server asks every pane in one order, so two bodies sent
+    /// to the same panes are taken in that order by each: were each pane
+    /// to take whichever came first, one could begin the first body and
+    /// another the second, and each sender wait for ever on the pane that
+    /// holds its piece back.
     pub fn takes(&self, token: u64) -> bool {
         match &self.typing {
             Some(typing) => typing.token == token,
-            None => self.awaiting.has(token),
+            None => self.awaiting.first() == Some(token),
         }
     }
 

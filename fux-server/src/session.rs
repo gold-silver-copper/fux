@@ -9691,6 +9691,39 @@ mod tests {
         Ok(())
     }
 
+    /// A pane takes the bodies its server asked it for in the order it
+    /// asked: the second waits with its sender till the first is typed, or
+    /// its asker gone, whichever body's piece comes first. Each pane taking
+    /// whichever came first, two pastes sent to the same two panes could
+    /// each be begun by one of them, and both wait for ever (D-186).
+    #[test]
+    fn bodies_are_taken_in_the_order_their_server_asked() -> TestResult {
+        use crate::link::ToPane;
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let to = command::To::Now(AnyRef::Pane(id));
+        let now = Instant::now();
+        let mut asked = Vec::new();
+        for body in 0..3 {
+            s.give_body(Some(body));
+            s.send_keys(to, &[], now).map_err(|e| e.to_string())?;
+            asked.push(s.deliveries.pop().ok_or("its delivery")?.1);
+        }
+        let [first, second, third] = asked[..] else {
+            return Err("three bodies".into());
+        };
+        let takes = |s: &mut Session, token| host(s, id, |h| h.takes(token));
+        assert!(takes(&mut s, first)? && !takes(&mut s, second)? && !takes(&mut s, third)?);
+        host(&mut s, id, |h| h.piece(first, &[Input::Text("a".into())]))?;
+        assert!(takes(&mut s, second)? && !takes(&mut s, third)?);
+        // Its asker gone, the second is waited for no more.
+        host(&mut s, id, |h| {
+            h.handle(ToPane::Drop { token: second }, now)
+        })?;
+        assert!(takes(&mut s, third)?);
+        Ok(())
+    }
+
     /// While a paste that comes in pieces is open, nothing else its program
     /// is to read is queued inside it: another client's key, a one-frame
     /// `send-keys` and the answer to the program's own query wait behind

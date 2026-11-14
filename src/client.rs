@@ -1543,6 +1543,60 @@ impl Output {
     }
 }
 
+/// A paste of an attached client's on its way, and what the client has to
+/// say meanwhile. Its first piece is sent at once, and each further one
+/// as the server says the last is taken (`ToAttached::More`), so its loop
+/// is never part way through writing a piece while the paste waits for a
+/// program that isn't reading. Till the server says its last piece is
+/// taken, all else the client would send or run waits behind it, in the
+/// order it came: keys typed, and the bindings among them, whose programs
+/// run after the keys before them are sent, as ever. Only its answers to
+/// the server's questions go at once: the pasted program may be what asks.
+#[derive(Default)]
+struct Pasting {
+    /// A paste is sent whose last piece is not yet taken.
+    open: bool,
+    /// Its pieces not yet sent, each a frame.
+    pieces: std::collections::VecDeque<Vec<u8>>,
+    behind: Vec<Dispatch>,
+}
+
+impl Pasting {
+    /// A paste's first frame was sent: `rest`, its other pieces, wait.
+    fn sent(&mut self, rest: impl Iterator<Item = Vec<u8>>) {
+        self.open = true;
+        self.pieces.extend(rest);
+    }
+
+    /// What was sent of the paste is taken: its next piece, to send; with
+    /// none left the paste is taken, and nothing waits behind it more.
+    fn taken(&mut self) -> Option<Vec<u8>> {
+        let next = self.pieces.pop_front();
+        self.open = next.is_some();
+        next
+    }
+
+    /// `acts`, after what waited behind a paste now taken.
+    fn order(&mut self, mut acts: Vec<Dispatch>) -> Vec<Dispatch> {
+        if self.open {
+            return acts;
+        }
+        let mut all = std::mem::take(&mut self.behind);
+        all.append(&mut acts);
+        all
+    }
+
+    /// `out`, if it goes now: anything with no paste on its way, and an
+    /// answer always. What does not waits behind the paste.
+    fn admit(&mut self, out: Dispatch) -> Option<Dispatch> {
+        if !self.open || matches!(out, Dispatch::Answer(..)) {
+            return Some(out);
+        }
+        self.behind.push(out);
+        None
+    }
+}
+
 /// A frame count must never wrap into a different prefix.
 fn next_frame(frames: u64) -> Result<u64, Error> {
     frames
@@ -1573,13 +1627,7 @@ fn attached(
     let mut pending_resize = None;
     let mut acts = Vec::new();
     let mut frames = 0u64;
-    // A paste longer than a frame takes: its pieces after the first, each
-    // sent as the server asks for it (`ToAttached::More`), so that this
-    // loop is never part way through writing one while the paste waits
-    // for a program that isn't reading. What is typed meanwhile waits
-    // behind it, here (`behind`): only what adds no input is sent.
-    let mut pasting: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
-    let mut behind: Vec<Dispatch> = Vec::new();
+    let mut pasting = Pasting::default();
     const STREAM: Option<usize> = Some(0);
     const WINCH: Option<usize> = Some(1);
     const STOPS: Option<usize> = Some(2);
@@ -1597,10 +1645,11 @@ fn attached(
                 }
                 (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
                 (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
-                // The next piece of the paste is wanted: its taker reads
-                // it as it is written.
+                // What was sent of the paste is taken: its next piece goes,
+                // which its taker reads as it is written; with none left,
+                // what waited behind the paste does (below).
                 (ToAttached::More, _) => {
-                    if let Some(piece) = pasting.pop_front()
+                    if let Some(piece) = pasting.taken()
                         && let Err(ended) =
                             tell(stream, decoder, true, output.as_deref_mut(), &piece)
                     {
@@ -1628,7 +1677,7 @@ fn attached(
         // Before admission, resizes stay local. Once admitted, send the
         // latest one before dispatching any job that fences this connection.
         if keyboard.is_some()
-            && pasting.is_empty()
+            && !pasting.open
             && let Some(size) = pending_resize.take()
         {
             if let Err(ended) = tell(
@@ -1643,24 +1692,11 @@ fn attached(
             frames = next_frame(frames)?;
         }
         let mut runs = Vec::new();
-        // What waited behind a paste goes first, once the paste is sent.
-        let todo = match pasting.is_empty() {
-            true => {
-                let mut todo = std::mem::take(&mut behind);
-                todo.append(&mut acts);
-                todo
-            }
-            false => std::mem::take(&mut acts),
-        };
-        for out in todo {
-            let adds_input = matches!(
-                &out,
-                Dispatch::Send(Act::Key(_) | Act::Paste(_) | Act::Mouse(_) | Act::Focus(_))
-            );
-            if adds_input && !pasting.is_empty() {
-                behind.push(out);
+        for out in pasting.order(std::mem::take(&mut acts)) {
+            // A paste among them holds back what follows it.
+            let Some(out) = pasting.admit(out) else {
                 continue;
-            }
+            };
             let act = match out {
                 Dispatch::Run(job) => {
                     runs.push(job);
@@ -1686,7 +1722,9 @@ fn attached(
             ) {
                 return ended;
             }
-            pasting.extend(encoded);
+            if matches!(&act, AttachedFrame::Act(act) if matches!(**act, Act::Paste(_))) {
+                pasting.sent(encoded);
+            }
             frames = next_frame(frames)?;
         }
         // A job runs after every frame read with the keys that made it is
@@ -1866,6 +1904,38 @@ fn last_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// While a paste of its own is not yet taken, an attached client sends
+    /// its answers and nothing else; what it typed and the bindings among
+    /// it wait, and go in the order they came once the server says the
+    /// last piece is taken (D-183). A binding's program ran, and its frame
+    /// count was taken, ahead of keys typed before it.
+    #[test]
+    fn what_a_client_would_send_behind_its_paste_keeps_its_order() {
+        let key = |c| Dispatch::Send(Act::Key(KeyPress::char(c).into()));
+        let answer = Dispatch::Answer(3, fux_wire::callback::Data::Int(7));
+        let mut pasting = Pasting::default();
+        let sent = |pasting: &mut Pasting, acts: Vec<Dispatch>| -> Vec<Dispatch> {
+            (pasting.order(acts).into_iter())
+                .filter_map(|out| pasting.admit(out))
+                .collect()
+        };
+        // With no paste on its way, all goes as it comes.
+        let typed = vec![key('l'), Dispatch::Fence];
+        assert_eq!(sent(&mut pasting, typed.clone()), typed);
+        pasting.sent(vec![b"piece two".to_vec()].into_iter());
+        let behind = vec![key('l'), key('s'), Dispatch::Fence, answer.clone()];
+        assert_eq!(sent(&mut pasting, behind), [answer.clone()]);
+        // Its second piece asked for: still on its way.
+        assert_eq!(pasting.taken(), Some(b"piece two".to_vec()));
+        assert_eq!(sent(&mut pasting, vec![key('x')]), []);
+        // Its last piece taken: what waited goes first, in order.
+        assert_eq!(pasting.taken(), None);
+        assert_eq!(
+            sent(&mut pasting, vec![key('y')]),
+            [key('l'), key('s'), Dispatch::Fence, key('x'), key('y')]
+        );
+    }
 
     /// A client refused memory while it joins a reply's parts fails that
     /// request, with the out-of-memory code: it aborted. Given the memory,

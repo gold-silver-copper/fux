@@ -928,12 +928,15 @@ frames! {
         /// What only it knows, asked for a request: it sends its `Answer`
         /// with this number.
         Read(asked: u64, read: crate::command::ClientRead) = 13,
-        /// The next piece of the paste it is sending is wanted now: it
-        /// sends one `AttachedFrame::Piece`. A client sends a paste's first
-        /// piece and then each further one only as it is asked for, so it
-        /// is never part way through writing one while the paste waits for
-        /// a program that isn't reading, and what else it has to say (an
-        /// `Answer`, a detach) is said meanwhile.
+        /// What it last sent of the paste it is sending is taken: it sends
+        /// the next piece (`AttachedFrame::Piece`), or, with none left, its
+        /// paste is taken, and it sends what it held back behind it. A
+        /// client sends a paste's first piece and then each further one
+        /// only as it is told so, and nothing else that adds input till
+        /// the last is taken: so it is never part way through writing a
+        /// piece while its paste waits for a program that isn't reading,
+        /// what it types keeps its order behind the paste, and what else
+        /// it has to say (an `Answer`, a detach) is said meanwhile.
         More = 21,
     }
 }

@@ -484,6 +484,29 @@ impl Run {
                 );
             }
             Outgoing::To(_, ToAttached::Paint(bytes)) => panic!("not a question: {bytes:?}"),
+            // What a client is owed as state: a copy, OSC 52 with its text
+            // in base64; the bell; a title is its connection's to make.
+            Outgoing::Owed(_, fux_server::link::Owed::Clipboard, bytes) => {
+                let payload = bytes
+                    .strip_prefix(b"\x1b]52;c;")
+                    .and_then(|b| b.strip_suffix(b"\x07"))
+                    .unwrap_or_else(|| panic!("not OSC 52: {bytes:?}"));
+                assert!(
+                    payload
+                        .iter()
+                        .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b))
+                );
+            }
+            Outgoing::Owed(_, fux_server::link::Owed::Bell, bytes) => {
+                assert_eq!(bytes, outer::BELL);
+            }
+            Outgoing::Owed(
+                _,
+                fux_server::link::Owed::Title | fux_server::link::Owed::Prompt,
+                bytes,
+            ) => panic!("not the session's to owe: {bytes:?}"),
+            // Asked of a client by its connection, never by the session.
+            Outgoing::To(_, ToAttached::More) => panic!("a piece asked for by the session"),
             Outgoing::To(client, ToAttached::Exit(_)) => self.detach(client),
             // Sent only as a client attaches, by the server.
             Outgoing::To(_, ToAttached::Welcome(..)) => {
