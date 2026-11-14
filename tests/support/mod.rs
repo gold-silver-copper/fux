@@ -1021,7 +1021,7 @@ pub fn cap(pid: i32, more: u64) -> Outcome {
             "--pid",
             &pid.to_string(),
             &format!("--as={limit}:{limit}"),
-            "--core=unlimited",
+            "--core=0",
         ])
         .output()
         .map_err(e)?;
