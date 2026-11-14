@@ -886,13 +886,14 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
     Ok(())
 }
 
-/// The numbers of the name files a run keeps (`record::name_file`).
+/// The numbers of the name files a run keeps (`record::name_file`): each
+/// its server's process and which of its names it is.
 fn name_files(server: &Server) -> Vec<String> {
     let entries = std::fs::read_dir(kept(server)).into_iter().flatten();
     let mut names: Vec<String> = (entries.flatten())
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter_map(|name| name.strip_prefix("name.").map(str::to_owned))
-        .filter(|number| number.parse::<u64>().is_ok())
+        .filter(|number| !number.ends_with(".new"))
         .collect();
     names.sort();
     names
@@ -1712,6 +1713,67 @@ fn a_run_a_live_server_holds_is_left_to_it() -> Outcome {
     eventually("the first server and its pane gone", || {
         Ok(!alive(pid) && !alive(own))
     })
+}
+
+/// 29b. A second server on a run a live server holds removes none of that
+///     server's name files, though it writes a record before it hears who
+///     holds the run (D-175). The first server is stopped, a name's file
+///     of its own written and its structure not yet (made, as its numbers
+///     are its process's); one of its panes' processes is killed, so the
+///     second server, taking the run, finds a pane gone and records that
+///     at once, before the other pane says who holds it. It leaves, and
+///     the first server's files are all there.
+#[test]
+fn a_second_server_that_writes_removes_no_name_file_of_the_firsts() -> Outcome {
+    let server = Server::start("")?;
+    let stays = pane(&server, "w", &["sleep", "1017"])?;
+    let goes = pane(&server, "w", &["sleep", "1018"])?;
+    let _reap = reap_run(&server)?;
+    server.ok(&[&format!(
+        "(sequence! (rename (pane {}) \"held\") #inert)",
+        fux::script::quoted(&stays)
+    )])?;
+    let (own, pid) = (own_process(&server, &goes)?, server_pid(&server)?);
+    let pending = kept(&server).join(format!("name.{pid}.4242"));
+    std::fs::write(&pending, "pending").map_err(e)?;
+    let names = name_files(&server);
+    assert!(names.len() >= 2, "{names:?}");
+    // Stopped: what follows it does not see, nor record.
+    signal(pid, Signal::Stop);
+    let _resume = Resumed(pid);
+    signal(own, Signal::Kill);
+    eventually("the pane's process gone", || Ok(!alive(own)))?;
+    let mut lock = server.socket.clone().into_os_string();
+    lock.push(".lock");
+    std::fs::remove_file(&lock).map_err(e)?;
+    std::fs::remove_file(&server.socket).map_err(e)?;
+    let record = kept(&server).join("run");
+    let before = std::fs::read(&record).map_err(e)?;
+    let _ = within(&server, 30, &["(sequence! (start) #inert)"])?;
+    let held = format!("is held by the fux server with pid {pid}");
+    let log = server.socket.with_file_name("fux.log");
+    eventually("the second server said who holds the run", || {
+        Ok(std::fs::read_to_string(&log).is_ok_and(|said| said.contains(&held)))
+    })?;
+    eventually("the second server gone", || Ok(!server.socket.exists()))?;
+    assert_ne!(
+        std::fs::read(&record).map_err(e)?,
+        before,
+        "the second server recorded the pane it found gone"
+    );
+    assert_eq!(name_files(&server), names, "the first server's names");
+    signal(pid, Signal::Cont);
+    signal(pid, Signal::Term);
+    eventually("the first server gone", || Ok(!alive(pid)))
+}
+
+/// A process a test stopped, let go on as the test ends.
+struct Resumed(i32);
+
+impl Drop for Resumed {
+    fn drop(&mut self) {
+        signal(self.0, Signal::Cont);
+    }
 }
 
 /// 30. What is beside the socket where a run keeps its panes and is no

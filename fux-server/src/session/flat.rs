@@ -2,7 +2,9 @@
 //! of nesting and a long name cost, counted, never timed.
 use super::*;
 use crate::session::testing::TestResult;
-use fux_wire::command::{Beside, Command, Program, Screen};
+#[cfg(unix)]
+use fux_wire::command::Beside;
+use fux_wire::command::{Command, Program, Screen};
 
 /// What a test's panes run, and its journal's length: read where the stack
 /// is a test's own, as reading the defaults runs fux's whole script.
@@ -12,6 +14,7 @@ fn defaults() -> Result<(command::PaneOptions, command::JournalEntries), String>
 }
 
 /// A directory of the test `name`'s own, new.
+#[cfg(unix)]
 fn scratch(name: &str) -> Result<PathBuf, String> {
     let scratch = fuxix::file::scratch().map_err(|e| e.to_string())?;
     let dir = scratch.join(format!("fux-{name}-{}", std::process::id()));
@@ -22,6 +25,7 @@ fn scratch(name: &str) -> Result<PathBuf, String> {
 
 /// A session on a socket in `dir` that records its run there, as a
 /// server's does, its panes in this process; and where it keeps the run.
+#[cfg(unix)]
 fn recording(dir: &Path, journal: command::JournalEntries) -> Result<(Session, PathBuf), String> {
     let socket = dir.join("fux.sock");
     let kept = crate::socket::panes(&socket);
@@ -277,7 +281,11 @@ fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
     assert_eq!(large(&kept, NAME)?, named, "the name's file is as it was");
     // What a crash between a name's writing and the structure's leaves:
     // a name no structure names, beside the run as it was.
-    std::fs::write(crate::record::name_file(&kept, 77), "never recorded")?;
+    let left = crate::record::NameId {
+        server: 7,
+        number: 77,
+    };
+    std::fs::write(crate::record::name_file(&kept, left), "never recorded")?;
     drop(s);
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
     let (mut again, _) = recording(&dir, journal)?;
@@ -292,7 +300,7 @@ fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
     // panes, in the first session's process, were found gone, and so
     // recorded. (A server that finds them all there writes none till
     // something changes: `tests/pane_processes.rs`.)
-    assert!(!crate::record::name_file(&kept, 77).exists());
+    assert!(!crate::record::name_file(&kept, left).exists());
     // Named anew: the old name's file goes once the structure names the new.
     ask(&mut again, &rename("short"))?;
     assert_eq!(large(&kept, NAME)?, []);
@@ -302,6 +310,102 @@ fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
         .count();
     assert_eq!(names, 1);
     drop(again);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// Two servers on one run (D-171: the first's lock file removed under it)
+/// write and remove no name file of each other's. The second takes the
+/// run back while a pane has not answered it, so it does not know yet
+/// that the run is its own; the first, alive, then gives a name, and the
+/// second, asked for one too, writes its record. The first's new name is
+/// there still, as it wrote it, and so is the second's, in a file of its
+/// own number; and the first's next record is one a third server reads,
+/// names and all. Once the second's sweep took the first's file, and its
+/// next number was the first's too: the run could not be taken back.
+#[cfg(unix)]
+#[test]
+fn a_second_server_on_a_run_removes_and_overwrites_no_name_of_the_firsts() -> TestResult {
+    let (options, journal) = defaults()?;
+    let dir = scratch("two")?;
+    let (mut first, kept) = recording(&dir, journal)?;
+    nest(&mut first, None, 1, options)?;
+    let (ws, tab, pane) = (first.parts.tabs_in(None).first())
+        .map(|(ws, tab)| (*ws, tab.id(), tab.root().first_pane()))
+        .ok_or("no tab")?;
+    let rename = |target: AnyRef, name: &str| Command::Rename {
+        target,
+        name: name.to_owned(),
+    };
+    ask(&mut first, &rename(AnyRef::Workspace(ws), "one"))?;
+    // The pane's own process, as the second finds it: it listens, and has
+    // not answered.
+    let socket = kept.join(pane.number().to_string());
+    let _silent = std::os::unix::net::UnixListener::bind(&socket)?;
+    let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
+    let (mut second, _) = recording(&dir, journal)?;
+    second.names_as = first.names_as.wrapping_add(1);
+    second.resume(record, Instant::now())?;
+    assert!(!second.owns(), "a pane has not answered");
+    // The first names its workspace anew, after the second read the record.
+    ask(&mut first, &rename(AnyRef::Workspace(ws), "three"))?;
+    let named = |s: &Session, of: AnyRef| {
+        let (id, _) = s.named.get(&of).ok_or("no such name")?;
+        Ok::<_, String>(crate::record::name_file(&kept, *id))
+    };
+    let firsts = named(&first, AnyRef::Workspace(ws))?;
+    // The second writes a record, with a name of its own.
+    ask(&mut second, &rename(AnyRef::Tab(tab), "two"))?;
+    let seconds = named(&second, AnyRef::Tab(tab))?;
+    assert_ne!(firsts, seconds, "a file each");
+    assert_eq!(std::fs::read_to_string(&firsts)?, "three");
+    assert_eq!(std::fs::read_to_string(&seconds)?, "two");
+    // The second leaves, as a pane would tell it to. The first goes on:
+    // its next record is the run's, and a server reads it whole.
+    drop(second);
+    ask(&mut first, &rename(AnyRef::Tab(tab), "four"))?;
+    drop(first);
+    let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
+    let (mut third, _) = recording(&dir, journal)?;
+    third.resume(record, Instant::now())?;
+    assert_eq!(third.workspace(ws).and_then(|ws| ws.name()), Some("three"));
+    let tab_name = third.parts.tab(tab).and_then(|(_, tab)| tab.name());
+    assert_eq!(tab_name, Some("four"));
+    drop(third);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// The record is made again only once the tree was handed out to change:
+/// settling with nothing new, a request that only reads and a key typed
+/// make none; a split makes one.
+#[cfg(unix)]
+#[test]
+fn the_record_is_made_only_when_the_tree_may_have_changed() -> TestResult {
+    let (options, journal) = defaults()?;
+    let dir = scratch("made")?;
+    let (mut s, _) = recording(&dir, journal)?;
+    nest(&mut s, None, 1, options)?;
+    let pane = *s.parts.panes().keys().next().ok_or("no pane")?;
+    let client = s.attach(24, 80, None)?;
+    s.settle(Instant::now());
+    let made = s.encoded;
+    for _ in 0..3 {
+        s.settle(Instant::now());
+    }
+    s.input(client, b"x");
+    s.settle(Instant::now());
+    assert_eq!(s.encoded, made, "nothing changed the tree");
+    let split = Command::Split {
+        beside: Beside::Split(Axis::Horizontal, None),
+        target: pane,
+        start: command::Start::Program(Program::new("cat".into(), Vec::new())?),
+        cwd: Some(dir.clone()),
+        options,
+    };
+    ask(&mut s, &split)?;
+    assert!(s.encoded > made);
+    drop(s);
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

@@ -1611,7 +1611,7 @@ impl Parts {
     /// by the number `name` gives for it, said with what it names.
     pub(crate) fn record(
         &self,
-        name: &mut dyn FnMut(AnyRef, &Rc<str>) -> u64,
+        name: &mut dyn FnMut(AnyRef, &Rc<str>) -> crate::record::NameId,
     ) -> crate::record::Tree {
         let mut named = |of: AnyRef, text: Option<&Rc<str>>| text.map(|text| name(of, text));
         let workspaces = (self.workspaces.values())
@@ -1698,12 +1698,12 @@ impl Parts {
     pub(crate) fn restore(
         journal: fux_wire::command::JournalEntries,
         tree: &crate::record::Tree,
-        names: &BTreeMap<u64, Rc<str>>,
+        names: &BTreeMap<crate::record::NameId, Rc<str>>,
         panes: BTreeMap<PaneId, Pane>,
     ) -> Result<Parts, fux_wire::code::Error> {
         use fux_wire::code::{Code, fail};
         let bad = |why: String| fail(Code::BadValue, format!("the run's record: {why}"));
-        let named = |name: Option<u64>| match name {
+        let named = |name: Option<crate::record::NameId>| match name {
             None => Ok(None),
             Some(id) => (names.get(&id).cloned().map(Some))
                 .ok_or_else(|| bad(format!("name {id} is not there"))),

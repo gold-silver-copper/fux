@@ -8,16 +8,19 @@
 //! (D-175). The structure is flat: the workspaces and the tabs are two
 //! lists of rows, each workspace naming its children by their ids, so no
 //! depth of nesting is read or written by going into it. It holds no name,
-//! only each name's number: a name's text is in the file `name.N`, written
-//! once, when the name is given, and the structure, written whole on every
-//! change of the tree, costs what its rows do, whatever the names weigh.
+//! only each name's number (`NameId`): a name's text is in the file
+//! `name.S.N`, written once, when the name is given, and the structure,
+//! written whole on every change of the tree, costs what its rows do,
+//! whatever the names weigh. `S` is the process of the server that wrote
+//! the file: two servers that find themselves on one run (D-171) never
+//! write one file.
 //!
 //! The order keeps every crash recoverable: a new name's file is written
 //! before the structure that names it, and a name no longer used is
 //! removed after the structure that dropped it. So the structure there
 //! never names a file that is not; what a crash leaves over is a name file
 //! no structure names, which the server that takes the run back removes
-//! with the first record it writes (`sweep`).
+//! once the run is known to be its own (`sweep`, `Session::commit`).
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
@@ -48,12 +51,22 @@ pub struct Tree {
 }
 wired!(struct Tree { top, workspaces, tabs });
 
+/// A name's number: the process id of the server that wrote its file, and
+/// which of that server's names it is. No two servers alive at once give
+/// one number, so none writes over another's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NameId {
+    pub server: u32,
+    pub number: u64,
+}
+wired!(struct NameId { server, number });
+
 /// A workspace: its name's number, and what it holds, tabs and
 /// workspaces, in order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Workspace {
     pub id: WsId,
-    pub name: Option<u64>,
+    pub name: Option<NameId>,
     pub children: Vec<AnyRef>,
 }
 wired!(struct Workspace { id, name, children });
@@ -63,7 +76,7 @@ wired!(struct Workspace { id, name, children });
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
     pub id: TabId,
-    pub name: Option<u64>,
+    pub name: Option<NameId>,
     pub nodes: Vec<Node>,
     pub revision: Option<u64>,
     pub fixed: bool,
@@ -78,7 +91,7 @@ wired!(struct Tab { id, name, nodes, revision, fixed, size, zoomed, panes });
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pane {
     pub id: PaneId,
-    pub name: Option<u64>,
+    pub name: Option<NameId>,
     /// Its role: a shell, which closes as it ends, or a program, which
     /// stays.
     pub shell: bool,
@@ -120,8 +133,15 @@ pub fn read(path: &Path) -> Result<Option<Record>, String> {
 }
 
 /// Where name `id`'s text is kept in `panes`, a run's directory.
-pub fn name_file(panes: &Path, id: u64) -> PathBuf {
+pub fn name_file(panes: &Path, id: NameId) -> PathBuf {
     panes.join(format!("{NAME}{id}"))
+}
+
+/// As its file is named, after `name.`: `S.N`.
+impl std::fmt::Display for NameId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.server, self.number)
+    }
 }
 
 /// What every name's file is named by, before its number.
@@ -129,7 +149,7 @@ const NAME: &str = "name.";
 
 /// The text of each name `tree` has, by its number, read from `panes`:
 /// one that is not there, or is no text, makes the record unreadable.
-pub fn read_names(panes: &Path, tree: &Tree) -> Result<BTreeMap<u64, Rc<str>>, String> {
+pub fn read_names(panes: &Path, tree: &Tree) -> Result<BTreeMap<NameId, Rc<str>>, String> {
     let mut names = BTreeMap::new();
     for (_, id) in tree.named() {
         let path = name_file(panes, id);
@@ -147,7 +167,7 @@ pub fn read_names(panes: &Path, tree: &Tree) -> Result<BTreeMap<u64, Rc<str>>, S
 /// structure's and an old name's removal, and a part of one, too; and
 /// every one, as a run's end is forgotten. What can't be removed is left,
 /// and logged: no structure names it.
-pub fn sweep(panes: &Path, kept: &BTreeSet<u64>) {
+pub fn sweep(panes: &Path, kept: &BTreeSet<NameId>) {
     let Ok(entries) = std::fs::read_dir(panes) else {
         return;
     };
@@ -156,8 +176,13 @@ pub fn sweep(panes: &Path, kept: &BTreeSet<u64>) {
         let Some(number) = name.to_str().and_then(|name| name.strip_prefix(NAME)) else {
             continue;
         };
-        let kept = (number.parse().ok())
-            .is_some_and(|id: u64| kept.contains(&id) && id.to_string() == number);
+        let id = number.split_once('.').and_then(|(server, number)| {
+            Some(NameId {
+                server: server.parse().ok()?,
+                number: number.parse().ok()?,
+            })
+        });
+        let kept = id.is_some_and(|id| kept.contains(&id) && id.to_string() == number);
         if !kept && let Err(error) = std::fs::remove_file(entry.path()) {
             log!("{}: {error}", entry.path().display());
         }
@@ -189,7 +214,7 @@ impl Tree {
     }
 
     /// Each name's number, with what it names.
-    pub fn named(&self) -> impl Iterator<Item = (AnyRef, u64)> + '_ {
+    pub fn named(&self) -> impl Iterator<Item = (AnyRef, NameId)> + '_ {
         let workspaces = (self.workspaces.iter()).map(|ws| (AnyRef::Workspace(ws.id), ws.name));
         let tabs = self.tabs.iter().flat_map(|tab| {
             let panes = tab
@@ -223,6 +248,37 @@ impl<T> Tracked<T> {
     /// It is written down as it is.
     pub fn settled(this: &mut Tracked<T>) {
         this.stale = false;
+    }
+}
+
+/// What changes nothing a record holds, reached without marking the tree
+/// changed: the journal and who acts in it, what a close moved, which
+/// tabs are to be sized and what size a pane was asked to take, who typed
+/// last. Each is asked on every request or after every event, and none
+/// is in the record (`Parts::record`).
+impl Tracked<crate::workspace::Parts> {
+    pub(crate) fn actor(&mut self, actor: fux_wire::events::Actor) -> fux_wire::events::Actor {
+        self.value.actor(actor)
+    }
+    pub(crate) fn journal_mut(&mut self) -> &mut crate::journal::Journal {
+        self.value.journal_mut()
+    }
+    pub(crate) fn take_displaced(&mut self) -> Vec<(fux_wire::id::ClientId, String)> {
+        self.value.take_displaced()
+    }
+    pub(crate) fn take_changed(&mut self) -> Vec<TabId> {
+        self.value.take_changed()
+    }
+    pub(crate) fn typed(&mut self, tab: TabId, client: fux_wire::id::ClientId) {
+        self.value.typed(tab, client);
+    }
+    pub(crate) fn laid_out(&mut self, tab: TabId) {
+        self.value.laid_out(tab);
+    }
+    /// Whether pane `pane` is to be told to take `size` (`Copy::ask_size`):
+    /// what it was asked is not what it is at, which alone is recorded.
+    pub(crate) fn ask_size(&mut self, pane: PaneId, size: fux_vt::Size) -> bool {
+        (self.value.pane_mut(pane)).is_some_and(|pane| pane.ask_size(size))
     }
 }
 

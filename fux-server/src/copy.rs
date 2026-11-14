@@ -165,7 +165,7 @@ impl Copy {
 
     /// It as its run's record keeps it (`Copy::recorded`), its name there
     /// by number `name`.
-    pub fn record(&self, name: Option<u64>) -> crate::record::Pane {
+    pub fn record(&self, name: Option<crate::record::NameId>) -> crate::record::Pane {
         let launch = self.runs.launch();
         crate::record::Pane {
             id: self.id,

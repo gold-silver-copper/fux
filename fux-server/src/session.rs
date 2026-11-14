@@ -4,7 +4,7 @@ use crate::copy::Copy as Pane;
 use crate::journal::{Detach, ViewChange};
 use crate::link::{Answered, Ask, Begin, FromPane, Hosting, Link, Remote, ToPane};
 use crate::pane::{self, Runs};
-use crate::record::Tracked;
+use crate::record::{NameId, Tracked};
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Form, Pending, Waiting, Watches};
 use crate::workspace::{Destination, Fit, Parts, Split, Tab, Workspace};
@@ -289,7 +289,15 @@ pub struct Session {
     recorded_head: Option<(command::Run, Vec<u32>, bool)>,
     /// The name files that record names (`record::name_file`): for each
     /// workspace, tab or pane named there, its name's number and text.
-    named: BTreeMap<AnyRef, (u64, Rc<str>)>,
+    named: BTreeMap<AnyRef, (NameId, Rc<str>)>,
+    /// The server its name files are numbered as (`NameId`): its process.
+    names_as: u32,
+    /// A pane said another server holds the run (`holder`): never undone.
+    held: bool,
+    /// How many times its record was made (`commit`), for the tests of
+    /// when it is.
+    #[cfg(test)]
+    pub(crate) encoded: u64,
     /// It took its run back and has written no record since: with the
     /// first it writes, the name files no structure names go (`commit`).
     unswept: bool,
@@ -492,6 +500,10 @@ impl Session {
             recorded: Vec::new(),
             recorded_head: None,
             named: BTreeMap::new(),
+            names_as: std::process::id(),
+            held: false,
+            #[cfg(test)]
+            encoded: 0,
             unswept: false,
             recording: true,
             ended: false,
@@ -2191,8 +2203,10 @@ impl Session {
     /// (`Tracked`), and holds each name by its number: a name given since
     /// the last record is written to its own file first, then the
     /// structure, whole, and then the names it no longer has are removed
-    /// (D-175), with every name file no structure names if this is the
-    /// first record written since the run was taken back. So what is written follows the tree's rows, not its names'
+    /// (D-175): once the run is known to be this server's (`owns`), and
+    /// then with every name file no structure names, the first time. Its
+    /// own names are numbered as its process, so it writes over no other
+    /// server's. So what is written follows the tree's rows, not its names'
     /// lengths, and a crash at any step leaves a structure whose names are
     /// all there.
     ///
@@ -2209,16 +2223,25 @@ impl Session {
             return Ok(());
         }
         let panes = crate::socket::panes(socket);
+        #[cfg(test)]
+        {
+            self.encoded = self.encoded.saturating_add(1);
+        }
         // Each name as the last record has it keeps its number, and its
         // file; another takes the next number, and is written.
-        let last = self.named.values().map(|(id, _)| *id).max();
+        let server = self.names_as;
+        let own = |(id, _): &(NameId, Rc<str>)| (id.server == server).then_some(id.number);
+        let last = self.named.values().filter_map(own).max();
         let mut next = last.map_or(0, |last| last.saturating_add(1));
         let (mut named, mut fresh) = (BTreeMap::new(), Vec::new());
         let tree = self.parts.record(&mut |of, text| {
             let id = match self.named.get(&of) {
                 Some((id, had)) if had == text => *id,
                 Some(_) | None => {
-                    let id = next;
+                    let id = NameId {
+                        server,
+                        number: next,
+                    };
                     next = next.saturating_add(1);
                     fresh.push((id, text.clone()));
                     id
@@ -2247,14 +2270,24 @@ impl Session {
             .and_then(|()| crate::record::write(&path, &bytes));
         match written {
             Ok(()) => {
-                let kept: BTreeSet<u64> = named.values().map(|(id, _)| *id).collect();
-                // A run taken back is this server's once it writes there:
-                // then what its last server's crash left over goes too.
-                if std::mem::take(&mut self.unswept) {
-                    crate::record::sweep(&panes, &kept);
-                }
-                for (id, _) in self.named.values().filter(|(id, _)| !kept.contains(id)) {
-                    let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
+                let kept: BTreeSet<NameId> = named.values().map(|(id, _)| *id).collect();
+                // Nothing is removed till the run is known to be this
+                // server's: every pane it reached for has answered or is
+                // gone, and none said another server holds it. Till then
+                // a name file it does not name may be that server's, just
+                // written. Then what it no longer names goes, and once,
+                // what its last server's crash left over with it.
+                match self.owns() {
+                    true if std::mem::take(&mut self.unswept) => {
+                        crate::record::sweep(&panes, &kept);
+                    }
+                    true => {
+                        let old = self.named.values().filter(|(id, _)| !kept.contains(id));
+                        for (id, _) in old {
+                            let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
+                        }
+                    }
+                    false => self.unswept = true,
                 }
                 self.named = named;
                 self.recorded = bytes;
@@ -2277,6 +2310,20 @@ impl Session {
                 Err(fail(Code::Client, why))
             }
         }
+    }
+
+    /// Whether the run is known to be this server's alone: no pane it
+    /// reached for as it took the run back is still to answer, and none
+    /// said another server holds it. A run it began is its own.
+    fn owns(&self) -> bool {
+        self.awaited.is_empty() && self.holder.is_none() && !self.held
+    }
+
+    /// Pane `id` says the server with pid `by` holds it: this one leaves
+    /// the run (`server::Server::leave`).
+    fn held_by(&mut self, id: PaneId, by: i32) {
+        self.held = true;
+        self.holder = Some((id, by));
     }
 
     /// Makes a change (`change`), told only once its record is written: one
@@ -2449,9 +2496,10 @@ impl Session {
             .filter_map(|(of, id)| Some((of, (id, names.get(&id)?.clone()))))
             .collect();
         // What a crash left between a name's writing and the structure's
-        // goes with the first record written here, not now: a pane may yet
-        // say another server holds the run (`holder`), and this one then
-        // leaves it having removed nothing of that server's.
+        // goes with a record written once the run is this server's
+        // (`owns`), not now: a pane may yet say another server holds the
+        // run (`holder`), and this one then leaves it having removed
+        // nothing of that server's.
         self.unswept = true;
         self.parts = Tracked::new(parts);
         self.awaited = asked;
@@ -2528,9 +2576,7 @@ impl Session {
             Answer::Live(Live::Held(by)) if crate::takeover::own(by) => {
                 log!("{id}: what was to be ended there is this server's own pane: left");
             }
-            Answer::Live(Live::Held(by)) if crate::takeover::holds(by) => {
-                self.holder = Some((id, by));
-            }
+            Answer::Live(Live::Held(by)) if crate::takeover::holds(by) => self.held_by(id, by),
             Answer::Live(Live::Held(_)) | Answer::Closed => self.end_stray(id, now),
             Answer::Live(
                 Live::Closing | Live::Greeted(_) | Live::Unbegun(_) | Live::OtherRun | Live::Silent,
@@ -2775,7 +2821,7 @@ impl Session {
                 self.awaited.remove(&id);
                 self.reach_again(id, now);
             }
-            Some(Fate::Refuse(by)) => self.holder = Some((id, by)),
+            Some(Fate::Refuse(by)) => self.held_by(id, by),
             Some(Fate::Await) | None => {}
         }
     }
@@ -2792,11 +2838,20 @@ impl Session {
         for id in ids {
             let shown = !self.viewers(AnyRef::Pane(id)).is_empty();
             let hosting = self.hosting(id);
+            // Read first: a pane told nothing new is not reached for to
+            // change, nor the tree's record made again for it.
+            let Some(pane) = self.parts.panes().get(&id) else {
+                continue;
+            };
+            let told_shown = pane.shown != shown;
+            let hosting = hosting.filter(|h| pane.hosting.as_ref() != Some(h));
+            if !told_shown && hosting.is_none() {
+                continue;
+            }
             let Some(pane) = self.parts.pane_mut(id) else {
                 continue;
             };
-            let told_shown = std::mem::replace(&mut pane.shown, shown) != shown;
-            let hosting = hosting.filter(|h| pane.hosting.as_ref() != Some(h));
+            pane.shown = shown;
             if let Some(hosting) = &hosting {
                 pane.hosting = Some(hosting.clone());
             }
@@ -2850,7 +2905,12 @@ impl Session {
             let Some(area) = self.area_of(tab) else {
                 continue;
             };
-            if let Ok(size) = Size::new(area.h(), area.w()) {
+            // Only a size it is not at yet: the tree is not reached for
+            // to change it otherwise, nor its record made again.
+            let at = self.tab(tab).map(Tab::fit);
+            if let Ok(size) = Size::new(area.h(), area.w())
+                && matches!(at, Some(Fit::Clients(last)) if last != size)
+            {
                 self.parts.shown_on(tab, size);
             }
             if let Some(t) = self.tab(tab) {
@@ -2864,9 +2924,7 @@ impl Session {
         // Each pane is told a size it was not told yet; it resizes as it
         // reads its program's output, and tells so (`Told::Resized`).
         for (id, size) in sizes {
-            if let Some(pane) = self.parts.pane_mut(id)
-                && pane.ask_size(size)
-            {
+            if self.parts.ask_size(id, size) {
                 let actor = self.parts.journal().current_actor();
                 self.tell_pane(id, ToPane::Resize { size, actor }, now);
             }
