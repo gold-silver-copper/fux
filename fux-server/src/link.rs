@@ -1402,7 +1402,15 @@ mod tests {
                 ToPane::Resize { size, .. } => format!("size {}", size.cols()),
                 ToPane::Ask { ask, .. } => format!("question {ask}"),
                 ToPane::Shown(_) => "shown".to_owned(),
-                other => format!("{other:?}"),
+                other @ (ToPane::Begin(_)
+                | ToPane::Host(_)
+                | ToPane::Typed { .. }
+                | ToPane::Taken
+                | ToPane::Close { .. }
+                | ToPane::Take { .. }
+                | ToPane::Who
+                | ToPane::Join { .. }
+                | ToPane::Drop { .. }) => format!("{other:?}"),
             });
         }
         let order = [

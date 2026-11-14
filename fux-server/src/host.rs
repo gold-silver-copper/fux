@@ -2278,7 +2278,12 @@ pub fn serve(
         // waits for it, and read again once it took enough
         // (`Pane::reads_output`).
         let reads = host.pane().reads_output();
-        let unread = (host.pane().process().child()).filter(|_| !reads && host.input);
+        // Its terminal is asked when it can be written while input waits,
+        // and while a piece it was given is not all written yet, which its
+        // sender waits to hear (`Pane::input_taken`).
+        let owing = peers.iter().any(|peer| peer.owes.is_some());
+        let writing = host.input || owing && !host.pane().input_taken();
+        let unread = (host.pane().process().child()).filter(|_| !reads && writing);
         let reading = match host.pane().process() {
             Process::Reading(child) => (reads && !host.pane().has_unread()).then_some(child),
             Process::Absent
@@ -2297,10 +2302,9 @@ pub fn serve(
         let reaped = fds.push(PollFd::new(children.reader(), Events::IN));
         let reached = fds.push(PollFd::new(&listener, Events::IN));
         let settling = host.settling();
-        let program = (reading
-            .map(|child| fds.push(PollFd::new(&child.master, writes(host.input)))))
-        .or_else(|| settling.map(|child| fds.push(PollFd::new(&child.master, Events::IN))))
-        .or_else(|| unread.map(|child| fds.push(PollFd::new(&child.master, Events::OUT))));
+        let program = (reading.map(|child| fds.push(PollFd::new(&child.master, writes(writing)))))
+            .or_else(|| settling.map(|child| fds.push(PollFd::new(&child.master, Events::IN))))
+            .or_else(|| unread.map(|child| fds.push(PollFd::new(&child.master, Events::OUT))));
         // One that holds a piece not yet taken is read no further, and
         // only its end is learned.
         let peered: Vec<_> = (peers.iter())
@@ -2497,8 +2501,17 @@ pub fn serve(
                             peer.held = Some((token, inputs));
                         }
                         Ok(Some(ToSide::Fetch { token })) => {
+                            // Refused the memory to send it, it is gone,
+                            // and its asker told that much; refused that
+                            // too, the link closes, which says the same.
                             let captured = host.fetch(token);
-                            peer.end.send(&FromSide::Held { token, captured });
+                            if (peer.end.try_send(&FromSide::Held { token, captured })).is_err() {
+                                let gone = FromSide::Held {
+                                    token,
+                                    captured: None,
+                                };
+                                done = peer.end.try_send(&gone).is_err();
+                            }
                         }
                         Ok(None) => break,
                         Err(_) => done = true,
@@ -2534,7 +2547,7 @@ pub fn serve(
         // One piece in flight for the pane, whoever sends: the next is
         // taken, from the body under way or one a question waits for, once
         // the program's terminal took the last.
-        if peers.iter().all(|peer| peer.owes.is_none()) && !host.input {
+        if peers.iter().all(|peer| peer.owes.is_none()) && host.pane().input_taken() {
             let next = (peers.iter_mut())
                 .find(|peer| matches!(&peer.held, Some((token, _)) if host.takes(*token)));
             if let Some(peer) = next
@@ -2549,7 +2562,9 @@ pub fn serve(
         if host.input {
             host.write_input();
         }
-        if !host.input {
+        // Taken once its terminal has written it all: where a write is in
+        // flight a while (Windows), not as soon as it was given.
+        if host.pane().input_taken() {
             for peer in &mut peers {
                 if let Some(token) = peer.owes.take() {
                     if peer.end.try_send(&FromSide::Took { token }).is_err() {
