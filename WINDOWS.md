@@ -293,7 +293,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   handle as a stdio the child's runtime doesn't write (Rust's test harness prints to stdout; fux's
   `__conn` already moves its stdout aside, `conn::wait`).
 - Every instance takes a client: while a spare waits, the listener's own next instance can take one
-  too. On Unix the server accepts while a spare waits too (D-164); on Windows it must keep polling
+  too. On Linux, which alone has spares, the server accepts while one waits too (D-164); on Windows it must keep polling
   its listener and hand such a client to a `__conn taken`.
 - `socket::connect` checks the server's user before returning, and the pipe's owner against this
   process's default owner (`TokenOwner`; Administrators for an elevated admin), which a squatter of
