@@ -791,19 +791,20 @@ pub struct Remote {
     /// What it said as it began or was taken back, its first facts last,
     /// till its pane takes them (`Session::linked`).
     pub first: Vec<FromPane>,
-    /// What says how it is to be now (its size, host, whether it is shown),
-    /// the latest of each, while its link takes nothing more: sent once it
-    /// does, so that one that reads nothing (stopped) grows no queue here.
-    pub later: Vec<ToPane>,
     /// Its link took none of what was last written to it: its process reads
     /// nothing (stopped, say). What would go to it waits upstream then.
     pub stalled: bool,
-    /// Questions asked of it while its link took nothing more, each by its
-    /// number: they wait here for their asker, not in the queue to it, and
-    /// go once its link takes what was queued, in order; one whose asker
-    /// went first is let go (`Link::unask`). So what a pane that reads
-    /// nothing is owed does not grow with those who gave up asking.
-    pub parked: Vec<(u64, ToPane)>,
+    /// What waits while its link takes nothing more, in the order it was
+    /// said, and goes in that order once its link took what was queued:
+    /// questions asked of it, each by its number, and what says how it is
+    /// to be now (its size, host, whether it is shown; no number). A
+    /// question waits here for its asker, not in the queue to it, and one
+    /// whose asker went first is let go (`Link::unask`). Of what says how
+    /// it is to be, only the latest of each kind since the last question
+    /// is kept: a question is answered as it was when it was asked, after
+    /// what was said before it and before what was said after. So what a
+    /// pane that reads nothing is owed grows only with those still asking.
+    pub parked: Vec<(Option<u64>, ToPane)>,
     /// The program whose handle the server copied from it (Windows,
     /// D-134), till another takes its place or the pane ends.
     pub adopted: Option<fuxix::process::Pid>,
@@ -811,7 +812,7 @@ pub struct Remote {
 
 impl Remote {
     /// Writes what is queued as far as its link takes it, and once it took
-    /// it all, what waited till then (`later`).
+    /// it all, what waited till then (`parked`), in the order it was said.
     pub fn flush(&mut self) {
         let queued = self.end.out.len();
         let all = matches!(self.end.flush(), Ok(true));
@@ -819,13 +820,51 @@ impl Remote {
         if !all {
             return;
         }
-        for message in std::mem::take(&mut self.later) {
+        for (_, message) in std::mem::take(&mut self.parked) {
             self.end.send(&message);
         }
-        for (_, question) in std::mem::take(&mut self.parked) {
-            self.end.send(&question);
-        }
         let _ = self.end.flush();
+    }
+
+    /// `state`, which says how it is to be now, waits its turn: in the
+    /// place of one of its kind said since the last question, if one was,
+    /// which it makes stale; else after all that waits.
+    fn park_state(&mut self, state: ToPane) {
+        let kind = std::mem::discriminant(&state);
+        let since = (self.parked.iter().rev())
+            .take_while(|(ask, _)| ask.is_none())
+            .count();
+        let from = self.parked.len().saturating_sub(since);
+        let stale = (self.parked.iter_mut().skip(from))
+            .find(|(_, waiting)| std::mem::discriminant(waiting) == kind);
+        match stale {
+            Some(stale) => stale.1 = state,
+            None => self.parked.push((None, state)),
+        }
+    }
+
+    /// Keeps, of what says how it is to be, the latest of each kind
+    /// between two questions: a question let go leaves what was said on
+    /// either side of it side by side.
+    fn tidy(&mut self) {
+        let mut kept = Vec::new();
+        if kept.try_reserve(self.parked.len()).is_err() {
+            return;
+        }
+        // From the last: one of a kind seen since the last question is
+        // stale.
+        let mut seen = Vec::new();
+        while let Some((ask, message)) = self.parked.pop() {
+            let kind = std::mem::discriminant(&message);
+            match ask {
+                Some(_) => seen.clear(),
+                None if seen.contains(&kind) => continue,
+                None => seen.push(kind),
+            }
+            kept.push((ask, message));
+        }
+        kept.reverse();
+        self.parked = kept;
     }
 
     /// Whether its link has not taken all it was sent: what is asked of it
@@ -851,12 +890,12 @@ impl Link {
                     message,
                     ToPane::Resize { .. } | ToPane::Host(_) | ToPane::Shown(_)
                 );
-                if state && !remote.end.out.is_empty() {
-                    let kind = std::mem::discriminant(&message);
-                    remote.later.retain(|m| std::mem::discriminant(m) != kind);
-                    remote.later.push(message);
+                // What waits keeps the order it was said in: a size said
+                // after a question goes after it.
+                if state && (!remote.end.out.is_empty() || !remote.parked.is_empty()) {
+                    remote.park_state(message);
                 } else if let (ToPane::Ask { ask, .. }, true) = (&message, remote.backed_up()) {
-                    remote.parked.push((*ask, message));
+                    remote.parked.push((Some(*ask), message));
                 } else {
                     remote.end.send(&message);
                 }
@@ -877,7 +916,7 @@ impl Link {
         };
         let mut body = None;
         remote.parked.retain(|(parked, question)| {
-            if *parked != ask {
+            if *parked != Some(ask) {
                 return true;
             }
             body = Some(match question {
@@ -900,6 +939,9 @@ impl Link {
             });
             false
         });
+        if body.is_some() {
+            remote.tidy();
+        }
         body
     }
 
@@ -971,7 +1013,6 @@ impl Remote {
             closed: false,
             ended: None,
             first: Vec::new(),
-            later: Vec::new(),
             stalled: false,
             parked: Vec::new(),
             adopted: None,
@@ -1228,7 +1269,6 @@ mod tests {
             closed: false,
             ended: None,
             first: Vec::new(),
-            later: Vec::new(),
             stalled: false,
             parked: Vec::new(),
             adopted: None,
@@ -1289,6 +1329,91 @@ mod tests {
                 last = ask;
             }
         }
+        Ok(())
+    }
+
+    /// What is said to a pane whose link takes nothing more goes, once it
+    /// reads, in the order it was said: a size said after a question comes
+    /// after it, as the question was asked at the size before (a size said
+    /// later went before every question that waited). Of two sizes with no
+    /// question between them only the later is sent, and a question let go
+    /// leaves no size behind it that a later one made stale.
+    #[cfg(unix)]
+    #[test]
+    fn what_waits_for_a_pane_goes_in_the_order_it_was_said()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{Ask, End, Link, Read, Remote, ToPane};
+        use fux_wire::events::Actor;
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        let mut theirs = End::new(theirs)?;
+        let mut link = Link::Remote(Remote {
+            end: End::new(ours)?,
+            pid: fuxix::process::Pid::from_i32(1).ok_or("a pid")?,
+            child: false,
+            closed: false,
+            ended: None,
+            first: Vec::new(),
+            stalled: false,
+            parked: Vec::new(),
+            adopted: None,
+        });
+        let id = fux_wire::id::PaneId::of(1);
+        let (now, mut inbox) = (std::time::Instant::now(), std::collections::VecDeque::new());
+        let size = |cols: u16| -> Result<ToPane, Box<dyn std::error::Error>> {
+            let (rows, cols) = (std::num::NonZeroU16::MIN, std::num::NonZeroU16::new(cols));
+            Ok(ToPane::Resize {
+                size: fux_vt::Size::from((rows, cols.ok_or("columns")?)),
+                actor: Actor::Outside,
+            })
+        };
+        let question = |ask: u64| ToPane::Ask {
+            ask,
+            actor: Actor::Outside,
+            what: Ask::ClearHistory,
+        };
+        let waiting = |link: &Link| match link {
+            Link::Remote(remote) => remote.parked.len(),
+            Link::Local(_) => 0,
+        };
+        // Something its link has not taken: what is said now waits.
+        link.send(id, ToPane::Shown(true), now, &mut inbox);
+        link.send(id, size(10)?, now, &mut inbox);
+        link.send(id, size(11)?, now, &mut inbox);
+        assert_eq!(waiting(&link), 1, "two sizes, the later kept");
+        link.send(id, question(1), now, &mut inbox);
+        link.send(id, size(12)?, now, &mut inbox);
+        link.send(id, question(2), now, &mut inbox);
+        link.send(id, size(13)?, now, &mut inbox);
+        link.send(id, question(3), now, &mut inbox);
+        link.send(id, size(14)?, now, &mut inbox);
+        assert_eq!(waiting(&link), 7);
+        // Its asker gone, the sizes on either side of it are one.
+        assert_eq!(link.unask(2), Some(None));
+        assert_eq!(waiting(&link), 5);
+        if let Link::Remote(remote) = &mut link {
+            remote.flush();
+        }
+        assert_eq!(waiting(&link), 0);
+        let mut buffer = [0u8; 4096];
+        assert_ne!(theirs.read(&mut buffer), Read::Closed);
+        let mut said = Vec::new();
+        while let Some(message) = theirs.next_message::<ToPane>()? {
+            said.push(match message {
+                ToPane::Resize { size, .. } => format!("size {}", size.cols()),
+                ToPane::Ask { ask, .. } => format!("question {ask}"),
+                ToPane::Shown(_) => "shown".to_owned(),
+                other => format!("{other:?}"),
+            });
+        }
+        let order = [
+            "shown",
+            "size 11",
+            "question 1",
+            "size 13",
+            "question 3",
+            "size 14",
+        ];
+        assert_eq!(said, order);
         Ok(())
     }
 
