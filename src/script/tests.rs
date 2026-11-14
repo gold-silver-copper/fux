@@ -898,6 +898,35 @@ fn a_file_that_does_not_read_is_placed_at_its_line() -> TestResult {
     Ok(())
 }
 
+/// Reading a request back from its data adds each option to what is
+/// built, copying nothing built before it: twice the nested workspaces
+/// make about twice the bytes, where a copy at every step made four times.
+#[test]
+fn reading_back_twice_the_nested_workspaces_makes_twice_the_bytes() -> TestResult {
+    let allocator = fux_vt_peak::ThreadPeak;
+    let mut made = Vec::new();
+    for depth in [1024, 2048] {
+        let steps: Vec<_> = (0..depth)
+            .map(|i| (words::Opt::In, vec![Value::str(i.to_string())]))
+            .collect();
+        let before = allocator.made();
+        let read = words::replayed(None, steps)?;
+        made.push(allocator.made().saturating_sub(before));
+        let Value::App(Fux::Opts(opts)) = read else {
+            return Err("options".into());
+        };
+        assert_eq!(opts.place.len(), depth);
+    }
+    let [shallow, deep] = made.as_slice() else {
+        return Err("two depths".into());
+    };
+    assert!(
+        *deep < shallow.saturating_mul(3),
+        "{shallow} bytes for 1024 workspaces, {deep} for 2048"
+    );
+    Ok(())
+}
+
 #[test]
 fn telling_an_uncaught_failure_allocates_no_more_at_depth() -> TestResult {
     let allocator = fux_vt_peak::ThreadPeak;
