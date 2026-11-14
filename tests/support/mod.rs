@@ -500,6 +500,8 @@ pub struct Client {
     greeted: bool,
     /// Its keys, once the server has said its id.
     keyboard: Option<Keyboard>,
+    /// What it sends behind a paste of its own, as the real client does.
+    pasting: fux::client::Pasting,
     frames: u64,
     /// Bytes typed before then, typed once it has.
     typed: Vec<u8>,
@@ -560,6 +562,7 @@ impl Client {
             read_only,
             greeted: false,
             keyboard: None,
+            pasting: fux::client::Pasting::default(),
             frames: 0,
             typed: Vec::new(),
             id: None,
@@ -604,8 +607,20 @@ impl Client {
     }
 
     fn acts(&mut self, acts: Vec<Dispatch>) -> Outcome {
-        for out in acts {
+        for out in self.pasting.order(acts) {
+            let Some(out) = self.pasting.admit(out) else {
+                continue;
+            };
             match out {
+                // A paste goes as the real client sends it: its first
+                // piece, the rest as each is asked for.
+                Dispatch::Send(act @ Act::Paste(_)) => {
+                    let frame = AttachedFrame::Act(Box::new(act));
+                    let mut pieces = fux_wire::protocol::encode_attached(&frame).into_iter();
+                    self.write(&pieces.next().unwrap_or_default())?;
+                    self.pasting.sent(pieces);
+                    self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                }
                 Dispatch::Send(act) => self.act(act)?,
                 Dispatch::Fence => self
                     .keyboard
@@ -698,13 +713,17 @@ impl Client {
                     );
                     self.id = Some(me.to_string());
                 }
+                ToAttached::More => {
+                    if let Some(piece) = self.pasting.taken() {
+                        self.write(&piece)?;
+                    }
+                }
+                ToAttached::Hold(held) => self.pasting.held = held,
                 frame @ (ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)
                 | ToAttached::Keys(_)
-                | ToAttached::Read(..)
-                | ToAttached::More
-                | ToAttached::Hold(_)) => {
+                | ToAttached::Read(..)) => {
                     if let Some(keyboard) = &mut self.keyboard {
                         acts.extend(keyboard.frame(frame));
                     }

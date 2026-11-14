@@ -1554,12 +1554,12 @@ impl Output {
 /// run after the keys before them are sent, as ever. Only its answers to
 /// the server's questions go at once: the pasted program may be what asks.
 #[derive(Default)]
-struct Pasting {
+pub struct Pasting {
     /// A paste is sent whose last piece is not yet taken.
     open: bool,
     /// The server said to hold back what is typed (`ToAttached::Hold`):
     /// the program typed into has a frame of input it has not read.
-    held: bool,
+    pub held: bool,
     /// Its pieces not yet sent, each a frame.
     pieces: std::collections::VecDeque<Vec<u8>>,
     behind: Vec<Dispatch>,
@@ -1567,14 +1567,14 @@ struct Pasting {
 
 impl Pasting {
     /// A paste's first frame was sent: `rest`, its other pieces, wait.
-    fn sent(&mut self, rest: impl Iterator<Item = Vec<u8>>) {
+    pub fn sent(&mut self, rest: impl Iterator<Item = Vec<u8>>) {
         self.open = true;
         self.pieces.extend(rest);
     }
 
     /// What was sent of the paste is taken: its next piece, to send; with
     /// none left the paste is taken, and nothing waits behind it more.
-    fn taken(&mut self) -> Option<Vec<u8>> {
+    pub fn taken(&mut self) -> Option<Vec<u8>> {
         let next = self.pieces.pop_front();
         self.open = next.is_some();
         next
@@ -1598,7 +1598,7 @@ impl Pasting {
     const MOST: usize = 4096;
 
     /// `acts`, after what waited behind a paste now taken.
-    fn order(&mut self, mut acts: Vec<Dispatch>) -> Vec<Dispatch> {
+    pub fn order(&mut self, mut acts: Vec<Dispatch>) -> Vec<Dispatch> {
         if self.waits() {
             return acts;
         }
@@ -1609,7 +1609,7 @@ impl Pasting {
 
     /// `out`, if it goes now: anything with no paste on its way, and an
     /// answer always. What does not waits behind the paste.
-    fn admit(&mut self, out: Dispatch) -> Option<Dispatch> {
+    pub fn admit(&mut self, out: Dispatch) -> Option<Dispatch> {
         if !self.waits() || matches!(out, Dispatch::Answer(..)) {
             return Some(out);
         }
