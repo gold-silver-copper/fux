@@ -134,6 +134,23 @@ fn kept(server: &Server) -> PathBuf {
     fux_server::socket::panes(&server.socket)
 }
 
+/// How many sockets the system has at `path`: the one listening there and
+/// each connection that reached it, taken by its listener or not yet (a
+/// process stopped takes none), till both its ends are closed
+/// (`/proc/net/unix`).
+#[cfg(target_os = "linux")]
+fn reached(path: &std::path::Path) -> Result<usize, String> {
+    let path = path.to_str().ok_or("its path")?;
+    let sockets = std::fs::read_to_string("/proc/net/unix").map_err(e)?;
+    Ok(sockets.lines().filter(|line| line.ends_with(path)).count())
+}
+
+/// Where pane `pane`'s own process listens.
+#[cfg(target_os = "linux")]
+fn pane_socket(server: &Server, pane: &str) -> PathBuf {
+    kept(server).join(pane.trim_start_matches('%'))
+}
+
 /// 1. A pane's own process killed: the server and another pane go on,
 ///    taking input and captures, and the journal says how it ended, then
 ///    its program's end, its real status.
@@ -225,12 +242,16 @@ fn a_flood_of_queries_none_reads_leaves_its_pane_process_flat_and_answering() ->
     Ok(())
 }
 
-/// 3. A client that stops reading while a pane floods it with copies: only
-///    its connection ends, its process capped; the server and others go
-///    on.
+/// 3. A client that stops reading while a pane floods it with copies costs
+///    neither its connection's process nor the server: what it is owed is
+///    the latest copy, kept as that in both (D-178), so neither grows, the
+///    server and another client go on, and once it reads again it gets
+///    the last copy, and not each of those before it. (Its connection
+///    queued every copy, and ended at its cap: this test said so.)
 #[cfg(target_os = "linux")]
 #[test]
-fn a_client_that_stops_reading_ends_only_its_connection() -> Outcome {
+fn a_client_that_stops_reading_costs_its_connection_and_the_server_nothing() -> Outcome {
+    const COPIES: usize = 200_000;
     let server = Server::start("")?;
     let pid = i32::try_from(server.pid().ok_or("the server's pid")?).map_err(e)?;
     let mut stuck = server.attach(10, 40)?;
@@ -240,25 +261,59 @@ fn a_client_that_stops_reading_ends_only_its_connection() -> Outcome {
         return Err(format!("its connection's process: {conns:?}"));
     };
     let conn = *conn;
-    // What it holds for its client grows by doubling, so it ends once
-    // about half its cap is held. The copies come no faster than its
-    // pane's process reads them, a few MiB a second in a debug build, less
-    // on CI: a cap of 16 MiB, 8 of them to hold, missed `PATIENCE` there.
-    cap(conn, 4 << 20)?;
     let shell = support::focused(&server)?;
-    // It no longer reads (`pump`) from here on.
-    let copies = r#"while :; do printf '\033]52;c;aGk=\a'; done"#;
-    server.type_line(&shell, copies)?;
-    eventually("its connection's process to end", || Ok(!alive(conn)))?;
-    eventually("its client gone", || {
-        Ok(!server
-            .ok(&["(listing (list-session))"])?
-            .contains("client "))
-    })?;
+    let before = (peak_kib(conn)?, peak_kib(pid)?);
+    // It no longer reads (`pump`) from here on. Its pane copies "hi" over
+    // and over, then "last", and says it is done.
+    let done = server.dir.join("copied");
+    let copies = format!(
+        r#"i=0; while [ $i -lt {COPIES} ]; do printf '\033]52;c;aGk=\a'; i=$((i+1)); done; printf '\033]52;c;bGFzdA==\a'; : > '{}'"#,
+        done.display()
+    );
+    server.type_line(&shell, &copies)?;
+    let mut copied = false;
+    for _ in 0..12 {
+        copied = eventually("its pane to have copied them all", || Ok(done.exists())).is_ok();
+        if copied {
+            break;
+        }
+    }
+    assert!(copied, "its pane did not copy them all");
     assert!(alive(pid), "the server");
+    assert!(alive(conn), "its connection's process ended");
     let mut other = server.attach(10, 40)?;
     other.wait_for("$")?;
     other.detach()?;
+    // It reads again: the last copy comes, the server having taken every
+    // copy its pane made by then.
+    let (last, each): (&[u8], &[u8]) = (b"\x1b]52;c;bGFzdA==\x07", b"\x1b]52;c;aGk=\x07");
+    let has = |painted: &[u8], copy: &[u8]| {
+        (0..painted.len())
+            .filter(|at| {
+                painted
+                    .get(*at..)
+                    .is_some_and(|rest| rest.starts_with(copy))
+            })
+            .count()
+    };
+    eventually("the last copy", || {
+        stuck.pump()?;
+        Ok(has(&stuck.painted, last) > 0)
+    })?;
+    let got = has(&stuck.painted, each);
+    assert!(got < COPIES / 2, "it was sent {got} of {COPIES} copies");
+    let grew = (
+        peak_kib(conn)?.saturating_sub(before.0),
+        peak_kib(pid)?.saturating_sub(before.1),
+    );
+    assert!(
+        grew.0 < 8 << 10,
+        "its connection's process grew {} KiB",
+        grew.0
+    );
+    // Measured in a debug build, whether its pane made 60,000 copies or
+    // 400,000: its connection +0 KiB, the server +3 to +5 MiB.
+    assert!(grew.1 < 16 << 10, "the server grew {} KiB", grew.1);
     drop(stuck);
     Ok(())
 }
@@ -618,6 +673,8 @@ fn a_paste_body_never_passes_through_the_server() -> Outcome {
     let pid = server_pid(&server)?;
     let before = peak_kib(pid)?;
     signal(own, Signal::Stop);
+    let at = pane_socket(&server, &sleeper);
+    let links = reached(&at)?;
     let mut sending = started(
         &server,
         &[&format!(
@@ -630,12 +687,12 @@ fn a_paste_body_never_passes_through_the_server() -> Outcome {
     stdin.write_all(&body).map_err(e)?;
     drop(stdin);
     // It stays with its sender, which waits: a piece at a time goes on
-    // (D-175), so no connection's process holds it either.
-    let sender = i32::try_from(sending.id()).map_err(e)?;
-    eventually("its sender to hold it", || {
-        Ok(peak_kib(sender).is_ok_and(|k| k > 32 << 10))
+    // (D-175), so no connection's process holds it either. Its
+    // connection has reached the pane's socket with the first piece, which
+    // the pane, stopped, does not take: it reads no more of it from here.
+    eventually("its connection to reach the pane", || {
+        Ok(reached(&at)? > links)
     })?;
-    std::thread::sleep(std::time::Duration::from_millis(300));
     let grew = peak_kib(pid)?.saturating_sub(before);
     let held = (connections(pid).into_iter())
         .filter_map(|conn| peak_kib(conn).ok())
@@ -1057,6 +1114,8 @@ fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome 
     let pid = server_pid(&server)?;
     let _reap = reap_run(&server)?;
     signal(own, Signal::Stop);
+    let at = pane_socket(&server, &sleeper);
+    let links = reached(&at)?;
     let mut sending = started(
         &server,
         &[&format!(
@@ -1067,13 +1126,12 @@ fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome 
     let mut stdin = sending.stdin.take().ok_or("its stdin")?;
     stdin.write_all(&vec![b'x'; 32 << 20]).map_err(e)?;
     drop(stdin);
-    // The body stays with its sender (D-175): its connection, sending the
-    // stopped pane the first piece, is one of those the server has.
-    let sender = i32::try_from(sending.id()).map_err(e)?;
-    eventually("its sender to hold it", || {
-        Ok(peak_kib(sender).is_ok_and(|k| k > 32 << 10))
+    // The body stays with its sender (D-175): its connection, which has
+    // reached the stopped pane's socket with the first piece, is one of
+    // those the server has.
+    eventually("its connection to reach the pane", || {
+        Ok(reached(&at)? > links)
     })?;
-    std::thread::sleep(std::time::Duration::from_millis(300));
     let conns = connections(pid);
     signal(pid, Signal::Kill);
     eventually("its connections gone", || {
@@ -1194,15 +1252,12 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
     let (mut client, id, got) = keeping(&server)?;
     let conn = the_clients(&server)?;
     signal(conn, Signal::Stop);
+    // They stay with their sender (D-175): its connection reaches the
+    // client's, stopped, with the first piece of them, none of it taken.
+    let at = kept(&server).join(format!("c{}", id.trim_start_matches('c')));
+    let links = reached(&at)?;
     let sending = paste(&server, &id, &vec![b'y'; SIZE])?;
-    let pid = server_pid(&server)?;
-    // They stay with their sender, a piece of them on its way (D-175).
-    let _ = pid;
-    let sender = i32::try_from(sending.id()).map_err(e)?;
-    eventually("the keys on their way", || {
-        Ok(peak_kib(sender).is_ok_and(|k| k > 32 << 10))
-    })?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    eventually("the keys on their way", || Ok(reached(&at)? > links))?;
     server.ok(&[&format!(
         "(sequence! (detach (client {})) #inert)",
         fux::script::quoted(&id)
