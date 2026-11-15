@@ -1,5 +1,5 @@
-//! The tree is flat tables and a name is kept once (D-175): what a depth
-//! of nesting and a long name cost, counted, never timed.
+//! The tree is flat tables: what a depth of nesting costs, counted,
+//! never timed.
 use super::*;
 use crate::session::testing::TestResult;
 #[cfg(unix)]
@@ -368,7 +368,7 @@ fn chain_of_tabs(depth: u32, client: ClientId) -> Result<Parts, String> {
             ended: None,
             read_error: None,
         };
-        Ok(Pane::recorded(&recorded, None))
+        Ok(Pane::recorded(&recorded))
     };
     let mut parts = Parts::new(journal);
     for level in 1..=depth {
@@ -413,124 +413,11 @@ fn killing_a_chain_with_a_tab_at_every_level_grows_with_the_depth_alone() -> Tes
     Ok(())
 }
 
-/// The files in `kept` that hold `bytes` bytes or more, each with what
-/// tells it from one written anew in its place.
-#[cfg(unix)]
-fn large(kept: &Path, bytes: u64) -> Result<Vec<(std::ffi::OsString, u64)>, String> {
-    use std::os::unix::fs::MetadataExt;
-    let mut large = Vec::new();
-    for entry in std::fs::read_dir(kept).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let found = entry.metadata().map_err(|e| e.to_string())?;
-        if found.len() >= bytes {
-            large.push((entry.file_name(), found.ino()));
-        }
-    }
-    Ok(large)
-}
-
-/// F014: a name is written once, to a file of its own, and no change of
-/// the tree writes it again: with a workspace named in 1 MiB, a split
-/// writes the structure alone, in fewer bytes than that one name. A name
-/// replaced leaves no file. A server taking the run back reads each name
-/// from its file; with the first record it writes, the run its own, it
-/// has each name in a file of its own, once, and removes the name files
-/// no structure names: the last server's, and what a crash between a
-/// name's writing and the structure's left.
-#[cfg(unix)]
-#[test]
-fn a_long_name_is_written_once_and_no_split_writes_it_again() -> TestResult {
-    const NAME: u64 = 1 << 20;
-    let (options, journal) = defaults()?;
-    let dir = scratch("names")?;
-    let (mut s, kept) = recording(&dir, journal)?;
-    nest(&mut s, None, 1, options)?;
-    let (ws, pane) = (s.parts.tabs_in(None).first())
-        .map(|(ws, tab)| (*ws, tab.root().first_pane()))
-        .ok_or("no tab")?;
-    let long: String = std::iter::repeat_n('n', usize::try_from(NAME)?).collect();
-    let rename = |name: &str| Command::Rename {
-        target: AnyRef::Workspace(ws),
-        name: name.to_owned(),
-    };
-    ask(&mut s, &rename(&long))?;
-    let named = large(&kept, NAME)?;
-    assert_eq!(named.len(), 1, "the name, in one file: {named:?}");
-    let split = Command::Split {
-        beside: Beside::Split(Axis::Horizontal, None),
-        target: pane,
-        start: command::Start::Program(Program::new("cat".into(), Vec::new())?),
-        cwd: Some(dir.clone()),
-        options,
-    };
-    let before = std::fs::read(kept.join("run"))?;
-    ask(&mut s, &split)?;
-    let after = std::fs::read(kept.join("run"))?;
-    assert_ne!(before, after, "the split is recorded");
-    assert!(u64::try_from(after.len())? < NAME / 64, "{}", after.len());
-    assert_eq!(large(&kept, NAME)?, named, "the name's file is as it was");
-    // What a crash between a name's writing and the structure's leaves:
-    // a name no structure names, beside the run as it was.
-    let left = crate::record::NameId {
-        server: 7,
-        number: 77,
-    };
-    std::fs::write(crate::record::name_file(&kept, left), "never recorded")?;
-    drop(s);
-    let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
-    let (mut again, _) = recording(&dir, journal)?;
-    again.resume(record, Instant::now())?;
-    assert_eq!(
-        again.workspace(ws).and_then(|ws| ws.name()).map(str::len),
-        Some(long.len())
-    );
-    assert_eq!(again.parts.panes().len(), 2);
-    // Its panes found gone, it wrote a record: the name it read stays in
-    // the file it was read from, and what no structure names is swept.
-    let named = large(&kept, NAME)?;
-    assert_eq!(named.len(), 1, "the name, in one file: {named:?}");
-    let tab = (again.parts.tabs_in(None).first())
-        .map(|(_, tab)| tab.id())
-        .ok_or("no tab")?;
-    let name_tab = Command::Rename {
-        target: AnyRef::Tab(tab),
-        name: "tab".to_owned(),
-    };
-    ask(&mut again, &name_tab)?;
-    assert_eq!(large(&kept, NAME)?, named, "and no change writes it again");
-    // What the crash left went with the first record written here: its
-    // panes, in the first session's process, were found gone, and so
-    // recorded. (A server that finds them all there writes none till
-    // something changes: `tests/pane_processes.rs`.)
-    assert!(!crate::record::name_file(&kept, left).exists());
-    // Named anew: the old name's file goes once the structure names the new.
-    ask(&mut again, &rename("short"))?;
-    assert_eq!(large(&kept, NAME)?, []);
-    let names = std::fs::read_dir(&kept)?
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("name."))
-        .count();
-    assert_eq!(names, 2, "the workspace's and the tab's");
-    drop(again);
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(())
-}
-
-/// The record in `kept`, read whole as a server taking the run back
-/// reads it: its structure, and every name it has.
-#[cfg(unix)]
-fn read_whole(kept: &Path) -> Result<Vec<String>, String> {
-    let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
-    let names = crate::record::read_names(kept, &record.tree)?;
-    Ok(names.values().map(|name| name.to_string()).collect())
-}
-
 /// A server that took a run back and has not heard from a pane serves as
 /// one that has (D-172): a client attaches, which takes an id the record
 /// holds, and the record is written. And stopped then, it records the
-/// run's end (D-174): no start takes the run back.
-/// What it writes meanwhile does not grow with its changes: a long name it
-/// read stays in the one file it was read from, copied by no record.
+/// run's end (D-174): no start takes the run back. A name it read is
+/// the name its workspace has.
 #[cfg(unix)]
 #[test]
 fn a_server_a_pane_has_not_answered_attaches_clients_and_records_its_end() -> TestResult {
@@ -539,14 +426,13 @@ fn a_server_a_pane_has_not_answered_attaches_clients_and_records_its_end() -> Te
     let (mut first, kept) = recording(&dir, journal)?;
     nest(&mut first, None, 1, options)?;
     let pane = *first.parts.panes().keys().next().ok_or("no pane")?;
-    const LONG: u64 = 1 << 18;
-    let long: String = std::iter::repeat_n('n', usize::try_from(LONG)?).collect();
     let named = (first.parts.tabs_in(None).first()).map(|(ws, _)| *ws);
-    let long_name = Command::Rename {
-        target: AnyRef::Workspace(named.ok_or("no workspace")?),
-        name: long,
+    let named = named.ok_or("no workspace")?;
+    let name = Command::Rename {
+        target: AnyRef::Workspace(named),
+        name: "kept".to_owned(),
     };
-    ask(&mut first, &long_name)?;
+    ask(&mut first, &name)?;
     let _silent = std::os::unix::net::UnixListener::bind(kept.join(pane.number().to_string()))?;
     drop(first);
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
@@ -559,29 +445,9 @@ fn a_server_a_pane_has_not_answered_attaches_clients_and_records_its_end() -> Te
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;
     assert_ne!(record.ids, before, "the client's id is recorded");
     assert!(!record.ended);
-    // Meanwhile a name it read is kept where it is, and no record copies
-    // it; a name it replaces leaves no file, the last server's neither.
-    let (ws, tab) = (again.parts.tabs_in(None).first())
-        .map(|(ws, tab)| (*ws, tab.id()))
-        .ok_or("no tab")?;
-    let rename = |target: AnyRef, name: &str| Command::Rename {
-        target,
-        name: name.to_owned(),
-    };
-    ask(&mut again, &rename(AnyRef::Tab(tab), "t0"))?;
-    let copies = large(&kept, LONG)?;
-    assert_eq!(copies.len(), 1, "the last server's alone: {copies:?}");
-    for change in 1..=5 {
-        ask(&mut again, &rename(AnyRef::Tab(tab), &format!("t{change}")))?;
-    }
-    assert_eq!(large(&kept, LONG)?, copies, "never copied");
-    let other: String = std::iter::repeat_n('m', usize::try_from(LONG)?).collect();
-    ask(&mut again, &rename(AnyRef::Workspace(ws), &other))?;
-    assert_eq!(large(&kept, LONG)?.len(), 1, "the old name's file went");
     assert_eq!(
-        read_whole(&kept)?.len(),
-        2,
-        "the workspace's name and the tab's"
+        again.workspace(named).and_then(|ws| ws.name()),
+        Some("kept")
     );
     again.end_run();
     let record = crate::record::read(&kept.join("run"))?.ok_or("no record")?;

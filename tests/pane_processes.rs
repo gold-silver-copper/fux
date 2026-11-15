@@ -927,124 +927,83 @@ fn a_close_read_after_its_server_went_ends_the_pane() -> Outcome {
     })
 }
 
-/// 15. A change whose record can't be written fails, and is not made: the
-///     tree a crash takes back is the one anyone saw (D-124 (3)).
+/// 15. A change made while the run's record can't be written stands, and
+///     its asker is told once that the record is behind: a tab killed so
+///     is gone with its panes, every listing still works and every pane
+///     listed answers; the next change that can be written writes them
+///     all, and a crash then takes back the tree as it was changed.
 #[test]
-fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
+fn a_change_whose_record_cannot_be_written_stands_and_is_said_once() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let kept_pane = pane(server, "a", &["sh"])?;
+    let killed = pane(server, "b", &["sh"])?;
+    let _reap = reap_run(server)?;
+    // Where its server writes a record first, before it renames it.
+    let blocked = kept(server).join(format!("run.new.{}", server_pid(server)?));
+    std::fs::create_dir(&blocked).map_err(e)?;
+    let kill = server.fux(&[&format!(
+        "(sequence! (kill (tab (pane {}))) #inert)",
+        fux::script::quoted(&killed)
+    )])?;
+    let rename = server.fux(&[&format!(
+        "(sequence! (rename (pane {}) \"one\") #inert)",
+        fux::script::quoted(&kept_pane)
+    )])?;
+    std::fs::remove_dir(&blocked).map_err(e)?;
+    // Whatever the kill answered, the session is whole: it lists, and a
+    // pane it lists answers.
+    let listed = server.ok(&["(listing (list-session))"])?;
+    assert!(listed.contains(&kept_pane), "{listed}");
+    server.ok(&[&format!(
+        "(sequence! (capture (pane {})) #inert)",
+        fux::script::quoted(&kept_pane)
+    )])?;
+    // The kill and the rename were made, and the first said the record
+    // fell behind; the second said nothing more.
+    assert_eq!(kill.status, 0, "{}", kill.stderr);
+    assert!(
+        kill.stderr.contains("could not be written"),
+        "{}",
+        kill.stderr
+    );
+    assert_eq!((rename.status, rename.stderr.as_str()), (0, ""));
+    assert!(!listed.contains(&format!("{killed} ")), "{listed}");
+    // Written by the next change: a crash takes back what was changed.
+    server.ok(&[&format!(
+        "(sequence! (rename (pane {}) \"two\") #inert)",
+        fux::script::quoted(&kept_pane)
+    )])?;
+    crash(server)?;
+    server.ok(&["(sequence! (start) #inert)"])?;
+    let listing = server.ok(&["(listing (list-session))"])?;
+    assert!(
+        listing.contains(" two ") && !listing.contains(&format!("{killed} ")),
+        "{listing}"
+    );
+    Ok(())
+}
+
+/// A resize asked while the run's record can't be written reaches its
+/// pane: none is remembered as sent that was not.
+#[test]
+fn a_resize_asked_while_the_record_cannot_be_written_reaches_its_pane() -> Outcome {
     let started = Server::start("")?;
     let _stop = Stop(&started);
     let server = &started;
     let shell = pane(server, "a", &["sh"])?;
-    server.ok(&[&format!(
-        "(sequence! (rename (pane {}) \"one\") #inert)",
+    let resize = format!(
+        "(sequence! (resize (tab (pane {})) 90 24) #inert)",
         fux::script::quoted(&shell)
-    )])?;
-    // Where its server writes a record first, before it renames it.
+    );
     let blocked = kept(server).join(format!("run.new.{}", server_pid(server)?));
     std::fs::create_dir(&blocked).map_err(e)?;
-    let refused = server.fux(&[&format!(
-        "(sequence! (rename (pane {}) \"two\") #inert)",
-        fux::script::quoted(&shell)
-    )])?;
-    assert_ne!(refused.status, 0);
-    assert!(
-        refused.stderr.contains("could not be written"),
-        "{}",
-        refused.stderr
-    );
-    let listing = server.ok(&["(listing (list-session))"])?;
-    assert!(
-        listing.contains(" one ") && !listing.contains(" two "),
-        "{listing}"
-    );
-    // A close is undone whole: its pane stays, and takes input.
-    let refused = server.fux(&[&format!(
-        "(sequence! (kill (pane {})) #inert)",
-        fux::script::quoted(&shell)
-    )])?;
-    assert_ne!(refused.status, 0, "{}", refused.stdout);
-    assert!(
-        server
-            .ok(&["(listing (list-session))"])?
-            .contains(&shell.to_string())
-    );
+    let _ = server.fux(&[&resize])?;
     std::fs::remove_dir(&blocked).map_err(e)?;
-    server.type_line(&shell, "echo still-here")?;
-    server.shows(&shell, "still-here")?;
-    signal(server_pid(server)?, Signal::Kill);
-    server.ok(&["(sequence! (start) #inert)"])?;
-    let listing = server.ok(&["(listing (list-session))"])?;
-    assert!(listing.contains(" one "), "{listing}");
-    Ok(())
-}
-
-/// The numbers of the name files a run keeps (`record::name_file`): each
-/// its server's process and which of its names it is.
-fn name_files(server: &Server) -> Vec<String> {
-    let entries = std::fs::read_dir(kept(server)).into_iter().flatten();
-    let mut names: Vec<String> = (entries.flatten())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter_map(|name| name.strip_prefix("name.").map(str::to_owned))
-        .filter(|number| !number.ends_with(".new"))
-        .collect();
-    names.sort();
-    names
-}
-
-/// 15b. A server killed between writing a name and writing the structure
-///     that names it leaves a run the next start takes back, with the
-///     names anyone saw; the name's file, which no structure names, goes
-///     with the first record the new server writes (D-175). The moment is held, not raced: a structure is written to
-///     `run.new.PID` first, and a FIFO put there holds the server at its
-///     opening, the name's file written, till it is killed.
-#[cfg(unix)]
-#[test]
-fn a_server_killed_between_a_name_and_the_structure_is_taken_back() -> Outcome {
-    let started = Server::start("")?;
-    let _stop = Stop(&started);
-    let server = &started;
-    let pane = pane(server, "a", &["sleep", "1016"])?;
-    let _reap = reap_run(server)?;
-    let rename = |name: &str| {
-        let pane = fux::script::quoted(&pane);
-        format!("(sequence! (rename (pane {pane}) \"{name}\") #inert)")
-    };
-    server.ok(&[&rename("one")])?;
-    let recorded = name_files(server);
-    // Found while it answers: held at the FIFO, it answers no one.
-    let serving = serving(server)?;
-    let held = kept(server).join(format!("run.new.{serving}"));
-    let made = std::process::Command::new("mkfifo").arg(&held).status();
-    assert!(
-        made.map_err(|error| format!("mkfifo: {error}"))?.success(),
-        "mkfifo {}",
-        held.display()
-    );
-    let mut renaming = server.spawn(&[&rename("two")])?;
-    let written = eventually("the new name's file written", || {
-        Ok(name_files(server).len() > recorded.len())
-    });
-    signal(serving, Signal::Kill);
-    let crashed = written.and(eventually("the server gone", || Ok(!alive(serving))));
-    let _ = end(&mut renaming);
-    std::fs::remove_file(&held).map_err(e)?;
-    crashed?;
-    let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
-    assert_eq!(taken.status, 0, "{}", taken.stderr);
-    let listing = server.ok(&["(listing (list-session))"])?;
-    assert!(
-        listing.contains(" one ") && !listing.contains(" two "),
-        "{listing}"
-    );
-    // And it is the run still, and this server's: its pane takes a name,
-    // and with that record the file no structure names goes.
-    server.ok(&[&rename("three")])?;
-    assert!(
-        server
-            .ok(&["(listing (list-session))"])?
-            .contains(" three ")
-    );
-    assert_eq!(name_files(server).len(), recorded.len(), "a name, a file");
+    server.ok(&[&resize])?;
+    server.type_line(&shell, "echo size=$(stty size)")?;
+    server.shows(&shell, "size=24 90")?;
     Ok(())
 }
 
@@ -1069,8 +1028,9 @@ fn a_pane_is_recorded_before_its_program_starts() -> Outcome {
         "a pane's process started"
     );
     std::fs::remove_dir(&blocked).map_err(e)?;
-    // The next pane's socket, a process listening at it.
-    let next = kept(&server).join("2");
+    // The next pane's socket, a process listening at it: the refused pane
+    // took id 2, never given again.
+    let next = kept(&server).join("3");
     let listener = std::os::unix::net::UnixListener::bind(&next).map_err(e)?;
     let refused = server.fux(&[format!(
         "(new-tab {})",
@@ -1521,8 +1481,8 @@ fn a_stopped_waiting_connection_holds_up_no_client() -> Outcome {
 
 /// A write past a file-size limit (`ulimit -f`) fails as a write, where it
 /// is told, and ends no process of fux: a tree change whose record can't be
-/// written so is refused, and the server lives; a client whose output
-/// can't be says so.
+/// written so is made all the same, the write logged, and the server
+/// lives; a client whose output can't be says so.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_write_past_the_file_size_limit_is_refused_not_fatal() -> Outcome {
@@ -1530,18 +1490,12 @@ fn a_write_past_the_file_size_limit_is_refused_not_fatal() -> Outcome {
     let pid = server_pid(&server)?;
     let shell = pane(&server, "a", &["sh"])?;
     limit(pid, "fsize", 16)?;
-    let refused = server.fux(&[&format!(
+    server.ok(&[&format!(
         "(sequence! (rename (pane {}) \"renamed\") #inert)",
         fux::script::quoted(&shell)
     )])?;
-    assert_ne!(refused.status, 0);
-    assert!(
-        refused.stderr.contains("could not be written"),
-        "{}",
-        refused.stderr
-    );
     let listing = server.ok(&["(listing (list-session))"])?;
-    assert!(!listing.contains(" renamed "), "{listing}");
+    assert!(listing.contains(" renamed "), "{listing}");
     assert!(alive(pid), "the server");
     let saved = server.dir.join("saved");
     let dump = (server.command("/bin/sh"))
@@ -1838,11 +1792,9 @@ fn a_run_a_live_server_holds_is_refused_whatever_was_removed_beside_it() -> Outc
 
 /// 29b. A run is its server's while that server lives, though it is
 ///     stopped and a pane of it gone meanwhile: a `start` then is refused
-///     too, and neither writes a record nor removes a name's file (D-180;
-///     a second server once took such a run, recorded the pane gone and
-///     wrote names of its own beside the first's, D-175).
+///     too, and writes no record (D-180).
 #[test]
-fn a_stopped_servers_run_is_refused_with_its_record_and_names_as_they_were() -> Outcome {
+fn a_stopped_servers_run_is_refused_with_its_record_as_it_was() -> Outcome {
     let server = Server::start("")?;
     let stays = pane(&server, "w", &["sleep", "1017"])?;
     let goes = pane(&server, "w", &["sleep", "1018"])?;
@@ -1852,8 +1804,6 @@ fn a_stopped_servers_run_is_refused_with_its_record_and_names_as_they_were() -> 
         fux::script::quoted(&stays)
     )])?;
     let (own, pid) = (own_process(&server, &goes)?, server_pid(&server)?);
-    let names = name_files(&server);
-    assert!(!names.is_empty(), "{names:?}");
     // Stopped: what follows it does not see, nor record.
     signal(pid, Signal::Stop);
     let _resume = Resumed(pid);
@@ -1865,7 +1815,6 @@ fn a_stopped_servers_run_is_refused_with_its_record_and_names_as_they_were() -> 
     let said = refused_start(&server)?;
     assert!(said.contains("another fux server"), "{said}");
     assert_eq!(std::fs::read(&record).map_err(e)?, before, "its record");
-    assert_eq!(name_files(&server), names, "its names' files");
     signal(pid, Signal::Cont);
     signal(pid, Signal::Term);
     eventually("the first server gone", || Ok(!alive(pid)))

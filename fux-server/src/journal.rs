@@ -113,8 +113,8 @@ struct Entry {
 }
 
 /// A time in the journal: before entry `seq` and before the `moves`th
-/// workspace to leave where it was. What `truncate` takes it back to,
-/// and how the workspaces were nested then (`Journal::above`).
+/// workspace to leave where it was: how the workspaces were nested
+/// then (`Journal::above`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Mark {
     seq: Seq,
@@ -444,22 +444,6 @@ impl Journal {
         Mark {
             seq: self.next,
             moves: self.moved,
-        }
-    }
-    /// Its entries from `mark` on, never read, let go, and the moves since
-    /// with them: a change undone before it was told
-    /// (`Session::transact`). What they evicted is gone.
-    pub(crate) fn truncate(&mut self, mark: Mark) {
-        while let Some(entry) = self.entries.pop_back_if(|entry| entry.seq >= mark.seq) {
-            self.text = self.text.saturating_sub(entry.event.stored());
-        }
-        while (self.thens.pop_back_if(|then| then.entry >= mark.seq)).is_some() {}
-        while let Some(moved) = self.moves.pop_back_if(|moved| moved.at.moves >= mark.moves) {
-            self.was.remove(&(moved.ws, moved.at));
-        }
-        self.moved = self.moved.min(mark.moves);
-        if mark.seq < self.next {
-            self.next = mark.seq;
         }
     }
     /// The oldest entry it still holds, or its end when it holds none.
@@ -1634,15 +1618,6 @@ mod tests {
         assert_eq!(read(&journal, &now, a)?, [0, 1, 3, 4]);
         assert_eq!(read(&journal, &now, b)?, [0, 1, 3, 4]);
         assert_eq!(read(&journal, &now, d)?, [1, 2]);
-        // A change undone takes its moves back with its entries.
-        let mark = journal.mark();
-        now.insert(b, d);
-        journal.left(b, Some(a));
-        journal.push(Event::Workspace((Some(d), b), Change::Moved(Some(a))));
-        now.insert(b, a);
-        journal.truncate(mark);
-        assert_eq!(read(&journal, &now, d)?, [1, 2]);
-        assert_eq!(read(&journal, &now, a)?, [0, 1, 3, 4]);
         // The moves go with the entries from before them, and are counted.
         assert_eq!(journal.moves.len(), 4);
         assert_eq!((journal.was.len(), journal.text), (4, 0));

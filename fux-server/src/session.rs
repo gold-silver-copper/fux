@@ -4,7 +4,7 @@ use crate::copy::Copy as Pane;
 use crate::journal::{Detach, ViewChange};
 use crate::link::{Answered, Ask, Begin, FromPane, Hosting, Link, Remote, ToPane};
 use crate::pane::{self, Runs};
-use crate::record::{NameId, Tracked};
+use crate::record::Tracked;
 use crate::view::{ClientKind, Mode, View};
 use crate::wait::{Form, Pending, Waiting, Watches};
 use crate::workspace::{Destination, Fit, Parts, Split, Tab, Workspace};
@@ -23,7 +23,6 @@ use fux_wire::layout::{self, Axis, NoPane, Placement, Rect, Shares, Side, Tree};
 use fux_wire::protocol::{Attach, Body, Reply, ToAttached};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 #[cfg(test)]
 mod flat;
 mod inspect;
@@ -192,17 +191,6 @@ impl Here<'_> {
     }
 }
 
-/// What a change undoes, taken before it (`Session::transact`).
-struct Undo {
-    structure: crate::workspace::Structure,
-    ids: Ids,
-    views: BTreeMap<ClientId, View>,
-    journal: crate::journal::Mark,
-    outbox: usize,
-    /// The last question asked of a pane before it.
-    asked: u64,
-}
-
 /// A program whose pane's own process ended first, adopted by the server
 /// (`fuxix::process::adopt_orphans`): reaped, its status told; killed once
 /// its grace is over, as a closed pane's program is.
@@ -291,32 +279,18 @@ pub struct Session {
     /// What that record says beside its tree: the run, the ids given last
     /// and whether it ended. None till one is written.
     recorded_head: Option<(command::Run, Vec<u32>, bool)>,
-    /// The name files that record names (`record::name_file`): for each
-    /// workspace, tab or pane named there, its name's number and text.
-    named: BTreeMap<AnyRef, (NameId, Rc<str>)>,
-    /// The server its name files are numbered as (`NameId`): its process.
-    names_as: u32,
-    /// The next number of its own for a name's file: never one it gave,
-    /// nor one a server of its process number gave in the record it read.
-    next_name: u64,
     /// How many times its record was made (`commit`), for the tests of
     /// when it is.
     #[cfg(test)]
     pub(crate) encoded: u64,
-    /// It took its run back and has written no record since: with the
-    /// first it writes, the name files no structure names go (`commit`).
-    unswept: bool,
     recording: bool,
+    /// Its record is behind its tree: the last write of it failed, which
+    /// was said once (`record_change`), and the next change writes it.
+    behind: bool,
+    /// What the request being made has its asker told beside its reply:
+    /// that the record fell behind as it was made.
+    warning: Option<String>,
     ended: bool,
-    /// What it tells its panes while a change may still be undone
-    /// (`transact`): told once the change is recorded, else never.
-    staged: Option<Vec<(PaneId, ToPane)>>,
-    /// Why a change could not be recorded, which undoes it (`transact`).
-    unrecorded: Option<Error>,
-    /// The panes a change closes, their copies and links, kept whole till
-    /// it is recorded: told to close then, or put back (`transact`).
-    closing: Vec<(PaneId, Link, bool)>,
-    closed: Vec<Pane>,
     /// The body the frame being taken has, kept by its connection
     /// (`link::FromConn::Frame`), till a request or act takes it; the
     /// bodies to go to panes, each its connection's number, its token and
@@ -508,18 +482,12 @@ impl Session {
             entries: journal,
             recorded: Vec::new(),
             recorded_head: None,
-            named: BTreeMap::new(),
-            names_as: std::process::id(),
-            next_name: 0,
             #[cfg(test)]
             encoded: 0,
-            unswept: false,
             recording: true,
+            behind: false,
+            warning: None,
             ended: false,
-            staged: None,
-            unrecorded: None,
-            closing: Vec::new(),
-            closed: Vec::new(),
             prompted: std::collections::BTreeSet::new(),
             body: None,
             deliveries: Vec::new(),
@@ -707,9 +675,7 @@ impl Session {
 
     /// Says `message` to pane `id`'s own process, if it has one.
     pub(crate) fn tell_pane(&mut self, id: PaneId, message: ToPane, now: Instant) {
-        if let Some(staged) = &mut self.staged {
-            staged.push((id, message));
-        } else if let Some(link) = self.links.get_mut(&id) {
+        if let Some(link) = self.links.get_mut(&id) {
             link.send(id, message, now, &mut self.inbox);
         }
     }
@@ -1872,7 +1838,8 @@ impl Session {
     pub fn attach_as(&mut self, attach: Attach, now: Instant) -> Result<ClientId, Error> {
         let client = self.ids.clone().client()?;
         let previous = self.parts.actor(fux_wire::events::Actor::Client(client));
-        let result = self.transact(now, |s| s.attach_checked(attach, now));
+        let result = self.attach_checked(attach, now);
+        self.record_change();
         self.parts.actor(previous);
         result
     }
@@ -2138,9 +2105,7 @@ impl Session {
         self.size_panes(now);
         self.host_panes(now);
         self.pump(now);
-        if let Err(error) = self.commit() {
-            log!("{error}");
-        }
+        self.record_change();
     }
 
     /// Tells each client a close moved, by a request it did not make, what
@@ -2194,9 +2159,7 @@ impl Session {
         if !ours {
             return;
         }
-        // Its names after its structure, which alone names them.
         let _ = std::fs::remove_file(panes.join("run"));
-        crate::record::sweep(&panes, &BTreeSet::new());
         for kept in [crate::record::ENDED, "exe"] {
             let _ = std::fs::remove_file(panes.join(kept));
         }
@@ -2214,23 +2177,12 @@ impl Session {
     /// Its run's record, written if it changed (`record`): before anything
     /// that changed it is told (D-124 (3)). It is made again only once
     /// the tree was handed out to change, or the run's own facts changed
-    /// (`Tracked`), and holds each name by its number: a name given since
-    /// the last record is written to its own file first, then the
-    /// structure, whole, and then the names it no longer has are removed
-    /// (D-175), with every name file no structure names, the first time
-    /// since the run was taken back. The run is this server's alone
-    /// (`socket::bind_socket`: its lock), so every file there is its own
-    /// to keep or remove, the last server's too. Its own names are
-    /// numbered as its process, and no number is given twice, so it
-    /// writes over no file a structure names. So what is written follows
-    /// the tree's rows, not its names'
-    /// lengths, and a crash at any step leaves a structure whose names are
-    /// all there.
+    /// (`Tracked`), and written whole, names and all, over the last
+    /// (`record::write`), so a crash leaves the one or the other.
     ///
-    /// One that can't be written fails, and the change it was for is
-    /// undone (`transact`); outside a change, a pane's end say, it is
-    /// logged, and the record stays as it was: a server taking the run
-    /// back finds such a pane gone.
+    /// One that can't be written fails, and the tree stays unsettled, so
+    /// the next change or settle writes it again: a server taking the run
+    /// back meanwhile finds the record as it was last written.
     fn commit(&mut self) -> Result<(), Error> {
         let Some(socket) = self.launch.as_ref().filter(|_| self.recording) else {
             return Ok(());
@@ -2239,98 +2191,30 @@ impl Session {
         if !Tracked::stale(&self.parts) && self.recorded_head.as_ref() == Some(&head) {
             return Ok(());
         }
-        let panes = crate::socket::panes(socket);
+        let path = crate::socket::panes(socket).join("run");
         #[cfg(test)]
         {
             self.encoded = self.encoded.saturating_add(1);
         }
-        // Each name as the last record has it keeps its number, and its
-        // file; another takes the next number, and is written.
-        let (tree, named, fresh) = self.numbered();
-        let record = |tree| crate::record::Record {
+        let bytes = fux_wire::wire::encode(&crate::record::Record {
             run: head.0,
             ids: head.1.clone(),
-            tree,
+            tree: self.parts.record(),
             ended: head.2,
-        };
-        let bytes = fux_wire::wire::encode(&record(tree));
-        if bytes == self.recorded {
-            Tracked::settled(&mut self.parts);
-            self.recorded_head = Some(head);
-            return Ok(());
-        }
-        let path = panes.join("run");
-        let numbers = u64::try_from(fresh.len()).unwrap_or(u64::MAX);
-        self.next_name = self.next_name.saturating_add(numbers);
-        let written = (fresh.iter())
-            .try_for_each(|(id, text)| {
-                crate::record::write(&crate::record::name_file(&panes, *id), text.as_bytes())
-            })
-            .and_then(|()| crate::record::write(&path, &bytes));
-        match written {
-            Ok(()) => {
-                let kept: BTreeSet<NameId> = named.values().map(|(id, _)| *id).collect();
-                // What it names no more goes at once; and once, with the
-                // first record of a run taken back, what its last
-                // server's crash left over.
-                let old = self.named.values().filter(|(id, _)| !kept.contains(id));
-                for (id, _) in old {
-                    let _ = std::fs::remove_file(crate::record::name_file(&panes, *id));
-                }
-                if std::mem::take(&mut self.unswept) {
-                    crate::record::sweep(&panes, &kept);
-                }
-                self.named = named;
-                self.recorded = bytes;
-                self.recorded_head = Some(head);
-                Tracked::settled(&mut self.parts);
-                Ok(())
-            }
-            // What was written of it stays: a name's file no structure
-            // names, its number not given again, which goes as the files
-            // no structure names do. Nothing is removed for a write that
-            // failed but what that write was making (`record::write`).
-            Err(error) => {
-                let why = format!(
-                    "the run's record, {}, could not be written ({error}): nothing changed",
-                    path.display()
-                );
-                if self.staged.is_some() {
-                    self.unrecorded = Some(fail(Code::Client, why.clone()));
-                }
-                Err(fail(Code::Client, why))
-            }
-        }
-    }
-
-    /// The tree as its record holds it, each name by a number, the names
-    /// by what they name, and those to be written: a name as the last
-    /// record has it keeps its number, and its file; any other takes the
-    /// next number of this server's.
-    #[expect(clippy::type_complexity, reason = "three lists, made together")]
-    fn numbered(
-        &self,
-    ) -> (
-        crate::record::Tree,
-        BTreeMap<AnyRef, (NameId, Rc<str>)>,
-        Vec<(NameId, Rc<str>)>,
-    ) {
-        let (server, mut number) = (self.names_as, self.next_name);
-        let (mut named, mut fresh) = (BTreeMap::new(), Vec::new());
-        let tree = self.parts.record(&mut |of, text| {
-            let id = match self.named.get(&of) {
-                Some((id, had)) if had == text => *id,
-                Some(_) | None => {
-                    let id = NameId { server, number };
-                    number = number.saturating_add(1);
-                    fresh.push((id, text.clone()));
-                    id
-                }
-            };
-            named.insert(of, (id, text.clone()));
-            id
         });
-        (tree, named, fresh)
+        if bytes != self.recorded
+            && let Err(error) = crate::record::write(&path, &bytes)
+        {
+            let why = format!(
+                "the run's record, {}, could not be written ({error})",
+                path.display()
+            );
+            return Err(fail(Code::Client, why));
+        }
+        self.recorded = bytes;
+        self.recorded_head = Some(head);
+        Tracked::settled(&mut self.parts);
+        Ok(())
     }
 
     /// Pane `id` says the server with pid `by` holds it: this one leaves
@@ -2339,89 +2223,43 @@ impl Session {
         self.holder = Some((id, by));
     }
 
-    /// Makes a change (`change`), told only once its record is written: one
-    /// that can't be is undone, as though never made, and fails. What the
-    /// change tells its panes waits till then.
-    fn transact<T>(
-        &mut self,
-        now: Instant,
-        change: impl FnOnce(&mut Self) -> Result<T, Error>,
-    ) -> Result<T, Error> {
-        // Only a run with a record has one to write first: a session that
-        // starts no programs (the tests', the tools') records nothing.
-        if self.staged.is_some() || self.launch.is_none() || !self.recording {
-            return change(self);
-        }
-        let undo = Undo {
-            structure: self.parts.structure(),
-            ids: self.ids.clone(),
-            views: self.views.clone(),
-            journal: self.parts.journal().mark(),
-            outbox: self.outbox.len(),
-            asked: self.asked_pane,
-        };
-        self.staged = Some(Vec::new());
-        let mut done = change(self);
-        if self.unrecorded.is_none()
-            && let Err(error) = self.commit()
-        {
-            done = Err(error);
-        }
-        let staged = self.staged.take().unwrap_or_default();
-        match self.unrecorded.take() {
-            Some(error) => {
-                self.roll_back(undo, now);
-                Err(error)
+    /// A change made, its record written (`commit`). One that can't be
+    /// stands, and is written by the next that can; that the record fell
+    /// behind is said once, to the log, to every attached client and to
+    /// the asker of the request being made, and so is that it caught up.
+    fn record_change(&mut self) {
+        match self.commit() {
+            Ok(()) if std::mem::take(&mut self.behind) => {
+                log!("the run's record is written again");
             }
-            None => {
-                for (id, message) in staged {
-                    self.tell_pane(id, message, now);
+            Ok(()) => {}
+            Err(_) if self.behind => {}
+            Err(error) => {
+                self.behind = true;
+                let why = format!(
+                    "{error}: what changed stands and is written with the next change; a server \
+                     that takes the run back before then finds it as last written"
+                );
+                log!("{why}");
+                for view in self.views.values_mut() {
+                    view.notify(why.clone(), true);
                 }
-                self.closed.clear();
-                for (id, link, closed) in std::mem::take(&mut self.closing) {
-                    self.unlink(id, link, closed, now);
-                }
-                done
+                self.warning = Some(why);
             }
-        }
-    }
-
-    /// A change undone (`transact`): the tree, ids, views and names as they
-    /// were, what it journaled, queued for clients or asked of panes let go
-    /// untold, and the panes it made closed.
-    fn roll_back(&mut self, undo: Undo, now: Instant) {
-        // What it closed comes back whole, untold.
-        self.parts.put_back(std::mem::take(&mut self.closed));
-        for (id, link, _) in std::mem::take(&mut self.closing) {
-            self.links.insert(id, link);
-        }
-        let made = self.parts.restructure(undo.structure);
-        self.ids = undo.ids;
-        self.views = undo.views;
-        self.parts.truncate_journal(undo.journal);
-        self.outbox.truncate(undo.outbox);
-        self.asks.retain(|ask, _| *ask <= undo.asked);
-        self.answers.retain(|ask, _| *ask <= undo.asked);
-        self.inbox.retain(|(id, _)| !made.contains(id));
-        for id in made {
-            if let Some(link) = self.links.remove(&id) {
-                self.unlink(id, link, true, now);
-            }
-        }
-        for view in self.views.values_mut() {
-            view.dirty = true;
-        }
-        if let Err(error) = self.commit() {
-            log!("{error}");
         }
     }
 
     /// Pane `id`, placed, starts: its place and id written in the record
     /// first, so that once its program runs a crash finds it there
     /// (D-124 (3)); a crash before leaves a pane the next server finds
-    /// gone. One that can't start fails, and undoes the change.
+    /// gone. One whose record can't be written, or that can't start,
+    /// fails, and is closed.
     fn start_pane(&mut self, id: PaneId, begin: Begin, now: Instant) -> Result<(), Error> {
-        self.commit()?;
+        if let Err(error) = self.commit() {
+            self.close_pane(id, None, now);
+            let why = format!("{error}: no program starts in a pane its record lacks");
+            return Err(fail(Code::Client, why));
+        }
         let link = match (&self.launch, &self.exe) {
             (Some(socket), Some(exe)) => {
                 let at = crate::socket::panes(socket).join(id.number().to_string());
@@ -2435,10 +2273,7 @@ impl Session {
                 Ok(())
             }
             Err(why) => {
-                match self.staged.is_some() {
-                    true => self.unrecorded = Some(fail(Code::Start, why.clone())),
-                    false => self.close_pane(id, None, now),
-                }
+                self.close_pane(id, None, now);
                 Err(fail(Code::Start, why))
             }
         }
@@ -2474,16 +2309,13 @@ impl Session {
             ));
         };
         let panes = crate::socket::panes(&socket);
-        // Read whole before any pane is asked: a record with a name gone,
-        // or one that is no tree, refuses the run with nothing changed.
-        let names = crate::record::read_names(&panes, &record.tree)
-            .map_err(|e| fail(Code::Start, format!("its record's names: {e}")))?;
+        // Read whole before any pane is asked: one that is no tree refuses
+        // the run with nothing changed.
         let recorded = record.tree.panes();
-        let name = |pane: &crate::record::Pane| pane.name.and_then(|n| names.get(&n).cloned());
         let copies: BTreeMap<PaneId, Pane> = (recorded.iter())
-            .map(|pane| (pane.id, Pane::recorded(pane, name(pane))))
+            .map(|pane| (pane.id, Pane::recorded(pane)))
             .collect();
-        let parts = Parts::restore(self.entries, &record.tree, &names, copies)?;
+        let parts = Parts::restore(self.entries, &record.tree, copies)?;
         let mut sockets = crate::takeover::sockets(&panes);
         for pane in &recorded {
             (sockets.entry(pane.id)).or_insert_with(|| panes.join(pane.id.number().to_string()));
@@ -2505,21 +2337,6 @@ impl Session {
         // As it is written: written again only once it differs.
         self.recorded = fux_wire::wire::encode(&record);
         self.recorded_head = None;
-        self.named = (record.tree.named())
-            .filter_map(|(of, id)| Some((of, (id, names.get(&id)?.clone()))))
-            .collect();
-        // What a crash left between a name's writing and the structure's
-        // goes with the first record written, not now: a takeover writes
-        // nothing till something changes.
-        self.unswept = true;
-        // The names it read are in other servers' files, or in files of
-        // its own number an earlier server wrote: it keeps them as they
-        // are, and numbers its own past them.
-        let past = (self.named.values())
-            .filter(|(id, _)| id.server == self.names_as)
-            .map(|(id, _)| id.number.saturating_add(1))
-            .max();
-        self.next_name = self.next_name.max(past.unwrap_or(0));
         self.parts = Tracked::new(parts);
         self.awaited = asked;
         for id in gone {
@@ -3019,10 +2836,6 @@ impl Session {
                 notice = Some((told, failed.is_some()));
             }
             self.end_pane(id, closed, now);
-            // A change's close is undone if its record can't be written.
-            if self.staged.is_some() {
-                self.closed.push(pane);
-            }
         }
         // Before it settles: one a close moved is told that instead.
         if let Some((told, failed)) = notice {
@@ -3044,10 +2857,7 @@ impl Session {
     /// Ends pane `id`'s process, its pane closed (by fux if `closed`).
     fn end_pane(&mut self, id: PaneId, closed: bool, now: Instant) {
         if let Some(link) = self.links.remove(&id) {
-            match self.staged.is_some() {
-                true => self.closing.push((id, link, closed)),
-                false => self.unlink(id, link, closed, now),
-            }
+            self.unlink(id, link, closed, now);
         }
     }
 
@@ -3224,9 +3034,13 @@ impl Session {
         let again = (!self.awaited.is_empty() && self.body.is_none()).then(|| request.clone());
         self.waits_on.set(None);
         let asked = self.asked_pane;
-        let begun = self
-            .transact(now, |s| s.begin_request(request, origin, now))
-            .unwrap_or_else(|error| Begun::Done(failure(error, origin, self)));
+        self.warning = None;
+        let begun = self.begin_request(request, origin, now);
+        self.record_change();
+        let mut begun = begun.unwrap_or_else(|error| Begun::Done(failure(error, origin, self)));
+        if let Begun::Done(reply) = &mut begun {
+            reply.warning = self.warning.take();
+        }
         // It failed for a pane not linked yet, having asked no pane
         // anything: it waits for that pane, and is made then, as though
         // asked then. Its asker's going ends the wait (D-159).
@@ -4231,6 +4045,14 @@ fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
         return Err(fail(Code::BadName, "a name cannot be empty or blank"));
     }
+    if name.len() > crate::record::MAX_NAME {
+        let message = format!(
+            "a name can be at most {} bytes; this one is {}",
+            crate::record::MAX_NAME,
+            name.len()
+        );
+        return Err(fail(Code::BadName, message));
+    }
     // An id's sigils, and what a destination reads as the request for a
     // fresh workspace.
     if name.starts_with(['%', '@', '+']) || name == "new-workspace" {
@@ -4904,6 +4726,20 @@ mod tests {
     use std::num::NonZeroU32;
     #[cfg(unix)]
     use std::time::Duration;
+
+    /// A name is at most `record::MAX_NAME` bytes, which the record
+    /// holds whole on every write; a longer one is refused, saying so.
+    #[test]
+    fn a_name_longer_than_the_limit_is_refused() {
+        let at: String = std::iter::repeat_n('n', crate::record::MAX_NAME).collect();
+        assert!(check_name(&at).is_ok());
+        let over = check_name(&format!("{at}n")).err().map(|e| e.to_string());
+        assert!(
+            over.as_deref()
+                .is_some_and(|e| e.contains("at most 1024 bytes")),
+            "{over:?}"
+        );
+    }
 
     /// Pane `id`'s host, held here, changed by `change`: what it tells
     /// then is taken in.

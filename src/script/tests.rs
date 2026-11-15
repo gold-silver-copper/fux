@@ -126,6 +126,7 @@ fn held_answers_and_captures_project_without_refreshing() -> TestResult {
     let reply = Reply {
         run: Some(version.run),
         response: Response::Answered(PaneResults::One(PaneAnswer::Acted(version))),
+        warning: None,
     };
     let values = testing::held_reply(
         "(get (send-keys (text (pane 1) \"x\")) \"version\")",
@@ -287,6 +288,7 @@ fn ended_answers_expose_both_exit_fields() -> TestResult {
         let reply = Reply {
             run: Some(version.run),
             response: Response::Answered(PaneResults::One(answer)),
+            warning: None,
         };
         let values = held_reply(
             "(sequence! (define! variables-6 (context ())) (bind variables-6 (quote! held) (wait (timeout (pane 1) 0))) (define! value-10 (evaluate (quote! held) variables-6)) \"exited\" (define! value-12 (get value-10 \"exited\")) (define! value-13 (evaluate (quote! held) variables-6)) \"signal\" (list value-12 (get value-13 \"signal\")))",

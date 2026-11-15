@@ -893,7 +893,11 @@ fn reply(run: Run, captured: Result<Box<fux_wire::answer::Captured>, String>) ->
 /// A reply its connection makes itself, framed for its client.
 fn framed(run: Option<Run>, response: Response) -> Vec<u8> {
     use fux_wire::protocol::{Reply, ToCommand};
-    let reply = Reply { run, response };
+    let reply = Reply {
+        run,
+        response,
+        warning: None,
+    };
     let bytes = fux_wire::wire::encode(&reply);
     let mut out = ByteQueue::default();
     fux_wire::protocol::split_into(&bytes, ToCommand::Part, &mut out);

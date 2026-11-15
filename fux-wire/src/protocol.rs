@@ -23,7 +23,7 @@ use fux_vt::bytes::ByteQueue;
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 79;
+pub const PROTOCOL: u32 = 80;
 
 /// The first protocol whose command line is grift: an older server's binary
 /// reads none.
@@ -721,11 +721,14 @@ impl OneKind for Asked {
 
 wire! {
     /// A request's reply and the server run that answered it. A local
-    /// config collector has no run.
+    /// config collector has no run. `warning` is what its asker is told
+    /// beside the reply: the request was made, and something it does not
+    /// answer for went wrong (the run's record could not be written).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Reply {
         pub run: Option<crate::command::Run>,
         pub response: Response,
+        pub warning: Option<String>,
     }
 }
 
@@ -792,11 +795,11 @@ impl Reply {
     /// A failure of kind `code`, with its exit status, and why.
     pub fn failed(code: Code, message: impl Into<String>) -> Self {
         Self {
-            run: None,
             response: Response::Failed {
                 code,
                 message: message.into(),
             },
+            ..Self::default()
         }
     }
 
@@ -838,8 +841,8 @@ impl Default for Response {
 impl From<Body> for Reply {
     fn from(body: Body) -> Self {
         Self {
-            run: None,
             response: Response::Returned(body),
+            ..Self::default()
         }
     }
 }
@@ -847,8 +850,8 @@ impl From<Body> for Reply {
 impl From<crate::answer::PaneResults> for Reply {
     fn from(answers: crate::answer::PaneResults) -> Self {
         Self {
-            run: None,
             response: Response::Answered(answers),
+            ..Self::default()
         }
     }
 }

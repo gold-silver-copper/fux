@@ -119,7 +119,7 @@ impl Copy {
     /// Pane `recorded`, as its run's record keeps it, its own process gone
     /// while no server ran: as it ended, if it had; else running, at the
     /// respawns it was at, its screen blank.
-    pub fn recorded(recorded: &crate::record::Pane, name: Option<std::rc::Rc<str>>) -> Copy {
+    pub fn recorded(recorded: &crate::record::Pane) -> Copy {
         let launch = crate::pane::Launch {
             argv: recorded.argv.clone(),
             cwd: recorded.cwd.clone(),
@@ -129,7 +129,7 @@ impl Copy {
             false => Runs::Explicit(launch),
         };
         let mut copy = Copy::new(recorded.id, runs, recorded.size, recorded.options);
-        copy.name = name;
+        copy.name = recorded.name.as_deref().map(std::rc::Rc::from);
         copy.respawns = recorded.respawns;
         copy.counts.respawns = recorded.respawns;
         copy.read_error.clone_from(&recorded.read_error);
@@ -163,13 +163,12 @@ impl Copy {
         copy
     }
 
-    /// It as its run's record keeps it (`Copy::recorded`), its name there
-    /// by number `name`.
-    pub fn record(&self, name: Option<crate::record::NameId>) -> crate::record::Pane {
+    /// It as its run's record keeps it (`Copy::recorded`).
+    pub fn record(&self) -> crate::record::Pane {
         let launch = self.runs.launch();
         crate::record::Pane {
             id: self.id,
-            name,
+            name: self.given_name().map(|name| name.to_string()),
             shell: matches!(self.runs, Runs::Shell(_)),
             argv: launch.argv.clone(),
             cwd: launch.cwd.clone(),

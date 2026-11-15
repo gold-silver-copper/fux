@@ -4,23 +4,11 @@
 //! saw. Its recovery state, read by no one else: fux's own, changing with
 //! it (`socket::panes`).
 //!
-//! It is one file of the structure, `run`, and one file for each name
-//! (D-175). The structure is flat: the workspaces and the tabs are two
-//! lists of rows, each workspace naming its children by their ids, so no
-//! depth of nesting is read or written by going into it. It holds no name,
-//! only each name's number (`NameId`): a name's text is in the file
-//! `name.S.N`, written once, when the name is given, and the structure,
-//! written whole on every change of the tree, costs what its rows do,
-//! whatever the names weigh. `S` is the process of the server that wrote
-//! the file: a server that takes a run back numbers its own names apart
-//! from those it read.
-//!
-//! The order keeps every crash recoverable: a new name's file is written
-//! before the structure that names it, and a name no longer used is
-//! removed after the structure that dropped it. So the structure there
-//! never names a file that is not; what a crash leaves over is a name file
-//! no structure names, which the server that takes the run back removes
-//! with the first record it writes as the run's one server (`sweep`).
+//! It is one file, `run`, written whole on every change of the tree. The
+//! structure is flat: the workspaces and the tabs are two lists of rows,
+//! each workspace naming its children by their ids, so no depth of
+//! nesting is read or written by going into it. Names are in it, each at
+//! most `MAX_NAME` bytes (`session::check_name`).
 //!
 //! A run has one server at a time (D-180: the lock on its directory,
 //! `socket::bind_socket`), so every file here is that server's to keep or
@@ -28,9 +16,7 @@
 use fux_wire::command::{AnyRef, Run};
 use fux_wire::id::{PaneId, TabId, WsId};
 use fux_wire::layout::Node;
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 /// What a run is: its identity, the ids it gave last, and its tree; and
 /// whether it ended (a stop, or its last pane's close): then no server
@@ -55,22 +41,12 @@ pub struct Tree {
 }
 wired!(struct Tree { top, workspaces, tabs });
 
-/// A name's number: the process id of the server that wrote its file, and
-/// which of that server's names it is: a server gives no number twice,
-/// and none an earlier server's file has, so none is written over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct NameId {
-    pub server: u32,
-    pub number: u64,
-}
-wired!(struct NameId { server, number });
-
-/// A workspace: its name's number, and what it holds, tabs and
+/// A workspace: its name, and what it holds, tabs and
 /// workspaces, in order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Workspace {
     pub id: WsId,
-    pub name: Option<NameId>,
+    pub name: Option<String>,
     pub children: Vec<AnyRef>,
 }
 wired!(struct Workspace { id, name, children });
@@ -80,7 +56,7 @@ wired!(struct Workspace { id, name, children });
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tab {
     pub id: TabId,
-    pub name: Option<NameId>,
+    pub name: Option<String>,
     pub nodes: Vec<Node>,
     pub revision: Option<u64>,
     pub fixed: bool,
@@ -95,7 +71,7 @@ wired!(struct Tab { id, name, nodes, revision, fixed, size, zoomed, panes });
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pane {
     pub id: PaneId,
-    pub name: Option<NameId>,
+    pub name: Option<String>,
     /// Its role: a shell, which closes as it ends, or a program, which
     /// stays.
     pub shell: bool,
@@ -122,8 +98,12 @@ impl Tab {
 /// record itself could not be written to say so (`Session::end_run`).
 pub const ENDED: &str = "ended";
 
+/// The longest name, in bytes: the record is written whole on every
+/// change, names and all, so what a name weighs is bounded.
+pub const MAX_NAME: usize = 1024;
+
 /// The structure at `path`, whole, if one is there: what a crashed server
-/// left. Its names are read apart (`read_names`).
+/// left.
 pub fn read(path: &Path) -> Result<Option<Record>, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -134,63 +114,6 @@ pub fn read(path: &Path) -> Result<Option<Record>, String> {
     record
         .map(Some)
         .map_err(|e| format!("{}: {e}", path.display()))
-}
-
-/// Where name `id`'s text is kept in `panes`, a run's directory.
-pub fn name_file(panes: &Path, id: NameId) -> PathBuf {
-    panes.join(format!("{NAME}{id}"))
-}
-
-/// As its file is named, after `name.`: `S.N`.
-impl std::fmt::Display for NameId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}", self.server, self.number)
-    }
-}
-
-/// What every name's file is named by, before its number.
-const NAME: &str = "name.";
-
-/// The text of each name `tree` has, by its number, read from `panes`:
-/// one that is not there, or is no text, makes the record unreadable.
-pub fn read_names(panes: &Path, tree: &Tree) -> Result<BTreeMap<NameId, Rc<str>>, String> {
-    let mut names = BTreeMap::new();
-    for (_, id) in tree.named() {
-        let path = name_file(panes, id);
-        let text = std::fs::read(&path)
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        names.insert(id, Rc::from(text));
-    }
-    Ok(names)
-}
-
-/// Removes from `panes` each name file but those of `kept`: what a crash
-/// left between a name's writing and the structure's, or between the
-/// structure's and an old name's removal, and a part of one, too; and
-/// every one, as a run's end is forgotten. What can't be removed is left,
-/// and logged: no structure names it.
-pub fn sweep(panes: &Path, kept: &BTreeSet<NameId>) {
-    let Ok(entries) = std::fs::read_dir(panes) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(number) = name.to_str().and_then(|name| name.strip_prefix(NAME)) else {
-            continue;
-        };
-        let id = number.split_once('.').and_then(|(server, number)| {
-            Some(NameId {
-                server: server.parse().ok()?,
-                number: number.parse().ok()?,
-            })
-        });
-        let kept = id.is_some_and(|id| kept.contains(&id) && id.to_string() == number);
-        if !kept && let Err(error) = std::fs::remove_file(entry.path()) {
-            log!("{}: {error}", entry.path().display());
-        }
-    }
 }
 
 /// Writes `bytes`, a record, to `path`, whole: to a file beside it renamed
@@ -220,19 +143,6 @@ impl Tree {
     /// The panes it holds.
     pub fn panes(&self) -> Vec<&Pane> {
         self.tabs.iter().flat_map(|tab| &tab.panes).collect()
-    }
-
-    /// Each name's number, with what it names.
-    pub fn named(&self) -> impl Iterator<Item = (AnyRef, NameId)> + '_ {
-        let workspaces = (self.workspaces.iter()).map(|ws| (AnyRef::Workspace(ws.id), ws.name));
-        let tabs = self.tabs.iter().flat_map(|tab| {
-            let panes = tab
-                .panes
-                .iter()
-                .map(|pane| (AnyRef::Pane(pane.id), pane.name));
-            std::iter::once((AnyRef::Tab(tab.id), tab.name)).chain(panes)
-        });
-        (workspaces.chain(tabs)).filter_map(|(of, name)| Some((of, name?)))
     }
 }
 
