@@ -939,7 +939,8 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
         "(sequence! (rename (pane {}) \"one\") #inert)",
         fux::script::quoted(&shell)
     )])?;
-    let blocked = kept(server).join("run.new");
+    // Where its server writes a record first, before it renames it.
+    let blocked = kept(server).join(format!("run.new.{}", server_pid(server)?));
     std::fs::create_dir(&blocked).map_err(e)?;
     let refused = server.fux(&[&format!(
         "(sequence! (rename (pane {}) \"two\") #inert)",
@@ -977,6 +978,76 @@ fn a_change_whose_record_cannot_be_written_is_not_made() -> Outcome {
     Ok(())
 }
 
+/// The numbers of the name files a run keeps (`record::name_file`): each
+/// its server's process and which of its names it is.
+fn name_files(server: &Server) -> Vec<String> {
+    let entries = std::fs::read_dir(kept(server)).into_iter().flatten();
+    let mut names: Vec<String> = (entries.flatten())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|name| name.strip_prefix("name.").map(str::to_owned))
+        .filter(|number| !number.ends_with(".new"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// 15b. A server killed between writing a name and writing the structure
+///     that names it leaves a run the next start takes back, with the
+///     names anyone saw; the name's file, which no structure names, goes
+///     with the first record the new server writes (D-175). The moment is held, not raced: a structure is written to
+///     `run.new.PID` first, and a FIFO put there holds the server at its
+///     opening, the name's file written, till it is killed.
+#[cfg(unix)]
+#[test]
+fn a_server_killed_between_a_name_and_the_structure_is_taken_back() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let pane = pane(server, "a", &["sleep", "1016"])?;
+    let _reap = reap_run(server)?;
+    let rename = |name: &str| {
+        let pane = fux::script::quoted(&pane);
+        format!("(sequence! (rename (pane {pane}) \"{name}\") #inert)")
+    };
+    server.ok(&[&rename("one")])?;
+    let recorded = name_files(server);
+    // Found while it answers: held at the FIFO, it answers no one.
+    let serving = serving(server)?;
+    let held = kept(server).join(format!("run.new.{serving}"));
+    let made = std::process::Command::new("mkfifo").arg(&held).status();
+    assert!(
+        made.map_err(|error| format!("mkfifo: {error}"))?.success(),
+        "mkfifo {}",
+        held.display()
+    );
+    let mut renaming = server.spawn(&[&rename("two")])?;
+    let written = eventually("the new name's file written", || {
+        Ok(name_files(server).len() > recorded.len())
+    });
+    signal(serving, Signal::Kill);
+    let crashed = written.and(eventually("the server gone", || Ok(!alive(serving))));
+    let _ = end(&mut renaming);
+    std::fs::remove_file(&held).map_err(e)?;
+    crashed?;
+    let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
+    assert_eq!(taken.status, 0, "{}", taken.stderr);
+    let listing = server.ok(&["(listing (list-session))"])?;
+    assert!(
+        listing.contains(" one ") && !listing.contains(" two "),
+        "{listing}"
+    );
+    // And it is the run still, and this server's: its pane takes a name,
+    // and with that record the file no structure names goes.
+    server.ok(&[&rename("three")])?;
+    assert!(
+        server
+            .ok(&["(listing (list-session))"])?
+            .contains(" three ")
+    );
+    assert_eq!(name_files(server).len(), recorded.len(), "a name, a file");
+    Ok(())
+}
+
 /// 16. A pane's id and place are recorded before its program starts: one
 ///     whose record can't be written starts nothing, and a socket a process
 ///     still listens at is never taken for debris (D-124 (3)).
@@ -985,7 +1056,7 @@ fn a_pane_is_recorded_before_its_program_starts() -> Outcome {
     let server = Server::start("")?;
     let pid = server_pid(&server)?;
     let panes = children(pid, "__pane").len();
-    let blocked = kept(&server).join("run.new");
+    let blocked = kept(&server).join(format!("run.new.{pid}"));
     std::fs::create_dir(&blocked).map_err(e)?;
     let refused = server.fux(&[format!(
         "(new-tab {})",
@@ -1659,17 +1730,16 @@ fn a_pane_never_begun_is_begun_from_its_record() -> Outcome {
     Ok(())
 }
 
-/// The record's workspace `ws` without the tab that holds `pane`.
-fn without(ws: &mut fux_server::record::Workspace, pane: fux_wire::id::PaneId) {
-    use fux_server::record::Child;
-    ws.children.retain(|child| match child {
-        Child::Tab(tab) => tab.panes.iter().all(|p| p.id != pane),
-        Child::Workspace(_) => true,
-    });
-    for child in &mut ws.children {
-        if let Child::Workspace(inner) = child {
-            without(inner, pane);
-        }
+/// The record's tree without the tab that holds `pane`.
+fn without(tree: &mut fux_server::record::Tree, pane: fux_wire::id::PaneId) {
+    use fux_wire::command::AnyRef;
+    let holds = |tab: &fux_server::record::Tab| tab.panes.iter().any(|p| p.id == pane);
+    let gone: Vec<AnyRef> = (tree.tabs.iter().filter(|tab| holds(tab)))
+        .map(|tab| AnyRef::Tab(tab.id))
+        .collect();
+    tree.tabs.retain(|tab| !holds(tab));
+    for ws in &mut tree.workspaces {
+        ws.children.retain(|child| !gone.contains(child));
     }
 }
 
@@ -1689,11 +1759,7 @@ fn a_pane_process_its_record_lacks_is_ended() -> Outcome {
     let (own, program) = (own_process(server, &stray)?, program_pid(server, &stray)?);
     crash(server)?;
     let id: fux_wire::id::PaneId = stray.parse().map_err(|_| format!("{stray}: no pane"))?;
-    rerecord(server, |record| {
-        for ws in &mut record.workspaces {
-            without(ws, id);
-        }
-    })?;
+    rerecord(server, |record| without(&mut record.tree, id))?;
     let taken = within(server, 30, &["(sequence! (start) #inert)"])?;
     assert_eq!(taken.status, 0, "{}", taken.stderr);
     eventually("the process its record lacks and its program gone", || {
@@ -1742,6 +1808,93 @@ fn a_run_a_live_server_holds_is_left_to_it() -> Outcome {
     eventually("the first server and its pane gone", || {
         Ok(!alive(pid) && !alive(own))
     })
+}
+
+/// 29b. A second server on a run a live server holds removes none of that
+///     server's name files, and the record it writes before it hears who
+///     holds the run reads whole (D-175). The first server is stopped, a
+///     name's file of its own written and its structure not yet (made, as
+///     its numbers are its process's); one of its panes' processes is
+///     killed, so the second server, taking the run, finds a pane gone
+///     and records that before the other pane says who holds it. It
+///     leaves: its record names files of its own, and the first server's
+///     are all there.
+#[test]
+fn a_second_server_leaves_a_whole_record_and_the_firsts_name_files() -> Outcome {
+    let server = Server::start("")?;
+    let stays = pane(&server, "w", &["sleep", "1017"])?;
+    let goes = pane(&server, "w", &["sleep", "1018"])?;
+    let _reap = reap_run(&server)?;
+    server.ok(&[&format!(
+        "(sequence! (rename (pane {}) \"held\") #inert)",
+        fux::script::quoted(&stays)
+    )])?;
+    let (own, pid) = (own_process(&server, &goes)?, server_pid(&server)?);
+    let pending = kept(&server).join(format!("name.{pid}.4242"));
+    std::fs::write(&pending, "pending").map_err(e)?;
+    let names = name_files(&server);
+    assert!(names.len() >= 2, "{names:?}");
+    // Stopped: what follows it does not see, nor record.
+    signal(pid, Signal::Stop);
+    let _resume = Resumed(pid);
+    signal(own, Signal::Kill);
+    eventually("the pane's process gone", || Ok(!alive(own)))?;
+    let mut lock = server.socket.clone().into_os_string();
+    lock.push(".lock");
+    std::fs::remove_file(&lock).map_err(e)?;
+    std::fs::remove_file(&server.socket).map_err(e)?;
+    let record = kept(&server).join("run");
+    let before = std::fs::read(&record).map_err(e)?;
+    let _ = within(&server, 30, &["(sequence! (start) #inert)"])?;
+    let held = format!("is held by the fux server with pid {pid}");
+    let log = server.socket.with_file_name("fux.log");
+    eventually("the second server said who holds the run", || {
+        Ok(std::fs::read_to_string(&log).is_ok_and(|said| said.contains(&held)))
+    })?;
+    eventually("the second server gone", || Ok(!server.socket.exists()))?;
+    // It found a pane gone, and recorded that: a record that reads whole,
+    // its names in files of the second server's own, beside the first's.
+    assert_ne!(std::fs::read(&record).map_err(e)?, before, "its record");
+    let read = fux_server::record::read(&record)?.ok_or("no record")?;
+    let named = fux_server::record::read_names(&kept(&server), &read.tree)?;
+    assert!(named.values().any(|name| &**name == "held"), "{named:?}");
+    let left = name_files(&server);
+    assert!(names.iter().all(|name| left.contains(name)), "{left:?}");
+    signal(pid, Signal::Cont);
+    signal(pid, Signal::Term);
+    eventually("the first server gone", || Ok(!alive(pid)))
+}
+
+/// 29c. A server that took a run back and is stopped before a pane has
+///     answered it (the pane's process is stopped) records the run's end
+///     all the same (D-174): the record says the run ended, and stays,
+///     its pane not known to have been told.
+#[test]
+fn a_server_stopped_before_a_pane_answered_records_its_runs_end() -> Outcome {
+    let server = Server::start("")?;
+    let sleeper = pane(&server, "w", &["sleep", "1019"])?;
+    let _reap = reap_run(&server)?;
+    let own = own_process(&server, &sleeper)?;
+    signal(own, Signal::Stop);
+    let _resume = Resumed(own);
+    crash(&server)?;
+    let taken = within(&server, 30, &["(sequence! (start) #inert)"])?;
+    assert_eq!(taken.status, 0, "{}", taken.stderr);
+    let serving = serving(&server)?;
+    signal(serving, Signal::Term);
+    eventually("the second server gone", || Ok(!alive(serving)))?;
+    let record = fux_server::record::read(&kept(&server).join("run"))?.ok_or("no record")?;
+    assert!(record.ended, "the run's end is recorded");
+    Ok(())
+}
+
+/// A process a test stopped, let go on as the test ends.
+struct Resumed(i32);
+
+impl Drop for Resumed {
+    fn drop(&mut self) {
+        signal(self.0, Signal::Cont);
+    }
 }
 
 /// 30. What is beside the socket where a run keeps its panes and is no

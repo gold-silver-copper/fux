@@ -4,7 +4,7 @@
 //! the terminal's attributes at their default, which the next one assumes.
 use crate::session::Session;
 use crate::view::{Mode, View};
-use crate::workspace::{Child, Node, Tab};
+use crate::workspace::Tab;
 use fux_vt::clusters;
 use fux_vt::sixel::Picture;
 use fux_vt::{
@@ -1464,28 +1464,35 @@ fn bar_fields(
             }
             Field::Tabs => {
                 if let Some(ws) = session.shown_workspace(view.id) {
-                    let current = ws.tab_of(view.id).map(|t| AnyRef::Tab(t.id()));
+                    let tab_of = session.parts.tab_of(ws.id(), view.id);
+                    let current = tab_of.map(|t| AnyRef::Tab(t.id()));
                     let rang = |tab: &Tab| tab.seat(view.id).is_some_and(|s| s.rang);
                     for (i, child) in ws.stack().children().iter().enumerate() {
                         if room == 0 {
                             break;
                         }
                         // A workspace in it rang if a tab in it did.
-                        let (label, rang) = match child {
-                            Node::Tab(tab) => (tab.label(session.parts.panes()), rang(tab)),
-                            Node::Workspace(inner) => {
+                        let (tab, inner) = match *child {
+                            AnyRef::Tab(tab) => (session.parts.tab(tab), None),
+                            AnyRef::Workspace(inner) => (None, session.parts.workspace(inner)),
+                            AnyRef::Pane(_) => (None, None),
+                        };
+                        let (label, rang) = match (tab, inner) {
+                            (Some((_, tab)), _) => (tab.label(session.parts.panes()), rang(tab)),
+                            (None, Some(inner)) => {
                                 let tabs = session.parts.tabs_in(Some(inner.id()));
                                 (inner.label(), tabs.into_iter().any(|(_, t)| rang(t)))
                             }
+                            (None, None) => continue,
                         };
-                        let rang = rang && Some(child.id()) != current;
+                        let rang = rang && Some(*child) != current;
                         let number = if view.presentation.bar.tab_numbers() {
                             format!("{} ", i.saturating_add(1))
                         } else {
                             String::new()
                         };
                         let label = format!(" {number}{label}{} ", if rang { "!" } else { "" });
-                        let attrs = if Some(child.id()) == current {
+                        let attrs = if Some(*child) == current {
                             view.presentation.styles.tab.attributes()
                         } else {
                             base

@@ -1,7 +1,7 @@
 use super::{Error, Session};
 use crate::copy::Copy as Pane;
 use crate::view::ClientKind;
-use crate::workspace::{Child, Fit};
+use crate::workspace::Fit;
 use fux_wire::code::Code;
 use fux_wire::command::AnyRef;
 use fux_wire::id::{PaneId, TabId};
@@ -179,10 +179,10 @@ impl Session {
         for ws in workspaces {
             let fact = inspect::Workspace {
                 id: ws.id(),
-                parent: self.parts.parent(ws.id()).flatten(),
+                parent: ws.parent(),
                 name: ws.name().map(str::to_owned),
                 label: format!("{}", ws.display_label()),
-                children: ws.stack().children().iter().map(Child::id).collect(),
+                children: ws.stack().children().to_vec(),
             };
             snapshot.workspaces.push(fact);
         }
