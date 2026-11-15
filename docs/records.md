@@ -501,8 +501,8 @@ program may raise any kind: `(raise (error (quote! my-kind) 1 2))`.
 fux sets no limits of its own: memory, time and steps are the user's and the OS's to bound (`ulimit`,
 cgroups, `timeout`), and a program that loops is stopped as any program is. At its descriptor or
 process limit a server refuses a new client with the cause
-(`the server can serve no new client now: …`), and a change whose record would pass its file-size
-limit is refused with nothing changed. The refusal does not come, and the client waits out its own
+(`the server can serve no new client now: …`), and a change made while the run's record can't be written (a full disk, a file-size limit) stands: its
+asker, the attached clients and the log are told once that the record is behind, and the next change writes it. The server's refusal of a new client does not come, and the client waits out its own
 timeout, when the whole system has no descriptor left, or when a running server's descriptor limit is
 lowered below the few it opened as it started. A connection the server ends is told why first; so is
 one whose server's process ended (killed, or refused memory), by the connection's own process, with
@@ -513,25 +513,15 @@ the server refuses it. So does a request longer than one frame (1 MiB), its keys
 (a name, a directory or a program of that length): its client's own connection process refuses it,
 and the server is sent none of it. A pane's program and directory together are 262,143 bytes at most (a
 quarter of a frame's 1,048,575 bytes, as its facts say them): `new-tab`, `split` or `respawn` with more fails `too-long`. A layout is a flat list of nodes, so it nests as deep as its panes take it,
-with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
-handler catches. Some of fux's own code refuses too, and goes on. A client joining a reply's parts (a capture
-too large for its memory, say) fails that request `out-of-memory`, and the next is served. Any process of fux
-reading a frame's texts and lists, the server too, takes the refusal as a frame it can't read: that
-connection or link ends, with the reason. A connection's process joining the pieces of a screen or a
-capture ends that connection the same way. Keys and pastes are joined nowhere: what is longer than a frame
+with no limit of its own. A size no screen can have, past what a grid holds, fails `size`. A name is at most 1,024 bytes: a longer one fails `bad-name`. When the OS refuses memory where grift asks for it, the failure is `out-of-memory`, which no
+handler catches. fux's own code takes memory as it needs it: refused, that process aborts, whether a pane's, a
+connection's, a client's or the server's, and a run whose server ended so is taken back (`start`). Keys and pastes are joined nowhere: what is longer than a frame
 goes to its pane a piece at a time, each sent once the pane's terminal took the one before, so a large
 `send-keys` or paste to a program that isn't reading blocks its sender until the program reads, as a terminal
 would, and that sender's later keys wait behind it; a short one answers at once while the terminal has room
 for it (a few thousand bytes), and waits like the rest once it has none. If the sender goes, its keys end
 where they are, a paste it had begun closed. `input` is told once a piece. A pane holds one
 frame of answers to its program's own queries, and reads that program's output no more till it reads them.
-A pane's own process refuses memory in most of what it does, and goes on: reading its program's output, or a
-resize, it loses only what that was for, and counts it (`lost`, `memory`), as it does output it could not
-set aside for its next turn; keys or a paste it can't encode or queue fail `out-of-memory` to whoever sent
-them, once, a paste it had begun closed; a connection that reaches it when it can keep no more is let go;
-and what it could not read or say for want of memory it reads or says again after a rest. It still aborts,
-refused memory, as it draws its screen for a client that shows it (more so with pictures), as it makes a
-capture, and in the small things it builds to say what it is (its first words to a server, its facts).
 What is typed at an attached terminal goes to the pane its client focuses, at once and in order with its
 bindings. A frame of it (1 MiB) is the most that waits unread for a pane's program: past that, what is
 typed is not taken, and its client is told (`%N isn't reading what is typed`); a paste, which waits for its
@@ -540,11 +530,7 @@ detach) always run; only its pastes wait for one another, the second sent once t
 another sent a client (`send-keys` to a client), more than 64 keys of it in a row, goes on from that client
 as a paste's text does, a piece at a time, and the request is answered once the program took it. While
 a paste is open or its text still to come, whatever else its program is to read (another client's keys, the
-answers to its own queries) waits behind the paste's closing bracket, a frame of it at most. Every other allocation
-fux's own code makes is infallible, and a refusal there aborts that process: what a decoded frame is
-made of beyond its texts and lists, what waits to be written to a socket in the server, a connection or a
-client, the server's tree and journal, a connection's composed screen, and a reply as the client prints it.
-The server and a connection's process may end so; a run whose server ended is taken back (`start`).
+answers to its own queries) waits behind the paste's closing bracket, a frame of it at most.
 [`codes.txt`](codes.txt) lists every kind with its exit status.
 
 A program catches a failure by kind with `(catch-kind! EXPRESSION KIND NAME HANDLER...)`, or any with
@@ -556,8 +542,8 @@ that had taken effect by then, as an uncaught failure lists them on stderr.
 ## `status`
 
 ```text
-((socket "/run/user/1000/fux/server.sock") (release "0.37.0") (protocol 79)
- (server-release "0.37.0") (server-protocol 79) (server-process-id 4242) (compatible #true))
+((socket "/run/user/1000/fux/server.sock") (release "0.37.0") (protocol 80)
+ (server-release "0.37.0") (server-protocol 80) (server-process-id 4242) (compatible #true))
 ```
 
 `(status)` returns an ordinary record with these locally readable fields, including `(compatible
