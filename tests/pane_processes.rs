@@ -90,20 +90,11 @@ fn children(pid: i32, word: &str) -> Vec<i32> {
         .collect()
 }
 
-/// The processes of the server `pid`'s connections that have a client:
-/// those it took itself (`__conn taken`), and those that took one at its
-/// socket, whose stdout then points elsewhere; not the one waiting for the
-/// next, which holds the socket on its stdout (`Server::spare`).
+/// The processes of the server `pid`'s connections, each of which has a
+/// client.
 #[cfg(target_os = "linux")]
 fn connections(pid: i32) -> Vec<i32> {
-    let taken = children(pid, "taken");
-    (children(pid, "__conn").into_iter())
-        .filter(|conn| {
-            taken.contains(conn)
-                || std::fs::read_link(format!("/proc/{conn}/fd/1"))
-                    .is_ok_and(|to| !to.to_string_lossy().starts_with("socket:"))
-        })
-        .collect()
+    children(pid, "__conn")
 }
 
 /// The server's process.
@@ -456,77 +447,6 @@ fn a_crashed_servers_run_is_taken_back() -> Outcome {
 
 /// Stops a server however its test ends: one that took a run back is no
 /// child of the test's.
-/// 6b. A crashed server's run is taken back though the connection's
-///     process it started for its next client, which holds its socket till
-///     it sees its server go, is stopped meanwhile: a socket whose server
-///     is gone is no server's (`socket::owned`), with room in its backlog
-///     or none.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_crashed_servers_run_is_taken_back_while_its_waiting_connection_is_stopped() -> Outcome {
-    taken_back_with_its_spare_stopped(false)
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_crashed_servers_run_is_taken_back_with_its_stopped_connections_backlog_full() -> Outcome {
-    taken_back_with_its_spare_stopped(true)
-}
-
-#[cfg(target_os = "linux")]
-fn taken_back_with_its_spare_stopped(full: bool) -> Outcome {
-    let started = Server::start("")?;
-    let _stop = Stop(&started);
-    let server = &started;
-    let shell = pane(server, "work", &["sh"])?;
-    server.type_line(&shell, "echo MARK-BEFORE")?;
-    server.shows(&shell, "MARK-BEFORE")?;
-    let before = layout(server)?;
-    let pid = server_pid(server)?;
-    let waiting: Vec<i32> = (children(pid, "__conn").into_iter())
-        .filter(|conn| !connections(pid).contains(conn))
-        .collect();
-    let [spare] = waiting[..] else {
-        return Err(format!("the connection waiting for a client: {waiting:?}"));
-    };
-    signal(spare, Signal::Stop);
-    signal(pid, Signal::Kill);
-    // Clients come while no server serves, till the socket takes no more.
-    let mut queued = Vec::new();
-    while full && queued.len() < 100_000 {
-        let fd = fuxix::socket::stream().map_err(e)?;
-        fuxix::io::set_nonblocking(&fd, true).map_err(e)?;
-        match fuxix::socket::connect(&fd, &server.socket) {
-            Ok(()) => queued.push(fd),
-            Err(fuxix::Errno::AGAIN) => break,
-            Err(error) => return Err(format!("queueing a client: {error}")),
-        }
-    }
-    // Asked with a bound: a client of the old socket would wait for good.
-    let taken = server.ok(&["(sequence! (start) #inert)"]).and_then(|_| {
-        let status = within(server, 30, &["(status)"])?;
-        match status.status {
-            0 => layout(server),
-            _ => Err(format!("no server took the run back: {}", status.stderr)),
-        }
-    });
-    let still = processes().into_iter().any(|(p, ..)| p == spare)
-        && std::fs::read_to_string(format!("/proc/{spare}/stat")).is_ok_and(|stat| {
-            stat.rsplit_once(") ")
-                .is_some_and(|(_, r)| r.starts_with('T'))
-        });
-    signal(spare, Signal::Cont);
-    drop(queued);
-    assert_eq!(taken?, before);
-    assert!(still, "the spare ran meanwhile");
-    assert!(
-        server
-            .ok(&[&format!("(capture (pane {}))", fux::script::quoted(&shell))])?
-            .contains("MARK-BEFORE")
-    );
-    eventually("the old connection's process gone", || Ok(!alive(spare)))
-}
-
 struct Stop<'a>(&'a Server);
 
 impl Drop for Stop<'_> {
@@ -1368,22 +1288,8 @@ fn limit(pid: i32, which: &str, soft: u64) -> Outcome {
     }
 }
 
-/// The connection's process that waits at `pid`'s socket for the next
-/// client (`Server::spare`).
-#[cfg(target_os = "linux")]
-fn spare(pid: i32) -> Result<i32, String> {
-    let mut found = None;
-    eventually("a connection waiting for a client", || {
-        let taken = connections(pid);
-        found = (children(pid, "__conn").into_iter()).find(|conn| !taken.contains(conn));
-        Ok(found.is_some())
-    })?;
-    found.ok_or_else(|| "a connection waiting for a client".into())
-}
-
 /// Three clients, one after another, of a server that has met a limit
-/// (`ulimit`): the one its waiting connection's process takes may be
-/// served; each one refused is told `cause`, and two are, the second by a
+/// (`ulimit`): each one refused is told `cause`, and two are, the second by a
 /// server that was ready to tell again.
 #[cfg(target_os = "linux")]
 fn refused_naming(server: &Server, cause: &str) -> Outcome {
@@ -1408,7 +1314,6 @@ fn refused_naming(server: &Server, cause: &str) -> Outcome {
 fn a_server_out_of_descriptors_tells_a_client_so() -> Outcome {
     let server = Server::start("")?;
     let pid = server_pid(&server)?;
-    spare(pid)?;
     no_descriptor_free(pid)?;
     refused_naming(&server, "Too many open files")
 }
@@ -1426,28 +1331,6 @@ fn no_descriptor_free(pid: i32) -> Outcome {
     limit(pid, "nofile", free)
 }
 
-/// So is a client its waiting connection's process would have taken, had
-/// it not been stopped: left to that process once, it is told by the
-/// server, which does not wait on it for good.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_server_out_of_descriptors_tells_a_client_its_stopped_connection_left() -> Outcome {
-    let server = Server::start("")?;
-    let pid = server_pid(&server)?;
-    let stopped = spare(pid)?;
-    signal(stopped, Signal::Stop);
-    no_descriptor_free(pid)?;
-    let asked = within(&server, 30, &["(length (panes (all)))"]);
-    signal(stopped, Signal::Cont);
-    let asked = asked?;
-    assert!(
-        asked.stderr.contains("Too many open files"),
-        "{}",
-        asked.stderr
-    );
-    Ok(())
-}
-
 /// A server that can start no process tells a client it can give none so,
 /// which fails at once naming the cause, not with a connection reset.
 #[cfg(target_os = "linux")]
@@ -1459,24 +1342,8 @@ fn a_server_out_of_processes_tells_a_client_so() -> Outcome {
     }
     let server = Server::start("")?;
     let pid = server_pid(&server)?;
-    spare(pid)?;
     limit(pid, "nproc", 1)?;
     refused_naming(&server, "starting a connection's process")
-}
-
-/// A connection's process that waits at the socket and is stopped holds up
-/// no client: the server takes there what it has not taken.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_stopped_waiting_connection_holds_up_no_client() -> Outcome {
-    let server = Server::start("")?;
-    let stopped = spare(server_pid(&server)?)?;
-    signal(stopped, Signal::Stop);
-    let asked = within(&server, 30, &["(length (panes (all)))"]);
-    signal(stopped, Signal::Cont);
-    let asked = asked?;
-    assert_eq!(asked.status, 0, "{}", asked.stderr);
-    Ok(())
 }
 
 /// A write past a file-size limit (`ulimit -f`) fails as a write, where it

@@ -7,7 +7,7 @@
 use fuxix::Errno;
 use fuxix::io::{Stream, read, write_what_fits};
 use fuxix::poll::{Events, PollFd, Source, poll};
-use fuxix::socket::{Connection, Listener, Spare, User, connect, name, peer};
+use fuxix::socket::{Connection, Listener, User, connect, name, peer};
 use std::io::{BufRead, Write};
 use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
 use std::process::{Command, ExitStatus, Stdio};
@@ -262,78 +262,6 @@ fn a_name_taken_first_is_told_apart() -> Outcome {
     let _ = reader.join();
     assert!(status.success(), "{status:?}");
     Listener::bind(&name).map_err(text)?;
-    Ok(())
-}
-
-const SPARE: &str = "FUXIX_TEST_SPARE";
-
-/// The child of [`a_child_given_a_spare_takes_its_client`]: takes a client
-/// on the spare it was given as its stdin, reads it as its parent's user,
-/// and answers each line with its own pid.
-#[test]
-#[ignore = "the child of a_child_given_a_spare_takes_its_client"]
-fn child_takes_a_client_on_its_spare() -> Outcome {
-    if std::env::var_os(SPARE).is_none() {
-        return Ok(());
-    }
-    let _turn = turn();
-    let deadline = after(Duration::from_secs(20))?;
-    let handle = std::io::stdin().as_handle().try_clone_to_owned();
-    let mut spare = Spare::try_from(handle.map_err(text)?).map_err(text)?;
-    ready(&spare, deadline)?;
-    let connection = spare.accept().map_err(text)?;
-    let connected = connection.connected().map_err(text)?;
-    if !peer(&connection, connected)
-        .map_err(text)?
-        .user
-        .is_current()
-    {
-        return Err("a stranger".into());
-    }
-    let stream = connection.stream().map_err(text)?;
-    while let Some(line) = line(&stream, deadline)? {
-        let answer = format!(
-            "{} from {}\n",
-            line.replace("ping", "pong"),
-            std::process::id()
-        );
-        send(&stream, answer.as_bytes(), deadline)?;
-    }
-    Ok(())
-}
-
-/// A child given the listener's spare instance takes the client that
-/// comes and talks to it, while the client still reads the pipe's server
-/// as the parent, who made the instance.
-#[test]
-fn a_child_given_a_spare_takes_its_client() -> Outcome {
-    let _turn = turn();
-    let deadline = after(Duration::from_secs(25))?;
-    let name = unique("spare")?;
-    let mut listener = Listener::bind(&name).map_err(text)?;
-    let spare = OwnedHandle::try_from(listener.spare().map_err(text)?).map_err(text)?;
-    let mut command = child("child_takes_a_client_on_its_spare", SPARE, "1")?;
-    command.stdin(Stdio::from(spare)).stdout(Stdio::null());
-    let mut worker = Child(command.spawn().map_err(text)?);
-    drop(command);
-    // Only the child's instance is left to connect to.
-    drop(listener);
-    let client = connect(&name).map_err(text)?;
-    let server = peer(&client, SystemTime::now()).map_err(text)?;
-    assert_eq!(server.pid, our_pid(), "the server is the parent");
-    for i in 0..3 {
-        send(&client, format!("ping {i}\n").as_bytes(), deadline)?;
-        let want = format!("pong {i} from {}", worker.0.id());
-        assert_eq!(line(&client, deadline)?, Some(want));
-    }
-    drop(client);
-    let status = exited(&mut worker, "the worker's exit", deadline)?;
-    assert!(status.success(), "{status:?}");
-    say(&format!(
-        "PIPES handoff spare worker={} server_pid_seen={:?} ok",
-        worker.0.id(),
-        server.pid
-    ));
     Ok(())
 }
 

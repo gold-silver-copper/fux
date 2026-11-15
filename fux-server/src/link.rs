@@ -409,8 +409,6 @@ wired!(Expect {
 /// From a client's connection's own process to the server.
 #[derive(Debug)]
 pub enum FromConn {
-    /// It took its client at the server's socket: a spare's first word.
-    Accepted,
     /// A whole frame its client sent, decoded as the frame expected: sent
     /// again as it came, for the server to take, but for its inputs or
     /// paste text, which it keeps as `body` (`ToConn::Deliver`).
@@ -432,7 +430,6 @@ pub enum FromConn {
     Unreached { token: u64, pane: PaneId },
 }
 wired!(FromConn {
-    Accepted,
     Frame { frame, body },
     Flushed,
     Shut,
@@ -441,12 +438,10 @@ wired!(FromConn {
     Unreached { token, pane },
 });
 
-/// How the server starts a client's connection's own process, before its
-/// client comes: `fux __conn`, its link on stdin, the server's socket on
-/// stdout, where it takes its client (`conn::wait`); or, `fux __conn
-/// taken`, for a client the server took itself, on stdout (`conn::serve`).
+/// How the server starts a client's connection's own process, for a
+/// client it took: `fux __conn`, its link on stdin, its client on stdout
+/// (`conn::serve`).
 pub const CONN: &str = "__conn";
-pub const TAKEN: &str = "taken";
 
 #[cfg(test)]
 mod tests {

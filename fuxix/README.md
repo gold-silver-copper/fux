@@ -103,24 +103,23 @@ On Windows the transport is one named pipe instance per connection:
   explicit owner-only descriptor, `D:P(A;;GA;;;<user SID>)` (the default
   one lets any user open a pipe to read). A name any process holds
   already fails with `Errno::ADDRINUSE`, never joining it.
-- A `Listener` keeps one instance waiting, a `Spare`, a `poll::Source`
+- A `Listener` keeps one instance waiting, a `poll::Source`
   ready to read once a client connected: an overlapped
   `ConnectNamedPipe` signals an event that a thread-pool wait turns into a
-  packet. `accept` gives a `Connection` and `spare` gives the waiting
-  `Spare`, each only once the next instance is made, so the name is never
-  free while the listener lives.
-- A `Spare` or a `Connection` is bound to no completion port until it is
+  packet. `accept` gives a `Connection` only once the next instance is
+  made, so the name is never free while the listener lives.
+- A `Connection` is bound to no completion port until it is
   made a `Stream` (`Connection::stream`), so it can be handed to a child
-  as a plain handle (`OwnedHandle::try_from`, `OwnedHandle::from`, then
+  as a plain handle (`OwnedHandle::from`, then
   std's `Stdio::from`, which makes it inheritable only in the copy for
-  that child's spawn). The child makes it a `Spare` or `Connection` again
+  that child's spawn). The child makes it a `Connection` again
   and binds it to its own port.
 - `socket::peer` reads the pipe's client pid on a server's end and its
   server pid on a client's (`GetNamedPipeClientProcessId`,
   `GetNamedPipeServerProcessId`), then that process's token (`TokenUser`,
   `TokenElevation`). A process that can't be read is an error, a refusal.
   The server pid is the process that made the instance: a client of a
-  child given a spare still reads the server's.
+  child handed its connection still reads the server's.
 - `socket::connect` opens the pipe (identification only: the server can't
   act as the client), and refuses with `Errno::ACCES` a server that is not
   this process's user, before anything is sent. Every instance taken is

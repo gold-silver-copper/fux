@@ -191,11 +191,8 @@ impl Drop for Endpoint {
 
 /// Whether a server listens on `path`, without waiting: a nonblocking
 /// connect answers at once. A listener with a full backlog refuses with
-/// `EAGAIN`, and counts as alive. One whose maker, as the system names it
-/// (`SO_PEERCRED`: the process that listened), is gone is no server's: a
-/// crashed server's socket, still held by a process of its own that has
-/// yet to see it go (its connection's, waiting for a client, `conn::wait`,
-/// which never listens itself).
+/// `EAGAIN`, and counts as alive. A crashed server's socket refuses: no
+/// process of its holds its listener (each is close-on-exec).
 pub fn listened(path: &Path) -> bool {
     let Ok(fd) = fuxix::socket::stream() else {
         return false;
@@ -204,33 +201,15 @@ pub fn listened(path: &Path) -> bool {
         return false;
     }
     match fuxix::socket::connect(&fd, path) {
-        Ok(()) => !fuxix::socket::peer(&fd)
-            .ok()
-            .and_then(|peer| peer.pid)
-            .is_some_and(gone),
-        Err(fuxix::Errno::AGAIN | fuxix::Errno::INPROGRESS) => true,
+        Ok(()) | Err(fuxix::Errno::AGAIN | fuxix::Errno::INPROGRESS) => true,
         Err(_) => false,
     }
 }
 
-/// Whether a server answers on `socket`: something listens there
-/// (`listened`), and it is not a crashed server's, held by a process of its
-/// with a backlog full or not.
+/// Whether a server answers on `socket` (`listened`), with a backlog full
+/// or not.
 pub fn owned(socket: &SocketPath) -> bool {
-    listened(socket.path()) && !crashed(socket.path())
-}
-
-/// Whether the run on the socket at `path` lost its server: its record is
-/// left, which a stop removes, and no server holds the run's lock, asked
-/// as a starting server does, once none is starting there.
-fn crashed(path: &Path) -> bool {
-    if !panes(path).join("run").exists() {
-        return false;
-    }
-    let Ok(Ok(_turn)) = turn(path) else {
-        return false;
-    };
-    matches!(lock_run(path, false), Ok(Run::Ours(_)))
+    listened(socket.path())
 }
 
 /// Whether process `pid` is gone: it has no session, or, on Linux, it is a
@@ -442,17 +421,14 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
             )));
         }
         // With the run's lock held, one that listens is no live fux
-        // server's of this run, but still refused, unless its run's record
-        // is left: then it is a crashed one's, held by a process of its
-        // (`listened`, full or not).
-        Ok(_) if listened(path) && !panes(path).join("run").exists() => {
+        // server's of this run, but still refused (`listened`, full or not).
+        Ok(_) if listened(path) => {
             return Err(Error::Refused(format!(
                 "another fux server is already listening on {}",
                 path.display()
             )));
         }
-        // No answer, or a crashed server's socket a process of its still
-        // holds: with the lock held, no server owns it.
+        // No answer: with the lock held, no server owns it.
         Ok(_) => {
             if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
                 fs::remove_file(path).map_err(failed("removing stale socket ", path))?;
@@ -494,18 +470,12 @@ pub fn hand(accepted: Accepted) -> Handed {
     accepted.into()
 }
 
-/// The server's socket, for the next connection's process to wait at.
-pub fn spare(listener: &Listener) -> std::io::Result<Handed> {
-    Ok(listener.try_clone()?.into())
-}
-
-/// Starts `fux __conn` from `exe` with `words`, its link on stdin and
-/// `out` on stdout: the server's end of its link.
-pub fn launch_conn(exe: &Path, words: &[&str], out: Handed) -> std::io::Result<Stream> {
+/// Starts `fux __conn` from `exe`, its link on stdin and `out` on stdout:
+/// the server's end of its link.
+pub fn launch_conn(exe: &Path, out: Handed) -> std::io::Result<Stream> {
     let (ours, theirs) = UnixStream::pair()?;
     let child = std::process::Command::new(exe)
         .arg(crate::link::CONN)
-        .args(words)
         .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
             theirs,
         )))
@@ -705,7 +675,7 @@ pub fn listen_at(path: &Path) -> std::io::Result<Listener> {
 }
 
 /// A connection's process's client and its link to its server, as `fux
-/// __conn taken` is given them: on stdout and stdin.
+/// __conn` is given them: on stdout and stdin.
 pub fn taken_stdio() -> std::io::Result<(Stream, Stream)> {
     use std::os::fd::AsFd;
     let server = std::io::stdin().as_fd().try_clone_to_owned()?;
@@ -830,18 +800,6 @@ pub fn rerun(mut command: std::process::Command, arg0: &std::ffi::OsStr) -> std:
 /// keeps it.
 pub fn follower_id() -> u32 {
     std::process::id()
-}
-
-/// A connection's process started before its client came takes it at the
-/// server's socket on its stdout, and its link is on stdin.
-pub fn waiting_stdio() -> Result<(), String> {
-    use std::os::fd::AsFd;
-    let server = std::io::stdin().as_fd().try_clone_to_owned();
-    let out = std::io::stdout().as_fd().try_clone_to_owned();
-    match (out, server) {
-        (Ok(listener), Ok(server)) => crate::conn::wait(listener.into(), server.into()),
-        (Err(e), _) | (_, Err(e)) => Err(format!("its sockets: {e}")),
-    }
 }
 
 /// Where `fux help` says a server is found.

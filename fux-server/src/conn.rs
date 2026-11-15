@@ -1088,93 +1088,20 @@ impl Composer {
     }
 }
 
-/// A client's connection's own process (`fux __conn`), started before its
-/// client came (`Server::spare`): it waits at its server's socket,
-/// `listener`, which is also its stdout, for a client of the server's own
-/// user, as the server did; then lets the socket go, its stdout pointed at
-/// `/dev/null`, tells its server it took a client, and serves it (`serve`),
-/// its server on `server`. It never listens itself, so a client is still
-/// told the server's pid (`SO_PEERCRED`). Its server gone first, it ends.
-#[cfg(unix)]
-pub fn wait(listener: std::os::unix::net::UnixListener, server: Stream) -> Result<(), String> {
-    use fuxix::poll::{Events, PollFd};
-    let mut link = End::new(server).map_err(|e| format!("its server: {e}"))?;
-    let mut buffer = [0u8; 4096];
-    let mut said = Vec::new();
-    loop {
-        let mut fds = [
-            PollFd::new(&listener, Events::IN),
-            PollFd::new(&link.stream, Events::IN),
-        ];
-        match fuxix::poll::poll(&mut fds, None) {
-            Ok(_) | Err(fuxix::Errno::INTR) => {}
-            Err(error) => return Err(format!("poll: {error}")),
-        }
-        let [theirs, ours] = fds.map(|fd| !fd.revents().is_empty());
-        if ours {
-            let closed = link.read(&mut buffer) == Read::Closed;
-            while let Some(message) = (link.next_message::<ToConn>())
-                .map_err(|e| format!("its server sent a bad frame: {e}"))?
-            {
-                said.push(message);
-            }
-            if closed {
-                return Ok(());
-            }
-        }
-        if !theirs {
-            continue;
-        }
-        let client = match listener.accept() {
-            Ok((client, _)) => client,
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock
-                        | std::io::ErrorKind::Interrupted
-                        | std::io::ErrorKind::ConnectionAborted
-                ) =>
-            {
-                continue;
-            }
-            // Out of descriptors, say: its server starts another later.
-            Err(e) => return Err(format!("accept: {e}")),
-        };
-        if let Some(why) = crate::socket::stranger(fuxix::socket::peer(&client)) {
-            log!("{why}");
-            crate::socket::refuse(client, &why);
-            continue;
-        }
-        drop(listener);
-        // Its client is told why it is not served, should that fail.
-        let detached = std::fs::File::open("/dev/null")
-            .map_err(|e| format!("/dev/null: {e}"))
-            .and_then(|null| {
-                fuxix::io::redirect_stdout(&null).map_err(|e| format!("its stdout: {e}"))
-            });
-        if let Err(why) = detached {
-            crate::socket::refuse(client, &format!("this connection's process failed: {why}"));
-            return Err(why);
-        }
-        link.send(&FromConn::Accepted);
-        return serve(client, link, said);
-    }
-}
-
-/// A connection's process for a client its server took itself (`fux __conn
-/// taken`): its client on `client`, its server on `server`.
+/// A connection's process for a client its server took (`fux __conn`): its
+/// client on `client`, its server on `server`.
 pub fn taken(client: Stream, server: Stream) -> Result<(), String> {
     let link = End::new(server).map_err(|e| format!("its server: {e}"))?;
-    serve(client, link, Vec::new())
+    serve(client, link)
 }
 
 /// A client's connection's own process at work (`serve_on`): its client
-/// on `client`, its server on `link`, which said `said` before. One that
+/// on `client`, its server on `link`. One that
 /// fails tells its client why before it closes (`Exit`, which every stage
 /// reads), as much as the client takes at once: no connection its process
 /// ends closes without a word.
-pub fn serve(client: Stream, link: End, said: Vec<ToConn>) -> Result<(), String> {
-    let served = serve_on(&client, link, said);
+pub fn serve(client: Stream, link: End) -> Result<(), String> {
+    let served = serve_on(&client, link);
     if let Err(why) = &served {
         let why = format!("this connection's process failed: {why}");
         let mut out = ByteQueue::default();
@@ -1186,7 +1113,7 @@ pub fn serve(client: Stream, link: End, said: Vec<ToConn>) -> Result<(), String>
 
 /// The loop of a client's connection's own process, until its client or
 /// its server goes.
-fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), String> {
+fn serve_on(client: &Stream, mut link: End) -> Result<(), String> {
     use fuxix::poll::{Events, PollFd};
     crate::socket::nonblocking(client).map_err(|e| format!("its client: {e}"))?;
     let mut decoder = Decoder::default();
@@ -1242,7 +1169,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     // what its server said after them, which waits too.
     let mut listening: Option<Listening> = None;
     let mut keys: Option<u64> = None;
-    let mut backlog: std::collections::VecDeque<ToConn> = said.into();
+    let mut backlog: std::collections::VecDeque<ToConn> = std::collections::VecDeque::new();
     loop {
         let now = Instant::now();
         let attached = want == Want::Frames(Expect::Attached);
@@ -1994,7 +1921,7 @@ mod tests {
         said.send(&ToConn::Bytes(b"the reply".to_vec()));
         said.flush_all().map_err(|errno| errno.to_string())?;
         drop(said);
-        super::serve(client, End::new(link).map_err(e)?, Vec::new())?;
+        super::serve(client, End::new(link).map_err(e)?)?;
         let mut got = Vec::new();
         theirs.read_to_end(&mut got).map_err(e)?;
         // And then that its server went, which had no last word for it.
@@ -2008,25 +1935,21 @@ mod tests {
         Ok(())
     }
 
-    /// A spare that took a client as its server stopped, its `Accepted`
-    /// not yet sent when its server let its link go, can't reach its
-    /// server with a client in hand: it tells that client its server went,
-    /// and does not just close it.
+    /// A connection's process whose server went before it heard from it
+    /// tells its client its server went, and does not just close it.
     #[cfg(unix)]
     #[test]
     fn a_client_taken_as_its_server_went_is_told_so() -> Result<(), String> {
-        use crate::link::{End, FromConn};
+        use crate::link::End;
         use fux_wire::protocol::Greeting;
         use std::io::Read;
         use std::os::unix::net::UnixStream;
         let e = |error: std::io::Error| error.to_string();
         let (client, mut theirs) = UnixStream::pair().map_err(e)?;
         let (server, link) = UnixStream::pair().map_err(e)?;
-        // As `wait` leaves it: its first word said, not yet written.
-        let mut link = End::new(link).map_err(e)?;
-        link.send(&FromConn::Accepted);
+        let link = End::new(link).map_err(e)?;
         drop(server);
-        super::serve(client, link, Vec::new())?;
+        super::serve(client, link)?;
         let mut got = Vec::new();
         theirs.read_to_end(&mut got).map_err(e)?;
         let mut decoder = Decoder::default();
@@ -2048,7 +1971,7 @@ mod tests {
         let (client, mut theirs) = UnixStream::pair().map_err(e)?;
         let (mut server, link) = UnixStream::pair().map_err(e)?;
         server.write_all(&[0, 0, 0, 0]).map_err(e)?;
-        let failed = super::serve(client, crate::link::End::new(link).map_err(e)?, Vec::new());
+        let failed = super::serve(client, crate::link::End::new(link).map_err(e)?);
         assert!(failed.is_err(), "it took what is no message");
         let mut got = Vec::new();
         theirs.read_to_end(&mut got).map_err(e)?;
@@ -2110,7 +2033,7 @@ mod tests {
         let (server, link) = UnixStream::pair().map_err(e)?;
         let mut server = End::new(server).map_err(e)?;
         let link = End::new(link).map_err(e)?;
-        let conn = std::thread::spawn(move || super::serve(client, link, Vec::new()));
+        let conn = std::thread::spawn(move || super::serve(client, link));
         theirs.write_all(&hello.encode()).map_err(e)?;
         theirs.write_all(&asked.encode()).map_err(e)?;
         if shut {
@@ -2264,7 +2187,7 @@ mod tests {
         let (server, link) = UnixStream::pair().map_err(e)?;
         let server = End::new(server).map_err(e)?;
         let link = End::new(link).map_err(e)?;
-        let conn = std::thread::spawn(move || super::serve(client, link, Vec::new()));
+        let conn = std::thread::spawn(move || super::serve(client, link));
         Ok((theirs, server, conn))
     }
 
@@ -2513,8 +2436,7 @@ mod tests {
                     }
                 }
                 FromConn::Dropped(keys) => dropped += keys,
-                other @ (FromConn::Accepted
-                | FromConn::Flushed
+                other @ (FromConn::Flushed
                 | FromConn::Shut
                 | FromConn::Bad(_)
                 | FromConn::Unreached { .. }) => return Err(format!("{other:?}")),
@@ -2524,8 +2446,7 @@ mod tests {
         while taken + dropped < KEYS {
             match said(&mut server)? {
                 FromConn::Dropped(keys) => dropped += keys,
-                other @ (FromConn::Accepted
-                | FromConn::Frame { .. }
+                other @ (FromConn::Frame { .. }
                 | FromConn::Flushed
                 | FromConn::Shut
                 | FromConn::Bad(_)

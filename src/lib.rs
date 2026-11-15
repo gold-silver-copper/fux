@@ -62,8 +62,7 @@ fn internal() -> Option<ExitCode> {
     match (first.as_str(), rest) {
         (SERVE, rest) => Some(serve(rest)),
         (fux_server::link::PANE, rest) => Some(pane(rest)),
-        (fux_server::link::CONN, []) => Some(conn(false)),
-        (fux_server::link::CONN, [taken]) if taken == fux_server::link::TAKEN => Some(conn(true)),
+        (fux_server::link::CONN, []) => Some(conn()),
         _ => None,
     }
 }
@@ -152,16 +151,12 @@ fn pane(args: &[String]) -> ExitCode {
     }
 }
 
-/// A client's connection's own process, started by its server: its link
-/// on stdin, and on stdout the server's socket, where it takes its client
-/// (`server::Conn::spare`), or, `taken`, a client the server took itself.
-fn conn(taken: bool) -> ExitCode {
-    let served = match taken {
-        true => socket::taken_stdio()
-            .map_err(|e| format!("its sockets: {e}"))
-            .and_then(|(client, server)| fux_server::conn::taken(client, server)),
-        false => socket::waiting_stdio(),
-    };
+/// A client's connection's own process, started by its server for a
+/// client it took: its link on stdin, its client on stdout.
+fn conn() -> ExitCode {
+    let served = socket::taken_stdio()
+        .map_err(|e| format!("its sockets: {e}"))
+        .and_then(|(client, server)| fux_server::conn::taken(client, server));
     match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

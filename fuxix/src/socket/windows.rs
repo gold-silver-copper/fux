@@ -21,14 +21,14 @@
 //!   refuse each other (D-137). [`connect`] refuses a server that isn't
 //!   this process's user, or a pipe not owned as this process makes its
 //!   own, before anything is sent.
-//! - **Handed to a child.** An instance not yet connected (a [`Spare`])
-//!   or connected (a [`Connection`]) becomes a plain handle, given to one
-//!   child as std gives a `Stdio::from` handle: inheritable only in the
-//!   copy made for that child's spawn. Neither is bound to this process's
-//!   completion port until it becomes an [`crate::io::Stream`], so the
-//!   child can bind it to its own.
+//! - **Handed to a child.** An instance a client connected to (a
+//!   [`Connection`]) becomes a plain handle, given to one child as std
+//!   gives a `Stdio::from` handle: inheritable only in the copy made for
+//!   that child's spawn. It is bound to this process's completion port
+//!   only once it becomes an [`crate::io::Stream`], so the child can bind
+//!   it to its own.
 //!
-//! A [`Listener`] and a [`Spare`] are [`crate::poll::Source`]s, ready to
+//! A [`Listener`] is a [`crate::poll::Source`], ready to
 //! read once a client connected: a connect in flight is waited on by a
 //! thread-pool wait on its event, whose callback only wakes the poll.
 //!
@@ -643,8 +643,7 @@ fn instance(name: &[u16], security: &Security, first: bool) -> Result<OwnedHandl
 }
 
 /// A server's pipe: the name it holds, and one instance waiting for a
-/// client, to [`Listener::accept`] once a poll says it is ready to read,
-/// or to hand to a child as a [`Spare`].
+/// client, to [`Listener::accept`] once a poll says it is ready to read.
 pub struct Listener {
     name: Vec<u16>,
     security: Security,
@@ -685,14 +684,6 @@ impl Listener {
         std::mem::replace(&mut self.waiting, next).accept()
     }
 
-    /// The instance waiting for a client, for a child to take its client
-    /// itself, with the next already made in its place. Clients may then
-    /// reach either: each instance takes one.
-    pub fn spare(&mut self) -> Result<Spare> {
-        let next = self.next()?;
-        Ok(std::mem::replace(&mut self.waiting, next))
-    }
-
     fn next(&self) -> Result<Spare> {
         Spare::try_from(instance(&self.name, &self.security, false)?)
     }
@@ -719,10 +710,8 @@ impl Sealed for Listener {
 impl Source for Listener {}
 
 /// One pipe instance a client has not connected to yet: a
-/// [`Listener`]'s, or one a child was handed (`TryFrom<OwnedHandle>`),
-/// which takes one client itself ([`Spare::accept`]). Made a plain handle
-/// (`OwnedHandle::try_from`) to hand on, with no connect in flight.
-pub struct Spare {
+/// [`Listener`]'s, which takes one client ([`Spare::accept`]).
+struct Spare {
     /// None once its client is taken.
     handle: Option<OwnedHandle>,
     connect: Box<Connect>,
@@ -952,22 +941,6 @@ impl Drop for Spare {
     }
 }
 
-impl TryFrom<Spare> for OwnedHandle {
-    type Error = Errno;
-
-    /// Its handle, with no connect in flight, to hand to a child (as std's
-    /// `Stdio::from`), whose own [`Spare`] connects it. One whose client
-    /// came already is connected, and the child's spare says so at once.
-    /// A spare whose client was taken has none (`ERROR_INVALID_HANDLE`).
-    fn try_from(mut spare: Spare) -> Result<OwnedHandle> {
-        drop(spare.settle(true));
-        spare
-            .handle
-            .take()
-            .ok_or(Errno::from_code(ERROR_INVALID_HANDLE))
-    }
-}
-
 /// A pipe instance a client connected to, not yet bound to this process's
 /// completion port: to serve here ([`Connection::stream`]) or to hand to
 /// a child (`OwnedHandle::from`, and `Connection::from` there).
@@ -1014,7 +987,7 @@ impl From<OwnedHandle> for Connection {
     /// no completion port: a child's, handed to it. Its client must have
     /// connected before this process was made, as
     /// [`Connection::connected`] here is this process's creation time;
-    /// an instance not yet connected is handed on as a [`Spare`].
+    /// an instance not yet connected is handed to none.
     fn from(handle: OwnedHandle) -> Connection {
         let connected = None;
         Connection { handle, connected }

@@ -52,9 +52,8 @@ const FINISH_WAIT: Duration = Duration::from_secs(1);
 pub(crate) const STOP_LONGEST: Duration = STOP_WAIT.saturating_add(FINISH_WAIT);
 /// A condition that persists is logged once, then at most this often.
 const REPORT_EVERY: Duration = Duration::from_secs(10);
-/// How long the server waits to start another connection's process after
-/// one could not start, or ended before a client came: retrying at once
-/// would only repeat.
+/// How long the server's listener rests after an `accept` or a
+/// connection's process failed: retrying at once would only repeat.
 const ACCEPT_REST: Duration = Duration::from_millis(100);
 
 /// The socket the server is found by: held only while it serves, so the
@@ -65,9 +64,6 @@ struct Listening {
     /// A descriptor kept back, to let go when the server has every one its
     /// limit allows (`refuse`); none if none could be had.
     reserve: Option<fs::File>,
-    /// At that limit, a client was left to the spare a rest ago
-    /// (`Server::accept`): one still waiting was not taken by it.
-    passed: bool,
     /// Holds the lock; removes the socket once dropped, after the listener
     /// closes.
     endpoint: Endpoint,
@@ -81,7 +77,6 @@ impl Listening {
         Ok(Listening {
             listener,
             reserve: reserve(),
-            passed: false,
             endpoint,
         })
     }
@@ -136,7 +131,7 @@ fn unserved(doing: &str, error: &std::io::Error) -> String {
 /// Where the server is in its life, each stage holding the moment it waits
 /// for (`Server::wakes`), and the socket while it has one.
 enum Phase {
-    /// The listener is polled, a spare waiting there or not, unless an
+    /// The listener is polled unless an
     /// `accept` failed in a way that retrying at once would repeat: then
     /// the listener, which stays readable meanwhile, rests until `resting`.
     Serving {
@@ -372,28 +367,13 @@ impl Conn {
         })
     }
 
-    /// Starts the process of the next connection, from `exe`, before its
-    /// client comes: `fux __conn`, its link on its stdin, and the server's
-    /// socket, `listener`, on its stdout, where it takes its client itself
-    /// (`conn::wait`). A command's connection is then served at once, with
-    /// no process to start first.
-    fn spare(listener: &Listener, exe: &std::path::Path) -> std::io::Result<Conn> {
-        Conn::launch(exe, crate::socket::spare(listener)?, &[])
-    }
-
     /// Starts the process of a connection the server accepted itself on
-    /// `stream`, from `exe`: `fux __conn taken`, its client on stdout.
+    /// `stream`, from `exe`: `fux __conn`, its client on stdout.
     fn start(stream: Accepted, exe: &std::path::Path) -> std::io::Result<Conn> {
-        Conn::launch(exe, crate::socket::hand(stream), &[crate::link::TAKEN])
-    }
-
-    /// `fux __conn` with `words`, its link on stdin and `out` on stdout.
-    fn launch(
-        exe: &std::path::Path,
-        out: crate::socket::Handed,
-        words: &[&str],
-    ) -> std::io::Result<Conn> {
-        Conn::new(crate::socket::launch_conn(exe, words, out)?)
+        Conn::new(crate::socket::launch_conn(
+            exe,
+            crate::socket::hand(stream),
+        )?)
     }
 
     /// Whether all it sent its client was taken.
@@ -520,9 +500,6 @@ impl Conn {
                 }
                 // What it is owed and was not passed yet is still to come.
                 Ok(Some(FromConn::Flushed)) => self.pending = self.owed.any(),
-                // A spare's first word, which made it a connection
-                // (`spare_heard`).
-                Ok(Some(FromConn::Accepted)) => {}
                 Ok(Some(FromConn::Shut)) => closed = true,
                 Ok(Some(FromConn::Dropped(keys))) => {
                     self.dropped = self.dropped.saturating_add(keys);
@@ -767,11 +744,6 @@ pub struct Server {
     slots: Vec<Slot>,
     pollfds: fuxix::poll::Poll,
     ready: Vec<(Slot, PollFlags)>,
-    /// The next connection's process, which takes its client at the socket
-    /// itself (`spare`). The server accepts there too (`accept`), so a
-    /// client one that is stopped, or slow, has not taken waits for it no
-    /// longer than for the server's next turn.
-    spare: Option<Conn>,
     /// When a failure to keep one was last logged.
     accept_logged: Option<Instant>,
 }
@@ -976,7 +948,6 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalBytes) -> R
         slots: Vec::new(),
         pollfds: fuxix::poll::Poll::default(),
         ready: Vec::new(),
-        spare: None,
         accept_logged: None,
     };
     ready();
@@ -1100,8 +1071,6 @@ pub const READY: &[u8] = b"fux server: listening\n";
 enum Slot {
     /// The socket listened on.
     Listener,
-    /// The link of the next connection's process (`Server::spare`).
-    Spare,
     Children,
     Stops,
     Conn(usize),
@@ -1138,7 +1107,6 @@ impl Server {
                 let now = Instant::now();
                 match slot {
                     Slot::Listener => self.accept(now),
-                    Slot::Spare => self.spare_heard(now),
                     Slot::Children => {
                         crate::take_signals(&self.children);
                         self.reap(now);
@@ -1213,10 +1181,6 @@ impl Server {
         // Each client's view as it ends the turn.
         self.scenes(now);
         self.flush_links();
-        // The next connection's process starts once what this turn did has
-        // gone out, so a client waits for no start; one that can't is tried
-        // again when the turn says.
-        changed |= self.keep_spare(now);
         if changed {
             next = self.wakes().map(|(at, _)| at).min();
         }
@@ -1361,9 +1325,6 @@ impl Server {
                 Slot::Listener,
             );
         }
-        if let Some(spare) = &self.spare {
-            add(PollFd::new(&spare.link.stream, PollFlags::IN), Slot::Spare);
-        }
         add(
             PollFd::new(self.children.reader(), PollFlags::IN),
             Slot::Children,
@@ -1462,8 +1423,7 @@ impl Server {
         // back, nor a part of it.
         self.session.end_run();
         // The sockets go first: from now on a client finds no server. The
-        // next connection's process, its link closed, ends. The run's
-        // lock is kept till this server is gone: no other takes the run,
+        // run's lock is kept till this server is gone: no other takes the run,
         // or begins one there, while its panes are still closing.
         let by = after(now, STOP_WAIT);
         let stopping = Phase::Stopping(by, None);
@@ -1471,14 +1431,6 @@ impl Server {
             Phase::Serving { listening, .. } => Phase::Stopping(by, Some(listening.stop())),
             Phase::Stopping(..) => Phase::Stopping(by, None),
         };
-        // A client the spare took just now, not yet heard of, is a
-        // connection as the rest are, told below why it ends.
-        if let Some(mut spare) = self.spare.take() {
-            (spare.link).read_up_to(self.read_buffer.as_mut_slice(), CONN_READ);
-            if let Ok(Some(crate::link::FromConn::Accepted)) = spare.link.next_message() {
-                self.conns.push(spare);
-            }
-        }
         // Every client attached is detached for it before its entry, which
         // is the journal's last.
         let exit = format!("the fux server stopped: {reason}");
@@ -1575,52 +1527,8 @@ impl Server {
         }
     }
 
-    /// Starts the next connection's process (`Conn::spare`) while the
-    /// server serves and has none; one that cannot start is tried again
-    /// after `ACCEPT_REST`, as an `accept` that fails is: whether it rests
-    /// now.
-    fn keep_spare(&mut self, now: Instant) -> bool {
-        // Where the system names no socket's listening process (macOS), a
-        // crashed server's spare would hold its socket as a live server's
-        // (`socket::listened`): the server takes every client itself there.
-        if self.spare.is_some() || !cfg!(target_os = "linux") {
-            return false;
-        }
-        let Phase::Serving {
-            listening,
-            resting: None,
-        } = &self.phase
-        else {
-            return false;
-        };
-        let Some(exe) = self.session.exe.as_deref() else {
-            return false;
-        };
-        match Conn::spare(&listening.listener, exe) {
-            Ok(mut conn) => {
-                if let Some(panes) = self.session.panes() {
-                    let run = self.session.run;
-                    conn.tell_process(&crate::link::ToConn::Hello { panes, run });
-                }
-                let _ = conn.link.flush();
-                self.spare = Some(conn);
-                false
-            }
-            // Out of descriptors or processes: what waits at the socket is
-            // taken, and started or told so, there and then (`accept`).
-            Err(e) => {
-                self.rest(&format!("starting a connection's process: {e}"), now);
-                self.accept(now);
-                true
-            }
-        }
-    }
-
     /// Accepts the connections waiting on the server's socket, `ACCEPTS`
-    /// at most, whether a spare waits there too or not: each is given a
-    /// process of its own (`Conn::start`), so that a burst of clients waits
-    /// for no spare to start one at a time, and none waits on a spare that
-    /// is stopped. One that can't be given one is told why and closed
+    /// at most: each is given a process of its own (`Conn::start`). One that can't be given one is told why and closed
     /// (`socket::refuse`), so its client fails at once knowing the cause,
     /// as are the others waiting then; so is one `accept` can't take for
     /// want of a descriptor (`Listening::refuse`).
@@ -1649,18 +1557,12 @@ impl Server {
                     continue;
                 }
                 // Out of descriptors of its own, or something else that
-                // persists: the listener, readable still, rests. A spare
-                // has descriptors of its own and takes what waits; with
-                // none, or one that has not by the rest's end, the client
-                // is told, taken with the descriptor kept back.
+                // persists: the listener, readable still, rests; a client
+                // waiting for want of a descriptor is told, taken with the
+                // descriptor kept back.
                 Err(e) => {
                     let why = unserved("accept", &e);
-                    let full = crate::socket::out_of_descriptors(&e);
-                    // Left to the spare once: a client there still after
-                    // the rest, the spare did not take (it is stopped).
-                    let passes = full && self.spare.is_some() && !listening.passed;
-                    listening.passed = passes;
-                    let told = full && !passes && listening.refuse(&why);
+                    let told = crate::socket::out_of_descriptors(&e) && listening.refuse(&why);
                     self.rest(&why, now);
                     match told {
                         true => continue,
@@ -1708,39 +1610,7 @@ impl Server {
         }
     }
 
-    /// The next connection's process spoke: it took a client, and is one
-    /// of the server's connections from now on, and the next is started at
-    /// once; or it ended first.
-    fn spare_heard(&mut self, now: Instant) {
-        use crate::link::FromConn;
-        let Some(mut spare) = self.spare.take() else {
-            return;
-        };
-        let closed = spare
-            .link
-            .read_up_to(self.read_buffer.as_mut_slice(), CONN_READ)
-            == crate::link::Read::Closed;
-        match spare.link.next_message::<FromConn>() {
-            Ok(Some(FromConn::Accepted)) => {
-                if let Phase::Serving { listening, .. } = &mut self.phase {
-                    listening.passed = false;
-                }
-                self.conns.push(spare);
-                let index = self.conns.len().saturating_sub(1);
-                self.read_conn(index, now);
-                if let Some(conn) = self.conns.get_mut(index) {
-                    conn.flush(&mut self.session, now);
-                }
-                self.keep_spare(now);
-            }
-            Ok(None) if !closed => self.spare = Some(spare),
-            Ok(_) | Err(_) => {
-                self.rest("a connection's process ended before its client came", now);
-            }
-        }
-    }
-
-    /// The next connection's process waits `ACCEPT_REST`, `why` said at
+    /// The listener rests `ACCEPT_REST`, `why` said at
     /// most so often.
     fn rest(&mut self, why: &str, now: Instant) {
         if let Phase::Serving { resting, .. } = &mut self.phase {
@@ -2514,7 +2384,7 @@ mod tests {
     fn linked(client: UnixStream, expect: Option<crate::link::Expect>) -> std::io::Result<Conn> {
         let (link, theirs) = UnixStream::pair()?;
         let theirs = crate::link::End::new(theirs)?;
-        std::thread::spawn(move || crate::conn::serve(client, theirs, Vec::new()));
+        std::thread::spawn(move || crate::conn::serve(client, theirs));
         let mut conn = Conn::new(link)?;
         if let Some(expect) = expect {
             conn.tell_process(&crate::link::ToConn::Expect(expect));
@@ -2535,7 +2405,6 @@ mod tests {
                 slots: Vec::new(),
                 pollfds: fuxix::poll::Poll::default(),
                 ready: Vec::new(),
-                spare: None,
                 accept_logged: None,
             },
             peer,
@@ -2806,7 +2675,6 @@ mod tests {
             slots: Vec::new(),
             pollfds: fuxix::poll::Poll::default(),
             ready: Vec::new(),
-            spare: None,
             accept_logged: None,
         };
         Ok((server, peers, client))
@@ -3401,74 +3269,6 @@ mod tests {
                 r#""stopped""#,
             ]
         );
-        Ok(())
-    }
-
-    /// A client the spare took as the server stops, of which the server
-    /// has not heard yet, is told why its connection ends, as the rest are:
-    /// its process is not just let go.
-    #[test]
-    fn a_client_the_spare_took_as_the_server_stops_is_told_so()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (mut server, _peer) = server()?;
-        let dir = fuxix::file::scratch()?.join(format!("fux-stop-{}", std::process::id()));
-        let socket = crate::socket::checked(dir.join("s"), "test")?;
-        server.phase = Phase::Serving {
-            listening: Listening::open(&socket)?,
-            resting: None,
-        };
-        let (link, theirs) = UnixStream::pair()?;
-        let mut theirs = crate::link::End::new(theirs)?;
-        theirs.send(&crate::link::FromConn::Accepted);
-        theirs.flush_all().map_err(|errno| errno.to_string())?;
-        server.spare = Some(Conn::new(link)?);
-        let before = server.conns.len();
-        server.stop("a test".into(), Actor::Server, Instant::now());
-        let conn = server.conns.get(before).ok_or("the spare's connection")?;
-        let mut decoder = Decoder::default();
-        decoder.push(&client_bytes(conn));
-        assert!(matches!(
-            decoder.frame::<Greeting>(),
-            Ok(Some(Greeting::Exit(_)))
-        ));
-        Ok(())
-    }
-
-    /// A connection's process that can't be started is tried again when
-    /// the turn says to wake: the server waits on nothing else for it.
-    /// Only Linux has spares (`keep_spare`).
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_spare_that_cannot_start_is_tried_again_by_the_turns_deadline()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (mut server, _peer) = server()?;
-        let dir = fuxix::file::scratch()?.join(format!("fux-spare-{}", std::process::id()));
-        let socket = crate::socket::checked(dir.join("s"), "test")?;
-        server.phase = Phase::Serving {
-            listening: Listening::open(&socket)?,
-            resting: None,
-        };
-        // A turn with nothing to start settles what the session had to do,
-        // so that the next does nothing else.
-        server.session.exe = None;
-        let now = Instant::now();
-        let mut wakes = Vec::new();
-        let ControlFlow::Continue(_) = server.turn(now, &mut wakes) else {
-            return Err("the turn stopped the server".into());
-        };
-        server.session.exe = Some(dir.join("no-such-fux"));
-        let ControlFlow::Continue(next) = server.turn(now, &mut wakes) else {
-            return Err("the turn stopped the server".into());
-        };
-        let Phase::Serving {
-            resting: Some(retry),
-            ..
-        } = server.phase
-        else {
-            return Err("no retry".into());
-        };
-        assert!(server.spare.is_none());
-        assert_eq!(next, Some(retry));
         Ok(())
     }
 }

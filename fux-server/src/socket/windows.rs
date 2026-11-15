@@ -297,12 +297,6 @@ pub fn hand(accepted: Accepted) -> Handed {
     accepted.into()
 }
 
-/// Windows starts no connection's process before its client comes
-/// (`Server::keep_spare`): the server takes every client itself.
-pub fn spare(_listener: &Listener) -> std::io::Result<Handed> {
-    Err(std::io::ErrorKind::Unsupported.into())
-}
-
 /// Windows gives a process no limit on its handles to run into.
 pub fn out_of_descriptors(_error: &std::io::Error) -> bool {
     false
@@ -320,12 +314,11 @@ fn usable(handle: BorrowedHandle<'_>) -> Option<BorrowedHandle<'_>> {
     (!raw.is_null() && raw != invalid).then_some(handle)
 }
 
-/// Starts `fux __conn` from `exe` with `words`, its link on stdin and
-/// `out` on stdout: the server's end of its link.
-pub fn launch_conn(exe: &Path, words: &[&str], out: Handed) -> std::io::Result<Stream> {
+/// Starts `fux __conn` from `exe`, its link on stdin and `out` on stdout:
+/// the server's end of its link.
+pub fn launch_conn(exe: &Path, out: Handed) -> std::io::Result<Stream> {
     let (ours, theirs) = fuxix::io::pipe_for_fuxix_child()?;
-    let mut args = vec![std::ffi::OsStr::new(crate::link::CONN)];
-    args.extend(words.iter().map(std::ffi::OsStr::new));
+    let args = [std::ffi::OsStr::new(crate::link::CONN)];
     let log = std::io::stderr();
     let stdio = [
         Some(theirs.as_handle()),
@@ -495,7 +488,7 @@ pub fn listen_at(path: &Path) -> std::io::Result<Listener> {
 }
 
 /// A connection's process's client and its link to its server, as `fux
-/// __conn taken` is given them: the client's pipe instance on stdout, the
+/// __conn` is given them: the client's pipe instance on stdout, the
 /// link on stdin, each a handle it inherited.
 pub fn taken_stdio() -> std::io::Result<(Stream, Stream)> {
     let server = std::io::stdin().as_handle().try_clone_to_owned()?;
@@ -727,11 +720,6 @@ pub fn rerun(mut command: std::process::Command, _arg0: &std::ffi::OsStr) -> std
 /// is no `exec` to keep one.
 pub fn follower_id() -> u32 {
     fuxix::process::ancestry().get(1).copied().unwrap_or(0)
-}
-
-/// Windows starts no connection's process before its client.
-pub fn waiting_stdio() -> Result<(), String> {
-    Err("Windows starts no connection's process before its client".to_owned())
 }
 
 /// Where `fux help` says a server is found.

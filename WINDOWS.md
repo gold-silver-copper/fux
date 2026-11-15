@@ -222,7 +222,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   (`socket::start_pane`), never one its server made and handed over.
 - **The client is not built on Windows**: `src/client.rs`, `script`, `screens`, `keymap`,
   `client_state` and `help` are `cfg(unix)`; the binary runs `__serve`, `__pane PATH` and
-  `__conn taken`, and refuses anything else once. PR 8 removes those gates. The root `tests/*.rs`
+  `__conn`, and refuses anything else once. PR 8 removes those gates. The root `tests/*.rs`
   (they drive the client) are `#![cfg(unix)]` but `tests/windows.rs`, a small wire client.
 - **Names on Windows:** the socket path names a pipe, `\\.\pipe\fux-<path, \ as />-<SID>[-elevated]`
   (`socket::pipe_name`); no file is at the path. Beside it: `.starting` and `.lock` (opened with no
@@ -249,7 +249,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   losses, and a launcher job that binds the run (`process::job_fate`, D-135). PR 8's client should
   print them.
 - **No spare connection process on Windows** (`keep_spare` is Linux's): the server takes every
-  client and starts `fux __conn taken` with the client's instance on stdout and its link on stdin
+  client and starts `fux __conn` with the client's instance on stdout and its link on stdin
   (`io::pipe_for_fuxix_child`, both overlapped), handed through a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`
   of exactly those handles (`process::start`).
 - **D-134:** a pane process sends `FromPane::Offer` (its program's pid, creation time and handle
@@ -286,7 +286,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   (from the socket path's name, say) and keeps the run record and lock beside it; takeover is PR 7's.
 - `socket::Listener::bind` fails with `Errno::ADDRINUSE` when any process holds the name (another
   server or a squatter): the server then reads the run record, as Unix reads its socket.
-- `Listener::accept` gives a `Connection` (to serve: `Connection::stream`; for `fux __conn taken`:
+- `Listener::accept` gives a `Connection` (to serve: `Connection::stream`; for `fux __conn`:
   `OwnedHandle::from` then `Stdio::from`); `Listener::spare` gives the waiting `Spare` for
   `fux __conn` (`OwnedHandle::try_from`). In the child, `Spare::try_from(handle)` or
   `Connection::from(handle)`; both bind to the child's own port only when made a stream. Pass the
@@ -294,7 +294,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   `__conn` already moves its stdout aside, `conn::wait`).
 - Every instance takes a client: while a spare waits, the listener's own next instance can take one
   too. On Linux, which alone has spares, the server accepts while one waits too (D-164); on Windows it must keep polling
-  its listener and hand such a client to a `__conn taken`.
+  its listener and hand such a client to a `__conn`.
 - `socket::connect` checks the server's user before returning, and the pipe's owner against this
   process's default owner (`TokenOwner`; Administrators for an elevated admin), which a squatter of
   another user can't forge even should the server's pid be reused. It fails with `Errno::ACCES` (the
