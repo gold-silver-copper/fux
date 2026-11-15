@@ -703,6 +703,18 @@ pub fn encode_attached(frame: &AttachedFrame) -> Vec<Vec<u8>> {
     vec![frame.encode()]
 }
 
+/// A long run of keys another sent an attached client (`send-keys` to a
+/// client), as that client sends them on: a body, as a
+/// paste's is, in pieces that each fit a frame (`AttachedFrame::Piece`),
+/// the first to send as a paste's is and each further one as it is asked
+/// for. So they wait for the program that reads them, a piece at a time,
+/// where one frame a key would come faster than anything takes them.
+pub fn encode_keys(keys: Vec<crate::command::Input>) -> Vec<Vec<u8>> {
+    (cut_inputs(keys).into_iter())
+        .map(|piece| AttachedFrame::Piece(piece).encode())
+        .collect()
+}
+
 wire! {
     /// Where a request comes from: the caller's directory, its pane
     /// and program generation (`FUX_PANE`), that pane's server (`FUX_SERVER`),

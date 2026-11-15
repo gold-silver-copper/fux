@@ -161,15 +161,6 @@ impl Waiting {
         self.0.retain(|(_, awaiting)| awaiting.is_some());
         found
     }
-    fn clear(&mut self) {
-        self.0.clear();
-    }
-    /// How many of them are clients' pastes.
-    fn pastes(&self) -> usize {
-        (self.0.iter())
-            .filter(|(_, awaiting)| matches!(awaiting, Some(Awaiting::Paste { .. })))
-            .count()
-    }
 }
 
 /// A body under way: what it answers once its last piece is typed, and the
@@ -392,6 +383,8 @@ impl Host {
             ToPane::Close { closed } => self.close(closed, now),
             ToPane::Drop { token } => {
                 self.cut(token);
+                // A paste that will not come holds nothing back.
+                self.pane_mut().paste_came(token);
                 self.held.remove(&token);
                 match self.awaiting.remove(token) {
                     Some(Awaiting::Keys { ask, .. }) => {
@@ -407,9 +400,7 @@ impl Host {
                             answer: Answered::Refused(refusal),
                         });
                     }
-                    // A paste that will not come holds nothing back.
-                    Some(Awaiting::Paste { .. }) => self.pane_mut().paste_came(),
-                    None => {}
+                    Some(Awaiting::Paste { .. }) | None => {}
                 }
             }
             // Taken back as its link begins (`serve`).
@@ -1000,7 +991,7 @@ impl Host {
             match (self.awaiting).insert(token, Awaiting::Paste { client }) {
                 // What is typed from here on was typed after it, and waits
                 // behind it till it has all come.
-                true => self.pane_mut().expect_paste(),
+                true => self.pane_mut().expect_paste(token),
                 false => {
                     let why = no_memory().to_string();
                     self.report(FromPane::Refused { client, why });
@@ -1434,10 +1425,10 @@ impl Host {
         self.told.clear();
         self.out.clear();
         // What its last server's askers wanted is no one's now.
-        for _ in 0..self.awaiting.pastes() {
-            self.pane_mut().paste_came();
+        while let Some(token) = self.awaiting.first() {
+            self.awaiting.remove(token);
+            self.pane_mut().paste_came(token);
         }
-        self.awaiting.clear();
         self.held.clear();
         self.sent_facts = None;
         self.offered = None;
@@ -1557,18 +1548,18 @@ impl Host {
             let mut paste = typing.paste.clone();
             let pasted = encode(&self.pane, inputs, &mut paste, &mut bytes);
             let previous = std::mem::replace(&mut self.actor, typing.actor);
-            let open = paste.is_some();
+            let at = (typing.token, paste.is_some());
             let queued = match (typing.ask, pasted) {
                 (_, Err(_)) => false,
                 // A client's paste is typed, as its keys are: not told.
-                (None, Ok(_)) => self.pane_mut().piece(&bytes, open, None),
+                (None, Ok(_)) => self.pane_mut().piece(&bytes, at, None),
                 (Some(_), Ok(true)) => {
                     let told = Some((Sent::Paste, typing.seen));
-                    self.pane_mut().piece(&bytes, open, told)
+                    self.pane_mut().piece(&bytes, at, told)
                 }
                 (Some(_), Ok(false)) => {
                     let told = Some((Sent::Keys, typing.seen));
-                    self.pane_mut().piece(&bytes, open, told)
+                    self.pane_mut().piece(&bytes, at, told)
                 }
             };
             match queued {
@@ -1604,10 +1595,8 @@ impl Host {
     fn typed_all(&mut self, mut typing: Typing, cut: bool) {
         let previous = std::mem::replace(&mut self.actor, typing.actor);
         self.close_paste(&mut typing);
-        // A client's paste has all come: what was typed after it follows.
-        if typing.ask.is_none() {
-            self.pane_mut().paste_came();
-        }
+        // It has all come: what waited behind it follows in its turn.
+        self.pane_mut().paste_came(typing.token);
         self.actor = previous;
         self.report(FromPane::Retired(typing.token));
         let (Some(ask), false) = (typing.ask, typing.refused) else {

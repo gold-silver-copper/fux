@@ -10004,6 +10004,41 @@ mod tests {
         Ok(())
     }
 
+    /// What is typed between two pastes whose text is still to come keeps
+    /// its place: it is queued after the first, as that one has come, and
+    /// does not wait for the second, which holds back only what came after
+    /// it (D-183; one count of pastes to come queued it after both, and
+    /// held it for as long as the second took).
+    #[test]
+    fn what_is_typed_between_two_pastes_to_come_keeps_its_place() -> TestResult {
+        use fux_wire::act::Act;
+        let (mut s, first) = super::testing::attached(10, 40)?;
+        let second = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+        let id = s.focused(first).ok_or("its pane")?;
+        assert_eq!(s.focused(second), Some(id));
+        let now = Instant::now();
+        let key = |c| Act::Key(fux_vt::keys::KeyPress::char(c).into());
+        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
+        let pasted = |s: &mut Session, client| -> Result<u64, String> {
+            s.give_body(Some(7));
+            s.acts(client, vec![Act::Paste(String::new())], now);
+            s.give_body(None);
+            Ok(s.deliveries.pop().ok_or("its delivery")?.1)
+        };
+        // One client's paste, a key of the other's, the other's paste, a
+        // key of the first's: in that order.
+        let a = pasted(&mut s, first)?;
+        s.acts(second, vec![key('x')], now);
+        let b = pasted(&mut s, second)?;
+        s.acts(first, vec![key('y')], now);
+        assert!(queued(&mut s, id)?.is_empty());
+        host(&mut s, id, |h| h.piece(a, &[Input::Paste("A".into())]))?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~A\x1b[201~x");
+        host(&mut s, id, |h| h.piece(b, &[Input::Paste("B".into())]))?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~B\x1b[201~y");
+        Ok(())
+    }
+
     /// A pane takes the bodies its server asked it for in the order it
     /// asked: the second waits with its sender till the first is typed, or
     /// its asker gone, whichever body's piece comes first. Each pane taking

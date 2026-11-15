@@ -60,20 +60,27 @@ pub struct InputQueue {
     runs: VecDeque<(bool, usize)>,
     /// How many of the bytes queued are replies.
     replies: usize,
-    /// A paste is open in it: its bracket begun, and not yet ended. Only
-    /// that paste's own bytes are queued till it is (`piece`): what else
-    /// its program is to read, typed by another or answered to its own
-    /// queries, waits its turn (`behind`), so that none of it is pasted.
+    /// A paste is open in it: its bracket begun, and not yet ended.
     pasting: bool,
-    /// What waits behind the paste that is open, in order, a frame of it
-    /// at most (`BEHIND`): queued once the paste is closed. And how many of
-    /// its bytes are replies.
-    behind: Vec<u8>,
-    behind_replies: usize,
-    /// Pastes its server said clients sent, whose text has not all come:
-    /// what else comes meanwhile waits behind them too, as their server
-    /// said it after them (`expect`).
-    expected: usize,
+    /// What waits behind pastes, in the order it came: each run of it
+    /// behind the paste that was open, or announced by its server and
+    /// still to come, as the run began (`Behind`). Only a paste's own
+    /// bytes are queued while it is open (`piece`); what else its program
+    /// is to read, typed by another or answered to its own queries, waits
+    /// its turn here, so that none of it is pasted, and each run is
+    /// queued as its paste ends, whatever pastes were announced after it.
+    /// A frame of it in all at most (`BEHIND`).
+    gates: VecDeque<Behind>,
+}
+
+/// What waits behind one paste: the body its text is (`paste`), till that
+/// has all come or never will, then none; its bytes, and how many of them
+/// are replies.
+#[derive(Default)]
+struct Behind {
+    paste: Option<u64>,
+    bytes: Vec<u8>,
+    replies: usize,
 }
 
 /// The most that waits behind a paste that is open: a frame. What is typed
@@ -142,15 +149,15 @@ impl InputQueue {
         self.put(replies, true)
     }
     fn put(&mut self, bytes: &[u8], reply: bool) -> bool {
-        // Behind a paste that is open or still to come, and behind what
-        // waited behind one and is not queued yet.
-        if self.gated() || !self.behind.is_empty() {
-            let fits = self.behind.len().saturating_add(bytes.len()) <= BEHIND;
-            if !fits || fux_vt::bytes::try_extend(&mut self.behind, bytes).is_err() {
+        // Behind the paste last opened or announced, if any waits.
+        let waiting = self.behind();
+        if let Some(gate) = self.gates.back_mut() {
+            let fits = waiting.saturating_add(bytes.len()) <= BEHIND;
+            if !fits || fux_vt::bytes::try_extend(&mut gate.bytes, bytes).is_err() {
                 return false;
             }
             if reply {
-                self.behind_replies = self.behind_replies.saturating_add(bytes.len());
+                gate.replies = gate.replies.saturating_add(bytes.len());
             }
             self.settle();
             return true;
@@ -162,26 +169,34 @@ impl InputQueue {
         self.note(reply, bytes.len());
         true
     }
-    /// Queues `bytes`, a piece of the body being typed: its own, so not
-    /// behind the paste it may hold open. Room is made with them for a
-    /// paste's closing bracket, so that `close` never needs any: false if
-    /// the OS gave none, and none is queued. `open`, if it leaves a paste
-    /// open.
-    fn piece(&mut self, bytes: &[u8], open: bool) -> bool {
+    /// Queues `bytes`, a piece of body `body` being typed: its own, so
+    /// behind no paste. Room is made with them for a paste's closing
+    /// bracket, so that `close` never needs any: false if the OS gave
+    /// none, and none is queued. `open`, if it leaves a paste open: what
+    /// else comes then waits behind this body.
+    fn piece(&mut self, bytes: &[u8], body: u64, open: bool) -> bool {
         let closing = fux_vt::keys::encode::PasteEncoder::CLOSING;
         let room = bytes.len().saturating_add(closing);
-        if self.bytes.try_reserve(room).is_err() {
+        let gated = self.gates.iter().any(|gate| gate.paste == Some(body));
+        if self.bytes.try_reserve(room).is_err()
+            || open && !gated && self.gates.try_reserve(1).is_err()
+        {
             return false;
+        }
+        if open && !gated {
+            self.gates.push_front(Behind {
+                paste: Some(body),
+                ..Behind::default()
+            });
         }
         self.bytes.push(bytes);
         self.touched |= !bytes.is_empty();
         self.note(false, bytes.len());
         self.pasting = open;
-        self.settle();
         true
     }
     /// The paste that was open is closed with `closing`, in the room made
-    /// for it (`piece`); what waited behind it is queued after.
+    /// for it (`piece`).
     fn close(&mut self, closing: &[u8]) {
         if self.bytes.try_reserve(closing.len()).is_ok() {
             self.bytes.push(closing);
@@ -189,51 +204,65 @@ impl InputQueue {
             self.note(false, closing.len());
         }
         self.pasting = false;
-        self.settle();
     }
-    /// Queues what waited behind a paste, once none is open: all of it or,
-    /// refused the memory, none yet (it is tried again as more is queued
-    /// or written).
+    /// Queues what waited behind pastes that have ended, in order, up to
+    /// the first that has not: a run whole or, refused the memory, not
+    /// yet (it is tried again as more is queued or written).
     fn settle(&mut self) {
-        if self.gated() || self.behind.is_empty() || self.bytes.try_push(&self.behind).is_err() {
-            return;
+        while let Some(gate) = self.gates.front() {
+            if gate.paste.is_some() || self.bytes.try_push(&gate.bytes).is_err() {
+                return;
+            }
+            let (all, replies) = (gate.bytes.len(), gate.replies);
+            self.touched |= all > 0;
+            self.note(false, all.saturating_sub(replies));
+            self.note(true, replies);
+            self.gates.pop_front();
         }
-        let replies = std::mem::take(&mut self.behind_replies);
-        let typed = self.behind.len().saturating_sub(replies);
-        self.touched = true;
-        self.note(false, typed);
-        self.note(true, replies);
-        self.behind.clear();
-        self.behind.shrink_to(0);
     }
     /// Whether a paste is open in it, or one its server announced is
     /// still to come: what else comes waits behind it.
     pub fn gated(&self) -> bool {
-        self.pasting || self.expected > 0
+        !self.gates.is_empty()
     }
-    /// A client's paste is to come, its server says: what is typed from
-    /// here on waits behind it, as it was typed after it.
-    fn expect(&mut self) {
-        self.expected = self.expected.saturating_add(1);
+    /// Body `body`, a client's paste, is to come, its server says: what
+    /// is typed from here on waits behind it, as it was typed after it.
+    /// Refused the memory to keep its place, nothing waits for it.
+    fn expect(&mut self, body: u64) {
+        if self.gates.try_reserve(1).is_ok() {
+            self.gates.push_back(Behind {
+                paste: Some(body),
+                ..Behind::default()
+            });
+        }
     }
-    /// A paste that was to come has all come, or never will.
-    fn expected_came(&mut self) {
-        self.expected = self.expected.saturating_sub(1);
+    /// Body `body` has all come, or never will: what waited behind it
+    /// waits for it no more, and is queued in its turn.
+    fn came(&mut self, body: u64) {
+        for gate in &mut self.gates {
+            if gate.paste == Some(body) {
+                gate.paste = None;
+            }
+        }
         self.settle();
     }
     /// Whether a paste is open in it.
     pub fn pasting(&self) -> bool {
         self.pasting
     }
+    /// How many bytes wait behind pastes.
+    fn behind(&self) -> usize {
+        (self.gates.iter()).fold(0usize, |all, gate| all.saturating_add(gate.bytes.len()))
+    }
     /// How many bytes of what was typed wait for its program, the answers
     /// to its own queries apart.
     pub fn typed_waiting(&self) -> usize {
         self.waiting().saturating_sub(self.replies())
     }
-    /// How many bytes wait for its program in all: queued, and behind a
-    /// paste that is open.
+    /// How many bytes wait for its program in all: queued, and behind
+    /// pastes.
     pub fn waiting(&self) -> usize {
-        self.len().saturating_add(self.behind.len())
+        self.len().saturating_add(self.behind())
     }
     /// `len` bytes were queued, replies if `reply`. Refused the memory to
     /// say so, they count as what was queued before them.
@@ -260,12 +289,12 @@ impl InputQueue {
     /// How many of the bytes it holds are replies to its program's own
     /// queries.
     pub fn replies(&self) -> usize {
-        self.replies.saturating_add(self.behind_replies)
+        (self.gates.iter()).fold(self.replies, |all, gate| all.saturating_add(gate.replies))
     }
     /// Queues what `write` appends to its vector as a piece, in place;
     /// behind a paste that is open, as `push` does.
     fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) {
-        if self.gated() || !self.behind.is_empty() {
+        if self.gated() {
             let mut bytes = Vec::new();
             write(&mut bytes);
             self.push(bytes);
@@ -313,10 +342,9 @@ impl InputQueue {
     /// Lets everything queued go, as its program ends unread: how many
     /// bytes, which its ender tells.
     fn discard(&mut self) -> usize {
-        let queued = self.len().saturating_add(self.behind.len());
+        let queued = self.waiting();
         self.advance(self.len());
-        (self.pasting, self.behind, self.behind_replies) = (false, Vec::new(), 0);
-        self.expected = 0;
+        (self.pasting, self.gates) = (false, VecDeque::new());
         queued
     }
     /// Everything queued, for tests and the harnesses.
@@ -968,16 +996,16 @@ impl<'a> PaneMut<'a> {
         self.queued();
         queued
     }
-    /// A piece of the body being typed, `bytes`, is queued for its
+    /// A piece of body `body` being typed, `bytes`, is queued for its
     /// program, leaving a paste open if `open`, and told as `kind` if it
     /// is a request's: false if the OS gave no memory for it, and none is.
     pub fn piece(
         &mut self,
         bytes: &[u8],
-        open: bool,
+        (body, open): (u64, bool),
         told: Option<(Sent, Option<fux_wire::command::Version>)>,
     ) -> bool {
-        if !self.pane.piece(bytes, open) {
+        if !self.pane.piece(bytes, body, open) {
             return false;
         }
         self.queued();
@@ -996,13 +1024,13 @@ impl<'a> PaneMut<'a> {
         self.pane.input.close(closing);
         self.queued();
     }
-    /// A client's paste is to come (`InputQueue::expect`).
-    pub fn expect_paste(&mut self) {
-        self.pane.input.expect();
+    /// Body `body`, a client's paste, is to come (`InputQueue::expect`).
+    pub fn expect_paste(&mut self, body: u64) {
+        self.pane.input.expect(body);
     }
-    /// A paste that was to come has all come, or never will.
-    pub fn paste_came(&mut self) {
-        self.pane.input.expected_came();
+    /// Body `body` has all come, or never will (`InputQueue::came`).
+    pub fn paste_came(&mut self, body: u64) {
+        self.pane.input.came(body);
         self.queued();
     }
     /// Its program is sent `held`'s mouse report, `report`; the button
@@ -1771,9 +1799,9 @@ impl Pane {
         self.input.push(bytes)
     }
 
-    /// Queues a piece of the body being typed (`InputQueue::piece`).
-    fn piece(&mut self, bytes: &[u8], open: bool) -> bool {
-        self.input.piece(bytes, open)
+    /// Queues a piece of body `body` being typed (`InputQueue::piece`).
+    fn piece(&mut self, bytes: &[u8], body: u64, open: bool) -> bool {
+        self.input.piece(bytes, body, open)
     }
 
     /// Queues for its program what `write` makes for its screen.

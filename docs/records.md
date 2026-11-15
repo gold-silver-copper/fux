@@ -530,8 +530,10 @@ capture, and in the small things it builds to say what it is (its first words to
 What is typed at an attached terminal goes to the pane its client focuses, at once and in order with its
 bindings. A frame of it (1 MiB) is the most that waits unread for a pane's program: past that, what is
 typed is not taken, and its client is told (`%N isn't reading what is typed`); a paste, which waits for its
-program, is not refused so. Nothing a client types is held back for another pane or a paste, and its
-bindings (a change of focus, a detach) always run. While
+program, is not refused so. No key a client types is held back, and its bindings (a change of focus, a
+detach) always run; only its pastes wait for one another, the second sent once the first is taken. Text
+another sent a client (`send-keys` to a client), more than 64 keys of it in a row, goes on from that client
+as a paste's text does, a piece at a time, and the request is answered once the program took it. While
 a paste is open or its text still to come, whatever else its program is to read (another client's keys, the
 answers to its own queries) waits behind the paste's closing bracket, a frame of it at most. Every other allocation
 fux's own code makes is infallible, and a refusal there aborts that process: what a decoded frame is

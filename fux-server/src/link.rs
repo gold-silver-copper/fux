@@ -1201,8 +1201,20 @@ pub enum FromConn {
     /// than its server took them, a frame of them waiting here already.
     /// Its server tells its client so.
     Dropped(u64),
+    /// It could not reach pane `pane` with body `token`, or its link to
+    /// it went before the pane took all of it: its server, which told
+    /// that pane to wait for the body, tells it to wait no more.
+    Unreached { token: u64, pane: PaneId },
 }
-wired!(FromConn { Accepted, Frame { frame, body }, Flushed, Shut, Bad(why), Dropped(n) });
+wired!(FromConn {
+    Accepted,
+    Frame { frame, body },
+    Flushed,
+    Shut,
+    Bad(why),
+    Dropped(n),
+    Unreached { token, pane },
+});
 
 /// How the server starts a client's connection's own process, before its
 /// client comes: `fux __conn`, its link on stdin, the server's socket on

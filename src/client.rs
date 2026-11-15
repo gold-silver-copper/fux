@@ -1543,39 +1543,146 @@ impl Output {
     }
 }
 
-/// The pastes of an attached client's, oldest first, each as the frames
-/// not yet sent of it. One is on its way at a time: its first piece is
-/// sent at once, each further one as the server says the last is taken
-/// (`ToAttached::More`), and the next paste's first once that says the
-/// paste before it is taken. So the client is never part way through
-/// writing a piece while a paste waits for a program that isn't reading,
-/// and all else it has to say (keys, its bindings' doing, its answers)
-/// goes at once, in the order it came. A key typed after a paste that
-/// still waits its turn here is so sent before that paste.
+/// The bodies of an attached client's, oldest first, each as the frames
+/// not yet sent of it: its pastes, and long runs of keys another sent it
+/// (`bodies`). One is on its way at a time: its first piece is sent at
+/// once, each further one as the server says the last is taken
+/// (`ToAttached::More`), and the next body's first once that says the body
+/// before it is taken. So the client is never part way through writing a
+/// piece while a body waits for a program that isn't reading, and all else
+/// it has to say (keys, its bindings' doing) goes at once, in the order it
+/// came. A key typed after a body that still waits its turn here is so
+/// sent before it. An answer waits behind keys another sent it, and only
+/// those: it says they are typed.
 #[derive(Default)]
-pub struct Pastes(std::collections::VecDeque<std::collections::VecDeque<Vec<u8>>>);
+pub struct Pastes(std::collections::VecDeque<Waits>);
+
+/// What waits in `Pastes`: a body's frames not yet sent, `sent` if they
+/// are keys another sent its client; or an answer behind such keys.
+enum Waits {
+    Body {
+        frames: std::collections::VecDeque<Vec<u8>>,
+        sent: bool,
+    },
+    Answer(Vec<u8>),
+}
 
 impl Pastes {
-    /// A paste, as its `frames`: its first, to send now, if none is on
-    /// its way before it.
+    /// A paste, as its `frames`: its first, to send now, if no body is on
+    /// its way before it. A first frame is one its server counts
+    /// (`Fence::frames`), once it is sent, and not before.
     pub fn paste(&mut self, frames: impl Iterator<Item = Vec<u8>>) -> Option<Vec<u8>> {
-        self.0.push_back(frames.collect());
-        match self.0.len() {
-            1 => self.0.front_mut().and_then(|paste| paste.pop_front()),
+        self.body(frames.collect(), false)
+    }
+
+    /// Keys another sent this client, as their `frames` (`paste`).
+    pub fn keys(&mut self, frames: impl Iterator<Item = Vec<u8>>) -> Option<Vec<u8>> {
+        self.body(frames.collect(), true)
+    }
+
+    fn body(&mut self, frames: std::collections::VecDeque<Vec<u8>>, sent: bool) -> Option<Vec<u8>> {
+        self.0.push_back(Waits::Body { frames, sent });
+        match (self.0.len(), self.0.front_mut()) {
+            (1, Some(Waits::Body { frames, .. })) => frames.pop_front(),
             _ => None,
         }
     }
 
-    /// What was sent of the paste on its way is taken: the frame to send
-    /// next, if any. Its next piece; or, that paste taken, the first of
-    /// the paste after it.
-    pub fn taken(&mut self) -> Option<Vec<u8>> {
-        if let Some(next) = self.0.front_mut().and_then(|paste| paste.pop_front()) {
-            return Some(next);
+    /// An answer, as its `frame`: back, to send now, unless keys another
+    /// sent this client are still on their way, which it waits behind (it
+    /// is what says they are typed).
+    pub fn answer(&mut self, frame: Vec<u8>) -> Option<Vec<u8>> {
+        let behind = (self.0.iter()).any(|waits| matches!(waits, Waits::Body { sent: true, .. }));
+        match behind {
+            true => {
+                self.0.push_back(Waits::Answer(frame));
+                None
+            }
+            false => Some(frame),
+        }
+    }
+
+    /// What was sent of the body on its way is taken: the frames to send
+    /// next, each with whether its server counts it (all but a body's
+    /// further pieces). The body's next piece; or, that body taken, the
+    /// answers that waited behind it and the first of the body after it.
+    pub fn taken(&mut self) -> Vec<(Vec<u8>, bool)> {
+        if let Some(Waits::Body { frames, .. }) = self.0.front_mut()
+            && let Some(next) = frames.pop_front()
+        {
+            return vec![(next, false)];
         }
         self.0.pop_front();
-        self.0.front_mut().and_then(|paste| paste.pop_front())
+        let mut next = Vec::new();
+        loop {
+            match self.0.front_mut() {
+                Some(Waits::Body { frames, .. }) => {
+                    next.extend(frames.pop_front().map(|first| (first, true)));
+                    return next;
+                }
+                Some(Waits::Answer(_)) => {
+                    if let Some(Waits::Answer(frame)) = self.0.pop_front() {
+                        next.push((frame, true));
+                    }
+                }
+                None => return next,
+            }
+        }
     }
+}
+
+/// What an attached client sends or does next (`bodies`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Out {
+    Now(Box<Dispatch>),
+    /// A run of keys, to send as one body (`protocol::encode_keys`).
+    Keys(Vec<fux_wire::command::Input>),
+}
+
+/// The most keys in a row, of those another sent it, a client sends each
+/// as a frame of its own: a longer run goes as one body, which waits for
+/// its program a piece at a time, where megabytes of text sent a client
+/// came as a frame a key, faster than anything takes them.
+pub const RUN: usize = 64;
+
+/// `acts`, what keys another sent a client do (`ToAttached::Keys`), as it
+/// sends them: each as it is, but a run of more than `RUN` plain keys,
+/// which is one body. What is typed at its own terminal is never so
+/// gathered: each key goes at once, as it is typed.
+pub fn bodies(acts: Vec<Dispatch>) -> Vec<Out> {
+    let plain =
+        |out: &Dispatch| matches!(out, Dispatch::Send(Act::Key(stroke)) if stroke.kitty.is_none());
+    let mut outs = Vec::new();
+    let mut run: Vec<Dispatch> = Vec::new();
+    let flush = |run: &mut Vec<Dispatch>, outs: &mut Vec<Out>| {
+        let keys = std::mem::take(run);
+        if keys.len() <= RUN {
+            outs.extend(keys.into_iter().map(|key| Out::Now(Box::new(key))));
+            return;
+        }
+        let keys = (keys.into_iter())
+            .filter_map(|out| match out {
+                Dispatch::Send(Act::Key(stroke)) => {
+                    Some(fux_wire::command::Input::Key(stroke.press))
+                }
+                Dispatch::Send(_) | Dispatch::Run(_) | Dispatch::Fence | Dispatch::Answer(..) => {
+                    None
+                }
+            })
+            .collect();
+        outs.push(Out::Keys(keys));
+    };
+    for out in acts {
+        match plain(&out) {
+            true => run.push(out),
+            false => {
+                flush(&mut run, &mut outs);
+                outs.push(Out::Now(Box::new(out)));
+            }
+        }
+    }
+    flush(&mut run, &mut outs);
+    outs
 }
 
 /// A frame count must never wrap into a different prefix.
@@ -1607,6 +1714,8 @@ fn attached(
     let mut keyboard: Option<Keyboard> = None;
     let mut pending_resize = None;
     let mut acts = Vec::new();
+    // What keys another sent it do, till sent: before what it does itself.
+    let mut sent: Vec<Out> = Vec::new();
     let mut frames = 0u64;
     let mut pastes = Pastes::default();
     const STREAM: Option<usize> = Some(0);
@@ -1630,11 +1739,17 @@ fn attached(
                 // which its taker reads as it is written; with none left,
                 // what waited behind the paste does (below).
                 (ToAttached::More, _) => {
-                    if let Some(piece) = pastes.taken()
-                        && let Err(ended) =
+                    for (piece, first) in pastes.taken() {
+                        if let Err(ended) =
                             tell(stream, decoder, true, output.as_deref_mut(), &piece)
-                    {
-                        return ended;
+                        {
+                            return ended;
+                        }
+                        // The first frame of a body that waited its turn
+                        // is counted now that it is sent.
+                        if first {
+                            frames = next_frame(frames)?;
+                        }
                     }
                 }
                 (ToAttached::Welcome(me, run), None) => {
@@ -1650,6 +1765,9 @@ fn attached(
                     for text in attaching.notices.iter().cloned() {
                         acts.push(Dispatch::Send(Act::Notice { text, error: false }));
                     }
+                }
+                (frame @ ToAttached::Keys(_), Some(keyboard)) => {
+                    sent.extend(bodies(keyboard.frame(frame)));
                 }
                 (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),
                 (_, None) => {}
@@ -1672,37 +1790,47 @@ fn attached(
             frames = next_frame(frames)?;
         }
         let mut runs = Vec::new();
-        for out in std::mem::take(&mut acts) {
-            let act = match out {
-                Dispatch::Run(job) => {
+        let own = std::mem::take(&mut acts).into_iter();
+        let outs =
+            (std::mem::take(&mut sent).into_iter()).chain(own.map(|out| Out::Now(Box::new(out))));
+        for out in outs {
+            // What is sent now, if anything is: a body waits for the one
+            // before it (`Pastes`), and is counted once it is sent.
+            let out = match out {
+                Out::Keys(keys) => Err(keys),
+                Out::Now(out) => Ok(*out),
+            };
+            let first = match out {
+                Ok(Dispatch::Run(job)) => {
                     runs.push(job);
                     continue;
                 }
-                Dispatch::Fence => {
+                Ok(Dispatch::Fence) => {
                     if let Some(keyboard) = &mut keyboard {
                         keyboard.fence(frames);
                     }
                     continue;
                 }
-                Dispatch::Send(act) => AttachedFrame::Act(Box::new(act)),
-                Dispatch::Answer(asked, value) => AttachedFrame::Answer(asked, value),
+                Err(keys) => pastes.keys(fux_wire::protocol::encode_keys(keys).into_iter()),
+                Ok(Dispatch::Send(act @ Act::Paste(_))) => {
+                    let frame = AttachedFrame::Act(Box::new(act));
+                    pastes.paste(fux_wire::protocol::encode_attached(&frame).into_iter())
+                }
+                Ok(Dispatch::Send(act)) => Some(AttachedFrame::Act(Box::new(act)).encode()),
+                Ok(Dispatch::Answer(asked, value)) => {
+                    pastes.answer(AttachedFrame::Answer(asked, value).encode())
+                }
             };
-            let pasted = matches!(&act, AttachedFrame::Act(act) if matches!(**act, Act::Paste(_)));
-            let mut encoded = fux_wire::protocol::encode_attached(&act).into_iter();
-            // A paste goes once the one before it is taken (`Pastes`).
-            let first = match pasted {
-                true => pastes.paste(encoded),
-                false => encoded.next(),
+            let Some(first) = first else {
+                continue;
             };
-            if let Some(first) = first
-                && let Err(ended) = tell(
-                    stream,
-                    decoder,
-                    keyboard.is_some(),
-                    output.as_deref_mut(),
-                    &first,
-                )
-            {
+            if let Err(ended) = tell(
+                stream,
+                decoder,
+                keyboard.is_some(),
+                output.as_deref_mut(),
+                &first,
+            ) {
                 return ended;
             }
             frames = next_frame(frames)?;
@@ -1885,27 +2013,69 @@ fn last_frames(
 mod tests {
     use super::*;
 
-    /// A client's pastes go one at a time, each a piece at a time as it is
+    /// A client's bodies go one at a time, each a piece at a time as it is
     /// asked for: the first frame of a second waits till the first is
-    /// taken, and is sent then.
+    /// taken, is sent then, and is counted then, not when it was typed (a
+    /// binding pressed while it waited was fenced behind a frame that had
+    /// not been sent, and never ran).
     #[test]
-    fn a_clients_pastes_go_one_at_a_time_a_piece_as_it_is_asked_for() {
+    fn a_clients_bodies_go_one_at_a_time_a_piece_as_it_is_asked_for() {
         let frames = |from: u8, count: u8| (from..from + count).map(|n| vec![n]);
         let mut pastes = Pastes::default();
-        // The first goes at once; two more wait behind it.
+        // The first goes at once; two more wait behind it, nothing sent.
         assert_eq!(pastes.paste(frames(1, 3)), Some(vec![1]));
         assert_eq!(pastes.paste(frames(10, 1)), None);
         assert_eq!(pastes.paste(frames(20, 2)), None);
-        assert_eq!(pastes.taken(), Some(vec![2]));
-        assert_eq!(pastes.taken(), Some(vec![3]));
-        // The first is taken: the second goes, whole in one frame; taken,
-        // the third goes.
-        assert_eq!(pastes.taken(), Some(vec![10]));
-        assert_eq!(pastes.taken(), Some(vec![20]));
-        assert_eq!(pastes.taken(), Some(vec![21]));
-        assert_eq!(pastes.taken(), None);
+        // An answer waits for no paste of its own.
+        assert_eq!(pastes.answer(vec![9]), Some(vec![9]));
+        assert_eq!(pastes.taken(), [(vec![2], false)]);
+        assert_eq!(pastes.taken(), [(vec![3], false)]);
+        // The first is taken: the second goes, whole in one frame, a
+        // frame its server counts; taken, the third goes.
+        assert_eq!(pastes.taken(), [(vec![10], true)]);
+        assert_eq!(pastes.taken(), [(vec![20], true)]);
+        assert_eq!(pastes.taken(), [(vec![21], false)]);
+        assert_eq!(pastes.taken(), []);
         assert_eq!(pastes.paste(frames(30, 1)), Some(vec![30]));
-        assert_eq!(pastes.taken(), None);
+        assert_eq!(pastes.taken(), []);
+    }
+
+    /// The answer that says keys another sent this client are typed waits
+    /// behind them, and goes once they are taken (it went at once, and
+    /// their sender was told so with megabytes of them still to come).
+    #[test]
+    fn an_answer_waits_behind_keys_another_sent() {
+        let frames = |from: u8, count: u8| (from..from + count).map(|n| vec![n]);
+        let mut pastes = Pastes::default();
+        assert_eq!(pastes.keys(frames(1, 2)), Some(vec![1]));
+        assert_eq!(pastes.answer(vec![9]), None);
+        assert_eq!(pastes.keys(frames(5, 1)), None);
+        assert_eq!(pastes.answer(vec![8]), None);
+        assert_eq!(pastes.taken(), [(vec![2], false)]);
+        assert_eq!(pastes.taken(), [(vec![9], true), (vec![5], true)]);
+        assert_eq!(pastes.taken(), [(vec![8], true)]);
+        assert_eq!(pastes.answer(vec![7]), Some(vec![7]));
+    }
+
+    /// A long run of plain keys is one body, in its place among what else
+    /// the client does; a few keys go each as they are.
+    #[test]
+    fn a_long_run_of_keys_is_sent_as_one_body() -> Result<(), String> {
+        let key = |c| Dispatch::Send(Act::Key(KeyPress::char(c).into()));
+        let now = |out: Dispatch| Out::Now(Box::new(out));
+        let few = vec![key('l'), key('s'), Dispatch::Fence];
+        let sent: Vec<Out> = few.iter().cloned().map(now).collect();
+        assert_eq!(bodies(few), sent);
+        let mut acts: Vec<Dispatch> = (0..RUN + 1).map(|_| key('k')).collect();
+        acts.push(Dispatch::Fence);
+        acts.push(key('x'));
+        let outs = bodies(acts);
+        let [Out::Keys(keys), fence, last] = outs.as_slice() else {
+            return Err(format!("{} outs", outs.len()));
+        };
+        assert_eq!(keys.len(), RUN + 1);
+        assert_eq!((fence, last), (&now(Dispatch::Fence), &now(key('x'))));
+        Ok(())
     }
 
     /// A client refused memory while it joins a reply's parts fails that

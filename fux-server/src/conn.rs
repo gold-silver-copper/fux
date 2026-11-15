@@ -564,6 +564,12 @@ struct Post {
     token: u64,
     /// Those it is sent to, each with whether it took the piece in flight.
     links: Vec<(End, bool)>,
+    /// The pane each of `links` reaches, if it is a pane's; and the panes
+    /// it could not reach, or whose link went before they took it all:
+    /// its server is told (`FromConn::Unreached`), so that a pane that
+    /// waits for this body waits no more.
+    panes: Vec<Option<PaneId>>,
+    unreached: Vec<PaneId>,
     /// The piece in flight ends in `Input::More`.
     more: bool,
     /// Its attached client was asked for the piece after the one in flight
@@ -603,8 +609,10 @@ impl Post {
     /// gone, which take no more.
     fn on(&mut self, ready: &[bool], buffer: &mut [u8]) {
         let readable = ready.iter().chain(std::iter::repeat(&false));
-        for ((mut end, mut took), readable) in
-            std::mem::take(&mut self.links).into_iter().zip(readable)
+        let panes = std::mem::take(&mut self.panes);
+        let panes = panes.into_iter().chain(std::iter::repeat(None));
+        for (((mut end, mut took), readable), pane) in
+            (std::mem::take(&mut self.links).into_iter().zip(readable)).zip(panes)
         {
             let mut gone = end.flush().is_err() || *readable && end.read(buffer) == Read::Closed;
             loop {
@@ -619,8 +627,15 @@ impl Post {
                 }
             }
             match gone {
-                true => self.lost |= self.more || !took,
-                false => self.links.push((end, took)),
+                true => {
+                    let lost = self.more || !took;
+                    self.lost |= lost;
+                    self.unreached.extend(pane.filter(|_| lost));
+                }
+                false => {
+                    self.links.push((end, took));
+                    self.panes.push(pane);
+                }
             }
         }
     }
@@ -665,6 +680,8 @@ impl Errand {
                     token,
                     lost: end.is_none(),
                     links: end.into_iter().map(|end| (end, false)).collect(),
+                    panes: Vec::new(),
+                    unreached: Vec::new(),
                     more: false,
                     asked: false,
                     keys: Some(client),
@@ -1228,6 +1245,12 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         if dropped > 0 && link.out.len() <= QUEUED {
             link.send(&FromConn::Dropped(std::mem::take(&mut dropped)));
         }
+        for post in errands.iter_mut().filter_map(Errand::post) {
+            for pane in std::mem::take(&mut post.unreached) {
+                let token = post.token;
+                link.send(&FromConn::Unreached { token, pane });
+            }
+        }
         // Its client gone with a body of its on its way, the body ends
         // where it is: its links closed, a paste left open is closed.
         let busy = body.is_some() || errands.iter_mut().any(|e| e.post().is_some());
@@ -1457,8 +1480,14 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         if out.is_empty() {
             out.shrink(64 << 10);
             // Keys among what its client took are taken: their sender
-            // sends the next piece.
-            if let Some(listening) = &mut listening {
+            // sends the next piece. Not while a body of its client's is
+            // kept or on its way here: the keys it was sent come back from
+            // it as one (a long run of them), and their sender waits for
+            // that, so that its client holds two pieces of them at most.
+            let posting = body.is_some()
+                || !ahead.is_empty()
+                || errands.iter_mut().any(|e| e.post().is_some());
+            if let (Some(listening), false) = (&mut listening, posting) {
                 listening.took();
             }
             if std::mem::take(&mut unflushed) {
@@ -1567,7 +1596,12 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
         if !listens && client_ready.intersects(Events::HUP | Events::ERR) {
             (ended, gone) = (true, true);
             // A body dies with its sender: its links closed, each pane
-            // closes the paste it left open.
+            // closes the paste it left open. What is left unread of it is
+            // its pieces, no request: let go with it (read as requests,
+            // they were told to its server as a bad frame).
+            if body.is_some() || errands.iter_mut().any(|e| e.post().is_some()) {
+                decoder = Decoder::default();
+            }
             body = None;
             errands.retain_mut(|errand| errand.post().is_none());
         }
@@ -1659,6 +1693,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                             for post in errands.iter_mut().filter_map(Errand::post) {
                                 if post.token == token {
                                     (post.keys, post.links) = (None, Vec::new());
+                                    post.panes = Vec::new();
                                 }
                             }
                             out.push(&typed(*run, Some(client)));
@@ -1734,13 +1769,26 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                     ToConn::Scene(scene) => composer.scene(*scene),
                     ToConn::Deliver { token, panes, .. } => {
                         let (_, inputs) = body.take().unwrap_or_default();
-                        let links = (composer.panes.iter())
-                            .flat_map(|(at, run)| panes.iter().filter_map(|id| join(at, *run, *id)))
-                            .map(|end| (end, false))
-                            .collect();
+                        // A pane it can't reach is told to its server,
+                        // which told that pane to wait for this body.
+                        let (mut links, mut reached, mut unreached) =
+                            (Vec::new(), Vec::new(), Vec::new());
+                        for id in panes {
+                            let end =
+                                (composer.panes.as_ref()).and_then(|(at, run)| join(at, *run, id));
+                            match end {
+                                Some(end) => {
+                                    links.push((end, false));
+                                    reached.push(Some(id));
+                                }
+                                None => unreached.push(id),
+                            }
+                        }
                         let mut post = Post {
                             token,
                             links,
+                            panes: reached,
+                            unreached,
                             more: false,
                             asked: false,
                             keys: None,
@@ -2288,6 +2336,137 @@ mod tests {
         drop((pane, server));
         conn.join().map_err(|_| "its process panicked")??;
         let _ = std::fs::remove_dir_all(&panes);
+        Ok(())
+    }
+
+    /// A body its server said goes to a pane it can't reach (no process
+    /// listens there, or it takes no more connections) is told to its
+    /// server, which told that pane to wait for it: the pane then waits no
+    /// more (D-183; it was let go without a word, and the pane held every
+    /// other input behind a paste that never came).
+    #[cfg(unix)]
+    #[test]
+    fn a_body_for_a_pane_it_cant_reach_is_told_to_its_server() -> Result<(), String> {
+        use crate::link::{Expect, FromConn, ToConn};
+        use fux_wire::command::Input;
+        use fux_wire::protocol::{AttachedFrame, Frame, Hello, Role};
+        use std::io::Write;
+        let e = |error: std::io::Error| error.to_string();
+        // Where its run's panes would listen: none does.
+        let panes = std::env::temp_dir().join(format!("fux-conn-none-{}", std::process::id()));
+        std::fs::create_dir_all(&panes).map_err(e)?;
+        let (mut theirs, mut server, conn) = served()?;
+        theirs
+            .write_all(&Hello::ours(Role::Attach).encode())
+            .map_err(e)?;
+        said(&mut server)?;
+        let run = "1-2".parse().map_err(|()| "a run")?;
+        server.send(&ToConn::Hello {
+            panes: panes.clone(),
+            run,
+        });
+        server.send(&ToConn::Expect(Expect::Attached));
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        let piece = vec![Input::Paste("text".into())];
+        theirs
+            .write_all(&AttachedFrame::Piece(piece).encode())
+            .map_err(e)?;
+        let FromConn::Frame {
+            body: Some(body), ..
+        } = said(&mut server)?
+        else {
+            return Err("its paste, its text kept".into());
+        };
+        let pane = fux_wire::id::PaneId::of(3);
+        server.send(&ToConn::Deliver {
+            body,
+            token: 5,
+            panes: vec![pane],
+        });
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        let told = said(&mut server)?;
+        assert!(
+            matches!(told, FromConn::Unreached { token: 5, pane: at } if at == pane),
+            "{told:?}"
+        );
+        drop(server);
+        conn.join().map_err(|_| "its process panicked")??;
+        let _ = std::fs::remove_dir_all(&panes);
+        Ok(())
+    }
+
+    /// Keys typed faster than its server takes them, a frame of what its
+    /// client sent waiting already, are not taken; its server is told how
+    /// many, so that every frame its client sent is accounted for: taken,
+    /// or told as not (D-189; a binding's program waits for all of them).
+    #[cfg(unix)]
+    #[test]
+    fn keys_it_does_not_take_are_counted_to_its_server() -> Result<(), String> {
+        use crate::link::{Expect, FromConn, ToConn};
+        use fux_wire::act::Act;
+        use fux_wire::protocol::{AttachedFrame, Frame, Hello, Role};
+        use std::io::Write;
+        const KEYS: u64 = 400_000;
+        let e = |error: std::io::Error| error.to_string();
+        let (mut theirs, mut server, conn) = served()?;
+        theirs
+            .write_all(&Hello::ours(Role::Attach).encode())
+            .map_err(e)?;
+        said(&mut server)?;
+        server.send(&ToConn::Expect(Expect::Attached));
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        // Its server reads nothing while they come: all of them written,
+        // then a detach, which is always taken.
+        let key = AttachedFrame::Act(Box::new(Act::Key(fux_vt::keys::KeyPress::char('k').into())));
+        let mut frames = Vec::new();
+        for _ in 0..KEYS {
+            frames.extend_from_slice(&key.encode());
+        }
+        frames.extend_from_slice(&AttachedFrame::Detach.encode());
+        let writing = std::thread::spawn(move || theirs.write_all(&frames).map(|()| theirs));
+        let (mut taken, mut dropped) = (0u64, 0u64);
+        loop {
+            match said(&mut server)? {
+                FromConn::Frame { frame, .. } => {
+                    let mut decoder = Decoder::default();
+                    decoder.push(&frame);
+                    match decoder
+                        .frame::<AttachedFrame>()
+                        .map_err(|e| e.to_string())?
+                    {
+                        Some(AttachedFrame::Detach) => break,
+                        Some(_) => taken += 1,
+                        None => return Err("a whole frame".into()),
+                    }
+                }
+                FromConn::Dropped(keys) => dropped += keys,
+                other @ (FromConn::Accepted
+                | FromConn::Flushed
+                | FromConn::Shut
+                | FromConn::Bad(_)
+                | FromConn::Unreached { .. }) => return Err(format!("{other:?}")),
+            }
+        }
+        // What it dropped last may be told after the detach.
+        while taken + dropped < KEYS {
+            match said(&mut server)? {
+                FromConn::Dropped(keys) => dropped += keys,
+                other @ (FromConn::Accepted
+                | FromConn::Frame { .. }
+                | FromConn::Flushed
+                | FromConn::Shut
+                | FromConn::Bad(_)
+                | FromConn::Unreached { .. }) => return Err(format!("{other:?}")),
+            }
+        }
+        assert_eq!(taken + dropped, KEYS);
+        assert!(dropped > 0, "a frame of them was not the most that waited");
+        let theirs = writing
+            .join()
+            .map_err(|_| "its client panicked")?
+            .map_err(e)?;
+        drop((theirs, server));
+        conn.join().map_err(|_| "its process panicked")??;
         Ok(())
     }
 

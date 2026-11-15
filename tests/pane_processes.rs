@@ -2847,6 +2847,9 @@ fn flooded_with_keys(server: &Server, client: &mut Client, own: i32) -> Outcome 
     let mut held = 0u64;
     for _ in 0..KEYS / 4096 {
         client.write(&frames)?;
+        // Its server counts each, taken or not: the binding below waits
+        // for all of them.
+        client.wrote(4096);
         for conn in &conns {
             held = held.max(peak_kib(*conn).unwrap_or(0));
         }
@@ -2957,6 +2960,9 @@ fn a_paste_that_waits_keeps_its_client_from_no_binding() -> Outcome {
     paste.resize(paste.len() + PASTED, b'y');
     paste.extend_from_slice(b"\x1b[201~");
     terminal.type_bytes(&paste)?;
+    // A second paste, which waits its turn behind the first: nothing of it
+    // is sent, and no binding waits for it.
+    terminal.type_bytes(b"\x1b[200~second\x1b[201~")?;
     // `C-b o`: the next pane. What is typed now is for that one.
     let marked = server.dir.join("marked");
     terminal.type_bytes(b"\x02o")?;
@@ -3000,4 +3006,70 @@ fn a_flood_of_queries_keeps_a_client_that_watches_from_no_binding() -> Outcome {
         client.pump()?;
         Ok(client.exit.as_deref() == Some("detached"))
     })
+}
+
+/// 36. Megabytes of text sent to a client (`send-keys` to a client, typed
+///     there as keys) all reach the program it types into: the client
+///     sends a long run of keys as it sends a paste's text, a piece once
+///     the last is taken, so none comes faster than it is taken (D-185;
+///     each was a frame of its own, and past a frame waiting its
+///     connection dropped them while the request said they were sent).
+#[cfg(target_os = "linux")]
+#[test]
+fn text_sent_to_a_client_all_reaches_the_program_it_types_into() -> Outcome {
+    use std::io::Write;
+    const SENT: usize = 2 << 20;
+    let server = Server::start("")?;
+    let (mut client, id, got) = keeping(&server)?;
+    let mut sending = started(
+        &server,
+        &[&format!(
+            "(send-keys (text (client {}) (input)))",
+            fux::script::quoted(&id)
+        )],
+    )?;
+    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+    stdin.write_all(&vec![b't'; SENT]).map_err(e)?;
+    drop(stdin);
+    let (typed, said) = finish(sending, &mut client)?;
+    assert!(typed, "{said}");
+    let mut kept = 0u64;
+    for _ in 0..6 {
+        let all = eventually("all of it kept", || {
+            client.pump()?;
+            kept = std::fs::metadata(&got).map_err(e)?.len();
+            Ok(kept >= u64::try_from(SENT).map_err(e)?)
+        });
+        if all.is_ok() {
+            break;
+        }
+    }
+    assert_eq!(kept, u64::try_from(SENT).map_err(e)?);
+    Ok(())
+}
+
+/// 37. A paste whose connection can't reach its pane's socket (here the
+///     socket's name is gone) holds nothing back in that pane: the
+///     connection tells its server, which told the pane to wait for the
+///     paste, and the pane waits no more. What is typed after it reaches
+///     the program (D-183; the pane waited for that paste for good, and
+///     held every other input and answer behind it).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paste_that_cant_reach_its_pane_holds_nothing_back_there() -> Outcome {
+    let server = Server::start("")?;
+    let (mut client, _, got) = keeping(&server)?;
+    let pane = support::focused(&server)?;
+    let socket = pane_socket(&server, &pane);
+    std::fs::rename(&socket, socket.with_extension("away")).map_err(e)?;
+    client.send(b"\x1b[200~lost\x1b[201~")?;
+    client.send(b"KEYS")?;
+    let mut read = Vec::new();
+    eventually("what was typed after it read", || {
+        client.pump()?;
+        read = std::fs::read(&got).unwrap_or_default();
+        Ok(read.ends_with(b"KEYS"))
+    })?;
+    assert!(!read.contains(&b'l'), "its paste was typed");
+    Ok(())
 }

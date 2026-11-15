@@ -181,6 +181,10 @@ struct Conn {
     /// Keys its client typed that its connection did not take
     /// (`FromConn::Dropped`), till its client is told.
     dropped: u64,
+    /// Bodies its connection could not get to a pane
+    /// (`FromConn::Unreached`), till that pane is told to wait for one no
+    /// more.
+    unreached: Vec<(PaneId, u64)>,
     /// Its process has bytes its client has not taken yet, or is owed
     /// some (`owed`).
     pending: bool,
@@ -336,6 +340,7 @@ impl Conn {
             decoder: Decoder::default(),
             out: ByteQueue::default(),
             dropped: 0,
+            unreached: Vec::new(),
             pending: false,
             owed: Owing::default(),
             bad: None,
@@ -502,6 +507,9 @@ impl Conn {
                 Ok(Some(FromConn::Shut)) => closed = true,
                 Ok(Some(FromConn::Dropped(keys))) => {
                     self.dropped = self.dropped.saturating_add(keys);
+                }
+                Ok(Some(FromConn::Unreached { token, pane })) => {
+                    self.unreached.push((pane, token));
                 }
                 Ok(Some(FromConn::Bad(why))) => {
                     log!("a client sent a bad frame: {why}");
@@ -1764,9 +1772,22 @@ impl Server {
         if let (false, Some(attached)) = (conn.pending, conn.attached()) {
             self.session.prompted.remove(&attached.client);
         }
+        // A body its connection could not get to a pane: the pane, told to
+        // wait for it, is told it will not come, and holds nothing back
+        // for it, nor a question open.
+        for (pane, token) in mem::take(&mut conn.unreached) {
+            conn.tokens.remove(&(Holder::Pane(pane), token));
+            let drop = crate::link::ToPane::Drop { token };
+            self.session.tell_pane(pane, drop, now);
+        }
         // Keys it typed faster than they were taken: it is told how many
         // were not.
+        // They count as frames of its taken all the same: a binding's
+        // program waits for every frame its client sent before it.
         let dropped = mem::take(&mut conn.dropped);
+        if let Some(attached) = conn.attached() {
+            attached.processed = attached.processed.saturating_add(dropped);
+        }
         if let (1.., Some(client)) = (dropped, conn.attached().map(|a| a.client)) {
             let why =
                 format!("{dropped} keys were typed faster than fux took them, and were not taken");

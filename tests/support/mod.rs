@@ -610,6 +610,25 @@ impl Client {
         Ok(())
     }
 
+    /// What keys another sent it do, sent as the real client sends them:
+    /// a long run of them as one body, a piece as each is asked for.
+    fn sent(&mut self, acts: Vec<Dispatch>) -> Outcome {
+        use fux::client::Out;
+        for out in fux::client::bodies(acts) {
+            match out {
+                Out::Keys(keys) => {
+                    let pieces = fux_wire::protocol::encode_keys(keys).into_iter();
+                    if let Some(first) = self.pastes.keys(pieces) {
+                        self.write(&first)?;
+                        self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                    }
+                }
+                Out::Now(out) => self.acts(vec![*out])?,
+            }
+        }
+        Ok(())
+    }
+
     fn acts(&mut self, acts: Vec<Dispatch>) -> Outcome {
         for out in acts {
             match out {
@@ -620,8 +639,8 @@ impl Client {
                     let pieces = fux_wire::protocol::encode_attached(&frame).into_iter();
                     if let Some(first) = self.pastes.paste(pieces) {
                         self.write(&first)?;
+                        self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
                     }
-                    self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
                 }
                 Dispatch::Send(act) => self.act(act)?,
                 Dispatch::Fence => self
@@ -636,9 +655,13 @@ impl Client {
                         .dispatch(job, self.frames)
                         .map_err(e)?;
                 }
+                // Behind keys another sent it, as the real client's.
                 Dispatch::Answer(asked, value) => {
-                    self.frame(&AttachedFrame::Answer(asked, value))?;
-                    self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                    let answer = AttachedFrame::Answer(asked, value).encode();
+                    if let Some(answer) = self.pastes.answer(answer) {
+                        self.write(&answer)?;
+                        self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                    }
                 }
             }
         }
@@ -665,6 +688,12 @@ impl Client {
         let result = self.stream.write_all(bytes).map_err(e);
         self.stream.set_nonblocking(true).map_err(e)?;
         result
+    }
+
+    /// `frames` more frames were written as they are (`write`), which its
+    /// server counts: a binding's program waits for all of them.
+    pub fn wrote(&mut self, frames: u64) {
+        self.frames = self.frames.saturating_add(frames);
     }
 
     pub fn detach(&mut self) -> Outcome {
@@ -719,14 +748,21 @@ impl Client {
                     self.id = Some(me.to_string());
                 }
                 ToAttached::More => {
-                    if let Some(piece) = self.pastes.taken() {
+                    for (piece, first) in self.pastes.taken() {
                         self.write(&piece)?;
+                        if first {
+                            self.frames =
+                                self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                        }
                     }
+                }
+                frame @ ToAttached::Keys(_) => {
+                    let sent = (self.keyboard.as_mut()).map(|keyboard| keyboard.frame(frame));
+                    self.sent(sent.unwrap_or_default())?;
                 }
                 frame @ (ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)
-                | ToAttached::Keys(_)
                 | ToAttached::Read(..)) => {
                     if let Some(keyboard) = &mut self.keyboard {
                         acts.extend(keyboard.frame(frame));
