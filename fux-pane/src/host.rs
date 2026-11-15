@@ -1045,6 +1045,14 @@ impl Host {
     /// Does what it is asked: its answer, or none yet (a respawn's waits
     /// for it).
     fn ask(&mut self, ask: u64, what: Ask, now: Instant) -> Option<Answered> {
+        // A capture holds whole frames: the rest of one part way read
+        // (`Pane::mid_frame`: its bytes are all here) is read first, each
+        // call of the parser doing its budget's work, as its turns would.
+        if matches!(what, Ask::Capture { .. }) {
+            while self.pane.mid_frame() && self.pane.reads_output() {
+                self.fire(Timer::Unread, now);
+            }
+        }
         let done = match what {
             Ask::Keys {
                 inputs,
@@ -2722,6 +2730,31 @@ mod tests {
         assert!(largest > LAUNCH, "its launch is in none: {sizes:?}");
         // A message's own few bytes beside its report's.
         assert!(largest.saturating_add(64) <= MAX_PAYLOAD, "{sizes:?}");
+        Ok(())
+    }
+
+    /// A capture asked while a frame is part way read holds the whole
+    /// frame: the rest of it is read first, so none shows half of one.
+    #[test]
+    fn a_capture_asked_mid_frame_holds_the_whole_frame() -> TestResult {
+        let mut host = lone(50, 200)?;
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(crate::pane::tests::spends_the_budget(50, 200));
+        frame.extend_from_slice(b"\x1b[HDONE\x1b[?2026l");
+        host.output(&frame, Instant::now());
+        assert!(host.pane().mid_frame(), "the budget stopped no call");
+        let ask = Ask::Capture {
+            history: None,
+            view: command::CaptureView::default(),
+            tab: fux_wire::id::TabId::of(1),
+            hold: false,
+        };
+        let Some(Answered::Captured(captured)) = host.ask(1, ask, Instant::now()) else {
+            return Err("no capture".into());
+        };
+        let first = captured.lines.first().map(|line| line.text.as_str());
+        assert_eq!(first, Some("DONE"), "a capture of half a frame");
+        assert!(!host.pane().mid_frame());
         Ok(())
     }
 
