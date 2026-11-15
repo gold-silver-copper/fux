@@ -419,6 +419,8 @@ impl Wire for crate::command::Screen {
 /// past 256 does not compile), then its fields in the order listed. `Ty<T>`
 /// is `Wire` where `T` is. For a type declared in another crate; fux's own
 /// are declared in `wire!`, which writes this list from the declaration.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! wire_enum {
     ($ty:ident $(<$g:ident>)? {
         $($var:ident $(( $($p:ident),+ ))? $({ $($f:ident),* })?),* $(,)?
@@ -429,7 +431,7 @@ macro_rules! wire_enum {
                 $($var),*
             }
             impl$(<$g: $crate::wire::Wire>)? $crate::wire::Wire for $ty$(<$g>)? {
-                fn put(&self, out: &mut impl crate::wire::Sink) {
+                fn put(&self, out: &mut impl $crate::wire::Sink) {
                     match self {$(
                         Self::$var $(( $($p),+ ))? $({ $($f),* })? => {
                             out.push(Tag::$var as u8);
@@ -458,10 +460,12 @@ pub(crate) use wire_enum;
 /// `wire_struct!(Ty { a, b })` expands to `impl Wire for Ty`: its fields,
 /// one at least, in order, by name or tuple index (`Ty { 0 }`). For a type
 /// declared elsewhere; one declared here says its fields once, in `wire!`.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! wire_struct {
     ($ty:path { $($f:tt),+ $(,)? }) => {
         impl $crate::wire::Wire for $ty {
-            fn put(&self, out: &mut impl crate::wire::Sink) {
+            fn put(&self, out: &mut impl $crate::wire::Sink) {
                 $($crate::wire::Wire::put(&self.$f, out);)*
             }
             fn get(

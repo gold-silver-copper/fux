@@ -2253,7 +2253,13 @@ impl Session {
                 let at = crate::socket::panes(socket).join(id.number().to_string());
                 Link::start(exe, &at, begin)
             }
+            // A session held in one process (the tests', the tools') holds
+            // its panes' hosts itself. A server never does: a pane there
+            // would have a terminal nothing reads.
+            #[cfg(any(test, feature = "in-process"))]
             _ => crate::host::Host::begin(begin, now).map(|host| Link::Local(Box::new(host))),
+            #[cfg(not(any(test, feature = "in-process")))]
+            _ => Err("the server has no fux to run a pane's own process with".to_owned()),
         };
         match link {
             Ok(link) => {
