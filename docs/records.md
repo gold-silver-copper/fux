@@ -527,11 +527,12 @@ them, once, a paste it had begun closed; a connection that reaches it when it ca
 and what it could not read or say for want of memory it reads or says again after a rest. It still aborts,
 refused memory, as it draws its screen for a client that shows it (more so with pictures), as it makes a
 capture, and in the small things it builds to say what it is (its first words to a server, its facts).
-What is typed at an attached terminal flows too: once a frame of it waits unread for a pane's program, the
-clients that typed into that pane keep what they type into it, and send it once the program reads, to that
-pane wherever their focus is by then. Nothing else of theirs waits: a client's bindings (a change of focus,
-a detach), its mouse and what it types into another pane go on at once, whatever paste or program is stuck. While
-a paste that came in pieces is open, whatever else its program is to read (another client's keys, the
+What is typed at an attached terminal goes to the pane its client focuses, at once and in order with its
+bindings. A frame of it (1 MiB) is the most that waits unread for a pane's program: past that, what is
+typed is not taken, and its client is told (`%N isn't reading what is typed`); a paste, which waits for its
+program, is not refused so. Nothing a client types is held back for another pane or a paste, and its
+bindings (a change of focus, a detach) always run. While
+a paste is open or its text still to come, whatever else its program is to read (another client's keys, the
 answers to its own queries) waits behind the paste's closing bracket, a frame of it at most. Every other allocation
 fux's own code makes is infallible, and a refusal there aborts that process: what a decoded frame is
 made of beyond its texts and lists, what waits to be written to a socket in the server, a connection or a
