@@ -234,7 +234,7 @@ impl InputQueue {
     /// Refused the memory to keep its place, nothing waits for it.
     #[expect(
         clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (push_back): left, D-194"
+        reason = "its one push follows the room made for it just before"
     )]
     fn expect(&mut self, body: u64) {
         if self.gates.try_reserve(1).is_ok() {
@@ -276,7 +276,7 @@ impl InputQueue {
     /// say so, they count as what was queued before them.
     #[expect(
         clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (push_back): left, D-194"
+        reason = "its one push follows the room made for it just before"
     )]
     fn note(&mut self, reply: bool, len: usize) {
         if len == 0 {

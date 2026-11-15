@@ -1048,7 +1048,7 @@ impl Host {
     /// it, as its program asked for them; told to `client` if refused.
     #[expect(
         clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (extend, extend_from_slice, push, to_string): left, D-194"
+        reason = "the client told once a turn is pushed into room made for it; a refusal's text and the bytes of a focus or scroll report abort if the OS refuses them: left, D-194"
     )]
     fn typed(&mut self, client: ClientId, typed: Typed) {
         // Its text comes from its client's connection, and is refused, if
