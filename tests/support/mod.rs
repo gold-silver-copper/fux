@@ -107,6 +107,71 @@ fn output(out: std::process::Output) -> Result<Output, String> {
     })
 }
 
+/// The longest a command of a test's is waited for: one a test means to
+/// take long (twenty thousand workspaces killed) takes a minute or two.
+const ANSWER: Duration = Duration::from_secs(300);
+
+/// Runs `command` to its end, as `Command::output` does, but not for
+/// ever: one that has not ended after `ANSWER` is killed and is the test's
+/// failure, where a command that waited on a program that reads nothing
+/// kept its test, and the run, till someone cancelled it.
+fn answered(mut command: Command) -> Result<Output, String> {
+    let said = format!("{command:?}");
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    // Read as it writes: a pipe left full would hold the command up. Its
+    // pipes close as it ends, so their ends are what is waited for.
+    let (done, ends) = std::sync::mpsc::channel();
+    let pipes: [Option<Box<dyn Read + Send>>; 2] = [
+        child.stdout.take().map(|pipe| Box::new(pipe) as _),
+        child.stderr.take().map(|pipe| Box::new(pipe) as _),
+    ];
+    for (which, pipe) in pipes.into_iter().enumerate() {
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let mut all = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut all);
+            }
+            let _ = done.send((which, all));
+        });
+    }
+    let deadline = after(ANSWER);
+    let mut said_by = [Vec::new(), Vec::new()];
+    let mut status = None;
+    for _ in 0..2 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let Ok((which, all)) = ends.recv_timeout(left) else {
+            break;
+        };
+        if let Some(slot) = said_by.get_mut(which) {
+            *slot = all;
+        }
+    }
+    while Instant::now() < deadline {
+        status = child.try_wait().map_err(e)?;
+        if status.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let Some(status) = status else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("no answer in {ANSWER:?} from {said}"));
+    };
+    let [stdout, stderr] = said_by;
+    Ok(Output {
+        status: status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
 impl Server {
     /// A server whose shell is `sh` with a plain prompt. Run
     /// `config` to prepare the scripted clients' whole local state;
@@ -279,7 +344,7 @@ impl Server {
         for (k, v) in env {
             command.env(k, v);
         }
-        output(command.output().map_err(e)?)
+        answered(command)
     }
 
     /// `program`, to run against this server.
