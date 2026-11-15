@@ -1405,3 +1405,82 @@ fn quiet_propagates_closure_instead_of_reporting_stability() -> Outcome {
     assert_eq!(closed.status, 4, "{}", closed.stderr);
     Ok(())
 }
+
+/// A capture past 1,000,000 bytes is an ordinary string, which
+/// `byte-length` and `slice` take.
+#[test]
+fn a_capture_past_a_million_bytes_is_one_string() -> Outcome {
+    let server = Server::start("")?;
+    let roomy = "(lambda! (options) (history-bytes (size options 120 40) 33554432))";
+    let pane = id(&server.ok(&launch(&[roomy], &["sh", "-c", "seq 1 200000"]))?);
+    server.exits(&pane)?;
+    let text = format!(
+        "(data-text (capture (all-history (pane {}))))",
+        fux::script::quoted(&pane)
+    );
+    let long = server.ok(&[&format!("(greater-than? (byte-length {text}) 1000000)")])?;
+    assert_eq!(long, "#true\n");
+    assert_eq!(server.ok(&[&format!("(slice {text} 0 8)")])?, "((kind \"\n");
+    Ok(())
+}
+
+/// The journal read on from each batch's `next` gives every event once:
+/// 70 renames come in one batch, in order and none missed, and reading on
+/// from its `next` gives none of them again.
+#[test]
+fn the_journal_read_on_from_a_batch_s_next_gives_every_event_once() -> Outcome {
+    let server = Server::start("")?;
+    let cursor = server.ok(&["(get (next-events (all) \"\" 0) \"next\")"])?;
+    let pane = id(&server.ok(&launch(&[], &["sh", "-c", "read x"]))?);
+    server.ok(&[&format!(
+        "(for-each (lambda! (n) (rename (pane {}) (integer-to-string n))) (range 0 70)) #inert",
+        fux::script::quoted(&pane)
+    )])?;
+    let read = format!(
+        "(define! one (next-events (all) {} 0)) \
+         (define! renamed (filter (lambda! (e) (same? (get e \"event\") \"renamed\")) (get one \"events\"))) \
+         (define! two (next-events (all) (get one \"next\") 0)) \
+         (print (get one \"status\")) (print (get one \"missed\")) \
+         (print (length (get two \"events\"))) (print (get two \"missed\")) \
+         (print (length (get (next-events (all) (get two \"next\") 0) \"events\"))) \
+         (for-each (lambda! (e) (print (get e \"name\"))) renamed) #inert",
+        fux::script::quoted(cursor.trim())
+    );
+    let names: String = (0..70).map(|n| format!("{n}\n")).collect();
+    assert_eq!(
+        server.ok(&[&read])?,
+        format!("continuing\n0\n0\n0\n0\n{names}")
+    );
+    Ok(())
+}
+
+/// An untargeted headless attach to an empty server starts one workspace,
+/// its shell laid out on the whole of the attach's screen, and the client
+/// ends when it is detached.
+#[test]
+fn a_headless_attach_to_an_empty_server_starts_one_workspace() -> Outcome {
+    use std::io::BufRead;
+    let server = Server::empty()?;
+    let workspaces = ["(length (get (list-session) \"workspaces\"))"];
+    assert_eq!(server.ok(&workspaces)?, "0\n");
+    let mut client = std::process::Command::new(FUX)
+        .args(["(attach (size (options) 100 30))"])
+        .env("FUX_SOCKET", &server.socket)
+        .env("XDG_CONFIG_HOME", server.dir.join("config"))
+        .env_remove("FUX_PANE")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    let stdout = client.stdout.take().ok_or("its stdout")?;
+    let mut lines = std::io::BufReader::new(stdout).lines();
+    assert_eq!(lines.next().ok_or("its id")?.map_err(e)?, "c1");
+    assert_eq!(server.ok(&workspaces)?, "1\n");
+    let size = server.ok(&[
+        "(define! p (first (get (list-session) \"panes\"))) (list (get p \"columns\") (get p \"rows\"))",
+    ])?;
+    assert_eq!(size, "100\n30\n");
+    server.ok(&["(detach (client \"c1\")) #inert"])?;
+    assert_eq!(lines.next().ok_or("its end")?.map_err(e)?, "[detached]");
+    assert!(client.wait().map_err(e)?.success());
+    Ok(())
+}
