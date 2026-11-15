@@ -671,7 +671,7 @@ pub fn start_server(
     let (output, theirs) = std::io::pipe()?;
     let stdio = [None, Some(theirs.as_handle()), Some(log.as_handle())];
     let directory = Some(socket.directory());
-    let started = fuxix::process::start_in(exe, args, stdio, directory, &[])?;
+    let started = fuxix::process::start_in(exe, args, stdio, directory)?;
     Ok(Starting {
         pid: started.pid,
         output: Some(output),

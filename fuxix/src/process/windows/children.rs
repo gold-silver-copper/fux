@@ -78,24 +78,22 @@ pub fn start(
     args: &[&OsStr],
     stdio: [Option<BorrowedHandle<'_>>; 3],
 ) -> std::io::Result<Started> {
-    start_in(program, args, stdio, None, &[])
+    start_in(program, args, stdio, None)
 }
 
 /// As [`start`], in `directory` if one is given, this process's own
-/// otherwise, with this process's environment but for `unset`.
+/// otherwise, with this process's environment.
 pub fn start_in(
     program: &Path,
     args: &[&OsStr],
     stdio: [Option<BorrowedHandle<'_>>; 3],
     directory: Option<&Path>,
-    unset: &[&str],
 ) -> std::io::Result<Started> {
     use windows_sys::Win32::System::JobObjects::IsProcessInJob;
     let place = Place {
         directory: directory
             .map(|directory| crate::pty::wide(directory.as_os_str()))
             .transpose()?,
-        environment: (!unset.is_empty()).then(|| environment_without(unset)),
     };
     let mut line = Vec::new();
     for arg in std::iter::once(program.as_os_str()).chain(args.iter().copied()) {
@@ -127,31 +125,10 @@ pub fn start_in(
     Ok(Started { pid, breakaway })
 }
 
-/// Where a process starts: its directory, NUL-ended, and its environment
-/// block; none, this process's.
+/// Where a process starts: its directory, NUL-ended; none, this
+/// process's. Its environment is this process's.
 struct Place {
     directory: Option<Vec<u16>>,
-    environment: Option<Vec<u16>>,
-}
-
-/// This process's environment as a block `CreateProcessW` takes, but for
-/// `unset`, whose names are matched as Windows matches them, in any case.
-fn environment_without(unset: &[&str]) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt as _;
-    let mut block = Vec::new();
-    for (name, value) in std::env::vars_os() {
-        if unset.iter().any(|gone| name.eq_ignore_ascii_case(gone)) {
-            continue;
-        }
-        block.extend(name.encode_wide());
-        block.push(u16::from(b'='));
-        block.extend(value.encode_wide());
-        block.push(0);
-    }
-    // Ended by an empty string: an empty block has two NULs too.
-    block.push(0);
-    block.push(0);
-    block
 }
 
 fn denied(error: &std::io::Error) -> bool {
@@ -232,7 +209,6 @@ fn create(
     if breakaway {
         flags |= CREATE_BREAKAWAY_FROM_JOB;
     }
-    let environment = (place.environment.as_ref()).map_or(std::ptr::null(), |block| block.as_ptr());
     let directory = (place.directory.as_ref()).map_or(std::ptr::null(), |wide| wide.as_ptr());
     let mut line = line.to_vec();
     let mut created = PROCESS_INFORMATION::default();
@@ -247,7 +223,7 @@ fn create(
             std::ptr::null(),
             i32::from(!handed.is_empty()),
             flags,
-            environment.cast(),
+            std::ptr::null(),
             directory,
             &info.StartupInfo,
             &mut created,
