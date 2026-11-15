@@ -58,6 +58,40 @@ fn processes() -> Vec<(i32, i32, String)> {
         .collect()
 }
 
+/// How many children of `parent` have ended and are not reaped, as `ps`
+/// says.
+fn zombies(parent: i32) -> usize {
+    let listed = std::process::Command::new("ps")
+        .args(["-A", "-o", "ppid=,stat="])
+        .output();
+    let Ok(out) = listed else {
+        return 0;
+    };
+    (String::from_utf8_lossy(&out.stdout).lines())
+        .filter(|line| {
+            let mut words = line.split_whitespace();
+            words.next().and_then(|p| p.parse().ok()) == Some(parent)
+                && words.next().is_some_and(|stat| stat.starts_with('Z'))
+        })
+        .count()
+}
+
+/// Each connection's own process is reaped once it ends: commands leave
+/// no zombie under their server (on macOS the server reaped none, and
+/// kept one for every command till it ended).
+#[test]
+fn commands_leave_no_zombie_under_their_server() -> Outcome {
+    let server = Server::start("")?;
+    let pid = server_pid(&server)?;
+    for _ in 0..20 {
+        server.ok(&["(status)"])?;
+    }
+    eventually(
+        "its connections' processes reaped",
+        || Ok(zombies(pid) == 0),
+    )
+}
+
 /// A process's parent, as `ps` says.
 fn parent(pid: i32) -> Result<i32, String> {
     (processes().into_iter())

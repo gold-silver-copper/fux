@@ -471,8 +471,12 @@ pub fn hand(accepted: Accepted) -> Handed {
 }
 
 /// Starts `fux __conn` from `exe`, its link on stdin and `out` on stdout:
-/// the server's end of its link.
-pub fn launch_conn(exe: &Path, out: Handed) -> std::io::Result<Stream> {
+/// the server's end of its link, and the process, which the server reaps
+/// by name once it ends (`Server::reap`).
+pub fn launch_conn(
+    exe: &Path,
+    out: Handed,
+) -> std::io::Result<(Stream, Option<fuxix::process::Pid>)> {
     let (ours, theirs) = UnixStream::pair()?;
     let child = std::process::Command::new(exe)
         .arg(crate::link::CONN)
@@ -481,10 +485,8 @@ pub fn launch_conn(exe: &Path, out: Handed) -> std::io::Result<Stream> {
         )))
         .stdout(std::process::Stdio::from(out))
         .spawn()?;
-    // Reaped as the server's other children are (`reap`); std never
-    // waits on a dropped child.
-    drop(child);
-    Ok(ours)
+    // std never waits on a dropped child.
+    Ok((ours, fuxix::process::Pid::from_u32(child.id())))
 }
 
 /// Starts pane process `fux __pane` from `exe`, listening at `socket` on

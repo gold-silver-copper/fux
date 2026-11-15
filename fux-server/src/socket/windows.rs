@@ -316,7 +316,7 @@ fn usable(handle: BorrowedHandle<'_>) -> Option<BorrowedHandle<'_>> {
 
 /// Starts `fux __conn` from `exe`, its link on stdin and `out` on stdout:
 /// the server's end of its link.
-pub fn launch_conn(exe: &Path, out: Handed) -> std::io::Result<Stream> {
+pub fn launch_conn(exe: &Path, out: Handed) -> std::io::Result<(Stream, Option<Pid>)> {
     let (ours, theirs) = fuxix::io::pipe_for_fuxix_child()?;
     let args = [std::ffi::OsStr::new(crate::link::CONN)];
     let log = std::io::stderr();
@@ -326,7 +326,8 @@ pub fn launch_conn(exe: &Path, out: Handed) -> std::io::Result<Stream> {
         usable(log.as_handle()),
     ];
     fuxix::process::start(exe, &args, stdio)?;
-    Ok(ours)
+    // Its handle is let go as it is started: nothing of it is left to reap.
+    Ok((ours, None))
 }
 
 /// How long a pane's process has to say it listens.

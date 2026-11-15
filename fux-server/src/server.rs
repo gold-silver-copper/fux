@@ -379,11 +379,12 @@ impl Conn {
 
     /// Starts the process of a connection the server accepted itself on
     /// `stream`, from `exe`: `fux __conn`, its client on stdout.
-    fn start(stream: Accepted, exe: &std::path::Path) -> std::io::Result<Conn> {
-        Conn::new(crate::socket::launch_conn(
-            exe,
-            crate::socket::hand(stream),
-        )?)
+    fn start(
+        stream: Accepted,
+        exe: &std::path::Path,
+    ) -> std::io::Result<(Conn, Option<fuxix::process::Pid>)> {
+        let (link, process) = crate::socket::launch_conn(exe, crate::socket::hand(stream))?;
+        Ok((Conn::new(link)?, process))
     }
 
     /// Whether all it sent its client was taken.
@@ -743,6 +744,9 @@ pub struct Server {
     session: Session,
     phase: Phase,
     conns: Vec<Conn>,
+    /// The connections' own processes that have not ended, to reap as
+    /// they do: each outlives its `Conn` by a moment.
+    conn_children: Vec<fuxix::process::Pid>,
     children: fuxix::signal::Pipe,
     stops: fuxix::signal::Pipe,
     /// Where bytes read from a client's connection or terminal land before
@@ -952,6 +956,7 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalBytes) -> R
             resting: None,
         },
         conns: Vec::new(),
+        conn_children: Vec::new(),
         children,
         stops,
         read_buffer,
@@ -1604,7 +1609,8 @@ impl Server {
                     .map_err(|e| (kept, unserved("starting a connection's process", &e))),
             };
             match started {
-                Ok(mut conn) => {
+                Ok((mut conn, process)) => {
+                    self.conn_children.extend(process);
                     if let Some(panes) = self.session.panes() {
                         let run = self.session.run;
                         conn.tell_process(&crate::link::ToConn::Hello { panes, run });
@@ -2087,9 +2093,10 @@ impl Server {
     }
 
     /// Reaps each pane's own process and each program adopted from one
-    /// that ended (`Session::children`), since signals coalesce, and the
-    /// other orphans the server adopted.
+    /// that ended (`Session::children`), since signals coalesce, each
+    /// connection's own process, and the other orphans the server adopted.
     fn reap(&mut self, now: Instant) {
+        (self.conn_children).retain(|pid| matches!(fuxix::process::reap(*pid), Ok(None)));
         let children = self.session.children();
         for pid in &children {
             if let Ok(Some(status)) = fuxix::process::reap(*pid) {
@@ -2407,6 +2414,7 @@ mod tests {
                 session,
                 phase: Phase::Stopping(Instant::now(), None),
                 conns: vec![conn],
+                conn_children: Vec::new(),
                 children: fuxix::signal::Pipe::new(&[])?,
                 stops: fuxix::signal::Pipe::new(&[])?,
                 read_buffer: read_buffer()?,
@@ -2677,6 +2685,7 @@ mod tests {
             session,
             phase: Phase::Stopping(Instant::now(), None),
             conns,
+            conn_children: Vec::new(),
             children: fuxix::signal::Pipe::new(&[])?,
             stops: fuxix::signal::Pipe::new(&[])?,
             read_buffer: read_buffer()?,
