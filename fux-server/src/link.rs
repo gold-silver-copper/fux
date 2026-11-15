@@ -112,10 +112,7 @@ impl Remote {
     /// between two questions: a question let go leaves what was said on
     /// either side of it side by side.
     fn tidy(&mut self) {
-        let mut kept = Vec::new();
-        if kept.try_reserve(self.parked.len()).is_err() {
-            return;
-        }
+        let mut kept = Vec::with_capacity(self.parked.len());
         // From the last: one of a kind seen since the last question is
         // stale.
         let mut seen = Vec::new();
@@ -455,43 +452,6 @@ pub const TAKEN: &str = "taken";
 mod tests {
     use super::{BYTES, Message, Sending, ToConn};
     use fux_wire::protocol::{Decoder, Frame};
-
-    /// An end refused memory queues nothing of what it would send, and
-    /// leaves in its socket what it would read; both go on once memory is
-    /// given.
-    #[cfg(all(unix, feature = "checks"))]
-    #[test]
-    fn an_end_refused_memory_sends_and_reads_nothing_and_goes_on()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use super::{End, Read};
-        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
-        let (mut ours, mut theirs) = (End::new(ours)?, End::new(theirs)?);
-        fux_vt::refuse_next(1);
-        assert!(ours.try_send(&ToConn::Answered).is_err());
-        assert!(ours.queued::<ToConn>().is_empty());
-        fux_vt::refuse_next(1);
-        assert!(ours.try_send_whole(&ToConn::Answered).is_err());
-        assert!(ours.queued::<ToConn>().is_empty());
-        assert!(ours.try_send_whole(&ToConn::Answered)?);
-        let long = ToConn::Bytes(vec![7; BYTES * 2]);
-        assert!(!ours.try_send_whole(&long)?);
-        ours.try_send(&ToConn::Close)?;
-        ours.flush_all()?;
-        let mut buffer = [0u8; 4096];
-        fux_vt::refuse_next(1);
-        assert_eq!(theirs.try_read(&mut buffer), Read::Refused);
-        assert!(matches!(theirs.next_message::<ToConn>(), Ok(None)));
-        assert_eq!(theirs.try_read(&mut buffer), Read::More);
-        assert!(matches!(
-            theirs.next_message::<ToConn>(),
-            Ok(Some(ToConn::Answered))
-        ));
-        assert!(matches!(
-            theirs.next_message::<ToConn>(),
-            Ok(Some(ToConn::Close))
-        ));
-        Ok(())
-    }
 
     /// A thousand questions to a pane whose process reads nothing, each
     /// given up by its asker, leave nothing more queued to it: once its

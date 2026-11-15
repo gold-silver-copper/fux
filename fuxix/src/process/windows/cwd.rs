@@ -122,28 +122,17 @@ fn directory_string(process: HANDLE) -> Result<(usize, usize)> {
     Ok((usize::from(length), buffer))
 }
 
-/// One read of the directory's characters, `budget` admitting them.
-fn once<A: crate::Allocation>(
-    process: HANDLE,
-    budget: &mut A,
-) -> std::result::Result<Result<Vec<u8>>, A::Error> {
-    let (length, buffer) = match directory_string(process) {
-        Ok(found) => found,
-        Err(errno) => return Ok(Err(errno)),
-    };
-    let mut characters = Vec::new();
-    budget.reserve(&mut characters, length)?;
-    characters.resize(length, 0);
-    Ok(read(process, buffer, &mut characters).map(|()| characters))
+/// One read of the directory's characters.
+fn once(process: HANDLE) -> Result<Vec<u8>> {
+    let (length, buffer) = directory_string(process)?;
+    let mut characters = vec![0; length];
+    read(process, buffer, &mut characters).map(|()| characters)
 }
 
 /// The directory process `pid` works in, read twice from its process
 /// parameters ([module docs](self)): `Err` if it can't be opened or read,
-/// or the two reads differ; its characters admitted under `budget`.
-pub fn cwd_observed<A: crate::Allocation>(
-    pid: Pid,
-    budget: &mut A,
-) -> std::result::Result<Result<Option<PathBuf>>, A::Error> {
+/// or the two reads differ.
+pub fn cwd_observed(pid: Pid) -> Result<Option<PathBuf>> {
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
@@ -152,20 +141,14 @@ pub fn cwd_observed<A: crate::Allocation>(
     // SAFETY: it takes numbers and touches no memory.
     let raw = unsafe { OpenProcess(access, 0, pid.as_raw()) };
     if raw.is_null() {
-        return Ok(Err(Errno::last()));
+        return Err(Errno::last());
     }
     // SAFETY: `raw` was just opened, and nothing else owns it.
     let process = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let first = match once(process.as_raw_handle(), budget)? {
-        Ok(first) => first,
-        Err(errno) => return Ok(Err(errno)),
-    };
-    let second = match once(process.as_raw_handle(), budget)? {
-        Ok(second) => second,
-        Err(errno) => return Ok(Err(errno)),
-    };
+    let first = once(process.as_raw_handle())?;
+    let second = once(process.as_raw_handle())?;
     if first != second {
-        return Ok(Err(Errno::AGAIN));
+        return Err(Errno::AGAIN);
     }
     let mut units: Vec<u16> = (first.as_chunks::<2>().0.iter())
         .map(|pair| u16::from_le_bytes(*pair))
@@ -175,7 +158,5 @@ pub fn cwd_observed<A: crate::Allocation>(
     if units.len() > 3 && units.last() == Some(&backslash) {
         units.pop();
     }
-    Ok(Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(
-        &units,
-    )))))
+    Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(&units))))
 }

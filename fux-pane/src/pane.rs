@@ -140,8 +140,8 @@ impl Run {
 
 impl InputQueue {
     /// Queues `bytes` as a piece, behind a paste that is open: false if
-    /// the OS gave no memory for them, or more than `BEHIND` would wait
-    /// behind that paste, and none is queued. Only the pane queues
+    /// more than `BEHIND` would wait behind that paste, and none is
+    /// queued. Only the pane queues
     /// (`Pane::push`).
     fn push(&mut self, bytes: impl AsRef<[u8]>) -> bool {
         self.put(bytes.as_ref(), false)
@@ -156,41 +156,26 @@ impl InputQueue {
         // Behind the paste last opened or announced, if any waits.
         let waiting = self.behind();
         if let Some(gate) = self.gates.back_mut() {
-            let fits = waiting.saturating_add(bytes.len()) <= BEHIND;
-            if !fits || fux_vt::bytes::try_extend(&mut gate.bytes, bytes).is_err() {
+            if waiting.saturating_add(bytes.len()) > BEHIND {
                 return false;
             }
+            gate.bytes.extend_from_slice(bytes);
             if reply {
                 gate.replies = gate.replies.saturating_add(bytes.len());
             }
             self.settle();
             return true;
         }
-        if self.bytes.try_push(bytes).is_err() {
-            return false;
-        }
+        self.bytes.push(bytes);
         self.touched |= !bytes.is_empty();
         self.note(reply, bytes.len());
         true
     }
     /// Queues `bytes`, a piece of body `body` being typed: its own, so
-    /// behind no paste. Room is made with them for a paste's closing
-    /// bracket, so that `close` never needs any: false if the OS gave
-    /// none, and none is queued. `open`, if it leaves a paste open: what
-    /// else comes then waits behind this body.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "its gate and its bytes go into the room made for them just before"
-    )]
-    fn piece(&mut self, bytes: &[u8], body: u64, open: bool) -> bool {
-        let closing = fux_vt::keys::encode::PasteEncoder::CLOSING;
-        let room = bytes.len().saturating_add(closing);
+    /// behind no paste. `open`, if it leaves a paste open: what else
+    /// comes then waits behind this body.
+    fn piece(&mut self, bytes: &[u8], body: u64, open: bool) {
         let gated = self.gates.iter().any(|gate| gate.paste == Some(body));
-        if self.bytes.try_reserve(room).is_err()
-            || open && !gated && self.gates.try_reserve(1).is_err()
-        {
-            return false;
-        }
         if open && !gated {
             self.gates.push_front(Behind {
                 paste: Some(body),
@@ -201,30 +186,22 @@ impl InputQueue {
         self.touched |= !bytes.is_empty();
         self.note(false, bytes.len());
         self.pasting = open;
-        true
     }
-    /// The paste that was open is closed with `closing`, in the room made
-    /// for it (`piece`).
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the closing bracket goes into the room made for it just before"
-    )]
+    /// The paste that was open is closed with `closing`.
     fn close(&mut self, closing: &[u8]) {
-        if self.bytes.try_reserve(closing.len()).is_ok() {
-            self.bytes.push(closing);
-            self.touched |= !closing.is_empty();
-            self.note(false, closing.len());
-        }
+        self.bytes.push(closing);
+        self.touched |= !closing.is_empty();
+        self.note(false, closing.len());
         self.pasting = false;
     }
     /// Queues what waited behind pastes that have ended, in order, up to
-    /// the first that has not: a run whole or, refused the memory, not
-    /// yet (it is tried again as more is queued or written).
+    /// the first that has not.
     fn settle(&mut self) {
         while let Some(gate) = self.gates.front() {
-            if gate.paste.is_some() || self.bytes.try_push(&gate.bytes).is_err() {
+            if gate.paste.is_some() {
                 return;
             }
+            self.bytes.push(&gate.bytes);
             let (all, replies) = (gate.bytes.len(), gate.replies);
             self.touched |= all > 0;
             self.note(false, all.saturating_sub(replies));
@@ -239,18 +216,11 @@ impl InputQueue {
     }
     /// Body `body`, a client's paste, is to come, its server says: what
     /// is typed from here on waits behind it, as it was typed after it.
-    /// Refused the memory to keep its place, nothing waits for it.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "its one push follows the room made for it just before"
-    )]
     fn expect(&mut self, body: u64) {
-        if self.gates.try_reserve(1).is_ok() {
-            self.gates.push_back(Behind {
-                paste: Some(body),
-                ..Behind::default()
-            });
-        }
+        self.gates.push_back(Behind {
+            paste: Some(body),
+            ..Behind::default()
+        });
     }
     /// Body `body` has all come, or never will: what waited behind it
     /// waits for it no more, and is queued in its turn.
@@ -280,28 +250,15 @@ impl InputQueue {
     pub fn waiting(&self) -> usize {
         self.len().saturating_add(self.behind())
     }
-    /// `len` bytes were queued, replies if `reply`. Refused the memory to
-    /// say so, they count as what was queued before them.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "its one push follows the room made for it just before"
-    )]
+    /// `len` bytes were queued, replies if `reply`.
     fn note(&mut self, reply: bool, len: usize) {
         if len == 0 {
             return;
         }
-        let room = self.runs.try_reserve(1).is_ok();
-        let reply = match self.runs.back_mut() {
-            Some((kind, run)) if *kind == reply || !room => {
-                *run = run.saturating_add(len);
-                *kind
-            }
-            Some(_) | None if room => {
-                self.runs.push_back((reply, len));
-                reply
-            }
-            Some(_) | None => false,
-        };
+        match self.runs.back_mut() {
+            Some((kind, run)) if *kind == reply => *run = run.saturating_add(len),
+            Some(_) | None => self.runs.push_back((reply, len)),
+        }
         if reply {
             self.replies = self.replies.saturating_add(len);
         }
@@ -313,10 +270,6 @@ impl InputQueue {
     }
     /// Queues what `write` appends to its vector as a piece, in place;
     /// behind a paste that is open, as `push` does.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "what `write` appends, to the queue or to a vector of its own behind a paste, aborts if the OS refuses it memory: left, D-194"
-    )]
     fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) {
         if self.gated() {
             let mut bytes = Vec::new();
@@ -373,7 +326,6 @@ impl InputQueue {
     }
     /// Everything queued, for tests and the harnesses.
     #[cfg(any(test, feature = "in-process"))]
-    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
     fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
@@ -428,10 +380,6 @@ pub struct Said {
 }
 
 impl Said {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (from_utf8_lossy, collect): left, D-194"
-    )]
     fn new(sent: fux_vt::Kept<'_>) -> Self {
         let text = String::from_utf8_lossy(sent.bytes);
         let text = text.chars().filter(|c| !c.is_control()).collect();
@@ -483,10 +431,6 @@ impl Title {
         self.now = title;
         changed
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (push_back): left, D-194"
-    )]
     fn push(&mut self) {
         if self.pushed.len() >= TITLE_STACK {
             self.pushed.pop_front();
@@ -504,8 +448,6 @@ impl Title {
 struct Sink<'a, 't> {
     /// The replies to one read, queued together after it.
     replies: Vec<u8>,
-    /// Replies the OS gave no memory to keep: lost, and counted.
-    unkept: u64,
     /// Where its bells, notifications, titles and commands' starts and
     /// ends go: the session's journal, in order.
     tell: &'a mut Teller<'t>,
@@ -536,15 +478,9 @@ impl Sink<'_, '_> {
 
 impl fux_vt::Sink for Sink<'_, '_> {
     fn reply(&mut self, bytes: &[u8]) {
-        if fux_vt::bytes::try_extend(&mut self.replies, bytes).is_err() {
-            self.unkept = self.unkept.saturating_add(1);
-        }
+        self.replies.extend_from_slice(bytes);
     }
     /// A colour query (OSC 10, 11) is answered if the colour is known.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (push): left, D-194"
-    )]
     fn event(&mut self, event: Event<'_>) {
         match event {
             Event::Title(title) => {
@@ -582,10 +518,6 @@ impl fux_vt::Sink for Sink<'_, '_> {
             Event::IconName(_) => {}
         }
     }
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (push): left, D-194"
-    )]
     fn picture(&mut self, placed: bool) {
         self.pictures.push(placed);
     }
@@ -594,10 +526,6 @@ impl fux_vt::Sink for Sink<'_, '_> {
     /// title, which are one here) or 2 (title); Ps 1, the icon alone, is
     /// not a title. vim and tmux push on starting and pop on leaving. And
     /// `CSI ? 996 n`, the colour scheme asked for, answered if known.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (extend_from_slice): left, D-194"
-    )]
     fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
         let fux_vt::Unhandled::Csi {
             params,
@@ -759,11 +687,6 @@ impl Losses {
 
     /// What a notice says of them, of pane `id`: for each kind it lost
     /// any of, what, how many, and why (`%1: memory refused (2): …`).
-    #[expect(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (collect, format!): left, D-194"
-    )]
     pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
         let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
@@ -992,10 +915,6 @@ impl<'a> PaneMut<'a> {
     /// Reading a terminal of its program's failed so: told, whether it is
     /// the terminal of the program it runs or one it left
     /// (`Session::read_left`).
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (to_string): left, D-194"
-    )]
     pub fn tell_read_failed(&mut self, error: fuxix::Errno) {
         self.tell.tell(Told::ReadFailed(error.to_string()));
     }
@@ -1028,11 +947,8 @@ impl<'a> PaneMut<'a> {
     }
     /// A request's `bytes` are queued for its program, and told as `kind`,
     /// with the version `expect` admitted them at, if it did.
-    /// False if the OS gave no memory to queue them: none is, nor told.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (Box::new): left, D-194"
-    )]
+    /// False if more than `BEHIND` would wait behind a paste: none is, nor
+    /// told.
     pub fn send(
         &mut self,
         bytes: &[u8],
@@ -1060,20 +976,14 @@ impl<'a> PaneMut<'a> {
     }
     /// A piece of body `body` being typed, `bytes`, is queued for its
     /// program, leaving a paste open if `open`, and told as `kind` if it
-    /// is a request's: false if the OS gave no memory for it, and none is.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (Box::new): left, D-194"
-    )]
+    /// is a request's.
     pub fn piece(
         &mut self,
         bytes: &[u8],
         (body, open): (u64, bool),
         told: Option<(Sent, Option<fux_wire::command::Version>)>,
-    ) -> bool {
-        if !self.pane.piece(bytes, body, open) {
-            return false;
-        }
+    ) {
+        self.pane.piece(bytes, body, open);
         self.queued();
         if let Some((kind, expected)) = told {
             self.tell.tell(Told::Input {
@@ -1083,7 +993,6 @@ impl<'a> PaneMut<'a> {
                 generation: self.pane.respawns,
             });
         }
-        true
     }
     /// The paste the body being typed left open is closed with `closing`.
     pub fn close_paste(&mut self, closing: &[u8]) {
@@ -1141,10 +1050,6 @@ impl<'a> PaneMut<'a> {
     /// the bell, its latest notification, and its copies, in order.
     /// Refused copies are counted here, unless this pane's program-copy permission
     /// is false, which copies nothing and so refuses none.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (push): left, D-194"
-    )]
     pub fn take_read(&mut self) -> (bool, Option<Said>, Vec<String>) {
         let mut copies = Vec::new();
         let allowed = self.pane.options.program_clipboard;
@@ -1245,10 +1150,6 @@ impl Left {
 
     /// What a notice says of it, after the end's own words: nothing, if it
     /// left no input unwritten.
-    #[expect(
-        clippy::disallowed_macros,
-        reason = "aborts if the OS refuses it memory (format!): left, D-194"
-    )]
     pub fn told(self) -> String {
         match self.input {
             0 => String::new(),
@@ -1353,16 +1254,8 @@ impl Pane {
     /// ([`Pane::read_unread`]).
     fn output(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         self.keep_terminal_size();
-        // Output it can't keep for a later turn, refused the memory, is
-        // lost, and counted as what the screen lost for memory is.
-        let lost = Losses {
-            memory: 1,
-            ..Losses::default()
-        };
         if self.has_unread() {
-            if fux_vt::bytes::try_extend(&mut self.unread.bytes, bytes).is_err() {
-                self.lose(lost);
-            }
+            self.unread.bytes.extend_from_slice(bytes);
             return;
         }
         let rest = match self.reads_output() {
@@ -1372,11 +1265,7 @@ impl Pane {
                 None => return,
             },
         };
-        let mut kept = Vec::new();
-        match fux_vt::bytes::try_extend(&mut kept, rest) {
-            Ok(()) => self.wait_unread(kept, 0, now),
-            Err(_) => self.lose(lost),
-        }
+        self.wait_unread(rest.to_vec(), 0, now);
     }
 
     /// Whether output waits to be read on the pane's next turn
@@ -1480,10 +1369,6 @@ impl Pane {
 
     /// Reads `bytes` at `now`, returning where its next parser turn starts.
     /// A held frame already owns its bytes and keeps that allocation itself.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (extend_from_slice): left, D-194"
-    )]
     fn read(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) -> Option<usize> {
         let mut rest = bytes;
         loop {
@@ -1565,7 +1450,6 @@ impl Pane {
         let refused = self.parser.refused();
         let mut sink = Sink {
             replies: Vec::new(),
-            unkept: 0,
             pictures: Vec::new(),
             tell,
             title: &mut self.title,
@@ -1600,10 +1484,7 @@ impl Pane {
         if begun.is_none() && slice.len() < bytes.len() {
             begun = Some((read, fux_vt::Stop::Budget));
         }
-        let mut unkept = sink.unkept;
-        if !self.input.reply(&sink.replies) {
-            unkept = unkept.saturating_add(1);
-        }
+        let unkept = u64::from(!self.input.reply(&sink.replies));
         if let Some(scheme) = sink.told {
             self.scheme_told = Some(scheme);
         }
@@ -1860,15 +1741,15 @@ impl Pane {
         std::mem::take(&mut self.untold)
     }
 
-    /// Queues `bytes` of input for its program: false if the OS gave no
-    /// memory for them.
+    /// Queues `bytes` of input for its program: false if more than
+    /// `BEHIND` would wait behind a paste (`InputQueue::push`).
     fn push(&mut self, bytes: impl AsRef<[u8]>) -> bool {
         self.input.push(bytes)
     }
 
     /// Queues a piece of body `body` being typed (`InputQueue::piece`).
-    fn piece(&mut self, bytes: &[u8], body: u64, open: bool) -> bool {
-        self.input.piece(bytes, body, open)
+    fn piece(&mut self, bytes: &[u8], body: u64, open: bool) {
+        self.input.piece(bytes, body, open);
     }
 
     /// Queues for its program what `write` makes for its screen.
@@ -1913,10 +1794,6 @@ impl Pane {
         true
     }
 
-    #[expect(
-        clippy::disallowed_macros,
-        reason = "aborts if the OS refuses it memory (format!): left, D-194"
-    )]
     pub fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
         let (resize, read) = std::mem::take(&mut self.terminal_errors);
         let id = self.id;
@@ -2151,7 +2028,6 @@ pub mod testing {
     /// `rows` by `cols`, whatever fux-vt's weights: DECALN fills every
     /// cell and ED clears them all, the pair repeated twice as often as
     /// the fewest that a parser call stops at its budget in.
-    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
     pub fn spends_the_budget(rows: u16, cols: u16) -> Vec<u8> {
         struct Discard;
         impl fux_vt::Sink for Discard {}
@@ -2186,11 +2062,6 @@ pub mod testing {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "tests allocate as they please"
-)]
 pub mod tests {
     pub use super::testing::{options, spends_the_budget};
     use crate::vt_feed::{Feed, Look};

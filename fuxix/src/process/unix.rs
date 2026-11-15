@@ -1,6 +1,7 @@
 //! Processes on Unix: their IDs, signals, sessions, and how they end.
 use super::{Dispositions, Reach, Scan, Sent, Signal, Status, TREE_MAX, Tree};
 use crate::errno::{Errno, Result, check, fit};
+#[cfg(target_os = "macos")]
 use std::ffi::OsString;
 use std::fmt;
 use std::num::NonZeroI32;
@@ -555,81 +556,21 @@ impl Job {
     }
 }
 
-/// Opens one proc file without a heap-allocated path or CString.
+/// The observed current directory.
 #[cfg(not(target_os = "macos"))]
-fn proc_path(pid: Pid, part: &str) -> Option<[u8; 64]> {
-    let mut path = [0u8; 64];
-    let mut cursor = std::io::Cursor::new(path.as_mut_slice());
-    std::io::Write::write_fmt(&mut cursor, format_args!("/proc/{pid}/{part}\0")).ok()?;
-    Some(path)
+pub fn cwd_observed(pid: Pid) -> Result<Option<PathBuf>> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .map(Some)
+        .map_err(|error| Errno::from_io_error(&error).unwrap_or(Errno::IO))
 }
 
-/// The observed current directory. Stack space handles ordinary paths;
-/// longer paths grow under the same grant, including replacement peaks.
-#[cfg(not(target_os = "macos"))]
-pub fn cwd_observed<A: crate::Allocation>(
-    pid: Pid,
-    budget: &mut A,
-) -> std::result::Result<Result<Option<PathBuf>>, A::Error> {
-    use std::os::unix::ffi::OsStringExt;
-    let Some(path) = proc_path(pid, "cwd") else {
-        return Ok(Ok(None));
-    };
-    let mut stack = [0u8; 4096];
-    // SAFETY: the path is NUL-terminated and stack is writable for its length.
-    let read =
-        unsafe { libc::readlink(path.as_ptr().cast(), stack.as_mut_ptr().cast(), stack.len()) };
-    let Ok(count) = usize::try_from(read) else {
-        return Ok(Err(Errno::last()));
-    };
-    if count < stack.len() {
-        let bytes = stack.get(..count).ok_or_else(A::exceeded)?;
-        return budget.os_string(bytes).map(|p| Ok(Some(PathBuf::from(p))));
-    }
-    let before = budget.remaining();
-    let mut raw = Vec::new();
-    let result = (|| {
-        let mut room = stack.len().checked_mul(2).ok_or_else(A::exceeded)?;
-        loop {
-            let more = room.checked_sub(raw.len()).ok_or_else(A::exceeded)?;
-            budget.reserve(&mut raw, more)?;
-            raw.resize(room, 0);
-            // SAFETY: path is NUL-terminated, and raw is initialized and writable.
-            let read =
-                unsafe { libc::readlink(path.as_ptr().cast(), raw.as_mut_ptr().cast(), raw.len()) };
-            let Ok(count) = usize::try_from(read) else {
-                return Ok(Err(Errno::last()));
-            };
-            if count < raw.len() {
-                raw.truncate(count);
-                return Ok(Ok(()));
-            }
-            room = room.checked_mul(2).ok_or_else(A::exceeded)?;
-        }
-    })();
-    if matches!(&result, Ok(Ok(()))) {
-        return Ok(Ok(Some(PathBuf::from(OsString::from_vec(raw)))));
-    }
-    drop(raw);
-    budget.release(
-        before
-            .checked_sub(budget.remaining())
-            .ok_or_else(A::exceeded)?,
-    )?;
-    result.map(|result| result.map(|()| None))
-}
-
-/// The observed current directory, copied from the kernel's stack result
-/// only after its exact retained capacity has been admitted.
+/// The observed current directory.
 #[cfg(target_os = "macos")]
-pub fn cwd_observed<A: crate::Allocation>(
-    pid: Pid,
-    budget: &mut A,
-) -> std::result::Result<Result<Option<PathBuf>>, A::Error> {
+pub fn cwd_observed(pid: Pid) -> Result<Option<PathBuf>> {
     use std::os::unix::ffi::OsStringExt;
     let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
     let Ok(bytes) = libc::c_int::try_from(size_of::<libc::proc_vnodepathinfo>()) else {
-        return Ok(Ok(None));
+        return Ok(None);
     };
     // SAFETY: info is writable for exactly bytes; a short result is rejected.
     let read = unsafe {
@@ -642,10 +583,10 @@ pub fn cwd_observed<A: crate::Allocation>(
         )
     };
     if read <= 0 {
-        return Ok(Err(Errno::last()));
+        return Err(Errno::last());
     }
     if read != bytes {
-        return Ok(Ok(None));
+        return Ok(None);
     }
     // SAFETY: proc_pidinfo filled the whole structure, as checked above.
     let info = unsafe { info.assume_init() };
@@ -657,11 +598,10 @@ pub fn cwd_observed<A: crate::Allocation>(
         .take_while(|c| **c != 0);
     let count = path.clone().count();
     if count == 0 {
-        return Ok(Ok(None));
+        return Ok(None);
     }
-    let mut bytes = budget.vector(count)?;
-    bytes.extend(path.map(|c| c.cast_unsigned()));
-    Ok(Ok(Some(PathBuf::from(OsString::from_vec(bytes)))))
+    let bytes = path.map(|c| c.cast_unsigned()).collect();
+    Ok(Some(PathBuf::from(OsString::from_vec(bytes))))
 }
 
 /// This process and its ancestors, nearest first, as the OS says: each
@@ -839,14 +779,13 @@ mod tests {
     fn cwd_observations_keep_os_failures_distinct_from_known_paths()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let own = Pid::from_raw(i32::try_from(std::process::id())?).ok_or("own pid")?;
-        let mut quota = 8192usize;
-        let observed = cwd_observed(own, &mut quota)??.ok_or("own cwd")?;
+        let observed = cwd_observed(own)?.ok_or("own cwd")?;
         assert_eq!(
             observed.canonicalize()?,
             std::env::current_dir()?.canonicalize()?
         );
         let missing = Pid::from_raw(i32::MAX).ok_or("missing pid")?;
-        assert!(matches!(cwd_observed(missing, &mut quota), Ok(Err(_))));
+        assert!(cwd_observed(missing).is_err());
         Ok(())
     }
 

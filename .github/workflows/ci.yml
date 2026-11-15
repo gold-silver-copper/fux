@@ -84,20 +84,8 @@ jobs:
           # fux-vt's unit tests of its checker (the faults it finds) build
           # only with `checks`: about a minute beside the workspace's.
           cargo test -p fux-vt --features checks --lib --locked 2>&1 | tee -a "$CI_LOGS/test.log"
-          # A frame's encoding and a decoder refused memory (fux-wire's own
-          # `checks`, which the two below turn on too).
-          cargo clippy -p fux-wire --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
-          cargo test -p fux-wire --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
-          # The pane process's crate under its allocation list
-          # (fux-pane/clippy.toml), with what its features add.
-          cargo clippy -p fux-pane --features checks,testing,in-process --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
-          # Render allocation refusals, without enabling the large VT suites
-          # in the ordinary workspace test run.
-          cargo clippy -p fux-server --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
-          cargo test -p fux-server --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
-          # The client refused memory as it joins a reply.
-          cargo clippy -p fux --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
-          cargo test -p fux --features checks --lib refused_ --locked 2>&1 | tee -a "$CI_LOGS/test.log"
+          # The pane process's crate with what its features add.
+          cargo clippy -p fux-pane --features testing,in-process --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
 
       # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
       # in release, as debug is too slow for the step's 5 minutes; built in

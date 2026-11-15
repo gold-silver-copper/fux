@@ -2608,66 +2608,6 @@ fn a_program_that_writes_ten_megabytes_before_it_reads_gets_all_it_was_sent() ->
     Ok(())
 }
 
-/// 29. A pane's process given no more memory once it is warm, every
-///     allocation refused (its address space held to what it has): its
-///     program floods it with output while it is sent keys over and over,
-///     each on a link of its own, opened and closed, and clients attach
-///     and leave; it lives, the same process, and once
-///     it is given memory again it serves, its flood read to its end
-///     (owner answer 2: a pane's process never ends for memory; it aborted
-///     on the first keys it could not queue). What is asked of it
-///     meanwhile is refused or waits: each is given two seconds and let
-///     go, as its asker would. Not yet so, and so not asked here: a pane
-///     refused memory as it makes a capture still ends, and one refused it
-///     as it draws its screen for a client can (D-186): this run's clients
-///     show a screen small enough to be drawn in what the pane has.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pane_process_refused_all_memory_lives_through_floods_and_side_links() -> Outcome {
-    let server = Server::start("")?;
-    let go = server.dir.join("go");
-    let script = format!(
-        "stty raw -echo; printf WARM-%s NOW; until [ -e {go} ]; do sleep 0.05; done; \
-         (cat >/dev/null) & yes flood-of-output | head -c 8000000; printf DONE-%s ALL; sleep 1000",
-        go = go.display()
-    );
-    let flood = pane(&server, "a", &["sh", "-c", &script])?;
-    let own = own_process(&server, &flood)?;
-    // Warm: shown to a client, captured, typed at.
-    let mut client = server.attach_to(24, 80, "a")?;
-    client.wait_for("WARM-NOW")?;
-    server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(&flood))])?;
-    drop(client);
-    let status = std::fs::read_to_string(format!("/proc/{own}/status")).map_err(e)?;
-    let size: u64 = (status.lines())
-        .find_map(|line| line.strip_prefix("VmSize:"))
-        .and_then(|kib| kib.trim().trim_end_matches("kB").trim().parse().ok())
-        .ok_or("its size")?;
-    // Not a byte more than it has.
-    limit(own, "as", size.saturating_mul(1024))?;
-    std::fs::write(&go, b"").map_err(e)?;
-    let typed: String = std::iter::repeat_n('k', 4000).collect();
-    let keys = format!(
-        "(send-keys (text (pane {}) {}))",
-        fux::script::quoted(&flood),
-        fux::script::quoted(&typed)
-    );
-    for _ in 0..12 {
-        let _ = within(&server, 2, &[&keys])?;
-        if let Ok(mut client) = server.attach_to(24, 80, "a") {
-            let _ = client.pump();
-        }
-        assert!(alive(own), "its pane's process ended, refused memory");
-    }
-    limit(own, "as", u64::MAX)?;
-    eventually("its flood read to its end", || {
-        Ok(capture(&server, &flood)?.stdout.contains("DONE-ALL"))
-    })?;
-    assert!(alive(own));
-    assert_eq!(own_process(&server, &flood)?, own);
-    Ok(())
-}
-
 /// 30. A client answers a question while a paste of its own waits: the
 ///     first byte of a 2 MiB paste sets its pane's program to ask the
 ///     client that pastes it what keys it has (`keys`), before it reads the

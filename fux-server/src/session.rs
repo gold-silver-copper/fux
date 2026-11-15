@@ -1560,18 +1560,14 @@ impl Session {
 
     /// The directory pane `pane`'s program is in, if it can be read.
     fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
-        let mut allocation = usize::MAX;
-        self.dir_with(pane, &mut allocation).ok()?.ok().flatten()
+        self.dir_read(pane).ok().flatten()
     }
 
-    fn dir_with<A: fuxix::Allocation>(
-        &self,
-        pane: PaneId,
-        budget: &mut A,
-    ) -> Result<fuxix::Result<Option<PathBuf>>, A::Error> {
+    /// `dir_of`, or the system's error reading it.
+    fn dir_read(&self, pane: PaneId) -> fuxix::Result<Option<PathBuf>> {
         match self.parts.panes().get(&pane).and_then(Pane::pid) {
-            Some(pid) => fuxix::process::cwd_observed(pid, budget),
-            None => Ok(Ok(None)),
+            Some(pid) => fuxix::process::cwd_observed(pid),
+            None => Ok(None),
         }
     }
 
@@ -6517,22 +6513,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "checks")]
-    #[test]
-    fn refused_client_capture_returns_an_error() -> TestResult {
-        let (mut session, client) = attached(10, 40)?;
-        fux_vt::refuse_next(1);
-        let result = session.client(
-            Some(client),
-            &ClientAction::Capture,
-            Here::Cli(None, None),
-            Instant::now(),
-        );
-        let error = result.err().ok_or("capture succeeded")?;
-        assert_eq!(error.code(), Code::Memory);
-        Ok(())
-    }
-
     #[test]
     fn a_frame_a_resize_reads_is_read_whole() -> TestResult {
         let (mut s, c) = attached(24, 80)?;
@@ -10117,42 +10097,6 @@ mod tests {
         let said = String::from_utf8_lossy(&rest).into_owned();
         assert!(said.starts_with("two\x1b[201~xy\x1b[?"), "{said:?}");
         assert!(said.ends_with('c'), "{said:?}");
-        Ok(())
-    }
-
-    /// A paste whose next piece the OS gives no memory for is closed where
-    /// it is, in room made before its first byte was queued, and its asker
-    /// told: its bracket is never left open (D-181).
-    #[cfg(feature = "checks")]
-    #[test]
-    fn a_paste_refused_memory_part_way_is_closed() -> TestResult {
-        let mut s = started()?;
-        let id = PaneId::of(1);
-        let to = command::To::Now(AnyRef::Pane(id));
-        let now = Instant::now();
-        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
-        s.give_body(Some(7));
-        let pending = s.send_keys(to, &[], now).map_err(|e| e.to_string())?;
-        let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
-        let [(_, ask)] = pending.asks.as_slice() else {
-            return Err("one ask".into());
-        };
-        host(&mut s, id, |h| {
-            h.piece(token, &[Input::Pasting("one".into()), Input::More]);
-        })?;
-        fux_vt::refuse_next(u32::MAX);
-        let refused = host(&mut s, id, |h| {
-            h.piece(token, &[Input::Pasting("two".into()), Input::More])
-        });
-        fux_vt::refuse_next(0);
-        refused?;
-        assert_eq!(queued(&mut s, id)?, b"\x1b[200~one\x1b[201~");
-        assert!(s.answered_yet(*ask), "its asker is told it was refused");
-        // What is left of it is let go.
-        host(&mut s, id, |h| {
-            h.piece(token, &[Input::Paste("three".into())])
-        })?;
-        assert!(queued(&mut s, id)?.is_empty());
         Ok(())
     }
 

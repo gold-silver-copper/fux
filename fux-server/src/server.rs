@@ -671,29 +671,7 @@ impl Conn {
             return;
         }
         reply.run = Some(session.run);
-        const REFUSED: &str = "the OS refused memory for the reply";
-        // Keep the fixed failure frame available before trying the reply.
-        if self
-            .out
-            .push_with(|out| out.try_reserve_exact(REFUSED.len().saturating_add(5)))
-            .is_err()
-        {
-            self.enter(session, Stage::Dead, now);
-            return;
-        }
         let bytes = fux_wire::wire::encode(&reply);
-        // Include every Part header and PartsEnd, before queuing any of it.
-        let headers = bytes
-            .len()
-            .div_ceil(fux_wire::protocol::MAX_PAYLOAD)
-            .checked_mul(5);
-        let reserve = headers
-            .and_then(|n| n.checked_add(bytes.len()))
-            .and_then(|n| n.checked_add(5));
-        if reserve.is_none_or(|n| self.out.push_with(|out| out.try_reserve_exact(n)).is_err()) {
-            self.end(session, &ToCommand::Exit(REFUSED), now);
-            return;
-        }
         split_into(&bytes, ToCommand::Part, &mut self.out);
         self.send(&ToCommand::PartsEnd);
         if self.stage.asked() {

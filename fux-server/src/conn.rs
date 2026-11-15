@@ -2737,20 +2737,4 @@ mod tests {
         conn.join().map_err(|_| "its process panicked")??;
         Ok(())
     }
-
-    /// A screen it can't compose, refused memory, paints nothing: what the
-    /// client shows stays, and its connection ends, saying why.
-    #[cfg(feature = "checks")]
-    #[test]
-    fn a_refused_paint_paints_nothing() -> Result<(), String> {
-        let (session, client) = crate::session::testing::attached(10, 40)?;
-        let mut composer = Composer::new(Instant::now());
-        composer.scene(crate::render::scene(&session, client).ok_or("a scene")?);
-        let mut out = ByteQueue::default();
-        fux_vt::refuse_next(1);
-        let refused = composer.paint(&mut out, Instant::now());
-        assert!(refused.is_err_and(|why| why.contains("rendering")));
-        assert!(out.is_empty(), "painted");
-        Ok(())
-    }
 }

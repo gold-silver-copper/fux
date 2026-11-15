@@ -52,9 +52,6 @@ pub enum Error {
     Wire(crate::wire::Error),
     /// A piece of a longer message, where a message is one frame at most.
     Piece,
-    /// The OS refused the memory to join, hold or send a message of more
-    /// than this many bytes.
-    Memory(usize),
 }
 
 impl std::fmt::Display for Error {
@@ -71,12 +68,6 @@ impl std::fmt::Display for Error {
                 "a piece of a longer message, where a message is one frame \
                  ({MAX_FRAME} bytes) at most"
             ),
-            Error::Memory(bytes) => {
-                write!(
-                    f,
-                    "the OS refused memory for a message of over {bytes} bytes"
-                )
-            }
         }
     }
 }
@@ -215,36 +206,6 @@ pub trait Frame<'a>: Sized {
         out.truncate(start);
         out.reserve(framed(payload));
         pieces(self, payload, out);
-    }
-
-    /// The bytes `encode_into` appends: the frame's, or its pieces'.
-    fn encoded_len(&self) -> usize {
-        let mut count = Count(0);
-        self.write(&mut count);
-        framed(count.0)
-    }
-
-    /// `encode_into`, once the OS gave room for all of it: refused
-    /// (`Error::Memory`), `out` is as it was. The room is reserved first,
-    /// and what is written within it allocates nothing, so a process that
-    /// must not die of a refusal (a pane's own) sends so.
-    fn try_encode_into(&self, out: &mut Vec<u8>) -> Result<(), Error> {
-        let mut count = Count(0);
-        self.write(&mut count);
-        let bytes = framed(count.0);
-        fux_vt::bytes::try_reserve(out, bytes).map_err(|_| Error::Memory(bytes))?;
-        pieces(self, count.0, out);
-        Ok(())
-    }
-}
-
-/// Counts the bytes written to it: a payload's length, before room is made
-/// for it.
-struct Count(usize);
-
-impl Sink for Count {
-    fn extend_from_slice(&mut self, bytes: &[u8]) {
-        self.0 = self.0.saturating_add(bytes.len());
     }
 }
 
@@ -1001,8 +962,7 @@ pub struct Decoder {
 
 /// The pieces of one long message, joined as they come: held only by a
 /// reader that asked for something long (a client its reply, a connection's
-/// process a pane's screen or capture), never by the server. It grows as
-/// the OS gives it memory, and a refusal is an error, not an abort.
+/// process a pane's screen or capture), never by the server..
 #[derive(Default)]
 pub struct Joining {
     pieces: Vec<u8>,
@@ -1012,10 +972,9 @@ pub struct Joining {
 }
 
 impl Joining {
-    /// Adds `piece` to the message, if the OS gives the memory.
-    pub fn push(&mut self, piece: &[u8]) -> Result<(), Error> {
-        fux_vt::bytes::try_extend(&mut self.pieces, piece)
-            .map_err(|_| Error::Memory(self.pieces.len()))
+    /// Adds `piece` to the message.
+    pub fn push(&mut self, piece: &[u8]) {
+        self.pieces.extend_from_slice(piece);
     }
 
     /// The pieces joined so far.
@@ -1036,20 +995,6 @@ impl Joining {
 impl Decoder {
     pub fn push(&mut self, bytes: &[u8]) {
         self.buffer.push(bytes);
-    }
-
-    /// `push`, if the OS gives the room (`Error::Memory`): refused, it
-    /// holds what it held.
-    pub fn try_push(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        (self.buffer.try_push(bytes)).map_err(|_| Error::Memory(self.buffer.len()))
-    }
-
-    /// Makes room for `additional` more bytes, or says the OS gave none
-    /// (`Error::Memory`): a push within it allocates nothing, so a reader
-    /// that must not die of a refusal makes room before it reads its
-    /// socket, and leaves there what it has no room for.
-    pub fn try_reserve(&mut self, additional: usize) -> Result<(), Error> {
-        (self.buffer.try_reserve(additional)).map_err(|_| Error::Memory(self.buffer.len()))
     }
 
     /// Gives back memory beyond `keep` bytes once no more is pending.
@@ -1111,7 +1056,7 @@ impl Decoder {
                 break whole;
             }
             let piece = self.buffer.take_front(whole);
-            joining.push(piece.get(5..).unwrap_or_default())?;
+            joining.push(piece.get(5..).unwrap_or_default());
         };
         let frame = self.buffer.take_front(whole);
         // A whole frame has its kind byte.
@@ -1122,7 +1067,7 @@ impl Decoder {
         if joining.pieces.is_empty() {
             return F::decode(*kind, payload).map(Some);
         }
-        joining.push(payload)?;
+        joining.push(payload);
         joining.whole = true;
         F::decode(*kind, &joining.pieces).map(Some)
     }
@@ -1268,68 +1213,6 @@ mod tests {
         assert_eq!(Reader::new(&bytes).whole::<Wait>()?, wait);
         let prefix = bytes.get(..bytes.len().saturating_sub(4)).ok_or("limit")?;
         assert!(Reader::new(prefix).whole::<Wait>().is_err());
-        Ok(())
-    }
-
-    /// A frame encoded into room made first is the frame as it is encoded
-    /// otherwise, a long one in the same pieces, which a reader that asked
-    /// for it joins; and its length is known before.
-    #[test]
-    fn a_frame_encoded_into_room_made_first_is_the_same_frame() -> Result<(), Error> {
-        for payload in [
-            0,
-            1,
-            MAX_PAYLOAD,
-            MAX_PAYLOAD + 1,
-            2 * MAX_PAYLOAD,
-            2 * MAX_PAYLOAD + 7,
-        ] {
-            let bytes: Vec<u8> = (0u8..251).cycle().take(payload).collect();
-            let frame = ToCommand::Part(Cow::Borrowed(&bytes));
-            let (mut plain, mut tried) = (vec![9], vec![9]);
-            frame.encode_into(&mut plain);
-            frame.try_encode_into(&mut tried)?;
-            assert!(plain == tried, "{payload}");
-            assert_eq!(frame.encoded_len(), tried.len() - 1, "{payload}");
-            let (mut decoder, mut joining) = (Decoder::default(), Joining::default());
-            decoder.push(tried.get(1..).unwrap_or_default());
-            let joined = decoder.long::<ToCommand>(&mut joining)?;
-            assert!(joined == Some(frame), "{payload}");
-        }
-        let mut bare = Vec::new();
-        ToCommand::PartsEnd.try_encode_into(&mut bare)?;
-        assert_eq!(bare, ToCommand::PartsEnd.encode());
-        Ok(())
-    }
-
-    /// Refused memory, an encoding leaves what it would append to as it
-    /// was, and a decoder holds what it held; both go on after.
-    #[cfg(feature = "checks")]
-    #[test]
-    fn an_encoding_or_a_push_refused_memory_changes_nothing() -> Result<(), Error> {
-        // Longer than the room a short vector has: only what needs room
-        // can be refused it.
-        let why: String = std::iter::repeat_n('y', 200).collect();
-        let frame = ToCommand::Exit(&why);
-        let mut out = vec![1, 2, 3];
-        out.shrink_to_fit();
-        fux_vt::refuse_next(1);
-        let refused = frame.try_encode_into(&mut out);
-        assert_eq!(refused, Err(Error::Memory(frame.encoded_len())));
-        assert_eq!(out, [1, 2, 3]);
-        frame.try_encode_into(&mut out)?;
-        let encoded = out.get(3..).unwrap_or_default().to_vec();
-        assert_eq!(encoded, frame.encode());
-        let mut decoder = Decoder::default();
-        let (half, rest) = encoded.split_at_checked(4).unwrap_or_default();
-        decoder.try_push(half)?;
-        fux_vt::refuse_next(1);
-        assert_eq!(decoder.try_push(rest), Err(Error::Memory(4)));
-        assert_eq!(decoder.buffered(), 4);
-        fux_vt::refuse_next(1);
-        assert_eq!(decoder.try_reserve(rest.len()), Err(Error::Memory(4)));
-        decoder.try_push(rest)?;
-        assert_eq!(decoder.frame::<ToCommand>()?, Some(frame));
         Ok(())
     }
 

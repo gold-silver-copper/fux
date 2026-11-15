@@ -1,10 +1,5 @@
 //! A pane's process: its PTY, how it starts, how its exit is noticed, and how
 //! it and its session are ended.
-#![expect(
-    clippy::disallowed_macros,
-    clippy::disallowed_methods,
-    reason = "a program is started and its ends are told with std's own allocations, a few small ones for each program: left, D-194"
-)]
 use fux_wire::answer::Ended;
 pub use fuxix::process::Pid;
 use fuxix::process::{Job, Reach, Scan, Sent};

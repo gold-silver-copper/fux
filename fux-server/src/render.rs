@@ -1070,27 +1070,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(feature = "checks")]
-    #[test]
-    fn refused_grid_allocation_preserves_the_previous_screen() -> Result<(), fux_vt::Error> {
-        fux_vt::refuse_next(1);
-        assert!(matches!(
-            super::Grid::new(24, 80),
-            Err(fux_vt::Error::Capacity)
-        ));
-        let mut grid = super::Grid::new(2, 3)?;
-        grid.cells.set(
-            0,
-            fux_vt::CellRef::new("K", false, fux_vt::Attributes::default()),
-        );
-        grid.cursor = Some((1, 2));
-        let before = grid.clone();
-        fux_vt::refuse_next(1);
-        assert_eq!(grid.reset(24, 80, true), Err(fux_vt::Error::Capacity));
-        assert_eq!(grid, before);
-        Ok(())
-    }
-
     fn new_grid(rows: u16, cols: u16) -> super::Grid {
         let grid = super::Grid::new(rows, cols);
         assert!(grid.is_ok(), "{grid:?}");

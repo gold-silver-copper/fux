@@ -9,7 +9,6 @@ use fux_wire::inspect::{self, Projection, Scope, Snapshot};
 use fux_wire::json::Json;
 use fux_wire::layout::{Node, Rect};
 use fux_wire::protocol::Body;
-use fux_wire::wire::Memory;
 use std::collections::BTreeMap;
 
 impl Session {
@@ -26,7 +25,7 @@ impl Session {
     ) -> Result<inspect::Pane, Error> {
         let facts = (*projection != Projection::Topology).then(|| pane.facts().clone());
         let cwd = if *projection == Projection::Recipe {
-            Some(match self.dir_with(pane.id(), &mut Memory)? {
+            Some(match self.dir_read(pane.id()) {
                 Ok(Some(dir)) => inspect::Directory::Known(crate::capture::path(dir.as_os_str())),
                 Ok(None) => inspect::Directory::Unknown,
                 Err(errno) => inspect::Directory::Failed(errno.raw()),

@@ -83,10 +83,6 @@ impl Error {
             Error::Socket(socket::Error::NoServer(_)) | Error::Connect { .. } => Code::NoServer,
             Error::Mismatch { .. } | Error::Unfollowed { .. } => Code::Mismatch,
             Error::Output(_) => Code::Output,
-            Error::Protocol(
-                fux_wire::protocol::Error::Memory(_)
-                | fux_wire::protocol::Error::Wire(fux_wire::wire::Error::Memory(_)),
-            ) => Code::Memory,
             Error::Socket(_)
             | Error::Refused(_)
             | Error::Protocol(_)
@@ -378,24 +374,13 @@ impl Requests {
                 },
             );
         }
-        // Its reply, joined from its parts as far as the OS gives memory:
-        // a refusal is this request's failure, said once the rest of the
-        // reply is read and let go, so that the next request meets its own.
+        // Its reply, joined from its parts.
         let mut parts = Joining::default();
-        let mut refused = None;
         loop {
             while let Some(frame) = self.decoder.frame()? {
                 match frame {
-                    ToCommand::Part(_) if refused.is_some() => {}
-                    ToCommand::Part(bytes) => {
-                        if let Err(error) = parts.push(&bytes) {
-                            (parts, refused) = (Joining::default(), Some(error));
-                        }
-                    }
+                    ToCommand::Part(bytes) => parts.push(&bytes),
                     ToCommand::PartsEnd => {
-                        if let Some(error) = refused {
-                            return Err(error.into());
-                        }
                         let reply = fux_wire::wire::Reader::new(parts.as_slice()).whole::<Reply>();
                         return Ok(reply.map_err(fux_wire::protocol::Error::Wire)?);
                     }
@@ -2075,42 +2060,6 @@ mod tests {
         };
         assert_eq!(keys.len(), RUN + 1);
         assert_eq!((fence, last), (&now(Dispatch::Fence), &now(key('x'))));
-        Ok(())
-    }
-
-    /// A client refused memory while it joins a reply's parts fails that
-    /// request, with the out-of-memory code: it aborted. Given the memory,
-    /// it reads the same reply.
-    #[cfg(all(unix, feature = "checks"))]
-    #[test]
-    fn refused_memory_joining_a_reply_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
-        let (mine, mut server) = std::os::unix::net::UnixStream::pair()?;
-        let reply: Reply = fux_wire::protocol::Body::Empty.into();
-        let mut answer = fux_vt::bytes::ByteQueue::default();
-        fux_wire::protocol::split_into(
-            &fux_wire::wire::encode(&reply),
-            ToCommand::Part,
-            &mut answer,
-        );
-        answer.push_with(|frames| ToCommand::PartsEnd.encode_into(frames));
-        // Two answers, each read by the request it is met with.
-        server.write_all(answer.as_slice())?;
-        server.write_all(answer.as_slice())?;
-        let asked = Asked {
-            after: None,
-            request: fux_wire::command::Command::Inspect {
-                scope: fux_wire::inspect::Scope::All,
-                projection: fux_wire::inspect::Projection::Facts,
-            }
-            .into(),
-            context: Context::default(),
-        };
-        let mut requests = Requests::over(mine);
-        fux_vt::refuse_next(1);
-        let refused = requests.ask(&asked, None);
-        fux_vt::refuse_next(0);
-        assert_eq!(refused.err().map(|e| e.code()), Some(Code::Memory));
-        assert_eq!(requests.ask(&asked, None)?, reply);
         Ok(())
     }
 

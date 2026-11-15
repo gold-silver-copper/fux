@@ -2,10 +2,6 @@
 //! program (`host`, `pane`), the grid its screen is drawn on (`render`),
 //! its captures, and what it and its server say to each other (`link`).
 //! fux-server holds the same code for a session kept in one process.
-//!
-//! A pane's process must outlive an OS that refuses it memory: its
-//! `clippy.toml` bans the allocations that abort then, so each one here
-//! either can refuse or says why it is kept.
 
 /// Writes to the log, the process's stderr: `log!("…", args)` writes the
 /// line after `fux server: `. A log that cannot be written, a full disk,

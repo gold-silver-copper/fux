@@ -78,7 +78,7 @@ programs built on the libraries (below) are the acceptance test for the whole po
    wasm32 build check for fux-vt; `.gitattributes` so CRLF checkouts don't break byte-exact test data.
    Done when: the Windows job is green and fux-vt builds for wasm32.
 2. **fuxix per module.** The "Linux, Android and macOS only" `compile_error!` (`fuxix/src/lib.rs:21-22`)
-   moves to each module; portable `Pid`, `Signal`, `Status`, `Errno`, `Allocation`; fux-wire's five
+   moves to each module; portable `Pid`, `Signal`, `Status`, `Errno`; fux-wire's five
    Windows errors fixed. Done when: fux-wire builds for Windows, and the Unix diff is types only.
 3. **`Job` on Unix**, and macOS `process::tree()` stops listing every process on the system. Done when: the
    pane code uses `Job` with identical behaviour, and a macOS test shows `tree()` returns descendants only.

@@ -2,11 +2,6 @@
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state, as data (`Captured`) that the client renders as text or
 //! as JSON.
-#![expect(
-    clippy::disallowed_macros,
-    clippy::disallowed_methods,
-    reason = "a capture is built whole, in plain vectors, strings and JSON, and aborts if the OS refuses it memory: left, D-194"
-)]
 use crate::pane::{Pane, Process};
 use fux_vt::{
     Attributes, CommandMark, Mark, Mode, MouseProtocolEncoding, MouseProtocolMode, Row, Screen,
@@ -17,7 +12,6 @@ use fux_wire::command::{CaptureView, Source, Version};
 use fux_wire::id::ClientId;
 use fux_wire::inspect::Terminal;
 use fux_wire::json::Json;
-use fux_wire::wire::Memory;
 
 /// What `since` reads a version's changed rows from: each revision the
 /// screen had (a version's `SCREEN`), oldest first, with its mark as it
@@ -708,10 +702,7 @@ pub fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
         Some(fux_wire::answer::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
         Some(fux_wire::answer::Ended::Lost) | None => (Json::Null, Json::Null),
     };
-    let read_error = pane
-        .read_error()
-        .map(|e| e.message(&mut Memory))
-        .transpose()?;
+    let read_error = pane.read_error().map(|e| e.to_string());
     let argv = pane.runs.launch().argv.iter().map(Json::str).collect();
     Ok(Json::object(vec![
         ("pane", Json::str(pane.id().to_string())),
