@@ -15,10 +15,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fux-pane"
+version = "0.37.0"
+dependencies = [
+ "fux",
+ "fux-vt",
+ "fux-wire",
+ "fuxix",
+]
+
+[[package]]
 name = "fux-server"
 version = "0.37.0"
 dependencies = [
  "fux",
+ "fux-pane",
  "fux-vt",
  "fux-vt-peak",
  "fux-wire",

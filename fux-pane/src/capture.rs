@@ -2,6 +2,11 @@
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state, as data (`Captured`) that the client renders as text or
 //! as JSON.
+#![expect(
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    reason = "a capture is built whole, in plain vectors, strings and JSON, and aborts if the OS refuses it memory: left, D-194"
+)]
 use crate::pane::{Pane, Process};
 use fux_vt::{
     Attributes, CommandMark, Mark, Mode, MouseProtocolEncoding, MouseProtocolMode, Row, Screen,

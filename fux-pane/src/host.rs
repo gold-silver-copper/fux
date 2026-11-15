@@ -142,6 +142,7 @@ struct Waiting(Vec<(u64, Option<Awaiting>)>);
 impl Waiting {
     /// `awaiting` waits for body `token`: false if the OS gave no memory
     /// to keep it, and it does not.
+    #[expect(clippy::disallowed_methods, reason = "room for one was made above")]
     fn insert(&mut self, token: u64, awaiting: Awaiting) -> bool {
         if self.0.try_reserve(1).is_err() {
             return false;
@@ -216,6 +217,10 @@ pub struct Watch {
 impl Host {
     /// A pane as `begin` says, its first program started, if it starts
     /// real ones: else why not.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (to_string): left, D-194"
+    )]
     pub fn begin(begin: Begin, now: Instant) -> Result<Host, String> {
         let launch = pane::Launch {
             argv: begin.argv,
@@ -312,6 +317,10 @@ impl Host {
     }
 
     /// What it told goes out first, at the counts it is at now.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (Box::new, push): left, D-194"
+    )]
     fn tell_told(&mut self) {
         if self.told.is_empty() {
             return;
@@ -338,12 +347,20 @@ impl Host {
     }
 
     /// Tells the server `report`, after what it told before.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     fn report(&mut self, report: FromPane) {
         self.tell_told();
         self.out.push(report);
     }
 
     /// What the server says.
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
     pub fn handle(&mut self, message: ToPane, now: Instant) {
         // What may change its screen or facts: keys typed do not (an echo
         // is its program's output), nor its facts taken.
@@ -417,6 +434,11 @@ impl Host {
     /// many turns as that takes (`after_turn`): till then the respawn is
     /// under way, and another refused. Its answer, the version the pane
     /// starts at, waits for it.
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (format!, push, to_string): left, D-194"
+    )]
     fn respawn(
         &mut self,
         ask: u64,
@@ -510,6 +532,10 @@ impl Host {
     /// that exited with output unread exits, and a respawn under way takes
     /// its place, once a frame its old program holds is read too, by a
     /// turn of its own (`fire`).
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
     fn after_turn(&mut self, now: Instant) {
         let respawning = self.respawning.is_some();
         let pane = &self.pane;
@@ -561,6 +587,10 @@ impl Host {
     /// Hangs up a program; it is killed and reaped after `GRACE`.
     /// `closed`: fux closed it (`kill`), not its own end: the rest of its
     /// session goes too.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     fn end(&mut self, process: Process, closed: bool, now: Instant) {
         if let Process::Reading(mut child)
         | Process::HungUp(mut child)
@@ -577,6 +607,11 @@ impl Host {
 
     /// It is closed, by fux if `closed`: its program, and one a respawn
     /// under way started, are ended.
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (format!, push): left, D-194"
+    )]
     fn close(&mut self, closed: bool, now: Instant) {
         if self.closed.is_some() {
             return;
@@ -626,6 +661,11 @@ impl Host {
         self.actor = previous;
     }
 
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (collect, format!, join, push): left, D-194"
+    )]
     fn program_exited(&mut self, ended: Ended, now: Instant) {
         let pane = &self.pane;
         // Told once.
@@ -705,6 +745,10 @@ impl Host {
     /// told, from the program whose terminal it is, the one respawned over
     /// or that left a writer too; only its own program stops being read for
     /// it.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     pub fn read_left_with(
         &mut self,
         empty_ends: bool,
@@ -832,6 +876,10 @@ impl Host {
     /// Tells the clients showing it what it let go of and has not told,
     /// each kind with how many (`Pane::take_untold`); with no client showing
     /// it, it is kept for one that does.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (extend, join): left, D-194"
+    )]
     fn tell_refused(&mut self) {
         if !self.shown || !(self.pane.loses() || self.pane.has_terminal_errors()) {
             return;
@@ -871,6 +919,10 @@ impl Host {
     }
 
     /// What `timer` waited for is done, now that it is due.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (extend): left, D-194"
+    )]
     pub fn fire(&mut self, timer: Timer, now: Instant) {
         self.changed();
         match timer {
@@ -900,6 +952,10 @@ impl Host {
     /// Checks its program's leader, and those killed, since signals
     /// coalesce, and reaps the orphans it adopted, every child that is no
     /// leader of its own.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (collect): left, D-194"
+    )]
     pub fn reap(&mut self, now: Instant) {
         self.changed();
         self.reap_killed();
@@ -919,6 +975,10 @@ impl Host {
     }
 
     /// Reaps each program killed that has exited.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (collect): left, D-194"
+    )]
     fn reap_killed(&mut self) {
         let killed = std::mem::take(&mut self.killed).into_iter();
         self.killed = killed.filter_map(process::reaped).collect();
@@ -927,6 +987,10 @@ impl Host {
     /// Kills every program it has left, and waits for them, at most a
     /// second: a process stuck in the kernel is left to init rather than
     /// hold its pane's end.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (extend): left, D-194"
+    )]
     pub fn finish(&mut self) {
         let dying = std::mem::take(&mut self.dying);
         self.killed
@@ -982,6 +1046,10 @@ impl Host {
 
     /// Keys, a paste, a focus change or a mouse report a client typed into
     /// it, as its program asked for them; told to `client` if refused.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (extend, extend_from_slice, push, to_string): left, D-194"
+    )]
     fn typed(&mut self, client: ClientId, typed: Typed) {
         // Its text comes from its client's connection, and is refused, if
         // it is, as its first piece comes (`piece`).
@@ -1048,6 +1116,10 @@ impl Host {
 
     /// Why what was to be queued for its program was not: a frame of
     /// what was typed waits for it unread.
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
     fn not_queued(&self) -> Error {
         fail(
             Code::TooLong,
@@ -1060,6 +1132,10 @@ impl Host {
 
     /// Does what it is asked: its answer, or none yet (a respawn's waits
     /// for it).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (insert): left, D-194"
+    )]
     fn ask(&mut self, ask: u64, what: Ask, now: Instant) -> Option<Answered> {
         let done = match what {
             Ask::Keys {
@@ -1151,6 +1227,10 @@ impl Host {
 
     /// Whether its program takes keys now, sent it at `seen` if that is
     /// given: the version it is at, or why not.
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
     fn takes_keys(&self, seen: Option<Version>) -> Result<Version, Error> {
         let now = self.version();
         if let Some(seen) = seen {
@@ -1174,6 +1254,11 @@ impl Host {
 
     /// `send-mouse`: `mouse` at `row` and `col`, encoded as its program
     /// asked for mouse reports.
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (extend, format!, vec!): left, D-194"
+    )]
     fn send_mouse(&mut self, mouse: Mouse, row: u16, col: u16) -> Result<Answered, Error> {
         use fux_vt::MouseProtocolMode as Asked;
         use fux_vt::keys::mouse::MouseAction::{Motion, Press, Release};
@@ -1266,6 +1351,11 @@ impl Host {
     /// `signal` sent to the process group that runs in its foreground: the
     /// terminal's foreground group (a job its shell runs), or the program
     /// it was started with; never the shell of a pane that runs one.
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (collect, extend_from_slice, format!, join): left, D-194"
+    )]
     fn signal(&mut self, signal: fuxix::process::Signal) -> Result<Answered, Error> {
         let pane = &self.pane;
         let target = pane.id();
@@ -1328,6 +1418,10 @@ impl Host {
     /// Sends `signal` to the foreground group of its terminal, as Unix does:
     /// the shell's job, or the program it was started with; never the shell
     /// of a pane that runs one.
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
     fn signal_group(&mut self, signal: fuxix::process::Signal) -> Result<(), Error> {
         let pane = &self.pane;
         let target = pane.id();
@@ -1351,6 +1445,11 @@ impl Host {
     /// A capture of its screen, `history` rows before it, as `view` asks:
     /// its observation's place, name and label, and the journal's cursor,
     /// left for the server to give it (`Session::captured`).
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (Box::new, format!): left, D-194"
+    )]
     fn capture(
         &mut self,
         history: Option<usize>,
@@ -1386,6 +1485,10 @@ impl Host {
 
     /// Its own facts, as a capture holds them: its place, name and label
     /// are the server's.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (to_owned): left, D-194"
+    )]
     fn observed(&self, tab: fux_wire::id::TabId) -> Result<fux_wire::inspect::Pane, Error> {
         let pane = &self.pane;
         Ok(fux_wire::inspect::Pane {
@@ -1405,6 +1508,10 @@ impl Host {
     }
 
     /// Its program's, launch's and terminal's facts now.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (collect): left, D-194"
+    )]
     fn facts(&self) -> Result<fux_wire::inspect::Facts, Error> {
         let pane = &self.pane;
         let terminal = fux_wire::inspect::Terminal::ALL.iter().copied();
@@ -1452,6 +1559,10 @@ impl Host {
     }
 
     /// What it says of itself as a server takes it back.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (to_string): left, D-194"
+    )]
     fn greeting(&self) -> crate::link::Greeting {
         let pane = &self.pane;
         let launch = pane.runs.launch();
@@ -1500,6 +1611,10 @@ impl Host {
     /// typed, its paste left open if it goes on; with its last, what
     /// waited for the body is answered. A body refused as it begins is
     /// refused once, and the rest of it let go.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (to_string): left, D-194"
+    )]
     pub fn piece(&mut self, token: u64, inputs: &[Input]) {
         let mut typing = match self.typing.take() {
             Some(typing) => typing,
@@ -1592,6 +1707,10 @@ impl Host {
 
     /// Body `typing` is over: whole, or `cut` short, its sender gone. A
     /// paste it left open is closed, and what waited for it is answered.
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
     fn typed_all(&mut self, mut typing: Typing, cut: bool) {
         let previous = std::mem::replace(&mut self.actor, typing.actor);
         self.close_paste(&mut typing);
@@ -1807,6 +1926,7 @@ impl Host {
     /// A respawn under way over `old`, into `fresh`, its grace over: as
     /// one over a program that ignores the hangup.
     #[cfg(all(any(test, feature = "testing"), unix))]
+    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
     pub fn respawning_over(&mut self, fresh: Pane, old: Child, now: Instant) {
         if let Process::Reading(child) = self.set_process(Process::Respawning) {
             self.dying.push(Dying {
@@ -1827,6 +1947,7 @@ impl Host {
     }
     /// The programs it started and has not reaped.
     #[cfg(all(any(test, feature = "testing"), unix))]
+    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
     pub fn children(&self) -> Vec<Pid> {
         (self.pane.process().child().into_iter())
             .chain(
@@ -1868,6 +1989,11 @@ impl<'a> Env<'a> {
 /// in cells of `cell`, if it starts real ones: told of its server
 /// (`FUX_PANE`, `FUX_SOCKET`, `FUX_SERVER`, and `FUX`, the fux running it,
 /// unset if it cannot be had).
+#[expect(
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    reason = "aborts if the OS refuses it memory (extend, format!, to_owned, to_string, vec!): left, D-194"
+)]
 fn spawn(
     told: &Env<'_>,
     generation: u64,
@@ -1898,6 +2024,10 @@ fn spawn(
 /// asked to make for it, and of those fux queues it unasked (in-band
 /// resize, colour scheme), so that none waits for a program respawned
 /// there.
+#[expect(
+    clippy::disallowed_macros,
+    reason = "aborts if the OS refuses it memory (format!): left, D-194"
+)]
 pub fn refuses_input(pane: &Pane) -> Option<Error> {
     let why = match pane.process() {
         Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
@@ -1917,6 +2047,10 @@ pub fn refuses_input(pane: &Pane) -> Option<Error> {
 }
 
 /// `pane`'s program has ended, with `status`: it takes no input.
+#[expect(
+    clippy::disallowed_macros,
+    reason = "aborts if the OS refuses it memory (format!): left, D-194"
+)]
 pub fn ended(pane: PaneId, status: Ended) -> Error {
     let was = match status {
         Ended::Exited(_) | Ended::Lost => "",
@@ -1997,6 +2131,10 @@ enum Drain {
 
 /// A turn's worth of what a terminal holds (`pane::SLICE`), read with
 /// `read`, and whether it may hold more.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "aborts if the OS refuses it memory (extend_from_slice): left, D-194"
+)]
 fn left_turn(mut read: impl FnMut(&mut [u8]) -> Result<usize, fuxix::Errno>) -> (Vec<u8>, Drain) {
     let mut left = Vec::new();
     let mut buffer = [0u8; pane::SLICE];
@@ -2119,8 +2257,16 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
     if let Err(errno) = fuxix::process::adopt_orphans() {
         log!("adopting orphans: {errno}");
     }
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "its last words, as it ends before it serves"
+    )]
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| format!("the signal pipe: {e}"))?;
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "its last words, as it ends before it serves"
+    )]
     crate::socket::pane_listen(&listener).map_err(|e| format!("its socket: {e}"))?;
     let own = i32::try_from(std::process::id()).unwrap_or(0);
     // A server gone before its first word started nothing, and nothing is
@@ -2130,8 +2276,16 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
     // answered is heeded, a close after a taking (its run ending) or its
     // start after it said it has not begun.
     let (mut end, begin) = 'begun: loop {
+        #[expect(
+            clippy::disallowed_macros,
+            reason = "its last words, as it ends before it serves"
+        )]
         let stream =
             crate::socket::pane_next(&mut listener).map_err(|e| format!("its server: {e}"))?;
+        #[expect(
+            clippy::disallowed_macros,
+            reason = "its last words, as it ends before it serves"
+        )]
         let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
         loop {
             match end.wait::<ToPane>() {
@@ -2166,6 +2320,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
             }
         }
     };
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "its last words, as it ends before it serves"
+    )]
     crate::socket::pane_begun(&listener).map_err(|e| format!("its socket: {e}"))?;
     // The server that holds its link, as it said it is.
     let mut server = begin.server;
@@ -2185,9 +2343,17 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
         end.send(&FromPane::Offer(offer));
     }
     if let Some(first) = host.update() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a small box, which aborts if the OS refuses it: left, D-194"
+        )]
         end.send(&FromPane::Update(Box::new(first)));
         waiting = true;
     }
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "once, as it begins: what it reads into from then on"
+    )]
     let mut buffer = vec![0u8; READ];
     let mut clock = Clock {
         next: Instant::now(),
@@ -2236,7 +2402,12 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                     {
                         // Refused the memory for it, it is drawn again at
                         // the next turn that is due.
-                        match peer.end.try_send(&FromSide::Drawn(Box::new(drawn))) {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "a small box, which aborts if the OS refuses it: left, D-194"
+                        )]
+                        let drawn = Box::new(drawn);
+                        match peer.end.try_send(&FromSide::Drawn(drawn)) {
                             Ok(()) => (watch.waiting, sent) = (true, true),
                             Err(_) => starved = true,
                         }
@@ -2256,7 +2427,15 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
             while let Some(report) = reports.next() {
                 if end.try_send(&report).is_err() {
                     starved = true;
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "what it could not send is kept in a list made anew, which aborts if the OS refuses that too: left, D-194"
+                    )]
                     let mut kept: Vec<FromPane> = std::iter::once(report).chain(reports).collect();
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "what it could not send is kept in a list made anew, which aborts if the OS refuses that too: left, D-194"
+                    )]
                     kept.append(&mut host.out);
                     host.out = kept;
                     break;
@@ -2269,6 +2448,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                 && due
                 && let Some(update) = host.update()
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "a small box, which aborts if the OS refuses it: left, D-194"
+                )]
                 end.send(&FromPane::Update(Box::new(update)));
                 (waiting, sent) = (true, true);
                 again = Some(crate::after(now, PAINT));
@@ -2338,6 +2521,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
             .or_else(|| unread.map(|child| fds.push(PollFd::new(&child.master, Events::OUT))));
         // One that holds a piece not yet taken is read no further, and
         // only its end is learned.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a list a turn makes, an entry for each peer: aborts if the OS refuses it: left, D-194"
+        )]
         let peered: Vec<_> = (peers.iter())
             .map(|peer| {
                 let mut events = match peer.held {
@@ -2352,11 +2539,18 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
             .collect();
         match fds.poll(timeout) {
             Ok(_) | Err(fuxix::Errno::INTR) => {}
-            Err(error) => return Err(format!("poll: {error}")),
+            Err(error) => {
+                #[expect(clippy::disallowed_macros, reason = "its last words, as it ends")]
+                return Err(format!("poll: {error}"));
+            }
         }
         let ready = |entry: Option<_>| entry.map_or(Events::NONE, |entry| fds.events(entry));
         let (linked, reaped, reached) = (ready(linked), ready(Some(reaped)), ready(Some(reached)));
         let program = ready(program);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a list a turn makes, an entry for each peer: aborts if the OS refuses it: left, D-194"
+        )]
         let peered: Vec<Events> = peered.into_iter().map(|peer| ready(Some(peer))).collect();
         let now = Instant::now();
         if !linked.is_empty()
@@ -2388,6 +2582,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                     && peers.try_reserve(1).is_ok()
                     && let Ok(end) = crate::socket::serve(reached).and_then(End::new)
                 {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "room for one was made in the condition above"
+                    )]
                     peers.push(Peer {
                         end,
                         side: None,
@@ -2425,6 +2623,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
         while let Some(mut peer) = peers.pop() {
             let events = peered.get(peers.len()).copied().unwrap_or(Events::NONE);
             if events.is_empty() {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "room for every peer was made as the list was taken"
+                )]
                 kept.push(peer);
                 continue;
             }
@@ -2493,7 +2695,12 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                                     clock.next = now;
                                     server = by;
                                     taken = true;
-                                    Taking::Greets(Box::new(host.greeting()))
+                                    #[expect(
+                                        clippy::disallowed_methods,
+                                        reason = "a small box, which aborts if the OS refuses it: left, D-194"
+                                    )]
+                                    let greeting = Box::new(host.greeting());
+                                    Taking::Greets(greeting)
                                 }
                                 None => {
                                     host.handle(asked, now);
@@ -2508,6 +2715,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                             done = true;
                         }
                         Ok(Some(ToPane::Who)) => {
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "a small box, which aborts if the OS refuses it: left, D-194"
+                            )]
                             let greets = Taking::Greets(Box::new(host.greeting()));
                             peer.end.send(&FromPane::Taking(greets));
                             let _ = peer.end.flush_all();
@@ -2568,6 +2779,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                 );
                 link = (!closed).then_some(peer.end);
             } else if !closed {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "room for every peer was made as the list was taken"
+                )]
                 kept.push(peer);
             } else if let Some(token) = peer.sends {
                 host.cut(token);
@@ -2663,6 +2878,11 @@ fn read_program(host: &mut Host, buffer: &mut [u8], clock: &mut Clock, hung: boo
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "tests allocate as they please"
+)]
 mod tests {
     use super::*;
     type TestResult = Result<(), Box<dyn std::error::Error>>;

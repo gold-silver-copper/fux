@@ -232,6 +232,10 @@ impl InputQueue {
     /// Body `body`, a client's paste, is to come, its server says: what
     /// is typed from here on waits behind it, as it was typed after it.
     /// Refused the memory to keep its place, nothing waits for it.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push_back): left, D-194"
+    )]
     fn expect(&mut self, body: u64) {
         if self.gates.try_reserve(1).is_ok() {
             self.gates.push_back(Behind {
@@ -270,6 +274,10 @@ impl InputQueue {
     }
     /// `len` bytes were queued, replies if `reply`. Refused the memory to
     /// say so, they count as what was queued before them.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push_back): left, D-194"
+    )]
     fn note(&mut self, reply: bool, len: usize) {
         if len == 0 {
             return;
@@ -353,6 +361,7 @@ impl InputQueue {
     }
     /// Everything queued, for tests and the harnesses.
     #[cfg(any(test, feature = "in-process"))]
+    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
     fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
@@ -407,6 +416,10 @@ pub struct Said {
 }
 
 impl Said {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (collect): left, D-194"
+    )]
     fn new(sent: fux_vt::Kept<'_>) -> Self {
         let text = String::from_utf8_lossy(sent.bytes);
         let text = text.chars().filter(|c| !c.is_control()).collect();
@@ -458,6 +471,10 @@ impl Title {
         self.now = title;
         changed
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push_back): left, D-194"
+    )]
     fn push(&mut self) {
         if self.pushed.len() >= TITLE_STACK {
             self.pushed.pop_front();
@@ -512,6 +529,10 @@ impl fux_vt::Sink for Sink<'_, '_> {
         }
     }
     /// A colour query (OSC 10, 11) is answered if the colour is known.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     fn event(&mut self, event: Event<'_>) {
         match event {
             Event::Title(title) => {
@@ -549,6 +570,10 @@ impl fux_vt::Sink for Sink<'_, '_> {
             Event::IconName(_) => {}
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     fn picture(&mut self, placed: bool) {
         self.pictures.push(placed);
     }
@@ -557,6 +582,10 @@ impl fux_vt::Sink for Sink<'_, '_> {
     /// title, which are one here) or 2 (title); Ps 1, the icon alone, is
     /// not a title. vim and tmux push on starting and pop on leaving. And
     /// `CSI ? 996 n`, the colour scheme asked for, answered if known.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (extend_from_slice): left, D-194"
+    )]
     fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
         let fux_vt::Unhandled::Csi {
             params,
@@ -718,6 +747,11 @@ impl Losses {
 
     /// What a notice says of them, of pane `id`: for each kind it lost
     /// any of, what, how many, and why (`%1: memory refused (2): …`).
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (collect, format!): left, D-194"
+    )]
     pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
         let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
@@ -946,6 +980,10 @@ impl<'a> PaneMut<'a> {
     /// Reading a terminal of its program's failed so: told, whether it is
     /// the terminal of the program it runs or one it left
     /// (`Session::read_left`).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (to_string): left, D-194"
+    )]
     pub fn tell_read_failed(&mut self, error: fuxix::Errno) {
         self.tell.tell(Told::ReadFailed(error.to_string()));
     }
@@ -979,6 +1017,10 @@ impl<'a> PaneMut<'a> {
     /// A request's `bytes` are queued for its program, and told as `kind`,
     /// with the version `expect` admitted them at, if it did.
     /// False if the OS gave no memory to queue them: none is, nor told.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (Box::new): left, D-194"
+    )]
     pub fn send(
         &mut self,
         bytes: &[u8],
@@ -1007,6 +1049,10 @@ impl<'a> PaneMut<'a> {
     /// A piece of body `body` being typed, `bytes`, is queued for its
     /// program, leaving a paste open if `open`, and told as `kind` if it
     /// is a request's: false if the OS gave no memory for it, and none is.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (Box::new): left, D-194"
+    )]
     pub fn piece(
         &mut self,
         bytes: &[u8],
@@ -1083,6 +1129,10 @@ impl<'a> PaneMut<'a> {
     /// the bell, its latest notification, and its copies, in order.
     /// Refused copies are counted here, unless this pane's program-copy permission
     /// is false, which copies nothing and so refuses none.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     pub fn take_read(&mut self) -> (bool, Option<Said>, Vec<String>) {
         let mut copies = Vec::new();
         let allowed = self.pane.options.program_clipboard;
@@ -1189,6 +1239,10 @@ impl Left {
 
     /// What a notice says of it, after the end's own words: nothing, if it
     /// left no input unwritten.
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
     pub fn told(self) -> String {
         match self.input {
             0 => String::new(),
@@ -1420,6 +1474,10 @@ impl Pane {
 
     /// Reads `bytes` at `now`, returning where its next parser turn starts.
     /// A held frame already owns its bytes and keeps that allocation itself.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (extend_from_slice): left, D-194"
+    )]
     fn read(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) -> Option<usize> {
         let mut rest = bytes;
         loop {
@@ -1849,6 +1907,10 @@ impl Pane {
         true
     }
 
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
     pub fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
         let (resize, read) = std::mem::take(&mut self.terminal_errors);
         let id = self.id;
@@ -2083,6 +2145,7 @@ pub mod testing {
     /// `rows` by `cols`, whatever fux-vt's weights: DECALN fills every
     /// cell and ED clears them all, the pair repeated twice as often as
     /// the fewest that a parser call stops at its budget in.
+    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
     pub fn spends_the_budget(rows: u16, cols: u16) -> Vec<u8> {
         struct Discard;
         impl fux_vt::Sink for Discard {}
@@ -2117,6 +2180,11 @@ pub mod testing {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "tests allocate as they please"
+)]
 pub mod tests {
     pub use super::testing::{options, spends_the_budget};
     use crate::vt_feed::{Feed, Look};

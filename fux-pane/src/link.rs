@@ -196,6 +196,10 @@ pub struct Refusal {
 wired!(struct Refusal { code, message });
 
 impl From<fux_wire::code::Error> for Refusal {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (to_string): left, D-194"
+    )]
     fn from(error: fux_wire::code::Error) -> Refusal {
         Refusal {
             code: error.code(),
@@ -514,6 +518,11 @@ pub const LAUNCH: usize = MAX_PAYLOAD / 4;
 
 /// Whether a pane may run `argv` in `cwd`: they take no more than `LAUNCH`
 /// in its reports, as its facts say them.
+#[expect(
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    reason = "aborts if the OS refuses it memory (collect, format!): left, D-194"
+)]
 pub fn launch_fits(
     argv: &fux_wire::command::Program,
     cwd: &std::path::Path,
@@ -689,6 +698,7 @@ impl End {
     /// The messages queued to go, as the other end will read them: for the
     /// tests.
     #[cfg(any(test, feature = "testing"))]
+    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
     pub fn queued<T: Wire>(&self) -> Vec<T> {
         let (mut decoder, mut joining) = (Decoder::default(), Joining::default());
         decoder.push(self.out.as_slice());

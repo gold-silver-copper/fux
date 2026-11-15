@@ -33,6 +33,10 @@ impl<'a> Teller<'a> {
     }
 
     /// The pane tells `what`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     pub fn tell(&mut self, what: Told) {
         let actor = match what {
             Told::Bell

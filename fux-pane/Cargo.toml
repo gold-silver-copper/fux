@@ -22,9 +22,10 @@ fux-vt = { path = "../fux-vt", version = "0.16.0" }
 fux-wire = { path = "../fux-wire", version = "0.37.0" }
 fuxix = { path = "../fuxix", version = "0.9.0" }
 
-# A test reads fux's default history size.
+# A test reads fux's default history size; the tests name ids by number.
 [dev-dependencies]
 fux = { path = ".." }
+fux-wire = { path = "../fux-wire", features = ["testing"] }
 
 # The workspace's lints, but for `disallowed_methods`, denied here and not
 # forbidden: this crate's `clippy.toml` adds the allocations that abort
