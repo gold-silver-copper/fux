@@ -284,9 +284,9 @@ record a line, each with its `sequence` and the `next` cursor, until the
 scope is gone or the server stops; an empty cursor starts now. Take the
 cursor from `information` or from a capture, and you miss nothing between
 reading and following. A hook is an ordinary program reading this stream,
-and a log is your redirect (`>> FILE`). The journal keeps the last 16,384
-events, a size the `journal-entries` setting gives a server as it starts;
-a reader past what it still holds fails `journal-loss`.
+and a log is your redirect (`>> FILE`). The journal keeps as many of its
+last events as 2 MiB hold, a size the `journal-bytes` setting gives a
+server as it starts; a reader past what it still holds fails `journal-loss`.
 [docs/records.md](docs/records.md) lists every record and event.
 
 ## Configuration
@@ -332,7 +332,7 @@ grift: write them again in grift.
   | --- | --- |
   | `shell` | a list: the program, then its arguments, for this client's new panes |
   | `history-bytes` | the history budget in bytes for panes this client creates (`history-budget` changes one pane's) |
-  | `journal-entries` | the events the journal of a server this client starts keeps; a running server keeps its own |
+  | `journal-bytes` | the bytes of events the journal of a server this client starts keeps; a running server keeps its own |
   | `reflow` | rewrap recorded primary-screen lines when a new pane is resized |
   | `alternate-scroll-lines` | arrows per alternate-screen wheel action; Ctrl keeps half-page scrolling |
   | `picture-bytes` | the picture budget for new panes, 0 to 96 MiB; zero disables pictures |

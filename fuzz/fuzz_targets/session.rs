@@ -230,7 +230,7 @@ fn defaults() -> &'static ClientState {
 
 impl Run {
     fn new(rows: u16, cols: u16, run: fux_wire::command::Run, now: std::time::Instant) -> Run {
-        let journal = defaults().preferences.journal_entries;
+        let journal = defaults().preferences.journal_bytes;
         let s = Session::new("/nonexistent/fux.sock".into(), false, run, journal);
         // The client attaching starts its first shell, on its screen.
         let mut run = Run {

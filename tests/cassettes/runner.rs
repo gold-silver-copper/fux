@@ -700,7 +700,7 @@ fn replay(cassette: &Cassette, ctx: &Ctx, keep: bool, deadline: Instant) -> Resu
             fux::script::default_state()
                 .map_err(e)?
                 .preferences
-                .journal_entries
+                .journal_bytes
                 .get()
                 .to_string(),
         )

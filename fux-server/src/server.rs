@@ -714,7 +714,7 @@ impl std::error::Error for Error {}
 
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
-pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) -> Result<(), Error> {
+pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalBytes) -> Result<(), Error> {
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| Error::Setup(e.into()))?;
     // Orphans the panes' programs leave stay the server's to read and reap.
@@ -3078,14 +3078,17 @@ mod tests {
             let mut reader = crate::journal::Reader::new(scope, journal, session.run, Some(from))?;
             let said =
                 |e: &fux_wire::events::Item, key| e.data.get(key).map(fux_wire::json::Json::render);
-            Ok((reader.batch(journal, true)?.events.iter())
-                .map(|e| {
-                    [said(e, "event"), said(e, "why")]
-                        .into_iter()
-                        .flatten()
-                        .collect()
-                })
-                .collect())
+            Ok((reader
+                .batch(journal, &session.parts.nested(), true)?
+                .events
+                .iter())
+            .map(|e| {
+                [said(e, "event"), said(e, "why")]
+                    .into_iter()
+                    .flatten()
+                    .collect()
+            })
+            .collect())
         };
         let now = Instant::now();
         let (mut session, mut conn, _peer) = attached()?;

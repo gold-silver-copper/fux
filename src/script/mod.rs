@@ -1199,7 +1199,7 @@ fn local(
             // Watching or naming a run starts no replacement server.
             let (socket, notices) = match *read_only || of.is_some() {
                 true => (server.socket()?, Vec::new()),
-                false => started(server, committed.preferences.journal_entries)?,
+                false => started(server, committed.preferences.journal_bytes)?,
             };
             if *read_only && !client::answers(&socket) {
                 let why = "no server answers: there is nothing to watch";
@@ -1221,7 +1221,7 @@ fn local(
             let draft = draft.ok_or_else(|| {
                 Failed::new(Code::Config, "start needs this client's local state")
             })?;
-            let journal = (draft.preferences.journal_entries())
+            let journal = (draft.preferences.journal_bytes())
                 .map_err(|why| Failed::new(Code::Config, why))?;
             started(server, journal)?;
         }
@@ -1240,10 +1240,10 @@ fn local(
 }
 
 /// The server's socket, starting it in the background if none answers,
-/// its journal keeping `journal` events, and what one started said.
+/// its journal keeping `journal` bytes of events, and what one started said.
 fn started(
     server: &mut Server,
-    journal: fux_wire::command::JournalEntries,
+    journal: fux_wire::command::JournalBytes,
 ) -> Result<(SocketPath, Vec<String>), Failed> {
     let socket = server.socket()?;
     let notices = match client::answers(&socket) {
@@ -1725,7 +1725,7 @@ pub mod testing {
             "/nonexistent/fux.sock".into(),
             false,
             run,
-            preferences.journal_entries,
+            preferences.journal_bytes,
         );
         let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
         let attach = fux_wire::protocol::Attach {

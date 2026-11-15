@@ -251,7 +251,7 @@ impl Through {
             fux::script::default_state()
                 .map_err(|e| e.to_string())?
                 .preferences
-                .journal_entries,
+                .journal_bytes,
         );
         // The client attaching starts its first shell, on its screen.
         let size = fux_vt::Size::new(rows, cols).map_err(|e| format!("fux: {e}"))?;
