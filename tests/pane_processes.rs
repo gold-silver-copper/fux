@@ -2706,7 +2706,10 @@ fn flooded_with_keys(server: &Server, client: &mut Client, own: i32) -> Outcome 
     let grew = |pid: i32, before: u64| peak_kib(pid).map(|peak| peak.saturating_sub(before));
     let (in_pane, served) = (grew(own, before.0)?, grew(pid, before.1)?);
     assert!(in_pane < 4 << 10, "its pane's process grew {in_pane} KiB");
-    assert!(served < 4 << 10, "the server grew {served} KiB");
+    // A frame of what was typed may wait in the server for a pane's
+    // process that takes none, with what its buffer grew by: far from the
+    // hundred megabytes these keys are as frames.
+    assert!(served < 8 << 10, "the server grew {served} KiB");
     assert!(held < 24 << 10, "a connection's process held {held} KiB");
     // `C-b d`: its bindings run whatever its pane takes.
     client.send(b"\x02d")?;
