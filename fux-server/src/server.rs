@@ -2103,8 +2103,12 @@ impl Server {
                 self.session.reaped(*pid, status, now);
             }
         }
+        // Each child the server reaps by name is kept from the sweep of
+        // orphans: one reaped there would leave its pid in a list here,
+        // for the next process given that pid to be taken for it.
         let children = self.session.children();
-        fuxix::process::reap_orphans(|pid| children.contains(&pid));
+        let conns = &self.conn_children;
+        fuxix::process::reap_orphans(|pid| children.contains(&pid) || conns.contains(&pid));
     }
 
     /// Waits for the panes' own processes, told to end, at most a second: one
