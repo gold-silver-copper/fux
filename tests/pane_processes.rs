@@ -1502,6 +1502,35 @@ fn capturing(server: &Server, pane: &str) -> Result<std::process::Child, String>
         .map_err(e)
 }
 
+/// One that reaches a pane, asks who it is and reads no answer holds the
+/// pane up no more than its own answer: an answer larger than its socket
+/// takes used to be written till it all went, and the pane did nothing
+/// else meanwhile, for its server or its program.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_peer_that_reads_no_answer_does_not_stop_the_pane() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    // Its launch is in its answer: more than a socket's buffer holds, in
+    // two arguments, each under what the system takes as one.
+    let piece: String = std::iter::repeat_n('x', 64).collect();
+    let long = format!("(apply join (map (lambda! (#ignore) \"{piece}\") (range 0 1875)))");
+    let id = id(&server.ok(&[format!(
+        "(sequence! (define! long {long}) (new-tab (program (size (in (options) \"w\") 80 24) (list \"sh\" \"-c\" \"sleep 1030\" long long))))"
+    )])?);
+    let _reap = reap_run(server)?;
+    let stream = std::os::unix::net::UnixStream::connect(pane_socket(server, &id)).map_err(e)?;
+    let mut silent = fux_server::link::End::new(stream).map_err(e)?;
+    silent.send(&fux_server::link::ToPane::Who);
+    silent.flush_all().map_err(e)?;
+    let asked = format!("(capture (pane {}))", fux::script::quoted(&id));
+    let answered = within(server, 10, &[&asked])?;
+    assert_eq!(answered.status, 0, "{}", answered.stderr);
+    drop(silent);
+    Ok(())
+}
+
 /// A pane whose socket's file is gone ends when it loses its server: no
 /// server could find it again, and it and its program would run on with
 /// no way to reach them. Another pane of the run is taken back.

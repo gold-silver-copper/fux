@@ -2038,6 +2038,10 @@ struct Peer {
     /// The piece of this body taken from it, till the program's terminal
     /// took it all: it is told then (`FromSide::Took`).
     owes: Option<u64>,
+    /// It has had its answer and is heard no more: it goes once its socket
+    /// took the answer, which the pane's loop writes as it can and never
+    /// waits on.
+    leaving: bool,
 }
 
 /// What its server said on `end`, its link, is taken in, in order, read
@@ -2304,8 +2308,8 @@ pub fn serve(
         let peered: Vec<_> = (peers.iter())
             .map(|peer| {
                 let mut events = match peer.held {
-                    None => Events::IN,
-                    Some(_) => Events::NONE,
+                    None if !peer.leaving => Events::IN,
+                    None | Some(_) => Events::NONE,
                 };
                 if !peer.end.out.is_empty() {
                     events |= Events::OUT;
@@ -2354,6 +2358,7 @@ pub fn serve(
                         held: None,
                         sends: None,
                         owes: None,
+                        leaving: false,
                     });
                 }
             }
@@ -2379,6 +2384,14 @@ pub fn serve(
             let events = peered.get(peers.len()).copied().unwrap_or(Events::NONE);
             if events.is_empty() {
                 kept.push(peer);
+                continue;
+            }
+            // One that only has its answer to take: gone once it took it,
+            // or went.
+            if peer.leaving {
+                if matches!(peer.end.flush(), Ok(false)) {
+                    kept.push(peer);
+                }
                 continue;
             }
             // What it said before it went is taken first; a frame at a time
@@ -2456,14 +2469,12 @@ pub fn serve(
                             if taken {
                                 break;
                             }
-                            let _ = peer.end.flush_all();
-                            done = true;
+                            peer.leaving = true;
                         }
                         Ok(Some(ToPane::Who)) => {
                             let greets = Taking::Greets(Box::new(host.greeting()));
                             peer.end.send(&FromPane::Taking(greets));
-                            let _ = peer.end.flush_all();
-                            done = true;
+                            peer.leaving = true;
                         }
                         Ok(Some(ToPane::Join { run }))
                             if run == host.run && host.closed.is_none() =>
@@ -2491,11 +2502,20 @@ pub fn serve(
                         Err(_) => done = true,
                     },
                 }
-                if done {
+                if done || peer.leaving {
                     break;
                 }
             }
             closed |= done;
+            // Its answer goes as its socket takes it: what is left of it
+            // is written on later turns, the pane waiting on no one.
+            // One that closed its own side as it asked still reads it.
+            if peer.leaving {
+                if matches!(peer.end.flush(), Ok(false)) {
+                    kept.push(peer);
+                }
+                continue;
+            }
             // Its server's link now, or gone: a body it was sending ends
             // where it is. What that server said after it asked, read with
             // it, is taken in now: one that asked for it and closed it at
