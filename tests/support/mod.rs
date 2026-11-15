@@ -939,38 +939,6 @@ pub fn resident_mib(pid: u32) -> Result<f64, String> {
     Ok(kib / 1024.0)
 }
 
-/// The CPU time a process has used, in seconds.
-pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
-    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        // After the command name, which is in parentheses and may hold
-        // spaces, the fields start at the state, field 3: user and system
-        // time, fields 14 and 15, are the 12th and 13th here, in ticks.
-        let (_, rest) = stat.rsplit_once(')').ok_or("a /proc stat line")?;
-        let fields: Vec<&str> = rest.split_whitespace().collect();
-        let ticks = |i: usize| -> Result<f64, String> {
-            fields
-                .get(i)
-                .ok_or("a /proc stat field")?
-                .parse::<f64>()
-                .map_err(e)
-        };
-        let hz = Command::new("getconf").arg("CLK_TCK").output().map_err(e)?;
-        let hz: f64 = String::from_utf8_lossy(&hz.stdout)
-            .trim()
-            .parse()
-            .map_err(e)?;
-        return Ok((ticks(11)? + ticks(12)?) / hz);
-    }
-    // macOS: `ps` gives minutes and seconds to the hundredth.
-    let out = Command::new("ps")
-        .args(["-o", "time=", "-p", &pid.to_string()])
-        .output()
-        .map_err(e)?;
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    let (minutes, seconds) = text.split_once(':').ok_or(format!("ps time {text:?}"))?;
-    Ok(minutes.parse::<f64>().map_err(e)? * 60.0 + seconds.parse::<f64>().map_err(e)?)
-}
-
 /// Whether a process `pid` exists, as `ps -p` finds it: a zombie not yet
 /// reaped does.
 pub fn exists(pid: i32) -> bool {
