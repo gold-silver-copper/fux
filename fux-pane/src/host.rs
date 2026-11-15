@@ -1048,7 +1048,7 @@ impl Host {
     /// it, as its program asked for them; told to `client` if refused.
     #[expect(
         clippy::disallowed_methods,
-        reason = "the client told once a turn is pushed into room made for it; a refusal's text and the bytes of a focus or scroll report abort if the OS refuses them: left, D-194"
+        reason = "the client told once a turn is pushed into room made for it; a key's and a paste's encoding (`key_bytes`, `paste`), a refusal's text and the bytes of a focus or scroll report abort if the OS refuses them: left, D-194"
     )]
     fn typed(&mut self, client: ClientId, typed: Typed) {
         // Its text comes from its client's connection, and is refused, if
@@ -1794,6 +1794,9 @@ impl Host {
                 return None;
             }
         };
+        // Its title and facts are cloned, here and for the update: each
+        // aborts if the OS refuses it memory, and no lint names a clone
+        // (D-194).
         let now = (facts, pane.title().clone(), pane.counts(), pane.size());
         if self.sent_facts.as_ref() == Some(&now) {
             return None;
@@ -2065,6 +2068,10 @@ pub fn ended(pane: PaneId, status: Ended) -> Error {
 /// through `paste`, which a piece that leaves one open (`Input::Pasting`)
 /// leaves for the next, so that a paste in pieces is one paste. Whether
 /// any of it was pasted; or that the OS gave no memory for them.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a key's bytes go into the room made for them just before"
+)]
 fn encode(
     p: &Pane,
     inputs: &[Input],
@@ -2293,12 +2300,20 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                 // Ended before it began, by a server whose run has it no
                 // more, or ends: it started nothing.
                 Ok(Some(ToPane::Close { .. })) => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "its first words, before it serves, queued with the twin that aborts if the OS refuses it memory"
+                    )]
                     end.send(&FromPane::Taking(Taking::Closing));
                     let _ = end.flush_all();
                     unlink();
                     return Ok(());
                 }
                 Ok(Some(ToPane::Take { .. } | ToPane::Who)) => {
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "its first words, before it serves, queued with the twin that aborts if the OS refuses it memory"
+                    )]
                     end.send(&FromPane::Taking(Taking::Unbegun { pid: own }));
                     let _ = end.flush_all();
                 }
@@ -2330,22 +2345,34 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
     let mut host = match Host::begin(*begin, Instant::now()) {
         Ok(host) => host,
         Err(why) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "its first words, before it serves, queued with the twin that aborts if the OS refuses it memory"
+            )]
             end.send(&FromPane::Begun(Some(why)));
             let _ = end.flush_all();
             return Ok(());
         }
     };
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "its first words, before it serves, queued with the twin that aborts if the OS refuses it memory"
+    )]
     end.send(&FromPane::Begun(None));
     // Facts sent and not yet taken: its first, which its server waits for
     // as it starts it.
     let mut waiting = false;
     if let Some(offer) = host.offer() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a small message queued with the twin that aborts if the OS refuses it memory: left, D-194"
+        )]
         end.send(&FromPane::Offer(offer));
     }
     if let Some(first) = host.update() {
         #[expect(
             clippy::disallowed_methods,
-            reason = "a small box, which aborts if the OS refuses it: left, D-194"
+            reason = "a small box, and a message queued with the twin that aborts if the OS refuses it: left, D-194"
         )]
         end.send(&FromPane::Update(Box::new(first)));
         waiting = true;
@@ -2442,6 +2469,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                 }
             }
             if let Some(offer) = host.offer() {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "a small message queued with the twin that aborts if the OS refuses it memory: left, D-194"
+                )]
                 end.send(&FromPane::Offer(offer));
             }
             if !waiting
@@ -2450,7 +2481,7 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
             {
                 #[expect(
                     clippy::disallowed_methods,
-                    reason = "a small box, which aborts if the OS refuses it: left, D-194"
+                    reason = "a small box, and a message queued with the twin that aborts if the OS refuses it: left, D-194"
                 )]
                 end.send(&FromPane::Update(Box::new(update)));
                 (waiting, sent) = (true, true);
@@ -2707,6 +2738,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                                     Taking::Closing
                                 }
                             };
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "a small message queued with the twin that aborts if the OS refuses it memory: left, D-194"
+                            )]
                             peer.end.send(&FromPane::Taking(answer));
                             if taken {
                                 break;
@@ -2720,6 +2755,10 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
                                 reason = "a small box, which aborts if the OS refuses it: left, D-194"
                             )]
                             let greets = Taking::Greets(Box::new(host.greeting()));
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "a small message queued with the twin that aborts if the OS refuses it memory: left, D-194"
+                            )]
                             peer.end.send(&FromPane::Taking(greets));
                             let _ = peer.end.flush_all();
                             done = true;

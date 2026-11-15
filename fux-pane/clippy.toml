@@ -6,6 +6,11 @@
 # `try_encode_into`), and mark the push that follows the room made with
 # `#[expect(clippy::disallowed_methods, reason = "…")]`. The lint is denied
 # here, not forbidden as in the workspace, so that it can be.
+# The list is a fence with gaps, not a proof: a lint names a method by its
+# path, so it sees no `clone` of owned data (derived or not), no
+# `String::from`, `Vec::from` or `into` (one trait method for every type),
+# nothing a closure handed to another crate allocates, and nothing fux-vt,
+# fux-wire or fuxix allocate inside a method not named here.
 #
 # Std methods that panic when a condition on their arguments fails at run
 # time: an index or range out of bounds, a position off a char boundary,

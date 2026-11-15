@@ -178,6 +178,10 @@ impl InputQueue {
     /// bracket, so that `close` never needs any: false if the OS gave
     /// none, and none is queued. `open`, if it leaves a paste open: what
     /// else comes then waits behind this body.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "its gate and its bytes go into the room made for them just before"
+    )]
     fn piece(&mut self, bytes: &[u8], body: u64, open: bool) -> bool {
         let closing = fux_vt::keys::encode::PasteEncoder::CLOSING;
         let room = bytes.len().saturating_add(closing);
@@ -201,6 +205,10 @@ impl InputQueue {
     }
     /// The paste that was open is closed with `closing`, in the room made
     /// for it (`piece`).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the closing bracket goes into the room made for it just before"
+    )]
     fn close(&mut self, closing: &[u8]) {
         if self.bytes.try_reserve(closing.len()).is_ok() {
             self.bytes.push(closing);
@@ -305,6 +313,10 @@ impl InputQueue {
     }
     /// Queues what `write` appends to its vector as a piece, in place;
     /// behind a paste that is open, as `push` does.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "what `write` appends, to the queue or to a vector of its own behind a paste, aborts if the OS refuses it memory: left, D-194"
+    )]
     fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) {
         if self.gated() {
             let mut bytes = Vec::new();
@@ -418,7 +430,7 @@ pub struct Said {
 impl Said {
     #[expect(
         clippy::disallowed_methods,
-        reason = "aborts if the OS refuses it memory (collect): left, D-194"
+        reason = "aborts if the OS refuses it memory (from_utf8_lossy, collect): left, D-194"
     )]
     fn new(sent: fux_vt::Kept<'_>) -> Self {
         let text = String::from_utf8_lossy(sent.bytes);

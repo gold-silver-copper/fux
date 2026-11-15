@@ -521,7 +521,7 @@ pub const LAUNCH: usize = MAX_PAYLOAD / 4;
 #[expect(
     clippy::disallowed_macros,
     clippy::disallowed_methods,
-    reason = "aborts if the OS refuses it memory (collect, format!): left, D-194"
+    reason = "aborts if the OS refuses it memory (collect, fux_wire::wire::encode, format!): left, D-194"
 )]
 pub fn launch_fits(
     argv: &fux_wire::command::Program,
@@ -576,6 +576,10 @@ impl End {
     /// Queues `message`, sent as the socket takes it (`flush`). One longer
     /// than a frame goes in pieces, which only an end that asked for
     /// something long joins (`next_long`); any other refuses the first.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the twin that aborts if the OS refuses it memory, for the server's side and a pane's small messages (D-194): what a pane reports goes through `try_send`"
+    )]
     pub fn send(&mut self, message: &impl Wire) {
         let message = Sending(message);
         self.out.push_with(|out| message.encode_into(out));
@@ -610,6 +614,10 @@ impl End {
 
     /// Queues `message` if it is one frame, as the server takes them:
     /// whether it was queued.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the twin that aborts if the OS refuses it memory, for the server's side: a pane's process uses `try_send_whole`"
+    )]
     pub fn send_whole(&mut self, message: &impl Wire) -> bool {
         let message = Sending(message);
         self.out.push_with(|out| {
@@ -685,6 +693,10 @@ impl End {
                 Ok(0) => return Read::Closed,
                 Ok(n) => {
                     read = read.saturating_add(n);
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "into the room made above if `refusable`; else this is `read`, the twin that aborts, for the server's side and a link's first word"
+                    )]
                     self.decoder.push(buffer.get(..n).unwrap_or_default());
                 }
                 Err(fuxix::Errno::INTR) => {}
@@ -728,6 +740,10 @@ impl End {
     /// Waits for the next whole message: for a link's first word alone,
     /// from a process just started, as its start waits today
     /// (`process::spawn`). None once the other end is gone first.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a link's first word, before a pane serves, read with the twin that aborts if the OS refuses it memory: left, D-194"
+    )]
     pub fn wait<T: Wire>(&mut self) -> Result<Option<T>, fux_wire::protocol::Error> {
         let mut buffer = [0u8; 4096];
         loop {
