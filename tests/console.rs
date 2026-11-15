@@ -140,9 +140,19 @@ mod windows {
     impl Place {
         fn new(name: &str) -> Result<Place, String> {
             // Of this run alone: another user's run can't be cleared away,
-            // and its logs would read as this one's.
+            // and its logs would read as this one's. Made new, so one an
+            // earlier run left under this process's number, which the
+            // system gives again, is passed over (it failed the test: the
+            // fux folder in it was there already, os error 183).
             let run = std::process::id();
-            let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("console-{name}-{run}"));
+            let tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
+            std::fs::create_dir_all(tmp).map_err(text)?;
+            let dir = (0..100u8)
+                .map(|again| tmp.join(format!("console-{name}-{run}-{again}")))
+                .find(|dir| std::fs::create_dir(dir).is_ok())
+                .ok_or_else(|| {
+                    format!("no new folder console-{name}-{run}-N in {}", tmp.display())
+                })?;
             std::fs::create_dir_all(dir.join("appdata").join("fux")).map_err(text)?;
             let folder = fux_server::socket::folder().map_err(text)?;
             let home = dir.join(folder);
