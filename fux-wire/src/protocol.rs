@@ -538,14 +538,6 @@ frames! {
         /// client's connection; the rest, while its last input is
         /// `Input::More`, follow it, and its server never sees them.
         Piece(inputs: Vec<crate::command::Input>) = PIECE_KIND,
-        /// A key or a paste for pane `pane`, the one its client focused as
-        /// it was typed, though it may focus another by now: what a client
-        /// held back (`ToAttached::Hold`, or behind a paste of its own to
-        /// that pane) and sends later goes where it was typed, so its
-        /// bindings, a change of focus among them, never wait behind it.
-        For(pane: PaneId, act: Box<Act>) = 24,
-        /// `Piece`, the first of a paste for pane `pane` (`For`).
-        PieceFor(pane: PaneId, inputs: Vec<crate::command::Input>) = 25,
     }
 }
 
@@ -695,30 +687,17 @@ pub fn encode_asked(asked: &Asked) -> Vec<u8> {
     out
 }
 
-/// A key or a paste as an attached client sends it, each of its frames
-/// encoded: for pane `to` if one is named (`AttachedFrame::For`), else for
-/// the pane it focuses. A paste longer than a frame takes goes in pieces
-/// (`AttachedFrame::Piece`), the first to send at once and each further one
-/// as it is asked for (`ToAttached::More`).
-pub fn encode_typed(act: Act, to: Option<PaneId>) -> Vec<Vec<u8>> {
-    let frame = match to {
-        Some(pane) => AttachedFrame::For(pane, Box::new(act)),
-        None => AttachedFrame::Act(Box::new(act)),
-    };
-    let (AttachedFrame::Act(act) | AttachedFrame::For(_, act)) = &frame else {
-        return vec![frame.encode()];
-    };
-    if let Act::Paste(text) = &**act
-        && !sends_whole(&frame)
+/// `frame` as an attached client sends it, each of its frames encoded: a
+/// paste longer than a frame takes in pieces (`AttachedFrame::Piece`), the
+/// first to send at once and each further one as it is asked for
+/// (`ToAttached::More`); anything else as its one frame.
+pub fn encode_attached(frame: &AttachedFrame) -> Vec<Vec<u8>> {
+    if let AttachedFrame::Act(act) = frame
+        && let Act::Paste(text) = &**act
+        && !sends_whole(frame)
     {
-        let mut pieces = cut_inputs(vec![crate::command::Input::Paste(text.clone())]).into_iter();
-        let first = pieces.next().unwrap_or_default();
-        let first = match to {
-            Some(pane) => AttachedFrame::PieceFor(pane, first),
-            None => AttachedFrame::Piece(first),
-        };
-        return std::iter::once(first.encode())
-            .chain(pieces.map(|piece| AttachedFrame::Piece(piece).encode()))
+        return (cut_inputs(vec![crate::command::Input::Paste(text.clone())]).into_iter())
+            .map(|piece| AttachedFrame::Piece(piece).encode())
             .collect();
     }
     vec![frame.encode()]
@@ -949,26 +928,15 @@ frames! {
         /// What only it knows, asked for a request: it sends its `Answer`
         /// with this number.
         Read(asked: u64, read: crate::command::ClientRead) = 13,
-        /// What it last sent of the paste it is sending is taken: it sends
-        /// the next piece (`AttachedFrame::Piece`), or, with none left, its
-        /// paste is taken, and it sends what it held back behind it. A
-        /// client sends a paste's first piece and then each further one
-        /// only as it is told so, and nothing else that adds input till
-        /// the last is taken: so it is never part way through writing a
-        /// piece while its paste waits for a program that isn't reading,
-        /// what it types keeps its order behind the paste, and what else
-        /// it has to say (an `Answer`, a detach) is said meanwhile.
+        /// What it last sent of the oldest paste it is sending is taken: it
+        /// sends that paste's next piece (`AttachedFrame::Piece`), or, with
+        /// none left, that paste is taken. A client sends a paste's first
+        /// piece and then each further one only as it is told so: it is
+        /// never part way through writing a piece while its paste waits
+        /// for a program that isn't reading, and all else it has to say
+        /// (keys, its bindings' doing, an `Answer`, a detach) is said
+        /// meanwhile, at once.
         More = 21,
-        /// Whether it holds back what it types into pane `pane` (`true`),
-        /// till told otherwise: a frame of what was typed waits unread for
-        /// that pane's program, or its process takes nothing. Only keys
-        /// and pastes for that pane wait, each to be sent it later
-        /// (`AttachedFrame::For`); its bindings, its mouse, and what it
-        /// types into another pane go on at once.
-        Hold(pane: PaneId, held: bool) = 22,
-        /// The pane it focuses now, if any: what it types is for that
-        /// pane, which it says when it sends it later than it was typed.
-        Focus(pane: Option<PaneId>) = 23,
     }
 }
 

@@ -128,9 +128,10 @@ pub struct Host {
     held: BTreeMap<u64, Box<fux_wire::answer::Captured>>,
     /// The body being typed into it, between its first piece and its last.
     typing: Option<Typing>,
-    /// Its server was told a frame of input waits unread for its program
-    /// (`FromPane::Full`), and not yet that none does.
-    full: bool,
+    /// The clients told this turn that no more of what they type is
+    /// taken, a frame of what was typed waiting unread for its program
+    /// (`typed`): each told once a turn (`take`).
+    refusing: Vec<ClientId>,
 }
 
 /// The questions that wait for a body, each by its token: a list, which
@@ -162,6 +163,12 @@ impl Waiting {
     }
     fn clear(&mut self) {
         self.0.clear();
+    }
+    /// How many of them are clients' pastes.
+    fn pastes(&self) -> usize {
+        (self.0.iter())
+            .filter(|(_, awaiting)| matches!(awaiting, Some(Awaiting::Paste { .. })))
+            .count()
     }
 }
 
@@ -266,7 +273,7 @@ impl Host {
             whole: 0,
             awaiting: Waiting::default(),
             typing: None,
-            full: false,
+            refusing: Vec::new(),
             held: BTreeMap::new(),
         })
     }
@@ -299,21 +306,10 @@ impl Host {
     /// whose reading takes more than one call of the parser, so that what
     /// the frame does is told whole, with the counts it leaves.
     pub fn take(&mut self) -> Vec<FromPane> {
-        // Full at a frame of input unread, and no longer once none waits:
-        // said as it changes, so that those who type into it hold back
-        // what they type instead of its piling up here.
-        // What was typed, not its program's own queries answered: a
-        // program that asks without reading stalls only itself (D-177).
-        let input = self.pane.input();
-        let waits = input.waiting().saturating_sub(input.replies());
-        let full = match self.full {
-            true => waits > 0,
-            false => waits >= crate::pane::BEHIND,
-        };
-        if full != self.full {
-            self.full = full;
-            self.report(FromPane::Full(full));
-        }
+        // Who was told that what it types is not taken is told again if it
+        // types on: once a turn, so that it still reads so after its last
+        // key, each key clearing what its client was told before it.
+        self.refusing.clear();
         if self.pane.mid_frame() {
             return Vec::new();
         }
@@ -397,15 +393,23 @@ impl Host {
             ToPane::Drop { token } => {
                 self.cut(token);
                 self.held.remove(&token);
-                if let Some(Awaiting::Keys { ask, .. }) = self.awaiting.remove(token) {
-                    let refusal = Refusal {
-                        code: fux_wire::code::Code::Indeterminate,
-                        message: format!("{}: its asker went before its keys came", self.pane.id()),
-                    };
-                    self.report(FromPane::Answer {
-                        ask,
-                        answer: Answered::Refused(refusal),
-                    });
+                match self.awaiting.remove(token) {
+                    Some(Awaiting::Keys { ask, .. }) => {
+                        let refusal = Refusal {
+                            code: fux_wire::code::Code::Indeterminate,
+                            message: format!(
+                                "{}: its asker went before its keys came",
+                                self.pane.id()
+                            ),
+                        };
+                        self.report(FromPane::Answer {
+                            ask,
+                            answer: Answered::Refused(refusal),
+                        });
+                    }
+                    // A paste that will not come holds nothing back.
+                    Some(Awaiting::Paste { .. }) => self.pane_mut().paste_came(),
+                    None => {}
                 }
             }
             // Taken back as its link begins (`serve`).
@@ -993,9 +997,14 @@ impl Host {
         if let Typed::Body(token) = typed {
             // Refused the memory to wait for it, its pieces are never
             // taken, and stay with its sender.
-            if !(self.awaiting).insert(token, Awaiting::Paste { client }) {
-                let why = no_memory().to_string();
-                self.report(FromPane::Refused { client, why });
+            match (self.awaiting).insert(token, Awaiting::Paste { client }) {
+                // What is typed from here on was typed after it, and waits
+                // behind it till it has all come.
+                true => self.pane_mut().expect_paste(),
+                false => {
+                    let why = no_memory().to_string();
+                    self.report(FromPane::Refused { client, why });
+                }
             }
             return;
         }
@@ -1029,27 +1038,33 @@ impl Host {
                 }
             }
         }
-        if !bytes.is_empty() && !self.pane_mut().typed(&bytes) {
+        if bytes.is_empty() {
+            return;
+        }
+        // A frame of what was typed is the most that waits for its
+        // program, behind a paste or not: past it, what is typed is not
+        // taken, and its typist is told so, once till some is again.
+        let room = crate::pane::BEHIND.saturating_sub(self.pane.input().typed_waiting());
+        if bytes.len() <= room && self.pane_mut().typed(&bytes) {
+            return;
+        }
+        if !self.refusing.contains(&client) && self.refusing.try_reserve(1).is_ok() {
+            self.refusing.push(client);
             let why = self.not_queued().to_string();
-            // A focus change that could not be told is no news.
             self.report(FromPane::Refused { client, why });
         }
     }
 
-    /// Why what was to be queued for its program was not: more than a
-    /// frame waits behind a paste that is open, or the OS gave no memory.
+    /// Why what was to be queued for its program was not: a frame of
+    /// what was typed waits for it unread.
     fn not_queued(&self) -> Error {
-        match self.pane.input().pasting() {
-            true => fail(
-                Code::TooLong,
-                format!(
-                    "a paste into {} is under way, and more than {} bytes wait behind it",
-                    self.pane.id(),
-                    crate::pane::BEHIND
-                ),
+        fail(
+            Code::TooLong,
+            format!(
+                "{} isn't reading what is typed: no more is taken till it reads",
+                self.pane.id()
             ),
-            false => no_memory(),
-        }
+        )
     }
 
     /// Does what it is asked: its answer, or none yet (a respawn's waits
@@ -1419,6 +1434,9 @@ impl Host {
         self.told.clear();
         self.out.clear();
         // What its last server's askers wanted is no one's now.
+        for _ in 0..self.awaiting.pastes() {
+            self.pane_mut().paste_came();
+        }
         self.awaiting.clear();
         self.held.clear();
         self.sent_facts = None;
@@ -1586,6 +1604,10 @@ impl Host {
     fn typed_all(&mut self, mut typing: Typing, cut: bool) {
         let previous = std::mem::replace(&mut self.actor, typing.actor);
         self.close_paste(&mut typing);
+        // A client's paste has all come: what was typed after it follows.
+        if typing.ask.is_none() {
+            self.pane_mut().paste_came();
+        }
         self.actor = previous;
         self.report(FromPane::Retired(typing.token));
         let (Some(ask), false) = (typing.ask, typing.refused) else {

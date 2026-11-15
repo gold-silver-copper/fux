@@ -305,18 +305,6 @@ pub struct Session {
     /// have not written them yet: one that is not reading is opened no
     /// other on (`ClientAction::Open`). The server's, which hears of it.
     pub prompted: std::collections::BTreeSet<ClientId>,
-    /// The panes with a frame of input their program has not read
-    /// (`FromPane::Full`): what is typed into one is held by its typist.
-    pub(crate) full: std::collections::BTreeSet<PaneId>,
-    /// Who typed into which pane since it last had no input unread: those
-    /// are told to hold back once it has a frame of it (`typing_holds`).
-    pub(crate) typists: std::collections::BTreeSet<(PaneId, ClientId)>,
-    /// How much was typed into each such pane since it said so
-    /// (`input::put_in`): past a frame, no more is taken.
-    pub(crate) over: BTreeMap<PaneId, usize>,
-    /// The pane what a client typed is for, while an act that names one
-    /// is applied (`AttachedFrame::For`): not the one it focuses now.
-    pub(crate) typing_for: Option<PaneId>,
     /// What panes used up of what connections held them for (`Retired`):
     /// the server lets each go of its connection.
     pub retired: Vec<(PaneId, u64)>,
@@ -504,10 +492,6 @@ impl Session {
             closing: Vec::new(),
             closed: Vec::new(),
             prompted: std::collections::BTreeSet::new(),
-            full: std::collections::BTreeSet::new(),
-            typists: std::collections::BTreeSet::new(),
-            over: BTreeMap::new(),
-            typing_for: None,
             body: None,
             deliveries: Vec::new(),
             retired: Vec::new(),
@@ -699,41 +683,6 @@ impl Session {
         } else if let Some(link) = self.links.get_mut(&id) {
             link.send(id, message, now, &mut self.inbox);
         }
-    }
-
-    /// The panes client `client` is to hold back what it types into
-    /// (`ToAttached::Hold`): the one it focuses, if that pane's process
-    /// takes nothing or slower than it is typed (`typing_waits`); and each
-    /// it typed into that has a frame of what was typed unread by its
-    /// program (`FromPane::Full`). What is typed into those stays with the
-    /// client; one that only shows such a pane is told nothing.
-    pub fn typing_holds(&self, client: ClientId) -> std::collections::BTreeSet<PaneId> {
-        let waits = (self.focused(client)).filter(|_| self.typing_waits(client));
-        (self.typists.iter())
-            .filter(|(pane, typist)| {
-                *typist == client && self.full.contains(pane) && self.links.contains_key(pane)
-            })
-            .map(|(pane, _)| *pane)
-            .chain(waits)
-            .collect()
-    }
-
-    /// Whether what client `client` types waits, unread by the server: its
-    /// focused pane's process takes nothing of what it was sent (stopped,
-    /// say: `Remote::stalled`), or a frame of what was said to it waits
-    /// here already. It stays with the client and its connection, never
-    /// queued here past that.
-    pub fn typing_waits(&self, client: ClientId) -> bool {
-        let pane = self.focused(client);
-        pane.and_then(|pane| self.links.get(&pane))
-            .is_some_and(|link| match link {
-                // Or takes it slower than it is typed: a frame of what was
-                // said to it waits here already.
-                Link::Remote(remote) => {
-                    remote.stalled || remote.end.out.len() >= fux_wire::protocol::MAX_FRAME
-                }
-                Link::Local(_) => false,
-            })
     }
 
     /// Where its run's panes listen, and keep what outlives its server
@@ -1088,14 +1037,6 @@ impl Session {
             FromPane::Refused { client, why } => self.notify_to(client, why, true),
             FromPane::Retired(token) => self.retired.push((id, token)),
             FromPane::Offer(_) => {}
-            FromPane::Full(true) => {
-                self.full.insert(id);
-            }
-            FromPane::Full(false) => {
-                self.full.remove(&id);
-                self.over.remove(&id);
-                self.typists.retain(|(pane, _)| *pane != id);
-            }
         }
     }
 
@@ -4607,9 +4548,7 @@ pub(crate) mod testing {
                     | ToAttached::Exit(_)
                     | ToAttached::Welcome(..)
                     | ToAttached::Read(..)
-                    | ToAttached::More
-                    | ToAttached::Hold(..)
-                    | ToAttached::Focus(_),
+                    | ToAttached::More,
                 )
                 | super::Outgoing::Owed(..)
                 | super::Outgoing::Keys(..)
@@ -9743,27 +9682,22 @@ mod tests {
         Ok(())
     }
 
-    /// A pane says when a frame of what was typed waits unread for its
-    /// program, once, and when none waits any more; meanwhile a client
-    /// that types into it is to hold back what it types, and no other is
-    /// (D-187). What was typed queued in the pane without end.
+    /// A frame of what was typed is the most that waits unread for a pane's
+    /// program: what is typed past it is not taken, and its typist is told
+    /// so, once a turn. The answers to the program's own
+    /// queries are not what was typed, and count for none of it (D-187;
+    /// what was typed queued in the pane without end).
     #[test]
-    fn a_pane_with_a_frame_typed_and_unread_has_its_typists_hold_back() -> TestResult {
+    fn what_is_typed_past_a_frame_unread_is_not_taken_and_said_once() -> TestResult {
         use crate::link::{FromPane, ToPane, Typed};
         let (mut s, client) = super::testing::attached(10, 40)?;
         let id = s.focused(client).ok_or("its pane")?;
         let now = Instant::now();
         let key = || Typed::Key(fux_vt::keys::KeyPress::char('k').into());
-        // Another client shows the same pane, and types nothing.
-        let watcher = s.attach(10, 40, None).map_err(|e| e.to_string())?;
-        assert_eq!(s.focused(watcher), Some(id));
-        // One key typed as a client's is: its server knows who typed.
-        let stroke = fux_vt::keys::KeyPress::char('k').into();
-        s.acts(client, vec![fux_wire::act::Act::Key(stroke)], now);
-        let fulls = |reports: &[FromPane]| -> Vec<bool> {
+        let refused = |reports: &[FromPane]| -> Vec<String> {
             (reports.iter())
                 .filter_map(|report| match report {
-                    FromPane::Full(full) => Some(*full),
+                    FromPane::Refused { why, .. } => Some(why.clone()),
                     FromPane::Begun(_)
                     | FromPane::Taking(_)
                     | FromPane::Told { .. }
@@ -9771,68 +9705,45 @@ mod tests {
                     | FromPane::Alert { .. }
                     | FromPane::Copied(_)
                     | FromPane::Notice { .. }
-                    | FromPane::Refused { .. }
                     | FromPane::Answer { .. }
                     | FromPane::Retired(_)
                     | FromPane::Offer(_) => None,
                 })
                 .collect()
         };
-        // One byte short of a frame: not full.
-        let said = host(&mut s, id, |h| {
-            for _ in 2..crate::pane::BEHIND {
-                h.handle(
-                    ToPane::Typed {
-                        client,
-                        typed: key(),
-                    },
-                    now,
-                );
-            }
-            h.take()
-        })?;
-        assert_eq!(fulls(&said), []);
-        assert!(s.typing_holds(client).is_empty());
-        let said = host(&mut s, id, |h| {
-            h.handle(
-                ToPane::Typed {
-                    client,
-                    typed: key(),
-                },
-                now,
-            );
-            let mut said = h.take();
-            // More typed while it is full says nothing more.
-            h.handle(
-                ToPane::Typed {
-                    client,
-                    typed: key(),
-                },
-                now,
-            );
-            said.append(&mut h.take());
-            said
-        })?;
-        assert_eq!(fulls(&said), [true]);
-        s.heard(id, FromPane::Full(true));
-        s.pump(now);
-        assert_eq!(s.typing_holds(client), [id].into());
-        assert!(s.typing_holds(watcher).is_empty(), "it typed nothing");
-        // Its program reads it all: no longer.
-        let said = host(&mut s, id, |h| {
-            let read = h.pane_mut().drain_input().len();
-            assert_eq!(read, crate::pane::BEHIND + 1);
-            h.take()
-        })?;
-        assert_eq!(fulls(&said), [false]);
-        s.heard(id, FromPane::Full(false));
-        s.pump(now);
-        assert!(s.typing_holds(client).is_empty());
-        // Answers to its program's own queries, a frame of them unread,
-        // are not what was typed: nobody is told to hold back for them.
-        let said = host(&mut s, id, |h| {
-            // A slice of its output a call: as many calls as bring a
-            // frame of answers.
+        let typed = |s: &mut Session, keys: usize| {
+            host(s, id, |h| {
+                for _ in 0..keys {
+                    h.handle(
+                        ToPane::Typed {
+                            client,
+                            typed: key(),
+                        },
+                        now,
+                    );
+                }
+                h.take()
+            })
+        };
+        // A frame of keys is taken; the three after it are not, said once
+        // for the turn they came in.
+        assert_eq!(
+            refused(&typed(&mut s, crate::pane::BEHIND)?),
+            [] as [String; 0]
+        );
+        let said = refused(&typed(&mut s, 3)?);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said.iter()
+                .all(|why| why.contains("isn't reading what is typed"))
+        );
+        assert_eq!(queued(&mut s, id)?.len(), crate::pane::BEHIND);
+        // Its program read: what is typed is taken again, and no more is
+        // said till a frame waits again.
+        assert_eq!(refused(&typed(&mut s, 1)?), [] as [String; 0]);
+        assert_eq!(queued(&mut s, id)?, b"k");
+        // A frame of answers to its own queries unread: a key is taken.
+        host(&mut s, id, |h| {
             let queries: Vec<u8> = std::iter::repeat_n(*b"\x1b[c", 1024).flatten().collect();
             for _ in 0..10_000 {
                 if h.pane().input().replies() >= crate::pane::BEHIND {
@@ -9841,9 +9752,43 @@ mod tests {
                 h.output(&queries, now);
             }
             assert!(h.pane().input().replies() >= crate::pane::BEHIND);
-            h.take()
         })?;
-        assert_eq!(fulls(&said), []);
+        assert_eq!(refused(&typed(&mut s, 1)?), [] as [String; 0]);
+        assert!(queued(&mut s, id)?.ends_with(b"k"));
+        Ok(())
+    }
+
+    /// What a client types after a paste, while the paste's text is still
+    /// to come from its connection, waits behind it: its server said the
+    /// paste first. A paste that will not come holds nothing back (D-181).
+    #[test]
+    fn what_is_typed_after_a_paste_still_to_come_waits_behind_it() -> TestResult {
+        use crate::link::ToPane;
+        use fux_wire::act::Act;
+        let (mut s, client) = super::testing::attached(10, 40)?;
+        let id = s.focused(client).ok_or("its pane")?;
+        let now = Instant::now();
+        let key = |c| Act::Key(fux_vt::keys::KeyPress::char(c).into());
+        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
+        let pasted = |s: &mut Session| -> Result<u64, String> {
+            s.give_body(Some(7));
+            s.acts(client, vec![Act::Paste(String::new())], now);
+            s.give_body(None);
+            Ok(s.deliveries.pop().ok_or("its delivery")?.1)
+        };
+        let token = pasted(&mut s)?;
+        s.acts(client, vec![key('x'), key('y')], now);
+        assert!(queued(&mut s, id)?.is_empty(), "typed ahead of the paste");
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Paste("text".into())])
+        })?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~text\x1b[201~xy");
+        // One whose sender went before any of it came.
+        let token = pasted(&mut s)?;
+        s.acts(client, vec![key('z')], now);
+        assert!(queued(&mut s, id)?.is_empty());
+        host(&mut s, id, |h| h.handle(ToPane::Drop { token }, now))?;
+        assert_eq!(queued(&mut s, id)?, b"z");
         Ok(())
     }
 

@@ -785,7 +785,9 @@ fn typing_at_a_stopped_pane_grows_no_queue_in_the_server() -> Outcome {
     std::thread::sleep(std::time::Duration::from_secs(1));
     let grew = peak_kib(pid)?.saturating_sub(before);
     signal(own, Signal::Cont);
-    assert!(grew < 2 << 10, "the server grew {grew} KiB");
+    // A frame of what was typed is the most it keeps for a pane that
+    // takes none (D-187): its queue, and what its allocator keeps of it.
+    assert!(grew < 8 << 10, "the server grew {grew} KiB");
     Ok(())
 }
 
@@ -2634,66 +2636,130 @@ fn two_pastes_sent_at_once_to_the_same_two_panes_both_arrive() -> Outcome {
 }
 
 /// 32. Megabytes typed at a program that isn't reading (a terminal that
-///     pastes as plain keys) wait with the client that typed them: a frame
-///     of them reaches the pane, which says so; its typist is told to hold
-///     back what it types into that pane, and keeps it; and when the
-///     program reads, it gets every byte. Neither the pane's process, the
-///     server nor the connection's grows with what was typed (D-187; all
-///     of it queued in the pane's process).
+///     pastes as plain keys) queue nowhere: a frame of what was typed is
+///     the most its pane holds, the keys past it are not taken, and their
+///     typist is told so; neither the pane's process, the server nor the
+///     connection's grows with them, and the client's bindings run all
+///     the while (D-187; all of it queued in the pane's process).
 #[cfg(target_os = "linux")]
 #[test]
-fn megabytes_typed_at_a_program_that_reads_nothing_wait_in_the_terminal() -> Outcome {
-    const TYPED: usize = 4 << 20;
+fn keys_typed_past_a_frame_at_a_program_that_reads_nothing_are_not_taken() -> Outcome {
     let server = Server::start("")?;
-    let mut terminal = Terminal::attach(&server, 24, 80, &[])?;
-    terminal.wait_for("$")?;
-    let pid = server_pid(&server)?;
-    let own = own_process(&server, &support::focused(&server)?)?;
+    let mut client = server.attach(24, 100)?;
+    client.ready()?;
+    let pane = support::focused(&server)?;
+    server.type_line(&pane, "stty raw -echo; printf RAW-%s NOW; sleep 1000")?;
+    server.shows(&pane, "RAW-NOW")?;
+    let own = own_process(&server, &pane)?;
+    flooded_with_keys(&server, &mut client, own)
+}
+
+/// 32a. The same of a pane whose own process is stopped, and takes
+///      nothing of what it is sent: a frame of what was typed is the most
+///      the server keeps for it, the keys past it are not taken, and their
+///      typist is told so (D-187; its client's frames were left unread,
+///      and with them its answers and its detach).
+#[cfg(target_os = "linux")]
+#[test]
+fn keys_typed_past_a_frame_at_a_stopped_pane_are_not_taken() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 100)?;
+    client.ready()?;
+    let pane = support::focused(&server)?;
+    let own = own_process(&server, &pane)?;
+    signal(own, Signal::Stop);
+    let flooded = flooded_with_keys(&server, &mut client, own);
+    signal(own, Signal::Cont);
+    flooded
+}
+
+/// 8 MiB of keys typed by `client` at the pane it focuses, whose process
+/// is `own`, none of them read: no fux process grows with them, the client
+/// is told they are not taken, and its detach binding then runs.
+#[cfg(target_os = "linux")]
+fn flooded_with_keys(server: &Server, client: &mut Client, own: i32) -> Outcome {
+    use fux_wire::act::Act;
+    use fux_wire::protocol::{AttachedFrame, Frame};
+    const KEYS: usize = 8 << 20;
+    let pid = server_pid(server)?;
     let conns = connections(pid);
+    let before = (peak_kib(own)?, peak_kib(pid)?);
+    let key = AttachedFrame::Act(Box::new(Act::Key(fux_vt::keys::KeyPress::char('k').into())));
+    let frame = key.encode();
+    let mut frames = Vec::new();
+    for _ in 0..4096 {
+        frames.extend_from_slice(&frame);
+    }
+    // Its connection's process, as it is read while the keys come.
+    let mut held = 0u64;
+    for _ in 0..KEYS / 4096 {
+        client.write(&frames)?;
+        for conn in &conns {
+            held = held.max(peak_kib(*conn).unwrap_or(0));
+        }
+    }
+    eventually("it is told its keys are not taken", || {
+        client.pump()?;
+        let text = client.text();
+        Ok(text.contains("isn't reading what is typed") || text.contains("typed faster"))
+    })?;
+    let grew = |pid: i32, before: u64| peak_kib(pid).map(|peak| peak.saturating_sub(before));
+    let (in_pane, served) = (grew(own, before.0)?, grew(pid, before.1)?);
+    assert!(in_pane < 4 << 10, "its pane's process grew {in_pane} KiB");
+    assert!(served < 4 << 10, "the server grew {served} KiB");
+    assert!(held < 24 << 10, "a connection's process held {held} KiB");
+    // `C-b d`: its bindings run whatever its pane takes.
+    client.send(b"\x02d")?;
+    eventually("it detached", || {
+        client.pump()?;
+        Ok(client.exit.as_deref() == Some("detached"))
+    })
+}
+
+/// 32b. Keys typed while a paste waits for a program that isn't reading
+///      land after the paste, in the order they were typed: its pane
+///      queues nothing else inside a paste that is open or still to come
+///      (D-181).
+#[cfg(target_os = "linux")]
+#[test]
+fn keys_typed_while_a_paste_waits_land_after_it() -> Outcome {
+    const PASTED: usize = 200_000;
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 100)?;
+    client.ready()?;
+    let pane = support::focused(&server)?;
     let (go, got) = (server.dir.join("go"), server.dir.join("got"));
     let script = format!(
         "stty raw -echo; printf RAW-%s NOW; until [ -e {go} ]; do sleep 0.05; done; \
-         head -c {TYPED} | wc -c > {got}.part; mv {got}.part {got}; stty sane\n",
+         head -c {all} > {got}.part; mv {got}.part {got}; stty sane\n",
         go = go.display(),
-        got = got.display()
+        got = got.display(),
+        all = PASTED + 4
     );
     let run = server.dir.join("run.sh");
     std::fs::write(&run, script).map_err(e)?;
-    terminal.type_bytes(format!("sh {}\r", run.display()).as_bytes())?;
-    terminal.wait_for("RAW-NOW")?;
-    let before = (peak_kib(own)?, peak_kib(pid)?);
-    // Typed from a thread of its own, as fast as its client reads it.
-    let typing = std::thread::spawn(move || {
-        let typed = terminal.type_bytes(&vec![b'k'; TYPED]);
-        (terminal, typed)
-    });
-    // A frame of it has reached the pane, whose program reads none of it.
-    eventually("a frame of what was typed in its pane", || {
-        Ok(peak_kib(own)?.saturating_sub(before.0) >= 1 << 10)
-    })?;
+    server.type_line(&pane, &format!("sh {}", run.display()))?;
+    server.shows(&pane, "RAW-NOW")?;
+    // More than its terminal takes while it reads nothing: the paste
+    // waits; then four keys.
+    let mut paste = b"\x1b[200~".to_vec();
+    paste.resize(paste.len() + PASTED, b'p');
+    paste.extend_from_slice(b"\x1b[201~");
+    client.send(&paste)?;
+    client.send(b"KEYS")?;
     std::fs::write(&go, b"").map_err(e)?;
-    let (mut terminal, typed) = typing.join().map_err(|_| "its typing panicked")?;
-    typed?;
-    let mut read = String::new();
-    for _ in 0..12 {
-        let all = eventually("all that was typed, read", || {
-            terminal.pump();
-            read = std::fs::read_to_string(&got).unwrap_or_default();
-            Ok(!read.is_empty())
-        });
-        if all.is_ok() {
-            break;
-        }
-    }
-    assert_eq!(read.trim(), TYPED.to_string());
-    let grew = |pid: i32, before: u64| peak_kib(pid).map(|peak| peak.saturating_sub(before));
-    let (pane, served) = (grew(own, before.0)?, grew(pid, before.1)?);
-    assert!(pane < 3 << 10, "its pane's process grew {pane} KiB");
-    assert!(served < 3 << 10, "the server grew {served} KiB");
-    for conn in conns {
-        let held = peak_kib(conn).unwrap_or(0);
-        assert!(held < 16 << 10, "a connection's process held {held} KiB");
-    }
+    let mut read = Vec::new();
+    eventually("all of it read", || {
+        client.pump()?;
+        read = std::fs::read(&got).unwrap_or_default();
+        Ok(!read.is_empty())
+    })?;
+    assert_eq!(read.len(), PASTED + 4);
+    assert!(
+        read.ends_with(b"pppKEYS"),
+        "its keys are not after its paste"
+    );
+    assert!(!read.get(..PASTED).unwrap_or_default().contains(&b'K'));
     Ok(())
 }
 
@@ -2755,13 +2821,11 @@ fn a_paste_that_waits_keeps_its_client_from_no_binding() -> Outcome {
 }
 
 /// 34. A program that floods its terminal with queries and reads no answer
-///     stalls only itself: a client that shows its pane and focuses it,
-///     typing nothing, is told to hold back nothing, and its bindings run
-///     (D-177, D-187; the answers counted as input typed, and every client
-///     focusing the pane was told to hold back).
+///     stalls only itself: a client that shows its pane and focuses it is
+///     kept from nothing, and its bindings run (D-177).
 #[cfg(target_os = "linux")]
 #[test]
-fn a_flood_of_queries_holds_back_no_client_that_watches() -> Outcome {
+fn a_flood_of_queries_keeps_a_client_that_watches_from_no_binding() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(24, 100)?;
     client.ready()?;
@@ -2775,71 +2839,9 @@ fn a_flood_of_queries_holds_back_no_client_that_watches() -> Outcome {
         client.pump()?;
         Ok(peak_kib(own)?.saturating_sub(before) >= 1 << 10)
     })?;
-    client.pump()?;
-    assert_eq!(client.holds, [], "told to hold back, typing nothing");
     client.send(b"\x02d")?;
     eventually("it detached", || {
         client.pump()?;
         Ok(client.exit.as_deref() == Some("detached"))
     })
-}
-
-/// 35. A client that is told to hold back what it types, and types on all
-///     the same, grows nothing: of 8 MiB of keys sent a program that reads
-///     none, its pane's process, the server and its connection's hold a
-///     bounded part, and the client is told why no more is taken: by its
-///     server, past a frame after it was told to hold back, or by its
-///     connection, which ends it, once 4 MiB of what it typed waits there
-///     untaken (D-187).
-#[cfg(target_os = "linux")]
-#[test]
-fn a_client_that_types_on_when_told_to_hold_back_grows_nothing() -> Outcome {
-    use fux_wire::act::Act;
-    use fux_wire::protocol::{AttachedFrame, Frame};
-    const KEYS: usize = 8 << 20;
-    let server = Server::start("")?;
-    let mut client = server.attach(24, 100)?;
-    client.ready()?;
-    let pane = support::focused(&server)?;
-    server.type_line(&pane, "stty raw -echo; printf RAW-%s NOW; sleep 1000")?;
-    server.shows(&pane, "RAW-NOW")?;
-    let pid = server_pid(&server)?;
-    let own = own_process(&server, &pane)?;
-    let conns = connections(pid);
-    let before = (peak_kib(own)?, peak_kib(pid)?);
-    // Frames written as they are: no gate of its own holds them back.
-    let key = AttachedFrame::Act(Box::new(Act::Key(fux_vt::keys::KeyPress::char('k').into())));
-    let frame = key.encode();
-    let mut frames = Vec::with_capacity(frame.len() * 4096);
-    for _ in 0..4096 {
-        frames.extend_from_slice(&frame);
-    }
-    // Its connection's process, as it is read while it is there.
-    let mut held = 0u64;
-    for _ in 0..KEYS / 4096 {
-        // Ended by its connection, it can write no more.
-        if client.write(&frames).is_err() {
-            break;
-        }
-        for conn in &conns {
-            held = held.max(peak_kib(*conn).unwrap_or(0));
-        }
-    }
-    eventually("it is told why no more is taken", || {
-        let _ = client.pump();
-        let refused = (client.exits.first())
-            .is_some_and(|why| why.contains("typed that the server has not taken"));
-        Ok(refused || client.text().contains("isn't reading what is typed"))
-    })
-    .map_err(|error| format!("{error}: it was told {:?}", client.exits))?;
-    assert!(
-        client.holds.iter().any(|(_, held)| *held),
-        "never told to hold back"
-    );
-    let grew = |pid: i32, before: u64| peak_kib(pid).map(|peak| peak.saturating_sub(before));
-    let (in_pane, served) = (grew(own, before.0)?, grew(pid, before.1)?);
-    assert!(in_pane < 4 << 10, "its pane's process grew {in_pane} KiB");
-    assert!(served < 4 << 10, "the server grew {served} KiB");
-    assert!(held < 24 << 10, "a connection's process held {held} KiB");
-    Ok(())
 }

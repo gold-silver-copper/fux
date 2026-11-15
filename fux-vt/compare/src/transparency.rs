@@ -398,9 +398,7 @@ impl Through {
                     | ToAttached::Keys(_)
                     | ToAttached::Ended(_)
                     | ToAttached::Read(..)
-                    | ToAttached::More
-                    | ToAttached::Hold(..)
-                    | ToAttached::Focus(_),
+                    | ToAttached::More,
                 ) => {}
             }
         }

@@ -2,7 +2,7 @@
 //! its overlay or its focused pane. The client reads its
 //! own keyboard and runs its own bindings; a key reaches the server only
 //! as literal input for the pane it focuses.
-use crate::link::Typed;
+use crate::link::{Link, Typed};
 use crate::session::Session;
 use crate::view::Mode;
 use fux_vt::keys::Keystroke;
@@ -145,8 +145,7 @@ impl Session {
     /// Types into the client's focused pane: a key or a paste, as its
     /// program asked (`put_in`).
     fn type_in(&mut self, client: ClientId, typed: Typed, now: Instant) -> bool {
-        // The pane it was typed into, if its client says (`act_for`).
-        let Some(pane) = self.typed_into(client) else {
+        let Some(pane) = self.focused(client) else {
             return false;
         };
         self.typed(client);
@@ -174,52 +173,20 @@ impl Session {
             self.notify_to(client, why, true);
             return true;
         }
-        self.typists.insert((pane, client));
-        // A pane with a frame typed and unread has its typists hold back
-        // (`typing_holds`): what one types all the same, past the frame
-        // that may have been on its way as it was told, is not taken, and
-        // it is told so once, so that the pane holds no more for it.
-        if self.full.contains(&pane) && matches!(typed, Typed::Key(_)) {
-            let slack = fux_wire::protocol::MAX_FRAME;
-            let over = self.over.entry(pane).or_default();
-            // More than any key's bytes.
-            let was = std::mem::replace(over, over.saturating_add(16));
-            if *over > slack {
-                if was <= slack {
-                    let why = format!(
-                        "{pane}'s program isn't reading what is typed: no more is taken till it does"
-                    );
-                    self.notify_to(client, why, true);
-                }
-                return true;
-            }
+        // A pane's process that takes what it is sent slower than it is
+        // typed (stopped, say) has a frame of it waiting here at most:
+        // past it, what is typed is not taken, and its typist is told so
+        // (each time: a key clears what its client was told before it).
+        // A paste's text does not come this way.
+        let waits = matches!(self.links.get(&pane), Some(Link::Remote(remote))
+            if remote.end.out.len() >= fux_wire::protocol::MAX_FRAME);
+        if waits && !matches!(typed, Typed::Body(_)) {
+            let why = format!("{pane} isn't reading what is typed: no more is taken till it reads");
+            self.notify_to(client, why, true);
+            return true;
         }
         self.tell_pane(pane, crate::link::ToPane::Typed { client, typed }, now);
         false
-    }
-
-    /// The pane what client `client` types now is for: the one it says it
-    /// typed it into, if that pane is still there, else the one it
-    /// focuses.
-    fn typed_into(&self, client: ClientId) -> Option<fux_wire::id::PaneId> {
-        match self.typing_for {
-            Some(pane) => self.parts.panes().contains_key(&pane).then_some(pane),
-            None => self.focused(client),
-        }
-    }
-
-    /// `act`, a key or a paste client `client` typed into pane `pane` and
-    /// sends now, though it may focus another (`AttachedFrame::For`).
-    pub fn act_for(
-        &mut self,
-        client: ClientId,
-        pane: fux_wire::id::PaneId,
-        act: Act,
-        now: Instant,
-    ) {
-        self.typing_for = Some(pane);
-        self.acts(client, vec![act], now);
-        self.typing_for = None;
     }
 
     fn paste(&mut self, client: ClientId, text: String, now: Instant) {
@@ -235,7 +202,7 @@ impl Session {
         match self.body_token() {
             Some((body, token)) => {
                 let runs_in = self.views.get(&client).and_then(|v| v.runs_in);
-                let pane = self.typed_into(client).filter(|p| runs_in != Some(*p));
+                let pane = self.focused(client).filter(|p| runs_in != Some(*p));
                 // With no pane to take it, or one that was not told to
                 // wait for it, its connection lets it go: a piece sent a
                 // pane that waits for none would never be taken.

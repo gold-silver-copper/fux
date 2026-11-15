@@ -33,18 +33,19 @@ const READ: usize = 256 * 1024;
 /// as it is refused.
 const AHEAD: &str = "more than 256 KiB sent while a request waited: \
                      a request is sent once the one before it is answered";
-/// What an attached client is told that sent that much of other pastes
-/// while a paste of its own was still on its way.
-const BEHIND: &str = "more than 256 KiB pasted while a paste of this client's waited: \
+/// What an attached client is told that sent that much of other pastes,
+/// and of what it typed after them, while a paste of its own was still on
+/// its way.
+const BEHIND: &str = "more than a frame pasted and typed while a paste of this client's waited: \
                       a paste is sent once the one before it is taken";
-/// The most of what its client typed that waits here for its server to
-/// take: four frames. Its server takes no more while the pane typed into
-/// takes none, and tells its client to hold back what it types
-/// (`ToAttached::Hold`): a client that sends it all the same is refused
-/// past this (`UNTAKEN`), so that it grows its connection by no more.
-const BACKLOG: usize = 4 * fux_wire::protocol::MAX_FRAME;
-const UNTAKEN: &str = "more than 4 MiB typed that the server has not taken: the program \
-                       typed into isn't reading, and this client was told to hold back";
+/// The most of other pastes, and of what was typed after them, that waits
+/// here for a paste of its client's that is on its way: a frame, and what
+/// one read brings.
+const HELD: usize = fux_wire::protocol::MAX_FRAME + READ;
+/// The most of what its client sent that waits here for its server to
+/// take: a frame. Keys that come past it are not taken, and its server is
+/// told how many (`FromConn::Dropped`), which tells its client.
+const QUEUED: usize = fux_wire::protocol::MAX_FRAME;
 /// What a client is told whose server went without a last word for it:
 /// said by its connection's process, which outlives its server.
 const SERVER_GONE: &str = "the server process ended without a word (it was killed, or crashed, \
@@ -314,32 +315,36 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
 /// Whether an attached client's `frame` is a paste, or the first piece of
 /// one: taken once a paste of its client's that is still on its way is
 /// sent, one body being sent at a time. Anything else is taken at once,
-/// keys too: what orders them behind a paste is their client, which holds
-/// back what it types into a pane its paste goes to, and that pane, which
-/// queues nothing else inside a paste that is open (D-181).
+/// keys too: what orders them behind a paste is its pane, which queues
+/// nothing else inside a paste that is open or still to come (D-181).
 fn pastes(frame: &AttachedFrame) -> bool {
     use fux_wire::act::Act;
     match frame {
-        AttachedFrame::Act(act) | AttachedFrame::For(_, act) => matches!(**act, Act::Paste(_)),
-        AttachedFrame::Piece(_) | AttachedFrame::PieceFor(..) => true,
+        AttachedFrame::Act(act) => matches!(**act, Act::Paste(_)),
+        AttachedFrame::Piece(_) => true,
         AttachedFrame::Resize(_) | AttachedFrame::Detach | AttachedFrame::Answer(..) => false,
     }
 }
 
-/// Whether an attached client's `frame` is typed into a pane: a key or a
-/// paste. Its client holds these back when told to (`ToAttached::Hold`);
-/// one that sends them all the same, faster than its server takes them,
-/// is refused past `UNTAKEN`. Nothing else is: an answer, a detach, a
-/// binding's doing always go on.
-fn types(frame: &AttachedFrame) -> bool {
+/// Whether an attached client's `frame` adds to what a pane's program
+/// reads, or sizes what it draws on: behind a paste that waits here
+/// (`pastes`), it waits too, so that it is taken after it. An answer, a
+/// detach and what its screens show never wait.
+fn adds_input(frame: &AttachedFrame) -> bool {
     use fux_wire::act::Act;
     match frame {
-        AttachedFrame::Act(act) | AttachedFrame::For(_, act) => {
-            matches!(**act, Act::Key(_) | Act::Paste(_))
-        }
-        AttachedFrame::Piece(_) | AttachedFrame::PieceFor(..) => true,
-        AttachedFrame::Resize(_) | AttachedFrame::Detach | AttachedFrame::Answer(..) => false,
+        AttachedFrame::Act(act) => match **act {
+            Act::Key(_) | Act::Paste(_) | Act::Mouse(_) | Act::Focus(_) => true,
+            Act::Presentation(_) | Act::Reply(_) | Act::Screen { .. } | Act::Notice { .. } => false,
+        },
+        AttachedFrame::Resize(_) | AttachedFrame::Piece(_) => true,
+        AttachedFrame::Detach | AttachedFrame::Answer(..) => false,
     }
+}
+
+/// Whether an attached client's `frame` is a key typed.
+fn is_key(frame: &AttachedFrame) -> bool {
+    matches!(frame, AttachedFrame::Act(act) if matches!(**act, fux_wire::act::Act::Key(_)))
 }
 
 /// An attached client's `frame`, to send its server (`next_frame`): a
@@ -347,26 +352,18 @@ fn types(frame: &AttachedFrame) -> bool {
 fn attached_sent(mut frame: AttachedFrame, bodies: bool) -> Sent {
     use fux_wire::act::Act;
     let mut body = None;
-    if let (true, AttachedFrame::Act(act) | AttachedFrame::For(_, act)) = (bodies, &mut frame)
+    if let (true, AttachedFrame::Act(act)) = (bodies, &mut frame)
         && let Act::Paste(text) = &mut **act
     {
         body = Some(vec![Input::Paste(std::mem::take(text))]);
     }
     // A paste's first piece is the paste, to its server.
-    let paste = || Box::new(Act::Paste(String::new()));
-    frame = match (bodies, frame) {
-        (true, AttachedFrame::Piece(inputs)) => {
-            body = Some(inputs);
-            AttachedFrame::Act(paste())
-        }
-        (true, AttachedFrame::PieceFor(pane, inputs)) => {
-            body = Some(inputs);
-            AttachedFrame::For(pane, paste())
-        }
-        (_, frame) => frame,
-    };
+    if let (true, AttachedFrame::Piece(inputs)) = (bodies, &mut frame) {
+        body = Some(std::mem::take(inputs));
+        frame = AttachedFrame::Act(Box::new(Act::Paste(String::new())));
+    }
     let typed = match &frame {
-        AttachedFrame::Act(act) | AttachedFrame::For(_, act) => match **act {
+        AttachedFrame::Act(act) => match **act {
             Act::Paste(_) => Typed::Paste,
             Act::Key(_) => Typed::Key,
             Act::Presentation(_)
@@ -377,10 +374,7 @@ fn attached_sent(mut frame: AttachedFrame, bodies: bool) -> Sent {
             | Act::Notice { .. } => Typed::No,
         },
         AttachedFrame::Resize(_) => Typed::Resize,
-        AttachedFrame::Detach
-        | AttachedFrame::Answer(..)
-        | AttachedFrame::Piece(_)
-        | AttachedFrame::PieceFor(..) => Typed::No,
+        AttachedFrame::Detach | AttachedFrame::Answer(..) | AttachedFrame::Piece(_) => Typed::No,
     };
     Sent {
         frame: frame.encode(),
@@ -1203,13 +1197,16 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     let mut body: Option<(u64, Vec<Input>)> = None;
     let mut numbered = 0u64;
     // Pastes of its attached client's, read while a paste of its was on
-    // its way, and their bytes: taken in order once that is sent
-    // (`pastes`). A client sends one paste at a time itself, so these are
-    // few; one that sends `READ` of them is refused (`BEHIND`). Its client
-    // is read all the while, whatever waits here, and all else it sends
-    // goes on at once.
+    // its way, with what adds input after them, and their bytes: taken in
+    // order once that is sent (`pastes`, `adds_input`). One that sends
+    // `HELD` of them is refused (`BEHIND`). Its client is read all the
+    // while, whatever waits here: its keys with no paste before them
+    // here, its answers and its detach go on at once.
     let mut ahead: std::collections::VecDeque<AttachedFrame> = std::collections::VecDeque::new();
     let mut ahead_bytes = 0usize;
+    // Keys its client typed that were not taken (`QUEUED`), till its
+    // server, taking what waits again, is told how many.
+    let mut dropped = 0u64;
     // What it let go of a request longer than a frame, still coming.
     let mut long = 0usize;
     // What it does at panes' sockets, and whether one of them makes its
@@ -1228,6 +1225,9 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
     loop {
         let now = Instant::now();
         let attached = want == Want::Frames(Expect::Attached);
+        if dropped > 0 && link.out.len() <= QUEUED {
+            link.send(&FromConn::Dropped(std::mem::take(&mut dropped)));
+        }
         // Its client gone with a body of its on its way, the body ends
         // where it is: its links closed, a paste left open is closed.
         let busy = body.is_some() || errands.iter_mut().any(|e| e.post().is_some());
@@ -1274,16 +1274,18 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             }
             match (decoder.frame::<AttachedFrame>(), hungry) {
                 (Ok(Some(AttachedFrame::Piece(inputs))), Some(post)) => post.send(&inputs),
-                (Ok(Some(frame)), _) if types(&frame) && link.out.len() > BACKLOG => {
-                    out.push_with(|frames| ToAttached::Exit(UNTAKEN).encode_into(frames));
-                    link.send(&FromConn::Shut);
-                    (ended, told_shut, shut, want) = (true, true, true, Want::Nothing);
-                    ahead.clear();
+                // Typed faster than its server takes it: not taken.
+                (Ok(Some(frame)), _) if is_key(&frame) && link.out.len() > QUEUED => {
+                    dropped = dropped.saturating_add(1);
                 }
-                (Ok(Some(frame)), _) if pastes(&frame) => {
+                // Another paste, and what adds input after one that waits
+                // here, so that it is taken after it.
+                (Ok(Some(frame)), _)
+                    if pastes(&frame) || !ahead.is_empty() && adds_input(&frame) =>
+                {
                     ahead_bytes = ahead_bytes.saturating_add(frame.encode().len());
                     ahead.push_back(frame);
-                    if ahead_bytes > READ {
+                    if ahead_bytes > HELD {
                         out.push_with(|frames| ToAttached::Exit(BEHIND).encode_into(frames));
                         link.send(&FromConn::Shut);
                         (ended, told_shut, shut, want) = (true, true, true, Want::Nothing);
@@ -1347,14 +1349,12 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
                     // Its server takes one frame: a longer one stays here,
                     // and its client is told so.
                     let bytes = frame.len();
-                    // Typed faster than its server takes it, by a client
-                    // told to hold back: refused, its connection growing
-                    // by no more of it.
-                    if matches!(typed, Typed::Key | Typed::Paste) && link.out.len() > BACKLOG {
-                        out.push_with(|frames| ToAttached::Exit(UNTAKEN).encode_into(frames));
-                        link.send(&FromConn::Shut);
-                        (ended, told_shut, shut, want) = (true, true, true, Want::Nothing);
-                        break;
+                    // A key typed faster than its server takes it, a frame
+                    // of what its client sent waiting here already: not
+                    // taken, so that its connection grows by no more.
+                    if typed == Typed::Key && link.out.len() > QUEUED {
+                        dropped = dropped.saturating_add(1);
+                        continue;
                     }
                     let number = sent_body.as_ref().map(|_| numbered.wrapping_add(1));
                     let frame = FromConn::Frame {

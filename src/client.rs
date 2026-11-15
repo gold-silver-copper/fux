@@ -14,7 +14,6 @@ use fux_wire::command::ClientRead;
 #[cfg(all(test, unix))]
 use fux_wire::command::Command;
 use fux_wire::command::Request;
-use fux_wire::id::PaneId;
 use fux_wire::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Joining, Mismatch,
     PROTOCOL, Reply, Role, ToAttached, ToCommand,
@@ -997,9 +996,7 @@ impl Keyboard {
             ToAttached::Welcome(..)
             | ToAttached::Paint(_)
             | ToAttached::Exit(_)
-            | ToAttached::More
-            | ToAttached::Hold(..)
-            | ToAttached::Focus(_) => {}
+            | ToAttached::More => {}
         }
         acts.extend(self.release());
         acts
@@ -1546,171 +1543,38 @@ impl Output {
     }
 }
 
-/// What an attached client types that waits for a pane, and all else it
-/// has to say, which never does.
-///
-/// A key or a paste is for the pane the client focused as it was typed
-/// (`focus`, as its server says it). It waits here while a paste of this
-/// client's for that pane is on its way, or its server said to hold back
-/// what is typed into that pane (`ToAttached::Hold`); it is sent later
-/// addressed to that pane (`AttachedFrame::For`), wherever the client's
-/// focus is by then. Everything else goes at once, in the order it came:
-/// the bindings' programs, mouse and focus reports, answers, and what is
-/// typed into another pane. So a paste to a program that isn't reading,
-/// or a hold, never keeps a client from changing its focus, closing a
-/// pane or detaching.
-///
-/// One paste is on its way at a time: its first piece is sent at once,
-/// and each further one as the server says the last is taken
-/// (`ToAttached::More`), so the client is never part way through writing
-/// a piece while its paste waits.
+/// The pastes of an attached client's, oldest first, each as the frames
+/// not yet sent of it. One is on its way at a time: its first piece is
+/// sent at once, each further one as the server says the last is taken
+/// (`ToAttached::More`), and the next paste's first once that says the
+/// paste before it is taken. So the client is never part way through
+/// writing a piece while a paste waits for a program that isn't reading,
+/// and all else it has to say (keys, its bindings' doing, its answers)
+/// goes at once, in the order it came. A key typed after a paste that
+/// still waits its turn here is so sent before that paste.
 #[derive(Default)]
-pub struct Gate {
-    /// The pane it focuses, as its server last said.
-    focus: Option<PaneId>,
-    /// A paste is sent whose last piece is not yet taken: the pane it was
-    /// for, if it is known.
-    paste: Option<Option<PaneId>>,
-    /// Its pieces not yet sent, each a frame.
-    pieces: std::collections::VecDeque<Vec<u8>>,
-    /// The panes its server said to hold back what is typed into.
-    held: std::collections::BTreeSet<PaneId>,
-    /// What is to go, in the order it came, each key or paste with the
-    /// pane it is for. What is typed into a pane that takes none waits
-    /// here as long as it must, however much of it: it is this client's
-    /// own terminal's, and the terminal is read all the while, for the
-    /// bindings typed among it (D-83: no limit of fux's own). A key is
-    /// kept small.
-    queue: std::collections::VecDeque<(Option<PaneId>, Queued)>,
-}
+pub struct Pastes(std::collections::VecDeque<std::collections::VecDeque<Vec<u8>>>);
 
-/// What waits in a `Gate`: a key, kept as its stroke; or anything else.
-enum Queued {
-    Key(fux_vt::keys::Keystroke),
-    Other(Box<Dispatch>),
-}
-
-impl Queued {
-    fn of(out: Dispatch) -> Queued {
-        match out {
-            Dispatch::Send(Act::Key(stroke)) => Queued::Key(stroke),
-            other @ (Dispatch::Send(_)
-            | Dispatch::Run(_)
-            | Dispatch::Fence
-            | Dispatch::Answer(..)) => Queued::Other(Box::new(other)),
-        }
-    }
-    fn dispatch(self) -> Dispatch {
-        match self {
-            Queued::Key(stroke) => Dispatch::Send(Act::Key(stroke)),
-            Queued::Other(other) => *other,
-        }
-    }
-    /// Whether it is typed into a pane: a key or a paste.
-    fn typed(&self) -> bool {
-        match self {
-            Queued::Key(_) => true,
-            Queued::Other(other) => matches!(**other, Dispatch::Send(Act::Paste(_))),
-        }
-    }
-    fn pasted(&self) -> bool {
-        matches!(self, Queued::Other(other) if matches!(**other, Dispatch::Send(Act::Paste(_))))
-    }
-}
-
-/// What a client sends or does next (`Gate::next`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum Pass {
-    /// As it is: for the pane it focuses, if it is typed.
-    Now(Dispatch),
-    /// A key or a paste for this pane, which it may focus no more.
-    For(PaneId, Act),
-}
-
-impl Gate {
-    /// Its server says it focuses `pane` now.
-    pub fn focus(&mut self, pane: Option<PaneId>) {
-        self.focus = pane;
-    }
-
-    /// Its server says to hold back what is typed into `pane`, or no
-    /// longer.
-    pub fn hold(&mut self, pane: PaneId, held: bool) {
-        match held {
-            true => self.held.insert(pane),
-            false => self.held.remove(&pane),
-        };
-    }
-
-    /// `acts` are to go, after what waits: each key or paste for the pane
-    /// focused now.
-    pub fn take(&mut self, acts: Vec<Dispatch>) {
-        for out in acts {
-            let out = Queued::of(out);
-            let pane = self.focus.filter(|_| out.typed());
-            self.queue.push_back((pane, out));
+impl Pastes {
+    /// A paste, as its `frames`: its first, to send now, if none is on
+    /// its way before it.
+    pub fn paste(&mut self, frames: impl Iterator<Item = Vec<u8>>) -> Option<Vec<u8>> {
+        self.0.push_back(frames.collect());
+        match self.0.len() {
+            1 => self.0.front_mut().and_then(|paste| paste.pop_front()),
+            _ => None,
         }
     }
 
-    /// Whether what is typed into `pane` waits: a paste of this client's
-    /// for it is on its way, or its server said to hold back.
-    fn waits(&self, pane: PaneId) -> bool {
-        self.held.contains(&pane) || self.paste == Some(Some(pane))
-    }
-
-    /// The next to go, if any may: the first in the order it came that
-    /// does not wait. What is typed into a pane waits behind what was
-    /// typed into that pane before it, and a paste behind the paste on its
-    /// way, whatever its pane; nothing else waits at all.
-    pub fn pass(&mut self) -> Option<Pass> {
-        let mut blocked: Vec<Option<PaneId>> = Vec::new();
-        let at = self.queue.iter().position(|(pane, out)| {
-            if !out.typed() {
-                return true;
-            }
-            let waits = blocked.contains(pane)
-                || pane.is_some_and(|pane| self.waits(pane))
-                // With no pane known, a paste on its way is for the one
-                // focused, as this is.
-                || pane.is_none() && self.paste.is_some()
-                || out.pasted() && self.paste.is_some();
-            if waits && !blocked.contains(pane) {
-                blocked.push(*pane);
-            }
-            !waits
-        })?;
-        let (pane, out) = self.queue.remove(at)?;
-        if !out.typed() {
-            return Some(Pass::Now(out.dispatch()));
-        }
-        // A paste is on its way from here, till its last piece is taken.
-        if out.pasted() {
-            self.paste = Some(pane.or(self.focus));
-        }
-        // Sent as it is while its pane is the one focused: its server
-        // sends it there. Else to the pane it was typed into.
-        match (pane, out.dispatch()) {
-            (Some(pane), Dispatch::Send(act)) if self.focus != Some(pane) => {
-                Some(Pass::For(pane, act))
-            }
-            (_, out) => Some(Pass::Now(out)),
-        }
-    }
-
-    /// The first frame of the paste passed last was sent: `rest`, its
-    /// other pieces, wait to be asked for.
-    pub fn sent(&mut self, rest: impl Iterator<Item = Vec<u8>>) {
-        self.pieces.extend(rest);
-    }
-
-    /// What was sent of the paste is taken: its next piece, to send; with
-    /// none left the paste is taken, and what waited behind it goes.
+    /// What was sent of the paste on its way is taken: the frame to send
+    /// next, if any. Its next piece; or, that paste taken, the first of
+    /// the paste after it.
     pub fn taken(&mut self) -> Option<Vec<u8>> {
-        let next = self.pieces.pop_front();
-        if next.is_none() {
-            self.paste = None;
+        if let Some(next) = self.0.front_mut().and_then(|paste| paste.pop_front()) {
+            return Some(next);
         }
-        next
+        self.0.pop_front();
+        self.0.front_mut().and_then(|paste| paste.pop_front())
     }
 }
 
@@ -1744,7 +1608,7 @@ fn attached(
     let mut pending_resize = None;
     let mut acts = Vec::new();
     let mut frames = 0u64;
-    let mut gate = Gate::default();
+    let mut pastes = Pastes::default();
     const STREAM: Option<usize> = Some(0);
     const WINCH: Option<usize> = Some(1);
     const STOPS: Option<usize> = Some(2);
@@ -1766,15 +1630,13 @@ fn attached(
                 // which its taker reads as it is written; with none left,
                 // what waited behind the paste does (below).
                 (ToAttached::More, _) => {
-                    if let Some(piece) = gate.taken()
+                    if let Some(piece) = pastes.taken()
                         && let Err(ended) =
                             tell(stream, decoder, true, output.as_deref_mut(), &piece)
                     {
                         return ended;
                     }
                 }
-                (ToAttached::Hold(pane, held), _) => gate.hold(pane, held),
-                (ToAttached::Focus(pane), _) => gate.focus(pane),
                 (ToAttached::Welcome(me, run), None) => {
                     if !terminal {
                         (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
@@ -1810,13 +1672,8 @@ fn attached(
             frames = next_frame(frames)?;
         }
         let mut runs = Vec::new();
-        gate.take(std::mem::take(&mut acts));
-        while let Some(pass) = gate.pass() {
-            let (to, out) = match pass {
-                Pass::Now(out) => (None, out),
-                Pass::For(pane, act) => (Some(pane), Dispatch::Send(act)),
-            };
-            let encoded = match out {
+        for out in std::mem::take(&mut acts) {
+            let act = match out {
                 Dispatch::Run(job) => {
                     runs.push(job);
                     continue;
@@ -1827,29 +1684,26 @@ fn attached(
                     }
                     continue;
                 }
-                Dispatch::Answer(asked, value) => {
-                    vec![AttachedFrame::Answer(asked, value).encode()]
-                }
-                Dispatch::Send(act) => {
-                    let pasted = matches!(act, Act::Paste(_));
-                    let mut encoded = fux_wire::protocol::encode_typed(act, to).into_iter();
-                    let first: Vec<Vec<u8>> = encoded.next().into_iter().collect();
-                    if pasted {
-                        gate.sent(encoded);
-                    }
-                    first
-                }
+                Dispatch::Send(act) => AttachedFrame::Act(Box::new(act)),
+                Dispatch::Answer(asked, value) => AttachedFrame::Answer(asked, value),
             };
-            for frame in &encoded {
-                if let Err(ended) = tell(
+            let pasted = matches!(&act, AttachedFrame::Act(act) if matches!(**act, Act::Paste(_)));
+            let mut encoded = fux_wire::protocol::encode_attached(&act).into_iter();
+            // A paste goes once the one before it is taken (`Pastes`).
+            let first = match pasted {
+                true => pastes.paste(encoded),
+                false => encoded.next(),
+            };
+            if let Some(first) = first
+                && let Err(ended) = tell(
                     stream,
                     decoder,
                     keyboard.is_some(),
                     output.as_deref_mut(),
-                    frame,
-                ) {
-                    return ended;
-                }
+                    &first,
+                )
+            {
+                return ended;
             }
             frames = next_frame(frames)?;
         }
@@ -2018,9 +1872,7 @@ fn last_frames(
                 | ToAttached::Open(_)
                 | ToAttached::Keys(_)
                 | ToAttached::Read(..)
-                | ToAttached::More
-                | ToAttached::Hold(..)
-                | ToAttached::Focus(_) => {}
+                | ToAttached::More => {}
             }
         }
         if !matches!(read_more(stream, decoder), Ok(true)) {
@@ -2033,79 +1885,27 @@ fn last_frames(
 mod tests {
     use super::*;
 
-    /// What an attached client types into a pane waits while a paste of
-    /// its own for that pane is on its way, or it is told to hold back
-    /// what is typed there, and is sent later for that pane; all else goes
-    /// at once, in the order it came: its bindings' programs, its answers,
-    /// what it types into another pane (D-183, D-187). Bindings waited
-    /// behind a paste, and a client whose paste waited for a program that
-    /// wasn't reading could not change focus or detach.
+    /// A client's pastes go one at a time, each a piece at a time as it is
+    /// asked for: the first frame of a second waits till the first is
+    /// taken, and is sent then.
     #[test]
-    fn only_what_is_typed_into_a_pane_waits_for_it() -> Result<(), String> {
-        let key = |c| Dispatch::Send(Act::Key(KeyPress::char(c).into()));
-        let stroke = |c| Act::Key(KeyPress::char(c).into());
-        let paste = |text: &str| Dispatch::Send(Act::Paste(text.to_owned()));
-        let answer = Dispatch::Answer(3, fux_wire::callback::Data::Int(7));
-        let (one, two) = (PaneId::of(1), PaneId::of(2));
-        let all = |gate: &mut Gate, acts: Vec<Dispatch>| -> Vec<Pass> {
-            gate.take(acts);
-            std::iter::from_fn(|| gate.pass()).collect()
-        };
-        let now = |out: &Dispatch| Pass::Now(out.clone());
-        let mut gate = Gate::default();
-        gate.focus(Some(one));
-        // A paste for the pane focused, in two pieces: sent, on its way.
-        assert_eq!(all(&mut gate, vec![paste("p")]), [now(&paste("p"))]);
-        gate.sent(vec![b"piece two".to_vec()].into_iter());
-        // Keys for that pane wait; a binding's fence and an answer do not.
-        let typed = vec![key('l'), key('s'), Dispatch::Fence, answer.clone()];
-        assert_eq!(all(&mut gate, typed), [now(&Dispatch::Fence), now(&answer)]);
-        // The binding changed its focus: what it types now goes at once,
-        // but another paste, one being on its way.
-        gate.focus(Some(two));
-        assert_eq!(
-            all(&mut gate, vec![key('x'), paste("q"), key('y')]),
-            [now(&key('x'))]
-        );
-        // Its second piece asked for; then its last taken: what waited for
-        // the first pane goes to that pane, and the second paste goes.
-        assert_eq!(gate.taken(), Some(b"piece two".to_vec()));
-        assert_eq!(all(&mut gate, Vec::new()), []);
-        assert_eq!(gate.taken(), None);
-        assert_eq!(
-            all(&mut gate, Vec::new()),
-            [
-                Pass::For(one, stroke('l')),
-                Pass::For(one, stroke('s')),
-                now(&paste("q")),
-            ]
-        );
-        assert_eq!(gate.taken(), None);
-        assert_eq!(all(&mut gate, Vec::new()), [now(&key('y'))]);
-        // Told to hold back what is typed into the second pane: only that.
-        gate.hold(two, true);
-        assert_eq!(
-            all(&mut gate, vec![key('a'), Dispatch::Fence]),
-            [now(&Dispatch::Fence)]
-        );
-        gate.focus(Some(one));
-        assert_eq!(all(&mut gate, vec![key('b')]), [now(&key('b'))]);
-        // However much is typed into it meanwhile is kept, in order, and
-        // what else the client does goes on.
-        gate.focus(Some(two));
-        let many: Vec<Dispatch> = (0..100_000).map(|_| key('k')).collect();
-        assert_eq!(all(&mut gate, many), []);
-        assert_eq!(
-            all(&mut gate, vec![Dispatch::Fence]),
-            [now(&Dispatch::Fence)]
-        );
-        gate.focus(Some(one));
-        gate.hold(two, false);
-        let after = all(&mut gate, Vec::new());
-        assert_eq!(after.len(), 100_001);
-        assert_eq!(after.first(), Some(&Pass::For(two, stroke('a'))));
-        assert_eq!(after.last(), Some(&Pass::For(two, stroke('k'))));
-        Ok(())
+    fn a_clients_pastes_go_one_at_a_time_a_piece_as_it_is_asked_for() {
+        let frames = |from: u8, count: u8| (from..from + count).map(|n| vec![n]);
+        let mut pastes = Pastes::default();
+        // The first goes at once; two more wait behind it.
+        assert_eq!(pastes.paste(frames(1, 3)), Some(vec![1]));
+        assert_eq!(pastes.paste(frames(10, 1)), None);
+        assert_eq!(pastes.paste(frames(20, 2)), None);
+        assert_eq!(pastes.taken(), Some(vec![2]));
+        assert_eq!(pastes.taken(), Some(vec![3]));
+        // The first is taken: the second goes, whole in one frame; taken,
+        // the third goes.
+        assert_eq!(pastes.taken(), Some(vec![10]));
+        assert_eq!(pastes.taken(), Some(vec![20]));
+        assert_eq!(pastes.taken(), Some(vec![21]));
+        assert_eq!(pastes.taken(), None);
+        assert_eq!(pastes.paste(frames(30, 1)), Some(vec![30]));
+        assert_eq!(pastes.taken(), None);
     }
 
     /// A client refused memory while it joins a reply's parts fails that

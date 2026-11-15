@@ -178,17 +178,11 @@ struct Conn {
     decoder: Decoder,
     /// Frames for its client, till they go to its process.
     out: ByteQueue,
+    /// Keys its client typed that its connection did not take
+    /// (`FromConn::Dropped`), till its client is told.
+    dropped: u64,
     /// Its process has bytes its client has not taken yet, or is owed
     /// some (`owed`).
-    /// Its attached client was last told to hold back what it types
-    /// (`ToAttached::Hold`).
-    holds: std::collections::BTreeSet<PaneId>,
-    /// The pane its attached client was last told it focuses
-    /// (`ToAttached::Focus`).
-    focus: Option<PaneId>,
-    /// As much as a read brings of its client's frames waited to be
-    /// handled, and some still does (`hold`).
-    behind: bool,
     pending: bool,
     /// What its client is owed as state, not yet passed to its process:
     /// the latest clipboard copy and title, the bell, a prompt, each as
@@ -341,9 +335,7 @@ impl Conn {
             link: crate::link::End::new(link)?,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
-            holds: std::collections::BTreeSet::new(),
-            focus: None,
-            behind: false,
+            dropped: 0,
             pending: false,
             owed: Owing::default(),
             bad: None,
@@ -508,6 +500,9 @@ impl Conn {
                 // (`spare_heard`).
                 Ok(Some(FromConn::Accepted)) => {}
                 Ok(Some(FromConn::Shut)) => closed = true,
+                Ok(Some(FromConn::Dropped(keys))) => {
+                    self.dropped = self.dropped.saturating_add(keys);
+                }
                 Ok(Some(FromConn::Bad(why))) => {
                     log!("a client sent a bad frame: {why}");
                     self.bad = Some(why);
@@ -731,44 +726,8 @@ impl Conn {
             | ToAttached::Ended(_)
             | ToAttached::Keys(_)
             | ToAttached::Read(..)
-            | ToAttached::More
-            | ToAttached::Hold(..)
-            | ToAttached::Focus(_) => self.send(frame),
+            | ToAttached::More => self.send(frame),
         }
-    }
-
-    /// Tells its attached client as it is to hold back what it types, or
-    /// no longer (`ToAttached::Hold`): the pane it types into has a frame
-    /// unread or takes nothing (`Session::typing_holds`), or it types
-    /// faster than its frames are handled here, as much as a read brings
-    /// waiting (`hear`), till none does. Each turn, before the server
-    /// waits.
-    fn hold(&mut self, session: &Session) {
-        let Some(client) = self.attached().map(|attached| attached.client) else {
-            return;
-        };
-        // The pane it focuses, which what it types is for.
-        let focus = session.focused(client);
-        if focus != self.focus {
-            self.focus = focus;
-            self.send(&ToAttached::Focus(focus));
-        }
-        self.behind = match self.behind {
-            true => self.decoder.buffered() > 0,
-            false => self.decoder.buffered() >= CONN_READ,
-        };
-        let mut holds = session.typing_holds(client);
-        if self.behind {
-            holds.extend(focus);
-        }
-        let (was, now) = (std::mem::take(&mut self.holds), holds);
-        for pane in was.difference(&now) {
-            self.send(&ToAttached::Hold(*pane, false));
-        }
-        for pane in now.difference(&was) {
-            self.send(&ToAttached::Hold(*pane, true));
-        }
-        self.holds = now;
     }
 
     /// Passes its process what waits for its client, as far as its link
@@ -1157,9 +1116,6 @@ impl Server {
             }
             // Long work in the turn must not extend the poll's deadline.
             let timeout = next.map(|at| at.saturating_duration_since(Instant::now()));
-            for conn in &mut self.conns {
-                conn.hold(&self.session);
-            }
             let mut ready = mem::take(&mut self.ready);
             self.poll(timeout, &mut ready);
             for &(slot, flags) in &ready {
@@ -1362,10 +1318,9 @@ impl Server {
     /// what, go into `ready`.
     fn poll(&mut self, timeout: Option<Duration>, ready: &mut Vec<(Slot, PollFlags)>) {
         ready.clear();
-        let held: Vec<bool> = (self.conns.iter()).map(|conn| self.held(conn)).collect();
-        let runnable: Vec<bool> = (self.conns.iter().zip(&held))
-            .map(|(conn, held)| {
-                !held && conn.frame_waits()
+        let runnable: Vec<bool> = (self.conns.iter())
+            .map(|conn| {
+                conn.frame_waits()
                     || matches!(&conn.stage, Stage::Blocked(asked)
                 if !matches!(self.unprocessed(asked), Some(1..)))
             })
@@ -1397,16 +1352,13 @@ impl Server {
         add(PollFd::new(self.stops.reader(), PollFlags::IN), Slot::Stops);
         for (i, conn) in self.conns.iter().enumerate() {
             // Its process's link is read, what its client sent and whether
-            // the client took what it was sent, but while what its client
-            // types waits for a pane (`Server::held`).
-            // Held, it is not read, and only its end is to be learned.
-            // Windows tells that of a read kept in flight, which `HUP` and
-            // `ERR` ask for; Unix is asked nothing: Linux tells a hang-up
-            // unasked, and macOS nothing till the link is read again.
-            // Nor while as much as a read brings waits to be handled
-            // (`Conn::hear`).
-            let unread =
-                held.get(i).copied().unwrap_or(false) || conn.decoder.buffered() >= CONN_READ;
+            // the client took what it was sent, but while as much as a
+            // read brings waits to be handled (`Conn::hear`): then only
+            // its end is to be learned. Windows tells that of a read kept
+            // in flight, which `HUP` and `ERR` ask for; Unix is asked
+            // nothing: Linux tells a hang-up unasked, and macOS nothing
+            // till the link is read again.
+            let unread = conn.decoder.buffered() >= CONN_READ;
             let mut flags = match unread {
                 true if cfg!(windows) => PollFlags::HUP | PollFlags::ERR,
                 true => PollFlags::NONE,
@@ -1461,13 +1413,6 @@ impl Server {
                 .filter(|(flags, _)| !flags.is_empty())
                 .map(|(flags, slot)| (slot, flags)),
         );
-    }
-
-    /// Whether connection `conn`'s client's frames wait, unread: what it
-    /// types waits for a pane that reads nothing more of what it is sent
-    /// (`Session::typing_waits`), and stays with its connection's process.
-    fn held(&self, conn: &Conn) -> bool {
-        matches!(&conn.stage, Stage::Attached(attached) if self.session.typing_waits(attached.client))
     }
 
     /// Leaves the run to the server with pid `by`, which pane `pane` says
@@ -1819,15 +1764,18 @@ impl Server {
         if let (false, Some(attached)) = (conn.pending, conn.attached()) {
             self.session.prompted.remove(&attached.client);
         }
+        // Keys it typed faster than they were taken: it is told how many
+        // were not.
+        let dropped = mem::take(&mut conn.dropped);
+        if let (1.., Some(client)) = (dropped, conn.attached().map(|a| a.client)) {
+            let why =
+                format!("{dropped} keys were typed faster than fux took them, and were not taken");
+            self.session.notify_to(client, why, true);
+        }
         // Held apart while the frames it lends are handled.
         let mut decoder = mem::take(&mut conn.decoder);
         let mut frames = 0usize;
-        while frames < CONN_FRAMES
-            && self
-                .conns
-                .get(index)
-                .is_some_and(|conn| conn.reads() && !self.held(conn))
-        {
+        while frames < CONN_FRAMES && self.conns.get(index).is_some_and(|conn| conn.reads()) {
             // Each frame is a new event: a previous request may have taken
             // long enough to pass another request's deadline.
             match self.take_frame(index, &mut decoder, Instant::now()) {
@@ -1955,13 +1903,7 @@ impl Server {
                     // A paste's pieces stay with its client's connection,
                     // which sends the server the paste for the first
                     // (`conn::next_frame`): one that comes here has none.
-                    Some(AttachedFrame::Piece(_) | AttachedFrame::PieceFor(..)) => {}
-                    // Typed into that pane, and sent later than typed.
-                    Some(AttachedFrame::For(pane, act)) => {
-                        session.give_body(body);
-                        session.act_for(attached.client, pane, *act, now);
-                        session.give_body(None);
-                    }
+                    Some(AttachedFrame::Piece(_)) => {}
                     None => return Ok(false),
                 }
                 if let Some(attached) = conn.attached() {

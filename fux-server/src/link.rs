@@ -416,11 +416,6 @@ pub enum FromPane {
     /// Windows alone, before the facts naming a new program, and again to
     /// a server that takes it back.
     Offer(Offered),
-    /// Whether a frame of input or more waits unread for its program
-    /// (`true`), said once as it comes to that and once (`false`) when
-    /// none waits any more: those who type into it hold back meanwhile
-    /// (`ToAttached::Hold`).
-    Full(bool),
 }
 
 /// A pane's program as its process offers its server a copy of its
@@ -468,7 +463,6 @@ wired!(FromPane {
     Answer { ask, answer },
     Retired(t),
     Offer(o),
-    Full(f),
 });
 
 /// What a pane's process answers a server that reaches its socket: to one
@@ -1203,8 +1197,12 @@ pub enum FromConn {
     /// Its client sent what is no frame of those expected: why. It reads
     /// it no more.
     Bad(String),
+    /// This many keys its client typed were not taken: they came faster
+    /// than its server took them, a frame of them waiting here already.
+    /// Its server tells its client so.
+    Dropped(u64),
 }
-wired!(FromConn { Accepted, Frame { frame, body }, Flushed, Shut, Bad(why) });
+wired!(FromConn { Accepted, Frame { frame, body }, Flushed, Shut, Bad(why), Dropped(n) });
 
 /// How the server starts a client's connection's own process, before its
 /// client comes: `fux __conn`, its link on stdin, the server's socket on

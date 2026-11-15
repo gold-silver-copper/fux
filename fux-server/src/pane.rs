@@ -70,6 +70,10 @@ pub struct InputQueue {
     /// its bytes are replies.
     behind: Vec<u8>,
     behind_replies: usize,
+    /// Pastes its server said clients sent, whose text has not all come:
+    /// what else comes meanwhile waits behind them too, as their server
+    /// said it after them (`expect`).
+    expected: usize,
 }
 
 /// The most that waits behind a paste that is open: a frame. What is typed
@@ -138,9 +142,9 @@ impl InputQueue {
         self.put(replies, true)
     }
     fn put(&mut self, bytes: &[u8], reply: bool) -> bool {
-        // Behind a paste that is open, and behind what waited behind one
-        // and is not queued yet.
-        if self.pasting || !self.behind.is_empty() {
+        // Behind a paste that is open or still to come, and behind what
+        // waited behind one and is not queued yet.
+        if self.gated() || !self.behind.is_empty() {
             let fits = self.behind.len().saturating_add(bytes.len()) <= BEHIND;
             if !fits || fux_vt::bytes::try_extend(&mut self.behind, bytes).is_err() {
                 return false;
@@ -191,7 +195,7 @@ impl InputQueue {
     /// refused the memory, none yet (it is tried again as more is queued
     /// or written).
     fn settle(&mut self) {
-        if self.pasting || self.behind.is_empty() || self.bytes.try_push(&self.behind).is_err() {
+        if self.gated() || self.behind.is_empty() || self.bytes.try_push(&self.behind).is_err() {
             return;
         }
         let replies = std::mem::take(&mut self.behind_replies);
@@ -202,9 +206,29 @@ impl InputQueue {
         self.behind.clear();
         self.behind.shrink_to(0);
     }
+    /// Whether a paste is open in it, or one its server announced is
+    /// still to come: what else comes waits behind it.
+    pub fn gated(&self) -> bool {
+        self.pasting || self.expected > 0
+    }
+    /// A client's paste is to come, its server says: what is typed from
+    /// here on waits behind it, as it was typed after it.
+    fn expect(&mut self) {
+        self.expected = self.expected.saturating_add(1);
+    }
+    /// A paste that was to come has all come, or never will.
+    fn expected_came(&mut self) {
+        self.expected = self.expected.saturating_sub(1);
+        self.settle();
+    }
     /// Whether a paste is open in it.
     pub fn pasting(&self) -> bool {
         self.pasting
+    }
+    /// How many bytes of what was typed wait for its program, the answers
+    /// to its own queries apart.
+    pub fn typed_waiting(&self) -> usize {
+        self.waiting().saturating_sub(self.replies())
     }
     /// How many bytes wait for its program in all: queued, and behind a
     /// paste that is open.
@@ -241,7 +265,7 @@ impl InputQueue {
     /// Queues what `write` appends to its vector as a piece, in place;
     /// behind a paste that is open, as `push` does.
     fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) {
-        if self.pasting || !self.behind.is_empty() {
+        if self.gated() || !self.behind.is_empty() {
             let mut bytes = Vec::new();
             write(&mut bytes);
             self.push(bytes);
@@ -292,6 +316,7 @@ impl InputQueue {
         let queued = self.len().saturating_add(self.behind.len());
         self.advance(self.len());
         (self.pasting, self.behind, self.behind_replies) = (false, Vec::new(), 0);
+        self.expected = 0;
         queued
     }
     /// Everything queued, for tests and the harnesses.
@@ -969,6 +994,15 @@ impl<'a> PaneMut<'a> {
     /// The paste the body being typed left open is closed with `closing`.
     pub fn close_paste(&mut self, closing: &[u8]) {
         self.pane.input.close(closing);
+        self.queued();
+    }
+    /// A client's paste is to come (`InputQueue::expect`).
+    pub fn expect_paste(&mut self) {
+        self.pane.input.expect();
+    }
+    /// A paste that was to come has all come, or never will.
+    pub fn paste_came(&mut self) {
+        self.pane.input.expected_came();
         self.queued();
     }
     /// Its program is sent `held`'s mouse report, `report`; the button
