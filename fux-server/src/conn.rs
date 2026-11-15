@@ -316,7 +316,7 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
 /// one: taken once a paste of its client's that is still on its way is
 /// sent, one body being sent at a time. Anything else is taken at once,
 /// keys too: what orders them behind a paste is its pane, which queues
-/// nothing else inside a paste that is open or still to come (D-181).
+/// nothing else inside a paste that is open or still to come (D-183).
 fn pastes(frame: &AttachedFrame) -> bool {
     use fux_wire::act::Act;
     match frame {
@@ -2210,7 +2210,7 @@ mod tests {
     /// While a paste of its attached client's waits for a pane that takes
     /// nothing, its client is read all the same, and what it sends goes to
     /// its server at once: keys, its answer to a question, its detach
-    /// (D-183). It read its client no more: the answer a pasted program
+    /// (D-185). It read its client no more: the answer a pasted program
     /// waited for never came, nor a detach.
     #[cfg(unix)]
     #[test]
@@ -2279,7 +2279,7 @@ mod tests {
                 .ok_or_else(|| "a whole frame".to_owned())
         };
         // All of it goes on, in the order it came: keys too, which its
-        // pane keeps out of the paste (D-181).
+        // pane keeps out of the paste (D-183).
         for _ in 0..3 {
             assert!(matches!(next()?, AttachedFrame::Act(_)));
         }

@@ -1256,7 +1256,7 @@ mod tests {
     /// A thousand questions to a pane whose process reads nothing, each
     /// given up by its asker, leave nothing more queued to it: once its
     /// link takes no more, a question waits with its asker and goes with
-    /// it (D-179; they queued in the server, one for each who had asked).
+    /// it (D-181; they queued in the server, one for each who had asked).
     /// One whose asker stays is sent once the pane reads again.
     #[cfg(unix)]
     #[test]
