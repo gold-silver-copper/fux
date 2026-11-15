@@ -43,11 +43,11 @@ leaves out of `status`: there `lsof -t` names it from the socket.
 
 A new tab in workspace `work` running `sh`, its pane named `shell`: the
 later recipes type POSIX `sh` into it, whatever your `$SHELL` is (leave
-out `(program ... "sh")` for that one). From outside fux a new tab needs a
+out `(program ... (list "sh"))` for that one). From outside fux a new tab needs a
 size; run inside a fux pane, it takes that pane's tab's.
 
 ```sh
-fux '(rename (new-tab (program (size (in (options) "work") 80 24) "sh")) "shell")'
+fux '(rename (new-tab (program (size (in (options) "work") 80 24) (list "sh"))) "shell")'
 ```
 
 ## Run a program and wait for it to end
@@ -55,8 +55,8 @@ fux '(rename (new-tab (program (size (in (options) "work") 80 24) "sh")) "shell"
 Start it in a new tab, or in a split of a pane, and print its exit status.
 
 ```sh
-fux '(get (get (until-ended (new-tab (argument (argument (program (size (in (options) "work") 80 24) "sh") "-c") "sleep 1; exit 3")) 60) "program") "exited")'
-fux '(get (get (until-ended (split (argument (argument (program (axis (pane "shell") "vertical") "sh") "-c") "exit 5")) 60) "program") "exited")'
+fux '(get (get (until-ended (new-tab (program (size (in (options) "work") 80 24) (list "sh" "-c" "sleep 1; exit 3"))) 60) "program") "exited")'
+fux '(get (get (until-ended (split (program (axis (pane "shell") "vertical") (list "sh" "-c" "exit 5"))) 60) "program") "exited")'
 ```
 
 ## Type a line, send keys
@@ -158,7 +158,7 @@ then `ps -p` fails, the leader's command and directory are unknown, and
 pipeline whose leader `true` exits at once.
 
 ```sh
-fux '(rename (new-tab (program (size (in (options) "work") 80 24) "sh")) "piped")' > /dev/null
+fux '(rename (new-tab (program (size (in (options) "work") 80 24) (list "sh"))) "piped")' > /dev/null
 fux '(shows (pane "piped") "$" 30)' > /dev/null
 fux '(line (pane "piped") "true | sleep 300")' > /dev/null
 until G=$(fux '(get (get (pane "piped") "program") "foreground-group")') &&
@@ -193,7 +193,7 @@ or `timeout` ends it. When its reader stops early, fux ends quietly with
 
 ```sh
 C=$(fux '(get (information (all)) "cursor")')
-fux '(new-tab (program (size (in (options) "work") 80 24) "true"))' > /dev/null
+fux '(new-tab (program (size (in (options) "work") 80 24) (list "true")))' > /dev/null
 fux '(events (all) (first (arguments)))' "$C" | grep -m 1 '(event "exited")' || [ $? -eq 141 ]
 ```
 
@@ -227,7 +227,7 @@ in a scroll or resize, or the program respawned) it fails `stale` (exit
 redraws its first row once it reads a line.
 
 ```sh
-fux '(rename (new-tab (argument (argument (program (size (in (options) "work") 40 6) "sh") "-c") "stty -echo; printf \"a\\nb\\nc\"; read x; printf \"\\033[1;1HA\"; exec sleep 60")) "watched")'
+fux '(rename (new-tab (program (size (in (options) "work") 40 6) (list "sh" "-c" "stty -echo; printf \"a\\nb\\nc\"; read x; printf \"\\033[1;1HA\"; exec sleep 60"))) "watched")'
 fux '(shows (pane "watched") "c" 30)' > /dev/null
 V=$(fux '(version (capture (pane "watched")))')
 fux '(line (pane "watched") "x")'
@@ -249,7 +249,7 @@ then stops the reader.
 C=$(fux '(get (information (all)) "cursor")')
 fux '(events (all) (first (arguments)))' "$C" >> journal.data &
 J=$!
-fux '(new-tab (program (size (in (options) "work") 80 24) "true"))' > /dev/null
+fux '(new-tab (program (size (in (options) "work") 80 24) (list "true")))' > /dev/null
 until grep -q '(event "exited")' journal.data; do kill -0 "$J"; sleep 1; done
 kill "$J"
 ```
@@ -282,7 +282,7 @@ fux sets no time limits of its own: `timeout(1)` bounds a fux command
 
 ```sh
 timeout 2 fux '(shows (pane "shell") "never shown" 600)' || [ $? -eq 124 ]
-fux '(get (get (until-ended (new-tab (argument (argument (argument (program (size (in (options) "work") 80 24) "timeout") "2") "sleep") "600")) 60) "program") "exited")'
+fux '(get (get (until-ended (new-tab (program (size (in (options) "work") 80 24) (list "timeout" "2" "sleep" "600"))) 60) "program") "exited")'
 ```
 
 ## Cap one pane's memory
@@ -318,7 +318,7 @@ saying what was lost.
 (
   export FUX_SOCKET="$PWD/crash/fux.sock"
   fux '(start)'
-  fux '(rename (new-tab (argument (program (size (in (options) "work") 80 24) "sleep") "600")) "sleeper")' > /dev/null
+  fux '(rename (new-tab (program (size (in (options) "work") 80 24) (list "sleep" "600"))) "sleeper")' > /dev/null
   P=$(fux '(get (get (pane "sleeper") "program") "process-id")')
   kill -9 "$(fux '(get (status) "server-process-id")' 2>/dev/null || lsof -t "$FUX_SOCKET")"
   while fux '(status)' > /dev/null 2>&1; do sleep 0.1; done
@@ -339,8 +339,8 @@ An operation on the project covers the workspaces in it: its `events`, `panes`,
 `kill`, and `move` puts a workspace in another, or with `(all)` at the top.
 
 ```sh
-fux '(new-tab (program (size (in (in (options) "work") "agent1") 80 24) "sh"))' > /dev/null
-fux '(new-tab (program (size (in (in (options) "work") "agent2") 80 24) "sh"))' > /dev/null
+fux '(new-tab (program (size (in (in (options) "work") "agent1") 80 24) (list "sh")))' > /dev/null
+fux '(new-tab (program (size (in (in (options) "work") "agent2") 80 24) (list "sh")))' > /dev/null
 fux '(length (panes (workspace "work")))'
 fux '(get (get (workspace "agent2") "parent") "name")'
 fux '(kill (workspace "agent2"))'
@@ -357,9 +357,9 @@ are one namespace on a server, so each task and agent has a name of its
 own.
 
 ```sh
-fux '(rename (new-tab (program (size (in (in (in (options) "fleet") "orch1") "task1") 80 24) "sh")) "task1-impl")'
-fux '(rename (new-tab (program (size (in (in (in (options) "fleet") "orch1") "task1") 80 24) "sh")) "task1-review")'
-fux '(rename (new-tab (program (size (in (in (in (options) "fleet") "orch1") "task2") 80 24) "sh")) "task2-impl")'
+fux '(rename (new-tab (program (size (in (in (in (options) "fleet") "orch1") "task1") 80 24) (list "sh"))) "task1-impl")'
+fux '(rename (new-tab (program (size (in (in (in (options) "fleet") "orch1") "task1") 80 24) (list "sh"))) "task1-review")'
+fux '(rename (new-tab (program (size (in (in (in (options) "fleet") "orch1") "task2") 80 24) (list "sh"))) "task2-impl")'
 fux '(line (pane "task1-impl") "echo implementing")'
 [ "$(fux '(length (panes (workspace "task1")))')" -eq 2 ]
 [ "$(fux '(length (panes (workspace "orch1")))')" -eq 3 ]
@@ -379,9 +379,9 @@ last child (`C-b o`, `C-b q`), and `show` any pane. A tab's `nodes` lists a
 stack as `("stack" (CHILD ...))`, which `arrange` takes too.
 
 ```sh
-fux '(rename (new-tab (program (name (size (in (options) "work") 80 24) "code") "sh")) "editor")'
-fux '(rename (split (program (axis (pane "editor") "horizontal") "sh")) "tests")'
-fux '(rename (stack (program (pane "tests") "sh")) "build")'
+fux '(rename (new-tab (program (name (size (in (options) "work") 80 24) "code") (list "sh"))) "editor")'
+fux '(rename (split (program (axis (pane "editor") "horizontal") (list "sh"))) "tests")'
+fux '(rename (stack (program (pane "tests") (list "sh"))) "build")'
 fux '(data-text (get (first (get (snapshot (tab "code") "topology") "tabs")) "nodes"))'
 [ "$(fux '(get (pane "tests") "columns")')" = "$(fux '(get (pane "build") "columns")')" ]
 ```
@@ -414,7 +414,7 @@ presets arrange a tab's panes, and `confirm.grift`'s `confirm` asks before
 an action (the next recipe binds it).
 
 ```sh
-fux '(split (program (axis (pane "shell") "horizontal") "sh"))' > /dev/null
+fux '(split (program (axis (pane "shell") "horizontal") (list "sh")))' > /dev/null
 fux '(require! "recipes/layouts.grift") (even-h (tab (pane "shell")))'
 ```
 

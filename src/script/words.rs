@@ -332,11 +332,11 @@ words! {
         Finding Tabs "tabs" "scope -- list" raises(Type asks) "the tabs in a tab (itself), a workspace or all, in order; a pane holds none" "fux '(for-each (lambda! (t) (print (get t \"name\"))) (tabs (workspace \"agent\")))'" [];
         Finding All "all" "-- all" raises() "the whole session, for the words that take a scope: information, panes, tabs, kill, notify, events and dump" "fux '(information (all))'" [];
         Finding Focused "focused" "client -- pane" raises(Type asks) "the pane a client focuses: its tab's zoomed one while it has one" "fux '(capture (focused (client \"c1\")))'" [];
-        Starting Opts "options" "-- options" raises() "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) \"./app\"))'" [];
-        Starting Split "split" "subject -- answer" raises(Type Unused Usage Config asks) "split a pane along its required axis: a shell, or the program given" "fux '(split (axis (pane 3) \"vertical\"))'" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
-        Starting Stack "stack" "subject -- answer" raises(Type Unused Config asks) "an alternative to a pane on its rectangle, in the stack it is a child of, else a new one: a shell, or the program given; each client is shown one child of a stack (step, show)" "fux '(stack (program (pane 3) \"/bin/sh\"))'" [Pane: Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg];
-        Starting NewTab "new-tab" "options -- answer" raises(Type Unused Config asks) "a tab with the client's shell or explicit launch, in the workspace in names (made if it is not there; (in builder \"new-workspace\") makes an unnamed one), else the caller's" "fux '(new-tab (in (size (name (options) \"logs\") 80 24) \"agent\"))'" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg In];
-        Starting Respawn "respawn" "subject -- answer" raises(Type Unused asks) "start again in its pane the program it was given (new-tab, split), or the one given now" "fux '(respawn (kill-first (pane 3)))'" [Pane: KillFirst Program Arg];
+        Starting Opts "options" "-- options" raises() "empty options, for new-tab, attach and attach-defaults (the other words take them on the pane)" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) (list \"./app\")))'" [];
+        Starting Split "split" "subject -- answer" raises(Type Unused Usage Config asks) "split a pane along its required axis: a shell, or the program given" "fux '(split (axis (pane 3) \"vertical\"))'" [Pane: Axis Shares Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram];
+        Starting Stack "stack" "subject -- answer" raises(Type Unused Config asks) "an alternative to a pane on its rectangle, in the stack it is a child of, else a new one: a shell, or the program given; each client is shown one child of a stack (step, show)" "fux '(stack (program (pane 3) (list \"/bin/sh\")))'" [Pane: Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram];
+        Starting NewTab "new-tab" "options -- answer" raises(Type Unused Config asks) "a tab with the client's shell or explicit launch, in the workspace in names (made if it is not there; (in builder \"new-workspace\") makes an unnamed one), else the caller's" "fux '(new-tab (in (size (name (options) \"logs\") 80 24) \"agent\"))'" [Opts: Name Size Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram In];
+        Starting Respawn "respawn" "subject -- answer" raises(Type Unused asks) "start again in its pane the program it was given (new-tab, split), or the one given now" "fux '(respawn (kill-first (pane 3)))'" [Pane: KillFirst Program];
         Waiting Wait "wait" "place -- place" raises(Type Unused asks) "wait until the pane's version differs from the one changed gives, else an action's answer's (wait (line (pane 2) \"y\")), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux '(line (pane 3) \"y\")'); fux '(wait (timeout (changed (first (arguments))) 60))' \"$A\"" [Pane: Changed Timeout];
         Input SendKeys "send-keys" "target -- target" raises(Type Unused Usage asks) "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal" "fux '(send-keys (key (text (pane 3) \"ls -l\") \"Enter\"))'" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "pane action row col -- answer" raises(Type Range asks) "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux '(send-mouse (pane 3) \"click\" 2 10)'" [];
@@ -363,7 +363,7 @@ words! {
         Changing HistoryBudget "history-budget" "pane integer --" raises(Type Range asks) "change this pane's history budget in bytes; lowering evicts old rows" "fux '(sequence! (history-budget (pane 3) 4194304) #inert)'" [];
         Changing ClearHistory "clear-history" "pane --" raises(Type asks) "drop the pane's history" "fux '(sequence! (clear-history (pane 3)) #inert)'" [];
         Changing Zoom "zoom" "pane --" raises(Type asks) "fill its tab with the pane on every screen showing it, or restore the tab if it does" "fux '(sequence! (zoom (pane 3)) #inert)'" [];
-        Clients Attach "attach" "attachable --" raises(Type Unused Nested NotHere asks) "show the server in this terminal (bare fux runs (attach (options))); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux '(attach (tab 2))'" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Arg Name];
+        Clients Attach "attach" "attachable --" raises(Type Unused Nested NotHere asks) "show the server in this terminal (bare fux runs (attach (options))); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux '(attach (tab 2))'" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Name];
         Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it, a pane's stacks too" "fux '(sequence! (show (client \"c1\") (pane 3)) #inert)'" [];
         Clients Step "step" "client handle way --" raises(Type asks) "show a client the next, previous or last shown of the handle's siblings (a pane's: the children of the stack nearest it, else its tab's panes shown), or a pane's neighbour left right up or down; a pane other than a zoomed one ends the zoom" "fux '(sequence! (step (client \"c1\") (tab 2) \"next\") #inert)'" [];
         Clients Detach "detach" "client --" raises(Type asks) "detach a client" "fux '(sequence! (detach (client \"c1\")) #inert)'" [];
@@ -389,17 +389,16 @@ words! {
         Help Explain "explain" "word --" raises(Type UnknownWord Output) "one operation at length, or where a name of grift's is described; data describes printed data and errors, records every record and field; agents is the first screen of the agent guide, each topic (recipes typing read shells programs servers recipe-examples) a part of it, and guide all of it; cookbook has recipes to copy" "fux '(sequence! (explain \"capture\") #inert)'" [];
     }
     Opt {
-        Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux '(new-tab (program (size (name (in (options) \"agent\") \"web\") 80 24) \"./app\"))'";
-        Starting Size "size" "x columns rows -- x" raises(Type Unused Size) "what its tab is always laid out on, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) \"./app\"))'";
-        Starting Cwd "directory" "x dir -- x" raises(Type Unused) "where it starts. With none, a command line's program (run from a pane too) starts in the directory fux ran in, not the pane's it splits; a key's or prompt's in that pane's. A relative one is from the directory fux ran in, or a key's client's focused pane's" "fux '(new-tab (program (size (directory (in (options) \"agent\") \"/srv\") 80 24) \"./app\"))'";
-        Starting Program "program" "x path -- x" raises(Type Unused) "the program to start, in place of a shell; its pane stays once it exits" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) \"./app\"))'";
-        Starting HistoryBytes "history-bytes" "x integer -- x" raises(Type Unused Range) "history budget for the new pane, in bytes" "fux '(new-tab (program (history-bytes (in (options) \"agent\") 0) \"/bin/cat\"))'";
-        Starting Reflow "reflow" "x boolean -- x" raises(Type Unused) "whether the new pane rewraps primary-screen lines on resize" "fux '(new-tab (program (reflow (in (options) \"agent\") #false) \"/bin/cat\"))'";
-        Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" raises(Type Unused Range) "arrows per alternate-screen wheel action (0 to 32767)" "fux '(new-tab (program (alternate-scroll-lines (in (options) \"agent\") 3) \"/bin/cat\"))'";
-        Starting PictureBytes "picture-bytes" "x integer -- x" raises(Type Unused Range) "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux '(new-tab (program (picture-bytes (in (options) \"agent\") 0) \"/bin/cat\"))'";
-        Starting ProgramClipboard "program-clipboard" "x boolean -- x" raises(Type Unused) "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux '(new-tab (program (program-clipboard (in (options) \"agent\") #false) \"/bin/cat\"))'";
+        Starting Name "name" "x name -- x" raises(Type Unused) "the given name: new-tab's tab" "fux '(new-tab (program (size (name (in (options) \"agent\") \"web\") 80 24) (list \"./app\")))'";
+        Starting Size "size" "x columns rows -- x" raises(Type Unused Size) "what its tab is always laid out on, each at least 1, as large as a screen's grid holds; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) (list \"./app\")))'";
+        Starting Cwd "directory" "x dir -- x" raises(Type Unused) "where it starts. With none, a command line's program (run from a pane too) starts in the directory fux ran in, not the pane's it splits; a key's or prompt's in that pane's. A relative one is from the directory fux ran in, or a key's client's focused pane's" "fux '(new-tab (program (size (directory (in (options) \"agent\") \"/srv\") 80 24) (list \"./app\")))'";
+        Starting Program "program" "x list -- x" raises(Type Unused) "the program to start and its arguments, in place of a shell; its pane stays once it exits" "fux '(new-tab (program (size (in (options) \"agent\") 80 24) (list \"./app\" \"-v\")))'";
+        Starting HistoryBytes "history-bytes" "x integer -- x" raises(Type Unused Range) "history budget for the new pane, in bytes" "fux '(new-tab (program (history-bytes (in (options) \"agent\") 0) (list \"/bin/cat\")))'";
+        Starting Reflow "reflow" "x boolean -- x" raises(Type Unused) "whether the new pane rewraps primary-screen lines on resize" "fux '(new-tab (program (reflow (in (options) \"agent\") #false) (list \"/bin/cat\")))'";
+        Starting AlternateScrollLines "alternate-scroll-lines" "x integer -- x" raises(Type Unused Range) "arrows per alternate-screen wheel action (0 to 32767)" "fux '(new-tab (program (alternate-scroll-lines (in (options) \"agent\") 3) (list \"/bin/cat\")))'";
+        Starting PictureBytes "picture-bytes" "x integer -- x" raises(Type Unused Range) "picture budget for the new pane (0 to 96 MiB); zero disables pictures" "fux '(new-tab (program (picture-bytes (in (options) \"agent\") 0) (list \"/bin/cat\")))'";
+        Starting ProgramClipboard "program-clipboard" "x boolean -- x" raises(Type Unused) "whether the new pane's program may copy to the attached terminals' clipboards (OSC 52)" "fux '(new-tab (program (program-clipboard (in (options) \"agent\") #false) (list \"/bin/cat\")))'";
         Starting ShellProgram "shell-program" "x list -- x" raises(Type Unused) "the checked argv list to start with shell role; its exit closes the pane" "fux '(new-tab (shell-program (size (options) 80 24) (list \"/bin/sh\")))'";
-        Starting Arg "argument" "x text -- x" raises(Type Unused Usage) "an argument for the program" "fux '(new-tab (argument (program (size (in (options) \"agent\") 80 24) \"./app\") \"-v\"))'";
         Starting Axis "axis" "x way -- x" raises(Type Unused) "horizontal (side by side) or vertical (stacked); split requires it" "fux '(split (axis (pane 3) \"horizontal\"))'";
         Starting Shares "shares" "x n n -- x" raises(Type Unused Range) "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux '(split (shares (axis (pane 3) \"horizontal\") 2 1))'";
         Starting In "in" "x workspace -- x" raises(Type Unused) "the workspace for new-tab, attach or attach-defaults; again, one in the one before, for new-tab: it makes each from the first not there (a missing name, or a fresh unnamed one with (in builder \"new-workspace\")), the first at the top" "fux '(new-tab (size (in (in (options) \"proj\") \"agent1\") 80 24))'";
@@ -966,7 +965,7 @@ fn add(
 ) -> Result<(), Failure> {
     if !matches!(
         opt,
-        Opt::Arg | Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes | Opt::In
+        Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes | Opt::In
     ) && built.given.iter().any(|given| given.slot() == opt.slot())
     {
         return Err(fail(
@@ -1041,22 +1040,19 @@ fn apply(
             };
             built.inputs.push(Input::Bytes((*bytes).clone()));
         }
-        Opt::Program | Opt::ShellProgram => {
-            let shell = opt == Opt::ShellProgram;
-            built.shell = Some(shell);
-            if shell {
-                let program = read::<Program>(&next()?, Code::BadValue)?;
-                built.argv = program.into_argv();
-                return Ok(());
-            }
-            built.argv.push(string(&next()?)?);
+        // A shell's list is checked here; a program's when it is started,
+        // where a launch that cannot be made is said or left out.
+        Opt::ShellProgram => {
+            built.shell = Some(true);
+            built.argv = read::<Program>(&next()?, Code::BadValue)?.into_argv();
         }
-        Opt::Arg => {
-            let arg = text(&next()?)?;
+        Opt::Program => {
+            built.shell = Some(false);
+            let argv = super::settings::strings(&next()?);
+            built.argv = argv.map_err(|unread| refused(unread, Code::BadValue))?;
             if built.argv.is_empty() {
-                return Err(fail(Code::Usage, "comes after program"));
+                return Err(fail(Code::BadValue, "takes a program, then its arguments"));
             }
-            built.argv.push(arg);
         }
         Opt::MainScreen => built.view.source = Source::Main,
         Opt::AltScreen => built.view.source = Source::Alternate,
@@ -1214,7 +1210,6 @@ pub(super) fn check_attach_creation(
                     | Opt::ProgramClipboard
                     | Opt::Program
                     | Opt::ShellProgram
-                    | Opt::Arg
             )
         })
     {
@@ -2398,9 +2393,12 @@ mod tests {
     fn accumulating_options_preserve_order() -> TestResult {
         let mut value = Value::App(Fux::Opts(std::rc::Rc::default()));
         for (opt, values) in [
-            (Opt::Program, vec![Value::str("cat")]),
-            (Opt::Arg, vec![Value::str("a")]),
-            (Opt::Arg, vec![Value::str("b")]),
+            (
+                Opt::Program,
+                vec![Value::List(Rc::new(super::super::List::new(
+                    ["cat", "a", "b"].map(Value::str).to_vec(),
+                )))],
+            ),
             (Opt::Text, vec![Value::str("a")]),
             (Opt::Key, vec![Value::str("Enter")]),
             (Opt::Paste, vec![Value::str("b")]),
@@ -2499,10 +2497,10 @@ mod tests {
                     Opt::Reflow => vec![Value::Bool(false)],
                     Opt::AlternateScrollLines | Opt::PictureBytes => vec![Value::Int(0)],
                     Opt::ProgramClipboard => vec![Value::Bool(false)],
-                    Opt::Name | Opt::Cwd | Opt::Program | Opt::Arg | Opt::Text | Opt::Paste => {
+                    Opt::Name | Opt::Cwd | Opt::Text | Opt::Paste => {
                         vec![Value::str("x")]
                     }
-                    Opt::ShellProgram => {
+                    Opt::Program | Opt::ShellProgram => {
                         vec![Value::List(std::rc::Rc::new(super::super::List::new(
                             vec![Value::str("sh")],
                         )))]
@@ -2527,15 +2525,7 @@ mod tests {
                     | Opt::Changed
                     | Opt::Expect => vec![],
                 };
-                // `arg` requires a program first, which preserves the same kind.
-                let initial = if opt == Opt::Arg {
-                    let mut built = expected.clone();
-                    std::rc::Rc::make_mut(&mut built).argv.push("sh".into());
-                    Fux::Opts(built)
-                } else {
-                    target.clone()
-                };
-                let mut values = std::iter::once(Value::App(initial)).chain(args.clone());
+                let mut values = std::iter::once(Value::App(target.clone())).chain(args.clone());
                 let actual = modify(opt, &mut || {
                     values
                         .next()
@@ -2849,9 +2839,9 @@ mod tests {
                 r#"(directory B "/")"#,
                 "(history-bytes B 0)",
                 "(program-clipboard B #false)",
-                r#"(program B "")"#,
+                r#"(program B (list ""))"#,
                 r#"(shell-program B (list "/bin/sh"))"#,
-                r#"(argument (program B "/bin/sh") "-l")"#,
+                r#"(program B (list "/bin/sh" "-l"))"#,
             ] {
                 let program = format!(
                     "(set \"bell\" #false) (attach (size {} 80 24))",

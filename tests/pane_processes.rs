@@ -10,14 +10,11 @@ use support::*;
 
 /// A new pane, through one grift program with each executable argument quoted.
 fn program(builder: &str, argv: &[&str]) -> String {
-    let Some((first, rest)) = argv.split_first() else {
+    if argv.is_empty() {
         return builder.to_owned();
-    };
-    let mut expression = format!("(program {builder} {})", fux::script::quoted(first));
-    for argument in rest {
-        expression = format!("(argument {expression} {})", fux::script::quoted(argument));
     }
-    expression
+    let words: Vec<String> = argv.iter().map(|word| fux::script::quoted(word)).collect();
+    format!("(program {builder} (list {}))", words.join(" "))
 }
 fn pane(server: &Server, ws: &str, argv: &[&str]) -> Result<String, String> {
     let builder = format!("(size (in (options) {}) 80 24)", fux::script::quoted(ws));

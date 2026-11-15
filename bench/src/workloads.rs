@@ -202,7 +202,7 @@ const WAITED: usize = 4 << 20;
 const COMPILES: usize = 2_000;
 /// Command lines an agent sends, as `docs/agents.md` shows them.
 const LINES: [&str; 5] = [
-    r#"(new-tab (argument (program (name (in (options) "agent") "app") "./app") "--fast"))"#,
+    r#"(new-tab (program (name (in (options) "agent") "app") (list "./app" "--fast")))"#,
     r#"(send-keys (key (text (pane "%2") "y") "Enter"))"#,
     r#"(wait (changed "%2:0.57.0.3.0:48211-1867a3f9c2b8e7d6"))"#,
     r#"(define! twice (lambda! (n) (+ n n))) (map twice (list 1 2 3)) (capture (all-history (pane "%2")))"#,

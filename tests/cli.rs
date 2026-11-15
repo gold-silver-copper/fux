@@ -253,8 +253,8 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     );
     // A program's path holding a line end fails to start, the line end
     // shown as `\n`, as is a line separator in a message.
-    let path =
-        server.fux(&["(new-tab (program (size (in (options) \"agent\") 80 24) \"no\\nsuch\"))"])?;
+    let path = server
+        .fux(&["(new-tab (program (size (in (options) \"agent\") 80 24) (list \"no\\nsuch\")))"])?;
     assert!(
         path.stderr.starts_with("fux: start: ") && path.stderr.contains(r"starting no\nsuch in "),
         "{}",
@@ -267,7 +267,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         separator.stderr
     );
     // A pane that never changes is waited on until the time is up.
-    let timed_out = server.fux(&["(wait (timeout (new-tab (argument (program (size (in (options) \"agent\") 80 24) \"sleep\") \"30\")) 1))"])?;
+    let timed_out = server.fux(&["(wait (timeout (new-tab (program (size (in (options) \"agent\") 80 24) (list \"sleep\" \"30\"))) 1))"])?;
     assert_eq!(timed_out.status, 124, "{}", timed_out.stderr);
     assert!(
         timed_out.stderr.starts_with("fux: timeout: "),
@@ -384,7 +384,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     )?;
     assert_eq!(caught, "type-error\n");
     let before = said(
-        r#"(new-tab (program (size (in (options) "agent") 80 24) "sh")) (add "a" 1)"#,
+        r#"(new-tab (program (size (in (options) "agent") 80 24) (list "sh"))) (add "a" 1)"#,
         "type-error",
     )?;
     assert!(server.ok(&["(listing (list-session))"])?.contains("agent"));
@@ -613,7 +613,9 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     let dir = server.dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
     std::fs::create_dir(&dir).map_err(e)?;
     let out = std::process::Command::new(fux())
-        .args(["(new-tab (argument (program (size (in (options) \"agent\") 80 24) \"touch\") \"here\"))"])
+        .args([
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"touch\" \"here\")))",
+        ])
         .current_dir(&dir)
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
@@ -697,7 +699,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
         Ok(command)
     };
     let ran = full()?
-        .args(["(sequence! (help) (new-tab (argument (program (size (in (options) \"agent\") 80 24) \"sleep\") \"9\")))"])
+        .args(["(sequence! (help) (new-tab (program (size (in (options) \"agent\") 80 24) (list \"sleep\" \"9\"))))"])
         .output()
         .map_err(e)?;
     let said = String::from_utf8_lossy(&ran.stderr);
@@ -781,7 +783,7 @@ fn an_action_acts_though_stdout_is_closed() -> Outcome {
     let renamed = closed(&[r#"(rename (pane 1) "renamed")"#])?;
     assert_eq!(renamed.status.code(), Some(0));
     assert_eq!(server.ok(&["(pane \"renamed\")"])?, "%1\n");
-    let launch = [r#"(new-tab (program (size (in (options) "agent") 80 24) "sh"))"#];
+    let launch = [r#"(new-tab (program (size (in (options) "agent") 80 24) (list "sh")))"#];
     let made = closed(&launch)?;
     assert_eq!(made.status.code(), Some(141));
     assert_eq!(

@@ -165,7 +165,7 @@ an item a line; a capture prints as its text, and a record as one line of
 grift data.
 
 ```sh
-fux '(rename (new-tab (program (size (in (options) "agent") 80 24) "sh")) "sh1")'
+fux '(rename (new-tab (program (size (in (options) "agent") 80 24) (list "sh"))) "sh1")'
 A=$(fux '(line (pane "sh1") (first (arguments)))' 'sleep 1; echo "six times seven: $((6*7))"')
 fux '(wait (changed (first (arguments))))' "$A"
 fux '(shows (pane "sh1") "seven: 42" 30)'
@@ -206,8 +206,8 @@ A handle names everything under it: `information`, `dump`, `events`, `panes`,
 the whole of it, so `kill` on a project closes its agents' workspaces too.
 
 ```sh
-fux '(new-tab (program (size (in (in (options) "proj") "agent1") 80 24) "sh"))' > /dev/null
-fux '(new-tab (program (size (in (in (options) "proj") "agent2") 80 24) "sh"))' > /dev/null
+fux '(new-tab (program (size (in (in (options) "proj") "agent1") 80 24) (list "sh")))' > /dev/null
+fux '(new-tab (program (size (in (in (options) "proj") "agent2") 80 24) (list "sh")))' > /dev/null
 fux '(length (panes (workspace "proj")))'
 fux '(kill (workspace "proj"))'
 ```
@@ -303,7 +303,7 @@ grift: write them again in grift.
 (bind-key "C-a v" (code! (lambda! () (split-right))))
 (bind-key "C-a r l" (code! (lambda! () (move-border (focused (me)) "right" 1))))
 (repeat "C-a r")
-(bind-key "C-a g" (code! (lambda! () (split (program (axis (focused (me)) "vertical") "top")) #inert)))
+(bind-key "C-a g" (code! (lambda! () (split (program (axis (focused (me)) "vertical") (list "top"))) #inert)))
 (label "top")
 (group "Tools")
 (bind-key "M-h" (code! (lambda! () (step (me) (focused (me)) "left"))))
@@ -427,7 +427,7 @@ unanswered question stays unknown.
 
 | For | Use |
 | --- | --- |
-| a program's environment | `env(1)`: `(new-tab (argument (argument (program OPTIONS "env") "PORT=8080") "./app"))`; `env -u NAME` removes one |
+| a program's environment | `env(1)`: `(new-tab (program OPTIONS (list "env" "PORT=8080" "./app")))`; `env -u NAME` removes one |
 | a time limit | `timeout(1)`, on a fux command or as a pane's program |
 | a file into a pane | `fux '(send-keys (paste (pane 2) (input)))' < FILE` |
 | what a pane runs, and where | `ps`, `/proc` and `pgrep` on its program's `foreground-group` (`fux '(explain "agents")'`) |

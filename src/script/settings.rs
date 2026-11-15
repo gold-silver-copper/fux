@@ -100,7 +100,7 @@ fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), Un
 }
 
 /// A list of strings, each as it is, in a vector of exactly their number.
-fn strings(value: &Value<Fux>) -> Result<Vec<String>, Unread> {
+pub(super) fn strings(value: &Value<Fux>) -> Result<Vec<String>, Unread> {
     let (n, words) = checked(value)?;
     let mut strings = Vec::with_capacity(n);
     strings.extend(words.map(str::to_owned));

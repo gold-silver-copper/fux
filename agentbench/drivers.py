@@ -663,10 +663,7 @@ class Fux(Driver):
     @staticmethod
     def program(options, argv):
         """`options` given a program and its arguments."""
-        options = f"(program {options} {string(argv[0])})"
-        for a in argv[1:]:
-            options = f"(argument {options} {string(a)})"
-        return options
+        return f"(program {options} (list {' '.join(string(a) for a in argv)}))"
 
     def spawn(self, argv, size=None, name=None):
         # fux makes no size up, and no client is attached here: with none

@@ -369,7 +369,7 @@ fn a_client_shown_its_own_pane_does_not_loop() -> Outcome {
     for program in [attach.to_owned(), behind, orphaned] {
         let server = Server::start("")?;
         let launch = [&format!(
-            "(new-tab (argument (argument (program (size (in (options) \"viewer\") 60 12) \"sh\") \"-c\") {}))",
+            "(new-tab (program (size (in (options) \"viewer\") 60 12) (list \"sh\" \"-c\" {})))",
             fux::script::quoted(&program)
         )];
         let pane = server.ok(&launch)?;
@@ -407,7 +407,7 @@ fn a_headless_client_in_its_own_pane_keeps_its_capture_and_sizing() -> Outcome {
     let server = Server::start("")?;
     let attach = "unset FUX_PANE; \"$FUX\" \"(attach (in (size (options) 50 10) \\\"viewer\\\"))\"; sleep 60";
     let launch = [&format!(
-        "(new-tab (argument (argument (program (size (in (options) \"viewer\") 60 12) \"sh\") \"-c\") {}))",
+        "(new-tab (program (size (in (options) \"viewer\") 60 12) (list \"sh\" \"-c\" {})))",
         fux::script::quoted(attach)
     )];
     let pane = server.ok(&launch)?;
@@ -867,7 +867,7 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     // stdin, with the program's own group in the foreground. (Without one,
     // macOS names some other terminal, and Linux none.)
     let server = Server::start("")?;
-    let pane = server.ok(&["(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"/bin/sh\") \"-c\") \"echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60\"))"])?;
+    let pane = server.ok(&["(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/sh\" \"-c\" \"echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60\")))"])?;
     let pane = pane.split(':').next().unwrap_or_default();
     let mut fields = Vec::new();
     eventually("the program's report", || {
@@ -1529,7 +1529,7 @@ fn existing_attach_ignores_unusable_optional_launch() -> Outcome {
         40,
         &[
             fux(),
-            "(sequence! (attach (directory (program (options) \"\") \"/no/such/directory\")) #inert)",
+            "(sequence! (attach (directory (program (options) (list \"\")) \"/no/such/directory\")) #inert)",
         ],
         |command| {
             command
@@ -1569,7 +1569,7 @@ fn an_unusable_launch_is_left_out_and_said_only_on_refusal() -> Outcome {
             Some("no room for a pane below its bar"),
         ),
     ] {
-        let program = format!("(attach (program {size} \"\"))");
+        let program = format!("(attach (program {size} (list \"\")))");
         let args = [program.as_str()];
         let panes = server.panes()?.len();
         let mut terminal = Terminal::attach(server, 10, 80, &args)?;
@@ -1605,11 +1605,11 @@ fn a_targeted_attach_resolves_no_launch() -> Outcome {
     let server = Server::empty()?;
     for (args, said) in [
         (
-            &["(sequence! (attach (program (options) \"\")) #inert)"][..],
+            &["(sequence! (attach (program (options) (list \"\"))) #inert)"][..],
             true,
         ),
         (
-            &["(sequence! (attach (in (program (options) \"\") \"work\")) #inert)"],
+            &["(sequence! (attach (in (program (options) (list \"\")) \"work\")) #inert)"],
             false,
         ),
     ] {
@@ -1660,8 +1660,8 @@ fn attach_preferences_apply_before_explicit_operands() -> Outcome {
 fn attach_creation_refusals_keep_unused_for_inherited_targets() -> Outcome {
     let server = Server::start("(sequence! (attach-defaults (in (options) \"main\")) #inert)")?;
     for args in [
-        &["(sequence! (attach (program (options) \"/bin/sh\")) #inert)"][..],
-        &["(sequence! (attach (program (in (options) \"main\") \"/bin/sh\")) #inert)"][..],
+        &["(sequence! (attach (program (options) (list \"/bin/sh\"))) #inert)"][..],
+        &["(sequence! (attach (program (in (options) \"main\") (list \"/bin/sh\"))) #inert)"][..],
     ] {
         let mut terminal = Terminal::attach(&server, 10, 40, args)?;
         assert!(!terminal.wait_exit()?.success());

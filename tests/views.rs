@@ -239,7 +239,7 @@ fn a_fixed_tab_keeps_its_size_and_a_fitting_one_its_last_screen() -> Outcome {
     let mut client = server.attach(25, 84)?;
     client.wait_for("$")?;
     let run = [
-        "(sequence! (define! value-190 (new-tab (program (size (in (options) \"agent\") 100 40) \"cat\"))) (rename value-190 \"hid\") value-190)",
+        "(sequence! (define! value-190 (new-tab (program (size (in (options) \"agent\") 100 40) (list \"cat\")))) (rename value-190 \"hid\") value-190)",
     ];
     let pane = server.ok(&run)?;
     let pane = pane.split(':').next().unwrap_or_default();
@@ -260,7 +260,7 @@ fn a_fixed_tab_keeps_its_size_and_a_fitting_one_its_last_screen() -> Outcome {
     )])?;
     eventually("the client's size", || sized("84x25"))?;
     let other = server.words(
-        "(new-tab (argument (program (size (in (options) \"agent\") 60 20) \"sleep\") \"60\"))",
+        "(new-tab (program (size (in (options) \"agent\") 60 20) (list \"sleep\" \"60\")))",
     )?;
     let other = other.split(':').next().unwrap_or_default();
     server.ok(&[&format!(

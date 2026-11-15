@@ -356,7 +356,10 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
 fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
     let server = Server::start("")?;
     let code = "printf 'X\\033[65535b%.0s' $(seq 4000); echo; echo DO''NE";
-    let out = server.fux(&[&format!("(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") {}))", fux::script::quoted(code))])?;
+    let out = server.fux(&[&format!(
+        "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"sh\" \"-c\" {})))",
+        fux::script::quoted(code)
+    )])?;
     let pane = out.stdout.split(':').next().ok_or("its pane")?;
     assert_eq!(server.exits(pane)?, "0");
     let out = server.fux(&[&format!("(capture (pane {}))", fux::script::quoted(pane))])?;
@@ -389,7 +392,10 @@ fn a_writer_left_on_a_terminal_holds_up_no_one() -> Outcome {
         fill.display(),
         pid_file.display()
     );
-    server.ok(&[&format!("(new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") {}))", fux::script::quoted(&code))])?;
+    server.ok(&[&format!(
+        "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"sh\" \"-c\" {})))",
+        fux::script::quoted(&code)
+    )])?;
     let writer = pid_in(&pid_file)?;
     let group = fuxix::process::Pid::from_raw(writer).ok_or("the writer's group")?;
     let _reap = Reap(vec![writer]);

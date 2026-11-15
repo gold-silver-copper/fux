@@ -4775,7 +4775,7 @@ mod tests {
         let (mut s, _) = attached(12, 50)?;
         run(
             &mut s,
-            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
+            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\"))) #inert)",
         )?;
         s.end_program(PaneId::of(2), Ended::Lost);
         for code in [
@@ -4837,7 +4837,7 @@ mod tests {
         for _ in 0..2 {
             run(
                 &mut s,
-                "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+                "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
             )?;
         }
         for pane in [2, 3] {
@@ -4947,13 +4947,13 @@ mod tests {
         assert_eq!(
             output(
                 &mut s,
-                "(sequence! (define! variables-1755 (context ())) (bind variables-1755 (quote! held) (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))) (define! value-1763 (evaluate (quote! held) variables-1755)) \"version\" (bind variables-1755 (quote! before) (get value-1763 \"version\")) (kill (pane (evaluate (quote! held) variables-1755))) (define! value-1769 (evaluate (quote! held) variables-1755)) \"version\" (equal? (get value-1769 \"version\") (evaluate (quote! before) variables-1755)))"
+                "(sequence! (define! variables-1755 (context ())) (bind variables-1755 (quote! held) (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))) (define! value-1763 (evaluate (quote! held) variables-1755)) \"version\" (bind variables-1755 (quote! before) (get value-1763 \"version\")) (kill (pane (evaluate (quote! held) variables-1755))) (define! value-1769 (evaluate (quote! held) variables-1755)) \"version\" (equal? (get value-1769 \"version\") (evaluate (quote! before) variables-1755)))"
             )?,
             "#true\n"
         );
         run(
             &mut s,
-            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
+            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\"))) #inert)",
         )?;
         assert_eq!(
             output(
@@ -6182,7 +6182,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
         let pasted = run(&mut s, "(send-keys (paste (pane 2) \"x\"))");
@@ -6197,7 +6197,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -6233,7 +6233,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
@@ -6874,7 +6874,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026h\x1b]2;old\x07");
@@ -6886,7 +6886,7 @@ mod tests {
         let lines = told(&mut s, |s| {
             let respawn = run(
                 s,
-                "(respawn (kill-first (program (pane 2) \"/no/such/bin\")))",
+                "(respawn (kill-first (program (pane 2) (list \"/no/such/bin\"))))",
             );
             refused = respawn.err().unwrap_or_default();
         });
@@ -6942,7 +6942,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         let left: Vec<_> = std::iter::repeat_n(crate::pane::testing::spends_the_budget(24, 80), 4)
@@ -7000,7 +7000,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (program-clipboard (picture-bytes (alternate-scroll-lines (reflow (history-bytes (size (in (options) \"agent\") 80 24) 4096) #false) 3) 1024) #false) \"/bin/cat\"))",
+            "(new-tab (program (program-clipboard (picture-bytes (alternate-scroll-lines (reflow (history-bytes (size (in (options) \"agent\") 80 24) 4096) #false) 3) 1024) #false) (list \"/bin/cat\")))",
         )?;
         let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
         let mut stream = crate::journal::Reader::new(
@@ -7067,7 +7067,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7129,7 +7129,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         // One that ignores the hangup, with a title and a bell left unread
@@ -7178,7 +7178,7 @@ mod tests {
             let mut s = started()?;
             run(
                 &mut s,
-                "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+                "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
             )?;
             let id = PaneId::of(2);
             let argv = ["/bin/cat".to_owned()];
@@ -7228,7 +7228,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, b"\x1b[?2026hheld");
@@ -7248,7 +7248,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::testing::spends_the_budget(24, 80));
@@ -7270,7 +7270,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let id = PaneId::of(2);
         s.out(id, &crate::pane::testing::spends_the_budget(24, 80));
@@ -7337,7 +7337,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7461,7 +7461,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7486,7 +7486,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7571,7 +7571,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 23) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 23) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,
@@ -7597,7 +7597,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let lines = told(&mut s, |s| {
             s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(3));
@@ -7659,7 +7659,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         // A test's session starts no program: each is put in the pane.
         let argv = ["/bin/cat".to_owned()];
@@ -7728,7 +7728,7 @@ mod tests {
             let mut s = started()?;
             run(
                 &mut s,
-                "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
+                "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/true\")))",
             )?;
             let id = PaneId::of(2);
             if !held {
@@ -7804,7 +7804,7 @@ mod tests {
         let (mut s, _) = super::testing::attached(201, 200)?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 200 200) \"/bin/true\"))",
+            "(new-tab (program (size (in (options) \"agent\") 200 200) (list \"/bin/true\")))",
         )?;
         let id = PaneId::of(2);
         let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
@@ -7883,7 +7883,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/true\")))",
         )?;
         let id = PaneId::of(2);
         run(&mut s, "(respawn (pane 2))")?;
@@ -7919,7 +7919,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/true\")))",
         )?;
         let id = PaneId::of(2);
         run(&mut s, "(respawn (pane 2))")?;
@@ -7967,7 +7967,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/true\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/true\")))",
         )?;
         let id = PaneId::of(2);
         // Its terminal empty as the exit is told: the server's own read
@@ -7996,7 +7996,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(sequence! (split (program (axis (pane 1) \"horizontal\") \"/bin/cat\")) #inert)",
+            "(sequence! (split (program (axis (pane 1) \"horizontal\") (list \"/bin/cat\"))) #inert)",
         )?;
         // Its program has ended, and the pane stays: nothing takes input there.
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
@@ -8041,7 +8041,7 @@ mod tests {
         // A program's end is a change too: stale, not `not_running`.
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let seen = s.pane(PaneId::of(2))?.version(s.run);
         s.end_program(PaneId::of(2), fux_wire::answer::Ended::Exited(0));
@@ -9061,7 +9061,7 @@ mod tests {
         }
         run(
             &mut s,
-            "(sequence! (rename (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) \"web\") #inert)",
+            "(sequence! (rename (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\"))) \"web\") #inert)",
         )?;
         assert_eq!(
             output(
@@ -9138,20 +9138,20 @@ mod tests {
             ),
             (
                 "(options)",
-                "(program {} \"cat\")",
-                "(program {} \"sh\")",
+                "(program {} (list \"cat\"))",
+                "(program {} (list \"sh\"))",
                 "new-tab",
             ),
             (
                 "(options)",
-                "(program {} \"cat\")",
+                "(program {} (list \"cat\"))",
                 "(shell-program {} (list \"sh\"))",
                 "new-tab",
             ),
             (
                 "(options)",
                 "(shell-program {} (list \"sh\"))",
-                "(program {} \"cat\")",
+                "(program {} (list \"cat\"))",
                 "new-tab",
             ),
             (
@@ -9278,16 +9278,12 @@ mod tests {
     #[test]
     fn structural_and_context_recovery_codes_are_shared() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
-        for source in [
-            "(new-tab (argument (options) \"x\"))",
-            "(send-keys (pane 1))",
-        ] {
-            let caught = output(
-                &mut s,
-                &format!("(catch-kind! (sequence! {source} #inert) usage failure \"recovered\")"),
-            )?;
-            assert_eq!(caught, "recovered\n", "{source}");
-        }
+        let source = "(send-keys (pane 1))";
+        let caught = output(
+            &mut s,
+            &format!("(catch-kind! (sequence! {source} #inert) usage failure \"recovered\")"),
+        )?;
+        assert_eq!(caught, "recovered\n", "{source}");
         assert_eq!(
             output(&mut s, "(catch-kind! (me) not-here failure \"recovered\")")?,
             "recovered\n"
@@ -9315,7 +9311,7 @@ mod tests {
             ),
             (
                 Some(c),
-                "(new-tab (program (directory (size (options) 100 30) \"/\") \"cat\"))",
+                "(new-tab (program (directory (size (options) 100 30) \"/\") (list \"cat\")))",
                 true,
                 (100, 30),
                 true,
@@ -9329,7 +9325,7 @@ mod tests {
             ),
             (
                 None,
-                "(new-tab (program (directory (size (in (options) \"agent\") 100 30) \"/\") \"cat\"))",
+                "(new-tab (program (directory (size (in (options) \"agent\") 100 30) \"/\") (list \"cat\")))",
                 false,
                 (100, 30),
                 true,
@@ -9348,7 +9344,7 @@ mod tests {
         // command line, and a name another tab or a workspace has.
         output(
             &mut s,
-            "(sequence! (new-tab (program (name (size (in (options) \"agent\") 80 24) \"web\") \"cat\")) #inert)",
+            "(sequence! (new-tab (program (name (size (in (options) \"agent\") 80 24) \"web\") (list \"cat\"))) #inert)",
         )?;
         for (source, code) in [
             ("(new-tab (size (options) 80 24))", "no-target:"),
@@ -10502,14 +10498,14 @@ mod tests {
         run(
             &mut source,
             &format!(
-                "(new-tab (argument (argument (program (directory (size (in (options) \"new-workspace\") 150 40) {}) \"/bin/cat\") \"\") {}))",
+                "(new-tab (program (directory (size (in (options) \"new-workspace\") 150 40) {}) (list \"/bin/cat\" \"\" {})))",
                 fux::script::quoted(&directory),
                 fux::script::quoted(value)
             ),
         )?;
         run(
             &mut source,
-            "(sequence! (split (shell-program (shares (axis (pane 2) \"vertical\") 5 3) (list \"/bin/sh\" \"-l\" \"\"))) (split (program (shares (axis (pane 2) \"horizontal\") 7 2) \"/bin/cat\")) (rename (tab 2) \"given\") (rename (pane 2) \"sh\") #inert)",
+            "(sequence! (split (shell-program (shares (axis (pane 2) \"vertical\") 5 3) (list \"/bin/sh\" \"-l\" \"\"))) (split (program (shares (axis (pane 2) \"horizontal\") 7 2) (list \"/bin/cat\"))) (rename (tab 2) \"given\") (rename (pane 2) \"sh\") #inert)",
         )?;
         let dump = output(&mut source, "(dump (tab 2))")?;
         let mut again = started()?;
@@ -10594,7 +10590,7 @@ mod tests {
         )?;
         run(
             &mut source,
-            "(sequence! (define! value-4559 (new-tab (program (size (in (options) (workspace 1)) 80 24) \"/bin/cat\"))) (rename value-4559 \"cat\") (move value-4559 \"new-workspace\") #inert)",
+            "(sequence! (define! value-4559 (new-tab (program (size (in (options) (workspace 1)) 80 24) (list \"/bin/cat\")))) (rename value-4559 \"cat\") (move value-4559 \"new-workspace\") #inert)",
         )?;
         run(
             &mut source,
@@ -11287,7 +11283,7 @@ mod journal_tests {
         let (mut s, client) = testing::attached(24, 80)?;
         run(
             &mut s,
-            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\")) #inert)",
+            "(sequence! (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\"))) #inert)",
         )?;
         let id = PaneId::of(2);
         let from = s.parts.journal().end(s.run);

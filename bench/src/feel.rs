@@ -154,14 +154,11 @@ fn output(command: &mut Command) -> Result<String, String> {
 /// `options`, a grift expression, given a program and its arguments, as
 /// `new-tab` and `split` take them.
 fn with_program(options: String, program: &[String]) -> String {
-    let string = fux::script::quoted;
-    let Some((first, rest)) = program.split_first() else {
+    if program.is_empty() {
         return options;
-    };
-    let run = format!("(program {options} {})", string(first));
-    rest.iter().fold(run, |options, word| {
-        format!("(argument {options} {})", string(word))
-    })
+    }
+    let words: Vec<String> = program.iter().map(|w| fux::script::quoted(w)).collect();
+    format!("(program {options} (list {}))", words.join(" "))
 }
 
 /// A word quoted for `sh`.

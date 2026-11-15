@@ -54,7 +54,7 @@ fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 /// Seeds pick them by position, so a new one goes at the end.
 const SIDE: &[&str] = &[
     r##"(new-tab (in (size (options) 80 23) (workspace "+1"))) #inert"##,
-    r##"(new-tab (program (name (in (size (options) 80 23) (workspace "+1")) "two") "htop")) #inert"##,
+    r##"(new-tab (program (name (in (size (options) 80 23) (workspace "+1")) "two") (list "htop"))) #inert"##,
     r##"(new-tab (in (size (options) 80 23) "ws")) #inert"##,
     r##"(split (axis (pane "%1") "horizontal")) #inert"##,
     r##"(split (axis (pane "%2") "vertical")) #inert"##,

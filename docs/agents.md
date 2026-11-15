@@ -27,7 +27,7 @@ workspace, made if it isn't there; `in` again nests one in it (`(in (in
 (`%3:0.0.0.0.0:RUN`); here `rename` names the pane instead:
 
 ```sh
-fux '(rename (new-tab (program (size (in (options) "agent") 80 24) "sh")) "sh1")'
+fux '(rename (new-tab (program (size (in (options) "agent") 80 24) (list "sh"))) "sh1")'
 ```
 
 **Drive it, and wait.** An action (`line`, `send-keys`, `signal`) answers
@@ -45,7 +45,7 @@ screen you read, give its version: `expect` sends nothing and fails
 fux '(line (pane "sh1") (first (arguments)))' 'sleep 1; echo "built: $((6*7))"'
 fux '(shows (pane "sh1") "built: 42" 60)'
 fux '(quiet (pane "sh1") 2)'
-fux '(get (get (until-ended (new-tab (argument (argument (program (size (in (options) "jobs") 80 24) "sh") "-c") "exit 3")) 60) "program") "exited")'
+fux '(get (get (until-ended (new-tab (program (size (in (options) "jobs") 80 24) (list "sh" "-c" "exit 3"))) 60) "program") "exited")'
 V=$(fux '(version (capture (pane "sh1")))')
 fux '(line (expect (first (arguments))) "echo yes")' "$V"
 printf 'echo pasted\n' > lines.txt
@@ -75,8 +75,8 @@ fux '(events (pane "sh1") (first (arguments)))' "$C" | head -n 1 || [ $? -eq 141
 
 | For | Use |
 | --- | --- |
-| a program's environment | `env(1)`: `(argument (argument (program OPTIONS "env") "PORT=8080") "./app")` |
-| a time limit | `timeout(1)`, on fux or in a pane: `(argument (program OPTIONS "timeout") "60")` … |
+| a program's environment | `env(1)`: `(program OPTIONS (list "env" "PORT=8080" "./app"))` |
+| a time limit | `timeout(1)`, on fux or in a pane: `(program OPTIONS (list "timeout" "60"))` … |
 | a file's text | `< FILE`, read by `(input)` |
 | what a pane runs, and where | its `program`'s `foreground-group` G: `ps -o comm=,args= -p G`; Linux `readlink /proc/G/cwd`, `pgrep -a -g G`; macOS `lsof -a -p G -d cwd -Fn`, `pgrep -lf -g G` |
 | a log of what a program wrote | `script(1)` in its pane (`(explain "servers")`) |
@@ -136,7 +136,7 @@ stays unknown.
   program on stdin; a banner alone is not the prompt:
 
   ```grift
-  (define! p (new-tab (argument (program (size (in (options) "agent") 80 24) "python3") "-q")))
+  (define! p (new-tab (program (size (in (options) "agent") 80 24) (list "python3" "-q"))))
   (define! seen (shows p ">>>" 5))
   (print (string seen))
   (print (version seen))
@@ -145,8 +145,7 @@ stays unknown.
   Run with `timeout 30 fux -` and this program on stdin:
 
   ```grift
-  (define! p (new-tab (argument (argument (program (size (in (options) "agent") 80 24) "sh") "-c")
-    "echo result=42; exit 7")))
+  (define! p (new-tab (program (size (in (options) "agent") 80 24) (list "sh" "-c" "echo result=42; exit 7"))))
   (define! seen (until-ended p 10))
   (print (string seen))
   (print (get (get seen "program") "exited"))
@@ -225,7 +224,7 @@ stays unknown.
   frozen once its terminal is drained.
 
   ```grift
-  (define! p (new-tab (argument (program (size (in (options) "agent") 80 24) "cargo") "test")))
+  (define! p (new-tab (program (size (in (options) "agent") 80 24) (list "cargo" "test"))))
   (get (get (until-ended p 600) "program") "exited")
   ```
 - **A bell or notification:** its `bells` count grows, as for a command's
@@ -275,8 +274,7 @@ stays unknown.
   ```grift
   (define! cursor (get (information (all)) "cursor"))
   (define! job (lambda! (seconds)
-    (pane (new-tab (argument (argument (program (size (in (options) "agent") 80 24) "sh") "-c")
-      (join "sleep " seconds))))))
+    (pane (new-tab (program (size (in (options) "agent") 80 24) (list "sh" "-c" (join "sleep " seconds)))))))
   (define! jobs (map job (list "0.3" "0.05" "0.15")))
   (define! ours? (lambda! (event)
     (and!? (same? (get event "event") "exited")
@@ -478,8 +476,7 @@ function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
 In bash, a hook after `mark_end` sees the command's `$?`, though
 `PIPESTATUS` then holds `$?` alone. A remote shell (`ssh`) marks commands if
 its startup does. Or run a remote command in a pane of its own, and wait
-for its exit: `(new-tab (argument (argument (argument (program (size (in (options) "agent") 80 24)
-"ssh") "-n") "HOST") "make"))`.
+for its exit: `(new-tab (program (size (in (options) "agent") 80 24) (list "ssh" "-n" "HOST" "make")))`.
 
 ## programs: A program
 
@@ -495,7 +492,7 @@ between steps:
 
 ```grift
 ; test.grift: run the tests, wait until they end, read what they printed
-(define! a (new-tab (argument (program (name (size (in (options) "agent") 80 24) "tests") "cargo") "test")))
+(define! a (new-tab (program (name (size (in (options) "agent") 80 24) "tests") (list "cargo" "test"))))
 (until-ended a 600)
 (capture (all-history a))
 ```
@@ -599,7 +596,7 @@ of that server's panes. Each script should clean up the targets and processes it
 
 - A pane's program takes the server's environment, plus `FUX`,
   `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`. `env(1)` sets the rest:
-  `fux '(new-tab (argument (argument (program (size (in (options) "agent") 80 24) "env") "PORT=8080") "./app"))'`.
+  `fux '(new-tab (program (size (in (options) "agent") 80 24) (list "env" "PORT=8080" "./app")))'`.
 - Handle values returned by a server retain its run through lists, bindings,
   answers and request options; using one against another run is refused.
   A hand-written `(pane 3)`, `(tab 2)`, `(workspace 1)` or `(client "c1")` means the server
@@ -683,10 +680,10 @@ of that server's panes. Each script should clean up the targets and processes it
   writes). With util-linux:
 
   ```grift
-  (new-tab (fold argument (program (size (in (options) "agent") 80 24) "script")
-    (list "-q" "-e" "-f" "LOG" "-c" "make test")))
+  (new-tab (program (size (in (options) "agent") 80 24)
+    (list "script" "-q" "-e" "-f" "LOG" "-c" "make test")))
   ```
-  on macOS and the BSDs, `(list "-q" "-F" "LOG" "sh" "-c" "make test")`. LOG holds the
+  on macOS and the BSDs, `(list "script" "-q" "-F" "LOG" "sh" "-c" "make test")`. LOG holds the
   terminal's raw bytes (util-linux adds a first and last line of its own).
   `(dump (all))` prints the layout as a program that makes it again;
   `(attach (size (options) 100 30))` is a client with no terminal (`(send-keys (key

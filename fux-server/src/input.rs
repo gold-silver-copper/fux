@@ -1756,7 +1756,7 @@ mod tests {
         let (mut s, c) = session()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         run(
             &mut s,

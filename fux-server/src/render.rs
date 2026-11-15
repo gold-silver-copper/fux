@@ -1475,7 +1475,7 @@ mod tests {
         output_as(
             &mut s,
             Some(c),
-            "(sequence! (new-tab (program (directory (in (options) \"agent\") \"/\") \"x\")) #inert)",
+            "(sequence! (new-tab (program (directory (in (options) \"agent\") \"/\") (list \"x\"))) #inert)",
         )?;
         let id = s.focused(c).ok_or("the pane")?;
         let respawn = format!(

@@ -19,14 +19,11 @@ fn id(out: &str) -> String {
 
 /// Construct a program request in grift; every executable argument stays data.
 fn program(builder: &str, argv: &[&str]) -> String {
-    let Some((first, rest)) = argv.split_first() else {
+    if argv.is_empty() {
         return builder.to_owned();
-    };
-    let mut expression = format!("(program {builder} {})", fux::script::quoted(first));
-    for argument in rest {
-        expression = format!("(argument {expression} {})", fux::script::quoted(argument));
     }
-    expression
+    let words: Vec<String> = argv.iter().map(|word| fux::script::quoted(word)).collect();
+    format!("(program {builder} (list {}))", words.join(" "))
 }
 /// Each explicit option transform includes a size; the empty fixture uses 80 by 24.
 fn launch(before: &[&str], argv: &[&str]) -> Vec<String> {
@@ -1013,7 +1010,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         "(wrapped (options))",
         "(rows (options) 0 5)",
     ] {
-        let out = server.fux(&[&format!("(new-tab (program {builder} \"cat\"))")])?;
+        let out = server.fux(&[&format!("(new-tab (program {builder} (list \"cat\")))")])?;
         assert_eq!(out.status, 1, "{}", out.stderr);
         assert!(out.stderr.starts_with("fux: unused: "), "{}", out.stderr);
     }
@@ -1085,7 +1082,7 @@ fn respawn_keeps_a_given_name_matching_the_old_program() -> Outcome {
     server.exits(&pane)?;
     let ended = server.version(&pane)?;
     server.ok(&[&format!(
-        "(respawn (program (pane {}) \"true\"))",
+        "(respawn (program (pane {}) (list \"true\")))",
         fux::script::quoted(&pane)
     )])?;
     let name = server.ok(&[&format!(
@@ -1330,7 +1327,7 @@ fn until_ended_checks_before_waiting_and_keeps_status() -> Outcome {
         );
         assert_eq!(server.ok(&[&code])?, "7\n");
     }
-    let code = "(sequence! (define! value-42 (until-ended (wait (timeout (new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"sh\") \"-c\") \"sleep 0.1; exit 7\")) 1)) 1)) \"program\" (define! value-44 (get value-42 \"program\")) \"exited\" (get value-44 \"exited\"))";
+    let code = "(sequence! (define! value-42 (until-ended (wait (timeout (new-tab (program (size (in (options) \"agent\") 80 24) (list \"sh\" \"-c\" \"sleep 0.1; exit 7\"))) 1)) 1)) \"program\" (define! value-44 (get value-42 \"program\")) \"exited\" (get value-44 \"exited\"))";
     assert_eq!(server.ok(&[code])?, "7\n");
     Ok(())
 }

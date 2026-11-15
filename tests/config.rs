@@ -84,7 +84,7 @@ fn only_a_typing_terminal_loads_the_user_config() -> Outcome {
 #[test]
 fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     let server = Server::start(
-        "(sequence! (move-keys \"C-b\" \"C-a\") (define! split-below (lambda! () (sequence! (split (axis (focused (me)) \"vertical\")) #inert))) (bind-key \"C-a y\" (code! (lambda! () (sequence! (split-below) #inert)))) (unbind \"C-a h\") (bind-key \"C-a g\" (code! (lambda! () (sequence! (split (argument (argument (program (axis (focused (me)) \"horizontal\") \"sh\") \"-c\") \"echo from-g; exec sh\")) #inert)))) (group \"Tools\") #inert)",
+        "(sequence! (move-keys \"C-b\" \"C-a\") (define! split-below (lambda! () (sequence! (split (axis (focused (me)) \"vertical\")) #inert))) (bind-key \"C-a y\" (code! (lambda! () (sequence! (split-below) #inert)))) (unbind \"C-a h\") (bind-key \"C-a g\" (code! (lambda! () (sequence! (split (program (axis (focused (me)) \"horizontal\") (list \"sh\" \"-c\" \"echo from-g; exec sh\"))) #inert)))) (group \"Tools\") #inert)",
     )?;
     let mut client = server.attach(24, 90)?;
     client.wait_for("$")?;
@@ -235,7 +235,7 @@ fn an_imported_failure_keeps_the_whole_bundled_state() -> Outcome {
     terminal.type_bytes(b"d")?;
     terminal.wait_exit()?;
     assert_eq!(server.panes()?.len(), 1);
-    let probe = server.fux(&["(wait (new-tab (argument (argument (program (size (in (options) \"agent\") 80 24) \"/bin/sh\") \"-c\") \"sleep 1\")))"])?;
+    let probe = server.fux(&["(wait (new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/sh\" \"-c\" \"sleep 1\"))))"])?;
     assert_eq!(
         probe.status, 0,
         "a failed config changed another invocation's wait: {}",
@@ -454,7 +454,7 @@ fn a_program_uses_preferences_before_its_next_operation() -> Outcome {
 
 /// A new small pane uses its invocation's history budget.
 fn history_rows(server: &Server) -> Result<usize, String> {
-    let answer = server.ok(&["(new-tab (argument (argument (program (size (in (options) \"agent\") 80 5) \"/bin/sh\") \"-c\") \"i=0; while [ \\\"$i\\\" -lt 40 ]; do echo row; i=$((i+1)); done\"))"])?;
+    let answer = server.ok(&["(new-tab (program (size (in (options) \"agent\") 80 5) (list \"/bin/sh\" \"-c\" \"i=0; while [ \\\"$i\\\" -lt 40 ]; do echo row; i=$((i+1)); done\")))"])?;
     let pane = answer.trim().split(':').next().ok_or("pane")?;
     server.exits(pane)?;
     Ok(server
@@ -684,11 +684,11 @@ fn launches_save_the_callers_argv_role_and_environment() -> Outcome {
     let before = server.panes()?.len();
     for (conflict, code) in [
         (
-            "(new-tab (program (shell-program (size (in (options) \"main\") 80 24) (list \"/bin/sh\")) \"/bin/cat\"))",
+            "(new-tab (program (shell-program (size (in (options) \"main\") 80 24) (list \"/bin/sh\")) (list \"/bin/cat\")))",
             "unused",
         ),
         (
-            "(new-tab (shell-program (program (size (in (options) \"main\") 80 24) \"/bin/cat\") (list \"/bin/sh\")))",
+            "(new-tab (shell-program (program (size (in (options) \"main\") 80 24) (list \"/bin/cat\")) (list \"/bin/sh\")))",
             "unused",
         ),
     ] {
@@ -738,7 +738,7 @@ fn presentation_updates_only_the_addressed_view_before_a_wait_finishes() -> Outc
 #[test]
 fn pane_creation_overrides_preserve_zero_and_false_and_dump_replays_them() -> Outcome {
     let server = Server::start("")?;
-    let created = server.ok(&["(sequence! (set \"history-bytes\" 4096) (set \"program-clipboard\" #true) (new-tab (program (program-clipboard (picture-bytes (alternate-scroll-lines (reflow (history-bytes (size (in (options) \"agent\") 40 6) 0) #false) 0) 0) #false) \"/bin/cat\")))"])?;
+    let created = server.ok(&["(sequence! (set \"history-bytes\" 4096) (set \"program-clipboard\" #true) (new-tab (program (program-clipboard (picture-bytes (alternate-scroll-lines (reflow (history-bytes (size (in (options) \"agent\") 40 6) 0) #false) 0) 0) #false) (list \"/bin/cat\"))))"])?;
     let pane = created.trim().split(':').next().ok_or("pane")?;
     assert_eq!(
         server

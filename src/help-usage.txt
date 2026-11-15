@@ -13,7 +13,7 @@ Example: fux '(line (pane 3) "ls -l")'
 What an operation takes (options, keys, what to read) goes around the pane it
 acts on: `(send-keys (text (pane 2) "y"))`, `(capture (all-history (pane 2)))`;
 only FROM_OPTIONS start from (options):
-`(new-tab (argument (program (in (options) "jobs") "make") "test"))`. A new pane
+`(new-tab (program (in (options) "jobs") (list "make" "test")))`. A new pane
 is laid out on a size given (`(size (options) 80 24)`), else the caller's own
 screen or tab (fux run in a pane): run from outside fux, a size must be given,
 as fux makes none up. An action answers at once, with its pane's version from
