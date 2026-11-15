@@ -620,6 +620,8 @@ impl End {
     pub fn read_up_to(&mut self, buffer: &mut [u8], limit: usize) -> Read {
         let mut read = 0usize;
         while read < limit {
+            let room = buffer.len().min(limit.saturating_sub(read));
+            let buffer = buffer.get_mut(..room).unwrap_or_default();
             match fuxix::io::read(&self.stream, buffer) {
                 Ok(0) => return Read::Closed,
                 Ok(n) => {
