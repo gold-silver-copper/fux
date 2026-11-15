@@ -164,11 +164,14 @@ impl Endpoint {
     /// its run's lock stays its own till this is dropped, as it ends. A
     /// run is its server's while that server lives, its panes' closing
     /// too: a start meanwhile waits its turn behind it, as behind one
-    /// starting, and finds what it left, not panes it still holds.
-    pub fn stop(&mut self) {
+    /// starting, and finds what it left, not panes it still holds. That
+    /// turn is taken first, while `listener` still answers: a client that
+    /// finds no server from then on, and starts one, finds the turn
+    /// taken, and its start waits; none is refused for the run's lock.
+    pub fn stop(&mut self, listener: UnixListener) {
+        self.starting = turn(&self.path).ok().and_then(Result::ok);
+        drop(listener);
         self.unlink();
-        self.starting = (lock_file(&self.path, ".starting").ok())
-            .and_then(|(starting, _)| starting.lock().is_ok().then_some(starting));
     }
 
     fn unlink(&self) {
@@ -222,10 +225,10 @@ fn crashed(path: &Path) -> bool {
     if !panes(path).join("run").exists() {
         return false;
     }
-    let Ok((starting, _)) = lock_file(path, ".starting") else {
+    let Ok(Ok(_turn)) = turn(path) else {
         return false;
     };
-    starting.lock().is_ok() && matches!(lock_run(path, false), Ok(Run::Ours(_)))
+    matches!(lock_run(path, false), Ok(Run::Ours(_)))
 }
 
 /// Whether process `pid` is gone: it has no session, or, on Linux, it is a
@@ -317,9 +320,9 @@ fn lock_run(path: &Path, make: bool) -> Result<Run, Error> {
     )))
 }
 
-/// The process that holds a lock on the directory `held`, as the system
-/// lists them: on Linux alone (`/proc/locks`, each named there checked to
-/// have that very directory open), and only to name it.
+/// The process that holds a lock on the file or directory `held`, as the
+/// system lists them: on Linux alone (`/proc/locks`, each named there
+/// checked to have that very file open), and only to name it.
 fn locker(held: &fs::Metadata) -> Option<i32> {
     let locks = fs::read_to_string("/proc/locks").ok()?;
     let inode = format!(":{}", held.ino());
@@ -357,6 +360,28 @@ fn held_by(path: &Path, server: Option<i32>) -> String {
     )
 }
 
+/// A turn among the servers starting or stopping on the socket at `path`:
+/// the lock of its `.starting` file, waited for at most `TURN_WAIT`. Or
+/// why it was not had by then: who keeps it, where the system says which
+/// process, a server stopped as it starts or stops. Nothing is changed
+/// for a turn not had, that server's run least of all.
+fn turn(path: &Path) -> Result<Result<File, String>, Error> {
+    let (starting, starting_path) = lock_file(path, ".starting")?;
+    let held = starting.metadata().map_err(io(&starting_path))?;
+    let locked = super::lock_within(starting, super::TURN_WAIT)
+        .map_err(failed("locking ", &starting_path))?;
+    Ok(locked.ok_or_else(|| {
+        let who = locker(&held).map_or_else(String::new, |pid| format!(" (process {pid})"));
+        format!(
+            "another fux server{who} has been starting or stopping on {} for {} seconds, \
+             holding {}: this start waits no longer, and has changed nothing",
+            path.display(),
+            super::TURN_WAIT.as_secs(),
+            starting_path.display()
+        )
+    }))
+}
+
 /// The lock file beside the socket at `path`, its name ending `end`, made
 /// if it is not there, and its path. It orders the servers starting there
 /// (`.starting`), and only that: which one has the run is `lock_run`'s to
@@ -388,10 +413,7 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
     // listens or fails (this returns, or it exits): one refused below is
     // refused once the socket answers, which its client then finds
     // (`client::start_server`).
-    let (starting, starting_path) = lock_file(path, ".starting")?;
-    starting
-        .lock()
-        .map_err(failed("locking ", &starting_path))?;
+    let _starting = turn(path)?.map_err(Error::Refused)?;
     // Before anything there is touched: a server refused here has changed
     // nothing, its socket least of all.
     let lock = match lock_run(path, true)? {
@@ -1019,6 +1041,87 @@ mod tests {
         assert!(bind(&path).is_err_and(|e| e.to_string().contains("already listening")));
         assert!(exists(&path), "the live socket is kept");
         drop(replacement);
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A private directory of the test `name`'s own, and a socket's path
+    /// in it.
+    fn private(name: &str) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
+        let root = scratch(name)?;
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root)?;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+        let path = root.join("fux").join("s.sock");
+        Ok((root, path))
+    }
+
+    /// The lock that orders the servers starting on `path`, held as a
+    /// server starting or stopping there holds it.
+    fn ahead(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
+        let (starting, _) = lock_file(path, ".starting")?;
+        starting.lock()?;
+        Ok(starting)
+    }
+
+    /// A server that stops takes its turn among those starting before its
+    /// socket stops answering: with the turn held by another, its socket
+    /// is still there, and takes a client; it goes once the turn is had.
+    /// (The socket went first: a client that then found no server started
+    /// one, which found no turn taken and was refused for the run's lock,
+    /// not held up.)
+    #[test]
+    fn a_stopping_server_takes_its_turn_before_its_socket_goes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, path) = private("order")?;
+        let (mut endpoint, listener) = bind(&path)?;
+        let turn = ahead(&path)?;
+        let stopping = std::thread::spawn(move || {
+            endpoint.stop(listener);
+            endpoint
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!stopping.is_finished(), "it stopped without its turn");
+        assert!(
+            UnixStream::connect(&path).is_ok(),
+            "its socket went before its turn was had"
+        );
+        drop(turn);
+        let endpoint = stopping.join().map_err(|_| "the stop failed")?;
+        assert!(!exists(&path), "its socket is gone once it stopped");
+        // The turn is its own now, and the run's lock still.
+        assert!(endpoint.starting.is_some(), "it holds no turn");
+        assert!(matches!(lock_run(&path, false), Ok(Run::Theirs(_))));
+        drop(endpoint);
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A start waits its turn no longer than `TURN_WAIT`: with the turn
+    /// kept by another all that while (a server stopped as it stops), it
+    /// is refused, saying who keeps it, and has made no socket and taken
+    /// no run's lock; once the turn is free, a start is made as ever.
+    /// (It waited without end, and its client with it.)
+    #[test]
+    fn a_start_waits_its_turn_only_so_long() -> Result<(), Box<dyn std::error::Error>> {
+        let (root, path) = private("turn")?;
+        private_directory(&checked(&path, "test")?, true)?;
+        let turn = ahead(&path)?;
+        let began = std::time::Instant::now();
+        let refused = bind(&path).err().map(|e| e.to_string());
+        let refused = refused.ok_or("a start took the socket out of turn")?;
+        assert!(began.elapsed() >= super::super::TURN_WAIT, "{refused}");
+        assert!(refused.contains("s.sock.starting"), "{refused}");
+        #[cfg(target_os = "linux")]
+        assert!(
+            refused.contains(&format!("(process {})", std::process::id())),
+            "{refused}"
+        );
+        assert!(!exists(&path), "the refused start made a socket");
+        assert!(matches!(lock_run(&path, false), Ok(Run::None)));
+        drop(turn);
+        let (endpoint, _listener) = bind(&path)?;
+        drop(endpoint);
         let _ = fs::remove_dir_all(&root);
         Ok(())
     }

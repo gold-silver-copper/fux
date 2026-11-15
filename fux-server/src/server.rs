@@ -45,6 +45,11 @@ const ACCEPTS: usize = 64;
 const CONN_KEEP: usize = 64 * 1024;
 /// How long a stopping server waits for its clients and processes.
 const STOP_WAIT: Duration = Duration::from_millis(500);
+/// How long it then waits for its panes' own processes to end (`finish`).
+const FINISH_WAIT: Duration = Duration::from_secs(1);
+/// The longest a server takes to stop, its turn among the servers
+/// starting kept the while (`socket::TURN_WAIT`).
+pub(crate) const STOP_LONGEST: Duration = STOP_WAIT.saturating_add(FINISH_WAIT);
 /// A condition that persists is logged once, then at most this often.
 const REPORT_EVERY: Duration = Duration::from_secs(10);
 /// How long the server waits to start another connection's process after
@@ -90,8 +95,7 @@ impl Listening {
             mut endpoint,
             ..
         } = self;
-        drop(listener);
-        endpoint.stop();
+        endpoint.stop(listener);
         endpoint
     }
 
@@ -2097,7 +2101,8 @@ impl Server {
     /// stuck in the kernel is left to init rather than hold the server's
     /// exit. Each ends its program as it ends.
     fn finish(&mut self) {
-        for _ in 0..500 {
+        let until = after(Instant::now(), FINISH_WAIT);
+        while Instant::now() < until {
             self.flush_links();
             self.reap(Instant::now());
             if self.session.children().is_empty() {

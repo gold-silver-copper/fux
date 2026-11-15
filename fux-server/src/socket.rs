@@ -113,6 +113,32 @@ pub(crate) fn make_run_directory(socket: &Path) -> Result<(), Error> {
     }
 }
 
+/// How long a turn among the servers starting or stopping on a socket
+/// (its `.starting` file's lock) is waited for: twice the longest a
+/// stopping server keeps it. One kept longer is a server stopped as it
+/// starts or stops, which a start, a client asking whether a server runs
+/// and a server stopping wait for no further.
+pub(crate) const TURN_WAIT: std::time::Duration = crate::server::STOP_LONGEST.saturating_mul(2);
+
+/// Locks `file`, waiting at most `wait`: the file, locked, or none if
+/// another kept its lock that long. The lock is waited for as any is, so
+/// it is had the moment it is free; a wait given up leaves `file` closed,
+/// locked by no one here, whenever its lock comes.
+pub(crate) fn lock_within(
+    file: std::fs::File,
+    wait: std::time::Duration,
+) -> io::Result<Option<std::fs::File>> {
+    let (locked, lock) = std::sync::mpsc::channel();
+    std::thread::Builder::new().spawn(move || {
+        // Sent to no one once the wait is over: dropped, and so unlocked.
+        let _ = locked.send(file.lock().map(|()| file));
+    })?;
+    match lock.recv_timeout(wait) {
+        Ok(locked) => locked.map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
 /// What reaching for a pane's socket found (`reach`).
 pub enum Reach {
     /// A process listens there: a link to it.

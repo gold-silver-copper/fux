@@ -155,6 +155,26 @@ fn recorded_runs(path: &Path) -> bool {
     fuxix::process::identity(pid).is_ok_and(|now| now.created == created)
 }
 
+/// A turn among the servers starting or stopping on the socket at `path`:
+/// the lock of its `.starting` file, waited for at most `TURN_WAIT`. Or
+/// why it was not had by then: a server stopped as it starts or stops
+/// keeps it. Nothing is changed for a turn not had, that server's run
+/// least of all.
+fn turn(path: &Path) -> Result<Result<File, String>, Error> {
+    let (starting, starting_path) = lock_file(path, ".starting")?;
+    let locked = super::lock_within(starting, super::TURN_WAIT)
+        .map_err(failed("locking ", &starting_path))?;
+    Ok(locked.ok_or_else(|| {
+        format!(
+            "another fux server has been starting or stopping on {} for {} seconds, \
+             holding {}: this start waits no longer, and has changed nothing",
+            path.display(),
+            super::TURN_WAIT.as_secs(),
+            starting_path.display()
+        )
+    }))
+}
+
 /// The lock that makes this server its only owner, and its record, which
 /// is removed when it is dropped.
 pub struct Endpoint {
@@ -170,10 +190,13 @@ impl Endpoint {
     /// it ends. A run is its server's while that server lives, its panes'
     /// closing too: a start meanwhile waits its turn behind it, as behind
     /// one starting, and finds what it left, not panes it still holds.
-    pub fn stop(&mut self) {
+    /// That turn is taken first, while `listener` still answers: a client
+    /// that finds no server from then on, and starts one, finds the turn
+    /// taken, and its start waits; none is refused for the lock.
+    pub fn stop(&mut self, listener: Listener) {
+        self.starting = turn(&self.path).ok().and_then(Result::ok);
+        drop(listener);
         let _ = fs::remove_file(record_path(&self.path));
-        self.starting = (lock_file(&self.path, ".starting").ok())
-            .and_then(|(starting, _)| starting.lock().is_ok().then_some(starting));
     }
 }
 
@@ -195,10 +218,7 @@ const HELD_WAIT: Duration = Duration::from_secs(2);
 pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Listener), Error> {
     let path = socket.path();
     private_directory(socket, true)?;
-    let (starting, starting_path) = lock_file(path, ".starting")?;
-    starting
-        .lock()
-        .map_err(failed("locking ", &starting_path))?;
+    let starting = turn(path)?.map_err(Error::Refused)?;
     let (lock, lock_path) = lock_file(path, ".lock")?;
     lock.try_lock().map_err(|error| match error {
         fs::TryLockError::WouldBlock => Error::Refused(format!(
@@ -612,12 +632,9 @@ pub fn owned(socket: &SocketPath) -> bool {
 
 /// Whether a server holds the lock of the socket at `path`.
 fn lock_held(path: &Path) -> bool {
-    let Ok((starting, _)) = lock_file(path, ".starting") else {
+    let Ok(Ok(_turn)) = turn(path) else {
         return false;
     };
-    if starting.lock().is_err() {
-        return false;
-    }
     let Ok((lock, _)) = lock_file(path, ".lock") else {
         return false;
     };
