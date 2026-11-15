@@ -7611,7 +7611,7 @@ mod tests {
         let mut s = started()?;
         run(
             &mut s,
-            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+            "(new-tab (program (size (in (options) \"agent\") 80 24) (list \"/bin/cat\")))",
         )?;
         let now = Instant::now();
         let asked_and_left = |s: &mut Session, target: PaneId, argv| -> TestResult {

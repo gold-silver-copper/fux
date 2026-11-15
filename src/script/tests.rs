@@ -1466,15 +1466,15 @@ fn a_records_kind_and_fields_are_read_one_way() -> TestResult {
     let mut out = Vec::new();
     let kinds = "(list (kind (quote! ((kind \"capture\") (text \"ok\")))) \
                  (kind (quote! ((text \"ok\") (kind \"capture\")))))";
-    assert_eq!(main(&[kinds.into()], None, &mut out)?, 0);
+    assert_eq!(main(&[kinds.into()], &mut out)?, 0);
     assert_eq!(String::from_utf8(out)?, "capture\ncapture\n");
     // `(x 1 2)` is no field, so the value is a list, which has none.
     let mut out = Vec::new();
     let listed = "(kind (quote! ((x 1 2))))";
-    assert_eq!(main(&[listed.into()], None, &mut out)?, 0);
+    assert_eq!(main(&[listed.into()], &mut out)?, 0);
     assert_eq!(String::from_utf8(out)?, "list\n");
     let read = "(get (quote! ((x 1 2))) \"x\")";
-    let failed = main(&[read.into()], None, &mut Vec::new()).err();
+    let failed = main(&[read.into()], &mut Vec::new()).err();
     assert_eq!(failed.map(|f| f.code), Some(Code::Type), "{read}");
     Ok(())
 }
@@ -1482,7 +1482,7 @@ fn a_records_kind_and_fields_are_read_one_way() -> TestResult {
 /// the whole dictionary.
 #[test]
 fn word_refuses_what_is_no_name() -> TestResult {
-    let failed = main(&["(word 1)".into()], None, &mut Vec::new()).err();
+    let failed = main(&["(word 1)".into()], &mut Vec::new()).err();
     assert_eq!(failed.map(|f| f.code), Some(Code::Type));
     Ok(())
 }
