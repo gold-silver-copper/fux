@@ -684,6 +684,11 @@ pub trait Named: Clone + PartialEq + 'static {
         None
     }
 
+    /// The action that runs `code`, where a screen's key may run code.
+    fn running(_code: fux_wire::callback::Callback) -> Option<Self> {
+        None
+    }
+
     fn name(&self) -> &'static str {
         (Self::NAMES.iter())
             .find(|(_, a)| a == self)
@@ -740,28 +745,17 @@ impl<A: Named> Table<A> {
     }
 }
 
-impl Table<ListAct> {
-    pub fn bind_action(
-        &mut self,
-        key: KeyPress,
-        action: fux_wire::callback::Callback,
-    ) -> Result<(), String> {
-        if key.key == Key::Escape {
-            return Err("Escape leaves every screen of fux's own; it cannot be bound".to_owned());
-        }
-        let bound = (key, ListAct::Action(action), None);
-        match self.0.iter_mut().find(|(k, ..)| *k == key) {
-            Some(was) => *was = bound,
-            None => self.0.push(bound),
-        }
-        Ok(())
-    }
+/// What a key of one of fux's screens is bound to: one of the screen's
+/// actions by name, or code to run.
+pub enum Does<'a> {
+    Named(&'a str),
+    Runs(fux_wire::callback::Callback),
 }
 
 /// A screen's table, whatever its actions: what a config's words change.
 pub trait Bindable {
-    /// Binds `key` to the action named `name`, in place of what it did.
-    fn bind(&mut self, key: KeyPress, name: &str) -> Result<(), String>;
+    /// Binds `key` to `does`, in place of what it did.
+    fn bind(&mut self, key: KeyPress, does: Does<'_>) -> Result<(), String>;
     fn unbind(&mut self, key: KeyPress) -> Result<(), String>;
     /// The hint of `key`'s action, if it is bound.
     fn label(&mut self, key: KeyPress) -> Option<&mut Option<String>>;
@@ -773,19 +767,23 @@ pub trait Bindable {
 }
 
 impl<A: Named> Bindable for Table<A> {
-    fn bind(&mut self, key: KeyPress, name: &str) -> Result<(), String> {
+    fn bind(&mut self, key: KeyPress, does: Does<'_>) -> Result<(), String> {
         if key.key == Key::Escape {
             return Err("Escape leaves every screen of fux's own; it cannot be bound".to_owned());
         }
-        let Some((_, act)) = A::NAMES.iter().find(|(n, _)| *n == name) else {
+        let names = || {
             let names: Vec<&str> = A::NAMES.iter().map(|(n, _)| *n).collect();
-            return Err(format!(
-                "{name:?} is not {}",
-                fux_wire::words::listed(&names, "or")
-            ));
+            fux_wire::words::listed(&names, "or")
+        };
+        let act = match does {
+            Does::Named(name) => (A::NAMES.iter().find(|(n, _)| *n == name))
+                .map(|(_, act)| act.clone())
+                .ok_or_else(|| format!("{name:?} is not {}", names()))?,
+            Does::Runs(code) => A::running(code)
+                .ok_or_else(|| format!("a key here runs no code: it does {}", names()))?,
         };
         // A key bound again keeps its place, as a binding's does.
-        let bound = (key, act.clone(), None);
+        let bound = (key, act, None);
         match self.0.iter_mut().find(|(k, ..)| *k == bound.0) {
             Some(was) => *was = bound,
             None => self.0.push(bound),
@@ -815,14 +813,11 @@ impl<A: Named> Bindable for Table<A> {
                 .as_ref()
                 .map(|l| format!(" (label {})", quoted(l)))
                 .unwrap_or_default();
-            match act.source() {
-                Some(code) => format!("(bind-action {key} (code! {})){label}\n", code.text()),
-                None => format!(
-                    "(bind-in {} {key} {}){label}\n",
-                    quoted(modal),
-                    quoted(act.name())
-                ),
-            }
+            let does = match act.source() {
+                Some(code) => format!("(code! {})", code.text()),
+                None => quoted(act.name()),
+            };
+            format!("(bind-in {} {key} {does}){label}\n", quoted(modal))
         };
         self.0.iter().map(line).collect()
     }
@@ -859,6 +854,9 @@ impl Named for ListAct {
             Self::Action(action) => Some(&action.code),
             Self::Move(_) | Self::Choose | Self::Cancel => None,
         }
+    }
+    fn running(code: fux_wire::callback::Callback) -> Option<Self> {
+        Some(Self::Action(code))
     }
 }
 
@@ -924,8 +922,8 @@ mod tests {
     fn modal_keys_keep_case_in_actions_labels_and_unbinding() -> Result<(), String> {
         fn check<A: Named>(lower: &str, upper: &str) -> Result<(), String> {
             let mut table = Table::<A>::default();
-            table.bind(key("g")?, lower)?;
-            table.bind(key("S-g")?, upper)?;
+            table.bind(key("g")?, Does::Named(lower))?;
+            table.bind(key("S-g")?, Does::Named(upper))?;
             *table.label(key("g")?).ok_or("g label")? = Some("lower".into());
             *table.label(key("G")?).ok_or("G label")? = Some("upper".into());
             assert_eq!(table.get(key("g")?).map(|a| a.name()), Some(lower));

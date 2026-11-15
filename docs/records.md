@@ -594,8 +594,8 @@ A client's keys and preferences are its own: the server keeps no copy, and relay
 the column open, `"C-b r"` in the resize repeat mode. `keymap` is the root's keys in the order bound,
 each a `key` that runs a `binding`, with its `code`, `label` and `group`, or holds a `map` of more
 keys, which says whether it `repeat`s and has a `keymap` of its own, as deep as the keys go. `list`
-and `line` are the keys of fux's own screens: each its screen's `action`, or for a list's `bind-action`
-key its `code`, and its `label` or `none`. `(list-keys)` prints the same keys as config lines.
+and `line` are the keys of fux's own screens: each its screen's `action`, or for a list's key that runs
+code its `code`, and its `label` or `none`. `(list-keys)` prints the same keys as config lines.
 
 A `code` is the form the binding's `code!` holds, and reading it runs nothing. It evaluates in the
 program that runs it, asking nothing of the server and reading no file: a name that program lacks

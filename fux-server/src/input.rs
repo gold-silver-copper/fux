@@ -1594,15 +1594,15 @@ mod tests {
         for bad in [
             "(sequence! (bind-in \"list\" \"R\" \"confirm-close\") #inert)",
             "(sequence! (bind-in \"list\" \"R\" \"rename\") #inert)",
-            "(sequence! (bind-action \"R\" \"nosuch\") #inert)",
-            "(sequence! (bind-action \"Escape\" (code! (lambda! (argument-646 argument-647) #inert))) #inert)",
+            "(sequence! (bind-in \"list\" \"R\" \"nosuch\") #inert)",
+            "(sequence! (bind-in \"list\" \"Escape\" (code! (lambda! (argument-646 argument-647) #inert))) #inert)",
         ] {
             assert!(output_as(&mut s, Some(c), bad).is_err(), "{bad}");
         }
         output_as(
             &mut s,
             Some(c),
-            "(sequence! (bind-action \"R\" (code! (lambda! (argument-654 argument-655) (sequence! (print argument-655) #inert)))) (label \"test\") #inert)",
+            "(sequence! (bind-in \"list\" \"R\" (code! (lambda! (argument-654 argument-655) (sequence! (print argument-655) #inert)))) (label \"test\") #inert)",
         )?;
         run(
             &mut s,

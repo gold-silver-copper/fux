@@ -433,8 +433,7 @@ words! {
         Config Group "group" "name --" raises(Type NotConfig BadBinding) "the column's heading for the last binding" "(sequence! (bind-key \"C-b g v\" (code! (lambda! () (sequence! (split (axis (focused (me)) \"horizontal\")) #inert)))) (group \"panes\") #inert)";
         Config Repeat "repeat" "keys --" raises(Type NotConfig BadBinding) "the map the keys hold repeats: it stays after a key of it runs, until Esc (config)" "(sequence! (bind-key \"C-b g h\" (code! (lambda! () (sequence! (move-border (focused (me)) \"left\" 2) #inert)))) (repeat \"C-b g\") #inert)";
         Config Unbind "unbind" "keys --" raises(Type NotConfig BadBinding) "keys run or hold nothing, and a map they leave empty goes. It hides grift's (unbind context symbol), the one name of grift's fux takes: (lookup (standard-context) (quote! unbind) #inert) is grift's" "(sequence! (unbind \"C-b g v\") #inert)";
-        Config BindAction "bind-action" "key code --" raises(Type NotConfig BadBinding) "a list's key runs code, receiving client payload; Escape cannot be bound" "(sequence! (bind-action \"r\" (code! (lambda! (client target) (rename-prompt client target)))) (label \"rename\") #inert)";
-        Config BindIn "bind-in" "screen key action --" raises(Type NotConfig BadBinding) "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each" "(sequence! (bind-in \"list\" \"g\" \"first\") (label \"first\") #inert)";
+        Config BindIn "bind-in" "screen key action --" raises(Type NotConfig BadBinding) "in one of fux's own screens (list line), a key does one of its actions, as the default keys bind each; a list's key may run code instead, receiving client payload" "(sequence! (bind-in \"list\" \"g\" \"first\") (label \"first\") #inert)";
         Config UnbindIn "unbind-in" "screen key --" raises(Type NotConfig BadBinding) "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "(sequence! (unbind-in \"list\" \"g\") #inert)";
         Config UnbindAll "unbind-all" "--" raises(NotConfig) "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "(sequence! (unbind-all) #inert)";
     }
@@ -2249,23 +2248,21 @@ impl Host<'_> {
             }
             Keys::Unbind => keymap.unbind(&pressed()?).map_err(refused)?,
             Keys::Repeat => keymap.set_repeat(&pressed()?).map_err(refused)?,
-            Keys::BindAction => {
-                let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
-                let action = super::callback::code(&next()?)?.into();
-                let keymap = &mut state.keys;
-                keymap
-                    .modes
-                    .list
-                    .bind_action(key, action)
-                    .map_err(refused)?;
-                self.last_bound = Some(Bound::In(crate::keymap::Modal::List, key));
-            }
             Keys::BindIn | Keys::UnbindIn => {
                 let modal = one_of(&next()?, crate::keymap::Modal::ALL)?;
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
                 let table = keymap.modes.table(modal);
                 match keys == Keys::BindIn {
-                    true => table.bind(key, &string(&next()?)?).map_err(refused)?,
+                    true => {
+                        use crate::keymap::Does;
+                        let does = next()?;
+                        let does = if let Value::Str(name) = &does {
+                            Does::Named(name)
+                        } else {
+                            Does::Runs(super::callback::code(&does)?.into())
+                        };
+                        table.bind(key, does).map_err(refused)?;
+                    }
                     false => table.unbind(key).map_err(refused)?,
                 }
                 self.last_bound = Some(Bound::In(modal, key));
@@ -2778,7 +2775,7 @@ mod tests {
             r#"(set "styles" (list 1))"#,
             r#"(set "styles" (list (list 5 1 2)))"#,
             r#"(set "bar" (list 1))"#,
-            r#"(set "bar-slots" (list 1))"#,
+            r#"(set "bar" (list "top" (list (list "text" 1)) () #false))"#,
             r#"(set "shell" (list 1))"#,
         ] {
             let (failed, _, text) = offline(&format!(
