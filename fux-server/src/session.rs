@@ -9844,7 +9844,7 @@ mod tests {
     /// bracket each end, whichever piece its line ends and end marker fall
     /// across; its question is answered with its last piece. A piece under
     /// a token no question asked for is not taken, and a body whose sender
-    /// goes part way has its paste closed and its asker told (D-177).
+    /// goes part way has its paste closed and its asker told (D-180).
     #[test]
     fn a_body_is_typed_a_piece_at_a_time_as_one_paste() -> TestResult {
         let mut s = started()?;
@@ -9897,7 +9897,7 @@ mod tests {
     /// A frame of what was typed is the most that waits unread for a pane's
     /// program: what is typed past it is not taken, and its typist is told
     /// so, once a turn. The answers to the program's own
-    /// queries are not what was typed, and count for none of it (D-189;
+    /// queries are not what was typed, and count for none of it (D-192;
     /// what was typed queued in the pane without end).
     #[test]
     fn what_is_typed_past_a_frame_unread_is_not_taken_and_said_once() -> TestResult {
@@ -9972,7 +9972,7 @@ mod tests {
 
     /// What a client types after a paste, while the paste's text is still
     /// to come from its connection, waits behind it: its server said the
-    /// paste first. A paste that will not come holds nothing back (D-183).
+    /// paste first. A paste that will not come holds nothing back (D-186).
     #[test]
     fn what_is_typed_after_a_paste_still_to_come_waits_behind_it() -> TestResult {
         use crate::link::ToPane;
@@ -10008,7 +10008,7 @@ mod tests {
     /// text, which its connection kept, is let go by it, told so at once
     /// as any other is told where it goes. So the client hears its paste
     /// is done with, and the one after it, sent once the screen is gone,
-    /// goes to its pane (D-185; a client's pastes go one at a time).
+    /// goes to its pane (D-188; a client's pastes go one at a time).
     #[test]
     fn a_paste_while_its_client_shows_a_screen_is_let_go_and_the_next_goes_on() -> TestResult {
         use fux_wire::act::{Act, Panel, ScreenAct};
@@ -10040,7 +10040,7 @@ mod tests {
     /// What is typed between two pastes whose text is still to come keeps
     /// its place: it is queued after the first, as that one has come, and
     /// does not wait for the second, which holds back only what came after
-    /// it (D-183; one count of pastes to come queued it after both, and
+    /// it (D-186; one count of pastes to come queued it after both, and
     /// held it for as long as the second took).
     #[test]
     fn what_is_typed_between_two_pastes_to_come_keeps_its_place() -> TestResult {
@@ -10076,7 +10076,7 @@ mod tests {
     /// asked: the second waits with its sender till the first is typed, or
     /// its asker gone, whichever body's piece comes first. Each pane taking
     /// whichever came first, two pastes sent to the same two panes could
-    /// each be begun by one of them, and both wait for ever (D-188).
+    /// each be begun by one of them, and both wait for ever (D-191).
     #[test]
     fn bodies_are_taken_in_the_order_their_server_asked() -> TestResult {
         use crate::link::ToPane;
@@ -10108,7 +10108,7 @@ mod tests {
     /// While a paste that comes in pieces is open, nothing else its program
     /// is to read is queued inside it: another client's key, a one-frame
     /// `send-keys` and the answer to the program's own query wait behind
-    /// its closing bracket, in the order they came (D-177; a Ctrl-C typed
+    /// its closing bracket, in the order they came (D-180; a Ctrl-C typed
     /// by another became pasted text).
     #[test]
     fn what_comes_while_a_paste_is_open_follows_its_closing_bracket() -> TestResult {
@@ -10156,7 +10156,7 @@ mod tests {
 
     /// A paste whose next piece the OS gives no memory for is closed where
     /// it is, in room made before its first byte was queued, and its asker
-    /// told: its bracket is never left open (D-177).
+    /// told: its bracket is never left open (D-180).
     #[cfg(feature = "checks")]
     #[test]
     fn a_paste_refused_memory_part_way_is_closed() -> TestResult {

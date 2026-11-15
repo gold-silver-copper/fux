@@ -316,7 +316,7 @@ fn next_frame(decoder: &mut Decoder, want: Want, bodies: bool) -> Result<Option<
 /// one: taken once a paste of its client's that is still on its way is
 /// sent, one body being sent at a time. Anything else is taken at once,
 /// keys too: what orders them behind a paste is its pane, which queues
-/// nothing else inside a paste that is open or still to come (D-183).
+/// nothing else inside a paste that is open or still to come (D-186).
 fn pastes(frame: &AttachedFrame) -> bool {
     use fux_wire::act::Act;
     match frame {
@@ -2267,7 +2267,7 @@ mod tests {
     /// While a paste of its attached client's waits for a pane that takes
     /// nothing, its client is read all the same, and what it sends goes to
     /// its server at once: keys, its answer to a question, its detach
-    /// (D-185). It read its client no more: the answer a pasted program
+    /// (D-188). It read its client no more: the answer a pasted program
     /// waited for never came, nor a detach.
     #[cfg(unix)]
     #[test]
@@ -2336,7 +2336,7 @@ mod tests {
                 .ok_or_else(|| "a whole frame".to_owned())
         };
         // All of it goes on, in the order it came: keys too, which its
-        // pane keeps out of the paste (D-183).
+        // pane keeps out of the paste (D-186).
         for _ in 0..3 {
             assert!(matches!(next()?, AttachedFrame::Act(_)));
         }
@@ -2351,7 +2351,7 @@ mod tests {
     /// A body its server said goes to a pane it can't reach (no process
     /// listens there, or it takes no more connections) is told to its
     /// server, which told that pane to wait for it: the pane then waits no
-    /// more (D-183; it was let go without a word, and the pane held every
+    /// more (D-186; it was let go without a word, and the pane held every
     /// other input behind a paste that never came).
     #[cfg(unix)]
     #[test]
@@ -2407,7 +2407,7 @@ mod tests {
     /// A pane whose socket takes the link and then closes it (its process
     /// refused the peer, for want of memory) took nothing of the body: its
     /// server is told so too, though the body, one piece long, is over
-    /// with that (D-183; the errand ended first, and what it had to tell
+    /// with that (D-186; the errand ended first, and what it had to tell
     /// went with it).
     #[cfg(unix)]
     #[test]
@@ -2467,7 +2467,7 @@ mod tests {
     /// Keys typed faster than its server takes them, a frame of what its
     /// client sent waiting already, are not taken; its server is told how
     /// many, so that every frame its client sent is accounted for: taken,
-    /// or told as not (D-189; a binding's program waits for all of them).
+    /// or told as not (D-192; a binding's program waits for all of them).
     #[cfg(unix)]
     #[test]
     fn keys_it_does_not_take_are_counted_to_its_server() -> Result<(), String> {
