@@ -1143,7 +1143,7 @@ fn started_session() -> Result<fux_server::session::Session, String> {
     let journal = fux::script::default_state()
         .map_err(|e| e.to_string())?
         .preferences
-        .journal_entries;
+        .journal_bytes;
     let socket = "/nonexistent/fux.sock".into();
     Ok(fux_server::session::Session::new(
         socket,

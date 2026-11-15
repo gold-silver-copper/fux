@@ -459,7 +459,7 @@ class Fux(Driver):
         # A server a killed run left on this socket, stopped as a person does.
         subprocess.run(["sh", "-c", 'pid=$("$0" \'(get (status) "server-process-id")\') && kill "$pid"', self.bin],
                        env=self.env, capture_output=True, timeout=20)
-        self.server = subprocess.Popen([self.bin, "__serve", self.env["FUX_SOCKET"], "16384"],
+        self.server = subprocess.Popen([self.bin, "__serve", self.env["FUX_SOCKET"], "2097152"],
                                        env=self.env, cwd=self.work,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         end = time.time() + 5

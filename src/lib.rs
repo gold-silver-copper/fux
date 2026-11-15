@@ -94,7 +94,7 @@ fn client() -> ExitCode {
 }
 
 /// How a client starts a server, in the background: `fux __serve SOCKET
-/// ENTRIES`, its journal keeping ENTRIES events (`journal-entries`).
+/// BYTES`, its journal keeping BYTES bytes of events (`journal-bytes`).
 /// A client types it, the
 /// server leading a session of its own (`client::start_server`); no help
 /// lists it. A person can type it too: that server stays in the
@@ -107,16 +107,16 @@ fn serve(args: &[String]) -> ExitCode {
         let _ = writeln!(std::io::stderr(), "fux server: {message}");
         ExitCode::from(1)
     };
-    let [path, entries] = args else {
-        return fail("it takes a socket and the events its journal keeps".to_owned());
+    let [path, bytes] = args else {
+        return fail("it takes a socket and the bytes of events its journal keeps".to_owned());
     };
     let socket = match socket::checked(path, "socket") {
         Ok(socket) => socket,
         Err(error) => return fail(error.to_string()),
     };
-    let journal = entries.parse().ok().and_then(command::JournalEntries::new);
+    let journal = bytes.parse().ok().and_then(command::JournalBytes::new);
     let Some(journal) = journal else {
-        return fail(format!("{entries:?}: a journal keeps 1 event or more"));
+        return fail(format!("{bytes:?}: a journal keeps 1 byte or more"));
     };
     match server::serve(&socket, journal) {
         Ok(()) => ExitCode::SUCCESS,

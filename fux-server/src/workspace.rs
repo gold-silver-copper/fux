@@ -456,7 +456,6 @@ pub(crate) struct Structure {
     tabs: BTreeMap<TabId, Tab>,
     homes: BTreeMap<PaneId, TabId>,
     names: BTreeMap<PaneId, Option<Rc<str>>>,
-    parents: BTreeMap<WsId, WsId>,
 }
 
 /// The workspaces a kill closes as it empties them: none (it kills a pane
@@ -519,8 +518,8 @@ type Place = (
 );
 
 impl Parts {
-    /// Nothing yet, its journal keeping `journal` events.
-    pub fn new(journal: fux_wire::command::JournalEntries) -> Parts {
+    /// Nothing yet, its journal keeping `journal` bytes of events.
+    pub fn new(journal: fux_wire::command::JournalBytes) -> Parts {
         Parts {
             top: Stack {
                 children: Vec::new(),
@@ -674,6 +673,12 @@ impl Parts {
         self.workspaces.get(&id).map(|ws| ws.parent)
     }
 
+    /// The workspace each workspace is in now, as the journal reads it
+    /// (`journal::Nested`).
+    pub fn nested(&self) -> impl Fn(WsId) -> Option<WsId> + '_ {
+        |ws| self.workspaces.get(&ws)?.parent
+    }
+
     /// Whether workspace `ws` is `of` or in it.
     pub fn within(&self, ws: WsId, of: WsId) -> bool {
         self.up(ws).any(|above| above == of)
@@ -778,9 +783,10 @@ impl Parts {
     /// another, and at the one it is at (none, with the last workspace
     /// gone).
     fn viewing<R>(&mut self, change: impl FnOnce(&mut Parts) -> R) -> R {
-        let (before, nesting) = (self.places(), self.journal.nesting());
+        let (before, open) = (self.places(), self.journal.open());
         let out = change(self);
-        self.moved(before, &nesting);
+        self.moved(before, open.then);
+        self.journal.close(open);
         out
     }
 
@@ -808,12 +814,12 @@ impl Parts {
     /// Journals `shown` for each client whose place, current child in a
     /// node there before and after (not one made or closed), or whether it
     /// is shown a pane there before and after, is not as `before`: the
-    /// place left in the workspaces as they were nested then (`nesting`),
+    /// place left in the workspaces as they were nested then (at `then`),
     /// the one reached as they are now, and one place that stays in both.
     /// One a workspace's close moved, by a request not its own, is
     /// `displaced`: told the outermost that closed where it was, why, the
     /// tabs that closed in it, who closed it, and where it is now.
-    fn moved(&mut self, before: BTreeMap<ClientId, Place>, nesting: &BTreeMap<WsId, WsId>) {
+    fn moved(&mut self, before: BTreeMap<ClientId, Place>, then: crate::journal::Mark) {
         let after = self.places();
         let clients: BTreeSet<ClientId> = before.keys().chain(after.keys()).copied().collect();
         let moved = |c: &ClientId| match (before.get(c), after.get(c)) {
@@ -834,10 +840,10 @@ impl Parts {
             };
             match was.filter(|was| Some(*was) != now) {
                 Some(was) => {
-                    self.journal.push_then(shown(Some(was)), nesting, false);
+                    self.journal.push_then(shown(Some(was)), then, false);
                     self.journal.push(shown(now));
                 }
-                None => self.journal.push_then(shown(now), nesting, true),
+                None => self.journal.push_then(shown(now), then, true),
             }
             let by = self.journal.current_actor();
             if by == Actor::Client(client) {
@@ -845,9 +851,10 @@ impl Parts {
             }
             // The outermost workspace that closed of those it was in: what
             // held that one is there still, and its trail is told from it.
-            let up = |ws: &WsId| nesting.get(ws).copied();
+            let nested = |ws: WsId| self.workspaces.get(&ws)?.parent;
+            let above = |ws| std::iter::once(ws).chain(self.journal.above(ws, then, &nested));
             let was = was.map(|((ws, _), _)| ws);
-            let closed = (std::iter::successors(was, up).take(nesting.len().saturating_add(1)))
+            let closed = (was.into_iter().flat_map(above))
                 .filter_map(|ws| self.closing.get(&ws))
                 .filter_map(|c| Some((c.closed.as_ref()?, c.tabs)))
                 .last();
@@ -1069,7 +1076,7 @@ impl Parts {
     }
 
     /// Its journal's entries from `mark` on let go (`Journal::truncate`).
-    pub(crate) fn truncate_journal(&mut self, mark: fux_wire::events::Seq) {
+    pub(crate) fn truncate_journal(&mut self, mark: crate::journal::Mark) {
         self.journal.truncate(mark);
     }
 
@@ -1160,7 +1167,6 @@ impl Parts {
             .collect();
         let mut above = parent;
         for ((id, name), child) in made.into_iter().zip(held) {
-            self.journal.nest(id, above);
             let created = Change::Created(name.clone());
             self.journal.push(Event::Workspace((above, id), created));
             let ws = Workspace {
@@ -1441,7 +1447,9 @@ impl Parts {
             self.closing.entry(ws).or_default().closed = Some((gone.parent, label, why));
             self.journal
                 .push(Event::Workspace((gone.parent, ws), Change::Closed(why)));
-            self.journal.nest(ws, None);
+            if gone.parent.is_some() {
+                self.journal.left(ws, gone.parent);
+            }
             killed &= !matches!(killing, Killing::Within(w) if w == ws);
             emptied = (gone.parent)
                 .filter(|p| (self.workspace(*p)).is_some_and(|w| w.children.children.is_empty()));
@@ -1481,7 +1489,7 @@ impl Parts {
                 }
             }
             parts.workspaces.get_mut(&ws)?.parent = to;
-            parts.journal.nest(ws, to);
+            parts.journal.left(ws, from);
             (parts.journal).push(Event::Workspace((to, ws), Change::Moved(from)));
             if let Some(from) = from
                 && (parts.workspace(from)).is_some_and(|w| w.children.children.is_empty())
@@ -1655,7 +1663,6 @@ impl Parts {
             names: (self.panes.iter())
                 .map(|(id, pane)| (*id, pane.given_name().cloned()))
                 .collect(),
-            parents: self.journal.nesting(),
         }
     }
 
@@ -1686,17 +1693,16 @@ impl Parts {
                 pane.renamed(name);
             }
         }
-        self.journal.renest(structure.parents);
         made
     }
 
     /// The tree `tree` records (`record`), named as `names` says and
-    /// holding `panes`, its journal keeping `journal` events, no client
+    /// holding `panes`, its journal keeping `journal` bytes of events, no client
     /// shown it yet: as a server takes a run back. One that is no tree (a
     /// child named twice or missing, a workspace with none, or one nothing
     /// holds from the top down) is refused.
     pub(crate) fn restore(
-        journal: fux_wire::command::JournalEntries,
+        journal: fux_wire::command::JournalBytes,
         tree: &crate::record::Tree,
         names: &BTreeMap<crate::record::NameId, Rc<str>>,
         panes: BTreeMap<PaneId, Pane>,
@@ -1797,9 +1803,6 @@ impl Parts {
         // the top does not reach is held in a ring of its own.
         if parts.every_workspace().len() != parts.workspaces.len() {
             return Err(bad("a workspace is in none that the top holds".to_owned()));
-        }
-        for ws in parts.workspaces.values() {
-            parts.journal.nest(ws.id, ws.parent);
         }
         parts.panes = panes;
         Ok(parts)
