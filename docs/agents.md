@@ -694,7 +694,9 @@ of that server's panes. Each script should clean up the targets and processes it
   `"left"` and so on).
 
 A split needs an explicit axis: `(split (axis (pane 2) "horizontal"))`; resize
-with `(resize-pane (pane 2) 40 "horizontal")`, in cells. `panes` and `tabs`
+with `(resize-pane (pane 2) 40 "horizontal")`, in cells; a share of the tab is
+worked out from its width,
+`(get (first (get (snapshot (tab (pane 2)) "topology") "tabs")) "columns")`. `panes` and `tabs`
 read ordered membership; `(information (all))` reads one facts snapshot.
 
 ## recipe-examples: Programs over a pane argument
