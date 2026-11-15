@@ -413,6 +413,32 @@ fn killing_a_chain_with_a_tab_at_every_level_grows_with_the_depth_alone() -> Tes
     Ok(())
 }
 
+/// A record whose tab is zoomed on a pane that is not in that tab is no
+/// tree, and is refused: restored as it is, focus there would name a
+/// pane of another tab.
+#[cfg(unix)]
+#[test]
+fn a_record_zoomed_on_a_pane_of_another_tab_is_refused() -> TestResult {
+    let (options, journal) = defaults()?;
+    let dir = scratch("zoomed")?;
+    let (mut s, _) = recording(&dir, journal)?;
+    nest(&mut s, None, 1, options)?;
+    nest(&mut s, None, 1, options)?;
+    let restore = |tree: &crate::record::Tree| {
+        let copies = (tree.panes().into_iter())
+            .map(|pane| (pane.id, Pane::recorded(pane)))
+            .collect();
+        Parts::restore(journal, tree, copies).map(drop)
+    };
+    let mut tree = s.parts.record();
+    assert!(restore(&tree).is_ok(), "the record as it was written");
+    let other = (tree.tabs.get(1).and_then(|tab| tab.panes.first())).map(|pane| pane.id);
+    let first = tree.tabs.first_mut().ok_or("no tab")?;
+    first.zoomed = Some(other.ok_or("no second tab")?);
+    assert!(restore(&tree).is_err(), "zoomed on another tab's pane");
+    Ok(())
+}
+
 /// A server that took a run back and has not heard from a pane serves as
 /// one that has (D-172): a client attaches, which takes an id the record
 /// holds, and the record is written. And stopped then, it records the

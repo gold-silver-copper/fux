@@ -1710,6 +1710,12 @@ impl Parts {
                 seats: BTreeMap::new(),
                 typist: None,
             };
+            if let Some(zoomed) = tab.zoomed.filter(|zoomed| !tab.root.contains(*zoomed)) {
+                return Err(bad(format!(
+                    "{} is zoomed on {zoomed}, which is not in it",
+                    tab.id
+                )));
+            }
             for pane in ids {
                 if parts.homes.insert(pane, tab.id).is_some() || !panes.contains_key(&pane) {
                     return Err(bad(format!("{pane} is in two tabs, or is not there")));
