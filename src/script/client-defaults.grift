@@ -4,7 +4,7 @@
     bad-value failure (warn (first (get failure "values"))) "/bin/sh")
   unset-variable failure "/bin/sh")))
 (set "history-bytes" 8388608)
-(set "journal-entries" 16384)
+(set "journal-bytes" 2097152)
 (set "reflow" #true)
 (set "alternate-scroll-lines" 5)
 (set "picture-bytes" 100663296)

@@ -201,6 +201,10 @@ impl Said {
     pub fn as_str(&self) -> &str {
         &self.text
     }
+    /// The bytes its text holds.
+    pub(crate) fn stored(&self) -> usize {
+        self.text.capacity()
+    }
     /// `text` as a program sent it, `cut` if it sent more.
     #[cfg(feature = "in-process")]
     pub fn sent(text: &str, cut: bool) -> Self {
@@ -1954,7 +1958,7 @@ pub(crate) mod tests {
             &self,
         ) -> Result<crate::journal::Journal, Box<dyn std::error::Error>> {
             use fux_wire::id::{TabId, WsId};
-            let kept = fux_wire::command::JournalEntries::new(1 << 14).ok_or("journal")?;
+            let kept = fux_wire::command::JournalBytes::new(1 << 20).ok_or("journal")?;
             let mut journal = crate::journal::Journal::new(kept);
             let at = ((WsId::of(1), TabId::of(1)), self.pane.id);
             for (told, actor) in &self.told {
@@ -2575,7 +2579,7 @@ pub(crate) mod tests {
                 run,
                 Some(from),
             )?;
-            let (said, _) = stream.lines(&journal, |_| None);
+            let (said, _) = stream.lines(&journal, &|_| None, |_| None);
             assert_eq!(said, expected, "split at {split}");
         }
         Ok(())

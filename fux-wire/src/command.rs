@@ -14,9 +14,10 @@ use std::time::Duration;
 /// memory one allocation may hold.
 pub type HistoryBytes = Number<0, { isize::MAX.unsigned_abs() }>;
 
-/// The events a server's journal keeps, from its start: a reader further
-/// behind is told how many it missed.
-pub type JournalEntries = Number<1, { usize::MAX }>;
+/// The bytes of events a server's journal keeps, from its start, and its
+/// newest whatever its length: a reader further behind is told how many it
+/// missed.
+pub type JournalBytes = Number<1, { usize::MAX }>;
 
 /// A lower picture budget, up to the emulator's native ceiling.
 pub type PictureBytes = Number<0, { fux_vt::PICTURE_BYTES }>;
