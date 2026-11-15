@@ -744,6 +744,13 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
         )));
     }
     let exe = panes.join("exe");
+    // What is there is read in this start's turn among the servers
+    // starting and stopping: a server stopping there keeps its turn till
+    // it is gone, and removes its run's record and fux as it goes. Read
+    // before it, this start would run a fux that server then removes,
+    // and, where the system has no other way to a running program's file
+    // (macOS), could keep no fux for its own run.
+    let turn = crate::socket::start_turn(socket.path()).map_err(Error::Socket)?;
     // A run to take back runs the fux it started with (D-124 (7)), chosen
     // by the run's file alone: its record is that fux's to read, in its
     // own format.
@@ -762,9 +769,11 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
             );
             return Err(Error::Refused(stranded(&panes, &why)));
         }
-        // Before any lock is taken: the pinned fux takes them itself, or
-        // ends them, as its panes speak its protocol.
+        // Before the run's lock is taken, and with the turn let go: the
+        // pinned fux takes them itself, or ends them, as its panes speak
+        // its protocol.
         true | false if pinned && (recorded || marked) => {
+            drop(turn);
             return crate::socket::run_pinned(&exe)
                 .map_err(|error| Error::Refused(format!("running {}: {error}", exe.display())));
         }
@@ -779,6 +788,8 @@ pub fn serve(socket: &SocketPath, journal: fux_wire::command::JournalEntries) ->
         }
         false => {}
     }
+    // Taken again as the socket is (`socket::bind_socket`).
+    drop(turn);
     // The run's own fux, from here on: what it says, it says once.
     if let Some(text) = crate::socket::prepare_terminals(notice) {
         notice(&text);

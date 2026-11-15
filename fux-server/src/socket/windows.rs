@@ -175,6 +175,13 @@ fn turn(path: &Path) -> Result<Result<File, String>, Error> {
     }))
 }
 
+/// A start's turn among the servers starting or stopping on the socket
+/// at `path` (`turn`), its while it is kept: refused, saying why, where
+/// another keeps the turn too long.
+pub fn start_turn(path: &Path) -> Result<File, Error> {
+    turn(path)?.map_err(Error::Refused)
+}
+
 /// The lock that makes this server its only owner, and its record, which
 /// is removed when it is dropped.
 pub struct Endpoint {

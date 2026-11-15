@@ -2415,3 +2415,60 @@ fn a_start_held_up_reads_the_run_again_under_the_locks() -> Outcome {
     assert!(alive(program), "its program was ended");
     Ok(())
 }
+
+/// 41. A start held up behind a stopping server chooses the fux it runs
+///     only in its turn: the run that server ends, with the fux it ran,
+///     is removed by it as it goes, and is not this start's to run. The
+///     start begins a run with the fux that was started (D-177; it chose
+///     the ended run's fux before its turn and ran it, and the server
+///     ahead then removed that file: where the system has no other way
+///     to a running program's file, macOS, the start then kept no fux and
+///     failed). The test is the server ahead, as in 40.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_start_held_up_runs_no_fux_the_server_ahead_removed() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    crash(server)?;
+    let kept = kept(server);
+    let exe = kept.join("exe");
+    std::fs::write(kept.join(fux_server::record::ENDED), b"").map_err(e)?;
+    assert!(exe.exists(), "the run's fux");
+    let mut path = server.socket.clone().into_os_string();
+    path.push(".starting");
+    let ahead = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(e)?;
+    ahead.lock().map_err(e)?;
+    let start = server
+        .command(fux())
+        .arg("(sequence! (start) #inert)")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    eventually("the start waiting for the lock", || {
+        Ok(!waiting_for_a_lock(server).is_empty())
+    })?;
+    // The server ahead is done: what its run kept is gone.
+    for entry in std::fs::read_dir(&kept).map_err(e)? {
+        std::fs::remove_file(entry.map_err(e)?.path()).map_err(e)?;
+    }
+    drop(ahead);
+    let done = start.wait_with_output().map_err(e)?;
+    let said = String::from_utf8_lossy(&done.stderr);
+    assert!(done.status.success(), "{said}");
+    let pid = serving(server)?;
+    let args = (processes().into_iter())
+        .find_map(|(process, _, args)| (process == pid).then_some(args))
+        .ok_or("the new server's process")?;
+    assert!(
+        !args.contains(&*exe.to_string_lossy()),
+        "it runs the fux of the run that was removed: {args}"
+    );
+    Ok(())
+}

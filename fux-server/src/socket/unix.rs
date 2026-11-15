@@ -382,6 +382,13 @@ fn turn(path: &Path) -> Result<Result<File, String>, Error> {
     }))
 }
 
+/// A start's turn among the servers starting or stopping on the socket
+/// at `path` (`turn`), its while it is kept: refused, saying why, where
+/// another keeps the turn too long.
+pub fn start_turn(path: &Path) -> Result<File, Error> {
+    turn(path)?.map_err(Error::Refused)
+}
+
 /// The lock file beside the socket at `path`, its name ending `end`, made
 /// if it is not there, and its path. It orders the servers starting there
 /// (`.starting`), and only that: which one has the run is `lock_run`'s to
