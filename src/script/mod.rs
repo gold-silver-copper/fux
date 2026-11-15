@@ -822,6 +822,12 @@ impl Asks for Server {
             true => Err(cancelled()),
             false => (requests.ask(asked, self.out.as_deref())).map_err(client_failed),
         };
+        // What its server says beside a reply (its run's record fell
+        // behind) is a command line's to print. An attached client's
+        // requests print nothing over its screen: it is shown the notice.
+        if let (Some(_), Ok(Some(warning))) = (&self.out, reply.as_ref().map(|r| &r.warning)) {
+            let _ = writeln!(io::stderr(), "fux: {warning}");
+        }
         // A failed request's connection is not asked again, nor one a stop
         // may have shut, however the request ended; a stop from here on
         // cannot shut what is kept.

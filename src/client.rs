@@ -373,11 +373,7 @@ impl Requests {
                     ToCommand::Part(bytes) => parts.push(&bytes),
                     ToCommand::PartsEnd => {
                         let reply = fux_wire::wire::Reader::new(parts.as_slice()).whole::<Reply>();
-                        let reply = reply.map_err(fux_wire::protocol::Error::Wire)?;
-                        if let Some(warning) = &reply.warning {
-                            let _ = writeln!(io::stderr(), "fux: {warning}");
-                        }
-                        return Ok(reply);
+                        return Ok(reply.map_err(fux_wire::protocol::Error::Wire)?);
                     }
                     ToCommand::Exit(reason) => return Err(Error::Refused(reason.to_owned())),
                 }
