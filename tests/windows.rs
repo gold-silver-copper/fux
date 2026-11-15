@@ -705,7 +705,8 @@ fn the_builtin_conpty_runs_a_program_to_its_end() -> Outcome {
     stopped
 }
 
-/// A second server on a socket with a live one is refused by the lock;
+/// A second server on a socket with a live one is refused by the lock,
+/// which no one can remove under it;
 /// on a pipe name another process holds, it waits and refuses, never
 /// joining it (D-138).
 #[test]
@@ -714,14 +715,24 @@ fn a_live_server_and_a_held_pipe_are_refused() -> Outcome {
     let dir = scratch("refused")?;
     let socket = dir.join("fux").join("s.sock");
     let served = serve(&socket, &dir.join("first.log"))?;
+    // What a cleaner of old files would do under the live server: its
+    // lock file is open with no delete sharing, so it stays; and were it
+    // removed, the pipe's first instance still refuses a second server
+    // (D-180).
+    let mut lock = socket.clone().into_os_string();
+    lock.push(".lock");
+    let removed = std::fs::remove_file(&lock);
+    say(&format!(
+        "removing the live server's lock file: {removed:?}"
+    ));
     let second = serve(&socket, &dir.join("second.log")).err();
     let stopped = stop(&socket);
     drop(served);
     let second = second.ok_or("a second server started")?;
-    if !second.contains("already using") {
+    if !second.contains("already using") && !second.contains("without its lock") {
         return Err(format!("the second server: {second}"));
     }
-    say("a live server's socket was refused by its lock");
+    say("a live server's socket was refused, its lock file's removal tried");
     stopped?;
     let held = dir.join("fux").join("held.sock");
     let name = fux_server::socket::pipe_name(&held).map_err(text)?;

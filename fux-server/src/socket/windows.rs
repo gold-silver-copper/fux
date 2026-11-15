@@ -155,11 +155,56 @@ fn recorded_runs(path: &Path) -> bool {
     fuxix::process::identity(pid).is_ok_and(|now| now.created == created)
 }
 
+/// A turn among the servers starting or stopping on the socket at `path`:
+/// the lock of its `.starting` file, waited for at most `TURN_WAIT`. Or
+/// why it was not had by then: a server stopped as it starts or stops
+/// keeps it. Nothing is changed for a turn not had, that server's run
+/// least of all.
+fn turn(path: &Path) -> Result<Result<File, String>, Error> {
+    let (starting, starting_path) = lock_file(path, ".starting")?;
+    let locked = super::lock_within(starting, super::TURN_WAIT)
+        .map_err(failed("locking ", &starting_path))?;
+    Ok(locked.ok_or_else(|| {
+        format!(
+            "another fux server has been starting or stopping on {} for {} seconds, \
+             holding {}: this start waits no longer, and has changed nothing",
+            path.display(),
+            super::TURN_WAIT.as_secs(),
+            starting_path.display()
+        )
+    }))
+}
+
+/// A start's turn among the servers starting or stopping on the socket
+/// at `path` (`turn`), its while it is kept: refused, saying why, where
+/// another keeps the turn too long.
+pub fn start_turn(path: &Path) -> Result<File, Error> {
+    turn(path)?.map_err(Error::Refused)
+}
+
 /// The lock that makes this server its only owner, and its record, which
 /// is removed when it is dropped.
 pub struct Endpoint {
     path: PathBuf,
     _lock: File,
+    /// Its turn among the servers starting, taken as it stops (`stop`).
+    starting: Option<File>,
+}
+
+impl Endpoint {
+    /// The server stops: its record goes now, so no client takes it for
+    /// one that runs, and its lock stays its own till this is dropped, as
+    /// it ends. A run is its server's while that server lives, its panes'
+    /// closing too: a start meanwhile waits its turn behind it, as behind
+    /// one starting, and finds what it left, not panes it still holds.
+    /// That turn is taken first, while `listener` still answers: a client
+    /// that finds no server from then on, and starts one, finds the turn
+    /// taken, and its start waits; none is refused for the lock.
+    pub fn stop(&mut self, listener: Listener) {
+        self.starting = turn(&self.path).ok().and_then(Result::ok);
+        drop(listener);
+        let _ = fs::remove_file(record_path(&self.path));
+    }
 }
 
 impl Drop for Endpoint {
@@ -180,10 +225,7 @@ const HELD_WAIT: Duration = Duration::from_secs(2);
 pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Listener), Error> {
     let path = socket.path();
     private_directory(socket, true)?;
-    let (starting, starting_path) = lock_file(path, ".starting")?;
-    starting
-        .lock()
-        .map_err(failed("locking ", &starting_path))?;
+    let starting = turn(path)?.map_err(Error::Refused)?;
     let (lock, lock_path) = lock_file(path, ".lock")?;
     lock.try_lock().map_err(|error| match error {
         fs::TryLockError::WouldBlock => Error::Refused(format!(
@@ -192,6 +234,7 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Listener), Error> {
         )),
         fs::TryLockError::Error(error) => failed("locking ", &lock_path)(error),
     })?;
+    super::make_run_directory(path)?;
     let name = pipe_name(path)?;
     let start = Instant::now();
     let listener = loop {
@@ -221,6 +264,7 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Listener), Error> {
     let endpoint = Endpoint {
         path: path.to_owned(),
         _lock: lock,
+        starting: None,
     };
     Ok((endpoint, listener))
 }
@@ -465,27 +509,6 @@ pub fn unlink_own(_own: &Own, path: &Path) {
     let _ = fs::remove_file(path);
 }
 
-/// The socket's locks, taken again by a server that stopped and let them
-/// go as it stopped listening (`hold_again`).
-pub struct Held {
-    _starting: File,
-    _lock: File,
-}
-
-/// Takes the locks of the socket at `path` again, as a starting server
-/// does, for a server that stopped to let go of what its run kept: none if
-/// another server holds the socket now, whose run's the files there are.
-pub fn hold_again(path: &Path) -> Option<Held> {
-    let (starting, _) = lock_file(path, ".starting").ok()?;
-    starting.lock().ok()?;
-    let (lock, _) = lock_file(path, ".lock").ok()?;
-    lock.try_lock().ok()?;
-    Some(Held {
-        _starting: starting,
-        _lock: lock,
-    })
-}
-
 /// Whether the process `pid` still runs.
 pub fn runs(pid: Pid) -> bool {
     fuxix::process::identity(pid).is_ok()
@@ -616,12 +639,9 @@ pub fn owned(socket: &SocketPath) -> bool {
 
 /// Whether a server holds the lock of the socket at `path`.
 fn lock_held(path: &Path) -> bool {
-    let Ok((starting, _)) = lock_file(path, ".starting") else {
+    let Ok(Ok(_turn)) = turn(path) else {
         return false;
     };
-    if starting.lock().is_err() {
-        return false;
-    }
     let Ok((lock, _)) = lock_file(path, ".lock") else {
         return false;
     };
