@@ -375,15 +375,10 @@ fn kind<'a, 'b, A: Asks + ?Sized>(
         return g.string("record");
     }
     let v = from_grift(g, state.stop, v)?;
-    let name = match &v {
-        Value::App(a) => a.name(),
-        Value::Int(_)
-        | Value::Float(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::Symbol(_)
-        | Value::List(_)
-        | Value::Bytes(_) => v.kind(),
+    let name = if let Value::App(a) = &v {
+        a.name()
+    } else {
+        v.kind()
     };
     g.string(name)
 }
@@ -548,12 +543,7 @@ fn asked<'a, 'b, A: Asks + ?Sized>(
     args: &[G],
 ) -> Result<G, Error> {
     let name = word.row().name;
-    let takes = word
-        .row()
-        .effect
-        .split_once("--")
-        .map_or(0, |(s, _)| s.split_whitespace().count());
-    if args.len() != takes {
+    if args.len() != word.row().takes().count() {
         return Err(g.arity_error(args));
     }
     if matches!(word, Word::Act(Act::Word | Act::Dictionary)) {
@@ -1569,17 +1559,8 @@ fn from_grift_at<T>(
                     })))
                 }
                 (REQUEST, [_, subject, steps @ ..]) => {
-                    let subject = match from_grift_at(g, stop, subject, depth)? {
-                        Value::App(Fux::Null) => None,
-                        subject @ Value::Int(_)
-                        | subject @ Value::Float(_)
-                        | subject @ Value::Bool(_)
-                        | subject @ Value::Str(_)
-                        | subject @ Value::Symbol(_)
-                        | subject @ Value::List(_)
-                        | subject @ Value::App(_)
-                        | subject @ Value::Bytes(_) => Some(subject),
-                    };
+                    let subject = Some(from_grift_at(g, stop, subject, depth)?)
+                        .filter(|subject| !matches!(subject, Value::App(Fux::Null)));
                     let mut replayed = Vec::with_capacity(steps.len());
                     for step in steps {
                         let items = g.list_items(step)?;

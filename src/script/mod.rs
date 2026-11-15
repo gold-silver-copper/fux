@@ -208,9 +208,6 @@ pub struct Opts {
     pub view: fux_wire::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,
-    /// The words given, for the word they go on to refuse any it would not
-    /// use.
-    pub given: Vec<words::Opt>,
     /// What it goes on, as it was given, and what it was built with: its
     /// grift data, which `words::replayed` makes it again from.
     pub subject: Option<Value<Fux>>,
@@ -218,6 +215,12 @@ pub struct Opts {
 }
 
 impl Opts {
+    /// The words given, for the word they go on to refuse any it would not
+    /// use.
+    pub(crate) fn given(&self) -> impl Iterator<Item = words::Opt> {
+        self.steps.iter().map(|(opt, _)| *opt)
+    }
+
     pub(crate) fn pane_options(
         &self,
         defaults: fux_wire::command::PaneOptions,
@@ -1102,7 +1105,8 @@ fn local(
                 Some(_) | None if typing => configured(&defaults),
                 Some(_) | None => (defaults, None),
             };
-            let explicit = target.is_some() || creation.given.contains(&words::Opt::Name);
+            let named = creation.given().any(|given| given == words::Opt::Name);
+            let explicit = target.is_some() || named;
             let target = if explicit {
                 target.clone()
             } else {
@@ -1115,7 +1119,7 @@ fn local(
                     .map_err(|why| Failed::new(Code::BadValue, why.message))?
             };
             let mut creation = creation.as_ref().clone();
-            if !creation.given.contains(&words::Opt::Name) {
+            if !named {
                 creation.name = committed.attach.name.clone();
             }
             words::check_attach_creation(&creation, target.is_some(), *read_only)
@@ -1395,15 +1399,10 @@ pub fn run(
 /// A request left unasked at a program's end did nothing, which it says.
 pub fn refuse_unfinished(values: &[Value<Fux>], host: &Host<'_>) -> Result<(), Failed> {
     for value in values {
-        let items = match value {
-            Value::List(items) => items.items(),
-            value @ Value::Int(_)
-            | value @ Value::Float(_)
-            | value @ Value::Bool(_)
-            | value @ Value::Str(_)
-            | value @ Value::Symbol(_)
-            | value @ Value::App(_)
-            | value @ Value::Bytes(_) => std::slice::from_ref(value),
+        let items = if let Value::List(items) = value {
+            items.items()
+        } else {
+            std::slice::from_ref(value)
         };
         for item in items {
             if let Value::App(Fux::Opts(options)) = item {

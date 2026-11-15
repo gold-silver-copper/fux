@@ -82,9 +82,7 @@ pub fn explain(name: &str) -> Option<String> {
             "{}\n{}\nArguments: {}\nExample: {}\n",
             row.name,
             row.about,
-            row.effect
-                .split_once("--")
-                .map_or(row.effect, |(args, _)| args.trim()),
+            row.takes().collect::<Vec<_>>().join(" "),
             row.example
         );
         if let Word::Act(act) = word

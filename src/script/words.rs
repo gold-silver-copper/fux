@@ -170,6 +170,14 @@ pub struct Row {
     pub example: &'static str,
 }
 
+impl Row {
+    /// What it takes, each value's name in order: its effect before `--`.
+    pub fn takes(&self) -> std::str::SplitWhitespace<'static> {
+        let (takes, _) = self.effect.split_once("--").unwrap_or_default();
+        takes.split_whitespace()
+    }
+}
+
 /// The codes a word fails with as it runs: its own, and, if it `asks`,
 /// those asking a request fails with (`Code::asked`); one that takes values
 /// fails `stack_underflow` given too few, and `bad_value` given handles of
@@ -183,10 +191,7 @@ impl Word {
     /// The codes it fails with, as `Raises` says, each once.
     pub fn codes(self) -> Vec<Code> {
         let row = self.row();
-        let takes = row
-            .effect
-            .split_once("--")
-            .is_some_and(|(t, _)| !t.trim().is_empty());
+        let takes = row.takes().next().is_some();
         let taking = [Code::StackUnderflow, Code::BadValue]
             .into_iter()
             .filter(|_| takes);
@@ -447,11 +452,8 @@ fn fail(code: Code, message: impl Into<String>) -> Failure {
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
-    let row = Word::named(word)?.row();
-    Some(format!(
-        "({word} {})",
-        row.effect.split_once("--")?.0.trim()
-    ))
+    let takes: Vec<&str> = Word::named(word)?.row().takes().collect();
+    Some(format!("({word} {})", takes.join(" ")))
 }
 
 /// `failure`, a value of a kind the word doesn't take, told as the word's
@@ -463,12 +465,7 @@ fn described(word: Word, taken: Option<(usize, &'static str)>, mut failure: Fail
     let Some((at, kind)) = taken else {
         return failure;
     };
-    let effect = word
-        .row()
-        .effect
-        .split_once("--")
-        .map_or("", |(takes, _)| takes);
-    let name = effect.split_whitespace().nth(at).unwrap_or_default();
+    let name = word.row().takes().nth(at).unwrap_or_default();
     let said = match name {
         "integer" => Some("an integer"),
         "string" => Some("a string"),
@@ -634,17 +631,10 @@ fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
 }
 
 fn scope(value: &Value<Fux>) -> Result<Option<AnyRef>, Failure> {
-    match value {
-        Value::App(Fux::All) => Ok(None),
-        value @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Int(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::List(_)
-        | Value::App(_)) => target(value).map(Some),
+    if let Value::App(Fux::All) = value {
+        return Ok(None);
     }
+    target(value).map(Some)
 }
 
 /// A snapshot or journal scope: the session, a client, or a target.
@@ -677,12 +667,12 @@ fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
 /// Options a word would leave unused, refused rather than ignored: it
 /// takes those `help` lists for it.
 fn unused(word: Act, built: &Opts) -> Result<(), Failure> {
-    let Some(option) = built.given.iter().find(|o| !word.options().contains(o)) else {
+    let Some(option) = built.given().find(|o| !word.options().contains(o)) else {
         return Ok(());
     };
     let instead = format!(
         "takes no {option}: {option} goes on {}",
-        takers(Some(Word::Opt(*option)))
+        takers(Some(Word::Opt(option)))
     );
     Err(fail(Code::Unused, instead))
 }
@@ -729,21 +719,15 @@ const EXPECTED: &str = "takes no request expect made: only send-keys checks a ve
 /// The version `value` holds (`Answer::version`), or is as text.
 fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
     let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
-    let text: &str = match value {
-        Value::App(Fux::Record(record)) if record.is_held() => {
-            return record.version().ok_or_else(|| wrong(wanted, value));
-        }
-        Value::Str(text) => text,
-        other @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Int(_)
-        | Value::Bool(_)
-        | Value::List(_)
-        | Value::App(_)) => {
-            return Err(wrong(wanted, other));
-        }
+    if let Value::App(Fux::Record(record)) = value
+        && record.is_held()
+    {
+        return record.version().ok_or_else(|| wrong(wanted, value));
+    }
+    let Value::Str(text) = value else {
+        return Err(wrong(wanted, value));
     };
+    let text: &str = text;
     text.parse().map_err(|()| {
         let why = format!(
             "{:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it",
@@ -757,26 +741,16 @@ fn version(value: &Value<Fux>) -> Result<fux_wire::command::Version, Failure> {
 /// goes on (a pane, tab, workspace or client, an action's answer) becomes
 /// a request on that.
 fn modifying(value: Value<Fux>) -> Result<std::rc::Rc<Opts>, Failure> {
-    let built = match value {
-        Value::App(Fux::Opts(built)) => built,
-        other @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Int(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::List(_)
-        | Value::App(_)) => {
-            let on = on(&other)
-                .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
-            std::rc::Rc::new(Opts {
-                on: Some(on),
-                subject: Some(other),
-                ..Opts::default()
-            })
-        }
-    };
-    Ok(built)
+    if let Value::App(Fux::Opts(built)) = value {
+        return Ok(built);
+    }
+    let on =
+        on(&value).map_err(|_| wrong("a pane, tab, workspace or client, or options", &value))?;
+    Ok(std::rc::Rc::new(Opts {
+        on: Some(on),
+        subject: Some(value),
+        ..Opts::default()
+    }))
 }
 
 /// The request or options `steps` make of `subject`, as grift data says
@@ -963,14 +937,13 @@ fn add(
     if !matches!(
         opt,
         Opt::Text | Opt::Key | Opt::Paste | Opt::Bytes | Opt::In
-    ) && built.given.iter().any(|given| given.slot() == opt.slot())
+    ) && built.given().any(|given| given.slot() == opt.slot())
     {
         return Err(fail(
             Code::Unused,
             format!("{opt}: {} is already given", opt.slot()),
         ));
     }
-    built.given.push(opt);
     let mut arguments = Vec::new();
     let mut taken = || {
         let value = next()?;
@@ -1095,19 +1068,13 @@ fn span(
 /// tab, workspace or client alone, given nothing. Refused if `word`
 /// leaves something given unused.
 fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
-    let mut built = match value {
-        Value::App(Fux::Opts(built)) => owned(built),
-        other @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Int(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::List(_)
-        | Value::App(_)) => Opts {
-            on: Some(on(&other)?),
+    let mut built = if let Value::App(Fux::Opts(built)) = value {
+        owned(built)
+    } else {
+        Opts {
+            on: Some(on(&value)?),
             ..Opts::default()
-        },
+        }
     };
     let Some(on) = built.on.take() else {
         let why = format!(
@@ -1195,7 +1162,7 @@ pub(super) fn check_attach_creation(
     watch: bool,
 ) -> Result<(), Failure> {
     if (targeted || watch)
-        && let Some(option) = built.given.iter().find(|option| {
+        && let Some(option) = built.given().find(|option| {
             matches!(
                 option,
                 Opt::Name
@@ -1728,16 +1695,11 @@ impl Host<'_> {
             }
             Act::Resize => {
                 // Checked before the size is taken.
-                let sized = match next()? {
-                    Value::App(Fux::Client(c, _)) => Err(c),
-                    value @ (Value::Float(_)
-                    | Value::Symbol(_)
-                    | Value::Bytes(_)
-                    | Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::Str(_)
-                    | Value::List(_)
-                    | Value::App(_)) => Ok(target(&value)?),
+                let sized = next()?;
+                let sized = if let Value::App(Fux::Client(c, _)) = sized {
+                    Err(c)
+                } else {
+                    Ok(target(&sized)?)
                 };
                 let size = laid_out(&next()?, &next()?)?;
                 let resized = match sized {
@@ -1879,15 +1841,9 @@ impl Host<'_> {
             Act::SwapWith => {
                 let target = pane(&next()?)?;
                 let value = next()?;
-                let with = match value {
-                    Value::Str(_) => SwapWith::Toward(direction(&value)?),
-                    value @ (Value::Float(_)
-                    | Value::Symbol(_)
-                    | Value::Bytes(_)
-                    | Value::Int(_)
-                    | Value::Bool(_)
-                    | Value::List(_)
-                    | Value::App(_)) => SwapWith::Pane(pane(&value)?),
+                let with = match matches!(value, Value::Str(_)) {
+                    true => SwapWith::Toward(direction(&value)?),
+                    false => SwapWith::Pane(pane(&value)?),
                 };
                 tell(Command::SwapPane { target, with })
             }
@@ -1950,7 +1906,7 @@ impl Host<'_> {
                 let value = next()?;
                 let of = super::checked_scope(&value)?;
                 let (target, built) = attach_options(act, value)?;
-                if target.is_some() && built.given.contains(&Opt::Name) {
+                if target.is_some() && built.given().any(|given| given == Opt::Name) {
                     return Err(fail(
                         Code::BadValue,
                         "attach-defaults takes no name with a target",
@@ -2545,11 +2501,7 @@ mod tests {
         let mut wrong = Vec::new();
         for &word in Word::ALL {
             let codes = word.codes();
-            let takes = word
-                .row()
-                .effect
-                .split_once("--")
-                .map_or(0, |(t, _)| t.split_whitespace().count());
+            let takes = word.row().takes().count();
             for _ in 0..500 {
                 let mut stack = Vec::new();
                 for _ in 0..takes {

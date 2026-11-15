@@ -81,22 +81,17 @@ fn checked(value: &Value<Fux>) -> Result<(usize, impl Iterator<Item = &str>), Un
     let Value::List(list) = value else {
         return Err(wrong(takes, value));
     };
-    let words = || {
-        list.items().iter().filter_map(|item| match item {
-            Value::Str(s) => Some(&***s),
-            Value::Float(_)
-            | Value::Symbol(_)
-            | Value::Bytes(_)
-            | Value::Int(_)
-            | Value::Bool(_)
-            | Value::List(_)
-            | Value::App(_) => None,
-        })
-    };
     if let Some(item) = list.items().iter().find(|i| !matches!(i, Value::Str(_))) {
         return Err(format!("takes {takes}, not one holding {}", item.kind()).into());
     }
-    Ok((list.items().len(), words()))
+    let words = (list.items().iter()).filter_map(|item| {
+        if let Value::Str(s) = item {
+            Some(&***s)
+        } else {
+            None
+        }
+    });
+    Ok((list.items().len(), words))
 }
 
 /// A list of strings, each as it is, in a vector of exactly their number.
