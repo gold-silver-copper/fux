@@ -237,6 +237,16 @@ enum Holder {
     Client(ClientId, u64),
 }
 
+impl Holder {
+    /// Whether what it holds as `token` is used up, `retired` being the
+    /// panes that said they used a token up, each with the token: a pane's
+    /// by that pane alone. A body sent to two panes is held for each, and
+    /// one using it up leaves the other's claim on it.
+    fn used_up(self, token: u64, retired: &[(PaneId, u64)]) -> bool {
+        matches!(self, Holder::Pane(pane) if retired.contains(&(pane, token)))
+    }
+}
+
 /// Where a connection is in its life, each stage holding what it alone
 /// uses. It goes from `Hello` to `Attaching` and `Attached`, or to
 /// `Command`, and ends `Closing` or `Dead`, the only stages it is closed
@@ -1841,9 +1851,7 @@ impl Server {
     /// What panes used up (`Retired`), their askers' connections hold no
     /// more; and keys for a client gone, which their askers' are told.
     fn retire(&mut self) {
-        let retired: Vec<u64> = (mem::take(&mut self.session.retired).into_iter())
-            .map(|(_, token)| token)
-            .collect();
+        let retired = mem::take(&mut self.session.retired);
         let views = &self.session.views;
         let mut lost = Vec::new();
         for conn in &mut self.conns {
@@ -1853,8 +1861,7 @@ impl Server {
                     theirs.push(token);
                     false
                 }
-                Holder::Client(..) => true,
-                Holder::Pane(_) => !retired.contains(&token),
+                Holder::Client(..) | Holder::Pane(_) => !holder.used_up(token, &retired),
             });
             for &token in &theirs {
                 conn.tell_process(&crate::link::ToConn::Drop { token });
@@ -2136,6 +2143,18 @@ impl Server {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// One pane using up a token leaves another pane's claim on the same
+    /// token: a body sent to two panes is let go by each for itself, so a
+    /// connection that ends later still tells the second to let go.
+    #[test]
+    fn a_token_one_pane_used_up_is_still_held_for_another() {
+        let (first, second) = (PaneId::of(1), PaneId::of(2));
+        let retired = [(first, 7)];
+        assert!(Holder::Pane(first).used_up(7, &retired));
+        assert!(!Holder::Pane(second).used_up(7, &retired));
+        assert!(!Holder::Client(ClientId::of(1), 0).used_up(7, &retired));
+    }
     use std::os::unix::net::{UnixListener, UnixStream};
 
     #[test]

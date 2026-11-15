@@ -61,10 +61,12 @@ pub enum Told {
     /// Named otherwise: its new name.
     Renamed(String),
     /// Its program started again (`respawn`), as generation `generation`,
-    /// over one that ran: what that one left.
+    /// over one that ran: what that one left, and what was started, which
+    /// its server's copy takes (the journal keeps the event without it).
     Respawned {
         left: Left,
         generation: u64,
+        argv: Option<Box<fux_wire::command::Program>>,
     },
     Bell,
     Notification(Said),
@@ -113,7 +115,7 @@ pub enum Sent {
 
 wired!(Told {
     Renamed(name),
-    Respawned { left, generation },
+    Respawned { left, generation, argv },
     Bell,
     Notification(said),
     Title(said),

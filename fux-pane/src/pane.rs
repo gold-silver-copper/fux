@@ -1889,6 +1889,7 @@ impl Pane {
         tell.tell(Told::Respawned {
             left: over,
             generation: fresh.respawns,
+            argv: Some(Box::new(fresh.runs.launch().argv.clone())),
         });
         // Every field is explicit so additions require a respawn decision.
         let next = Self {

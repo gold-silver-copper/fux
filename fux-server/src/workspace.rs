@@ -1082,13 +1082,13 @@ impl Parts {
     pub(crate) fn told(
         &mut self,
         id: PaneId,
-        told: crate::journal::Told,
+        mut told: crate::journal::Told,
         actor: Actor,
         counts: fux_wire::command::Counts,
     ) -> Option<()> {
         let at = self.locate(id)?;
         let pane = self.panes.get_mut(&id)?;
-        pane.told(&told, counts);
+        pane.told(&mut told, counts);
         let event = Event::Pane((at, id), PaneEvent::Told(told));
         self.journal.push_from(event, actor);
         Some(())

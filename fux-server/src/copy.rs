@@ -39,9 +39,10 @@ pub struct Copy {
     options: PaneOptions,
     /// How many times its program was started again.
     pub respawns: u64,
-    /// It was asked to respawn, and has not said it did: a program at the
-    /// next generation may be its already.
-    pub respawning: bool,
+    /// It was asked to respawn, by the question of this number, and has
+    /// neither said it did nor answered: a program at the next generation
+    /// may be its already.
+    pub respawning: Option<u64>,
     counts: Counts,
     state: State,
     facts: Facts,
@@ -75,7 +76,7 @@ impl Copy {
             runs,
             options,
             respawns: 0,
-            respawning: false,
+            respawning: None,
             counts: Counts::default(),
             state: State::Running,
             facts: Facts {
@@ -262,8 +263,10 @@ impl Copy {
         Some(fail(Code::NotRunning, format!("{}: {why}", self.id)))
     }
 
-    /// It told `told`, which left it at `counts`.
-    pub(crate) fn told(&mut self, told: &Told, counts: Counts) {
+    /// It told `told`, which left it at `counts`. What a respawn started
+    /// is taken out of `told` and kept here: no reply need be made of the
+    /// respawn's answer for the copy to know its program.
+    pub(crate) fn told(&mut self, told: &mut Told, counts: Counts) {
         self.counts = counts;
         match told {
             Told::Title(title) => self.title = title.clone(),
@@ -303,9 +306,14 @@ impl Copy {
                     ("foreground_group", Json::Null),
                 ]);
             }
-            Told::Respawned { generation, .. } => {
+            Told::Respawned {
+                generation, argv, ..
+            } => {
+                if let (Some(argv), Runs::Explicit(launch)) = (argv.take(), &mut self.runs) {
+                    launch.argv = *argv;
+                }
                 self.respawns = *generation;
-                self.respawning = false;
+                self.respawning = None;
                 self.read_error = None;
                 self.state = State::Running;
                 self.title = Said::default();

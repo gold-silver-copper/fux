@@ -627,8 +627,8 @@ impl Session {
                             // Or the program a respawn under way started.
                             self.parts.panes().get(p).is_some_and(|pane| {
                                 let current = match pane.respawning {
-                                    true => pane.respawns.checked_add(1),
-                                    false => Some(pane.respawns),
+                                    Some(_) => pane.respawns.checked_add(1),
+                                    None => Some(pane.respawns),
                                 };
                                 current == Some(generation)
                             })
@@ -734,13 +734,6 @@ impl Session {
             code: fux_wire::code::Code::Indeterminate,
             message: format!("{pane} never answered: it may have acted"),
         };
-        if let Form::Respawn(_) = form {
-            for (pane, _) in &answers {
-                if let Some(copy) = self.parts.pane_mut(*pane) {
-                    copy.respawning = false;
-                }
-            }
-        }
         let mut reply = match form {
             Form::Many => {
                 let (mut took, mut sent, mut refused) = (Vec::new(), Vec::new(), None);
@@ -767,20 +760,12 @@ impl Session {
                     }
                 }
             }
-            Form::One | Form::Capture | Form::Respawn(_) => {
+            Form::One | Form::Capture => {
                 let Some((pane, answer)) = answers.into_iter().next() else {
                     return Reply::default();
                 };
                 match answer {
-                    Some(Answered::Acted(version)) => {
-                        if let (Form::Respawn(Some(argv)), Some(copy)) =
-                            (form, self.parts.pane_mut(pane))
-                            && let Runs::Explicit(launch) = &mut copy.runs
-                        {
-                            launch.argv = argv.clone();
-                        }
-                        acted(version)
-                    }
+                    Some(Answered::Acted(version)) => acted(version),
                     Some(Answered::Done) => Reply::default(),
                     Some(Answered::Captured(captured)) => self.captured(pane, *captured),
                     Some(Answered::Held { token, cursor, .. }) => {
@@ -942,6 +927,13 @@ impl Session {
             };
             if let (Some(counts), Some(pane)) = (counts, self.parts.pane_mut(id)) {
                 pane.caught_up(counts);
+            }
+            // A respawn answered, done or refused, is under way no more,
+            // whether or not its asker still waits for the answer.
+            if let Some(pane) = self.parts.pane_mut(id)
+                && pane.respawning == Some(ask)
+            {
+                pane.respawning = None;
             }
             // One its asker gave up on is let go (`abandon`).
             if self.asks.remove(&ask).is_some() {
@@ -3232,10 +3224,10 @@ impl Session {
                     argv: argv.clone(),
                 };
                 let asked = self.ask_pane(target, what, now);
-                if let (Ok(_), Some(copy)) = (&asked, self.parts.pane_mut(target)) {
-                    copy.respawning = true;
+                if let (Ok(ask), Some(copy)) = (&asked, self.parts.pane_mut(target)) {
+                    copy.respawning = Some(*ask);
                 }
-                asked.map(|ask| Pending::new(vec![(target, ask)], Form::Respawn(argv.clone())))
+                asked.map(|ask| Pending::new(vec![(target, ask)], Form::One))
             }
             Command::CapturePane {
                 target,
@@ -7613,6 +7605,50 @@ mod tests {
         });
         let said: Vec<&str> = lines.lines().filter_map(|l| l.split('"').nth(1)).collect();
         assert_eq!(said, ["exited", "respawned"], "{lines}");
+        Ok(())
+    }
+
+    /// A respawn whose asker left before any reply was made of its answer
+    /// is known as its pane tells it: the program started is the one the
+    /// server's copy names (its label, its record), and one refused leaves
+    /// the pane's own commands taken as its program's.
+    #[test]
+    fn a_respawn_whose_asker_left_is_known_as_its_pane_tells_it() -> TestResult {
+        let mut s = started()?;
+        run(
+            &mut s,
+            "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
+        )?;
+        let now = Instant::now();
+        let asked_and_left = |s: &mut Session, target: PaneId, argv| -> TestResult {
+            let respawn = Command::Respawn {
+                target,
+                kill: false,
+                argv,
+            };
+            let Done::Asked(pending) = s.run(&respawn, &Origin::Cli(Caller::default()), now) else {
+                return Err("its pane was not asked".into());
+            };
+            s.abandon(&pending.asks, &[], now);
+            s.pump(now);
+            Ok(())
+        };
+        let echo = command::Program::new("/bin/echo".into(), Vec::new())?;
+        asked_and_left(&mut s, PaneId::of(2), Some(echo))?;
+        let copy = s.parts.panes().get(&PaneId::of(2)).ok_or("its copy")?;
+        assert_eq!(copy.runs.launch().argv.program(), "/bin/echo");
+        // Refused: a shell's pane is not respawned.
+        asked_and_left(&mut s, PaneId::of(1), None)?;
+        let caller = Caller {
+            gave: Some((PaneId::of(1), 0)),
+            within: Within::This,
+            ..Caller::default()
+        };
+        let origin = Origin::Cli(caller);
+        assert!(
+            matches!(s.here(&origin)?, Here::Cli(Some(_), _)),
+            "its command was taken for a program that never came"
+        );
         Ok(())
     }
 

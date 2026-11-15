@@ -598,7 +598,9 @@ fn told_said(told: &Told) -> (&'static str, Fields) {
         };
         match told {
             Told::Renamed(name) => ("renamed", named(name)),
-            Told::Respawned { left, generation } => {
+            Told::Respawned {
+                left, generation, ..
+            } => {
                 let generation = ("generation", Json::uint(*generation));
                 (
                     "respawned",
@@ -784,6 +786,7 @@ pub fn every_kind(
         Told::Respawned {
             left,
             generation: i64::MAX.unsigned_abs(),
+            argv: None,
         },
         Told::Bell,
         notification,

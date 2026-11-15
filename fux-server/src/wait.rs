@@ -16,7 +16,7 @@ use crate::copy::Copy as Pane;
 use crate::link::Answered;
 use crate::session::Session;
 use fux_wire::answer::{Change, PaneAnswer, PaneResults};
-use fux_wire::command::{Counts, Program, Run, Version};
+use fux_wire::command::{Counts, Run, Version};
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::protocol::Reply;
 use std::time::{Duration, Instant};
@@ -133,8 +133,6 @@ pub enum Form {
     /// A capture's: its place, its name and the journal's cursor given it
     /// as it comes (`Session::captured`).
     Capture,
-    /// A respawn's: its pane's program takes these words, once it starts.
-    Respawn(Option<Program>),
 }
 
 impl Pending {
