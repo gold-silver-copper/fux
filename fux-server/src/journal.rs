@@ -180,9 +180,8 @@ pub type Nested<'a> = &'a dyn Fn(WsId) -> Option<WsId>;
 
 /// What happened, as many of the last events as `room` bytes hold, the
 /// last of them at least: a reader further behind is told how many it
-/// missed. What it holds is counted as it is held (`held`): each table at
-/// the rows it has room for, used or not, and each text at the size
-/// stored. An entry holds no more for being in a workspace in others:
+/// missed. What it holds is counted by `held`: each row of its tables and
+/// each text at the size stored. An entry holds no more for being in a workspace in others:
 /// which held it is read from how they are nested now and from each
 /// workspace's leaving a place since (`moves`).
 #[derive(Debug)]
@@ -231,14 +230,17 @@ impl Journal {
         let until = self.next;
         self.moves.push_back(Move { at, ws, until });
     }
-    /// The bytes it holds: its texts, its tables at the rows each has room
-    /// for, and a row of `was` for each move.
+    /// The bytes it holds: its texts and each row of its tables. So an
+    /// entry let go makes room at once, whatever it is. A table's room for
+    /// rows it does not hold is not counted and is bounded apart: the
+    /// ring's grows only into rows its room has left, and each table gives
+    /// back what is beyond twice its rows (`trim`).
     fn held(&self) -> usize {
         let rows = |rows: usize, row: usize| rows.saturating_mul(row);
         (self.text)
-            .saturating_add(rows(self.entries.capacity(), std::mem::size_of::<Entry>()))
-            .saturating_add(rows(self.moves.capacity(), std::mem::size_of::<Move>()))
-            .saturating_add(rows(self.thens.capacity(), std::mem::size_of::<Then>()))
+            .saturating_add(rows(self.entries.len(), std::mem::size_of::<Entry>()))
+            .saturating_add(rows(self.moves.len(), std::mem::size_of::<Move>()))
+            .saturating_add(rows(self.thens.len(), std::mem::size_of::<Then>()))
             .saturating_add(rows(self.was.len(), WAS))
     }
     /// The entries it holds.
@@ -377,12 +379,12 @@ impl Journal {
                 now,
             });
         }
-        self.text = self.text.saturating_add(event.stored());
-        // The ring's table grows by the rows its room has left, and no
-        // more than half again: with no row left, the oldest entry's is
-        // the new one's.
+        // The ring's table grows by the rows its room has left, this
+        // entry's among them, and no more than half again: with no row
+        // left, the oldest entry's is the new one's.
         if self.entries.len() == self.entries.capacity() {
-            let left = (self.room.saturating_sub(self.held()))
+            let held = self.held().saturating_add(event.stored());
+            let left = (self.room.saturating_sub(held))
                 .checked_div(std::mem::size_of::<Entry>())
                 .unwrap_or(0);
             let more = left.min((self.entries.len() / 2).max(ROWS));
@@ -391,6 +393,7 @@ impl Journal {
                 _ => self.entries.reserve_exact(more.max(1)),
             }
         }
+        self.text = self.text.saturating_add(event.stored());
         self.entries.push_back(Entry { seq, event, actor });
         self.evict();
     }
@@ -404,9 +407,10 @@ impl Journal {
             self.thens.pop_front();
         }
     }
-    /// Lets go the moves no entry kept happened before, gives back the
-    /// room of each table for rows it holds no more, and lets the oldest
-    /// entries go, but for the newest, till what is held fits its room.
+    /// Lets go the moves no entry kept happened before, and the oldest
+    /// entries, but for the newest, till what is held fits its room: no
+    /// more of them than that. Then each table gives back its room for
+    /// rows it holds no more.
     fn evict(&mut self) {
         loop {
             let first = self.first();
@@ -417,14 +421,14 @@ impl Journal {
                 self.was.remove(&(moved.ws, moved.at));
                 self.moves.pop_front();
             }
-            trim(&mut self.entries);
-            trim(&mut self.moves);
-            trim(&mut self.thens);
             if self.held() <= self.room || self.entries.len() <= 1 {
                 break;
             }
             self.oldest_goes();
         }
+        trim(&mut self.entries);
+        trim(&mut self.moves);
+        trim(&mut self.thens);
     }
     pub fn end(&self, run: Run) -> Cursor {
         Cursor {
@@ -1579,6 +1583,48 @@ mod tests {
         Ok(())
     }
 
+    /// One small row more than a full ring holds lets go the entries whose
+    /// room it takes and no more: a workspace's leaving, a `shown` told as
+    /// of before its change, a bell, each over a ring full of bells. When
+    /// the room its tables had for rows unused was counted, letting a bell
+    /// go made none, and half the ring went before the table gave any back.
+    #[test]
+    fn a_small_row_over_a_full_ring_lets_go_only_what_it_takes() -> TestResult {
+        let mut journal = journal()?;
+        for _ in 0..KEPT {
+            journal.push(bell(1));
+        }
+        assert_eq!(journal.entries.len(), KEPT);
+        let oldest = Cursor {
+            seq: journal.first(),
+            run: run()?,
+        };
+        let mut reader = Reader::new(Scope::All, &journal, run()?, Some(oldest))?;
+        let open = journal.open();
+        journal.left(WsId::of(2), Some(WsId::of(1)));
+        let shown = Event::View {
+            client: ClientId::of(1),
+            at: None,
+            change: ViewChange::Shown,
+        };
+        journal.push_then(shown, open.then, false);
+        journal.close(open);
+        journal.push(bell(1));
+        // Two entries, a move's two rows and a `then`: five entries' room
+        // at most.
+        assert!(
+            journal.entries.len() >= KEPT - 5,
+            "{}",
+            journal.entries.len()
+        );
+        assert!(journal.held() <= KEPT * 80);
+        let batch = reader.batch(&journal, &top, true)?;
+        assert!(batch.missed <= 5, "{} missed", batch.missed);
+        // The room of rows unused is bounded, though not counted.
+        assert!(journal.entries.capacity() <= KEPT + KEPT / 2 + ROWS);
+        Ok(())
+    }
+
     /// The reply a batch is, sent.
     fn reply_bytes(batch: Batch) -> usize {
         fux_wire::wire::encode(&reply(Ok(batch))).len()
@@ -1724,12 +1770,9 @@ mod tests {
             journal.push(bell(d));
         }
         assert_eq!((journal.moves.len(), journal.was.len()), (0, 0));
-        assert!(journal.held() <= KEPT * 80);
-        assert!(
-            journal.entries.len() >= KEPT - 8,
-            "{}",
-            journal.entries.len()
-        );
+        // A row a move just gave back is the next entry's.
+        assert!(journal.entries.len() >= KEPT - 1);
+        assert_eq!(journal.held(), journal.entries.len() * 80);
         Ok(())
     }
 

@@ -227,6 +227,37 @@ fn what_a_deep_kill_took_of_the_journal_is_given_back_at_any_depth() -> TestResu
     Ok(())
 }
 
+/// A workspace in another, made and killed over a ring full of bells with
+/// a client shown it, lets go about as many bells as it journals events
+/// (its leaving the outer one, and the client's leaving it, are rows of
+/// the journal's too): not half the ring, as when letting a bell go made
+/// no room.
+#[test]
+fn a_workspace_closed_over_a_full_ring_lets_go_only_a_few_events() -> TestResult {
+    let (options, _) = defaults()?;
+    let (mut s, client) = testing::attached(24, 80)?;
+    for _ in 0..s.parts.journal().rows().saturating_add(1) {
+        s.output(PaneId::of(1), b"\x07", Instant::now());
+    }
+    let (kept, end) = (s.parts.journal().kept(), s.parts.journal().end(s.run));
+    nest(&mut s, None, 2, options)?;
+    let (pane, outermost) = innermost(&s)?;
+    s.parts.show(client, AnyRef::Pane(pane));
+    s.settle(Instant::now());
+    let kill = Command::Kill {
+        target: Some(AnyRef::Workspace(outermost)),
+    };
+    ask(&mut s, &kill)?;
+    let journaled = (s.parts.journal().end(s.run).seq.0).saturating_sub(end.seq.0);
+    assert!(journaled > 0 && journaled < 64, "{journaled} events");
+    let now = s.parts.journal().kept();
+    assert!(
+        now.saturating_add(8) >= kept,
+        "{kept} entries kept before, {now} after {journaled} events"
+    );
+    Ok(())
+}
+
 /// F016: making ten thousand workspaces, each in the one before, setting
 /// a title in the innermost and killing the outermost, over and over,
 /// leaves the thread holding no more than the journal's room allows, and
