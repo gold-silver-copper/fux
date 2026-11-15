@@ -1,0 +1,147 @@
+# fux-pane's own list: the workspace's (`../clippy.toml`, kept the same
+# here by hand: clippy reads one file for a crate), and after it the
+# allocations that abort when the OS refuses memory, which a pane's process
+# must outlive (D-194). Each has a way that can refuse: make room first
+# (`try_reserve`, `fux_vt::bytes::ByteQueue::try_push`, fux-wire's
+# `try_encode_into`), and mark the push that follows the room made with
+# `#[expect(clippy::disallowed_methods, reason = "…")]`. The lint is denied
+# here, not forbidden as in the workspace, so that it can be.
+# The list is a fence with gaps, not a proof: a lint names a method by its
+# path, so it sees no `clone` of owned data (derived or not), no
+# `String::from`, `Vec::from` or `into` (one trait method for every type),
+# nothing a closure handed to another crate allocates, and nothing fux-vt,
+# fux-wire or fuxix allocate inside a method not named here.
+#
+# Std methods that panic when a condition on their arguments fails at run
+# time: an index or range out of bounds, a position off a char boundary,
+# slices of different lengths, a zero size. Every crate forbids calling them
+# (`disallowed_methods = "forbid"`); each reason says what to use instead.
+# Left off, as their only panic is running out of memory or capacity, like
+# every allocation's: `Vec::with_capacity`, `reserve`, `resize` and `collect`.
+# Also left off: `slice::rotate_left` and `rotate_right`, which panic when
+# turning by more than the slice. Every other way to rotate without that panic
+# takes twice the time, and fux-vt turns cells and rows with them, each turn
+# within what it turns: inserting and deleting characters clamps the count to
+# the cells just before (grid.rs, `shift`); the screen's rows turn by their
+# top, which is always below their count (grid.rs, `Order::push_back`); and
+# a key's bytes turn by one, never empty (keys/encode.rs, `legacy`).
+# And `char::encode_utf8`, which panics only for a buffer under four bytes:
+# every call passes a buffer of fixed size, four bytes or a cell's text.
+# And `slice::copy_within` and `copy_from_slice`, which panic on a range out
+# of bounds and on slices of different lengths. The rule: each crate calls
+# them only in one small helper, after the helper has checked what they would
+# panic on, and nowhere else but one: grep finds no other call. They are
+# fux-vt's `copy_within` in src/bytes.rs and `copy_from` in its lib.rs. The
+# one: moving a row (grid.rs, `move_row`) shifts a run by one with
+# `copy_within` directly, its ranges taken from the run's own length; the
+# checked helper there costs measurably more on the scroll-region path.
+disallowed-methods = [
+  # Vec
+  { path = "alloc::vec::Vec::insert", reason = "panics past the end: build the new Vec from iterators" },
+  { path = "alloc::vec::Vec::remove", reason = "panics past the end: build the new Vec from iterators" },
+  { path = "alloc::vec::Vec::swap_remove", reason = "panics past the end" },
+  { path = "alloc::vec::Vec::drain", reason = "panics on a range out of bounds: consume a ByteQueue, or retain" },
+  { path = "alloc::vec::Vec::split_off", reason = "panics past the end" },
+  { path = "alloc::vec::Vec::splice", reason = "panics on a range out of bounds" },
+  { path = "alloc::vec::Vec::extract_if", reason = "panics on a range out of bounds" },
+  # VecDeque
+  { path = "alloc::collections::VecDeque::insert", reason = "panics past the end: move elements with get and get_mut" },
+  { path = "alloc::collections::VecDeque::swap", reason = "panics on an index out of bounds" },
+  { path = "alloc::collections::VecDeque::drain", reason = "panics on a range out of bounds" },
+  { path = "alloc::collections::VecDeque::split_off", reason = "panics past the end" },
+  { path = "alloc::collections::VecDeque::range", reason = "panics on a range out of bounds" },
+  { path = "alloc::collections::VecDeque::range_mut", reason = "panics on a range out of bounds" },
+  { path = "alloc::collections::VecDeque::rotate_left", reason = "panics past the end" },
+  { path = "alloc::collections::VecDeque::rotate_right", reason = "panics past the end" },
+  # String and str
+  { path = "alloc::string::String::insert", reason = "panics off a char boundary: edit by chars" },
+  { path = "alloc::string::String::insert_str", reason = "panics off a char boundary: edit by chars" },
+  { path = "alloc::string::String::remove", reason = "panics off a char boundary: edit by chars" },
+  { path = "alloc::string::String::replace_range", reason = "panics off a char boundary: edit by chars" },
+  { path = "alloc::string::String::drain", reason = "panics off a char boundary" },
+  { path = "alloc::string::String::split_off", reason = "panics off a char boundary" },
+  { path = "alloc::string::String::truncate", reason = "panics off a char boundary: build the shorter string" },
+  { path = "str::split_at", reason = "panics off a char boundary: split_at_checked" },
+  { path = "str::split_at_mut", reason = "panics off a char boundary: split_at_mut_checked" },
+  { path = "str::repeat", reason = "panics when the length overflows: iter::repeat_n" },
+  # Slices
+  { path = "slice::split_at", reason = "panics past the end: split_at_checked" },
+  { path = "slice::split_at_mut", reason = "panics past the end: split_at_mut_checked" },
+  { path = "slice::swap", reason = "panics on an index out of bounds: get_disjoint_mut" },
+  { path = "slice::swap_with_slice", reason = "panics on slices of different lengths" },
+  { path = "slice::clone_from_slice", reason = "panics on slices of different lengths" },
+  { path = "slice::select_nth_unstable", reason = "panics past the end" },
+  { path = "slice::chunks", reason = "panics on a zero size: as_chunks, or split_at_checked" },
+  { path = "slice::chunks_mut", reason = "panics on a zero size" },
+  { path = "slice::chunks_exact", reason = "panics on a zero size: as_chunks" },
+  { path = "slice::rchunks", reason = "panics on a zero size" },
+  { path = "slice::windows", reason = "panics on a zero size: get and starts_with" },
+  { path = "slice::repeat", reason = "panics when the length overflows: iter::repeat_n" },
+  { path = "core::iter::Iterator::step_by", reason = "panics on a zero step" },
+  # Allocations that abort when memory is refused.
+  { path = "std::vec::Vec::push", reason = "aborts when memory is refused: use try_reserve, then push" },
+  { path = "std::vec::Vec::with_capacity", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "std::vec::Vec::extend_from_slice", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::resize", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::append", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::reserve", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "std::vec::Vec::reserve_exact", reason = "aborts when memory is refused: use try_reserve_exact" },
+  { path = "std::string::String::reserve", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "slice::sort", reason = "allocates, aborting when memory is refused: sort_unstable allocates nothing" },
+  { path = "slice::sort_by", reason = "allocates, aborting when memory is refused: sort_unstable_by allocates nothing" },
+  { path = "slice::sort_by_key", reason = "allocates, aborting when memory is refused: sort_unstable_by_key allocates nothing" },
+  { path = "slice::concat", reason = "aborts when memory is refused: reserve first" },
+  { path = "slice::join", reason = "aborts when memory is refused: reserve first" },
+  { path = "slice::to_vec", reason = "aborts when memory is refused: reserve first" },
+  { path = "core::iter::traits::collect::Extend::extend", reason = "aborts when memory is refused: reserve first" },
+  { path = "core::iter::traits::iterator::Iterator::collect", reason = "aborts when memory is refused: reserve first, then extend" },
+  { path = "std::string::String::push", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::string::String::push_str", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::string::String::with_capacity", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "std::boxed::Box::new", reason = "aborts when memory is refused" },
+  { path = "std::rc::Rc::new", reason = "aborts when memory is refused" },
+  { path = "std::sync::Arc::new", reason = "aborts when memory is refused" },
+  { path = "std::collections::HashMap::insert", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::HashSet::insert", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::BTreeMap::insert", reason = "aborts when memory is refused" },
+  { path = "std::collections::VecDeque::push_back", reason = "aborts when memory is refused: reserve first" },
+  { path = "alloc::borrow::ToOwned::to_owned", reason = "aborts when memory is refused: reserve first" },
+  { path = "alloc::string::ToString::to_string", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::VecDeque::push_front", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::HashMap::entry", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::BTreeMap::entry", reason = "aborts when memory is refused" },
+  { path = "std::collections::BTreeSet::insert", reason = "aborts when memory is refused" },
+  { path = "core::iter::traits::collect::FromIterator::from_iter", reason = "aborts when memory is refused: reserve first, then extend" },
+  { path = "std::vec::Vec::resize_with", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::extend_from_within", reason = "aborts when memory is refused: reserve first" },
+  { path = "str::to_lowercase", reason = "aborts when memory is refused" },
+  { path = "str::to_uppercase", reason = "aborts when memory is refused" },
+  { path = "str::replace", reason = "aborts when memory is refused" },
+  { path = "std::string::String::from_utf8_lossy", reason = "aborts when memory is refused" },
+  { path = "std::path::Path::to_path_buf", reason = "aborts when memory is refused" },
+  { path = "std::path::Path::join", reason = "aborts when memory is refused" },
+  { path = "std::path::PathBuf::push", reason = "aborts when memory is refused" },
+  { path = "std::ffi::OsStr::to_os_string", reason = "aborts when memory is refused" },
+  # fux's own that abort, each beside a twin that can refuse.
+  { path = "fux_vt::bytes::ByteQueue::push", reason = "aborts when memory is refused: use try_push" },
+  { path = "fux_vt::bytes::ByteQueue::push_with", reason = "aborts when memory is refused: use try_push_with" },
+  { path = "fux_vt::keys::encode::key_bytes", reason = "aborts when memory is refused: make room in the buffer first" },
+  { path = "fux_wire::protocol::Frame::encode", reason = "aborts when memory is refused: use try_encode_into" },
+  { path = "fux_wire::protocol::Frame::encode_into", reason = "aborts when memory is refused: use try_encode_into" },
+  { path = "fux_wire::protocol::Decoder::push", reason = "aborts when memory is refused: use try_push" },
+  { path = "fux_wire::wire::encode", reason = "aborts when memory is refused: use try_encode_into" },
+  { path = "fux_pane::link::End::send", reason = "aborts when memory is refused: use try_send" },
+  { path = "fux_pane::link::End::send_whole", reason = "aborts when memory is refused: use try_send_whole" },
+  { path = "fux_pane::link::End::read", reason = "aborts when memory is refused: use try_read" },
+  { path = "fux_pane::link::End::read_up_to", reason = "aborts when memory is refused: use try_read_up_to" },
+  { path = "fux_pane::link::End::wait", reason = "reads with `read`, which aborts when memory is refused: for a link's first word alone" },
+]
+
+disallowed-macros = [
+  { path = "std::format", reason = "aborts when memory is refused: write into a buffer with room made" },
+  { path = "std::vec", reason = "aborts when memory is refused: use try_reserve" },
+]
+
+# Tests may print what they found; the crates themselves write through
+# handles whose errors they handle (`print_stdout`, `print_stderr`).
+allow-print-in-tests = true

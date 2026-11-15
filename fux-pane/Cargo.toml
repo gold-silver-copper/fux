@@ -1,0 +1,75 @@
+[package]
+name = "fux-pane"
+version.workspace = true
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "fux's pane process: a pane's terminal, its input and its program, and what it and its server say to each other"
+repository = "https://github.com/gold-silver-copper/fux"
+
+[features]
+# What only tests use, fux-server's too: a grid's text, a pane's options,
+# a host's program set by hand.
+testing = []
+# `PaneMut::drain_input` and `wrote_input`, which empty a pane's input as
+# if written: for fux-server's `in-process`.
+in-process = []
+# Allocation refusal tests (`fux_vt::refuse_next`).
+checks = ["fux-vt/checks", "fux-wire/checks"]
+
+[dependencies]
+fux-vt = { path = "../fux-vt", version = "0.16.0" }
+fux-wire = { path = "../fux-wire", version = "0.37.0" }
+fuxix = { path = "../fuxix", version = "0.9.0" }
+
+# A test reads fux's default history size; the tests name ids by number.
+[dev-dependencies]
+fux = { path = ".." }
+fux-wire = { path = "../fux-wire", features = ["testing"] }
+
+# The workspace's lints, but for `disallowed_methods`, denied here and not
+# forbidden: this crate's `clippy.toml` adds the allocations that abort
+# when the OS refuses memory, and one kept says why where it is
+# (`#[expect(clippy::disallowed_methods, reason = "…")]`), which a
+# forbidden lint has no way to. Cargo cannot lift a workspace lint for one
+# crate, so the table is whole.
+[lints.rust]
+unused_must_use = "forbid"
+unconditional_recursion = "forbid"
+unsafe_code = "forbid"
+
+[lints.clippy]
+suspicious = { level = "forbid", priority = -1 }
+print_stdout = "forbid"
+print_stderr = "deny"
+dbg_macro = "forbid"
+unwrap_used = "forbid"
+expect_used = "forbid"
+panic = "forbid"
+unreachable = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
+indexing_slicing = "forbid"
+exit = "forbid"
+infinite_loop = "forbid"
+large_stack_frames = "forbid"
+unchecked_time_subtraction = "forbid"
+read_zero_byte_vec = "forbid"
+unused_result_ok = "forbid"
+debug_assert_with_mut_call = "forbid"
+allow_attributes = "forbid"
+undocumented_unsafe_blocks = "forbid"
+significant_drop_in_scrutinee = "forbid"
+significant_drop_tightening = "forbid"
+cast_lossless = "forbid"
+string_slice = "forbid"
+mem_forget = "forbid"
+large_stack_arrays = "forbid"
+allow_attributes_without_reason = "forbid"
+wildcard_enum_match_arm = "forbid"
+cast_possible_truncation = "forbid"
+cast_possible_wrap = "forbid"
+cast_sign_loss = "forbid"
+arithmetic_side_effects = "forbid"
+disallowed_methods = "deny"
+disallowed_macros = "deny"

@@ -1,8 +1,11 @@
 //! Bounded journal invalidations, read as finite cursor batches
 //! (`fux_wire::events`). A later snapshot may see newer state; events do not
 //! replicate live OS facts.
-use crate::pane::{End, Left, Said};
+use crate::pane::End;
+#[cfg(any(test, feature = "in-process"))]
+use crate::pane::{Left, Said};
 use crate::view::ClientKind;
+pub use fux_pane::told::{Sent, Teller, Told};
 use fux_wire::act::Opening;
 use fux_wire::command::{AnyRef, Run, Version};
 use fux_wire::events::{Actor, Batch, Cursor, Item, Seq, Status};
@@ -475,56 +478,6 @@ impl Journal {
 /// A pane's place: its workspace and tab, and the pane.
 pub type PaneAt = ((WsId, TabId), PaneId);
 
-/// What a pane tells of itself, in order, each with who caused it: what
-/// a pane's methods that change what events tell write to, at once,
-/// through a `pane::PaneMut`. Its process sends them on to the server
-/// (`host`), which journals them at the pane's place.
-pub struct Teller<'a> {
-    pane: PaneId,
-    generation: u64,
-    /// Who causes what the pane does for a request.
-    actor: Actor,
-    told: &'a mut Vec<(Told, Actor)>,
-}
-
-impl<'a> Teller<'a> {
-    pub(crate) fn new(
-        pane: PaneId,
-        generation: u64,
-        actor: Actor,
-        told: &'a mut Vec<(Told, Actor)>,
-    ) -> Self {
-        Teller {
-            pane,
-            generation,
-            actor,
-            told,
-        }
-    }
-
-    /// The pane tells `what`.
-    pub(crate) fn tell(&mut self, what: Told) {
-        let actor = match what {
-            Told::Bell
-            | Told::Notification(_)
-            | Told::Title(_)
-            | Told::CommandStarted
-            | Told::Done(_)
-            | Told::HungUp
-            | Told::ReadFailed(_)
-            | Told::Exited(_) => Actor::Program(self.pane, self.generation),
-            Told::Renamed(_)
-            | Told::Respawned { .. }
-            | Told::Resized(_)
-            | Told::HistoryBudget(_)
-            | Told::HistoryCleared
-            | Told::Input { .. }
-            | Told::Signalled { .. } => self.actor,
-        };
-        self.told.push((what, actor));
-    }
-}
-
 /// One thing that happened in the session, where: what can happen to a
 /// pane, at a pane, and what can happen to a tab or a workspace, at one.
 #[derive(Clone, Debug, PartialEq)]
@@ -578,81 +531,6 @@ pub enum PaneEvent {
     Told(Told),
 }
 
-/// What a pane tells of itself and its program (`Teller::tell`).
-#[derive(Clone, Debug, PartialEq)]
-pub enum Told {
-    /// Named otherwise: its new name.
-    Renamed(String),
-    /// Its program started again (`respawn`), as generation `generation`,
-    /// over one that ran: what that one left.
-    Respawned {
-        left: Left,
-        generation: u64,
-    },
-    Bell,
-    Notification(Said),
-    Title(Said),
-    /// A shell command's output began (OSC 133 `C`).
-    CommandStarted,
-    /// A shell command ended, with its status if it is known.
-    Done(Option<i32>),
-    Resized(fux_vt::Size),
-    /// The pane's retained history budget changed.
-    HistoryBudget(usize),
-    HistoryCleared,
-    /// Its program closed its terminal and runs on.
-    HungUp,
-    /// Reading its program's terminal failed unexpectedly, so; or its
-    /// pane's own process ended, so (`Session::pane_lost`).
-    ReadFailed(String),
-    /// A request's input was queued for its program `generation`: how it
-    /// came, how many bytes, and the version `expect` admitted it at, if
-    /// it did; never what it says.
-    Input {
-        kind: Sent,
-        bytes: usize,
-        // Boxed, so the rarer guard grows no entry of the journal.
-        expected: Option<Box<Version>>,
-        generation: u64,
-    },
-    /// A request sent `signal` to what runs in the foreground of its
-    /// program `generation`'s terminal.
-    Signalled {
-        signal: fuxix::process::Signal,
-        generation: u64,
-    },
-    /// Its program ended.
-    Exited(End),
-}
-
-/// How a request's input came: `send-keys`, a paste among its inputs or
-/// not, or `send-mouse`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Sent {
-    Keys,
-    Paste,
-    Mouse,
-}
-
-wired!(Told {
-    Renamed(name),
-    Respawned { left, generation },
-    Bell,
-    Notification(said),
-    Title(said),
-    CommandStarted,
-    Done(status),
-    Resized(size),
-    HistoryBudget(bytes),
-    HistoryCleared,
-    HungUp,
-    ReadFailed(error),
-    Input { kind, bytes, expected, generation },
-    Signalled { signal, generation },
-    Exited(end),
-});
-wired!(Sent { Keys, Paste, Mouse });
-
 /// An event's fields after its name and place.
 type Fields = Vec<(&'static str, Json)>;
 
@@ -695,15 +573,15 @@ impl PaneEvent {
             }
             PaneEvent::Closed(why) => ("closed", vec![why.field()]),
             PaneEvent::Moved(_) => ("moved", Vec::new()),
-            PaneEvent::Told(told) => told.said(),
+            PaneEvent::Told(told) => told_said(told),
         }
     }
 }
 
-impl Told {
-    /// The bytes it holds beyond itself.
-    fn stored(&self) -> usize {
-        match self {
+/// The bytes `told` holds beyond itself.
+fn told_stored(told: &Told) -> usize {
+    {
+        match told {
             Told::Renamed(text) | Told::ReadFailed(text) => text.capacity(),
             Told::Notification(said) | Told::Title(said) => said.stored(),
             Told::Input { expected, .. } => {
@@ -721,9 +599,11 @@ impl Told {
             | Told::Exited(_) => 0,
         }
     }
+}
 
-    /// Its name, and what else it says.
-    fn said(&self) -> (&'static str, Fields) {
+/// What a pane told: its name, and what else it says.
+fn told_said(told: &Told) -> (&'static str, Fields) {
+    {
         // A program's text, and `truncated` if it sent more.
         let said = |key, text: &str, cut: bool| {
             let cut = cut.then_some(("truncated", Json::Bool(true)));
@@ -732,7 +612,7 @@ impl Told {
                 .chain(cut)
                 .collect()
         };
-        match self {
+        match told {
             Told::Renamed(name) => ("renamed", named(name)),
             Told::Respawned { left, generation } => {
                 let generation = ("generation", Json::uint(*generation));
@@ -818,7 +698,7 @@ impl Event {
     /// stored.
     fn stored(&self) -> usize {
         match self {
-            Event::Pane(_, PaneEvent::Told(told)) => told.stored(),
+            Event::Pane(_, PaneEvent::Told(told)) => told_stored(told),
             Event::Tab(_, change) | Event::Workspace(_, change) => change.stored(),
             Event::Stopped(reason) => reason.capacity(),
             Event::Pane(..) | Event::Layout(..) | Event::Zoomed(..) | Event::View { .. } => 0,

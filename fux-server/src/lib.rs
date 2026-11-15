@@ -3,79 +3,19 @@
 //! in `fux-wire`'s terms. It never runs grift (D-2): programs run in
 //! clients.
 
-/// Writes to the server's log, its stderr: `log!("…", args)` writes the
-/// line after `fux server: `. A log that cannot be written, a full disk,
-/// say, loses the line and stops nothing.
-macro_rules! log {
-    ($($arg:tt)*) => {{
-        let _ = std::io::Write::write_fmt(
-            &mut std::io::stderr(),
-            format_args!("fux server: {}\n", format_args!($($arg)*)),
-        );
-    }};
-}
-
-/// `wired!(Ty { Unit, Tuple(a, b), Named { x, y } })` puts an enum of the
-/// server's on the wire, as fux-wire puts its own (`wire_enum!` there): a
-/// tag, its variant's place in the list, then its fields in order; and
-/// `wired!(struct Ty { a, b })`, a struct's fields in order. For what the
-/// server says to its own panes' processes (`link`), never to a client.
-macro_rules! wired {
-    (struct $ty:path { $($f:ident),+ $(,)? }) => {
-        impl fux_wire::wire::Wire for $ty {
-            fn put(&self, out: &mut impl fux_wire::wire::Sink) {
-                $(fux_wire::wire::Wire::put(&self.$f, out);)+
-            }
-            fn get(r: &mut fux_wire::wire::Reader<'_>) -> Result<Self, fux_wire::wire::Error> {
-                Ok(Self { $($f: fux_wire::wire::Wire::get(r)?),+ })
-            }
-        }
-    };
-    ($ty:ident { $($var:ident $(( $($p:ident),+ ))? $({ $($f:ident),* })?),* $(,)? }) => {
-        const _: () = {
-            #[repr(u8)]
-            enum Tag {
-                $($var),*
-            }
-            impl fux_wire::wire::Wire for $ty {
-                fn put(&self, out: &mut impl fux_wire::wire::Sink) {
-                    match self {$(
-                        Self::$var $(( $($p),+ ))? $({ $($f),* })? => {
-                            out.push(Tag::$var as u8);
-                            $($(fux_wire::wire::Wire::put($p, out);)+)?
-                            $($(fux_wire::wire::Wire::put($f, out);)*)?
-                        }
-                    )*}
-                }
-                fn get(
-                    r: &mut fux_wire::wire::Reader<'_>,
-                ) -> Result<Self, fux_wire::wire::Error> {
-                    let tag = <u8 as fux_wire::wire::Wire>::get(r)?;
-                    $(if tag == Tag::$var as u8 {
-                        $($(let $p = fux_wire::wire::Wire::get(r)?;)+)?
-                        $($(let $f = fux_wire::wire::Wire::get(r)?;)*)?
-                        return Ok(Self::$var $(( $($p),+ ))? $({ $($f),* })?);
-                    })*
-                    Err(fux_wire::wire::Error::Tag(stringify!($ty), tag))
-                }
-            }
-        };
-    };
-}
+// fux-pane's `log!` and `wired!`, in every module.
+#[macro_use]
+extern crate fux_pane;
 
 // The unit tests drive sessions through fux's grift; those that need a
 // POSIX shell or a Unix fact are `cfg(unix)`, and Windows tests the server
 // end to end besides (`tests/windows.rs`).
-pub mod capture;
 pub mod conn;
 pub mod copy;
-pub mod host;
 mod input;
 pub mod journal;
 pub mod link;
 pub mod outer;
-pub mod pane;
-pub mod process;
 pub mod record;
 pub mod render;
 pub mod server;
@@ -86,14 +26,12 @@ pub mod view;
 pub mod wait;
 pub mod workspace;
 
-use fuxix::process::Signal;
-use std::time::{Duration, Instant};
+// A pane's own code is fux-pane's, held here too for a session kept in
+// one process: under its old names.
+pub(crate) use fux_pane::after;
+pub use fux_pane::{capture, host, pane, process};
 
-/// `wait` after `from`. A time too far off for an `Instant` is taken as
-/// `from`, so that a deadline fires at once rather than never.
-pub(crate) fn after(from: Instant, wait: Duration) -> Instant {
-    from.checked_add(wait).unwrap_or(from)
-}
+use fuxix::process::Signal;
 
 /// The signals that stop a server and detach a client.
 pub const STOPS: [Signal; 3] = [Signal::Term, Signal::Int, Signal::Hup];

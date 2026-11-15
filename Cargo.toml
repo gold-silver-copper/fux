@@ -1,9 +1,9 @@
 [workspace]
-members = ["fux-wire", "fux-server", "fux-vt", "fux-vt/peak", "fuxix"]
+members = ["fux-wire", "fux-pane", "fux-server", "fux-vt", "fux-vt/peak", "fuxix"]
 exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench", "archived/fuxth", "archived/fuxth-run", "archived/fuxed"]
 resolver = "3"
 
-# fux's three crates share one release: the server tells it to programs
+# fux's four crates share one release: the server tells it to programs
 # and clients, and a client prints its own.
 [workspace.package]
 version = "0.37.0"
@@ -85,6 +85,8 @@ workspace = true
 # printed with `eprintln!`, which alone the test harness captures). fuxix, where
 # fux's `unsafe` lives, keeps its own table: Cargo cannot lift a workspace
 # lint for one crate. fux-vt/peak, which uses `unsafe`, keeps its own too.
+# So does fux-pane, which denies `disallowed_methods` where these forbid
+# it: its list bans allocations too, and one kept says why where it is.
 [workspace.lints.rust]
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"

@@ -22,6 +22,8 @@ use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt,
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
+pub use fux_pane::socket::{Accepted, PaneListener, Stream, accept, nonblocking, peer, serve};
+
 /// fux's directory's name.
 pub fn folder() -> Result<&'static str, Error> {
     Ok("fux")
@@ -472,41 +474,13 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
     Ok((endpoint, UnixListener::from(fd)))
 }
 
-/// One end of a link between fux's own processes, or a client's.
-pub type Stream = UnixStream;
 /// The server's listening socket.
 pub type Listener = UnixListener;
-/// A client's connection, as accepted: to serve, or to hand to its
-/// connection's process.
-pub type Accepted = UnixStream;
 /// What a child is handed as a standard stream.
 pub type Handed = std::os::fd::OwnedFd;
-/// A pane's process's socket, where its server and connections reach it.
-pub type PaneListener = UnixListener;
-
 /// Connects to the socket at `path`.
 pub fn connect(path: &Path) -> std::io::Result<Stream> {
     UnixStream::connect(path)
-}
-
-/// `stream` read and written without waiting.
-pub fn nonblocking(stream: &Stream) -> std::io::Result<()> {
-    stream.set_nonblocking(true)
-}
-
-/// The next client waiting at `listener`.
-pub fn accept(listener: &mut Listener) -> std::io::Result<Accepted> {
-    listener.accept().map(|(stream, _)| stream)
-}
-
-/// Who connected on `accepted`, as the system says.
-pub fn peer(accepted: &Accepted) -> fuxix::Result<fuxix::socket::Peer> {
-    fuxix::socket::peer(accepted)
-}
-
-/// `accepted` as a stream to serve here.
-pub fn serve(accepted: Accepted) -> std::io::Result<Stream> {
-    Ok(accepted)
 }
 
 /// A second hold on `accepted`'s connection, which outlives handing the
@@ -619,32 +593,6 @@ pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>, 
         .and_then(|path| Pinned::new(path).ok())
         .filter(|pinned| pinned.identity == bound);
     Ok((listener, socket, Own(own)))
-}
-
-/// A pane's process listens at `listener` itself, again: one that reaches
-/// it is told its pid, not the server's that made the socket
-/// (`SO_PEERCRED`).
-pub fn pane_listen(listener: &PaneListener) -> Result<(), String> {
-    fuxix::socket::listen(listener, PANE_BACKLOG).map_err(|e| format!("its socket: {e}"))
-}
-
-/// How many may wait at a pane's socket untaken: one more finds it busy
-/// (`Reach::Busy`).
-const PANE_BACKLOG: i32 = 16;
-
-/// The next to reach a pane's process at `listener`, waited for: its
-/// server, till it has begun.
-pub fn pane_next(listener: &mut PaneListener) -> Result<Stream, String> {
-    let (stream, _) = listener.accept().map_err(|e| format!("its server: {e}"))?;
-    Ok(stream)
-}
-
-/// A pane's process has begun: `listener` is read without waiting from
-/// now on.
-pub fn pane_begun(listener: &PaneListener) -> Result<(), String> {
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("its socket: {e}"))
 }
 
 /// Reaches for what listens at `socket`, without waiting: a link to it; or

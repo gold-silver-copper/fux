@@ -111,9 +111,7 @@ pub const BELL: &[u8] = b"\x07";
 /// program ringing without end (`yes $'\a'`) cannot flood it.
 pub const BELL_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Palette entries 0 to 15 as a terminal said them (OSC 4), `None` for an
-/// entry it did not.
-pub type Palette = [Option<Rgb>; 16];
+pub use fux_pane::pane::Palette;
 /// Turns on the terminal's scheme reports and asks for the scheme now. The
 /// client turns the reports off on every way out (`client::LEAVE`).
 pub const REPORTS_ON: &[u8] = b"\x1b[?2031h\x1b[?996n";

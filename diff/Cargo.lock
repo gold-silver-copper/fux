@@ -80,9 +80,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fux-pane"
+version = "0.37.0"
+dependencies = [
+ "fux-vt 0.16.0",
+ "fux-wire",
+ "fuxix 0.9.0",
+]
+
+[[package]]
 name = "fux-server"
 version = "0.37.0"
 dependencies = [
+ "fux-pane",
  "fux-vt 0.16.0",
  "fux-wire",
  "fuxix 0.9.0",

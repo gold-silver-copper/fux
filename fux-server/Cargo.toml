@@ -13,14 +13,15 @@ repository = "https://github.com/gold-silver-copper/fux"
 # pane's input as if written: for the fuzz targets, fux-diff, fux-bench
 # and fux-vt-compare. And `journal::every_kind_read`, every kind of event,
 # for fux's list of records.
-in-process = ["fux-wire/testing"]
+in-process = ["fux-wire/testing", "fux-pane/in-process"]
 # Allocation refusal tests, enabled explicitly so workspace tests do not
 # also run fux-vt's large bounds suites.
-checks = ["fux-vt/checks", "fux-wire/checks"]
+checks = ["fux-vt/checks", "fux-wire/checks", "fux-pane/checks"]
 
 # No fuxth here: the server never runs the interpreter (D-2).
 # `tests/no_interpreter.rs` checks the whole tree.
 [dependencies]
+fux-pane = { path = "../fux-pane", version = "0.37.0" }
 fux-vt = { path = "../fux-vt", version = "0.16.0" }
 fux-wire = { path = "../fux-wire", version = "0.37.0" }
 fuxix = { path = "../fuxix", version = "0.9.0" }
@@ -31,6 +32,7 @@ fuxix = { path = "../fuxix", version = "0.9.0" }
 grift = "6.0.0"
 fux = { path = "..", features = ["in-process"] }
 fux-wire = { path = "../fux-wire", features = ["testing"] }
+fux-pane = { path = "../fux-pane", features = ["testing"] }
 fux-vt-peak = { path = "../fux-vt/peak" }
 
 [lints]

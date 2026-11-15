@@ -1,15 +1,19 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::after;
-use crate::journal::{Sent, Teller, Told};
-use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Pid};
+use crate::told::{Sent, Teller, Told};
 use fux_vt::bytes::ByteQueue;
+use fux_vt::keys::colour::{Colours, Scheme};
 use fux_vt::{Event, Feature, Screen, Size};
 use fux_wire::answer::Ended;
 use fux_wire::events::Actor;
 use fux_wire::id::PaneId;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+
+/// Palette entries 0 to 15 as a terminal said them (OSC 4), `None` for an
+/// entry it did not.
+pub type Palette = [Option<fux_vt::Rgb>; 16];
 
 /// How long a frame drawn in synchronized output is held before it is
 /// shown anyway: Ghostty's choice. Long enough for a frame sent in pieces
@@ -174,6 +178,10 @@ impl InputQueue {
     /// bracket, so that `close` never needs any: false if the OS gave
     /// none, and none is queued. `open`, if it leaves a paste open: what
     /// else comes then waits behind this body.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "its gate and its bytes go into the room made for them just before"
+    )]
     fn piece(&mut self, bytes: &[u8], body: u64, open: bool) -> bool {
         let closing = fux_vt::keys::encode::PasteEncoder::CLOSING;
         let room = bytes.len().saturating_add(closing);
@@ -197,6 +205,10 @@ impl InputQueue {
     }
     /// The paste that was open is closed with `closing`, in the room made
     /// for it (`piece`).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the closing bracket goes into the room made for it just before"
+    )]
     fn close(&mut self, closing: &[u8]) {
         if self.bytes.try_reserve(closing.len()).is_ok() {
             self.bytes.push(closing);
@@ -228,6 +240,10 @@ impl InputQueue {
     /// Body `body`, a client's paste, is to come, its server says: what
     /// is typed from here on waits behind it, as it was typed after it.
     /// Refused the memory to keep its place, nothing waits for it.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "its one push follows the room made for it just before"
+    )]
     fn expect(&mut self, body: u64) {
         if self.gates.try_reserve(1).is_ok() {
             self.gates.push_back(Behind {
@@ -266,6 +282,10 @@ impl InputQueue {
     }
     /// `len` bytes were queued, replies if `reply`. Refused the memory to
     /// say so, they count as what was queued before them.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "its one push follows the room made for it just before"
+    )]
     fn note(&mut self, reply: bool, len: usize) {
         if len == 0 {
             return;
@@ -293,6 +313,10 @@ impl InputQueue {
     }
     /// Queues what `write` appends to its vector as a piece, in place;
     /// behind a paste that is open, as `push` does.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "what `write` appends, to the queue or to a vector of its own behind a paste, aborts if the OS refuses it memory: left, D-194"
+    )]
     fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) {
         if self.gated() {
             let mut bytes = Vec::new();
@@ -349,6 +373,7 @@ impl InputQueue {
     }
     /// Everything queued, for tests and the harnesses.
     #[cfg(any(test, feature = "in-process"))]
+    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
     fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
@@ -403,6 +428,10 @@ pub struct Said {
 }
 
 impl Said {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (from_utf8_lossy, collect): left, D-194"
+    )]
     fn new(sent: fux_vt::Kept<'_>) -> Self {
         let text = String::from_utf8_lossy(sent.bytes);
         let text = text.chars().filter(|c| !c.is_control()).collect();
@@ -415,7 +444,7 @@ impl Said {
         &self.text
     }
     /// The bytes its text holds.
-    pub(crate) fn stored(&self) -> usize {
+    pub fn stored(&self) -> usize {
         self.text.capacity()
     }
     /// `text` as a program sent it, `cut` if it sent more.
@@ -454,6 +483,10 @@ impl Title {
         self.now = title;
         changed
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push_back): left, D-194"
+    )]
     fn push(&mut self) {
         if self.pushed.len() >= TITLE_STACK {
             self.pushed.pop_front();
@@ -508,6 +541,10 @@ impl fux_vt::Sink for Sink<'_, '_> {
         }
     }
     /// A colour query (OSC 10, 11) is answered if the colour is known.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     fn event(&mut self, event: Event<'_>) {
         match event {
             Event::Title(title) => {
@@ -545,6 +582,10 @@ impl fux_vt::Sink for Sink<'_, '_> {
             Event::IconName(_) => {}
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     fn picture(&mut self, placed: bool) {
         self.pictures.push(placed);
     }
@@ -553,6 +594,10 @@ impl fux_vt::Sink for Sink<'_, '_> {
     /// title, which are one here) or 2 (title); Ps 1, the icon alone, is
     /// not a title. vim and tmux push on starting and pop on leaving. And
     /// `CSI ? 996 n`, the colour scheme asked for, answered if known.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (extend_from_slice): left, D-194"
+    )]
     fn unhandled(&mut self, sequence: fux_vt::Unhandled<'_>) {
         let fux_vt::Unhandled::Csi {
             params,
@@ -661,7 +706,7 @@ impl Runs {
 }
 
 /// A program's file name, or the program as given if it has none.
-pub(crate) fn basename(program: &str) -> &str {
+pub fn basename(program: &str) -> &str {
     std::path::Path::new(program)
         .file_name()
         .and_then(|name| name.to_str())
@@ -714,6 +759,11 @@ impl Losses {
 
     /// What a notice says of them, of pane `id`: for each kind it lost
     /// any of, what, how many, and why (`%1: memory refused (2): …`).
+    #[expect(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (collect, format!): left, D-194"
+    )]
     pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
         let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
@@ -935,19 +985,23 @@ impl<'a> PaneMut<'a> {
         self.pane.resize(size, now, &mut self.tell);
         self.queued();
     }
-    pub(crate) fn size_terminal(&mut self) {
+    pub fn size_terminal(&mut self) {
         let result = self.pane.size_terminal();
         self.pane.terminal_sized(result);
     }
     /// Reading a terminal of its program's failed so: told, whether it is
     /// the terminal of the program it runs or one it left
     /// (`Session::read_left`).
-    pub(crate) fn tell_read_failed(&mut self, error: fuxix::Errno) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (to_string): left, D-194"
+    )]
+    pub fn tell_read_failed(&mut self, error: fuxix::Errno) {
         self.tell.tell(Told::ReadFailed(error.to_string()));
     }
     /// Reading its program's terminal failed so: told, the program no
     /// longer read, the cause kept.
-    pub(crate) fn read_failed(&mut self, error: fuxix::Errno) {
+    pub fn read_failed(&mut self, error: fuxix::Errno) {
         self.tell_read_failed(error);
         self.pane.terminal_errors.1.get_or_insert(error);
         self.pane.read_error = Some(error);
@@ -958,7 +1012,7 @@ impl<'a> PaneMut<'a> {
             other @ (Process::Absent | Process::Exited(_) | Process::Respawning) => other,
         };
     }
-    pub(crate) fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
+    pub fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
         self.pane.take_terminal_errors()
     }
     pub fn respawned(&mut self, fresh: Pane, process: Process) -> (Process, Left) {
@@ -975,6 +1029,10 @@ impl<'a> PaneMut<'a> {
     /// A request's `bytes` are queued for its program, and told as `kind`,
     /// with the version `expect` admitted them at, if it did.
     /// False if the OS gave no memory to queue them: none is, nor told.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (Box::new): left, D-194"
+    )]
     pub fn send(
         &mut self,
         bytes: &[u8],
@@ -1003,6 +1061,10 @@ impl<'a> PaneMut<'a> {
     /// A piece of body `body` being typed, `bytes`, is queued for its
     /// program, leaving a paste open if `open`, and told as `kind` if it
     /// is a request's: false if the OS gave no memory for it, and none is.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (Box::new): left, D-194"
+    )]
     pub fn piece(
         &mut self,
         bytes: &[u8],
@@ -1044,7 +1106,7 @@ impl<'a> PaneMut<'a> {
         self.pane.mouse_held = held;
     }
     /// A request sent `signal` to what runs in its terminal's foreground.
-    pub(crate) fn tell_signalled(&mut self, signal: fuxix::process::Signal) {
+    pub fn tell_signalled(&mut self, signal: fuxix::process::Signal) {
         let generation = self.pane.respawns;
         self.tell.tell(Told::Signalled { signal, generation });
     }
@@ -1065,12 +1127,7 @@ impl<'a> PaneMut<'a> {
         self.queued();
     }
     #[must_use]
-    pub fn host(
-        &mut self,
-        colours: Colours,
-        palette: crate::outer::Palette,
-        graphics: fux_vt::Graphics,
-    ) -> bool {
+    pub fn host(&mut self, colours: Colours, palette: Palette, graphics: fux_vt::Graphics) -> bool {
         self.pane.host(colours, palette, graphics)
     }
     pub fn keeps_size(&mut self) {
@@ -1084,6 +1141,10 @@ impl<'a> PaneMut<'a> {
     /// the bell, its latest notification, and its copies, in order.
     /// Refused copies are counted here, unless this pane's program-copy permission
     /// is false, which copies nothing and so refuses none.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (push): left, D-194"
+    )]
     pub fn take_read(&mut self) -> (bool, Option<Said>, Vec<String>) {
         let mut copies = Vec::new();
         let allowed = self.pane.options.program_clipboard;
@@ -1148,8 +1209,8 @@ impl<'a> PaneMut<'a> {
         self.pane.input.advance(n);
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(all(test, unix))]
-    pub(crate) fn set_process(&mut self, process: Process) -> Process {
+    #[cfg(all(any(test, feature = "testing"), unix))]
+    pub fn set_process(&mut self, process: Process) -> Process {
         self.pane.set_process(process)
     }
     /// Everything queued for its program, as if written: for tests and the
@@ -1190,6 +1251,10 @@ impl Left {
 
     /// What a notice says of it, after the end's own words: nothing, if it
     /// left no input unwritten.
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
     pub fn told(self) -> String {
         match self.input {
             0 => String::new(),
@@ -1343,7 +1408,7 @@ impl Pane {
     /// to read to be read again. A program that is gone, or whose
     /// terminal none reads, is read to its end: nothing will take the
     /// replies.
-    pub(crate) fn reads_output(&self) -> bool {
+    pub fn reads_output(&self) -> bool {
         self.input.replies() < REPLIES
             || self.exiting.is_some()
             || self.draining
@@ -1421,6 +1486,10 @@ impl Pane {
 
     /// Reads `bytes` at `now`, returning where its next parser turn starts.
     /// A held frame already owns its bytes and keeps that allocation itself.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "aborts if the OS refuses it memory (extend_from_slice): left, D-194"
+    )]
     fn read(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) -> Option<usize> {
         let mut rest = bytes;
         loop {
@@ -1568,7 +1637,7 @@ impl Pane {
 
     /// Writes the waiting input, as far as the program's terminal takes it;
     /// whether it took any, which makes room in the queue.
-    pub(crate) fn write_input(&mut self) -> bool {
+    pub fn write_input(&mut self) -> bool {
         self.input.settle();
         let Process::Reading(child) = &self.process else {
             return false;
@@ -1593,7 +1662,7 @@ impl Pane {
     /// given (`fuxix::io::written`: on Windows a write is taken into a
     /// buffer first, and is in flight a while). Not that anything read
     /// it. A program gone takes nothing more, and nothing waits for it.
-    pub(crate) fn input_taken(&self) -> bool {
+    pub fn input_taken(&self) -> bool {
         self.input.is_empty()
             && match &self.process {
                 Process::Reading(child) => fuxix::io::written(&child.master),
@@ -1689,7 +1758,7 @@ impl Pane {
         self.parser.screen()
     }
 
-    pub(crate) fn since(&self) -> &crate::capture::Since {
+    pub fn since(&self) -> &crate::capture::Since {
         &self.since
     }
 
@@ -1820,12 +1889,7 @@ impl Pane {
     /// (`size_terminal`), once what is read with it, a resize among them,
     /// is read.
     #[must_use]
-    pub fn host(
-        &mut self,
-        colours: Colours,
-        palette: crate::outer::Palette,
-        graphics: fux_vt::Graphics,
-    ) -> bool {
+    pub fn host(&mut self, colours: Colours, palette: Palette, graphics: fux_vt::Graphics) -> bool {
         self.colours = colours;
         self.parser.set_host_palette(palette);
         let told = self.screen().graphics().cell();
@@ -1838,7 +1902,7 @@ impl Pane {
     /// kernel's count: a change of either signals the program (SIGWINCH),
     /// which asks again. One the system refuses leaves it as it was, the
     /// screen sized all the same; the caller must report the failure.
-    pub(crate) fn size_terminal(&self) -> Result<(), fuxix::Errno> {
+    pub fn size_terminal(&self) -> Result<(), fuxix::Errno> {
         let Some(child) = self.process.child() else {
             return Ok(());
         };
@@ -1855,7 +1919,11 @@ impl Pane {
         true
     }
 
-    pub(crate) fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "aborts if the OS refuses it memory (format!): left, D-194"
+    )]
+    pub fn take_terminal_errors(&mut self) -> impl Iterator<Item = String> + use<> {
         let (resize, read) = std::mem::take(&mut self.terminal_errors);
         let id = self.id;
         [
@@ -1870,7 +1938,7 @@ impl Pane {
         self.read_error
     }
 
-    pub(crate) fn has_terminal_errors(&self) -> bool {
+    pub fn has_terminal_errors(&self) -> bool {
         self.terminal_errors.0.is_some() || self.terminal_errors.1.is_some()
     }
 
@@ -1879,7 +1947,7 @@ impl Pane {
         self.parser.clear_history();
     }
 
-    pub(crate) fn set_history_bytes(&mut self, bytes: fux_wire::command::HistoryBytes) {
+    pub fn set_history_bytes(&mut self, bytes: fux_wire::command::HistoryBytes) {
         self.options.history_bytes = bytes;
         self.since.note(self.parser.screen());
         self.parser.set_history_bytes(bytes.get());
@@ -2041,8 +2109,8 @@ impl Pane {
     }
 
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(all(test, unix))]
-    pub(crate) fn set_process(&mut self, process: Process) -> Process {
+    #[cfg(all(any(test, feature = "testing"), unix))]
+    pub fn set_process(&mut self, process: Process) -> Process {
         std::mem::replace(&mut self.process, process)
     }
 
@@ -2055,7 +2123,7 @@ impl Pane {
         self.display_label().into()
     }
 
-    pub(crate) fn display_label(&self) -> fux_wire::words::Label<'_> {
+    pub fn display_label(&self) -> fux_wire::words::Label<'_> {
         use fux_wire::words::Label;
         if let Some(name) = self.name() {
             return Label::Text(name);
@@ -2070,10 +2138,12 @@ impl Pane {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use crate::vt_feed::{Feed, Look};
-    pub(crate) fn options(bytes: usize) -> Result<fux_wire::command::PaneOptions, String> {
+/// What the tests make panes with, fux-server's too.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use super::*;
+
+    pub fn options(bytes: usize) -> Result<fux_wire::command::PaneOptions, String> {
         Ok(fux_wire::command::PaneOptions {
             history_bytes: fux_wire::command::HistoryBytes::new(bytes).ok_or("history budget")?,
             program_clipboard: true,
@@ -2083,10 +2153,58 @@ pub(crate) mod tests {
         })
     }
 
+    /// Output that spends more than a parser call's budget on a screen of
+    /// `rows` by `cols`, whatever fux-vt's weights: DECALN fills every
+    /// cell and ED clears them all, the pair repeated twice as often as
+    /// the fewest that a parser call stops at its budget in.
+    #[expect(clippy::disallowed_methods, reason = "only the tests call it")]
+    pub fn spends_the_budget(rows: u16, cols: u16) -> Vec<u8> {
+        struct Discard;
+        impl fux_vt::Sink for Discard {}
+        let output = |n| -> Vec<u8> {
+            std::iter::repeat_n(&b"\x1b#8\x1b[2J"[..], n)
+                .flatten()
+                .copied()
+                .collect()
+        };
+        let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
+        let size = Size::from((one(rows), one(cols)));
+        let mut n = 1usize;
+        while n < 1 << 24 {
+            let stops = fux_vt::Parser::with_options(
+                size,
+                1 << 10,
+                OPTIONS.with(Feature::Reflow).with(Feature::Pictures),
+            )
+            .is_ok_and(|mut parser| {
+                matches!(
+                    parser.process_until_stop(&output(n), &mut Discard),
+                    Ok(Some((_, fux_vt::Stop::Budget)))
+                )
+            });
+            if stops {
+                break;
+            }
+            n = n.saturating_mul(2);
+        }
+        output(n.saturating_mul(2))
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "tests allocate as they please"
+)]
+pub mod tests {
+    pub use super::testing::{options, spends_the_budget};
+    use crate::vt_feed::{Feed, Look};
+
     use super::*;
     use fux_vt::Mode;
 
-    pub(crate) fn shell() -> Result<Runs, String> {
+    pub fn shell() -> Result<Runs, String> {
         Ok(Runs::Shell(Launch {
             argv: fux_wire::command::Program::new("/bin/sh".into(), Vec::new())?,
             cwd: "/".into(),
@@ -2094,7 +2212,7 @@ pub(crate) mod tests {
     }
 
     /// `rows` by `cols`, each at least one.
-    pub(crate) fn size(rows: u16, cols: u16) -> Size {
+    pub fn size(rows: u16, cols: u16) -> Size {
         let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
         Size::from((one(rows), one(cols)))
     }
@@ -2234,7 +2352,7 @@ pub(crate) mod tests {
     #[test]
     fn colour_queries_are_answered_from_the_session_s_colours()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::outer::{Colours, Scheme};
+        use fux_vt::keys::colour::{Colours, Scheme};
         let mut pane = pane(3, 30, 1 << 10)?;
         pane.output(b"\x1b]11;?\x07\x1b]10;?\x1b\\\x1b[?996n\x1b[c");
         assert_eq!(
@@ -2270,46 +2388,8 @@ pub(crate) mod tests {
             .to_owned()
     }
 
-    /// Output that spends more than a parser call's budget on a screen of
-    /// `rows` by `cols`, whatever fux-vt's weights: DECALN fills every
-    /// cell and ED clears them all, the pair repeated twice as often as
-    /// the fewest that a parser call stops at its budget in.
-    pub(crate) fn spends_the_budget(rows: u16, cols: u16) -> Vec<u8> {
-        struct Discard;
-        impl fux_vt::Sink for Discard {}
-        let output = |n| -> Vec<u8> {
-            std::iter::repeat_n(&b"\x1b#8\x1b[2J"[..], n)
-                .flatten()
-                .copied()
-                .collect()
-        };
-        let mut n = 1usize;
-        while n < 1 << 24 {
-            let stops = fux_vt::Parser::with_options(
-                size(rows, cols),
-                1 << 10,
-                OPTIONS.with(Feature::Reflow).with(Feature::Pictures),
-            )
-            .is_ok_and(|mut parser| {
-                matches!(
-                    parser.process_until_stop(&output(n), &mut Discard),
-                    Ok(Some((_, fux_vt::Stop::Budget)))
-                )
-            });
-            if stops {
-                break;
-            }
-            n = n.saturating_mul(2);
-        }
-        output(n.saturating_mul(2))
-    }
-
     /// An isolated pane with explicit geometry and history allowance.
-    pub(crate) fn pane(
-        rows: u16,
-        cols: u16,
-        history: usize,
-    ) -> Result<Lone, Box<dyn std::error::Error>> {
+    pub fn pane(rows: u16, cols: u16, history: usize) -> Result<Lone, Box<dyn std::error::Error>> {
         let size = Size::new(rows, cols)?;
         Pane::new(
             PaneId::of(1),
@@ -2324,7 +2404,7 @@ pub(crate) mod tests {
     }
 
     /// A pane alone, for tests of it: what it tells is kept, in order.
-    pub(crate) struct Lone {
+    pub struct Lone {
         pub pane: Pane,
         pub told: Vec<(Told, Actor)>,
         queued_input: bool,
@@ -2344,14 +2424,14 @@ pub(crate) mod tests {
     }
 
     impl Lone {
-        pub(crate) fn new(pane: Pane) -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn new(pane: Pane) -> Result<Self, Box<dyn std::error::Error>> {
             Ok(Self {
                 pane,
                 told: Vec::new(),
                 queued_input: false,
             })
         }
-        pub(crate) fn placed(&mut self) -> PaneMut<'_> {
+        pub fn placed(&mut self) -> PaneMut<'_> {
             PaneMut::new(
                 &mut self.pane,
                 Actor::Server,
@@ -2359,33 +2439,23 @@ pub(crate) mod tests {
                 &mut self.queued_input,
             )
         }
-        /// What it told, journaled at a place of its own.
-        pub(crate) fn journal(
-            &self,
-        ) -> Result<crate::journal::Journal, Box<dyn std::error::Error>> {
-            use fux_wire::id::{TabId, WsId};
-            let kept = fux_wire::command::JournalBytes::new(1 << 20).ok_or("journal")?;
-            let mut journal = crate::journal::Journal::new(kept);
-            let at = ((WsId::of(1), TabId::of(1)), self.pane.id);
-            for (told, actor) in &self.told {
-                let event = crate::journal::PaneEvent::Told(told.clone());
-                journal.push_from(crate::journal::Event::Pane(at, event), *actor);
-            }
-            Ok(journal)
+        /// What it told, in order.
+        pub fn told(&self) -> impl Iterator<Item = &Told> {
+            self.told.iter().map(|(told, _)| told)
         }
-        pub(crate) fn output(&mut self, bytes: &[u8]) {
+        pub fn output(&mut self, bytes: &[u8]) {
             self.placed().output(bytes, Instant::now());
         }
-        pub(crate) fn output_at(&mut self, bytes: &[u8], now: Instant) {
+        pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
             self.placed().output(bytes, now);
         }
-        pub(crate) fn read_unread(&mut self) {
+        pub fn read_unread(&mut self) {
             self.placed().read_unread(Instant::now());
         }
-        pub(crate) fn release_frame(&mut self) {
+        pub fn release_frame(&mut self) {
             self.placed().release_frame(Instant::now());
         }
-        pub(crate) fn resize(&mut self, size: Size) {
+        pub fn resize(&mut self, size: Size) {
             self.placed().resize(size, Instant::now());
         }
     }
@@ -2949,44 +3019,34 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Each shell command that begins and ends goes in the journal, with
-    /// its own status, in the output's order with bells and titles, however
-    /// the output is split into reads: a C while one runs moves its start
-    /// and begins none.
+    /// Each shell command that begins and ends is told, with its own
+    /// status, in the output's order with bells and titles, however the
+    /// output is split into reads: a C while one runs moves its start and
+    /// begins none. (How the journal says each is fux-server's to test.)
     #[test]
-    fn commands_begun_and_ended_are_journaled_in_the_outputs_order()
+    fn commands_begun_and_ended_are_told_in_the_outputs_order()
     -> Result<(), Box<dyn std::error::Error>> {
         let output: &[u8] =
             b"\x1b]133;C\x07\x07x\x1b]133;D;1\x07\x1b]133;C\x07\x1b]2;t\x07\x1b]133;C\x07";
-        let at = "(pane %1) (tab @1) (workspace +1)";
-        let started = format!("((event \"command-started\") {at})");
-        let lines = [
-            started.clone(),
-            format!("((event \"bell\") {at})"),
-            format!("((event \"done\") {at} (status 1))"),
-            started,
-            format!("((event \"title\") {at} (title \"t\"))"),
-        ];
-        let expected = lines.map(|line| line + "\n").concat();
         for split in 0..=output.len() {
             let mut pane = pane(3, 30, 1 << 10)?;
-            let run = "1-0".parse().map_err(|()| "a run")?;
             let (first, second) = output.split_at_checked(split).ok_or("a split")?;
             pane.output(first);
             pane.output(second);
-            let journal = pane.journal()?;
-            let from = fux_wire::events::Cursor {
-                seq: fux_wire::events::Seq(0),
-                run,
-            };
-            let mut stream = crate::journal::Reader::new(
-                fux_wire::inspect::Scope::All,
-                &journal,
-                run,
-                Some(from),
-            )?;
-            let (said, _) = stream.lines(&journal, &|_| None, |_| None);
-            assert_eq!(said, expected, "split at {split}");
+            let told: Vec<&Told> = pane.told().collect();
+            assert!(
+                matches!(
+                    told.as_slice(),
+                    [
+                        Told::CommandStarted,
+                        Told::Bell,
+                        Told::Done(Some(1)),
+                        Told::CommandStarted,
+                        Told::Title(title),
+                    ] if title.as_str() == "t"
+                ),
+                "split at {split}: {told:?}"
+            );
         }
         Ok(())
     }
