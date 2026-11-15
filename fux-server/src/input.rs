@@ -193,8 +193,14 @@ impl Session {
         let Some(view) = self.views.get_mut(&client) else {
             return;
         };
-        // Pastes go to the pane only.
+        // Pastes go to the pane only. Text its connection kept is let go
+        // by it then, told so as it is told where any other goes: to no
+        // pane. So its client hears that paste is done with, and sends
+        // the one after it.
         if !view.mode.is_normal() {
+            if let Some((body, token)) = self.body_token() {
+                self.deliveries.push((body, token, Vec::new()));
+            }
             return;
         }
         view.notice = None;

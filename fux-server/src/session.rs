@@ -10004,6 +10004,39 @@ mod tests {
         Ok(())
     }
 
+    /// A paste whose client shows a screen of its own goes to no pane; its
+    /// text, which its connection kept, is let go by it, told so at once
+    /// as any other is told where it goes. So the client hears its paste
+    /// is done with, and the one after it, sent once the screen is gone,
+    /// goes to its pane (D-185; a client's pastes go one at a time).
+    #[test]
+    fn a_paste_while_its_client_shows_a_screen_is_let_go_and_the_next_goes_on() -> TestResult {
+        use fux_wire::act::{Act, Panel, ScreenAct};
+        let (mut s, client) = super::testing::attached(10, 40)?;
+        let id = s.focused(client).ok_or("its pane")?;
+        let now = Instant::now();
+        let screen = |act| Act::Screen { opening: 1, act };
+        s.acts(
+            client,
+            vec![screen(ScreenAct::Show(Panel::Repeat("RESIZE".into())))],
+            now,
+        );
+        s.give_body(Some(7));
+        s.acts(client, vec![Act::Paste(String::new())], now);
+        // Told before anything else of its client's is taken.
+        let (body, _, panes) = s.deliveries.pop().ok_or("its text let go")?;
+        assert_eq!((body, panes), (7, Vec::new()));
+        s.give_body(None);
+        assert!(s.deliveries.is_empty(), "let go once");
+        s.acts(client, vec![screen(ScreenAct::Hide)], now);
+        s.give_body(Some(8));
+        s.acts(client, vec![Act::Paste(String::new())], now);
+        s.give_body(None);
+        let (body, _, panes) = s.deliveries.pop().ok_or("its delivery")?;
+        assert_eq!((body, panes), (8, vec![id]));
+        Ok(())
+    }
+
     /// What is typed between two pastes whose text is still to come keeps
     /// its place: it is queued after the first, as that one has come, and
     /// does not wait for the second, which holds back only what came after

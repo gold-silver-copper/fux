@@ -3031,19 +3031,25 @@ fn text_sent_to_a_client_all_reaches_the_program_it_types_into() -> Outcome {
     let mut stdin = sending.stdin.take().ok_or("its stdin")?;
     stdin.write_all(&vec![b't'; SENT]).map_err(e)?;
     drop(stdin);
-    let (typed, said) = finish(sending, &mut client)?;
-    assert!(typed, "{said}");
-    let mut kept = 0u64;
-    for _ in 0..6 {
-        let all = eventually("all of it kept", || {
+    // Megabytes typed a key at a time take their time: waited for as
+    // long as more of them keeps arriving.
+    let whole = u64::try_from(SENT).map_err(e)?;
+    let (mut kept, mut status) = (0u64, None);
+    loop {
+        let before = kept;
+        let done = eventually("more of it kept, or the keys sent", || {
             client.pump()?;
             kept = std::fs::metadata(&got).map_err(e)?.len();
-            Ok(kept >= u64::try_from(SENT).map_err(e)?)
+            status = status.or(sending.try_wait().map_err(e)?);
+            Ok(status.is_some() && kept >= whole)
         });
-        if all.is_ok() {
-            break;
+        match done {
+            Ok(()) => break,
+            Err(_) if kept > before => {}
+            Err(waited) => return Err(format!("{waited}: {kept} of {whole} kept")),
         }
     }
+    assert!(status.is_some_and(|status| status.success()));
     assert_eq!(kept, u64::try_from(SENT).map_err(e)?);
     Ok(())
 }

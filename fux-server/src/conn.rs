@@ -1483,7 +1483,7 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             // sends the next piece. Not while a body of its client's is
             // kept or on its way here: the keys it was sent come back from
             // it as one (a long run of them), and their sender waits for
-            // that, so that its client holds two pieces of them at most.
+            // that, so that its client holds a few pieces of them at most.
             let posting = body.is_some()
                 || !ahead.is_empty()
                 || errands.iter_mut().any(|e| e.post().is_some());
@@ -1654,7 +1654,16 @@ fn serve_on(client: &Stream, mut link: End, said: Vec<ToConn>) -> Result<(), Str
             // is told so, and sends what it held back behind it.
             let own = want == Want::Frames(Expect::Attached)
                 && matches!(errand.post(), Some(post) if post.keys.is_none());
-            match run.and_then(|run| errand.on(&readable, &mut buffer, run)) {
+            let on = run.and_then(|run| errand.on(&readable, &mut buffer, run));
+            // A pane it lost on the way is told to its server now: an
+            // errand that ends with this is gone before the next turn.
+            if let Some(post) = errand.post() {
+                for pane in std::mem::take(&mut post.unreached) {
+                    let token = post.token;
+                    link.send(&FromConn::Unreached { token, pane });
+                }
+            }
+            match on {
                 None if run.is_some() => going.push(errand),
                 Some(None) if own => {
                     out.push_with(|frames| ToAttached::More.encode_into(frames));
@@ -2389,6 +2398,66 @@ mod tests {
             matches!(told, FromConn::Unreached { token: 5, pane: at } if at == pane),
             "{told:?}"
         );
+        drop(server);
+        conn.join().map_err(|_| "its process panicked")??;
+        let _ = std::fs::remove_dir_all(&panes);
+        Ok(())
+    }
+
+    /// A pane whose socket takes the link and then closes it (its process
+    /// refused the peer, for want of memory) took nothing of the body: its
+    /// server is told so too, though the body, one piece long, is over
+    /// with that (D-183; the errand ended first, and what it had to tell
+    /// went with it).
+    #[cfg(unix)]
+    #[test]
+    fn a_body_for_a_pane_that_closes_its_link_is_told_to_its_server() -> Result<(), String> {
+        use crate::link::{Expect, FromConn, ToConn};
+        use fux_wire::command::Input;
+        use fux_wire::protocol::{AttachedFrame, Frame, Hello, Role};
+        use std::io::Write;
+        let e = |error: std::io::Error| error.to_string();
+        let panes = std::env::temp_dir().join(format!("fux-conn-shut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&panes);
+        std::fs::create_dir_all(&panes).map_err(e)?;
+        // Its pane's socket: each link taken, and closed at once.
+        let listener = std::os::unix::net::UnixListener::bind(panes.join("3")).map_err(e)?;
+        let refusing = std::thread::spawn(move || drop(listener.accept()));
+        let (mut theirs, mut server, conn) = served()?;
+        theirs
+            .write_all(&Hello::ours(Role::Attach).encode())
+            .map_err(e)?;
+        said(&mut server)?;
+        let run = "1-2".parse().map_err(|()| "a run")?;
+        server.send(&ToConn::Hello {
+            panes: panes.clone(),
+            run,
+        });
+        server.send(&ToConn::Expect(Expect::Attached));
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        let piece = vec![Input::Paste("text".into())];
+        theirs
+            .write_all(&AttachedFrame::Piece(piece).encode())
+            .map_err(e)?;
+        let FromConn::Frame {
+            body: Some(body), ..
+        } = said(&mut server)?
+        else {
+            return Err("its paste, its text kept".into());
+        };
+        let pane = fux_wire::id::PaneId::of(3);
+        server.send(&ToConn::Deliver {
+            body,
+            token: 5,
+            panes: vec![pane],
+        });
+        server.flush_all().map_err(|errno| errno.to_string())?;
+        let told = said(&mut server)?;
+        assert!(
+            matches!(told, FromConn::Unreached { token: 5, pane: at } if at == pane),
+            "{told:?}"
+        );
+        refusing.join().map_err(|_| "its pane panicked")?;
         drop(server);
         conn.join().map_err(|_| "its process panicked")??;
         let _ = std::fs::remove_dir_all(&panes);
