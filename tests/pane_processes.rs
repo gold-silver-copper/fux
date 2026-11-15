@@ -244,7 +244,7 @@ fn a_flood_of_queries_none_reads_leaves_its_pane_process_flat_and_answering() ->
 
 /// 3. A client that stops reading while a pane floods it with copies costs
 ///    neither its connection's process nor the server: what it is owed is
-///    the latest copy, kept as that in both (D-183), so neither grows, the
+///    the latest copy, kept as that in both (D-184), so neither grows, the
 ///    server and another client go on, and once it reads again it gets
 ///    the last copy, and not each of those before it. (Its connection
 ///    queued every copy, and ended at its cap: this test said so.)
@@ -687,7 +687,7 @@ fn a_paste_body_never_passes_through_the_server() -> Outcome {
     stdin.write_all(&body).map_err(e)?;
     drop(stdin);
     // It stays with its sender, which waits: a piece at a time goes on
-    // (D-180), so no connection's process holds it either. Its
+    // (D-181), so no connection's process holds it either. Its
     // connection has reached the pane's socket with the first piece, which
     // the pane, stopped, does not take: it reads no more of it from here.
     eventually("its connection to reach the pane", || {
@@ -786,7 +786,7 @@ fn typing_at_a_stopped_pane_grows_no_queue_in_the_server() -> Outcome {
     let grew = peak_kib(pid)?.saturating_sub(before);
     signal(own, Signal::Cont);
     // A frame of what was typed is the most it keeps for a pane that
-    // takes none (D-192): its queue, and what its allocator keeps of it.
+    // takes none (D-193): its queue, and what its allocator keeps of it.
     assert!(grew < 8 << 10, "the server grew {grew} KiB");
     Ok(())
 }
@@ -1199,7 +1199,7 @@ fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome 
     let mut stdin = sending.stdin.take().ok_or("its stdin")?;
     stdin.write_all(&vec![b'x'; 32 << 20]).map_err(e)?;
     drop(stdin);
-    // The body stays with its sender (D-180): its connection, which has
+    // The body stays with its sender (D-181): its connection, which has
     // reached the stopped pane's socket with the first piece, is one of
     // those the server has.
     eventually("its connection to reach the pane", || {
@@ -1325,7 +1325,7 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
     let (mut client, id, got) = keeping(&server)?;
     let conn = the_clients(&server)?;
     signal(conn, Signal::Stop);
-    // They stay with their sender (D-180): its connection reaches the
+    // They stay with their sender (D-181): its connection reaches the
     // client's, stopped, with the first piece of them, none of it taken.
     let at = kept(&server).join(format!("c{}", id.trim_start_matches('c')));
     let links = reached(&at)?;
@@ -2501,7 +2501,7 @@ fn a_start_held_up_reads_the_run_again_under_the_locks() -> Outcome {
 /// 27. A server killed while a paste is on its way: the paste's sender,
 ///     which still holds what its pane has not taken, is told its server
 ///     ended and how the run is taken back, and fails; `start` then takes
-///     the run back, its program still running (D-180; the sender had
+///     the run back, its program still running (D-181; the sender had
 ///     been answered at once, its paste queued in the pane's process).
 #[cfg(target_os = "linux")]
 #[test]
@@ -2547,7 +2547,7 @@ fn a_server_killed_mid_paste_tells_its_sender_and_its_run_is_taken_back() -> Out
 
 /// 28. A program that writes 10 MB before it reads, a megabyte sent it
 ///     meanwhile, gets all of it: what waits to be written to it never
-///     stops its output being read, nor the other way (D-182; a terminal
+///     stops its output being read, nor the other way (D-183; a terminal
 ///     that stops one for the other deadlocks here).
 #[cfg(target_os = "linux")]
 #[test]
@@ -2607,7 +2607,7 @@ fn a_program_that_writes_ten_megabytes_before_it_reads_gets_all_it_was_sent() ->
 ///     meanwhile is refused or waits: each is given two seconds and let
 ///     go, as its asker would. Not yet so, and so not asked here: a pane
 ///     refused memory as it makes a capture still ends, and one refused it
-///     as it draws its screen for a client can (D-185): this run's clients
+///     as it draws its screen for a client can (D-186): this run's clients
 ///     show a screen small enough to be drawn in what the pane has.
 #[cfg(target_os = "linux")]
 #[test]
@@ -2662,7 +2662,7 @@ fn a_pane_process_refused_all_memory_lives_through_floods_and_side_links() -> Ou
 ///     rest. The client, which sends each further piece only as it is asked
 ///     for, is free to answer, and its connection reads the answer though
 ///     the paste is still on its way; then the program reads all of it
-///     (D-180; the client sat in the write of the whole paste, its
+///     (D-181; the client sat in the write of the whole paste, its
 ///     connection read nothing of its client's, and all three waited for
 ///     ever).
 #[cfg(target_os = "linux")]
@@ -2720,7 +2720,7 @@ fn a_client_answers_a_question_while_its_own_paste_waits() -> Outcome {
 ///     both arrive whole at both: each pane takes the bodies in the order
 ///     its server asked for them, so no pane begins one while the other
 ///     begins the other, each sender then waiting for ever on the pane
-///     that held its piece back (D-191).
+///     that held its piece back (D-192).
 #[cfg(target_os = "linux")]
 #[test]
 fn two_pastes_sent_at_once_to_the_same_two_panes_both_arrive() -> Outcome {
@@ -2793,7 +2793,7 @@ fn two_pastes_sent_at_once_to_the_same_two_panes_both_arrive() -> Outcome {
 ///     the most its pane holds, the keys past it are not taken, and their
 ///     typist is told so; neither the pane's process, the server nor the
 ///     connection's grows with them, and the client's bindings run all
-///     the while (D-192; all of it queued in the pane's process).
+///     the while (D-193; all of it queued in the pane's process).
 #[cfg(target_os = "linux")]
 #[test]
 fn keys_typed_past_a_frame_at_a_program_that_reads_nothing_are_not_taken() -> Outcome {
@@ -2810,7 +2810,7 @@ fn keys_typed_past_a_frame_at_a_program_that_reads_nothing_are_not_taken() -> Ou
 /// 32a. The same of a pane whose own process is stopped, and takes
 ///      nothing of what it is sent: a frame of what was typed is the most
 ///      the server keeps for it, the keys past it are not taken, and their
-///      typist is told so (D-192; its client's frames were left unread,
+///      typist is told so (D-193; its client's frames were left unread,
 ///      and with them its answers and its detach).
 #[cfg(target_os = "linux")]
 #[test]
@@ -2878,7 +2878,7 @@ fn flooded_with_keys(server: &Server, client: &mut Client, own: i32) -> Outcome 
 /// 32b. Keys typed while a paste waits for a program that isn't reading
 ///      land after the paste, in the order they were typed: its pane
 ///      queues nothing else inside a paste that is open or still to come
-///      (D-186).
+///      (D-187).
 #[cfg(target_os = "linux")]
 #[test]
 fn keys_typed_while_a_paste_waits_land_after_it() -> Outcome {
@@ -2926,7 +2926,7 @@ fn keys_typed_while_a_paste_waits_land_after_it() -> Outcome {
 ///     nothing: with 2 MiB pasted into a raw-mode program that reads
 ///     none of it, more than its terminal takes, the client's bindings
 ///     run at once. It changes its focus, and what it types then goes to
-///     the pane it focuses now; and it detaches (D-188; bindings waited
+///     the pane it focuses now; and it detaches (D-189; bindings waited
 ///     behind the paste, and the client could only be killed).
 #[cfg(target_os = "linux")]
 #[test]
@@ -2984,7 +2984,7 @@ fn a_paste_that_waits_keeps_its_client_from_no_binding() -> Outcome {
 
 /// 34. A program that floods its terminal with queries and reads no answer
 ///     stalls only itself: a client that shows its pane and focuses it is
-///     kept from nothing, and its bindings run (D-182).
+///     kept from nothing, and its bindings run (D-183).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_flood_of_queries_keeps_a_client_that_watches_from_no_binding() -> Outcome {
@@ -3011,7 +3011,7 @@ fn a_flood_of_queries_keeps_a_client_that_watches_from_no_binding() -> Outcome {
 /// 36. Megabytes of text sent to a client (`send-keys` to a client, typed
 ///     there as keys) all reach the program it types into: the client
 ///     sends a long run of keys as it sends a paste's text, a piece once
-///     the last is taken, so none comes faster than it is taken (D-188;
+///     the last is taken, so none comes faster than it is taken (D-189;
 ///     each was a frame of its own, and past a frame waiting its
 ///     connection dropped them while the request said they were sent).
 #[cfg(target_os = "linux")]
@@ -3058,7 +3058,7 @@ fn text_sent_to_a_client_all_reaches_the_program_it_types_into() -> Outcome {
 ///     socket's name is gone) holds nothing back in that pane: the
 ///     connection tells its server, which told the pane to wait for the
 ///     paste, and the pane waits no more. What is typed after it reaches
-///     the program (D-186; the pane waited for that paste for good, and
+///     the program (D-187; the pane waited for that paste for good, and
 ///     held every other input and answer behind it).
 #[cfg(target_os = "linux")]
 #[test]
