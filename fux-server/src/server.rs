@@ -65,7 +65,7 @@ struct Listening {
     passed: bool,
     /// Holds the lock; removes the socket once dropped, after the listener
     /// closes.
-    _endpoint: Endpoint,
+    endpoint: Endpoint,
 }
 
 impl Listening {
@@ -77,8 +77,22 @@ impl Listening {
             listener,
             reserve: reserve(),
             passed: false,
-            _endpoint: endpoint,
+            endpoint,
         })
+    }
+
+    /// Stops listening: the listener closes and the socket goes, and
+    /// what is left holds the run's lock till the server ends
+    /// (`Endpoint::stop`).
+    fn stop(self) -> Endpoint {
+        let Listening {
+            listener,
+            mut endpoint,
+            ..
+        } = self;
+        drop(listener);
+        endpoint.stop();
+        endpoint
     }
 
     /// With every descriptor the server's limit allows open (`ulimit -n`),
@@ -126,8 +140,9 @@ enum Phase {
         resting: Option<Instant>,
     },
     /// Stopping, its socket gone: the server waits for its clients and
-    /// processes until then.
-    Stopping(Instant),
+    /// processes until then, its run's lock kept till it ends (what is
+    /// left of its socket's endpoint; none in a test with no socket).
+    Stopping(Instant, Option<Endpoint>),
 }
 
 /// Something the loop waits for until a moment (`Server::wakes`), and
@@ -994,7 +1009,7 @@ impl Server {
             let ControlFlow::Continue(next) = self.turn(Instant::now(), &mut wakes) else {
                 return;
             };
-            if matches!(self.phase, Phase::Stopping(_))
+            if matches!(self.phase, Phase::Stopping(..))
                 && self.session.links.is_empty()
                 && self.session.ending.is_empty()
                 && self.conns.is_empty()
@@ -1033,9 +1048,11 @@ impl Server {
             }
             self.ready = ready;
             // A pane says another server holds it. The run's lock keeps
-            // two servers off one run (`socket::bind_socket`), so this is
-            // where that lock did not hold; the pane is believed all the
-            // same, and this server leaves the run to that one.
+            // two servers off one run, from a server's start till it is
+            // gone, its stopping too (`socket::bind_socket`,
+            // `Endpoint::stop`), so this is where that lock did not hold;
+            // the pane is believed all the same, and this server leaves
+            // the run to that one.
             if let Some((pane, by)) = self.session.holder.take() {
                 self.leave(pane, by);
                 return;
@@ -1100,7 +1117,7 @@ impl Server {
             (self.session.orphans.iter().map(|o| o.deadline).min()).map(|at| (at, Wake::Grace));
         let phase = match self.phase {
             Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
-            Phase::Stopping(by) => Some((by, Wake::Stop)),
+            Phase::Stopping(by, _) => Some((by, Wake::Stop)),
         };
         let answers = self.conns.iter().filter_map(|conn| {
             let Stage::Waiting(waiting) = &conn.stage else {
@@ -1330,7 +1347,7 @@ impl Server {
 
     /// Stops the server, saying why, as `actor`.
     fn stop(&mut self, reason: String, actor: Actor, now: Instant) {
-        if let Phase::Stopping(_) = self.phase {
+        if let Phase::Stopping(..) = self.phase {
             return;
         }
         log!("{reason}");
@@ -1338,8 +1355,15 @@ impl Server {
         // back, nor a part of it.
         self.session.end_run();
         // The sockets go first: from now on a client finds no server. The
-        // next connection's process, its link closed, ends.
-        self.phase = Phase::Stopping(after(now, STOP_WAIT));
+        // next connection's process, its link closed, ends. The run's
+        // lock is kept till this server is gone: no other takes the run,
+        // or begins one there, while its panes are still closing.
+        let by = after(now, STOP_WAIT);
+        let stopping = Phase::Stopping(by, None);
+        self.phase = match mem::replace(&mut self.phase, stopping) {
+            Phase::Serving { listening, .. } => Phase::Stopping(by, Some(listening.stop())),
+            Phase::Stopping(..) => Phase::Stopping(by, None),
+        };
         // A client the spare took just now, not yet heard of, is a
         // connection as the rest are, told below why it ends.
         if let Some(mut spare) = self.spare.take() {
@@ -2083,11 +2107,10 @@ impl Server {
         }
         // The run is over, and its panes' sockets gone with them: so are
         // its record, then its fux, and where it kept them. Under the
-        // socket's locks, which it let go as it stopped listening: with
-        // another server there now, what is there is that one's run's, or
-        // that one's to end. And not while a pane process could not be told:
-        // the record, which says the run ended, stays for the next start
-        // to tell it.
+        // run's lock, which this server has kept since it took the run:
+        // what is there is its own. And not while a pane process could
+        // not be told: the record, which says the run ended, stays for
+        // the next start to tell it.
         let Some(socket) = self.session.socket().map(std::path::Path::to_owned) else {
             return;
         };
@@ -2100,10 +2123,9 @@ impl Server {
             log!("a pane process is not known to be told its run ended: the next start tells it");
             return;
         }
-        if let Some(held) = crate::socket::hold_again(&socket) {
+        if let Phase::Stopping(_, Some(_lock)) = &self.phase {
             self.session.forget_run();
             let _ = fs::remove_dir(crate::socket::panes(&socket));
-            drop(held);
         }
     }
 }
@@ -2120,7 +2142,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (mut server, _peers, client) = ordered_fixture()?;
         let now = Instant::now();
-        server.phase = Phase::Stopping(after(now, Duration::from_secs(60)));
+        server.phase = Phase::Stopping(after(now, Duration::from_secs(60)), None);
         server.session.outbox.clear();
         let reader = crate::journal::Reader::new(
             fux_wire::inspect::Scope::Client(client),
@@ -2240,7 +2262,7 @@ mod tests {
         let (mut server, _peers, _) = ordered_fixture()?;
         let now = Instant::now();
         let stop = after(now, Duration::from_secs(10));
-        server.phase = Phase::Stopping(stop);
+        server.phase = Phase::Stopping(stop, None);
         server
             .conns
             .get_mut(1)
@@ -2274,7 +2296,7 @@ mod tests {
     fn due_frames_precede_expired_wait_answers() -> Result<(), Box<dyn std::error::Error>> {
         let (mut server, _peers, _) = ordered_fixture()?;
         let now = Instant::now();
-        server.phase = Phase::Stopping(after(now, Duration::from_secs(10)));
+        server.phase = Phase::Stopping(after(now, Duration::from_secs(10)), None);
         let pane = PaneId::of(1);
         server.session.output(pane, b"\x1b[?2026hheld", now);
         let counts = server
@@ -2363,7 +2385,7 @@ mod tests {
         Ok((
             Server {
                 session,
-                phase: Phase::Stopping(Instant::now()),
+                phase: Phase::Stopping(Instant::now(), None),
                 conns: vec![conn],
                 children: fuxix::signal::Pipe::new(&[])?,
                 stops: fuxix::signal::Pipe::new(&[])?,
@@ -2481,7 +2503,7 @@ mod tests {
         let peers = vec![worker_peer, peer, unrelated_peer];
         let server = Server {
             session,
-            phase: Phase::Stopping(Instant::now()),
+            phase: Phase::Stopping(Instant::now(), None),
             conns,
             children: fuxix::signal::Pipe::new(&[])?,
             stops: fuxix::signal::Pipe::new(&[])?,

@@ -454,8 +454,10 @@ is neither set. An auto-started server logs to `fux.log` beside it.
 
 - The socket's directory must be a directory of yours, not a symbolic
   link, mode 0700; fux creates the default one so.
-- The socket is mode 0600 before any connection is accepted, and a lock
-  file makes one server its owner.
+- The socket is mode 0600 before any connection is accepted. A lock on
+  the run's own directory, `SOCKET.panes`, makes one server its owner
+  from its start till it is gone; no file that can be removed alone
+  does. The file `SOCKET.starting` only orders the servers starting.
 - Every peer must run as the server's own user (`SO_PEERCRED` on Linux,
   `getpeereid` on macOS); others, root included, are refused.
 - Frames are length-prefixed and at most 1 MiB, checked before anything

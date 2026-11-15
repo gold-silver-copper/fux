@@ -1680,12 +1680,21 @@ fn a_pane_process_its_record_lacks_is_ended() -> Outcome {
 }
 
 /// What a cleaner of idle files can remove beside a live server's socket
-/// is removed: its socket file and the file that orders starts there.
+/// is removed: every file there named after the socket, the socket's own
+/// too (its lock, on a build that keeps one in a file; the file that
+/// orders starts). The run's directory, in use, stays.
 fn clean_beside(server: &Server) -> Outcome {
-    let mut starting = server.socket.clone().into_os_string();
-    starting.push(".starting");
-    std::fs::remove_file(&starting).map_err(e)?;
-    std::fs::remove_file(&server.socket).map_err(e)
+    let name = server.socket.file_name().ok_or("the socket's name")?;
+    let name = name.to_string_lossy().into_owned();
+    let beside = server.socket.parent().ok_or("the socket's directory")?;
+    for entry in std::fs::read_dir(beside).map_err(e)? {
+        let entry = entry.map_err(e)?;
+        let named = entry.file_name().to_string_lossy().starts_with(&name);
+        if named && !entry.file_type().map_err(e)?.is_dir() {
+            std::fs::remove_file(entry.path()).map_err(e)?;
+        }
+    }
+    Ok(())
 }
 
 /// What a `start` on `server`'s socket, refused, said: on its own stderr,
@@ -2296,38 +2305,40 @@ fn a_pane_closed_while_it_begins_is_told_to_close() -> Outcome {
     })
 }
 
-/// 37. A server that stopped lets go of what its run kept only while no
-///     other server has the run: with the run's lock held by another by
-///     then (here the test, as a server started meanwhile: it is ahead at
-///     the file that orders starts, and takes the lock on the run's
-///     directory the moment the first lets it go), it removes neither the
-///     record nor the run's fux, which are that one's to deal with; the
-///     next start finds the run ended and begins anew (D-174; it removed
-///     them whoever's they were by then).
+/// 37. A stopping server keeps its run's lock till it is gone: while it
+///     waits for a pane's process to close (here one that is stopped),
+///     its socket gone already, no other server has the run, and a
+///     `start` then waits its turn and begins a run of its own, which it
+///     serves (D-177; the lock was let go with the socket, and a server
+///     started in between found the old panes held by one still alive,
+///     and left its own new run).
 #[test]
-fn a_stopped_server_removes_nothing_under_another_servers_lock() -> Outcome {
+fn a_stopping_server_keeps_its_runs_lock_till_it_is_gone() -> Outcome {
     let server = Server::start("")?;
+    let sleeper = pane(&server, "w", &["sleep", "1037"])?;
+    let _reap = reap_run(&server)?;
+    let own = own_process(&server, &sleeper)?;
     let pid = server_pid(&server)?;
-    let mut path = server.socket.clone().into_os_string();
-    path.push(".starting");
-    let ahead = std::fs::File::open(&path).map_err(e)?;
-    ahead.lock().map_err(e)?;
-    let kept = kept(&server);
-    let lock = std::fs::File::open(&kept).map_err(e)?;
+    let lock = std::fs::File::open(kept(&server)).map_err(e)?;
+    signal(own, Signal::Stop);
+    let _resume = Resumed(own);
     signal(pid, Signal::Term);
-    eventually("the first server's lock let go", || {
-        Ok(lock.try_lock().is_ok())
+    eventually("the first server's socket gone", || {
+        Ok(!server.socket.exists())
     })?;
-    drop(ahead);
-    eventually("the first server gone", || Ok(!alive(pid)))?;
+    let free = lock.try_lock().is_ok();
     assert!(
-        kept.join("run").exists() && kept.join("exe").exists(),
-        "it removed what another server's lock covers"
+        alive(pid),
+        "the first server ended before its lock was asked"
     );
-    drop(lock);
-    let taken = within(&server, 30, &["(sequence! (start) #inert)"])?;
-    assert_eq!(taken.status, 0, "{}", taken.stderr);
+    assert!(!free, "a stopping server's run was free to take");
+    let start = within(&server, 30, &["(sequence! (start) #inert)"])?;
+    assert_eq!(start.status, 0, "{}", start.stderr);
+    assert!(!alive(pid), "the start did not wait for the first server");
+    let second = serving(&server)?;
+    assert_ne!(second, pid);
     assert_eq!(server.ok(&["(length (panes (all)))"])?.trim(), "0");
+    assert!(alive(second), "the second server left its run");
     server.ok(&["(sequence! (kill-server) #inert)"])?;
     Ok(())
 }

@@ -148,19 +148,39 @@ impl Pinned {
     }
 }
 
-/// The lock that makes this server its only owner, and the socket it bound.
-/// Dropping it removes the socket if it is still the one this server bound.
+/// The lock that makes this server its run's only one, and the socket it
+/// bound. Dropping it removes the socket if it is still the one this
+/// server bound, and lets the lock go.
 pub struct Endpoint {
     path: PathBuf,
     socket: Pinned,
     _lock: File,
+    /// Its turn among the servers starting, taken as it stops (`stop`).
+    starting: Option<File>,
+}
+
+impl Endpoint {
+    /// The server stops: its socket goes now, so no client finds it, and
+    /// its run's lock stays its own till this is dropped, as it ends. A
+    /// run is its server's while that server lives, its panes' closing
+    /// too: a start meanwhile waits its turn behind it, as behind one
+    /// starting, and finds what it left, not panes it still holds.
+    pub fn stop(&mut self) {
+        self.unlink();
+        self.starting = (lock_file(&self.path, ".starting").ok())
+            .and_then(|(starting, _)| starting.lock().is_ok().then_some(starting));
+    }
+
+    fn unlink(&self) {
+        if self.socket.still_at(&self.path) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
-        if self.socket.still_at(&self.path) {
-            let _ = fs::remove_file(&self.path);
-        }
+        self.unlink();
     }
 }
 
@@ -251,11 +271,7 @@ fn lock_run(path: &Path, make: bool) -> Result<Run, Error> {
     let directory = panes(path);
     for _ in 0..LOCK_TRIES {
         if make {
-            match fuxix::file::private_dir(&directory) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(failed("creating ", &directory)(error)),
-            }
+            super::make_run_directory(path)?;
         }
         let opened = OpenOptions::new()
             .read(true)
@@ -283,7 +299,9 @@ fn lock_run(path: &Path, make: bool) -> Result<Run, Error> {
             // to be locked) has no fux server.
             Err(fs::TryLockError::Error(error)) => {
                 return Err(Error::Refused(format!(
-                    "{} could not be locked ({error}): the lock on a run's directory is what                      makes its server the only one, so fux starts none there; FUX_SOCKET                      names a socket on another filesystem",
+                    "{} could not be locked ({error}): the lock on a run's directory is what \
+                     makes its server the only one, so fux starts none there; FUX_SOCKET \
+                     names a socket on another filesystem",
                     directory.display()
                 )));
             }
@@ -416,6 +434,7 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
         path: path.to_owned(),
         socket: Pinned::new(path).map_err(io(path))?,
         _lock: lock,
+        starting: None,
     };
     // From here a failure drops `endpoint`, which removes the socket. The mode
     // is set before `listen`, so no connection is accepted on an open socket.
@@ -646,30 +665,6 @@ pub struct Own(Option<Pinned>);
 pub fn unlink_own(own: &Own, path: &Path) {
     if own.0.as_ref().is_some_and(|own| own.still_at(path)) {
         let _ = fs::remove_file(path);
-    }
-}
-
-/// The socket's locks, taken again by a server that stopped and let them
-/// go as it stopped listening (`hold_again`).
-pub struct Held {
-    _starting: File,
-    _lock: File,
-}
-
-/// Takes the locks of the socket at `path` again, as a starting server
-/// does, for a server that stopped to let go of what its run kept: none if
-/// another server holds the run now, whose the files there are, or if
-/// nothing is kept there any more. A server that starts meanwhile waits
-/// for it, as for one starting.
-pub fn hold_again(path: &Path) -> Option<Held> {
-    let (starting, _) = lock_file(path, ".starting").ok()?;
-    starting.lock().ok()?;
-    match lock_run(path, false) {
-        Ok(Run::Ours(lock)) => Some(Held {
-            _starting: starting,
-            _lock: lock,
-        }),
-        Ok(Run::Theirs(_) | Run::None) | Err(_) => None,
     }
 }
 
@@ -978,8 +973,14 @@ mod tests {
         // old files would: the run's lock is on its directory.
         let using = format!("is already using {}", path.display());
         for removed in [false, true] {
-            if removed {
-                fs::remove_file(root.join("fux").join("s.sock.starting"))?;
+            // Every file beside the socket named after it: on a build
+            // whose lock is one of them, the next bind is not refused so.
+            for entry in fs::read_dir(root.join("fux"))?.flatten() {
+                let beside = entry.file_type()?.is_file()
+                    && entry.file_name().to_string_lossy().starts_with("s.sock");
+                if removed && beside {
+                    fs::remove_file(entry.path())?;
+                }
             }
             let second = bind(&path).err().map(|e| e.to_string());
             let second = second.ok_or("a second server took the socket")?;

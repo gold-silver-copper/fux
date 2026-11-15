@@ -100,6 +100,19 @@ pub fn panes(socket: &Path) -> PathBuf {
     PathBuf::from(panes)
 }
 
+/// Makes the directory of the run on the socket at `socket` (`panes`),
+/// private, if it is not there. The one place it is made, on every OS:
+/// by the server taking the socket (`bind_socket`), under the lock that
+/// orders starts, so none is made beside one a stopping server removes.
+pub(crate) fn make_run_directory(socket: &Path) -> Result<(), Error> {
+    let directory = panes(socket);
+    match fuxix::file::private_dir(&directory) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(failed("creating ", &directory)(error)),
+    }
+}
+
 /// What reaching for a pane's socket found (`reach`).
 pub enum Reach {
     /// A process listens there: a link to it.

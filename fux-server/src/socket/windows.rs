@@ -160,6 +160,21 @@ fn recorded_runs(path: &Path) -> bool {
 pub struct Endpoint {
     path: PathBuf,
     _lock: File,
+    /// Its turn among the servers starting, taken as it stops (`stop`).
+    starting: Option<File>,
+}
+
+impl Endpoint {
+    /// The server stops: its record goes now, so no client takes it for
+    /// one that runs, and its lock stays its own till this is dropped, as
+    /// it ends. A run is its server's while that server lives, its panes'
+    /// closing too: a start meanwhile waits its turn behind it, as behind
+    /// one starting, and finds what it left, not panes it still holds.
+    pub fn stop(&mut self) {
+        let _ = fs::remove_file(record_path(&self.path));
+        self.starting = (lock_file(&self.path, ".starting").ok())
+            .and_then(|(starting, _)| starting.lock().is_ok().then_some(starting));
+    }
 }
 
 impl Drop for Endpoint {
@@ -192,6 +207,7 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Listener), Error> {
         )),
         fs::TryLockError::Error(error) => failed("locking ", &lock_path)(error),
     })?;
+    super::make_run_directory(path)?;
     let name = pipe_name(path)?;
     let start = Instant::now();
     let listener = loop {
@@ -221,6 +237,7 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Listener), Error> {
     let endpoint = Endpoint {
         path: path.to_owned(),
         _lock: lock,
+        starting: None,
     };
     Ok((endpoint, listener))
 }
@@ -463,27 +480,6 @@ pub struct Own;
 /// Removes the marker at `path`.
 pub fn unlink_own(_own: &Own, path: &Path) {
     let _ = fs::remove_file(path);
-}
-
-/// The socket's locks, taken again by a server that stopped and let them
-/// go as it stopped listening (`hold_again`).
-pub struct Held {
-    _starting: File,
-    _lock: File,
-}
-
-/// Takes the locks of the socket at `path` again, as a starting server
-/// does, for a server that stopped to let go of what its run kept: none if
-/// another server holds the socket now, whose run's the files there are.
-pub fn hold_again(path: &Path) -> Option<Held> {
-    let (starting, _) = lock_file(path, ".starting").ok()?;
-    starting.lock().ok()?;
-    let (lock, _) = lock_file(path, ".lock").ok()?;
-    lock.try_lock().ok()?;
-    Some(Held {
-        _starting: starting,
-        _lock: lock,
-    })
 }
 
 /// Whether the process `pid` still runs.
