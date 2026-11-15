@@ -1,3 +1,0 @@
-# if takes a flag, a boolean or an integer, and a string never is one.
-# fails: type
-str yes if str yes then

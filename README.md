@@ -252,10 +252,6 @@ fux '(get (word "line") "definition")'
   text, `(environment-variable NAME)` a variable (one not set fails
   `unset-variable`), `(warn VALUE)` prints on stderr and `(exit N)` ends with status N.
 
-fuxth, the Forth fux was written in before grift, its `fuxth` runner and fuxed, the
-screen editor written in it, are kept in [archived/](archived): fux neither
-builds nor runs them.
-
 ## Records and events
 
 Every fact fux keeps is a record, which prints as one line of grift data,

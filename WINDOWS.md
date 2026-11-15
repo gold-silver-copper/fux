@@ -74,7 +74,7 @@ Each PR keeps the Linux and macOS CI jobs green and adds its checks to a Windows
 `windows-11-arm` (Windows 11 25H2) and `windows-2025` (Server 2025, the Windows 11 24H2 code base). The 30
 programs built on the libraries (below) are the acceptance test for the whole port.
 1. **Windows CI and the 32-bit fux-vt fix.** A CI job that builds and tests fux-vt and the language crates on
-   both images (then fuxth; fux's language is now grift, and fuxth is in `archived/`); `fux-vt/src/link.rs:141`'s size assert holds only on 64-bit (gate it on pointer width); a
+   both images (then fuxth; fux's language is now grift); `fux-vt/src/link.rs:141`'s size assert holds only on 64-bit (gate it on pointer width); a
    wasm32 build check for fux-vt; `.gitattributes` so CRLF checkouts don't break byte-exact test data.
    Done when: the Windows job is green and fux-vt builds for wasm32.
 2. **fuxix per module.** The "Linux, Android and macOS only" `compile_error!` (`fuxix/src/lib.rs:21-22`)
@@ -90,7 +90,7 @@ programs built on the libraries (below) are the acceptance test for the whole po
    S1's byte-exactness check passes through the downloaded ConPTY, and S4's signal probes pass.
 7. **fux-server on Windows:** pane and connection processes, takeover, the signal mapping. Done when: S3's
    takeover probe passes against real fux (kill the server; a new one drives the live panes).
-8. **The client on Windows** (and the fuxth runner, since archived): console VT input and output, resize events, restore. Done when:
+8. **The client on Windows**: console VT input and output, resize events, restore. Done when:
    `fux` runs in Windows Terminal on a Windows 11 machine and the dogfood programs pass.
 
 ## The finish line, revised (PR 8)

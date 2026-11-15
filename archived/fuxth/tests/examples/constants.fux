@@ -1,7 +1,0 @@
-# let names a value; a definition may read a name set above it.
-# expect: 1440 86400
-60 let minute
-minute 24 mul let day-minutes
-define seconds-in-a-day day-minutes minute mul end
-day-minutes
-seconds-in-a-day

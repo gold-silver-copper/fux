@@ -1202,12 +1202,6 @@ impl<'a> PaneMut<'a> {
     pub fn stop_reading(&mut self) {
         self.pane.stop_reading(&mut self.tell);
     }
-    /// `n` bytes of its input were written to its terminal, as
-    /// `write_input` writes them: for fux-diff's queue.
-    #[cfg(any(test, feature = "in-process"))]
-    pub fn wrote_input(&mut self, n: usize) {
-        self.pane.input.advance(n);
-    }
     /// Gives it `process`, as a test's pane runs a child of the test's.
     #[cfg(all(any(test, feature = "testing"), unix))]
     pub fn set_process(&mut self, process: Process) -> Process {

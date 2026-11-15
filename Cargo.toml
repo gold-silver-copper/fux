@@ -1,6 +1,6 @@
 [workspace]
 members = ["fux-wire", "fux-pane", "fux-server", "fux-vt", "fux-vt/peak", "fuxix"]
-exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench", "archived/fuxth", "archived/fuxth-run", "archived/fuxed"]
+exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench"]
 resolver = "3"
 
 # fux's four crates share one release: the server tells it to programs

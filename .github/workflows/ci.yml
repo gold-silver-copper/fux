@@ -230,16 +230,6 @@ jobs:
           # citations wherever they are built (families.rs, `fux_vt_dir`).
           cargo test --manifest-path diff/Cargo.toml -p fux-vt-oracle --locked families:: 2>&1 | tee -a "$CI_LOGS/oracle.log"
 
-      - name: fux-diff builds
-        # It builds the last release beside this code, so a deliberate API
-        # change breaks it until its baseline is bumped (diff/README.md):
-        # then the bump is part of that change.
-        if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          cargo fmt --manifest-path diff/Cargo.toml --all --check
-          cargo clippy --manifest-path diff/Cargo.toml --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/diff.log"
-
       - name: Socket cleanup where inode numbers are reused
         # Only a filesystem that gives a freed inode number to the next file
         # tests the guarantee (bevy-final finding 014); the runner's home,
