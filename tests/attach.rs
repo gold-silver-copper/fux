@@ -963,7 +963,16 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     std::fs::set_permissions(&script, executable).map_err(e)?;
     let (here, nowhere) = (&server.dir, &server.dir.join("no-such-dir"));
     let not_found = "No such file or directory (os error 2)";
-    let before = server.ok(&["(listing (list-session))"])?;
+    // The tree, without the journal's cursor: a pane made and closed as
+    // its start failed is journaled, as it happened.
+    let tree = || -> Result<String, String> {
+        let listing = server.ok(&["(listing (list-session))"])?;
+        Ok((listing.lines())
+            .filter(|line| !line.starts_with("cursor "))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    };
+    let before = tree()?;
     for (program, cwd, error) in [
         (&missing, here, not_found),
         (&not_executable, here, "Permission denied (os error 13)"),
@@ -988,7 +997,7 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
         );
     }
     // Nothing a failed start made is left.
-    assert_eq!(server.ok(&["(listing (list-session))"])?, before);
+    assert_eq!(tree()?, before);
     // The server is unharmed, and a good shell starts again.
     server.ok(&["(sequence! (set \"shell\" (list \"/bin/sh\")) #inert)"])?;
     server.ok(&["(new-tab (size (in (options) \"new-workspace\") 80 24))"])?;
