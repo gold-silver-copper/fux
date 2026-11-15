@@ -49,7 +49,9 @@ impl Dying {
 /// waits on its terminal till then. Its answer, the version the pane
 /// starts at, waits for it.
 struct Replacement {
-    ask: u64,
+    /// The question it answers; none once the server that asked is gone
+    /// (`Host::forget`): its number means nothing to the next.
+    ask: Option<u64>,
     actor: Actor,
     fresh: Pane,
     process: Process,
@@ -483,7 +485,7 @@ impl Host {
         }
         let process = child.map_or(Process::Absent, Process::Reading);
         self.respawning = Some(Replacement {
-            ask,
+            ask: Some(ask),
             actor: self.actor,
             fresh,
             process,
@@ -531,6 +533,7 @@ impl Host {
         // pane looks for exits as they are signalled (`reap`).
         let exited = pane.process().child().and_then(|c| c.leader.exited());
         let started = pane.version(run);
+        self.end_typing("was respawned over");
         self.end(old, true, now);
         self.actor = actor;
         self.whole = self.whole.wrapping_add(1);
@@ -539,10 +542,12 @@ impl Host {
             let id = self.pane.id();
             self.notify(format!("{id} respawned{left}"), true);
         }
-        self.report(FromPane::Answer {
-            ask: new.ask,
-            answer: Answered::Acted(started),
-        });
+        if let Some(ask) = new.ask {
+            self.report(FromPane::Answer {
+                ask,
+                answer: Answered::Acted(started),
+            });
+        }
         if let Some(ended) = exited {
             self.exited(ended, now);
         }
@@ -596,9 +601,36 @@ impl Host {
                     "{id} closed while respawning: the program started for it was ended"
                 ),
             };
+            if let Some(ask) = abandoned.ask {
+                self.report(FromPane::Answer {
+                    ask,
+                    answer: Answered::Refused(refusal),
+                });
+            }
+        }
+    }
+
+    /// The program a body was being typed to is gone, exited or respawned
+    /// over (`why`): the body ends with it. Its asker is told so once, and
+    /// the pieces still to come are let go (`piece`), typed to no program
+    /// that follows and queued for none that is gone.
+    fn end_typing(&mut self, why: &str) {
+        let id = self.pane.id();
+        let Some(typing) = self.typing.as_mut().filter(|typing| !typing.refused) else {
+            return;
+        };
+        typing.refused = true;
+        typing.paste = None;
+        if let Some(ask) = typing.ask {
+            let message = format!(
+                "{id}: its program {why} before the rest of its keys came; what came was typed"
+            );
             self.report(FromPane::Answer {
-                ask: abandoned.ask,
-                answer: Answered::Refused(refusal),
+                ask,
+                answer: Answered::Refused(Refusal {
+                    code: Code::Indeterminate,
+                    message,
+                }),
             });
         }
     }
@@ -649,6 +681,7 @@ impl Host {
             Runs::Shell(_) => {
                 let (_, gone) = pane.exit(ended);
                 self.end(gone, false, now);
+                self.end_typing("exited");
             }
             Runs::Explicit(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
@@ -676,6 +709,7 @@ impl Host {
                     .collect::<Vec<_>>()
                     .join("; ");
                 self.notify(told, left);
+                self.end_typing("exited");
             }
         }
     }
@@ -1249,7 +1283,6 @@ impl Host {
         }
         let version = p.version(run);
         let queued = p.send_mouse(&report, held);
-        drop(p);
         match queued {
             true => Ok(Answered::Acted(version)),
             false => Err(self.not_queued()),
@@ -1417,10 +1450,18 @@ impl Host {
     fn forget(&mut self) {
         self.told.clear();
         self.out.clear();
-        // What its last server's askers wanted is no one's now.
+        // What its last server's askers wanted is no one's now: a respawn
+        // or a body under way answers no question, whose number the next
+        // server gives to another.
         while let Some(token) = self.awaiting.first() {
             self.awaiting.remove(token);
             self.pane_mut().paste_came(token);
+        }
+        if let Some(respawn) = &mut self.respawning {
+            respawn.ask = None;
+        }
+        if let Some(typing) = &mut self.typing {
+            typing.ask = None;
         }
         self.held.clear();
         self.sent_facts = None;
@@ -1771,7 +1812,7 @@ impl Host {
         }
         self.pane_mut().drain(true);
         self.respawning = Some(Replacement {
-            ask: 0,
+            ask: Some(0),
             actor: self.actor,
             fresh,
             process: Process::Absent,
@@ -2769,7 +2810,61 @@ mod tests {
         assert_eq!(host.pane().scheme_told, None, "told, unqueued");
         host.pane_mut().paste_came(7);
         host.tell_schemes();
-        assert_eq!(host.pane().scheme_told, Some(fux_vt::keys::colour::Scheme::Dark));
+        assert_eq!(
+            host.pane().scheme_told,
+            Some(fux_vt::keys::colour::Scheme::Dark)
+        );
+        Ok(())
+    }
+
+    /// A respawn asked by a server that went answers no question of the
+    /// next server's: its number is that server's, for whatever it asks.
+    #[test]
+    fn a_respawn_whose_server_went_answers_no_question() -> TestResult {
+        let mut host = lone(5, 20)?;
+        let now = Instant::now();
+        let actor = host.actor;
+        host.respawning = Some(Replacement {
+            ask: Some(9),
+            actor,
+            fresh: lone(5, 20)?.pane,
+            process: Process::Absent,
+            old: None,
+            grace: None,
+            since: now,
+        });
+        host.forget();
+        host.fire(Timer::Unread, now);
+        assert!(host.respawning.is_none(), "still respawning");
+        let told = host.take();
+        assert!(
+            !told.iter().any(|t| matches!(t, FromPane::Answer { .. })),
+            "{told:?}"
+        );
+        Ok(())
+    }
+
+    /// A body whose program exits part way ends with it: its asker is told
+    /// once, and its later pieces are queued for no one.
+    #[test]
+    fn a_body_ends_with_its_program() -> TestResult {
+        let mut host = lone(5, 20)?;
+        let now = Instant::now();
+        let keys = Ask::Keys {
+            inputs: Vec::new(),
+            seen: None,
+            body: Some(7),
+        };
+        assert!(host.ask(3, keys, now).is_none());
+        host.piece(7, &[Input::Text("a".into()), Input::More]);
+        host.exited(Ended::Exited(0), now);
+        host.piece(7, &[Input::Text("b".into()), Input::More]);
+        host.piece(7, &[Input::Text("c".into())]);
+        assert!(host.pane().input_taken(), "typed to a program gone");
+        let answers = (host.take().into_iter())
+            .filter(|t| matches!(t, FromPane::Answer { ask: 3, .. }))
+            .count();
+        assert_eq!(answers, 1);
         Ok(())
     }
 
