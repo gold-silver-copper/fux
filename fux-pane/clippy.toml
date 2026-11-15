@@ -125,7 +125,6 @@ disallowed-methods = [
   # fux's own that abort, each beside a twin that can refuse.
   { path = "fux_vt::bytes::ByteQueue::push", reason = "aborts when memory is refused: use try_push" },
   { path = "fux_vt::bytes::ByteQueue::push_with", reason = "aborts when memory is refused: use try_push_with" },
-  { path = "fux_vt::keys::encode::paste", reason = "aborts when memory is refused: use PasteEncoder, into room made" },
   { path = "fux_vt::keys::encode::key_bytes", reason = "aborts when memory is refused: make room in the buffer first" },
   { path = "fux_wire::protocol::Frame::encode", reason = "aborts when memory is refused: use try_encode_into" },
   { path = "fux_wire::protocol::Frame::encode_into", reason = "aborts when memory is refused: use try_encode_into" },
@@ -134,6 +133,8 @@ disallowed-methods = [
   { path = "fux_pane::link::End::send", reason = "aborts when memory is refused: use try_send" },
   { path = "fux_pane::link::End::send_whole", reason = "aborts when memory is refused: use try_send_whole" },
   { path = "fux_pane::link::End::read", reason = "aborts when memory is refused: use try_read" },
+  { path = "fux_pane::link::End::read_up_to", reason = "aborts when memory is refused: use try_read_up_to" },
+  { path = "fux_pane::link::End::wait", reason = "reads with `read`, which aborts when memory is refused: for a link's first word alone" },
 ]
 
 disallowed-macros = [

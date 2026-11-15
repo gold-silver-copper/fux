@@ -1048,7 +1048,7 @@ impl Host {
     /// it, as its program asked for them; told to `client` if refused.
     #[expect(
         clippy::disallowed_methods,
-        reason = "the client told once a turn is pushed into room made for it; a key's and a paste's encoding (`key_bytes`, `paste`), a refusal's text and the bytes of a focus or scroll report abort if the OS refuses them: left, D-194"
+        reason = "the client told once a turn is pushed into room made for it; a key's encoding (`key_bytes`), a refusal's text and the bytes of a focus or scroll report abort if the OS refuses them: left, D-194 (a paste refused its room is not typed at all, by fux-vt's `paste`)"
     )]
     fn typed(&mut self, client: ClientId, typed: Typed) {
         // Its text comes from its client's connection, and is refused, if
@@ -2295,7 +2295,12 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
         )]
         let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
         loop {
-            match end.wait::<ToPane>() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "its server's first word, waited for before it serves, read with the twin that aborts if the OS refuses it memory"
+            )]
+            let word = end.wait::<ToPane>();
+            match word {
                 Ok(Some(ToPane::Begin(begin))) => break 'begun (end, begin),
                 // Ended before it began, by a server whose run has it no
                 // more, or ends: it started nothing.

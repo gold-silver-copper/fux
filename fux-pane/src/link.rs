@@ -660,7 +660,7 @@ impl End {
     /// Reads what the socket holds, at most `buffer` at a time, until it
     /// would wait.
     pub fn read(&mut self, buffer: &mut [u8]) -> Read {
-        self.read_up_to(buffer, usize::MAX)
+        self.read_as(buffer, usize::MAX, false)
     }
 
     /// `read`, till `limit` bytes are read, the rest left for the next.
