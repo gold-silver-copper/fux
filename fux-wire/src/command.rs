@@ -328,44 +328,13 @@ impl Screen {
 pub type Size = Option<Screen>;
 
 wire! {
-    /// A pane's new width or height (`resize-pane`).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Extent {
-        Cells(cells: u16),
-        /// Of the tab's width or height.
-        Percent(percent: Percent),
-    }
-}
-
-/// A share, 1 to 100 percent: there is no other.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Percent(u8);
-
-impl Percent {
-    /// Every share there is.
-    pub const SHARES: std::ops::RangeInclusive<i64> = 1..=100;
-    pub fn new(n: u8) -> Option<Percent> {
-        Self::SHARES.contains(&i64::from(n)).then_some(Percent(n))
-    }
-    pub fn get(self) -> u8 {
-        self.0
-    }
-    /// Its share of `of`, at least 1.
-    pub fn of(self, of: u16) -> u16 {
-        let share = u32::from(of).saturating_mul(u32::from(self.0)) / 100;
-        // The share is at most `of`, which a u16 holds.
-        u16::try_from(share).unwrap_or(of).max(1)
-    }
-}
-
-wire! {
     /// How `resize-pane` and `move-border` resize a pane.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum PaneResize {
         /// Moves the border toward `direction` by this many cells.
         Border(direction: Direction, cells: u16),
-        /// To a width (horizontal) or a height (vertical).
-        To(axis: Axis, extent: Extent),
+        /// To a width (horizontal) or a height (vertical), in cells.
+        To(axis: Axis, cells: u16),
     }
 }
 
@@ -887,10 +856,6 @@ wire! {
             target: PaneId,
             bytes: HistoryBytes,
         },
-        /// The pane's history, dropped.
-        ClearHistory {
-            target: PaneId,
-        },
         /// The pane fills its tab on every screen showing it, or, if it
         /// does, the tab is laid out again.
         Zoom {
@@ -1073,7 +1038,6 @@ impl Command {
             | C::SwapPane { .. }
             | C::Arrange { .. }
             | C::ResizePane { .. }
-            | C::ClearHistory { .. }
             | C::Zoom { .. }
             | C::HistoryBudget { .. }
             | C::Reorder { .. }

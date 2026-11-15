@@ -1104,10 +1104,6 @@ impl<'a> PaneMut<'a> {
     pub fn drain(&mut self, more: bool) {
         self.pane.draining = more;
     }
-    pub fn clear_history(&mut self) {
-        self.pane.clear_history();
-        self.tell.tell(Told::HistoryCleared);
-    }
     pub fn set_history_bytes(&mut self, bytes: fux_wire::command::HistoryBytes) {
         if self.pane.options.history_bytes != bytes {
             self.pane.set_history_bytes(bytes);
@@ -1823,11 +1819,6 @@ impl Pane {
 
     pub fn has_terminal_errors(&self) -> bool {
         self.terminal_errors.0.is_some() || self.terminal_errors.1.is_some()
-    }
-
-    fn clear_history(&mut self) {
-        self.since.note(self.parser.screen());
-        self.parser.clear_history();
     }
 
     pub fn set_history_bytes(&mut self, bytes: fux_wire::command::HistoryBytes) {

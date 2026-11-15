@@ -10,9 +10,9 @@ use fux_vt::keys::Direction;
 use fux_wire::callback::Open;
 use fux_wire::code::Code;
 use fux_wire::command::{
-    AnyRef, Beside, Button, ClientAction, ClientRead, Command, Extent, HistoryBytes, Input, Kind,
-    Limit, Members, Mouse, MoveTo, PaneResize, Percent, Program, Request, Resized, Sibling, Since,
-    Source, SwapWith, To, Usage, Wait, Way, Wheel, WsRef,
+    AnyRef, Beside, Button, ClientAction, ClientRead, Command, HistoryBytes, Input, Kind, Limit,
+    Members, Mouse, MoveTo, PaneResize, Program, Request, Resized, Sibling, Since, Source,
+    SwapWith, To, Usage, Wait, Way, Wheel, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId};
 use fux_wire::layout::Axis;
@@ -263,10 +263,10 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 21] = [
+pub const KINDS: [(&str, &str, Option<&str>); 20] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("all", "the whole session", None),
-    ("client", "a client", None), ("size", "a size (from percent)", None),
+    ("client", "a client", None),
     ("answer", "an action's answer", None),
     ("closed-answer", "a closed pane's answer", None),
     ("client-capture", "a client's capture", None),
@@ -311,7 +311,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("seen", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("readable", "a handle or held observation"),
     ("snapshot-scope", "a snapshot scope"),
-    ("extent", "cells, or a percent"),
+    ("extent", "a width or height, in cells"),
     ("pane-or-seen", "a pane, an action's or wait's answer, a pane capture, or version text"),
     ("counterpart", "a pane or a direction"),
     ("sized", "a pane, tab, workspace or headless client"),
@@ -353,15 +353,13 @@ words! {
         Changing Notify "notify" "scope text --" raises(Type asks) "a notice on the clients showing it, or every client with all" "fux '(sequence! (notify (all) \"done\") #inert)'" [];
         Changing Resize "resize" "sized columns rows --" raises(Type Size asks) "a tab layout or headless client size, each at least 1, as large as a screen's grid holds; a pane selects its tab" "fux '(sequence! (resize (tab 2) 120 40) #inert)'" [];
         Changing ResizeAuto "resize-auto" "handle --" raises(Type asks) "a tab laid out on the screens of the clients showing it again (at its size until one shows it)" "fux '(sequence! (resize-auto (tab 2)) #inert)'" [];
-        Changing ResizePane "resize-pane" "pane extent way --" raises(Type Range asks) "a pane's horizontal or vertical extent: cells, or a percent" "fux '(sequence! (resize-pane (pane 3) (percent 30) \"horizontal\") #inert)'" [];
-        Changing Percent "percent" "n -- size" raises(Type Range) "n percent of the tab, for resize-pane" "fux '(sequence! (resize-pane (pane 3) (percent 30) \"horizontal\") #inert)'" [];
+        Changing ResizePane "resize-pane" "pane extent way --" raises(Type Range asks) "a pane's horizontal or vertical extent, in cells" "fux '(sequence! (resize-pane (pane 3) 40 \"horizontal\") #inert)'" [];
         Changing Arrange "arrange" "tab revision tree --" raises(Type Range asks) "replace the whole layout at a run-qualified structural revision" "fux '(sequence! (arrange (tab 2) \"REVISION\" (list (pane 3))) #inert)'" [];
         Changing MoveBorder "move-border" "pane way cells --" raises(Type Range asks) "move the pane's nearest border: left right up down" "fux '(sequence! (move-border (pane 3) \"left\" 5) #inert)'" [];
         Changing Move "move" "subject where --" raises(Type asks) "move a pane to a tab, workspace, new-tab, new-workspace, or beside its neighbour: left right up down; or a workspace into another, after what it holds, or to the top with all" "fux '(sequence! (move (workspace \"agent1\") (workspace \"proj\")) #inert)'" [];
         Changing SwapWith "swap-with" "pane counterpart --" raises(Type asks) "swap a pane with another pane or its neighbour: left right up down" "fux '(sequence! (swap-with (pane 3) (pane 4)) #inert)'" [];
         Changing Reorder "reorder" "handle way --" raises(Type asks) "move one place: next or previous" "fux '(sequence! (reorder (tab 2) \"next\") #inert)'" [];
         Changing HistoryBudget "history-budget" "pane integer --" raises(Type Range asks) "change this pane's history budget in bytes; lowering evicts old rows" "fux '(sequence! (history-budget (pane 3) 4194304) #inert)'" [];
-        Changing ClearHistory "clear-history" "pane --" raises(Type asks) "drop the pane's history" "fux '(sequence! (clear-history (pane 3)) #inert)'" [];
         Changing Zoom "zoom" "pane --" raises(Type asks) "fill its tab with the pane on every screen showing it, or restore the tab if it does" "fux '(sequence! (zoom (pane 3)) #inert)'" [];
         Clients Attach "attach" "attachable --" raises(Type Unused Nested NotHere asks) "show the server in this terminal (bare fux runs (attach (options))); with a size, be a client of no terminal instead; explicit targets and watch refuse creation options" "fux '(attach (tab 2))'" [Either: In Size Watch Cwd HistoryBytes Reflow AlternateScrollLines PictureBytes ProgramClipboard Program ShellProgram Name];
         Clients Show "show" "client handle --" raises(Type asks) "show a client a pane, tab or workspace, and each that holds it, a pane's stacks too" "fux '(sequence! (show (client \"c1\") (pane 3)) #inert)'" [];
@@ -1237,23 +1235,11 @@ pub(super) fn takers(word: Option<Word>) -> String {
     fux_wire::words::listed(&names, "or")
 }
 
-/// `resize-pane`: an explicit axis and extent, cells or a percent.
+/// `resize-pane`: an explicit axis and extent, in cells.
 fn resize_to(next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>) -> Result<Done<Ask>, Failure> {
     let target = pane(&next()?)?;
-    let extent = match next()? {
-        Value::App(Fux::Extent(e)) => e,
-        v @ Value::Int(_) => Extent::Cells(within(&v, CELL)?),
-        other @ (Value::Float(_)
-        | Value::Symbol(_)
-        | Value::Bytes(_)
-        | Value::Bool(_)
-        | Value::Str(_)
-        | Value::List(_)
-        | Value::App(_)) => {
-            return Err(wrong("cells or a percent", &other));
-        }
-    };
-    let by = PaneResize::To(axis(&next()?)?, extent);
+    let cells = within(&next()?, CELL)?;
+    let by = PaneResize::To(axis(&next()?)?, cells);
     tell(Command::ResizePane { target, by })
 }
 
@@ -1763,11 +1749,6 @@ impl Host<'_> {
             }
             Act::ResizeAuto => tell(Command::Resize(Resized::Tabs(target(&next()?)?, None))),
             Act::ResizePane => resize_to(&mut next),
-            Act::Percent => {
-                let n = within(&next()?, Percent::SHARES)?;
-                let share = Percent::new(n).ok_or_else(|| fail(Code::Range, "no share"))?;
-                now(out, Value::App(Fux::Extent(Extent::Percent(share))))
-            }
             Act::Arrange => {
                 let tab = next()?;
                 let Value::App(Fux::Tab(target, _)) = tab else {
@@ -1921,9 +1902,6 @@ impl Host<'_> {
                 let bytes = read::<HistoryBytes>(&next()?, Code::Range)?;
                 tell(Command::HistoryBudget { target, bytes })
             }
-            Act::ClearHistory => tell(Command::ClearHistory {
-                target: pane(&next()?)?,
-            }),
             Act::Zoom => tell(Command::Zoom {
                 target: pane(&next()?)?,
             }),
@@ -2564,7 +2542,6 @@ mod tests {
             Value::App(Fux::Null),
             Value::App(Fux::Opts(opts)),
             Value::App(Fux::Opts(Rc::new(on_pane))),
-            Value::App(Fux::Extent(Extent::Cells(3))),
         ];
         let mut draft = crate::script::default_state()?.draft();
         let mut seed = 1u64;

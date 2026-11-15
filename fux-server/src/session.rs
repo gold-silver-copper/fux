@@ -14,8 +14,8 @@ use fux_wire::answer::{self, Ended, PaneAnswer, PaneResults};
 use fux_wire::code::{Code, Error, fail};
 use fux_wire::command::Start;
 use fux_wire::command::{
-    self, AnyRef, Beside, ClientAction, Command, Extent, Input, Kind, Members, MoveTo, PaneResize,
-    Request, Resized, Sibling, SwapWith, Way, WsRef,
+    self, AnyRef, Beside, ClientAction, Command, Input, Kind, Members, MoveTo, PaneResize, Request,
+    Resized, Sibling, SwapWith, Way, WsRef,
 };
 use fux_wire::id::{ClientId, Ids, PaneId, TabId, WsId};
 use fux_wire::json::Json;
@@ -1476,17 +1476,13 @@ impl Session {
         pane: PaneId,
         area: Rect,
         axis: Axis,
-        extent: Extent,
+        len: u16,
     ) -> Result<(), Error> {
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(pane))?;
         let now = layout::place(&root, area)
             .rect(pane)
             .ok_or(Error::NoPane(pane))?;
-        let len = match extent {
-            Extent::Cells(n) => n,
-            Extent::Percent(p) => p.of(area.len(axis)),
-        };
         let want = match axis {
             Axis::Horizontal => (len, now.h()),
             Axis::Vertical => (now.w(), len),
@@ -3212,7 +3208,6 @@ impl Session {
                 col,
             } => one(self, target, Ask::Mouse { mouse, row, col }),
             Command::Signal { target, signal } => one(self, target, Ask::Signal(signal)),
-            Command::ClearHistory { target } => one(self, target, Ask::ClearHistory),
             Command::HistoryBudget { target, bytes } => one(self, target, Ask::HistoryBytes(bytes)),
             Command::Respawn {
                 target,
@@ -3451,7 +3446,6 @@ impl Session {
             | Command::SendMouse { .. }
             | Command::Signal { .. }
             | Command::Respawn { .. }
-            | Command::ClearHistory { .. }
             | Command::HistoryBudget { .. }
             | Command::CapturePane { .. } => Err(fail(
                 Code::NotHere,
@@ -3642,8 +3636,8 @@ impl Session {
                     format!("{pane} cannot move {way}: {why}"),
                 ))
             }
-            PaneResize::To(axis, extent) => {
-                (self.resize_pane_to(pane, area, axis, extent)).map(|()| Reply::default())
+            PaneResize::To(axis, cells) => {
+                (self.resize_pane_to(pane, area, axis, cells)).map(|()| Reply::default())
             }
         }
     }
@@ -11058,7 +11052,7 @@ mod tests {
             "(sequence! (resize-pane (pane 2) 37 \"horizontal\") #inert)",
             "(sequence! (resize-pane (pane 5) 7 \"vertical\") #inert)",
             "(sequence! (move-border (pane 6) \"left\" 3) #inert)",
-            "(sequence! (resize-pane (pane 2) (percent 30) \"horizontal\") #inert)",
+            "(sequence! (resize-pane (pane 2) 29 \"horizontal\") #inert)",
             "(sequence! (swap-with (pane 2) (pane 6)) #inert)",
             "(sequence! (move (pane 4) \"left\") #inert)",
             "(sequence! (kill (pane 5)) #inert)",
@@ -11259,17 +11253,10 @@ mod journal_tests {
         )?;
         run(
             &mut s,
-            "(sequence! (move-border (pane 2) \"right\" 3) (history-budget (pane 1) 128) (clear-history (pane 1)) (notify (all) \"note\") #inert)",
+            "(sequence! (move-border (pane 2) \"right\" 3) (history-budget (pane 1) 128) (notify (all) \"note\") #inert)",
         )?;
         let b = batch(&s, from)?;
-        for name in [
-            "laid_out",
-            "reordered",
-            "shown",
-            "zoomed",
-            "history_budget",
-            "history_cleared",
-        ] {
+        for name in ["laid_out", "reordered", "shown", "zoomed", "history_budget"] {
             assert!(!named(&b, name).is_empty(), "missing {name}: {b:?}");
         }
         let from = b.next;

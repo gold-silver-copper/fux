@@ -578,7 +578,7 @@ mod tests {
         let question = |ask: u64| ToPane::Ask {
             ask,
             actor: Actor::Outside,
-            what: Ask::ClearHistory,
+            what: Ask::Signal(fuxix::process::Signal::Term),
         };
         let waiting = |link: &Link| match link {
             Link::Remote(remote) => remote.parked.len(),

@@ -26,7 +26,7 @@ use fux_server::socket::SocketPath;
 use fux_wire::answer::{PaneAnswer, PaneResults};
 use fux_wire::code::Code;
 use fux_wire::command::{
-    AnyRef, Extent, HistoryBytes, Input, Limit, Program, Request, Run, Version, WsRef,
+    AnyRef, HistoryBytes, Input, Limit, Program, Request, Run, Version, WsRef,
 };
 use fux_wire::id::{ClientId, PaneId, TabId, WsId};
 use fux_wire::layout::Axis;
@@ -78,8 +78,6 @@ pub enum Fux {
     /// wait, for the word that acts on it after
     /// (`%2 str ls text str Enter key send-keys`).
     Opts(Rc<Opts>),
-    /// A width or height: cells, or a share of the tab.
-    Extent(Extent),
     /// A code value another client sent, as its form: `execute!` evaluates
     /// it in the caller's context, then calls it.
     Code(Rc<Sent>),
@@ -116,7 +114,6 @@ impl Fux {
                 Some(On::Changed(_)) => "changed-request",
                 Some(On::Seen(_)) => "expected-request",
             },
-            Fux::Extent(_) => "size",
             Fux::Code(_) => "code",
         }
     }
@@ -130,8 +127,6 @@ impl Fux {
             Fux::Tab(t, _) => write!(out, "{t}"),
             Fux::Workspace(w, _) => write!(out, "{w}"),
             Fux::Client(c, _) => write!(out, "{c}"),
-            Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
-            Fux::Extent(Extent::Percent(n)) => write!(out, "{}%", n.get()),
             Fux::All => write!(out, "all"),
             Fux::Opts(_) => write!(out, "({})", self.kind()),
             Fux::Code(code) => out.write_str(&code.text()),

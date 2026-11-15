@@ -446,7 +446,6 @@ The finite coverage schema is:
 | `view-resized` | `client` and its terminal's new `columns`, `rows` |
 | `screen` | `client` and the `kind` of screen it now shows (`"column"`, `"repeat"`, `"list"` or `"prompt"`), `none` once none: a fresh opening or a close |
 | `history-budget` | pane's new `history-bytes` |
-| `history-cleared` | pane history invalidated |
 | `respawned` | the new program's `generation`; optional `input-unread`, the old program's input not written to its terminal |
 | `hung-up` | its program closed its terminal and runs on (`"hung_up"`) |
 | `read-failed` | `read-error`, the errno text of an unexpected PTY read failure, or how its pane's own process ended; then its program's `exited`, with the status its program really ended with when it can be read, else lost, and its role's rule (a shell's pane closes) |
@@ -611,8 +610,8 @@ the prompt's program has. A callback, `bind-key` or another client takes it as i
 ((name "line") (provenance "library") (effect "(target text-value)")
  (documentation "line\nParameters: (target text-value)\n\n(lambda! ...)\n")
  (definition "#[applicative #[operative (target text-value) #ignore (send-keys ...)]]") (codes none))
-((name "percent") (provenance "fux") (effect "n -- size") (documentation "percent\nn percent of the tab...")
- (definition "#[applicative #[host percent]]") (codes ("type-error" "unused" ...)))
+((name "kill") (provenance "fux") (effect "scope --") (documentation "kill\nclose a pane, tab or workspace...")
+ (definition "#[applicative #[host kill]]") (codes ("type-error" "unused" ...)))
 ((name "double") (provenance "run") (effect none) (documentation none)
  (definition "#[applicative #[operative (x) #ignore (multiply x 2)]]") (codes none))
 ```

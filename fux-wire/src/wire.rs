@@ -2,7 +2,7 @@
 //! as the same value, so that the server receives what a client's words
 //! built, and never reads words itself. Big-endian numbers; a string or a
 //! list is its length then its items; an option or an enum its tag first.
-use crate::command::{Limit, Percent};
+use crate::command::Limit;
 use fux_vt::keys::mouse::MouseButton;
 use fux_vt::keys::{Direction, KeyPress};
 use fuxix::process::Signal;
@@ -720,7 +720,6 @@ leaves!(
     usize,
     std::num::NonZeroU32,
     crate::command::Limit,
-    crate::command::Percent,
     crate::command::ScrollLines,
     // A flag.
     bool,
@@ -784,19 +783,10 @@ impl<A: Reach, B: Reach, C: Reach> Reach for (A, B, C) {
     }
 }
 
-impl Wire for Percent {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.get().put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Percent::new(u8::get(r)?).ok_or(Error::Bad("percent"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{Command, Extent, Program};
+    use crate::command::{Command, Program};
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
@@ -992,12 +982,5 @@ mod tests {
             .is_err()
         );
         Ok(())
-    }
-
-    #[test]
-    fn a_percent_past_100_is_refused() {
-        let read = |n: u8| Extent::get(&mut Reader::new(&[1, n])).ok();
-        assert!(read(250).is_none() && read(0).is_none());
-        assert_eq!(read(100).map(|e| encode(&e)), Some(vec![1, 100]));
     }
 }

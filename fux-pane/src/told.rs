@@ -47,7 +47,6 @@ impl<'a> Teller<'a> {
             | Told::Respawned { .. }
             | Told::Resized(_)
             | Told::HistoryBudget(_)
-            | Told::HistoryCleared
             | Told::Input { .. }
             | Told::Signalled { .. } => self.actor,
         };
@@ -78,7 +77,6 @@ pub enum Told {
     Resized(fux_vt::Size),
     /// The pane's retained history budget changed.
     HistoryBudget(usize),
-    HistoryCleared,
     /// Its program closed its terminal and runs on.
     HungUp,
     /// Reading its program's terminal failed unexpectedly, so; or its
@@ -123,7 +121,6 @@ wired!(Told {
     Done(status),
     Resized(size),
     HistoryBudget(bytes),
-    HistoryCleared,
     HungUp,
     ReadFailed(error),
     Input { kind, bytes, expected, generation },

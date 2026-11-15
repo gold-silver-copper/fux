@@ -487,9 +487,8 @@ while not seen.endswith(b"q"):
 }
 
 /// Sizes are set, not worked out: a tab no client shows is laid out on its
-/// `size` and later on `resize`'s, and a pane is made a width in cells or
-/// a percentage of its tab; a size it cannot have is refused, nothing
-/// changed.
+/// `size` and later on `resize`'s, and a pane is made a width in cells; a
+/// size it cannot have is refused, nothing changed.
 #[test]
 fn sizes_are_set_as_asked() -> Outcome {
     let server = Server::start("")?;
@@ -517,7 +516,7 @@ fn sizes_are_set_as_asked() -> Outcome {
         fux::script::quoted(left)
     )])?);
     server.ok(&[&format!(
-        "(sequence! (resize-pane (pane {}) (percent 25) \"horizontal\") #inert)",
+        "(sequence! (resize-pane (pane {}) 25 \"horizontal\") #inert)",
         fux::script::quoted(&right)
     )])?;
     assert_eq!(size(&right)?, "25x20");

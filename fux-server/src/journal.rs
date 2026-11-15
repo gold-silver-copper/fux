@@ -577,7 +577,6 @@ fn told_stored(told: &Told) -> usize {
             | Told::Done(_)
             | Told::Resized(_)
             | Told::HistoryBudget(_)
-            | Told::HistoryCleared
             | Told::HungUp
             | Told::Signalled { .. }
             | Told::Exited(_) => 0,
@@ -619,7 +618,6 @@ fn told_said(told: &Told) -> (&'static str, Fields) {
                 "history_budget",
                 vec![("history_bytes", Json::count(*bytes))],
             ),
-            Told::HistoryCleared => ("history_cleared", Vec::new()),
             Told::HungUp => ("hung_up", Vec::new()),
             Told::ReadFailed(error) => (
                 "read_failed",
@@ -797,7 +795,6 @@ pub fn every_kind(
         Told::Resized(size),
         // The most a pane's budget is (`command::HistoryBytes`).
         Told::HistoryBudget(isize::MAX.unsigned_abs()),
-        Told::HistoryCleared,
         Told::HungUp,
         Told::ReadFailed(fuxix::Errno::SRCH.to_string()),
         // The most a grift integer says, as it reads them.
@@ -1281,7 +1278,6 @@ mod tests {
                         | Told::Done(_)
                         | Told::Resized(_)
                         | Told::HistoryBudget(_)
-                        | Told::HistoryCleared
                         | Told::HungUp
                         | Told::ReadFailed(_)
                         | Told::Input { .. }

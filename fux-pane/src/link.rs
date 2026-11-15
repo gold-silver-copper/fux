@@ -147,7 +147,6 @@ pub enum Ask {
         kill: bool,
         argv: Option<Program>,
     },
-    ClearHistory,
     HistoryBytes(HistoryBytes),
     /// A capture, its observation's place and name left for the server:
     /// it is in tab `tab` as it is asked. Held, it is kept for its asker's
@@ -164,7 +163,6 @@ wired!(Ask {
     Mouse { mouse, row, col },
     Signal(s),
     Respawn { kill, argv },
-    ClearHistory,
     HistoryBytes(b),
     Capture { history, view, tab, hold },
 });

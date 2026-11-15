@@ -35,7 +35,6 @@ events.events[][done]: event pane tab workspace status origin sequence next
 events.events[][exited]: event pane tab workspace exited input-unread origin sequence next
 events.events[][exited]: event pane tab workspace signal input-unread origin sequence next
 events.events[][history-budget]: event pane tab workspace history-bytes origin sequence next
-events.events[][history-cleared]: event pane tab workspace origin sequence next
 events.events[][hung-up]: event pane tab workspace origin sequence next
 events.events[][input]: event pane tab workspace generation kind bytes expected origin sequence next
 events.events[][input]: event pane tab workspace generation kind bytes origin sequence next

@@ -1,6 +1,6 @@
 //! Grift evaluates policy; native calls marshal into the existing request vocabulary.
 use super::*;
-use fux_wire::command::{Command, Percent};
+use fux_wire::command::Command;
 use grift::{Answer, Error, Grift, HostCall, Kind, Ran, Value as G};
 
 #[derive(Clone, Debug)]
@@ -1286,7 +1286,7 @@ pub(super) fn run(
 
 /// The symbol a handle is as grift data, its server run in it: `%3:RUN`,
 /// `@3:RUN`, `w+3:RUN`, `c3:RUN` (`c3:` and `w+3:` with no run, as `+3` reads
-/// as a number and `c3` is any symbol); `%all`; a share, `percent:30`.
+/// as a number and `c3` is any symbol); `%all`.
 pub(super) fn handle_name(app: &Fux, out: &mut dyn std::fmt::Write) -> std::fmt::Result {
     let run = |out: &mut dyn std::fmt::Write, run: &Option<Run>| match run {
         Some(run) => write!(out, ":{run}"),
@@ -1316,8 +1316,6 @@ pub(super) fn handle_name(app: &Fux, out: &mut dyn std::fmt::Write) -> std::fmt:
             }
         }
         Fux::All => out.write_str("%all"),
-        Fux::Extent(Extent::Percent(n)) => write!(out, "percent:{}", n.get()),
-        Fux::Extent(Extent::Cells(n)) => write!(out, "{n}"),
         Fux::Null => out.write_str("none"),
         Fux::Record(_) | Fux::Opts(_) | Fux::Code(_) => Ok(()),
     }
@@ -1328,11 +1326,6 @@ pub(super) fn handle_name(app: &Fux, out: &mut dyn std::fmt::Write) -> std::fmt:
 pub(crate) fn from_handle_name(name: &str) -> Option<Fux> {
     if name == "%all" {
         return Some(Fux::All);
-    }
-    if let Some(share) = name.strip_prefix("percent:") {
-        return Some(Fux::Extent(Extent::Percent(Percent::new(
-            share.parse().ok()?,
-        )?)));
     }
     let (id, run) = match name.split_once(':') {
         Some((id, "")) => (id, None),
@@ -1412,7 +1405,6 @@ fn to_grift<T>(g: &mut HostCall<'_, T>, v: &Value<Fux>) -> Result<G, Error> {
             }
             g.list(&items)?
         }
-        Value::App(Fux::Extent(Extent::Cells(n))) => G::Integer(i64::from(*n)),
         Value::App(app) => {
             let mut name = String::new();
             handle_name(app, &mut name).map_err(|_| g.error("output", &[]))?;

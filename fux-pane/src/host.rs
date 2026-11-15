@@ -1108,10 +1108,6 @@ impl Host {
                 Ok(()) => return None,
                 Err(error) => Err(error),
             },
-            Ask::ClearHistory => {
-                self.pane_mut().clear_history();
-                Ok(Answered::Done)
-            }
             Ask::HistoryBytes(bytes) => {
                 self.pane_mut().set_history_bytes(bytes);
                 Ok(Answered::Done)

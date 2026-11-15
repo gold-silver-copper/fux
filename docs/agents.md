@@ -670,7 +670,7 @@ of that server's panes. Each script should clean up the targets and processes it
 - A tab is laid out once, on its effective size: one given a `size`
   (`(resize TAB 40 12)`) always on that; else (`(resize-auto TAB)`) on the smallest
   screen of the clients showing it, watchers left out, while every pane fits there, else on the last size that did.
-  `(resize-pane PANE (percent 95) "horizontal")` sizes a pane in its tab; its `row` and `column` say where it is. A
+  `(resize-pane PANE 95 "horizontal")` sizes a pane in its tab, in cells; its `row` and `column` say where it is. A
   size that cannot be had is refused (`size`, as is a screen past what a
   grid holds, from `(size OPTIONS COLUMNS ROWS)` or the server), and nothing changes; so is a split
   or a move that would hide a pane on that size. A larger screen shows the
@@ -694,7 +694,7 @@ of that server's panes. Each script should clean up the targets and processes it
   `"left"` and so on).
 
 A split needs an explicit axis: `(split (axis (pane 2) "horizontal"))`; resize
-with `(resize-pane (pane 2) (percent 50) "horizontal")`. `panes` and `tabs`
+with `(resize-pane (pane 2) 40 "horizontal")`, in cells. `panes` and `tabs`
 read ordered membership; `(information (all))` reads one facts snapshot.
 
 ## recipe-examples: Programs over a pane argument

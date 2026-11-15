@@ -20,7 +20,6 @@ Command::Arrange target: TabId, revision: LayoutRevision, nodes: Vec<layout::Nod
 Command::ResizePane target: PaneId, by: PaneResize
 Command::SendKeys to: To, inputs: Vec<Input>
 Command::HistoryBudget target: PaneId, bytes: HistoryBytes
-Command::ClearHistory target: PaneId
 Command::Zoom target: PaneId
 Command::CapturePane target: PaneId, history: Option<usize>, view: CaptureView
 Command::Reorder target: AnyRef, toward: Sibling
@@ -80,9 +79,7 @@ Node::Pane pane: PaneId
 Node::Split axis: Axis, first_share: NonZeroU32, second_share: NonZeroU32, first: u32, second: u32
 Node::Stack children: Vec<u32>
 PaneResize::Border direction: Direction, cells: u16
-PaneResize::To axis: Axis, extent: Extent
-Extent::Cells cells: u16
-Extent::Percent percent: Percent
+PaneResize::To axis: Axis, cells: u16
 To::Now target: AnyRef
 To::Seen version: Version
 Version pane: PaneId, counts: Counts, run: Run

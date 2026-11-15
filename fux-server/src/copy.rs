@@ -328,7 +328,6 @@ impl Copy {
             | Told::Notification(_)
             | Told::CommandStarted
             | Told::Done(_)
-            | Told::HistoryCleared
             | Told::Input { .. }
             | Told::Signalled { .. } => {}
         }

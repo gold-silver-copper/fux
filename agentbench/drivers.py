@@ -730,7 +730,9 @@ class Fux(Driver):
         self.fux(f"(resize (tab {self.pane(pane)}) {cols} {rows})")
 
     def resize_pct(self, pane, pct):
-        self.fux(f'(resize-pane {self.pane(pane)} (percent {pct}) "horizontal")')
+        # fux sizes in cells: the share is worked out from the tab's width.
+        cols = int(self.fux(f'(get (tab {self.pane(pane)}) "columns")').stdout.split()[0])
+        self.fux(f'(resize-pane {self.pane(pane)} {max(1, cols * pct // 100)} "horizontal")')
 
     def split(self, pane, argv):
         axis = f'(axis {self.pane(pane)} "horizontal")'
