@@ -756,7 +756,6 @@ pub fn terminal(fact: Terminal, p: &Pane) -> Json {
                 ("copies_cut", Json::uint(losses.copies_cut)),
                 ("copies_not_text", Json::uint(losses.copies_not_text)),
                 ("pictures", Json::uint(losses.pictures)),
-                ("memory", Json::uint(losses.memory)),
             ])
         }
         Terminal::Cell => match p.screen().graphics().cell() {

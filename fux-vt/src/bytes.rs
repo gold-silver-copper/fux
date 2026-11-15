@@ -14,24 +14,6 @@ fn copy_within<T: Copy>(slice: &mut [T], src: Range<usize>, dest: usize) -> Opti
     fits.then(|| slice.copy_within(src, dest))
 }
 
-/// Makes room in `bytes` for `additional` more, or says the OS gave none:
-/// `bytes` is then as it was. What is then appended within that room
-/// allocates nothing, so a process that must not die of a refusal (a pane's
-/// own) reserves so before it writes.
-pub fn try_reserve(bytes: &mut Vec<u8>, additional: usize) -> Result<(), crate::Error> {
-    // Room it has already is asked of no one, so none can refuse it.
-    if bytes.capacity().saturating_sub(bytes.len()) >= additional {
-        return Ok(());
-    }
-    #[cfg(feature = "checks")]
-    if crate::check::refusing() {
-        return Err(crate::Error::Capacity);
-    }
-    bytes
-        .try_reserve(additional)
-        .map_err(|_| crate::Error::Capacity)
-}
-
 /// A queue of bytes. Taking from the front moves an offset, not the bytes
 /// behind it; the space taken is reclaimed when the queue empties, or on the
 /// next push once at least as much has been taken as is left, so each byte

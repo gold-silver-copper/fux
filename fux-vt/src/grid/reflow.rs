@@ -97,7 +97,7 @@ impl Grid {
             },
             ..self.successor(size)
         };
-        replacement.reserve_screen()?;
+        replacement.reserve_screen();
         let mut copy = Fill {
             grid: &mut replacement,
             rows: kept..end,

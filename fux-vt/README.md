@@ -447,7 +447,7 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   refused one changes nothing.
 - **`Cells`** (B39) holds at most 64 Mi cells, as a screen does:
   `Cells::new` and `Cells::reset` refuse more
-  with `Error::Capacity`, and so does a lack of memory, the cells left
+  with `Error::Capacity`, the cells left
   as they were.
 - **Listing pictures** (B09) doesn't search history: each picture's top
   row is followed into history as it scrolls there, by its number in the
@@ -570,19 +570,16 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   copies left), even with no byte left. A host that holds no frames and
   spreads no work over turns (a replay, a converter, a test) calls
   `Parser::process_all`, which makes those calls itself until every byte
-  is read and no work is owed, and gives how many times room was refused
-  on the way (B44): the screen is good to read whatever the count.
+  is read and no work is owed.
 - **Encoding a picture** (B08): `sixel::encode` reads each pixel of its
   crop twice and sets each sixel once, whatever its colours, and writes at
   most 12 bytes a pixel and 6 a colour a band of six rows.
-- **Running out of memory** (B44): what grows with a program's output is
-  asked for so that a refusal can be taken: history's rows, a screen's
-  cells, a picture's pixels. A refusal loses only what it was for, the rest
-  of the input is read, and `Parser::refused` counts it. Everything else
-  fux-vt allocates is bounded by the screen's size and the limits above (a
-  row's text and links, the style table, the OSC buffer, tab stops, the
-  colours, DECCRA's copy of the screen); if the system can't give one of
-  those, the process aborts, as Rust's allocations do.
+- **Running out of memory**: what fux-vt allocates is bounded by the
+  screen's size and the limits above (history's rows, a screen's cells, a
+  picture's pixels, a row's text and links, the style table, the OSC
+  buffer, tab stops, the colours, DECCRA's copy of the screen); if the
+  system can't give one of those, the process aborts, as Rust's
+  allocations do.
 
 ## Verification
 

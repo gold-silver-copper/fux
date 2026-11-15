@@ -244,11 +244,11 @@ fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
     parser.process(b"\x1b[2;1H")?;
     for feeds in [b"\n\n\n", b"\x0b\x0b\x0b", b"\x0c\x0c\x0c"] {
         parser.spent = crate::budget::LIMIT - 1;
-        let stop = parser.process_until_stop(feeds, &mut ())?;
+        let stop = parser.process_until_stop(feeds, &mut ());
         assert_eq!(stop, Some((1, Stop::Budget)), "{}", feeds.escape_ascii());
     }
     parser.spent = crate::budget::LIMIT - 1;
-    assert_eq!(parser.process_until_stop(b"\r\r\r", &mut ())?, None);
+    assert_eq!(parser.process_until_stop(b"\r\r\r", &mut ()), None);
     Ok(())
 }
 
@@ -265,13 +265,13 @@ fn copies_left_at_the_budget_are_made_before_later_text() -> Result<(), Error> {
         whole.process(first)?;
         whole.process(following.as_bytes())?;
         let mut parser = Parser::new(size, 0)?;
-        let stop = parser.process_until_stop(first, &mut ())?;
+        let stop = parser.process_until_stop(first, &mut ());
         assert_eq!(stop, Some((first.len(), Stop::Budget)));
         assert!(parser.has_work_left());
         let (mut rest, mut calls) = (following.as_bytes(), 0);
         loop {
             let before = crate::budget::spent();
-            let Some((taken, stop)) = parser.process_until_stop(rest, &mut ())? else {
+            let Some((taken, stop)) = parser.process_until_stop(rest, &mut ()) else {
                 break;
             };
             assert_eq!(stop, Stop::Budget);
@@ -286,7 +286,7 @@ fn copies_left_at_the_budget_are_made_before_later_text() -> Result<(), Error> {
             whole.screen().cursor_position()
         );
         assert_eq!(parser.screen().row_text(0), whole.screen().row_text(0));
-        assert_eq!(parser.process_until_stop(&[], &mut ())?, None);
+        assert_eq!(parser.process_until_stop(&[], &mut ()), None);
     }
     Ok(())
 }
@@ -359,7 +359,7 @@ fn printing_that_never_wraps_stops_at_the_budget() -> Result<(), Error> {
             left = after;
             while !rest.is_empty() || parser.has_work_left() {
                 let before = crate::budget::spent();
-                let stop = parser.process_until_stop(rest, &mut ())?;
+                let stop = parser.process_until_stop(rest, &mut ());
                 since = since.saturating_add(crate::budget::spent().saturating_sub(before));
                 assert!(
                     since <= crate::budget::LIMIT + 10_000,
@@ -512,7 +512,7 @@ fn a_frame_scan_stops_at_the_first_synchronized_output_reset() -> Result<(), Err
                         let (mut piece, tail) = rest.split_at_checked(chunk).unwrap_or((rest, &[]));
                         rest = tail;
                         while !piece.is_empty() {
-                            let taken = match streamed.process_until_stop(piece, &mut ())? {
+                            let taken = match streamed.process_until_stop(piece, &mut ()) {
                                 Some((taken, stop)) => {
                                     first.get_or_insert((offset + taken, stop));
                                     taken

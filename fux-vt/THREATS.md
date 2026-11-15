@@ -78,25 +78,10 @@ memory.
 
 ### 1.3 What happens when an allocation fails
 
-The program-sized allocations are fallible: each degrades where it
-happens, counts one in `Parser::refused()`, and the call reads every
-byte it was given. It returns `Err(Error::Capacity)` only to say that a
-refusal happened in it.
-
-| Site | Degrade |
-|---|---|
-| A row scrolled into history | The row goes as with no history; the screen still scrolls |
-| The alternate screen | The primary stays shown, and the mode reads reset |
-| RIS or a clear, with no room for new grids | History goes, then the grids are blanked in place |
-| The sixel decoder's growth | The picture keeps what it has, as at the budget (B03) |
-| The ring or a map shrinking | It keeps its room until the next trim (B17) |
-| A prompt mark's or a picture's line feed | The parser's state is set first, so it is never stuck in the string |
-
-Everything else allocates infallibly, and a failure there aborts the
-process (no unwinding). Those allocations are bounded by the screen's
-size and the crate's constants, not by what a program sends (a row's
-text, its link runs, the style table's screen share, DECCRA's copy, the
-OSC buffer, tab stops, the key decoder's buffers): a program can fill
+Every allocation is infallible: a failure aborts the process (no
+unwinding), and nothing degrades in its place. What a program can make
+fux-vt hold is bounded instead, by the screen's size, the budgets
+(history, pictures, links) and the crate's constants: a program can fill
 them, not grow them. The bounds keep both the abort and the OOM killer
 away; infallible allocation is no safety proof.
 
@@ -182,7 +167,6 @@ B26 and B41 bound host-side objects or host calls.
 | B41 | `ByteQueue::push_with` (host call) | After the closure, what was taken ≤ the buffer's length | — | A closure that clears the vector, then a push | `b41` |
 | B42 | Small fixed state | Tab stops a byte a column; the palette about 1.3 KB; kitty stacks 32 entries | — | HTS at every column | `b42` |
 | B43 | Events | Delivered synchronously; fux-vt keeps none but the last window title (`Screen::title`, ≤ `OSC_PAYLOAD_LIMIT`) | — | 400 × OSC 9 | `b43` |
-| B44 | Refused allocations | Each refusal counts in `Parser::refused()` and degrades as 1.3 says; every later byte is read | 1.3's table | `ESC]133;A BEL hello` with a refusal forced (`refuse_next`) | `b44` |
 | B45 | Key and mouse encoders (host calls) | ≤ 64 B per key, mouse report or `Screen::encode_mouse` chunk; alternate scroll ≤ 32,767 arrows | Default/UTF-8 positions past their limits emit a 0 byte; hosts admit or refuse each whole scroll expansion | Every key, modifier and mode; mouse at each encoding's edges; negotiated scroll expansion at maximum height | `b45`; `alternate_scroll_keeps_negotiated_arrows_in_bounded_chunks` |
 | B46 | Covering | A placement covers ≤ `COVER_WORDS` = 4,000,000 words of 64 pixels of the pictures under it, the room to note them included (16 B a row shown of each picture covered, and the covered rows' words) and a copy of what was noted of one the host holds; the room, the words promised included, is inside P (B01). It reads the newer picture's drawn grid positions on the rows of those under it, once a grid row: ≤ the positions it drew (B04) | One under it past the words, or past P, goes whole, the newest covered first | 64 pictures, each a column right of the last, opaque (P2 0) and drawn (P2 1) | `b46`; `a_picture_covers_only_the_pixels_it_lies_on` |
 
@@ -375,7 +359,6 @@ the tests check instead.
 - **3a** An XTGETTCAP is answered only while its string is read.
 - **4** A UTF-8 partial holds fewer bytes than its lead byte announces.
 - **5** `FrameScan` resumes inside the bytes held, in a reachable state.
-- **6** `refused()` never decreases. (Not checked yet.)
 - **7** A grid's `order` is a permutation of its slots.
 - **8** One record, text and link list per slot.
 - **9** Every cell past a row's `used` is blank.

@@ -1942,9 +1942,9 @@ fn encode(
                 pasted = true;
                 let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
                 let encoder = paste.get_or_insert_with(|| PasteEncoder::new(bracketed));
-                let _ = encoder.push(text.as_bytes(), out);
+                encoder.push(text.as_bytes(), out);
                 if matches!(input, Input::Paste(_)) {
-                    let _ = encoder.finish(out);
+                    encoder.finish(out);
                     *paste = None;
                 }
             }
@@ -1958,7 +1958,7 @@ fn encode(
 /// Ends the paste `paste` left open, if one is: its bracket closed.
 fn close(paste: Option<fux_vt::keys::encode::PasteEncoder>, out: &mut Vec<u8>) {
     if let Some(mut paste) = paste {
-        let _ = paste.finish(out);
+        paste.finish(out);
     }
 }
 

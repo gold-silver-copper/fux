@@ -709,8 +709,7 @@ impl Stored {
 
 impl Cells {
     /// `len` blank cells; `Error::Capacity` past `MAX_CELLS` (64 Mi, as a
-    /// screen holds at most) or if there is no memory for them
-    /// (`THREATS.md` B39).
+    /// screen holds at most; `THREATS.md` B39).
     pub fn new(len: usize) -> Result<Self, Error> {
         let mut cells = Self::default();
         cells.room_for(len)?;
@@ -721,7 +720,8 @@ impl Cells {
         if len > crate::grid::MAX_CELLS {
             return Err(Error::Capacity);
         }
-        crate::reserve(&mut self.cells, len)
+        crate::reserve(&mut self.cells, len);
+        Ok(())
     }
     /// How many cells there are.
     pub fn len(&self) -> usize {

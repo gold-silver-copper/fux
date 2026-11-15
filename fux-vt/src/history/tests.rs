@@ -1,4 +1,5 @@
 use super::*;
+use crate::Error;
 
 /// A row of `len` cells, each a letter from `first` on, in style `style`.
 fn row(len: usize, first: u8, style: u32) -> Vec<Compact> {
@@ -77,7 +78,7 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
         let first = b'a'.wrapping_add(u8::try_from(id % 26).unwrap_or(0));
         let cells = row(len, first, u32::try_from(id % 5).unwrap_or(0));
         let width = u16::try_from(len.max(80)).unwrap_or(u16::MAX);
-        history.push(arriving(id, &cells, width))?;
+        history.push(arriving(id, &cells, width));
         expected.push_back((
             id,
             id.wrapping_mul(3),
@@ -116,7 +117,7 @@ fn memory_stops_growing_at_the_budget() -> Result<(), Error> {
     for round in 0..4 {
         for id in 0..2000u64 {
             let cells = row(usize::try_from(id % 120).unwrap_or(0), b'a', 0);
-            history.push(arriving(id, &cells, 120))?;
+            history.push(arriving(id, &cells, 120));
             history.trim();
             assert!(
                 history.heap() <= budget,
@@ -151,7 +152,7 @@ fn block_numbers_wrap() -> Result<(), Error> {
         let first = b'a'.wrapping_add(u8::try_from(id % 26).unwrap_or(0));
         let cells = row(len, first, 0);
         let width = u16::try_from(len).unwrap_or(u16::MAX);
-        history.push(arriving(id, &cells, width))?;
+        history.push(arriving(id, &cells, width));
         expected.push_back((
             id,
             id.wrapping_mul(3),
@@ -201,14 +202,14 @@ fn a_row_with_one_link_holds_no_memory_for_it() -> Result<(), Error> {
             links.set(start..end, Some(&a));
             start = end;
         }
-        history.push(arriving(id, &cells, 4))?;
+        history.push(arriving(id, &cells, 4));
         history.attach(None, KeptLinks::take(&mut links));
         assert_eq!(history.runs, 0, "row {id}");
     }
     let mut links = RowLinks::default();
     links.set(0..1, Some(&a));
     links.set(2..3, Some(&b));
-    history.push(arriving(2, &cells, 4))?;
+    history.push(arriving(2, &cells, 4));
     history.attach(None, KeptLinks::take(&mut links));
     assert_eq!(history.runs, 2 * size_of::<Run>());
     Ok(())
@@ -226,19 +227,18 @@ fn spans_of_rows_let_go_while_history_is_made_anew_go_too() -> Result<(), Error>
     let mut id = 0u64;
     let mut push = |history: &mut History| {
         id = id.wrapping_add(2);
-        let pushed = history.push(arriving(id, &cells, 8));
+        history.push(arriving(id, &cells, 8));
         history.trim();
-        pushed
     };
     for round in 0..8 {
         history.set_budget(budget);
         for _ in 0..2000 {
-            push(&mut history)?;
+            push(&mut history);
         }
         // Made anew in half the room: half the rows go as they come in.
         history.set_budget(budget / 2);
         // A span begun lets go of those whose rows all went.
-        push(&mut history)?;
+        push(&mut history);
         assert!(
             history.spans.len() <= history.len().saturating_add(1),
             "round {round}: {} spans for {} rows",
@@ -263,4 +263,34 @@ fn a_deque_keeps_room_for_four_times_its_entries_and_64() {
     deque.pop_back();
     shrink(&mut deque);
     assert!(deque.capacity() < room, "past it");
+}
+
+/// The newest block doubles up to a block, a row half a block long starts
+/// a whole block, and a row that fits needs no room (`THREATS.md` B17).
+#[test]
+fn blocks_double_to_a_block_and_rows_fill_their_room() {
+    // Whether each of `rows` rows of `len` cells made history take room.
+    let made = |len: usize, rows: u64| -> Vec<bool> {
+        // 1 MiB of history: a block is 4,096 cells.
+        let mut history = History::new(1 << 20);
+        let cells = row(len, b'a', 0);
+        (0..rows)
+            .map(|id| {
+                let before = history.room_cells;
+                history.push(arriving(id.saturating_mul(30), &cells, 2048));
+                history.trim();
+                history.room_cells != before
+            })
+            .collect()
+    };
+    // One-cell rows: the first block is the first row's 1 cell, then it
+    // doubles (2, 4, 8) as rows overflow it; rows 4, 6, 7 and 8 fit.
+    assert_eq!(
+        made(1, 9),
+        [true, true, true, false, true, false, false, false, true]
+    );
+    // Rows of 2,048 cells, half a block: the first block is the first
+    // row's, doubled to a block for the second; the third starts a block
+    // of a block's cells, which the fourth fits in; and so on.
+    assert_eq!(made(2048, 6), [true, true, true, false, true, false]);
 }

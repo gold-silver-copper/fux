@@ -91,25 +91,13 @@ struct Behind {
 /// past it is refused, and its typist told.
 pub const BEHIND: usize = fux_wire::protocol::MAX_FRAME;
 
-/// A pane's runs of losses, each over at a success of its kind: a copy made, a picture placed whole, a
-/// read that refused no memory.
+/// A pane's runs of losses, each over at a success of its kind: a copy
+/// made, a picture placed whole.
 #[derive(Clone, Copy, Debug, Default)]
 struct LossRuns {
     copies_cut: Run,
     copies_not_text: Run,
     pictures: Run,
-    memory: Run,
-}
-
-/// What a read of output did over its calls of the parser: whether it
-/// parsed any, or was refused memory.
-#[derive(Clone, Copy, Debug, Default)]
-struct Reading {
-    parsed: bool,
-    refused: bool,
-    /// A frame was read whole: the read ends where the next frame begins,
-    /// or where nothing is left, what follows the frame joining it.
-    framed: bool,
 }
 
 /// A run of one kind of drop: none going on; going on and not yet told;
@@ -663,9 +651,6 @@ pub struct Losses {
     /// Sixel pictures it drew not kept whole
     /// (`fux_vt::Sink::picture`).
     pub pictures: u64,
-    /// Times reading its output, or a resize, was refused memory
-    /// (`fux_vt::Parser::refused`): each lost only what it was for.
-    pub memory: u64,
 }
 
 impl Losses {
@@ -676,31 +661,28 @@ impl Losses {
             copies_cut,
             copies_not_text,
             pictures,
-            memory,
         } = more;
         let add = |a: &mut u64, b| *a = a.saturating_add(b);
         add(&mut self.copies_cut, copies_cut);
         add(&mut self.copies_not_text, copies_not_text);
         add(&mut self.pictures, pictures);
-        add(&mut self.memory, memory);
     }
 
     /// What a notice says of them, of pane `id`: for each kind it lost
-    /// any of, what, how many, and why (`%1: memory refused (2): …`).
+    /// any of, what, how many, and why (`%1: copies (OSC 52) not made (2): …`).
     pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
         let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
         let pictures = "`fux '(explain \"records\")'` says why one may not be";
-        let (copies, memory) = ("copies (OSC 52) not made", "each lost only what it was for");
+        let copies = "copies (OSC 52) not made";
         let Losses {
             copies_cut: c,
             copies_not_text: t,
             pictures: p,
-            memory: m,
         } = self;
         // Each kind: how many, what, why, and what ends its run, till which
         // more are counted, not told (`Run`).
-        let each: [(u64, &str, &str, &str); 4] = [
+        let each: [(u64, &str, &str, &str); 3] = [
             (c, copies, &cut, "a copy is made"),
             (t, copies, &not_text, "a copy is made"),
             (
@@ -708,12 +690,6 @@ impl Losses {
                 "sixel pictures not kept whole",
                 pictures,
                 "one is placed whole",
-            ),
-            (
-                m,
-                "memory refused",
-                memory,
-                "a read of its output refuses none",
             ),
         ];
         (each.into_iter())
@@ -837,17 +813,13 @@ pub struct Pane {
     /// What it let go of and has not told a client showing it, its
     /// programs' before a respawn too: kept till one is.
     untold: Losses,
-    /// The size its screen was last refused, if its last resize was.
-    refused_size: Option<Size>,
-    /// Its runs of copies, pictures and memory lost (`Run`): its runs of
+    /// Its runs of copies and pictures lost (`Run`): its runs of
     /// input and replies are its queue's.
     loss_runs: LossRuns,
     /// First untold PTY resize and read errors, kept until a client sees them.
     terminal_errors: (Option<fuxix::Errno>, Option<fuxix::Errno>),
     /// The current program's read failure, retained after its exit.
     read_error: Option<fuxix::Errno>,
-    /// What the read of output under way did so far (`Pane::read_done`).
-    reading: Reading,
 }
 
 /// Owned output waiting for another parser turn. Consumed prefixes stay
@@ -1236,11 +1208,9 @@ impl Pane {
             alerts: Alerts::default(),
             lost: Losses::default(),
             untold: Losses::default(),
-            refused_size: None,
             loss_runs: LossRuns::default(),
             terminal_errors: (None, None),
             read_error: None,
-            reading: Reading::default(),
         })
     }
 
@@ -1324,7 +1294,6 @@ impl Pane {
             return false;
         };
         self.resize_to = None;
-        self.judge_read();
         self.take_size(size, tell);
         true
     }
@@ -1352,7 +1321,6 @@ impl Pane {
             self.wait_unread(bytes, start.saturating_add(taken), now);
             return;
         }
-        self.reading.framed |= at > 0;
         if let Some(taken) = self.read(after, now, tell) {
             self.wait_unread(bytes, start.saturating_add(at).saturating_add(taken), now);
         }
@@ -1392,14 +1360,10 @@ impl Pane {
                     self.wait_unread(frame, taken, now);
                     return None;
                 }
-                self.reading.framed = true;
             } else {
                 match self.parse(rest, true, tell) {
                     None => return None,
                     Some((end, fux_vt::Stop::Begun)) => {
-                        if self.reading.framed {
-                            self.judge_read();
-                        }
                         self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
                         rest = rest.get(end..).unwrap_or_default();
                     }
@@ -1428,14 +1392,10 @@ impl Pane {
             self.frame_read(held.len(), tell);
             return self.wait_unread(held, 0, now);
         }
-        match self.parse(&held, false, tell) {
-            // No output waits while a frame is held: it is the first.
-            Some((taken, _)) => {
-                self.frame_read(held.len().saturating_sub(taken), tell);
-                self.wait_unread(held, taken, now);
-            }
-            // A frame read whole: the read ends at the next frame.
-            None => self.reading.framed = true,
+        // No output waits while a frame is held: it is the first.
+        if let Some((taken, _)) = self.parse(&held, false, tell) {
+            self.frame_read(held.len().saturating_sub(taken), tell);
+            self.wait_unread(held, taken, now);
         }
     }
 
@@ -1453,7 +1413,6 @@ impl Pane {
         tell: &mut Teller<'_>,
     ) -> Option<(usize, fux_vt::Stop)> {
         self.since.note(self.parser.screen());
-        let refused = self.parser.refused();
         let mut sink = Sink {
             replies: Vec::new(),
             pictures: Vec::new(),
@@ -1466,8 +1425,6 @@ impl Pane {
             colours: &self.colours,
             told: None,
         };
-        // The parser refuses only allocations beyond its limits; the screen
-        // stays as it was and output continues.
         // Only `process_until_stop`, even to read past a BSU: with one way
         // in, the parser's loop is compiled once and its byte handling is
         // inlined into it, as it was before frames were held; with two it
@@ -1477,7 +1434,7 @@ impl Pane {
         let slice = bytes.get(..self.slice_left).unwrap_or(bytes);
         let (mut begun, mut read) = (None, 0usize);
         while let Some(rest) = slice.get(read..)
-            && let Ok(Some((taken, stop))) = self.parser.process_until_stop(rest, &mut sink)
+            && let Some((taken, stop)) = self.parser.process_until_stop(rest, &mut sink)
         {
             read = read.saturating_add(taken);
             if stop == fux_vt::Stop::Budget || until_frame && stop == fux_vt::Stop::Begun {
@@ -1490,14 +1447,13 @@ impl Pane {
         if begun.is_none() && slice.len() < bytes.len() {
             begun = Some((read, fux_vt::Stop::Budget));
         }
-        // A scheme it asked for is told once its reply is queued.
+        // Answers past what may wait behind an open paste are not queued;
+        // a scheme it asked for is told once its reply is.
         let kept = self.input.reply(&sink.replies);
-        let unkept = u64::from(!kept);
         if let Some(scheme) = sink.told.filter(|_| kept) {
             self.scheme_told = Some(scheme);
         }
         let pictures = sink.pictures;
-        self.reading.parsed |= !bytes.is_empty();
         // Each picture as it ended, in order: one placed whole ends a run
         // of pictures lost.
         for placed in pictures {
@@ -1509,12 +1465,6 @@ impl Pane {
                 }),
             }
         }
-        let memory = (self.parser.refused().saturating_sub(refused)).saturating_add(unkept);
-        self.reading.refused |= memory > 0;
-        self.lose(Losses {
-            memory,
-            ..Losses::default()
-        });
         begun
     }
 
@@ -1580,23 +1530,8 @@ impl Pane {
     /// size read.
     fn take_size(&mut self, size: Size, tell: &mut Teller<'_>) {
         self.since.note(self.parser.screen());
-        let refused = self.parser.refused();
-        let resized = self.parser.resize(size);
-        // A size refused is asked again as the session settles: counted
-        // once, till another size is asked.
-        let memory = self.parser.refused().saturating_sub(refused);
-        if memory == 0 {
-            self.loss_runs.memory = Run::Over;
-        }
-        let again = resized.is_err() && self.refused_size == Some(size);
-        self.refused_size = resized.is_err().then_some(size);
-        if !again {
-            self.lose(Losses {
-                memory,
-                ..Losses::default()
-            });
-        }
-        if resized.is_err() {
+        // A size past what a grid holds: its screen stays as it was.
+        if self.parser.resize(size).is_err() {
             return;
         }
         tell.tell(Told::Resized(size));
@@ -1645,10 +1580,9 @@ impl Pane {
         &self.since
     }
 
-    /// It is asked the size it has: a size refused before, asked again,
-    /// is a new refusal, counted.
+    /// It is asked the size it has: no resize waits for a frame's end.
     fn keeps_size(&mut self) {
-        (self.refused_size, self.resize_to) = (None, None);
+        self.resize_to = None;
     }
 
     /// Its input queue, to read.
@@ -1679,13 +1613,11 @@ impl Pane {
             copies_cut,
             copies_not_text,
             pictures,
-            memory,
         } = &mut losses;
         let runs = &mut self.loss_runs;
         gate(copies_cut, &mut runs.copies_cut);
         gate(copies_not_text, &mut runs.copies_not_text);
         gate(pictures, &mut runs.pictures);
-        gate(memory, &mut runs.memory);
         self.untold.add(losses);
     }
 
@@ -1703,29 +1635,9 @@ impl Pane {
         self.lose(losses);
     }
 
-    /// A call that reads its output is done: once nothing is held back or
-    /// left, the read is whole, over however many calls of the parser and
-    /// turns it took (a frame begun, a budget spent), and only then does
-    /// what it lost end runs. A frame read whole ends a read where the
-    /// next frame begins, so frames drawn back to back are read one by
-    /// one, what follows each joining it. One that refused no memory ends
-    /// a run of refusals.
+    /// A call that reads its output is done: the next has a turn's slice.
     fn read_done(&mut self) {
         self.slice_left = SLICE;
-        // Output held back (a frame) or left (a budget spent) is still
-        // being read: what this read did so far is kept for its end.
-        if self.frame.is_none() && !self.has_unread() {
-            self.judge_read();
-        }
-    }
-
-    /// A read ends here, its record judged: at a frame read whole, or once
-    /// nothing is held back or left.
-    fn judge_read(&mut self) {
-        let read = std::mem::take(&mut self.reading);
-        if read.parsed && !read.refused {
-            self.loss_runs.memory = Run::Over;
-        }
     }
 
     /// Whether it let go of anything not yet told.
@@ -1741,9 +1653,8 @@ impl Pane {
             copies_cut,
             copies_not_text,
             pictures,
-            memory,
         } = &mut self.loss_runs;
-        for run in [copies_cut, copies_not_text, pictures, memory] {
+        for run in [copies_cut, copies_not_text, pictures] {
             run.told();
         }
         std::mem::take(&mut self.untold)
@@ -1913,10 +1824,8 @@ impl Pane {
             left: fresh.left,
             alerts: fresh.alerts,
             lost: fresh.lost,
-            refused_size: fresh.refused_size,
             loss_runs: fresh.loss_runs,
             read_error: fresh.read_error,
-            reading: fresh.reading,
         };
         let old = std::mem::replace(self, next);
         (old.process, over)
@@ -2053,7 +1962,7 @@ pub mod testing {
             .is_ok_and(|mut parser| {
                 matches!(
                     parser.process_until_stop(&output(n), &mut Discard),
-                    Ok(Some((_, fux_vt::Stop::Budget)))
+                    Some((_, fux_vt::Stop::Budget))
                 )
             });
             if stops {

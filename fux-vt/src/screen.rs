@@ -1045,17 +1045,11 @@ impl Screen {
             cut: self.title.1,
         }
     }
-    /// Keeps `title` as the window title, or, refused room, an empty one
-    /// cut (THREATS.md 1.3).
+    /// Keeps `title` as the window title.
     pub(crate) fn set_title(&mut self, title: crate::Kept<'_>) {
         self.title.0.clear();
-        let kept = crate::reserve(&mut self.title.0, title.bytes.len()).is_ok();
-        if kept {
-            self.title.0.extend_from_slice(title.bytes);
-        } else {
-            crate::degraded();
-        }
-        self.title.1 = title.cut || !kept;
+        self.title.0.extend_from_slice(title.bytes);
+        self.title.1 = title.cut;
     }
     /// The colour palette entry `index` shows if the program changed it
     /// (OSC 4, with `Feature::Palette`); `None` while it is the terminal's.
@@ -1266,8 +1260,8 @@ impl Screen {
             (grid, kept, self.commands.marks())
         };
         let (mut alternate, _) = self.alternate.resized(size, &mut next, version)?;
-        // Only now, with both grids built, does the resize happen: a refused
-        // one leaves the screen whole, the next print still joining.
+        // Only now, with both grids built, does the resize happen: one of a
+        // size refused leaves the screen whole, the next print still joining.
         self.last_print = None;
         primary.adopt_history(&mut self.primary, kept);
         // The links' tables and keyboard stacks go along.
@@ -2446,27 +2440,18 @@ impl Screen {
                 let size = self.size();
                 let mut next = self.next_id;
                 // Both grids start again: in their storage if they can,
-                // else afresh, else cleared in place (`Grid::clear`).
+                // else afresh.
                 let recycle = [&self.primary, &self.alternate]
                     .iter()
                     .all(|g| g.recyclable() && g.size() == size);
-                let history = self.primary.history_bytes();
-                let fresh = (!recycle)
-                    .then(|| {
-                        let primary = Grid::new(size, history, &mut next, self.version).ok()?;
-                        Some((primary, Grid::unmade(size, &mut next, self.version).ok()?))
-                    })
-                    .flatten();
-                if let Some((primary, alternate)) = fresh {
-                    self.primary = primary;
-                    self.alternate = alternate;
-                } else {
-                    // A grid that cannot be blanked stays; the rest resets.
+                if recycle {
                     for g in [&mut self.primary, &mut self.alternate] {
-                        if g.clear(&mut next, self.version).is_err() {
-                            crate::degraded();
-                        }
+                        g.clear(&mut next, self.version);
                     }
+                } else {
+                    let history = self.primary.history_bytes();
+                    self.primary = Grid::fresh(size, history, &mut next, self.version, false);
+                    self.alternate = Grid::fresh(size, 0, &mut next, self.version, true);
                 }
                 self.next_id = next;
                 // No cell has a link now, and none is open.
@@ -2716,11 +2701,11 @@ impl Screen {
     /// Clears the alternate screen in `pen`'s colours (`bce`), as xterm
     /// does for 1047 and 1049. The cursor, margins and saved cursor stay;
     /// a pending wrap ends, as ED's does.
-    fn clear_alternate(&mut self, pen: Attributes) -> Result<(), Error> {
+    fn clear_alternate(&mut self, pen: Attributes) {
         let g = &mut self.alternate;
         let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
         let keyboard = mem::take(&mut g.keyboard);
-        self.alternate.clear(&mut self.next_id, self.version)?;
+        self.alternate.clear(&mut self.next_id, self.version);
         let blank = self.alternate.style(pen.erased());
         let g = &mut self.alternate;
         (g.cursor, g.saved, g.lines, g.keyboard) = (cursor, saved, lines, keyboard);
@@ -2732,7 +2717,6 @@ impl Screen {
                 g.erase(y, 0, cols, blank, self.version);
             }
         }
-        Ok(())
     }
 
     /// Shows the alternate screen, or the primary. The cursor and margins
@@ -3006,11 +2990,7 @@ impl Screen {
                 None if mode.fixed().is_none() => self.saved_modes.contains(mode),
                 None => continue,
             };
-            // A mode refused room is left as it was; the rest are set.
-            match self.set_mode(mode, on) {
-                Ok(reports) => report |= reports,
-                Err(_) => crate::degraded(),
-            }
+            report |= self.set_mode(mode, on);
         }
         match (handled, report) {
             (_, true) => Dispatch::Reply(self.size_report()),
@@ -3039,7 +3019,7 @@ impl Screen {
     /// Sets or resets `mode`; whether a size report is due (setting
     /// in-band resize reports at once, however often it is set).
     #[inline(never)]
-    fn set_mode(&mut self, mode: Mode, on: bool) -> Result<bool, Error> {
+    fn set_mode(&mut self, mode: Mode, on: bool) -> bool {
         match mode.kind() {
             Kind::Flag => {
                 // Resetting DECAWM ends a pending wrap (DEC STD 070,
@@ -3074,18 +3054,16 @@ impl Screen {
             }
             Kind::SizeReport => {
                 self.modes.set(mode, on);
-                return Ok(on);
+                return on;
             }
             Kind::Origin => {
                 let g = self.grid_mut();
                 g.cursor.origin = on;
                 g.position(0, 0);
             }
-            // The alternate screen is made before anything changes, so that
-            // failing to make it changes nothing.
             Kind::Screen(switch) => {
                 if on {
-                    self.alternate.make()?;
+                    self.alternate.make();
                 }
                 self.break_cluster();
                 match switch {
@@ -3104,7 +3082,7 @@ impl Screen {
                         self.save();
                         self.switch_screen(true);
                         self.terminal.clear_on_show = None;
-                        self.clear_alternate(self.attributes)?;
+                        self.clear_alternate(self.attributes);
                     }
                     Switch::SavingCursor => {
                         self.switch_screen(false);
@@ -3115,7 +3093,7 @@ impl Screen {
                 // xterm's clear on leaving came before it.
                 if let Some(pen) = self.terminal.clear_on_show.take_if(|_| on) {
                     let pending = self.alternate.cursor.pending_wrap;
-                    self.clear_alternate(pen)?;
+                    self.clear_alternate(pen);
                     self.alternate.cursor.pending_wrap = pending;
                 }
             }
@@ -3129,7 +3107,7 @@ impl Screen {
             Kind::Mouse(mouse) => latest(&mut self.terminal.mouse, mouse, on),
             Kind::Encoding(encoding) => latest(&mut self.terminal.encoding, encoding, on),
         }
-        Ok(false)
+        false
     }
 
     /// DECRQSS (`DCS $ q Pt ST`): the setting `request` names, written to

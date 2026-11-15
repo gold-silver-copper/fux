@@ -331,10 +331,10 @@ fn process_until_stop_stops_at_frame_boundaries() -> Result {
             let mut sink = Record::default();
             p.process(setup.as_bytes())?;
             let (head, tail) = sequence.as_bytes().split_at_checked(split).ok_or("split")?;
-            assert_eq!(p.process_until_stop(head, &mut sink)?, None);
+            assert_eq!(p.process_until_stop(head, &mut sink), None);
             let rest = [tail, b"\x1b]2;hello h\x07tail"].concat();
             assert_eq!(
-                p.process_until_stop(&rest, &mut sink)?,
+                p.process_until_stop(&rest, &mut sink),
                 Some((tail.len(), stop))
             );
             assert_eq!(
@@ -351,7 +351,7 @@ fn process_until_stop_stops_at_frame_boundaries() -> Result {
         let mut p = Parser::new(Size::new(2, 20)?, 0)?;
         p.process(setup.as_bytes())?;
         assert_eq!(
-            p.process_until_stop(input.as_bytes(), &mut Record::default())?,
+            p.process_until_stop(input.as_bytes(), &mut Record::default()),
             None
         );
     }
@@ -368,7 +368,7 @@ fn process_all_reads_past_every_stop() -> Result {
     bytes.extend_from_slice(b"\x1b[4l\x1b[?2026h\ry\x1b[?2026lz");
     let mut p = Parser::new(Size::new(1, 4096)?, 0)?;
     assert_eq!(
-        p.clone().process_until_stop(&bytes, &mut ())?.map(|s| s.1),
+        p.clone().process_until_stop(&bytes, &mut ()).map(|s| s.1),
         Some(Stop::Budget)
     );
     p.process_into(&bytes, &mut ())?;

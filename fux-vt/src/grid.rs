@@ -74,14 +74,14 @@ fn take_row(
     meta: &mut [Meta],
     (texts, links): (&[Text], Option<&[RowLinks]>),
     (slot, width): (usize, u16),
-) -> Result<bool, Error> {
+) -> bool {
     let Some(m) = meta.get_mut(slot) else {
-        return Ok(false);
+        return false;
     };
     if texts.get(slot).is_some_and(|text| !text.is_empty())
         || links.is_some_and(|links| links.get(slot).is_some_and(|l| !l.is_empty()))
     {
-        return Ok(false);
+        return false;
     }
     // Past its `used` mark the row is blank. A slot's cells are within
     // `cells`, so these do not wrap.
@@ -93,14 +93,14 @@ fn take_row(
     // The row's cells, those trimmed too, and the row: once.
     crate::budget::spend(row.len().saturating_add(1));
     let kept = row.get_mut(..len).unwrap_or_default();
-    history.push(m.arriving(kept, width))?;
+    history.push(m.arriving(kept, width));
     // Blanked now, while the cells are at hand.
     match kept {
         [cell] => *cell = BLANK,
         _ => kept.fill(BLANK),
     }
     m.used = 0;
-    Ok(true)
+    true
 }
 
 /// `Grid::narrow`'s bits.
@@ -185,10 +185,8 @@ impl Order {
     fn capacity(&self) -> usize {
         self.slots.capacity()
     }
-    fn try_reserve_exact(&mut self, more: usize) -> Result<(), Error> {
-        self.slots
-            .try_reserve_exact(more)
-            .map_err(|_| Error::Capacity)
+    fn reserve_exact(&mut self, more: usize) {
+        self.slots.reserve_exact(more);
     }
     #[inline]
     fn at(&self, row: usize) -> Option<usize> {
@@ -430,17 +428,16 @@ impl Grid {
         Self::made(size, 0, next, version, true)
     }
 
-    /// Gives an unmade grid its blank cells; on failure it stays unmade.
-    pub fn make(&mut self) -> Result<(), Error> {
+    /// Gives an unmade grid its blank cells.
+    pub fn make(&mut self) {
         if !self.unmade {
-            return Ok(());
+            return;
         }
         let size = self.size.cells();
         crate::budget::spend(size);
-        reserve(&mut self.cells, size)?;
+        reserve(&mut self.cells, size);
         self.cells.resize(size, BLANK);
         self.unmade = false;
-        Ok(())
     }
 
     fn made(
@@ -451,16 +448,27 @@ impl Grid {
         unmade: bool,
     ) -> Result<Self, Error> {
         Self::check_size(size)?;
+        Ok(Self::fresh(size, history_bytes, next, version, unmade))
+    }
+
+    /// `made`, of a size a grid holds (`check_size`).
+    pub(crate) fn fresh(
+        size: Size,
+        history_bytes: usize,
+        next: &mut u64,
+        version: u64,
+        unmade: bool,
+    ) -> Self {
         let mut grid = Self {
             unmade,
             ..Self::bare(size, history_bytes)
         };
-        grid.reserve_screen()?;
+        grid.reserve_screen();
         for _ in 0..size.rows() {
             let id = next_id(next);
             grid.push_screen_row(Meta::new(id, version, false, 0), &[], None, None);
         }
-        Ok(grid)
+        grid
     }
 
     fn bare(size: Size, history_bytes: usize) -> Self {
@@ -502,17 +510,16 @@ impl Grid {
     }
 
     /// Reserves exactly the screen's rows; their cells only once made.
-    fn reserve_screen(&mut self) -> Result<(), Error> {
+    fn reserve_screen(&mut self) {
         // Within the limits: `check_size` came first.
         let rows = usize::from(self.size.rows());
         let cells = if self.unmade { 0 } else { self.size.cells() };
-        reserve(&mut self.cells, cells)?;
-        reserve(&mut self.meta, rows)?;
-        reserve(&mut self.texts, rows)?;
-        reserve(&mut self.linked, rows)?;
+        reserve(&mut self.cells, cells);
+        reserve(&mut self.meta, rows);
+        reserve(&mut self.texts, rows);
+        reserve(&mut self.linked, rows);
         self.order
-            .try_reserve_exact(rows.saturating_sub(self.order.len()))?;
-        Ok(())
+            .reserve_exact(rows.saturating_sub(self.order.len()));
     }
 
     /// Adds a row as a resize rebuilds the grid: into history if `history`,
@@ -531,7 +538,7 @@ impl Grid {
         let width = u16::try_from(cells.len()).map_err(|_| Error::Capacity)?;
         let kept = trimmed(cells.get(..written).unwrap_or(cells));
         crate::budget::spend(kept.len().saturating_add(1));
-        self.history.push(meta.arriving(kept, width))?;
+        self.history.push(meta.arriving(kept, width));
         let text = text.filter(|text| !text.is_empty());
         let links = links.and_then(|mut links| KeptLinks::take(&mut links));
         if text.is_some() || links.is_some() {
@@ -1608,20 +1615,8 @@ impl Grid {
             && region.first() == 0
             && self.history_bytes() > 0
         {
-            let count = count.min(region.len());
-            for done in 0..count {
-                if self
-                    .scroll_into_history(region.last(), blank, next, version)
-                    .is_err()
-                {
-                    // No memory for history: scroll as without it
-                    // (THREATS.md 1.3), counted.
-                    crate::degraded();
-                    let rest = count.saturating_sub(done);
-                    let up = Scroll::Up { history: false };
-                    self.scroll_region(region, rest, up, blank, next, version);
-                    break;
-                }
+            for _ in 0..count.min(region.len()) {
+                self.scroll_into_history(region.last(), blank, next, version);
             }
             return;
         }
@@ -1794,17 +1789,10 @@ impl Grid {
 
     /// Moves the screen's top row into history and puts a new blank row,
     /// in style `blank`, at row `bottom`, the rows between moving up.
-    /// Nothing moves if history has no memory for it.
     #[inline]
-    fn scroll_into_history(
-        &mut self,
-        bottom: u16,
-        blank: u32,
-        next: &mut u64,
-        version: u64,
-    ) -> Result<(), Error> {
+    fn scroll_into_history(&mut self, bottom: u16, blank: u32, next: &mut u64, version: u64) {
         let Some(&slot) = self.order.get(0) else {
-            return Ok(());
+            return;
         };
         let taken = take_row(
             &mut self.history,
@@ -1812,9 +1800,9 @@ impl Grid {
             self.meta.as_mut_slice(),
             (&self.texts, (!self.links.none()).then_some(&self.linked)),
             (slot, self.size.cols()),
-        )?;
+        );
         if !taken {
-            self.take_row_with_extras(slot)?;
+            self.take_row_with_extras(slot);
         }
         self.history.trim();
         let id = next_id(next);
@@ -1834,27 +1822,25 @@ impl Grid {
         } else {
             self.move_row(0, usize::from(bottom));
         }
-        Ok(())
     }
 
     /// `take_row` for a row with text or links: they go with it.
     #[cold]
     #[inline(never)]
-    fn take_row_with_extras(&mut self, slot: usize) -> Result<(), Error> {
+    fn take_row_with_extras(&mut self, slot: usize) {
         let Some(&m) = self.meta.get(slot) else {
-            return Ok(());
+            return;
         };
         let start = slot.saturating_mul(usize::from(self.size.cols()));
         let used = start.saturating_add(usize::from(m.used));
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
         crate::budget::spend(usize::from(m.used).saturating_add(1));
-        self.history.push(m.arriving(cells, self.size.cols()))?;
+        self.history.push(m.arriving(cells, self.size.cols()));
         // A copy of the text, and the links themselves, the slot keeping
         // their list's memory for its next row.
         let text = self.texts.get(slot).map(Text::exact);
         let links = self.linked.get_mut(slot).and_then(KeptLinks::take);
         self.history.attach(text, links);
-        Ok(())
     }
 
     /// Moves screen row `from` to `to`, the rows between closing up; its
@@ -1958,7 +1944,7 @@ impl Grid {
             },
             ..self.successor(size)
         };
-        replacement.reserve_screen()?;
+        replacement.reserve_screen();
         let mut row = Vec::new();
         let same_width = self.size.cols() == cols;
         let kept = history.min(live_top);
@@ -2015,8 +2001,7 @@ impl Grid {
     }
 
     /// After a resize, moves `old`'s first `kept` history rows in without
-    /// copying, before the rows this grid's history was given. A row with
-    /// no memory for it goes, counted (THREATS.md 1.3).
+    /// copying, before the rows this grid's history was given.
     pub(crate) fn adopt_history(&mut self, old: &mut Self, kept: usize) {
         if kept == 0 {
             return;
@@ -2024,46 +2009,21 @@ impl Grid {
         let mut history = std::mem::take(&mut old.history);
         history.truncate(kept);
         let given = std::mem::replace(&mut self.history, history);
-        if self.history.take(&given).is_err() {
-            crate::degraded();
-        }
+        self.history.take(&given);
         self.charge_styles(if self.unmade { 0 } else { self.size.cells() });
     }
 
     /// Starts the grid again, as `new` makes it, reusing its storage when
     /// `recyclable`.
-    pub fn clear(&mut self, next: &mut u64, version: u64) -> Result<(), Error> {
-        if !self.recyclable() {
-            // The links' table is kept: it counts the link the program has
-            // open (`Screen::link_cells`) and finds it by its `id`.
-            match Self::made(self.size, self.history_bytes(), next, version, self.unmade) {
-                Ok(mut grid) => {
-                    grid.links = std::mem::take(&mut self.links);
-                    *self = grid;
-                    return Ok(());
-                }
-                // Out of memory: history goes and the rows are blanked in
-                // place (THREATS.md 1.3), counted.
-                Err(refused) => {
-                    if !self.holds_its_rows() {
-                        return Err(refused);
-                    }
-                    self.history = History::new(self.history_bytes());
-                    self.charge_styles(self.cells.len());
-                    crate::degraded();
-                }
-            }
+    pub fn clear(&mut self, next: &mut u64, version: u64) {
+        if self.recyclable() {
+            return self.renew(next, version);
         }
-        self.renew(next, version);
-        Ok(())
-    }
-
-    /// Whether storage holds a full-width slot for each live row, as
-    /// `renew` needs.
-    fn holds_its_rows(&self) -> bool {
-        let rows = usize::from(self.size.rows());
-        let cells = if self.unmade { 0 } else { self.size.cells() };
-        self.order.len() == rows && self.meta.len() == rows && self.cells.len() >= cells
+        // The links' table is kept: it counts the link the program has
+        // open (`Screen::link_cells`) and finds it by its `id`.
+        let mut grid = Self::fresh(self.size, self.history_bytes(), next, version, self.unmade);
+        grid.links = std::mem::take(&mut self.links);
+        *self = grid;
     }
 
     /// Whether `clear` can reuse the storage: it holds only the live rows,

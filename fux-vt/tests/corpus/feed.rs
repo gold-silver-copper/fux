@@ -37,12 +37,9 @@ impl Feed for Parser {
     fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.process_into(bytes, &mut ())
     }
-    /// A refusal of room is an error here, for a test to see.
     fn process_into(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
-        match self.process_all(bytes, sink) {
-            0 => Ok(()),
-            _ => Err(Error::Capacity),
-        }
+        self.process_all(bytes, sink);
+        Ok(())
     }
 }
 

@@ -46,9 +46,6 @@ enum Prefix {
     FullRows(usize),
     /// 2,000 links of 2,083-byte URIs, 4 MiB of links held (B16).
     HeldLinks,
-    /// An `x`, then this many of the allocations fux-vt makes room for
-    /// refused (`refuse_next`); a call refused is no failure of the replay.
-    Refused(u32),
 }
 
 /// Which fuzz target's format the seed is also written in.
@@ -994,22 +991,6 @@ fn seeds() -> Vec<Seed> {
             fuzz: Fuzz::Terminal,
         },
         Seed {
-            name: "b44-refused-mark",
-            row: "B44",
-            size: (1, 10, 1 << 20),
-            prefix: Prefix::Refused(1),
-            bytes: || b"\x1b]133;A\x07hello".to_vec(),
-            // A prompt mark's fresh line scrolls into history, whose first
-            // block is refused: one refusal, and the text after it shown.
-            // `hello` once went into the OSC. `deep` refuses nothing.
-            reaches: |r| {
-                text_shows(r, "hello")?;
-                let refused = r.parser.refused();
-                ensure(refused == 1, || format!("{refused} refusals"))
-            },
-            fuzz: Fuzz::None,
-        },
-        Seed {
             name: "b45-longest-key",
             row: "B45",
             size: defaults,
@@ -1139,13 +1120,9 @@ fn replay(seed: &Seed) -> Result<Replayed> {
             repeat(&row, n)
         }
         Prefix::HeldLinks => repeat(&held_link(), 2000),
-        Prefix::Refused(_) => b"x".to_vec(),
     };
     for piece in pieces(&prefix) {
         parser.process(piece)?;
-    }
-    if let Prefix::Refused(n) = seed.prefix {
-        fux_vt::refuse_next(n);
     }
     let bytes = (seed.bytes)();
     let (before, mut events, mut inputs) = (fux_vt::work_spent(), Events::default(), Vec::new());
@@ -1158,13 +1135,9 @@ fn replay(seed: &Seed) -> Result<Replayed> {
         decoder.timeout(&mut inputs);
     } else {
         for piece in pieces(&bytes) {
-            let refused = parser.process_all(piece, &mut events);
-            if !matches!(seed.prefix, Prefix::Refused(_)) && refused > 0 {
-                return Err(fux_vt::Error::Capacity.into());
-            }
+            parser.process_all(piece, &mut events);
         }
     }
-    fux_vt::refuse_next(0);
     Ok(Replayed {
         parser,
         work: fux_vt::work_spent().saturating_sub(before),

@@ -4,7 +4,6 @@
 //! (`THREATS.md` B17).
 
 use super::Kept;
-use crate::Error;
 
 #[derive(Debug, Default)]
 pub(crate) struct Ring {
@@ -65,21 +64,13 @@ impl Ring {
     pub(crate) fn has_room(&self) -> bool {
         self.last.len() < self.last.capacity()
     }
-    /// Starts a new last chunk; fails, with nothing changed, only when
-    /// out of memory.
-    pub(crate) fn grow(&mut self) -> Result<(), Error> {
-        if !self.last.is_empty() {
-            self.full.try_reserve(1).map_err(|_| Error::Capacity)?;
-        }
-        let mut chunk = Vec::new();
-        chunk
-            .try_reserve_exact(self.chunk())
-            .map_err(|_| Error::Capacity)?;
+    /// Starts a new last chunk.
+    pub(crate) fn grow(&mut self) {
+        let chunk = Vec::with_capacity(self.chunk());
         let last = std::mem::replace(&mut self.last, chunk);
         if !last.is_empty() {
             self.full.push(last);
         }
-        Ok(())
     }
     /// Appends `kept`; the caller checks `has_room` first.
     #[inline(always)]

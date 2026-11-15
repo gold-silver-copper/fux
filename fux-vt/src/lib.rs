@@ -83,7 +83,7 @@ use std::{fmt, ops::Range};
 
 pub use cell::{Attributes, Blink, CellRef, Cells, Color, Rgb, SgrForm, UnderlineStyle};
 #[cfg(feature = "checks")]
-pub use check::{Checked, Fault, refuse_next};
+pub use check::{Checked, Fault};
 pub use geometry::{Size, SizeError};
 pub use link::Hyperlink;
 pub use mode::{Mode, ModeStatus};
@@ -126,31 +126,9 @@ pub(crate) fn split_semicolon(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((halves.next()?, halves.next()?))
 }
 
-thread_local! {
-    /// How many refusals of room this thread's calls have met and gone on
-    /// past, each with its defined degrade (THREATS.md 1.3).
-    static DEGRADED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Counts a refusal of room met by its degrade rather than an error, such
-/// as a row let go instead of kept in history ([`Parser::refused`]).
-#[cold]
-pub(crate) fn degraded() {
-    DEGRADED.with(|n| n.set(n.get().saturating_add(1)));
-}
-
-pub(crate) fn degrades() -> u64 {
-    DEGRADED.with(std::cell::Cell::get)
-}
-
-/// Makes room in `v` for `len` items in all, or says there is none.
-pub(crate) fn reserve<T>(v: &mut Vec<T>, len: usize) -> Result<(), Error> {
-    #[cfg(feature = "checks")]
-    if check::refusing() {
-        return Err(Error::Capacity);
-    }
-    v.try_reserve_exact(len.saturating_sub(v.len()))
-        .map_err(|_| Error::Capacity)
+/// Makes room in `v` for exactly `len` items in all.
+pub(crate) fn reserve<T>(v: &mut Vec<T>, len: usize) {
+    v.reserve_exact(len.saturating_sub(v.len()));
 }
 
 /// A reply to a query, kept off the heap: the longest, XTVERSION's with
@@ -439,13 +417,13 @@ impl<'a> Row<'a> {
 /// Input/resource errors. Failing size changes leave the old screen intact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// More rows or cells than a grid may hold, or an allocation that failed.
+    /// More rows or cells than a grid may hold.
     Capacity,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Capacity => "terminal allocation limit exceeded",
+            Self::Capacity => "more rows or cells than a terminal holds",
         })
     }
 }
