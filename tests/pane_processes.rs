@@ -1679,33 +1679,50 @@ fn a_pane_process_its_record_lacks_is_ended() -> Outcome {
     Ok(())
 }
 
-/// 29. A run whose panes a live server still holds is not taken: with that
-///     server's lock and socket files removed under it (a cleaner of idle
-///     files), the server a `start` makes leaves the run as its panes say
-///     who holds them, naming that server, and writes nothing; the panes
-///     go on, held as before (D-171).
+/// What a cleaner of idle files can remove beside a live server's socket
+/// is removed: its socket file and the file that orders starts there.
+fn clean_beside(server: &Server) -> Outcome {
+    let mut starting = server.socket.clone().into_os_string();
+    starting.push(".starting");
+    std::fs::remove_file(&starting).map_err(e)?;
+    std::fs::remove_file(&server.socket).map_err(e)
+}
+
+/// What a `start` on `server`'s socket, refused, said: on its own stderr,
+/// or in the log of the server it started.
+fn refused_start(server: &Server) -> Result<String, String> {
+    let start = within(server, 30, &["(sequence! (start) #inert)"])?;
+    assert_ne!(start.status, 0, "a second server started");
+    let log = std::fs::read_to_string(server.socket.with_file_name("fux.log"));
+    Ok(start.stderr + &log.unwrap_or_default())
+}
+
+/// 29. A run a live server holds is not taken, whatever was removed
+///     beside its socket (a cleaner of idle files): a `start` is refused,
+///     naming the server that holds the run and saying its socket is
+///     gone, and changes nothing: no socket is made, the record is as it
+///     was, and the panes go on, held as before (D-177). (The lock was a
+///     file beside the socket: with it removed a second server started on
+///     the run, and left only once a pane said who held it.)
 #[test]
-fn a_run_a_live_server_holds_is_left_to_it() -> Outcome {
+fn a_run_a_live_server_holds_is_refused_whatever_was_removed_beside_it() -> Outcome {
     let server = Server::start("")?;
     let sleeper = pane(&server, "w", &["sleep", "1016"])?;
     let _reap = reap_run(&server)?;
     let own = own_process(&server, &sleeper)?;
     let programs: Vec<i32> = server.panes()?.into_iter().map(|(_, pid)| pid).collect();
     let pid = server_pid(&server)?;
-    let mut lock = server.socket.clone().into_os_string();
-    lock.push(".lock");
-    std::fs::remove_file(&lock).map_err(e)?;
-    std::fs::remove_file(&server.socket).map_err(e)?;
+    clean_beside(&server)?;
     let record = kept(&server).join("run");
     let before = std::fs::read(&record).map_err(e)?;
-    let _ = within(&server, 30, &["(sequence! (start) #inert)"])?;
-    let held = format!("is held by the fux server with pid {pid}");
-    // The log of a server a client starts is beside its socket.
-    let log = server.socket.with_file_name("fux.log");
-    eventually("the second server said who holds the run", || {
-        Ok(std::fs::read_to_string(&log).is_ok_and(|said| said.contains(&held)))
-    })?;
-    eventually("the second server gone", || Ok(!server.socket.exists()))?;
+    let said = refused_start(&server)?;
+    assert!(
+        said.contains("another fux server") && said.contains("its socket file is gone"),
+        "{said}"
+    );
+    #[cfg(target_os = "linux")]
+    assert!(said.contains(&format!("(process {pid})")), "{said}");
+    assert!(!server.socket.exists(), "the refused start made a socket");
     assert_eq!(std::fs::read(&record).map_err(e)?, before, "its record");
     assert!(alive(own) && alive(pid), "the pane or its server ended");
     assert!(programs.iter().all(|pid| alive(*pid)), "a program ended");
@@ -1716,17 +1733,13 @@ fn a_run_a_live_server_holds_is_left_to_it() -> Outcome {
     })
 }
 
-/// 29b. A second server on a run a live server holds removes none of that
-///     server's name files, and the record it writes before it hears who
-///     holds the run reads whole (D-175). The first server is stopped, a
-///     name's file of its own written and its structure not yet (made, as
-///     its numbers are its process's); one of its panes' processes is
-///     killed, so the second server, taking the run, finds a pane gone
-///     and records that before the other pane says who holds it. It
-///     leaves: its record names files of its own, and the first server's
-///     are all there.
+/// 29b. A run is its server's while that server lives, though it is
+///     stopped and a pane of it gone meanwhile: a `start` then is refused
+///     too, and neither writes a record nor removes a name's file (D-177;
+///     a second server once took such a run, recorded the pane gone and
+///     wrote names of its own beside the first's, D-175).
 #[test]
-fn a_second_server_leaves_a_whole_record_and_the_firsts_name_files() -> Outcome {
+fn a_stopped_servers_run_is_refused_with_its_record_and_names_as_they_were() -> Outcome {
     let server = Server::start("")?;
     let stays = pane(&server, "w", &["sleep", "1017"])?;
     let goes = pane(&server, "w", &["sleep", "1018"])?;
@@ -1736,36 +1749,20 @@ fn a_second_server_leaves_a_whole_record_and_the_firsts_name_files() -> Outcome 
         fux::script::quoted(&stays)
     )])?;
     let (own, pid) = (own_process(&server, &goes)?, server_pid(&server)?);
-    let pending = kept(&server).join(format!("name.{pid}.4242"));
-    std::fs::write(&pending, "pending").map_err(e)?;
     let names = name_files(&server);
-    assert!(names.len() >= 2, "{names:?}");
+    assert!(!names.is_empty(), "{names:?}");
     // Stopped: what follows it does not see, nor record.
     signal(pid, Signal::Stop);
     let _resume = Resumed(pid);
     signal(own, Signal::Kill);
     eventually("the pane's process gone", || Ok(!alive(own)))?;
-    let mut lock = server.socket.clone().into_os_string();
-    lock.push(".lock");
-    std::fs::remove_file(&lock).map_err(e)?;
-    std::fs::remove_file(&server.socket).map_err(e)?;
+    clean_beside(&server)?;
     let record = kept(&server).join("run");
     let before = std::fs::read(&record).map_err(e)?;
-    let _ = within(&server, 30, &["(sequence! (start) #inert)"])?;
-    let held = format!("is held by the fux server with pid {pid}");
-    let log = server.socket.with_file_name("fux.log");
-    eventually("the second server said who holds the run", || {
-        Ok(std::fs::read_to_string(&log).is_ok_and(|said| said.contains(&held)))
-    })?;
-    eventually("the second server gone", || Ok(!server.socket.exists()))?;
-    // It found a pane gone, and recorded that: a record that reads whole,
-    // its names in files of the second server's own, beside the first's.
-    assert_ne!(std::fs::read(&record).map_err(e)?, before, "its record");
-    let read = fux_server::record::read(&record)?.ok_or("no record")?;
-    let named = fux_server::record::read_names(&kept(&server), &read.tree)?;
-    assert!(named.values().any(|name| &**name == "held"), "{named:?}");
-    let left = name_files(&server);
-    assert!(names.iter().all(|name| left.contains(name)), "{left:?}");
+    let said = refused_start(&server)?;
+    assert!(said.contains("another fux server"), "{said}");
+    assert_eq!(std::fs::read(&record).map_err(e)?, before, "its record");
+    assert_eq!(name_files(&server), names, "its names' files");
     signal(pid, Signal::Cont);
     signal(pid, Signal::Term);
     eventually("the first server gone", || Ok(!alive(pid)))
@@ -2300,25 +2297,29 @@ fn a_pane_closed_while_it_begins_is_told_to_close() -> Outcome {
 }
 
 /// 37. A server that stopped lets go of what its run kept only while no
-///     other server has the socket: with the socket's lock held by another
-///     (here the test, as a server started meanwhile), it removes neither
-///     the record nor the run's fux, which are that one's to deal with;
-///     the next start finds the run ended and begins anew (D-174; it
-///     removed them whoever's they were by then).
+///     other server has the run: with the run's lock held by another by
+///     then (here the test, as a server started meanwhile: it is ahead at
+///     the file that orders starts, and takes the lock on the run's
+///     directory the moment the first lets it go), it removes neither the
+///     record nor the run's fux, which are that one's to deal with; the
+///     next start finds the run ended and begins anew (D-174; it removed
+///     them whoever's they were by then).
 #[test]
 fn a_stopped_server_removes_nothing_under_another_servers_lock() -> Outcome {
     let server = Server::start("")?;
     let pid = server_pid(&server)?;
-    // Another's lock: the file the first holds is replaced, as a cleaner
-    // of idle files leaves it, and the new one locked.
     let mut path = server.socket.clone().into_os_string();
-    path.push(".lock");
-    std::fs::remove_file(&path).map_err(e)?;
-    let lock = std::fs::File::create(&path).map_err(e)?;
-    lock.try_lock().map_err(e)?;
-    signal(pid, Signal::Term);
-    eventually("the first server gone", || Ok(!alive(pid)))?;
+    path.push(".starting");
+    let ahead = std::fs::File::open(&path).map_err(e)?;
+    ahead.lock().map_err(e)?;
     let kept = kept(&server);
+    let lock = std::fs::File::open(&kept).map_err(e)?;
+    signal(pid, Signal::Term);
+    eventually("the first server's lock let go", || {
+        Ok(lock.try_lock().is_ok())
+    })?;
+    drop(ahead);
+    eventually("the first server gone", || Ok(!alive(pid)))?;
     assert!(
         kept.join("run").exists() && kept.join("exe").exists(),
         "it removed what another server's lock covers"

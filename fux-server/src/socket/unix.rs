@@ -972,15 +972,27 @@ mod tests {
         let mode = |p: &Path| fs::metadata(p).map(|m| m.permissions().mode() & 0o777).ok();
         assert_eq!(mode(&path), Some(0o600));
         assert_eq!(mode(&root.join("fux")), Some(0o700));
-        // A second server on the same path is refused while the first lives.
-        let second = bind(&path);
-        assert_eq!(
-            second.err().map(|e| e.to_string()),
-            Some(format!(
-                "another fux server is already using {}",
-                path.display()
-            ))
-        );
+        // A second server on the same path is refused while the first
+        // lives, naming it where the system says which process it is; and
+        // still with the one lock file there is removed, as a cleaner of
+        // old files would: the run's lock is on its directory.
+        let using = format!("is already using {}", path.display());
+        for removed in [false, true] {
+            if removed {
+                fs::remove_file(root.join("fux").join("s.sock.starting"))?;
+            }
+            let second = bind(&path).err().map(|e| e.to_string());
+            let second = second.ok_or("a second server took the socket")?;
+            assert!(
+                second.starts_with("another fux server") && second.contains(&using),
+                "{second}"
+            );
+            #[cfg(target_os = "linux")]
+            assert!(
+                second.contains(&format!("(process {})", std::process::id())),
+                "{second}"
+            );
+        }
         // A client connects, and its peer is this user.
         let client = UnixStream::connect(&path).map_err(|e| e.to_string())?;
         let (served, _) = listener.accept().map_err(|e| e.to_string())?;
