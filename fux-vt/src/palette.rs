@@ -119,13 +119,22 @@ fn atoi(text: &[u8]) -> i32 {
     }
 }
 
+/// `digits` read as hex digits and nothing else: `from_str_radix` alone
+/// takes a sign before them.
+fn hex_digits(digits: &[u8]) -> Option<u32> {
+    let digits = str::from_utf8(digits).ok()?;
+    (digits.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| u32::from_str_radix(digits, 16).ok())
+        .flatten()
+}
+
 /// A channel of `digits` hex digits (at most four) read as XParseColor
 /// reads `rgb:`, scaled to 16 bits.
 fn scaled(digits: &[u8]) -> Option<u16> {
     if digits.is_empty() || digits.len() > 4 {
         return None;
     }
-    let value = u32::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
+    let value = hex_digits(digits)?;
     let bits = u32::try_from(digits.len()).ok()?.checked_mul(4)?;
     let largest = 1u32.checked_shl(bits)?.checked_sub(1)?;
     u16::try_from(value.checked_mul(0xffff)?.checked_div(largest)?).ok()
@@ -145,7 +154,7 @@ impl Rgb {
             let shift = u32::try_from(n).ok()?.checked_mul(4)?;
             let channel = |i: usize| -> Option<u16> {
                 let digits = hex.get(i.checked_mul(n)?..i.checked_add(1)?.checked_mul(n)?)?;
-                let value = u16::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
+                let value = u16::try_from(hex_digits(digits)?).ok()?;
                 value.checked_shl(16u32.checked_sub(shift)?)
             };
             [channel(0)?, channel(1)?, channel(2)?]

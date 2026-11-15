@@ -113,6 +113,18 @@ fn specifications_are_kept_as_xterm_keeps_them() -> Result {
     Ok(())
 }
 
+/// A sign is no hex digit: a specification with one among its digits is
+/// not read, and sets nothing.
+#[test]
+fn a_sign_among_a_colours_digits_is_no_digit() -> Result {
+    for spec in ["#+f+f+f", "rgb:+f/+f/+f"] {
+        let input = format!("\x1b]4;1;{spec}\x1b\\\x1b]4;1;?\x1b\\");
+        let (heard, _) = run(PALETTE, input.as_bytes())?;
+        assert_eq!(heard, said(&[]), "{spec}");
+    }
+    Ok(())
+}
+
 /// xterm's `ChangeAnsiColorRequest`: a pair whose specification cannot be
 /// read, or whose number is out of range, ends the list; a number is read
 /// as `atoi` reads it, so `x` is 0 and `1x` is 1; a query in the list sees
