@@ -8,11 +8,11 @@
 //! `Host` is that process's state, run by its loop (`run`); a session held
 //! in one process (the tests', the tools') holds its panes' hosts itself
 //! (`Link::Local`).
-use crate::journal::{Sent, Told};
 use crate::link::{Answered, Ask, Begin, FromPane, Hosting, Refusal, ToPane, Typed, Update};
 use crate::pane::{self, Pane, PaneMut, Process, Runs};
 use crate::process::{self, Child, Pid};
 use crate::render::Grid;
+use crate::told::{Sent, Told};
 use fux_vt::Size;
 use fux_wire::answer::{self, Ended};
 use fux_wire::code::{Code, Error, fail};
@@ -705,7 +705,7 @@ impl Host {
     /// told, from the program whose terminal it is, the one respawned over
     /// or that left a writer too; only its own program stops being read for
     /// it.
-    pub(crate) fn read_left_with(
+    pub fn read_left_with(
         &mut self,
         empty_ends: bool,
         mut read: impl FnMut(&fuxix::pty::Master, &mut [u8]) -> Result<usize, fuxix::Errno>,
@@ -1762,8 +1762,8 @@ impl Host {
         self.respawning.is_some()
     }
     /// Its ended program's last output is awaited till `at`.
-    #[cfg(all(test, unix))]
-    pub(crate) fn settle_till(&mut self, at: Instant) {
+    #[cfg(all(any(test, feature = "testing"), unix))]
+    pub fn settle_till(&mut self, at: Instant) {
         self.settling = Some(at);
     }
     /// Whether a program whose exit is told is still read.
@@ -1781,33 +1781,33 @@ impl Host {
         }
     }
     /// Gives it `process`, as a test's pane runs a child of the test's.
-    #[cfg(all(test, unix))]
-    pub(crate) fn set_process(&mut self, process: Process) -> Process {
+    #[cfg(all(any(test, feature = "testing"), unix))]
+    pub fn set_process(&mut self, process: Process) -> Process {
         self.pane_mut().set_process(process)
     }
     /// Starts real programs from now on, told `socket`, or none.
-    #[cfg(test)]
-    pub(crate) fn starts(&mut self, socket: Option<PathBuf>) {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn starts(&mut self, socket: Option<PathBuf>) {
         self.socket = socket;
     }
     /// The program a respawn under way started, and its fresh pane's
     /// history budget.
-    #[cfg(test)]
-    pub(crate) fn replacement(&self) -> Option<(Option<&Child>, usize)> {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn replacement(&self) -> Option<(Option<&Child>, usize)> {
         let r = self.respawning.as_ref()?;
         Some((r.process.child(), r.fresh.history_bytes()))
     }
     /// The program a respawn under way respawns over is `old`.
-    #[cfg(all(test, unix))]
-    pub(crate) fn respawned_over(&mut self, old: Child) {
+    #[cfg(all(any(test, feature = "testing"), unix))]
+    pub fn respawned_over(&mut self, old: Child) {
         if let Some(r) = &mut self.respawning {
             r.old = Some(old);
         }
     }
     /// A respawn under way over `old`, into `fresh`, its grace over: as
     /// one over a program that ignores the hangup.
-    #[cfg(all(test, unix))]
-    pub(crate) fn respawning_over(&mut self, fresh: Pane, old: Child, now: Instant) {
+    #[cfg(all(any(test, feature = "testing"), unix))]
+    pub fn respawning_over(&mut self, fresh: Pane, old: Child, now: Instant) {
         if let Process::Reading(child) = self.set_process(Process::Respawning) {
             self.dying.push(Dying {
                 child,
@@ -1826,8 +1826,8 @@ impl Host {
         });
     }
     /// The programs it started and has not reaped.
-    #[cfg(all(test, unix))]
-    pub(crate) fn children(&self) -> Vec<Pid> {
+    #[cfg(all(any(test, feature = "testing"), unix))]
+    pub fn children(&self) -> Vec<Pid> {
         (self.pane.process().child().into_iter())
             .chain(
                 (self.respawning.iter()).flat_map(|r| r.process.child().into_iter().chain(&r.old)),
@@ -1898,7 +1898,7 @@ fn spawn(
 /// asked to make for it, and of those fux queues it unasked (in-band
 /// resize, colour scheme), so that none waits for a program respawned
 /// there.
-pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
+pub fn refuses_input(pane: &Pane) -> Option<Error> {
     let why = match pane.process() {
         Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
         Process::ReadFailed(_, error) => {
@@ -1917,7 +1917,7 @@ pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
 }
 
 /// `pane`'s program has ended, with `status`: it takes no input.
-pub(crate) fn ended(pane: PaneId, status: Ended) -> Error {
+pub fn ended(pane: PaneId, status: Ended) -> Error {
     let was = match status {
         Ended::Exited(_) | Ended::Lost => "",
         Ended::Signalled(_) => "was ",
@@ -2103,7 +2103,9 @@ fn heed(
 }
 
 /// The loop of a pane's own process (`fux __pane`), listening at its
-/// socket on `listener`, until it is closed and its program is gone: it
+/// socket on `listener`, until it is closed and its program is gone;
+/// `unlink` removes its own socket's file, the one its server bound for
+/// it, as it closes or ends. It
 /// starts as a server's first word says (`ToPane::Begin`), waiting for one
 /// however many reach it and say something else, each told it has not
 /// begun (`Taking::Unbegun`); and then reads its program's terminal, its
@@ -2111,11 +2113,7 @@ fn heed(
 /// process showing its screen, or a server of its run that takes it back
 /// once its own is gone without closing it (a crash, D-124), each answered
 /// in words (`Taking`), one at a time.
-pub fn serve(
-    mut listener: crate::socket::PaneListener,
-    socket: Option<PathBuf>,
-    own_socket: crate::socket::Own,
-) -> Result<(), String> {
+pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Result<(), String> {
     use crate::link::{End, FromSide, Read, Taking, ToSide};
     use fuxix::poll::{Events, PollFd};
     if let Err(errno) = fuxix::process::adopt_orphans() {
@@ -2123,16 +2121,8 @@ pub fn serve(
     }
     let children = fuxix::signal::Pipe::new(&[fuxix::process::Signal::Chld])
         .map_err(|e| format!("the signal pipe: {e}"))?;
-    crate::socket::load_terminals();
-    crate::socket::pane_listen(&listener)?;
+    crate::socket::pane_listen(&listener).map_err(|e| format!("its socket: {e}"))?;
     let own = i32::try_from(std::process::id()).unwrap_or(0);
-    // Its own socket's file, the one its server bound for it: what it
-    // removes as it ends, and no file put there since.
-    let unlink = |socket: &Option<PathBuf>| {
-        if let Some(socket) = socket {
-            crate::socket::unlink_own(&own_socket, socket);
-        }
-    };
     // A server gone before its first word started nothing, and nothing is
     // lost by waiting for the next: the one that takes its run back begins
     // it from the run's record, where it was written before it was started.
@@ -2140,7 +2130,8 @@ pub fn serve(
     // answered is heeded, a close after a taking (its run ending) or its
     // start after it said it has not begun.
     let (mut end, begin) = 'begun: loop {
-        let stream = crate::socket::pane_next(&mut listener)?;
+        let stream =
+            crate::socket::pane_next(&mut listener).map_err(|e| format!("its server: {e}"))?;
         let mut end = End::new(stream).map_err(|e| format!("its link: {e}"))?;
         loop {
             match end.wait::<ToPane>() {
@@ -2150,7 +2141,7 @@ pub fn serve(
                 Ok(Some(ToPane::Close { .. })) => {
                     end.send(&FromPane::Taking(Taking::Closing));
                     let _ = end.flush_all();
-                    unlink(&socket);
+                    unlink();
                     return Ok(());
                 }
                 Ok(Some(ToPane::Take { .. } | ToPane::Who)) => {
@@ -2175,7 +2166,7 @@ pub fn serve(
             }
         }
     };
-    crate::socket::pane_begun(&listener)?;
+    crate::socket::pane_begun(&listener).map_err(|e| format!("its socket: {e}"))?;
     // The server that holds its link, as it said it is.
     let mut server = begin.server;
     let mut host = match Host::begin(*begin, Instant::now()) {
@@ -2214,16 +2205,17 @@ pub fn serve(
     // before it looks again, as what it did not read would wake it at once.
     let mut rest = false;
     let mut poll = fuxix::poll::Poll::default();
-    let mut socket = socket;
+    // Its socket's file is removed once, as it closes or ends: a file put
+    // at its path after that is another's.
+    let mut found = true;
     loop {
         if std::mem::take(&mut rest) {
             std::thread::sleep(STARVED);
         }
         let now = Instant::now();
         // Closed, it waits for no server: none finds it, as it ends.
-        if host.closed.is_some() && socket.is_some() {
-            unlink(&socket);
-            socket = None;
+        if host.closed.is_some() && std::mem::take(&mut found) {
+            unlink();
         }
         let due = clock.due(now) <= now;
         let mut sent = false;
@@ -2294,7 +2286,9 @@ pub fn serve(
         }
         if host.finished() {
             host.finish();
-            unlink(&socket);
+            if found {
+                unlink();
+            }
             return Ok(());
         }
         let timer = host.timer();

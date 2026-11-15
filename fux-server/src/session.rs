@@ -6467,7 +6467,7 @@ mod tests {
                     None,
                     runs.clone(),
                     sized(9, 40)?,
-                    crate::pane::tests::options(1024)?,
+                    crate::pane::testing::options(1024)?,
                     Instant::now(),
                 )?;
                 host(&mut session, id, |h| {
@@ -7137,7 +7137,7 @@ mod tests {
             "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
-        let left: Vec<_> = std::iter::repeat_n(crate::pane::tests::spends_the_budget(24, 80), 4)
+        let left: Vec<_> = std::iter::repeat_n(crate::pane::testing::spends_the_budget(24, 80), 4)
             .flatten()
             .collect();
         s.out(id, &left);
@@ -7201,7 +7201,7 @@ mod tests {
             s.run,
             None,
         )?;
-        let spends = crate::pane::tests::spends_the_budget(24, 80);
+        let spends = crate::pane::testing::spends_the_budget(24, 80);
         let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
         left.push(0x07);
         s.out(id, &left);
@@ -7269,7 +7269,7 @@ mod tests {
             ),
         )?;
         let id = PaneId::of(2);
-        s.out(id, &crate::pane::tests::spends_the_budget(23, 80));
+        s.out(id, &crate::pane::testing::spends_the_budget(23, 80));
         // Programs are started, as a server starts them.
         host(&mut s, id, |h| {
             h.starts(Some("/nonexistent/fux.sock".into()))
@@ -7382,7 +7382,7 @@ mod tests {
                     h.pane_mut().exiting(ended);
                 }
             })?;
-            s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
+            s.out(id, &crate::pane::testing::spends_the_budget(24, 80));
             let mut stream = crate::journal::Reader::new(
                 fux_wire::inspect::Scope::All,
                 s.parts.journal(),
@@ -7443,7 +7443,7 @@ mod tests {
             "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
-        s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
+        s.out(id, &crate::pane::testing::spends_the_budget(24, 80));
         let begun = s.begin_now(respawn_of(id, &[])?, &Origin::Cli(Caller::default()));
         let Begun::Waiting(mut waiting) = begun else {
             return Err("answered before what was left was read".into());
@@ -7465,7 +7465,7 @@ mod tests {
             "(new-tab (program (size (in (options) \"agent\") 80 24) \"/bin/cat\"))",
         )?;
         let id = PaneId::of(2);
-        s.out(id, &crate::pane::tests::spends_the_budget(24, 80));
+        s.out(id, &crate::pane::testing::spends_the_budget(24, 80));
         let mut stream = crate::journal::Reader::new(
             fux_wire::inspect::Scope::All,
             s.parts.journal(),
@@ -11498,7 +11498,7 @@ mod journal_tests {
         )?;
         s.output(id, b"\x07", Instant::now());
         // Force the replacement to finish on a later parser turn.
-        let spends = crate::pane::tests::spends_the_budget(24, 80);
+        let spends = crate::pane::testing::spends_the_budget(24, 80);
         let left: Vec<u8> = std::iter::repeat_n(spends, 3).flatten().collect();
         s.output(id, &left, Instant::now());
         let replacement = Command::Respawn {

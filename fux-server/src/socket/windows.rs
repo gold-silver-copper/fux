@@ -31,6 +31,8 @@ use std::os::windows::io::{AsHandle, BorrowedHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+pub use fux_pane::socket::{Accepted, PaneListener, Stream, accept, nonblocking, peer, serve};
+
 /// fux's folder's name: its own for an elevated process, whose default
 /// owner is not its normal processes' (D-137).
 pub fn folder() -> Result<&'static str, Error> {
@@ -269,47 +271,19 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Listener), Error> {
     Ok((endpoint, listener))
 }
 
-/// One end of a link between fux's own processes, or a client's.
-pub type Stream = fuxix::io::Stream;
 /// The server's pipe.
 pub type Listener = fuxix::socket::Listener;
-/// A client's connection, as accepted: to serve, or to hand to its
-/// connection's process.
-pub type Accepted = fuxix::socket::Connection;
 /// What a child is handed as a standard handle.
 pub type Handed = OwnedHandle;
-/// A pane's process's pipe, where its server and connections reach it.
-pub type PaneListener = fuxix::socket::Listener;
-
 /// Connects to the pipe the path `path` names.
 pub fn connect(path: &Path) -> std::io::Result<Stream> {
     let name = pipe_name(path).map_err(std::io::Error::other)?;
     Ok(fuxix::socket::connect(&name)?)
 }
 
-/// Streams are always read and written without waiting here.
-pub fn nonblocking(_stream: &Stream) -> std::io::Result<()> {
-    Ok(())
-}
-
 /// The listener accepts without waiting already.
 pub fn listening(_listener: &Listener) -> std::io::Result<()> {
     Ok(())
-}
-
-/// The next client connected at `listener`: `WouldBlock` while none has.
-pub fn accept(listener: &mut Listener) -> std::io::Result<Accepted> {
-    Ok(listener.accept()?)
-}
-
-/// Who connected on `accepted`, as the system says.
-pub fn peer(accepted: &Accepted) -> fuxix::Result<fuxix::socket::Peer> {
-    fuxix::socket::peer(accepted, accepted.connected()?)
-}
-
-/// `accepted` as a stream to serve here.
-pub fn serve(accepted: Accepted) -> std::io::Result<Stream> {
-    Ok(accepted.stream()?)
 }
 
 /// A second hold on `accepted`'s connection, which outlives handing the
@@ -446,32 +420,6 @@ pub fn pane_listener(args: &[String]) -> Result<(PaneListener, Option<PathBuf>, 
     (stdout.write_all(b"\n").and_then(|()| stdout.flush()))
         .map_err(|e| format!("telling its server: {e}"))?;
     Ok((listener, Some(socket), Own))
-}
-
-/// A pane's process made its pipe itself (`pane_listener`): nothing more
-/// to listen on.
-pub fn pane_listen(_listener: &PaneListener) -> Result<(), String> {
-    Ok(())
-}
-
-/// A pane's process has begun: its pipe is read without waiting already.
-pub fn pane_begun(_listener: &PaneListener) -> Result<(), String> {
-    Ok(())
-}
-
-/// The next to reach a pane's process at `listener`, waited for: its
-/// server, till it has begun.
-pub fn pane_next(listener: &mut PaneListener) -> Result<Stream, String> {
-    use fuxix::poll::{Events, PollFd};
-    loop {
-        match listener.accept() {
-            Ok(connection) => return connection.stream().map_err(|e| format!("its server: {e}")),
-            Err(fuxix::Errno::AGAIN) => {}
-            Err(error) => return Err(format!("its server: {error}")),
-        }
-        let mut fds = [PollFd::new(&*listener, Events::IN)];
-        fuxix::poll::poll(&mut fds, None).map_err(|e| format!("poll: {e}"))?;
-    }
 }
 
 /// Reaches for what listens on the pipe the path `socket` names: a link

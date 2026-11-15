@@ -133,8 +133,16 @@ fn serve(args: &[String]) -> ExitCode {
 /// socket listening on stdin (on Windows, the socket's path in `args`,
 /// which names the pipe it makes).
 fn pane(args: &[String]) -> ExitCode {
-    let served = socket::pane_listener(args)
-        .and_then(|(listener, socket, own)| fux_server::host::serve(listener, socket, own));
+    let served = socket::pane_listener(args).and_then(|(listener, socket, own)| {
+        socket::load_terminals();
+        // Its own socket's file, and no file put at its path since.
+        let unlink = || {
+            if let Some(socket) = &socket {
+                socket::unlink_own(&own, socket);
+            }
+        };
+        fux_server::host::serve(listener, &unlink)
+    });
     match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

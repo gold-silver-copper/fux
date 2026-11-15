@@ -681,7 +681,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
 /// foreground group. One that ended is held till a respawn's program takes
 /// its place; `null` while a respawn lets go of one that ran, and the pane
 /// holds none.
-pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
+pub fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
     let process = pane.process();
     let state = match process {
         // A session that starts no programs (tests) runs its panes' unstarted,
@@ -729,7 +729,7 @@ pub(crate) fn program(pane: &Pane) -> Result<Json, fux_wire::code::Error> {
 /// (a live `get` reads one): the modes that say how its program takes
 /// input, the input queued for it, and the cell its program is told, by
 /// its tab's host (`Session::host_panes`); and the pane's options.
-pub(crate) fn terminal(fact: Terminal, p: &Pane) -> Json {
+pub fn terminal(fact: Terminal, p: &Pane) -> Json {
     match fact {
         Terminal::AltScreen => Json::Bool(p.screen().mode(Mode::AlternateScreen)),
         // What it asked for: whether a move without a button is reported.
@@ -808,7 +808,7 @@ pub(crate) fn terminal(fact: Terminal, p: &Pane) -> Json {
 }
 
 /// What a pane was started as: a shell or a program, and where.
-pub(crate) fn launch(pane: &Pane) -> fux_wire::inspect::Launch {
+pub fn launch(pane: &Pane) -> fux_wire::inspect::Launch {
     fux_wire::inspect::Launch {
         shell: matches!(pane.runs, crate::pane::Runs::Shell(_)),
         cwd: path(pane.runs.launch().cwd.as_os_str()),
@@ -818,7 +818,7 @@ pub(crate) fn launch(pane: &Pane) -> fux_wire::inspect::Launch {
 /// Exact OS bytes, never lossily converted to text: a Unix path's bytes,
 /// and on Windows its WTF-8 bytes (`OsStr::as_encoded_bytes`), which keep
 /// a lone surrogate (docs/json.md).
-pub(crate) fn path(value: &std::ffi::OsStr) -> fux_wire::inspect::Path {
+pub fn path(value: &std::ffi::OsStr) -> fux_wire::inspect::Path {
     match value.to_str() {
         Some(text) => fux_wire::inspect::Path::Utf8(text.to_owned()),
         None => fux_wire::inspect::Path::Bytes(value.as_encoded_bytes().to_vec()),
