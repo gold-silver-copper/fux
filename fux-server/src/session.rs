@@ -8177,9 +8177,9 @@ mod tests {
             "(sequence! (set \"bar\" (list \"bottom\" (list \"unknown\") () #false)) #inert)".to_owned(),
             "(sequence! (set \"bar\" (list \"bottom\" (list \"pane\") (list \"pane\") #false)) #inert)".to_owned(),
             format!("str bar list str bottom list {too_many} end list end false end set"),
-            "(sequence! (set \"bar\" (list \"top\" (list (list \"slot\" 16)) () #false)) #inert)".to_owned(),
-            "(sequence! (set \"bar-slots\" (list (list 0 \"one\") (list 0 \"two\"))) #inert)".to_owned(),
-            "(sequence! (set \"bar-slots\" (list (list 0 (code-point-to-string 10)))) #inert)".to_owned(),
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"slot\" 0)) () #false)) #inert)".to_owned(),
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" \"one\") (list \"text\" \"one\")) () #false)) #inert)".to_owned(),
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" (code-point-to-string 10))) () #false)) #inert)".to_owned(),
         ];
         for invalid in cases {
             // A valid preceding change is discarded with the refused draft.

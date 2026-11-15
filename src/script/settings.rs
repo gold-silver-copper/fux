@@ -306,7 +306,7 @@ impl Reads for fux_wire::presentation::Styles {
 
 impl Reads for fux_wire::presentation::Bar {
     fn takes() -> String {
-        "[top/bottom/off [left fields] [right fields] tab-numbers?]; fields: workspace tabs pane [slot 0..15]".to_owned()
+        "[top/bottom/off [left fields] [right fields] tab-numbers?]; fields: workspace tabs pane [text TEXT]".to_owned()
     }
     fn read(value: &Value<Fux>) -> Result<Self, Unread> {
         use fux_wire::presentation::{BarPosition, Field};
@@ -329,20 +329,18 @@ impl Reads for fux_wire::presentation::Bar {
                             "tabs" => Ok(Field::Tabs),
                             "pane" => Ok(Field::Pane),
                             name => Err(format!(
-                                "no bar field {name:?}; fields are workspace tabs pane [slot 0..15]"
+                                "no bar field {name:?}; fields are workspace tabs pane [text TEXT]"
                             )
                             .into()),
                         },
                         Value::List(_) => {
-                            let [name, index] = items(value)? else {
-                                return Err("a slot field is [slot 0..15]".to_owned().into());
+                            let [name, text] = items(value)? else {
+                                return Err("a text field is [text TEXT]".to_owned().into());
                             };
-                            if word(name)? != "slot" {
-                                return Err("a slot field is [slot 0..15]".to_owned().into());
+                            if word(name)? != "text" {
+                                return Err("a text field is [text TEXT]".to_owned().into());
                             }
-                            let id =
-                                u8::try_from(int(index)?).map_err(|_| "a bar slot is 0 to 15")?;
-                            Ok(Field::Slot(id))
+                            Ok(Field::Text(word(text)?.to_owned()))
                         }
                         Value::Float(_)
                         | Value::Symbol(_)
@@ -350,7 +348,7 @@ impl Reads for fux_wire::presentation::Bar {
                         | Value::Int(_)
                         | Value::Bool(_)
                         | Value::App(_) => {
-                            Err("a bar field is a name or [slot 0..15]".to_owned().into())
+                            Err("a bar field is a name or [text TEXT]".to_owned().into())
                         }
                     })
                     .collect()
@@ -375,7 +373,7 @@ impl Reads for fux_wire::presentation::Bar {
                 Field::Workspace => Data::text("workspace"),
                 Field::Tabs => Data::text("tabs"),
                 Field::Pane => Data::text("pane"),
-                Field::Slot(id) => Data::List(vec![Data::text("slot"), Data::int(*id)]),
+                Field::Text(text) => Data::List(vec![Data::text("text"), Data::text(text)]),
             };
             Data::List(fields.iter().map(field).collect())
         };
@@ -385,38 +383,5 @@ impl Reads for fux_wire::presentation::Bar {
             fields(self.right()),
             Data::Bool(self.tab_numbers()),
         ])
-    }
-}
-
-impl Reads for fux_wire::presentation::Slots {
-    fn takes() -> String {
-        "up to 16 [slot-number text] rows; 0..15, no controls; replaces all slots".to_owned()
-    }
-    fn read(value: &Value<Fux>) -> Result<Self, Unread> {
-        let rows = items(value)?;
-        held(|| {
-            if rows.len() > Self::MAX {
-                return Err("at most 16 bar slots".to_owned().into());
-            }
-            let values = rows
-                .iter()
-                .map(|row| {
-                    let [id, text] = items(row)? else {
-                        return Err(Self::takes().into());
-                    };
-                    let id = u8::try_from(int(id)?).map_err(|_| "a bar slot is 0 to 15")?;
-                    let text = word(text)?;
-                    Ok((id, text))
-                })
-                .collect::<Result<_, Unread>>()?;
-            Ok(Self::new(values)?)
-        })
-    }
-    fn data(&self) -> Data {
-        let ids = (0..u8::try_from(Self::MAX).unwrap_or(u8::MAX)).filter_map(|id| {
-            let text = self.text(id)?;
-            Some(Data::List(vec![Data::int(id), Data::text(text)]))
-        });
-        Data::List(ids.collect())
     }
 }

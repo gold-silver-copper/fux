@@ -635,8 +635,8 @@ fn bar_fields(
                     );
                 }
             }
-            Field::Slot(id) => {
-                if let Some(text) = view.presentation.slots.text(*id).filter(|t| !t.is_empty()) {
+            Field::Text(text) => {
+                if !text.is_empty() {
                     push(&mut parts, &mut room, format!(" {text} "), base);
                 }
             }
@@ -1744,13 +1744,13 @@ mod tests {
     }
 
     #[test]
-    fn bar_fields_follow_client_data_and_slots_stay_inert() -> Result<(), String> {
+    fn bar_fields_follow_client_data_and_text_stays_inert() -> Result<(), String> {
         use crate::session::testing::{attached, output_as};
         let (mut session, client) = attached(8, 100)?;
         output_as(
             &mut session,
             Some(client),
-            "(sequence! (set \"bar-slots\" (list (list 0 \"me detach\"))) (set \"bar\" (list \"top\" (list (list \"slot\" 0) \"tabs\" \"workspace\") (list \"pane\") #true)) #inert)",
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" \"me detach\") \"tabs\" \"workspace\") (list \"pane\") #true)) #inert)",
         )?;
         let view = session.views.get(&client).ok_or("view")?;
         assert_eq!((view.pane_area().y(), view.pane_area().h()), (1, 7));
@@ -1771,7 +1771,7 @@ mod tests {
         output_as(
             &mut session,
             Some(client),
-            "(sequence! (set \"bar\" (list \"top\" (list (list \"slot\" 0)) (list \"pane\") #false)) #inert)",
+            "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" \"first\")) (list \"pane\") #false)) #inert)",
         )?;
         let mut shown = Grid::default();
         assert!(compose_into(
@@ -1780,17 +1780,17 @@ mod tests {
             &mut shown,
             &mut Placement::default()
         ));
-        for change in ["notice", "slot", "title"] {
+        for change in ["notice", "text", "title"] {
             if let Some(view) = session.views.get_mut(&client) {
                 view.notice = None;
             }
             match change {
                 "notice" => session.notify_to(client, "top error", true),
-                "slot" => {
+                "text" => {
                     output_as(
                         &mut session,
                         Some(client),
-                        "(sequence! (set \"bar-slots\" (list (list 0 \"updated\"))) #inert)",
+                        "(sequence! (set \"bar\" (list \"top\" (list (list \"text\" \"updated\")) (list \"pane\") #false)) #inert)",
                     )?;
                 }
                 _ => session.out(PaneId::of(1), b"\x1b]2;new title\x07"),

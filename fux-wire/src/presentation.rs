@@ -52,8 +52,10 @@ wire! {
     pub enum BarPosition { Top, Bottom, Off, }
 }
 wire! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Field { Workspace, Tabs, Pane, Slot(index: u8), }
+    /// What a bar shows in one place: one of fux's own, or text a client
+    /// gave, shown as it is and never run.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Field { Workspace, Tabs, Pane, Text(text: String), }
 }
 
 /// Each field once across both sides, with no recursive formatting.
@@ -73,13 +75,13 @@ impl Bar {
     ) -> Result<Self, String> {
         let mut seen = Vec::new();
         for field in left.iter().chain(&right) {
-            if seen.contains(field) {
+            if seen.contains(&field) {
                 return Err("a bar field occurs more than once".to_owned());
             }
-            if matches!(field, Field::Slot(n) if usize::from(*n) >= Slots::MAX) {
-                return Err("a bar slot is 0 to 15".to_owned());
+            if matches!(field, Field::Text(text) if text.chars().any(char::is_control)) {
+                return Err("a bar's text has no control characters".to_owned());
             }
-            seen.push(*field);
+            seen.push(field);
         }
         Ok(Self {
             position,
@@ -123,48 +125,6 @@ impl Wire for Bar {
     }
 }
 
-/// Per-client text. A user program supplies changes; the painter never runs it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Slots(Vec<(u8, String)>);
-impl Slots {
-    /// How many slots there are: 0 to 15.
-    pub const MAX: usize = 16;
-    pub fn new<'a, T: Into<std::borrow::Cow<'a, str>>>(
-        values: Vec<(u8, T)>,
-    ) -> Result<Self, String> {
-        let mut out = Vec::new();
-        for (id, text) in values {
-            let text = text.into();
-            if usize::from(id) >= Self::MAX {
-                return Err("a bar slot is 0 to 15".to_owned());
-            }
-            if out.iter().any(|(held, _)| *held == id) {
-                return Err(format!("bar slot {id} occurs more than once"));
-            }
-            if text.chars().any(char::is_control) {
-                return Err("bar slot text has no control characters".to_owned());
-            }
-            out.push((id, text.into_owned()));
-        }
-        Ok(Self(out))
-    }
-    pub fn text(&self, id: u8) -> Option<&str> {
-        self.0
-            .iter()
-            .find(|(n, _)| *n == id)
-            .map(|(_, text)| text.as_str())
-    }
-}
-crate::wire::shaped!(struct Slots(slots: Vec<(u8, String)>));
-impl Wire for Slots {
-    fn put(&self, out: &mut impl crate::wire::Sink) {
-        self.0.put(out);
-    }
-    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        Self::new(Vec::<(u8, String)>::get(r)?).map_err(|_| Error::Bad("bar slots"))
-    }
-}
-
 wire! {
     /// Optional output requested by this attached client.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,7 +135,6 @@ wire! {
         pub cell_placement: bool,
         pub styles: Styles,
         pub bar: Bar,
-        pub slots: Slots,
         pub show_column: bool,
     }
 }
@@ -209,7 +168,6 @@ pub(crate) fn sample() -> Result<Presentation, String> {
         cell_placement: false,
         styles,
         bar: Bar::new(BarPosition::Bottom, left, vec![Field::Pane], false)?,
-        slots: Slots::new::<String>(Vec::new())?,
         show_column: true,
     })
 }
@@ -239,14 +197,11 @@ mod tests {
             Err(Error::Bad("bar description"))
         ));
         bytes.clear();
-        vec![(16u8, "x".to_owned())].put(&mut bytes);
-        assert!(matches!(
-            Reader::new(&bytes).whole::<Slots>(),
-            Err(Error::Bad("bar slots"))
-        ));
-        bytes.clear();
-        vec![(0u8, "escape\x1b".to_owned())].put(&mut bytes);
-        assert!(Reader::new(&bytes).whole::<Slots>().is_err());
+        BarPosition::Bottom.put(&mut bytes);
+        vec![Field::Text("escape\x1b".to_owned())].put(&mut bytes);
+        Vec::<Field>::new().put(&mut bytes);
+        false.put(&mut bytes);
+        assert!(Reader::new(&bytes).whole::<Bar>().is_err());
         Ok(())
     }
 }

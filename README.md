@@ -343,15 +343,14 @@ grift: write them again in grift.
 
   `shell`, `history-bytes`, `program-clipboard`, `reflow`, `alternate-scroll-lines`
   and `picture-bytes` supply this client's future launches. `bell`, `titles`,
-  `terminal-clipboard`, `cell-placement`, `styles`, `bar`, `bar-slots` and
+  `terminal-clipboard`, `cell-placement`, `styles`, `bar` and
   `show-column` affect only this client's view. `set` and config evaluation send
   no requests.
 - **The bar's place, fields and styles** are settings too.
   `(set "bar" (quote! ("bottom" ("workspace" "tabs") ("pane") #false)))` is
   top, bottom or off, the left fields, the right fields and whether tabs are
-  numbered; a field is `"workspace"`, `"tabs"`, `"pane"` or `("slot" N)`, 0 to 15,
-  each once. Off, the default, takes no row. `bar-slots` replaces all slots with
-  `(N "text")` rows, inert text with no controls, each slot once. `styles` rows are
+  numbered; a field is `"workspace"`, `"tabs"`, `"pane"` or `("text" "any text")`, inert
+  text with no controls, each once. Off, the default, takes no row. `styles` rows are
   `(ROLE FOREGROUND BACKGROUND FLAG...)`: roles `bar`, `tab`, `keys`, `notice`,
   `error`, `panel`, `border`, `border-focus`; colours 0 to 255, `"default"` or
   `"#rrggbb"`; flags `"bold"`, `"dim"`, `"italic"`, `"underline"`. A subset changes

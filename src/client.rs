@@ -2072,7 +2072,7 @@ mod tests {
         let effects = admitted(
             &mut keyboard,
             Job::from(
-                "(sequence! (define! variables-2 (context ())) (define! value-3 \"terminal-clipboard\") (define! value-4 (set value-3 #false)) (define! value-5 \"styles\") (define! value-8 \"bar\") (define! value-9 (list value-8 7 8)) (define! value-10 (list value-9)) (define! value-11 (set value-5 value-10)) (define! value-12 \"bar-slots\") (define! value-15 \"inert\") (define! value-16 (list 0 value-15)) (define! value-17 (list value-16)) (define! value-18 (set value-12 value-17)) (define! value-19 \"show-column\") (define! value-20 (set value-19 #false)) (define! value-21 (pane 1)) (define! value-22 \"Enter\") (define! value-23 (key value-21 value-22)) (define! value-24 (send-keys value-23)) #inert)",
+                "(sequence! (define! variables-2 (context ())) (define! value-3 \"terminal-clipboard\") (define! value-4 (set value-3 #false)) (define! value-5 \"styles\") (define! value-8 \"bar\") (define! value-9 (list value-8 7 8)) (define! value-10 (list value-9)) (define! value-11 (set value-5 value-10)) (define! value-18 (set \"bar\" (list \"top\" (list (list \"text\" \"inert\")) () #false))) (define! value-19 \"show-column\") (define! value-20 (set value-19 #false)) (define! value-21 (pane 1)) (define! value-22 \"Enter\") (define! value-23 (key value-21 value-22)) (define! value-24 (send-keys value-23)) #inert)",
             ),
         );
         let [Dispatch::Run(job)] = effects.as_slice() else {
@@ -2114,7 +2114,10 @@ mod tests {
         };
         assert!(!p.terminal_clipboard && !p.show_column);
         assert_eq!(p.styles.bar.foreground, fux_vt::Color::Idx(7));
-        assert_eq!(p.slots.text(0), Some("inert"));
+        assert_eq!(
+            p.bar.left(),
+            [fux_wire::presentation::Field::Text("inert".to_owned())]
+        );
         assert_ne!(fuxix::poll::poll(&mut requests, Some(ANSWER))?, 0);
         let (mut peer, _) = listener.accept()?;
         let mut decoder = Frames::default();

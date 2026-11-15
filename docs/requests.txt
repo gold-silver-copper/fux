@@ -142,7 +142,7 @@ Attach of: Option<command::Run>, headless: bool, size: fux_vt::Size, target: Opt
 AttachTarget::Workspace workspace: WsRef
 AttachTarget::Tab tab: TabId
 AttachTarget::Pane pane: PaneId
-Presentation bell: bool, titles: bool, terminal_clipboard: bool, cell_placement: bool, styles: Styles, bar: Bar, slots: Slots, show_column: bool
+Presentation bell: bool, titles: bool, terminal_clipboard: bool, cell_placement: bool, styles: Styles, bar: Bar, show_column: bool
 Styles bar: Style, tab: Style, keys: Style, notice: Style, error: Style, panel: Style, border: Style, border_focus: Style
 Style foreground: Color, background: Color, bold: bool, dim: bool, italic: bool, underline: bool
 Color::Default
@@ -156,6 +156,5 @@ BarPosition::Off
 Field::Workspace
 Field::Tabs
 Field::Pane
-Field::Slot index: u8
-Slots slots: Vec<(u8, String)>
+Field::Text text: String
 InitialWorkspace name: Option<String>, start: Start, options: PaneOptions, cwd: PathBuf
