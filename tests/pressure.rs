@@ -195,6 +195,14 @@ fn input_waits_while_its_program_does_not_read() -> Outcome {
         client.send(&[key])?;
         expected.push(key);
     }
+    // Its server takes a client's frames in order, and says what it is
+    // told to each pane in order: once this notice shows, every key above
+    // is on its way to the pane, ahead of the keys sent below.
+    client.act(fux_wire::act::Act::Notice {
+        text: "all-typed".to_owned(),
+        error: false,
+    })?;
+    client.wait_for("all-typed")?;
     // Sent keys are answered once the terminal took them, which it does
     // while it has room: on Linux for all of these, on macOS, whose
     // terminal holds a kilobyte, for none. The first that is not answered

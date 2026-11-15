@@ -2538,6 +2538,15 @@ pub fn serve(
         }
         kept.reverse();
         peers = kept;
+        // What waits is written before the next piece is looked for, and
+        // again after it: a write that empties the queue is followed by
+        // that look in the same turn. Written only after it, the write
+        // that took the last of what waited left a piece held with nothing
+        // to wake the pane for it (its terminal no longer asked for room),
+        // and its sender waited for ever.
+        if host.input {
+            host.write_input();
+        }
         // One piece in flight for the pane, whoever sends: the next is
         // taken, from the body under way or one a question waits for, once
         // the program's terminal took the last.
