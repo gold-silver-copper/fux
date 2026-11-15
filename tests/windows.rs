@@ -718,7 +718,7 @@ fn a_live_server_and_a_held_pipe_are_refused() -> Outcome {
     // What a cleaner of old files would do under the live server: its
     // lock file is open with no delete sharing, so it stays; and were it
     // removed, the pipe's first instance still refuses a second server
-    // (D-177).
+    // (D-180).
     let mut lock = socket.clone().into_os_string();
     lock.push(".lock");
     let removed = std::fs::remove_file(&lock);

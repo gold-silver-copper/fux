@@ -22,7 +22,7 @@
 //! no structure names, which the server that takes the run back removes
 //! with the first record it writes as the run's one server (`sweep`).
 //!
-//! A run has one server at a time (D-177: the lock on its directory,
+//! A run has one server at a time (D-180: the lock on its directory,
 //! `socket::bind_socket`), so every file here is that server's to keep or
 //! remove, whichever server wrote it.
 use fux_wire::command::{AnyRef, Run};

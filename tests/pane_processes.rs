@@ -1710,7 +1710,7 @@ fn refused_start(server: &Server) -> Result<String, String> {
 ///     beside its socket (a cleaner of idle files): a `start` is refused,
 ///     naming the server that holds the run and saying its socket is
 ///     gone, and changes nothing: no socket is made, the record is as it
-///     was, and the panes go on, held as before (D-177). (The lock was a
+///     was, and the panes go on, held as before (D-180). (The lock was a
 ///     file beside the socket: with it removed a second server started on
 ///     the run, and left only once a pane said who held it.)
 #[test]
@@ -1744,7 +1744,7 @@ fn a_run_a_live_server_holds_is_refused_whatever_was_removed_beside_it() -> Outc
 
 /// 29b. A run is its server's while that server lives, though it is
 ///     stopped and a pane of it gone meanwhile: a `start` then is refused
-///     too, and neither writes a record nor removes a name's file (D-177;
+///     too, and neither writes a record nor removes a name's file (D-180;
 ///     a second server once took such a run, recorded the pane gone and
 ///     wrote names of its own beside the first's, D-175).
 #[test]
@@ -2309,7 +2309,7 @@ fn a_pane_closed_while_it_begins_is_told_to_close() -> Outcome {
 ///     waits for a pane's process to close (here one that is stopped),
 ///     its socket gone already, no other server has the run, and a
 ///     `start` then waits its turn and begins a run of its own, which it
-///     serves (D-177; the lock was let go with the socket, and a server
+///     serves (D-180; the lock was let go with the socket, and a server
 ///     started in between found the old panes held by one still alive,
 ///     and left its own new run).
 #[test]
@@ -2419,7 +2419,7 @@ fn a_start_held_up_reads_the_run_again_under_the_locks() -> Outcome {
 /// 41. A start held up behind a stopping server chooses the fux it runs
 ///     only in its turn: the run that server ends, with the fux it ran,
 ///     is removed by it as it goes, and is not this start's to run. The
-///     start begins a run with the fux that was started (D-177; it chose
+///     start begins a run with the fux that was started (D-180; it chose
 ///     the ended run's fux before its turn and ran it, and the server
 ///     ahead then removed that file: where the system has no other way
 ///     to a running program's file, macOS, the start then kept no fux and
