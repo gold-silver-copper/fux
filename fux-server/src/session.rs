@@ -9269,6 +9269,22 @@ mod tests {
         Ok(())
     }
 
+    /// A handle written as text is the handle: `tab` of a pane's text is
+    /// that pane's tab, as `tab` of the pane is, and never the pane.
+    #[test]
+    fn a_handles_text_is_checked_for_its_kind_as_the_handle_is() -> TestResult {
+        let (mut s, _) = attached(10, 40)?;
+        let said = output(
+            &mut s,
+            "(sequence! (define! run (get (information (all)) \"run\")) \
+             (define! p (join \"%1:\" run)) (define! t (join \"@1:\" run)) \
+             (list (kind (tab p)) (same? (string (tab p)) (string (tab (pane 1)))) \
+             (catch-kind! (kind (pane t)) no-target failure \"refused, as (pane (tab 1)) is\")))",
+        )?;
+        assert_eq!(said, "tab\n#true\nrefused, as (pane (tab 1)) is\n");
+        Ok(())
+    }
+
     #[test]
     fn structural_and_context_recovery_codes_are_shared() -> TestResult {
         let (mut s, _) = attached(10, 40)?;
