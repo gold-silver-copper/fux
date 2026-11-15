@@ -140,7 +140,8 @@ fn pane(args: &[String]) -> ExitCode {
                 socket::unlink_own(&own, socket);
             }
         };
-        fux_server::host::serve(listener, &unlink)
+        let findable = || (socket.as_deref()).is_some_and(|socket| socket::own_at(&own, socket));
+        fux_server::host::serve(listener, &unlink, &findable)
     });
     match served {
         Ok(()) => ExitCode::SUCCESS,

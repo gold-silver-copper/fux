@@ -607,10 +607,16 @@ pub fn peer_pid(stream: &Stream) -> Option<fuxix::process::Pid> {
 /// path was not that one as the process began.
 pub struct Own(Option<Pinned>);
 
+/// Whether the socket file at `path` is still the one `own` names: what
+/// a server taking its run back finds its pane by.
+pub fn own_at(own: &Own, path: &Path) -> bool {
+    own.0.as_ref().is_some_and(|own| own.still_at(path))
+}
+
 /// Removes the socket file at `path` if it is still the one `own` names;
 /// one that could not be named is left.
 pub fn unlink_own(own: &Own, path: &Path) {
-    if own.0.as_ref().is_some_and(|own| own.still_at(path)) {
+    if own_at(own, path) {
         let _ = fs::remove_file(path);
     }
 }

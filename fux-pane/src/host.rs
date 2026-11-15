@@ -2083,7 +2083,8 @@ fn heed(
 /// The loop of a pane's own process (`fux __pane`), listening at its
 /// socket on `listener`, until it is closed and its program is gone;
 /// `unlink` removes its own socket's file, the one its server bound for
-/// it, as it closes or ends. It
+/// it, as it closes or ends, and `findable` says whether that file is
+/// still there for the next server to find it by. It
 /// starts as a server's first word says (`ToPane::Begin`), waiting for one
 /// however many reach it and say something else, each told it has not
 /// begun (`Taking::Unbegun`); and then reads its program's terminal, its
@@ -2091,7 +2092,11 @@ fn heed(
 /// process showing its screen, or a server of its run that takes it back
 /// once its own is gone without closing it (a crash, D-124), each answered
 /// in words (`Taking`), one at a time.
-pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Result<(), String> {
+pub fn serve(
+    mut listener: crate::socket::PaneListener,
+    unlink: &dyn Fn(),
+    findable: &dyn Fn() -> bool,
+) -> Result<(), String> {
     use crate::link::{End, FromSide, Read, Taking, ToSide};
     use fuxix::poll::{Events, PollFd};
     if let Err(errno) = fuxix::process::adopt_orphans() {
@@ -2183,6 +2188,16 @@ pub fn serve(mut listener: crate::socket::PaneListener, unlink: &dyn Fn()) -> Re
     let mut found = true;
     loop {
         let now = Instant::now();
+        // With no server, and its socket's file no longer its own, none
+        // will find it again: it closes, as a kill closes it, and does not
+        // run on out of reach.
+        if link.is_none() && host.closed.is_none() && !findable() {
+            log!(
+                "{}: its server is gone and its socket's file is not its own: it ends",
+                host.id()
+            );
+            host.close(true, now);
+        }
         // Closed, it waits for no server: none finds it, as it ends.
         if host.closed.is_some() && std::mem::take(&mut found) {
             unlink();

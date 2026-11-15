@@ -445,6 +445,12 @@ pub fn peer_pid(stream: &Stream) -> Option<Pid> {
 /// name while it runs, so no other pane's marker is at that path.
 pub struct Own;
 
+/// Whether the marker at `path` is still there: what a server taking its
+/// run back finds its pane by.
+pub fn own_at(_own: &Own, path: &Path) -> bool {
+    path.exists()
+}
+
 /// Removes the marker at `path`.
 pub fn unlink_own(_own: &Own, path: &Path) {
     let _ = fs::remove_file(path);

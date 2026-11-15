@@ -1471,6 +1471,27 @@ fn capturing(server: &Server, pane: &str) -> Result<std::process::Child, String>
         .map_err(e)
 }
 
+/// A pane whose socket's file is gone ends when it loses its server: no
+/// server could find it again, and it and its program would run on with
+/// no way to reach them. Another pane of the run is taken back.
+#[test]
+fn a_pane_whose_socket_file_is_gone_ends_when_its_server_does() -> Outcome {
+    let started = Server::start("")?;
+    let _stop = Stop(&started);
+    let server = &started;
+    let kept_pane = pane(server, "w", &["sleep", "1020"])?;
+    let lost = pane(server, "w", &["sleep", "1021"])?;
+    let _reap = reap_run(server)?;
+    let (own, program) = (own_process(server, &lost)?, program_pid(server, &lost)?);
+    std::fs::remove_file(kept(server).join(lost.trim_start_matches('%'))).map_err(e)?;
+    crash(server)?;
+    eventually("the pane no server can find, and its program, gone", || {
+        Ok(!alive(own) && !alive(program))
+    })?;
+    server.ok(&["(sequence! (start) #inert)"])?;
+    capture(server, &kept_pane).map(drop)
+}
+
 /// 26. A pane's process stopped as its server crashes holds up neither the
 ///     start nor the other panes: `start` waits for no pane, the rest is
 ///     served, and what is asked of the stopped pane waits till it
