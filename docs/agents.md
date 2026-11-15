@@ -633,8 +633,8 @@ of that server's panes. Each script should clean up the targets and processes it
   `kill` on its process stops it: `kill "$(fux '(get (status) "server-process-id")')"`,
   or on macOS, which says no `server-process-id`, the pid `lsof -t SOCKET` gives.
   A command line against a server of another
-  fux protocol runs again with that server's own binary, saying so in one
-  line on stderr; where that cannot be, it fails with `mismatch`, saying why.
+  fux protocol fails with `mismatch`, naming both builds: stop that
+  server, or use its own binary.
   A command whose reply was lost has an unknown outcome: the server may
   have made a process or queued its input, so running it again is no way
   to learn whether it ran.

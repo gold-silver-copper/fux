@@ -25,9 +25,6 @@ use std::borrow::Cow;
 /// Bumped on any change to the frames below.
 pub const PROTOCOL: u32 = 80;
 
-/// The first protocol whose command line is grift: an older server's binary
-/// reads none.
-pub const GRIFT: u32 = 77;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -81,6 +78,9 @@ impl std::error::Error for Error {}
 pub struct Mismatch {
     pub protocol: u32,
     pub version: String,
+    /// The client's own, which the server's differs from.
+    pub client_protocol: u32,
+    pub client_version: String,
 }
 
 impl Mismatch {
@@ -93,6 +93,8 @@ impl Mismatch {
         Err(Self {
             protocol: server.protocol,
             version: server.version.clone(),
+            client_protocol: client.protocol,
+            client_version: client.version.clone(),
         })
     }
 }
@@ -103,9 +105,13 @@ impl std::fmt::Display for Mismatch {
             version: &self.version,
             protocol: self.protocol,
         };
+        let ours = Build {
+            version: &self.client_version,
+            protocol: self.client_protocol,
+        };
         write!(
             f,
-            "the server runs {theirs}; use a matching client to keep its panes running. `kill` on its process stops it and its panes (`fux '(status)'` gives its `server-process-id`, where the system says it); a new server does not resume them",
+            "the server runs {theirs} and this client is {ours}: stop the server, or use its own binary to keep its panes running. `kill` on its process stops it and its panes (`fux '(status)'` gives its `server-process-id`, where the system says it); a new server does not resume them",
         )
     }
 }
@@ -164,14 +170,6 @@ impl Wire for Role {
             byte => Role::Unknown(byte),
         })
     }
-}
-
-impl Role {
-    /// The byte an older protocol's kill said, which a server of that
-    /// protocol obeyed whatever the client's protocol. Its client takes any
-    /// `Hello` as leave to have stopped the server, but reports an `Exit`
-    /// before one as a failure: so it is answered that alone.
-    pub const RETIRED_KILL: Role = Role::Unknown(2);
 }
 
 // Its shape is its byte's.
@@ -1232,6 +1230,8 @@ mod tests {
         let theirs = |protocol, version: &str| Mismatch {
             protocol,
             version: version.into(),
+            client_protocol: 54,
+            client_version: "0.36.0".into(),
         };
         let client = hello(54, "0.36.0", Role::Command);
         let between = |server: &Hello| Mismatch::between(&client, server);
@@ -1241,6 +1241,17 @@ mod tests {
         assert_eq!(other, Err(theirs(55, "0.36.0")));
         let both = between(&hello(23, "0.37.0", Role::Command));
         assert_eq!(both, Err(theirs(23, "0.37.0")));
+        // What it says names both builds and what to do: nothing runs the
+        // command again with another binary.
+        let said = theirs(23, "0.37.0").to_string();
+        for part in [
+            "fux 0.37.0 (protocol 23)",
+            "fux 0.36.0 (protocol 54)",
+            "stop the server",
+            "its own binary",
+        ] {
+            assert!(said.contains(part), "{part}: {said}");
+        }
     }
 
     /// A frame decodes only from the bytes it encodes to: an `Act` whose

@@ -1740,17 +1740,6 @@ impl Server {
                     return Ok(false);
                 };
                 conn.bodies.pop_front();
-                // An older client's kill: refused before any Hello, which it
-                // would take as the server stopped.
-                if hello.role == Role::RETIRED_KILL {
-                    let why = format!(
-                        "the server runs {}, which takes no kill: `kill` on its process stops it \
-                         (`fux '(status)'` gives its `server-pid`, where the system says it)",
-                        fux_wire::protocol::Build::OURS
-                    );
-                    conn.end(session, &Greeting::Exit(&why), now);
-                    return Ok(true);
-                }
                 let ours = Hello::ours(hello.role);
                 let between = Mismatch::between(&hello, &ours);
                 conn.send(&Greeting::Hello(ours));

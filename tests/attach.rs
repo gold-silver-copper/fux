@@ -628,10 +628,9 @@ fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outc
 }
 
 /// A client of another protocol is answered the server's `Hello`, then its
-/// mismatch, so that it can follow: whatever role it says, one this
-/// protocol has (attach) or not (byte 3, protocol 57's headless attach).
-/// An older protocol's kill (byte 2) is answered an `Exit` alone, which its
-/// client reports as a failure, and the server lives.
+/// mismatch, which names both builds and says what to do: whatever role
+/// it says, one this protocol has (attach) or not (bytes 2 and 3, an older
+/// protocol's kill and headless attach). The server lives.
 #[test]
 fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
     use fux_wire::protocol::{Frame, Greeting, Hello, Role};
@@ -640,7 +639,7 @@ fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
     for (protocol, role) in [
         (999, Role::Attach),
         (57, Role::Unknown(3)),
-        (57, Role::RETIRED_KILL),
+        (57, Role::Unknown(2)),
     ] {
         let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
         // Set before writing: macOS refuses a timeout on a socket its peer
@@ -672,28 +671,22 @@ fn a_protocol_mismatch_is_answered_whatever_the_role() -> Outcome {
                 });
             }
         }
-        if role == Role::RETIRED_KILL {
-            let [Err(reason)] = frames.as_slice() else {
-                return Err(format!("a kill: not an Exit alone: {frames:?}"));
-            };
-            assert!(reason.contains("takes no kill"), "{reason}");
-            assert!(
-                server.ok(&["(listing (list-session))"])?.contains("%1"),
-                "the server lives"
-            );
-            continue;
-        }
         let [Ok(theirs), Err(reason)] = frames.as_slice() else {
             return Err(format!("{role:?}: not a Hello then an Exit: {frames:?}"));
         };
         assert_eq!(*theirs, fux_wire::protocol::PROTOCOL, "{role:?}");
         assert!(
             reason.contains(&format!("protocol {}", fux_wire::protocol::PROTOCOL))
-                && reason.contains("use a matching client")
+                && reason.contains(&format!("fux 0.36.0 (protocol {protocol})"))
+                && reason.contains("stop the server, or use its own binary")
                 && reason.contains("`kill` on its process")
                 && reason.contains("stops it and its panes")
                 && reason.contains("a new server does not resume them"),
             "{reason}"
+        );
+        assert!(
+            server.ok(&["(listing (list-session))"])?.contains("%1"),
+            "the server lives"
         );
     }
     Ok(())

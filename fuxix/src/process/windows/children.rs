@@ -263,46 +263,6 @@ fn create(
     Ok(unsafe { OwnedHandle::from_raw_handle(created.hProcess) })
 }
 
-/// Ends this process now with `code`: what stands for `exec`, once the
-/// program that took its place has ended with it.
-pub fn end(code: i32) -> ! {
-    use windows_sys::Win32::System::Threading::ExitProcess;
-    // SAFETY: it takes a number, and doesn't return.
-    unsafe { ExitProcess(code.cast_unsigned()) }
-}
-
-/// The path of the program process `pid` runs, as the system says.
-pub fn image(pid: Pid) -> std::io::Result<std::path::PathBuf> {
-    use std::os::windows::ffi::OsStringExt as _;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-        QueryFullProcessImageNameW,
-    };
-    // SAFETY: it takes numbers and touches no memory.
-    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.as_raw()) };
-    if raw.is_null() {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: `raw` was just opened, and nothing else owns it.
-    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let mut name = vec![0u16; 32 * 1024];
-    let mut length = u32::try_from(name.len()).unwrap_or(0);
-    // SAFETY: the process is open; `name` is writable for `length` units.
-    let asked = unsafe {
-        QueryFullProcessImageNameW(
-            process.as_raw_handle(),
-            PROCESS_NAME_WIN32,
-            name.as_mut_ptr(),
-            &mut length,
-        )
-    };
-    if asked == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    name.truncate(usize::try_from(length).unwrap_or(0));
-    Ok(std::ffi::OsString::from_wide(&name).into())
-}
-
 /// This process and its ancestors, nearest first, as the system lists them.
 /// A pid is reused once its process is gone: a parent made after its child
 /// is no parent, and the chain ends there.

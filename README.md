@@ -381,10 +381,8 @@ its socket, which takes them back with their screens and ids (the
 cookbook's "Take a crashed server's panes back"); it keeps its run's own
 fux to do it with, so an upgrade waits for the next fresh run. Detaching, or a client's crash, leaves the server and its
 programs running. A command line against a server of another fux protocol
-runs again with that server's own binary, saying so on stderr; where that
-cannot be, it fails `mismatch`, saying why. A server from before grift reads
-no grift, so no program runs with its binary, only a plain `fux`, which attaches
-with it: to run a program, stop it, and `(status)` says which process it is.
+fails `mismatch`, naming both builds: stop that server, or use its own
+binary; `(status)` says which process it is.
 
 ## Terminal features
 

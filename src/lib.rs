@@ -81,7 +81,7 @@ fn client() -> ExitCode {
     });
     let ran = match args {
         // It tells its own failure.
-        Ok(args) => script::main(&args, Some(argv), &mut std::io::stdout()),
+        Ok(args) => script::main(&args, &mut std::io::stdout()),
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
             let _ = writeln!(std::io::stderr(), "fux: {failed}");

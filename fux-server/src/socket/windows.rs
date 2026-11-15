@@ -650,7 +650,7 @@ pub struct Starting {
 const ENDING: Duration = Duration::from_secs(2);
 
 /// Starts `exe` with `args` in the background, its stderr `log`, its stdout
-/// a pipe to read; without the variable `unset`. Through
+/// a pipe to read. Through
 /// `fuxix::process::start`, whose handle list hands it these alone (D-140):
 /// with std's, it would inherit what the client inherited, and `fux start |
 /// findstr x` would never end. It runs in its socket's folder: a process's
@@ -660,12 +660,11 @@ pub fn start_server(
     args: &[&std::ffi::OsStr],
     socket: &SocketPath,
     log: File,
-    unset: &str,
 ) -> std::io::Result<Starting> {
     let (output, theirs) = std::io::pipe()?;
     let stdio = [None, Some(theirs.as_handle()), Some(log.as_handle())];
     let directory = Some(socket.directory());
-    let started = fuxix::process::start_in(exe, args, stdio, directory, &[unset])?;
+    let started = fuxix::process::start_in(exe, args, stdio, directory, &[])?;
     Ok(Starting {
         pid: started.pid,
         output: Some(output),
@@ -692,34 +691,6 @@ impl Starting {
             }
         }
     }
-}
-
-/// The program process `pid` runs, to run it; its path, to say; and whether
-/// it is this very binary, by path, as `follow` asks.
-pub fn server_binary(pid: Pid) -> Result<(PathBuf, PathBuf, bool), String> {
-    let path = fuxix::process::image(pid).map_err(|e| format!("process {pid}: {e}"))?;
-    let ours = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-    let real = |path: &Path| fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()));
-    let same = real(&path)? == real(&ours)?;
-    Ok((path.clone(), path, same))
-}
-
-/// Runs `command`, having no `exec`: waits for it, and this process ends
-/// with its code. Returns only if it can't start. `arg0` has no place here:
-/// std names a program by its path.
-pub fn rerun(mut command: std::process::Command, _arg0: &std::ffi::OsStr) -> std::io::Error {
-    match command.status() {
-        // No terminal is raw here: a command line, ending as what took its
-        // place did.
-        Ok(status) => fuxix::process::end(status.code().unwrap_or(1)),
-        Err(error) => error,
-    }
-}
-
-/// The id a command that followed finds in its mark: its parent's, as there
-/// is no `exec` to keep one.
-pub fn follower_id() -> u32 {
-    fuxix::process::ancestry().get(1).copied().unwrap_or(0)
 }
 
 /// Where `fux help` says a server is found.

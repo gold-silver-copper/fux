@@ -741,7 +741,7 @@ pub struct Starting {
 }
 
 /// Starts `exe` with `args` in the background, its stderr `log`, its stdout
-/// a pipe to read; without the variable `unset`. A daemon (daemon(7)): a
+/// a pipe to read. A daemon (daemon(7)): a
 /// session of its own, no descriptors of the client's but stdio, no
 /// directory kept busy.
 pub fn start_server(
@@ -749,12 +749,10 @@ pub fn start_server(
     args: &[&std::ffi::OsStr],
     _socket: &SocketPath,
     log: File,
-    unset: &str,
 ) -> std::io::Result<Starting> {
     let mut command = std::process::Command::new(exe);
     command
         .args(args)
-        .env_remove(unset)
         .current_dir("/")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -775,31 +773,6 @@ impl Starting {
     pub fn ended(mut self) -> std::io::Result<String> {
         self.child.wait().map(|status| status.to_string())
     }
-}
-
-/// The program process `pid` runs, to run it, however it was replaced
-/// since; its path, to say; and whether it is this very binary.
-pub fn server_binary(pid: fuxix::process::Pid) -> Result<(PathBuf, PathBuf, bool), String> {
-    let exe = PathBuf::from(format!("/proc/{pid}/exe"));
-    let named = |e: std::io::Error| format!("{}: {e}", exe.display());
-    let path = fs::read_link(&exe).map_err(named)?;
-    let theirs = fs::metadata(&exe).map_err(named)?;
-    let ours = fs::metadata("/proc/self/exe").map_err(|e| format!("/proc/self/exe: {e}"))?;
-    let same = (theirs.dev(), theirs.ino()) == (ours.dev(), ours.ino());
-    Ok((exe, path, same))
-}
-
-/// Runs `command` in this process's place, its first argument `arg0`:
-/// returns only if it can't.
-pub fn rerun(mut command: std::process::Command, arg0: &std::ffi::OsStr) -> std::io::Error {
-    use std::os::unix::process::CommandExt;
-    command.arg0(arg0).exec()
-}
-
-/// The id a command that followed finds in its mark: its own, as `exec`
-/// keeps it.
-pub fn follower_id() -> u32 {
-    std::process::id()
 }
 
 /// Where `fux help` says a server is found.

@@ -564,7 +564,7 @@ that had taken effect by then, as an uncaught failure lists them on stderr.
 `(status)` returns an ordinary record with these locally readable fields, including `(compatible
 #false)` for a protocol mismatch. `server-process-id` is the server's process, as the system recorded
 it for the socket; where it says none (macOS), the field is left out. A command line against a server
-of another protocol runs again with that process's binary.
+of another protocol fails `mismatch`.
 
 With no server, `status` fails (`no-server`), saying the socket and whether a server that stopped left
 it there. Every server in fux's directory: `(status)` on each socket there (`(explain "servers")`).

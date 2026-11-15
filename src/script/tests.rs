@@ -9,13 +9,12 @@ impl Asks for NoRequests {
 #[test]
 fn one_argument_is_a_program() -> TestResult {
     let mut out = Vec::new();
-    assert_eq!(main(&["(add 1 2)".into()], None, &mut out)?, 0);
+    assert_eq!(main(&["(add 1 2)".into()], &mut out)?, 0);
     assert_eq!(out, b"3\n");
     out.clear();
     assert_eq!(
         main(
             &["(first (arguments))".into(), "(data \"quoted\")".into()],
-            None,
             &mut out
         )?,
         0
@@ -27,7 +26,7 @@ fn one_argument_is_a_program() -> TestResult {
 fn release_flags_bypass_the_operand_taking_version_word() -> TestResult {
     for flag in ["--version", "-V"] {
         let mut out = Vec::new();
-        assert_eq!(main(&[flag.into()], None, &mut out)?, 0);
+        assert_eq!(main(&[flag.into()], &mut out)?, 0);
         assert_eq!(
             String::from_utf8(out)?,
             format!("{}\n", fux_wire::protocol::Build::OURS)
@@ -38,10 +37,10 @@ fn release_flags_bypass_the_operand_taking_version_word() -> TestResult {
 #[test]
 fn a_list_left_prints_an_item_a_line() -> TestResult {
     let mut out = Vec::new();
-    main(&["(list 1 \"\" (list 2 \"x\") 3)".into()], None, &mut out)?;
+    main(&["(list 1 \"\" (list 2 \"x\") 3)".into()], &mut out)?;
     assert_eq!(out, b"1\n\n(2 \"x\")\n3\n");
     out.clear();
-    main(&["()".into()], None, &mut out)?;
+    main(&["()".into()], &mut out)?;
     assert!(out.is_empty());
     Ok(())
 }
@@ -59,7 +58,6 @@ fn a_caught_closed_pipe_still_ends_quietly() -> TestResult {
     assert_eq!(
         main(
             &["(catch-kind! (print \"x\") output failure #inert)".into()],
-            None,
             &mut Closed
         )?,
         141
@@ -77,7 +75,7 @@ fn final_output_reports_the_writers_failure() {
             Ok(())
         }
     }
-    let failure = main(&["1".into()], None, &mut Broken).err();
+    let failure = main(&["1".into()], &mut Broken).err();
     assert!(failure.is_some_and(|f| f.code == Code::Output && f.message.contains("broken writer")));
 }
 #[test]
@@ -173,7 +171,6 @@ fn an_exit_cannot_be_caught_as_an_ordinary_error() -> TestResult {
     let mut out = Vec::new();
     let status = main(
         &["(catch! (exit 7) failure (display \"continued\"))".into()],
-        None,
         &mut out,
     )?;
     assert_eq!(status, 7);
@@ -185,7 +182,6 @@ fn an_exit_runs_the_cleanups_around_it() -> TestResult {
     let mut out = Vec::new();
     let status = main(
         &["(finally! (exit 3) (display \"cleaned\"))".into()],
-        None,
         &mut out,
     )?;
     assert_eq!((status, out.as_slice()), (3, &b"cleaned"[..]));
@@ -194,7 +190,7 @@ fn an_exit_runs_the_cleanups_around_it() -> TestResult {
 #[test]
 fn explicit_code_runs_in_its_receiving_dictionary() -> TestResult {
     let mut out = Vec::new();
-    main(&["(define! receiver (lambda! (x) (add x 1))) (execute! (code! (lambda! (x) (receiver x))) 41)".into()],None,&mut out)?;
+    main(&["(define! receiver (lambda! (x) (add x 1))) (execute! (code! (lambda! (x) (receiver x))) 41)".into()],&mut out)?;
     assert_eq!(out, b"42\n");
     Ok(())
 }
@@ -1457,11 +1453,9 @@ fn a_cleanups_walk_goes_on_after_the_stop_that_let_it_run() -> TestResult {
 fn text_takes_an_integer_and_refuses_a_float_saying_so() -> TestResult {
     let mut out = Vec::new();
     let taken = "(sequence! (argument (program (options) \"echo\") 1) #true)";
-    assert_eq!(main(&[taken.into()], None, &mut out)?, 0);
+    assert_eq!(main(&[taken.into()], &mut out)?, 0);
     let refused = "(argument (program (options) \"echo\") 1.5)";
-    let failed = main(&[refused.into()], None, &mut out)
-        .err()
-        .ok_or("taken")?;
+    let failed = main(&[refused.into()], &mut out).err().ok_or("taken")?;
     assert!(failed.message.contains("an integer"), "{}", failed.message);
     Ok(())
 }

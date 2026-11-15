@@ -83,23 +83,6 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
         .map(Into::into)
 }
 
-/// A new file for this process alone, open to read and write, named after
-/// `name`: it goes with its last handle (`FILE_FLAG_DELETE_ON_CLOSE`).
-pub fn anonymous(name: &str) -> std::io::Result<std::fs::File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE,
-    };
-    let path = scratch()?.join(format!("{name}-{}", std::process::id()));
-    (std::fs::OpenOptions::new().read(true).write(true))
-        .create_new(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .attributes(FILE_ATTRIBUTE_TEMPORARY)
-        .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
-        .open(&path)
-}
-
 /// A directory for scratch files: the user's `%TEMP%`.
 pub fn scratch() -> std::io::Result<std::path::PathBuf> {
     let dir = std::env::temp_dir();

@@ -91,9 +91,6 @@ pub struct Files {
     pub(super) parents: Vec<Option<PathBuf>>,
     resolved: Vec<Resolved>,
     read: Vec<(PathBuf, Result<String, String>)>,
-    /// Marked before a file that may not read the same again (a pipe) is
-    /// read: the command line's program then isn't run again elsewhere.
-    pub(super) acted: Option<super::Acted>,
 }
 
 impl Default for Files {
@@ -107,7 +104,6 @@ impl Default for Files {
             parents: Vec::new(),
             resolved: Vec::new(),
             read: Vec::new(),
-            acted: None,
         }
     }
 }
@@ -175,11 +171,6 @@ impl Files {
             *at = at.saturating_add(1);
             let unread = || Err(unread(&path.display().to_string()));
             return found.map_or_else(unread, |(_, text)| text.clone());
-        }
-        if let Some(acted) = &self.acted
-            && !path.metadata().is_ok_and(|m| m.is_file())
-        {
-            acted.mark();
         }
         let text = read(path).map_err(|e| e.to_string());
         self.read.push((path.to_owned(), text.clone()));
