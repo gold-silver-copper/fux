@@ -338,6 +338,23 @@ fn a_mark_after_a_soft_wrap_joins_the_row_above() -> Result {
     Ok(())
 }
 
+/// REP prints every copy asked of a character that joins itself, on a
+/// screen its copies could fill many times over: leading jamo all join the
+/// first (GB6) in its cell, so none of them is one a full screen makes
+/// needless.
+#[test]
+fn rep_prints_every_copy_of_a_character_that_joins_itself() -> Result {
+    let size = Size::new(1, 2)?;
+    let mut printed = Parser::new(size, 0)?;
+    printed.process("\u{1100}\u{1100}\u{1100}\u{1100}".as_bytes())?;
+    let mut repeated = Parser::new(size, 0)?;
+    repeated.process("\u{1100}\x1b[3b".as_bytes())?;
+    assert_eq!(shown(&repeated), shown(&printed));
+    let four = "\u{1100}\u{1100}\u{1100}\u{1100}";
+    assert_eq!(cells(&repeated, 0), [c(four, true)]);
+    Ok(())
+}
+
 /// REP after a cluster repeats the character that took the cell (its
 /// first), and the copies are segmented as if printed again (README, REP
 /// row): a flag's first regional indicator twice is a second flag; leading

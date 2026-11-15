@@ -2025,6 +2025,11 @@ impl Screen {
     /// How many of `asked` copies of `c` REP must print to leave what all
     /// of them would (`repeat`).
     fn copies_needed(&self, c: char, asked: usize) -> usize {
+        // Copies that join one another fill a cell, not rows: every one
+        // asked is printed, till their cluster is full (`copies`).
+        if Cluster::start(c).push(c) {
+            return asked;
+        }
         let g = self.grid();
         let width = crate::char_width(c).unwrap_or(1).max(1);
         if width > usize::from(g.size().cols()) {
