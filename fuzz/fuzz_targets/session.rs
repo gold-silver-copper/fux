@@ -483,6 +483,31 @@ impl Run {
                 );
             }
             Outgoing::To(_, ToAttached::Paint(bytes)) => panic!("not a question: {bytes:?}"),
+            // What a client is owed as state: a copy, OSC 52 with its text
+            // in base64; the bell; a title is its connection's to make.
+            Outgoing::Owed(_, fux_server::link::Owed::Clipboard, bytes) => {
+                let payload = bytes
+                    .strip_prefix(b"\x1b]52;c;")
+                    .and_then(|b| b.strip_suffix(b"\x07"))
+                    .unwrap_or_else(|| panic!("not OSC 52: {bytes:?}"));
+                assert!(
+                    payload
+                        .iter()
+                        .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b))
+                );
+            }
+            Outgoing::Owed(_, fux_server::link::Owed::Bell, bytes) => {
+                assert_eq!(bytes, outer::BELL);
+            }
+            Outgoing::Owed(
+                _,
+                fux_server::link::Owed::Title | fux_server::link::Owed::Prompt,
+                bytes,
+            ) => panic!("not the session's to owe: {bytes:?}"),
+            // Asked of a client by its connection, never by the session.
+            Outgoing::To(_, ToAttached::More) => {
+                panic!("its connection's or its server's to say, not the session's")
+            }
             Outgoing::To(client, ToAttached::Exit(_)) => self.detach(client),
             // Sent only as a client attaches, by the server.
             Outgoing::To(_, ToAttached::Welcome(..)) => {
@@ -528,11 +553,12 @@ impl Run {
                                 self.press(client, fux_vt::keys::KeyPress::char(c).into());
                             }
                         }
-                        fux_wire::command::Input::Paste(text) => {
+                        fux_wire::command::Input::Paste(text)
+                        | fux_wire::command::Input::Pasting(text) => {
                             self.inputs(client, vec![Input::Paste(text)]);
                         }
                         // A pane's alone: send-keys refuses them for a client.
-                        fux_wire::command::Input::Bytes(_) => {}
+                        fux_wire::command::Input::Bytes(_) | fux_wire::command::Input::More => {}
                     }
                 }
             }

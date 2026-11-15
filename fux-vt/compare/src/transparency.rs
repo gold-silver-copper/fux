@@ -382,8 +382,13 @@ impl Through {
                 Outgoing::To(client, ToAttached::Exit(reason)) if client == self.client => {
                     return Err(format!("fux detached the client: {reason}"));
                 }
+                // What it is owed as state (a copy, the bell) is bytes for
+                // its terminal too.
+                Outgoing::Owed(client, _, bytes) if client == self.client => {
+                    self.terminal.process(&bytes)?;
+                }
                 Outgoing::Shutdown(reason, _) => return Err(format!("fux stopped: {reason}")),
-                Outgoing::Keys(..) => {}
+                Outgoing::Keys(..) | Outgoing::Owed(..) => {}
                 Outgoing::To(
                     _,
                     ToAttached::Paint(_)
@@ -392,7 +397,8 @@ impl Through {
                     | ToAttached::Open(_)
                     | ToAttached::Keys(_)
                     | ToAttached::Ended(_)
-                    | ToAttached::Read(..),
+                    | ToAttached::Read(..)
+                    | ToAttached::More,
                 ) => {}
             }
         }

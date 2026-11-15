@@ -134,6 +134,23 @@ fn kept(server: &Server) -> PathBuf {
     fux_server::socket::panes(&server.socket)
 }
 
+/// How many sockets the system has at `path`: the one listening there and
+/// each connection that reached it, taken by its listener or not yet (a
+/// process stopped takes none), till both its ends are closed
+/// (`/proc/net/unix`).
+#[cfg(target_os = "linux")]
+fn reached(path: &std::path::Path) -> Result<usize, String> {
+    let path = path.to_str().ok_or("its path")?;
+    let sockets = std::fs::read_to_string("/proc/net/unix").map_err(e)?;
+    Ok(sockets.lines().filter(|line| line.ends_with(path)).count())
+}
+
+/// Where pane `pane`'s own process listens.
+#[cfg(target_os = "linux")]
+fn pane_socket(server: &Server, pane: &str) -> PathBuf {
+    kept(server).join(pane.trim_start_matches('%'))
+}
+
 /// 1. A pane's own process killed: the server and another pane go on,
 ///    taking input and captures, and the journal says how it ended, then
 ///    its program's end, its real status.
@@ -173,43 +190,68 @@ fn a_pane_process_killed_ends_its_pane_alone() -> Outcome {
     Ok(())
 }
 
-/// 2. A pane flooding what it answers its program, under a cap of its
-///    own process's memory: that process ends alone.
+/// 2. A program that asks its terminal what it is, far more than its
+///    pane's process may hold the answers to (a cap of its memory), and
+///    reads none till it has asked it all, having written megabytes
+///    before it reads: its pane holds a frame of answers, reads it no
+///    more till it reads, answers its server meanwhile, and its process
+///    lives. That process grew with every answer, and ended at its cap.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_flood_under_a_cap_ends_its_pane_process_alone() -> Outcome {
+fn a_flood_of_queries_none_reads_leaves_its_pane_process_flat_and_answering() -> Outcome {
     let server = Server::start("")?;
     let flood = pane(&server, "a", &["sleep", "1000"])?;
-    let shell = pane(&server, "b", &["sh"])?;
     let own = own_process(&server, &flood)?;
-    cap(own, 64 << 20)?;
-    // It asks its terminal what it is, and never reads the answers.
-    let asks = r#"q=$(printf '\033[c%.0s' $(seq 200)); yes "$q""#;
+    let cap_bytes = 16 << 20;
+    cap(own, cap_bytes)?;
+    let before = peak_kib(own)?;
+    let go = kept(&server).join("read-now");
+    // 4 MB of queries, each answered with more than six times its
+    // length: more than the cap; cut where a query ends, so that what is
+    // printed after is text. A reader takes the answers once told to.
+    let asks = format!(
+        r#"stty raw -echo; (until [ -e {go} ]; do sleep 0.05; done; cat </dev/tty >/dev/null) & q=$(printf '\033[c%.0s' $(seq 200)); yes "$q" | head -c 4000000; printf 'ASKED-%s' ALL; sleep 1000"#,
+        go = go.display()
+    );
     let respawn = vec![format!(
         "(respawn (kill-first {}))",
         program(
             &format!("(pane {})", fux::script::quoted(&flood)),
-            &["sh", "-c", asks]
+            &["sh", "-c", &asks]
         )
     )];
     server.ok(&respawn)?;
-    eventually("its process to end", || Ok(!alive(own)))?;
-    assert!(
-        server
-            .pid()
-            .is_some_and(|p| alive(i32::try_from(p).unwrap_or(0)))
-    );
-    server.type_line(&shell, "echo still-here")?;
-    server.shows(&shell, "still-here")?;
+    // Its pane answers its server while its program floods it.
+    for (rows, cols) in [(10, 40), (12, 50)] {
+        let resize = format!(
+            "(resize (size (pane {}) {cols} {rows}))",
+            fux::script::quoted(&flood)
+        );
+        let _ = server.fux(&[&resize])?;
+        server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(&flood))])?;
+    }
+    std::fs::write(&go, b"").map_err(e)?;
+    let capture = format!("(capture (pane {}))", fux::script::quoted(&flood));
+    eventually("all it asked to be read", || {
+        Ok(server.ok(&[&capture])?.contains("ASKED-ALL"))
+    })?;
+    assert!(alive(own), "its pane's process ended");
+    assert_eq!(own_process(&server, &flood)?, own);
+    let grew = peak_kib(own)?.saturating_sub(before);
+    assert!(grew < 8 << 10, "its pane's process grew {grew} KiB");
     Ok(())
 }
 
-/// 3. A client that stops reading while a pane floods it with copies: only
-///    its connection ends, its process capped; the server and others go
-///    on.
+/// 3. A client that stops reading while a pane floods it with copies costs
+///    neither its connection's process nor the server: what it is owed is
+///    the latest copy, kept as that in both (D-184), so neither grows, the
+///    server and another client go on, and once it reads again it gets
+///    the last copy, and not each of those before it. (Its connection
+///    queued every copy, and ended at its cap: this test said so.)
 #[cfg(target_os = "linux")]
 #[test]
-fn a_client_that_stops_reading_ends_only_its_connection() -> Outcome {
+fn a_client_that_stops_reading_costs_its_connection_and_the_server_nothing() -> Outcome {
+    const COPIES: usize = 200_000;
     let server = Server::start("")?;
     let pid = i32::try_from(server.pid().ok_or("the server's pid")?).map_err(e)?;
     let mut stuck = server.attach(10, 40)?;
@@ -219,25 +261,59 @@ fn a_client_that_stops_reading_ends_only_its_connection() -> Outcome {
         return Err(format!("its connection's process: {conns:?}"));
     };
     let conn = *conn;
-    // What it holds for its client grows by doubling, so it ends once
-    // about half its cap is held. The copies come no faster than its
-    // pane's process reads them, a few MiB a second in a debug build, less
-    // on CI: a cap of 16 MiB, 8 of them to hold, missed `PATIENCE` there.
-    cap(conn, 4 << 20)?;
     let shell = support::focused(&server)?;
-    // It no longer reads (`pump`) from here on.
-    let copies = r#"while :; do printf '\033]52;c;aGk=\a'; done"#;
-    server.type_line(&shell, copies)?;
-    eventually("its connection's process to end", || Ok(!alive(conn)))?;
-    eventually("its client gone", || {
-        Ok(!server
-            .ok(&["(listing (list-session))"])?
-            .contains("client "))
-    })?;
+    let before = (peak_kib(conn)?, peak_kib(pid)?);
+    // It no longer reads (`pump`) from here on. Its pane copies "hi" over
+    // and over, then "last", and says it is done.
+    let done = server.dir.join("copied");
+    let copies = format!(
+        r#"i=0; while [ $i -lt {COPIES} ]; do printf '\033]52;c;aGk=\a'; i=$((i+1)); done; printf '\033]52;c;bGFzdA==\a'; : > '{}'"#,
+        done.display()
+    );
+    server.type_line(&shell, &copies)?;
+    let mut copied = false;
+    for _ in 0..12 {
+        copied = eventually("its pane to have copied them all", || Ok(done.exists())).is_ok();
+        if copied {
+            break;
+        }
+    }
+    assert!(copied, "its pane did not copy them all");
     assert!(alive(pid), "the server");
+    assert!(alive(conn), "its connection's process ended");
     let mut other = server.attach(10, 40)?;
     other.wait_for("$")?;
     other.detach()?;
+    // It reads again: the last copy comes, the server having taken every
+    // copy its pane made by then.
+    let (last, each): (&[u8], &[u8]) = (b"\x1b]52;c;bGFzdA==\x07", b"\x1b]52;c;aGk=\x07");
+    let has = |painted: &[u8], copy: &[u8]| {
+        (0..painted.len())
+            .filter(|at| {
+                painted
+                    .get(*at..)
+                    .is_some_and(|rest| rest.starts_with(copy))
+            })
+            .count()
+    };
+    eventually("the last copy", || {
+        stuck.pump()?;
+        Ok(has(&stuck.painted, last) > 0)
+    })?;
+    let got = has(&stuck.painted, each);
+    assert!(got < COPIES / 2, "it was sent {got} of {COPIES} copies");
+    let grew = (
+        peak_kib(conn)?.saturating_sub(before.0),
+        peak_kib(pid)?.saturating_sub(before.1),
+    );
+    assert!(
+        grew.0 < 8 << 10,
+        "its connection's process grew {} KiB",
+        grew.0
+    );
+    // Measured in a debug build, whether its pane made 60,000 copies or
+    // 400,000: its connection +0 KiB, the server +3 to +5 MiB.
+    assert!(grew.1 < 16 << 10, "the server grew {} KiB", grew.1);
     drop(stuck);
     Ok(())
 }
@@ -597,6 +673,8 @@ fn a_paste_body_never_passes_through_the_server() -> Outcome {
     let pid = server_pid(&server)?;
     let before = peak_kib(pid)?;
     signal(own, Signal::Stop);
+    let at = pane_socket(&server, &sleeper);
+    let links = reached(&at)?;
     let mut sending = started(
         &server,
         &[&format!(
@@ -608,13 +686,24 @@ fn a_paste_body_never_passes_through_the_server() -> Outcome {
     let mut stdin = sending.stdin.take().ok_or("its stdin")?;
     stdin.write_all(&body).map_err(e)?;
     drop(stdin);
-    eventually("its connection to hold it", || {
-        Ok((connections(pid).into_iter()).any(|conn| peak_kib(conn).is_ok_and(|k| k > 32 << 10)))
+    // It stays with its sender, which waits: a piece at a time goes on
+    // (D-181), so no connection's process holds it either. Its
+    // connection has reached the pane's socket with the first piece, which
+    // the pane, stopped, does not take: it reads no more of it from here.
+    eventually("its connection to reach the pane", || {
+        Ok(reached(&at)? > links)
     })?;
     let grew = peak_kib(pid)?.saturating_sub(before);
+    let held = (connections(pid).into_iter())
+        .filter_map(|conn| peak_kib(conn).ok())
+        .max();
     signal(own, Signal::Cont);
     let _ = sending.wait();
     assert!(grew < 8 << 10, "the server grew {grew} KiB");
+    assert!(
+        held.is_some_and(|k| k < 16 << 10),
+        "a connection held {held:?} KiB"
+    );
     Ok(())
 }
 
@@ -696,7 +785,9 @@ fn typing_at_a_stopped_pane_grows_no_queue_in_the_server() -> Outcome {
     std::thread::sleep(std::time::Duration::from_secs(1));
     let grew = peak_kib(pid)?.saturating_sub(before);
     signal(own, Signal::Cont);
-    assert!(grew < 2 << 10, "the server grew {grew} KiB");
+    // A frame of what was typed is the most it keeps for a pane that
+    // takes none (D-193): its queue, and what its allocator keeps of it.
+    assert!(grew < 8 << 10, "the server grew {grew} KiB");
     Ok(())
 }
 
@@ -1096,6 +1187,8 @@ fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome 
     let pid = server_pid(&server)?;
     let _reap = reap_run(&server)?;
     signal(own, Signal::Stop);
+    let at = pane_socket(&server, &sleeper);
+    let links = reached(&at)?;
     let mut sending = started(
         &server,
         &[&format!(
@@ -1106,15 +1199,17 @@ fn a_connection_sending_a_stopped_pane_a_body_ends_with_its_server() -> Outcome 
     let mut stdin = sending.stdin.take().ok_or("its stdin")?;
     stdin.write_all(&vec![b'x'; 32 << 20]).map_err(e)?;
     drop(stdin);
-    let mut conn = None;
-    eventually("its connection to hold it", || {
-        conn =
-            (connections(pid).into_iter()).find(|conn| peak_kib(*conn).is_ok_and(|k| k > 32 << 10));
-        Ok(conn.is_some())
+    // The body stays with its sender (D-181): its connection, which has
+    // reached the stopped pane's socket with the first piece, is one of
+    // those the server has.
+    eventually("its connection to reach the pane", || {
+        Ok(reached(&at)? > links)
     })?;
-    let conn = conn.ok_or("its connection")?;
+    let conns = connections(pid);
     signal(pid, Signal::Kill);
-    eventually("its connection gone", || Ok(!alive(conn)))?;
+    eventually("its connections gone", || {
+        Ok(conns.iter().all(|conn| !alive(*conn)))
+    })?;
     signal(own, Signal::Cont);
     let _ = sending.wait();
     Ok(())
@@ -1230,13 +1325,12 @@ fn keys_for_a_client_that_detaches_first_fail() -> Outcome {
     let (mut client, id, got) = keeping(&server)?;
     let conn = the_clients(&server)?;
     signal(conn, Signal::Stop);
+    // They stay with their sender (D-181): its connection reaches the
+    // client's, stopped, with the first piece of them, none of it taken.
+    let at = kept(&server).join(format!("c{}", id.trim_start_matches('c')));
+    let links = reached(&at)?;
     let sending = paste(&server, &id, &vec![b'y'; SIZE])?;
-    let pid = server_pid(&server)?;
-    eventually("the keys on their way", || {
-        Ok((connections(pid).into_iter())
-            .any(|asker| asker != conn && peak_kib(asker).is_ok_and(|k| k > 32 << 10)))
-    })?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    eventually("the keys on their way", || Ok(reached(&at)? > links))?;
     server.ok(&[&format!(
         "(sequence! (detach (client {})) #inert)",
         fux::script::quoted(&id)
@@ -2416,6 +2510,587 @@ fn a_start_held_up_reads_the_run_again_under_the_locks() -> Outcome {
     Ok(())
 }
 
+/// 27. A server killed while a paste is on its way: the paste's sender,
+///     which still holds what its pane has not taken, is told its server
+///     ended and how the run is taken back, and fails; `start` then takes
+///     the run back, its program still running (D-181; the sender had
+///     been answered at once, its paste queued in the pane's process).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_server_killed_mid_paste_tells_its_sender_and_its_run_is_taken_back() -> Outcome {
+    use std::io::Write;
+    let run = Server::start("")?;
+    let _stop = Stop(&run);
+    let server = &run;
+    let sleeper = pane(server, "a", &["sleep", "1000"])?;
+    let own = own_process(server, &sleeper)?;
+    let program = program_pid(server, &sleeper)?;
+    let links = |pid: i32| std::fs::read_dir(format!("/proc/{pid}/fd")).map(Iterator::count);
+    let before = links(own).map_err(e)?;
+    let mut sending = started(
+        server,
+        &[&format!(
+            "(send-keys (paste {} (input)))",
+            support::reference(&sleeper)
+        )],
+    )?;
+    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+    stdin.write_all(&vec![b'x'; 32 << 20]).map_err(e)?;
+    drop(stdin);
+    // Its connection reached the pane with a piece, which the pane's
+    // program, reading nothing, leaves the rest behind.
+    eventually("a piece on its way", || Ok(links(own).map_err(e)? > before))?;
+    assert!(sending.try_wait().map_err(e)?.is_none(), "it waits");
+    let pid = server_pid(server)?;
+    signal(pid, Signal::Kill);
+    let out = sending.wait_with_output().map_err(e)?;
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(!out.status.success(), "{said}");
+    assert!(
+        said.contains("ended without a word") && said.contains("(start)"),
+        "{said}"
+    );
+    server.ok(&["(sequence! (start) #inert)"])?;
+    server.version(&sleeper)?;
+    assert!(alive(program), "its program ended with the server");
+    assert_eq!(own_process(server, &sleeper)?, own);
+    Ok(())
+}
+
+/// 28. A program that writes 10 MB before it reads, a megabyte sent it
+///     meanwhile, gets all of it: what waits to be written to it never
+///     stops its output being read, nor the other way (D-183; a terminal
+///     that stops one for the other deadlocks here).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_program_that_writes_ten_megabytes_before_it_reads_gets_all_it_was_sent() -> Outcome {
+    use std::io::Write;
+    const SENT: usize = 1 << 20;
+    let server = Server::start("")?;
+    let got = server.dir.join("got");
+    // Raw, so that what it is sent is neither a line nor echoed; it says
+    // so, reads one byte (the go), writes, and only then reads the rest.
+    let script = format!(
+        "stty raw -echo; printf RAW-%s NOW; dd bs=1 count=1 >/dev/null 2>&1; \
+         head -c 10000000 /dev/zero | tr '\\0' x; printf WROTE-%s ALL; \
+         head -c {SENT} | wc -c > {part}; mv {part} {got}; sleep 1000",
+        part = server.dir.join("part").display(),
+        got = got.display()
+    );
+    let writer = pane(&server, "a", &["sh", "-c", &script])?;
+    server.shows(&writer, "RAW-NOW")?;
+    let mut sending = started(
+        &server,
+        &[&format!(
+            "(send-keys (paste {} (input)))",
+            support::reference(&writer)
+        )],
+    )?;
+    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+    stdin.write_all(&vec![b'y'; SENT + 1]).map_err(e)?;
+    drop(stdin);
+    let mut kept = String::new();
+    for _ in 0..12 {
+        let read = eventually("all it was sent, read", || {
+            kept = std::fs::read_to_string(&got).unwrap_or_default();
+            Ok(!kept.is_empty())
+        });
+        if read.is_ok() {
+            break;
+        }
+    }
+    assert_eq!(kept.trim(), SENT.to_string());
+    assert!(sending.wait().map_err(e)?.success(), "its paste failed");
+    assert!(
+        capture(&server, &writer)?.stdout.contains("WROTE-ALL"),
+        "its output was not read to its end"
+    );
+    Ok(())
+}
+
+/// 29. A pane's process given no more memory once it is warm, every
+///     allocation refused (its address space held to what it has): its
+///     program floods it with output while it is sent keys over and over,
+///     each on a link of its own, opened and closed, and clients attach
+///     and leave; it lives, the same process, and once
+///     it is given memory again it serves, its flood read to its end
+///     (owner answer 2: a pane's process never ends for memory; it aborted
+///     on the first keys it could not queue). What is asked of it
+///     meanwhile is refused or waits: each is given two seconds and let
+///     go, as its asker would. Not yet so, and so not asked here: a pane
+///     refused memory as it makes a capture still ends, and one refused it
+///     as it draws its screen for a client can (D-186): this run's clients
+///     show a screen small enough to be drawn in what the pane has.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pane_process_refused_all_memory_lives_through_floods_and_side_links() -> Outcome {
+    let server = Server::start("")?;
+    let go = server.dir.join("go");
+    let script = format!(
+        "stty raw -echo; printf WARM-%s NOW; until [ -e {go} ]; do sleep 0.05; done; \
+         (cat >/dev/null) & yes flood-of-output | head -c 8000000; printf DONE-%s ALL; sleep 1000",
+        go = go.display()
+    );
+    let flood = pane(&server, "a", &["sh", "-c", &script])?;
+    let own = own_process(&server, &flood)?;
+    // Warm: shown to a client, captured, typed at.
+    let mut client = server.attach_to(24, 80, "a")?;
+    client.wait_for("WARM-NOW")?;
+    server.ok(&[&format!("(capture (pane {}))", fux::script::quoted(&flood))])?;
+    drop(client);
+    let status = std::fs::read_to_string(format!("/proc/{own}/status")).map_err(e)?;
+    let size: u64 = (status.lines())
+        .find_map(|line| line.strip_prefix("VmSize:"))
+        .and_then(|kib| kib.trim().trim_end_matches("kB").trim().parse().ok())
+        .ok_or("its size")?;
+    // Not a byte more than it has.
+    limit(own, "as", size.saturating_mul(1024))?;
+    std::fs::write(&go, b"").map_err(e)?;
+    let typed: String = std::iter::repeat_n('k', 4000).collect();
+    let keys = format!(
+        "(send-keys (text (pane {}) {}))",
+        fux::script::quoted(&flood),
+        fux::script::quoted(&typed)
+    );
+    for _ in 0..12 {
+        let _ = within(&server, 2, &[&keys])?;
+        if let Ok(mut client) = server.attach_to(24, 80, "a") {
+            let _ = client.pump();
+        }
+        assert!(alive(own), "its pane's process ended, refused memory");
+    }
+    limit(own, "as", u64::MAX)?;
+    eventually("its flood read to its end", || {
+        Ok(capture(&server, &flood)?.stdout.contains("DONE-ALL"))
+    })?;
+    assert!(alive(own));
+    assert_eq!(own_process(&server, &flood)?, own);
+    Ok(())
+}
+
+/// 30. A client answers a question while a paste of its own waits: the
+///     first byte of a 2 MiB paste sets its pane's program to ask the
+///     client that pastes it what keys it has (`keys`), before it reads the
+///     rest. The client, which sends each further piece only as it is asked
+///     for, is free to answer, and its connection reads the answer though
+///     the paste is still on its way; then the program reads all of it
+///     (D-181; the client sat in the write of the whole paste, its
+///     connection read nothing of its client's, and all three waited for
+///     ever).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_answers_a_question_while_its_own_paste_waits() -> Outcome {
+    const SENT: usize = 2 << 20;
+    let server = Server::start("")?;
+    let mut terminal = Terminal::attach(&server, 24, 80, &[])?;
+    terminal.wait_for("$")?;
+    let listing = server.ok(&["(listing (list-session))"])?;
+    let client: String = (listing.split("client ").nth(1))
+        .map(|rest| {
+            rest.chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect()
+        })
+        .ok_or("its client")?;
+    let (asked, got) = (server.dir.join("asked"), server.dir.join("got"));
+    let script = format!(
+        "stty raw -echo; printf RAW-%s NOW; dd bs=1 count=1 >/dev/null 2>&1; \
+         \"$FUX\" '(keys (client \"{client}\"))' > {asked}.part 2>&1; mv {asked}.part {asked}; \
+         head -c {rest} | wc -c > {got}.part; mv {got}.part {got}; stty sane\n",
+        asked = asked.display(),
+        got = got.display(),
+        rest = SENT - 1
+    );
+    let run = server.dir.join("run.sh");
+    std::fs::write(&run, script).map_err(e)?;
+    terminal.type_bytes(format!("sh {}\r", run.display()).as_bytes())?;
+    terminal.wait_for("RAW-NOW")?;
+    let mut paste = b"\x1b[200~".to_vec();
+    paste.resize(paste.len() + SENT, b'y');
+    paste.extend_from_slice(b"\x1b[201~");
+    terminal.type_bytes(&paste)?;
+    eventually("its answer, while its paste waited", || {
+        terminal.pump();
+        Ok(asked.exists())
+    })?;
+    let mut read = String::new();
+    for _ in 0..6 {
+        let all = eventually("all it pasted, read", || {
+            terminal.pump();
+            read = std::fs::read_to_string(&got).unwrap_or_default();
+            Ok(!read.is_empty())
+        });
+        if all.is_ok() {
+            break;
+        }
+    }
+    assert_eq!(read.trim(), (SENT - 1).to_string());
+    Ok(())
+}
+
+/// 31. Two pastes of several pieces, sent at once to the same two panes,
+///     both arrive whole at both: each pane takes the bodies in the order
+///     its server asked for them, so no pane begins one while the other
+///     begins the other, each sender then waiting for ever on the pane
+///     that held its piece back (D-192).
+#[cfg(target_os = "linux")]
+#[test]
+fn two_pastes_sent_at_once_to_the_same_two_panes_both_arrive() -> Outcome {
+    use std::io::Write;
+    const SENT: usize = 3 << 20;
+    let server = Server::start("")?;
+    let reader = |name: &str| {
+        let got = server.dir.join(name);
+        let script = format!(
+            "stty raw -echo; printf RAW-%s NOW; head -c {all} | wc -c > {got}.part; \
+             mv {got}.part {got}; sleep 1000",
+            all = SENT * 2,
+            got = got.display()
+        );
+        (got, script)
+    };
+    let (got_a, script_a) = reader("got-a");
+    let (got_b, script_b) = reader("got-b");
+    let a = pane(&server, "a", &["sh", "-c", &script_a])?;
+    let b = id(&server.ok(&[format!(
+        "(split {})",
+        program(
+            &format!("(axis (pane {}) \"horizontal\")", fux::script::quoted(&a)),
+            &["sh", "-c", &script_b]
+        )
+    )])?);
+    for pane in [&a, &b] {
+        server.shows(pane, "RAW-NOW")?;
+    }
+    let tab = server.ok(&[&format!(
+        "(sequence! (define! its-pane (pane {})) \"tab\" (get its-pane \"tab\"))",
+        fux::script::quoted(&a)
+    )])?;
+    let paste = format!(
+        "(send-keys (paste (tab {}) (input)))",
+        fux::script::quoted(tab.trim())
+    );
+    let mut senders = Vec::new();
+    for byte in *b"xy" {
+        let mut sending = started(&server, &[&paste])?;
+        let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+        stdin.write_all(&vec![byte; SENT]).map_err(e)?;
+        drop(stdin);
+        senders.push(sending);
+    }
+    let mut read = (String::new(), String::new());
+    for _ in 0..6 {
+        let all = eventually("both pastes read by both panes", || {
+            read = (
+                std::fs::read_to_string(&got_a).unwrap_or_default(),
+                std::fs::read_to_string(&got_b).unwrap_or_default(),
+            );
+            Ok(!read.0.is_empty() && !read.1.is_empty())
+        });
+        if all.is_ok() {
+            break;
+        }
+    }
+    let all = (SENT * 2).to_string();
+    assert_eq!((read.0.trim(), read.1.trim()), (all.as_str(), all.as_str()));
+    for mut sending in senders {
+        let out = sending.wait().map_err(e)?;
+        assert!(out.success(), "a paste failed");
+    }
+    Ok(())
+}
+
+/// 32. Megabytes typed at a program that isn't reading (a terminal that
+///     pastes as plain keys) queue nowhere: a frame of what was typed is
+///     the most its pane holds, the keys past it are not taken, and their
+///     typist is told so; neither the pane's process, the server nor the
+///     connection's grows with them, and the client's bindings run all
+///     the while (D-193; all of it queued in the pane's process).
+#[cfg(target_os = "linux")]
+#[test]
+fn keys_typed_past_a_frame_at_a_program_that_reads_nothing_are_not_taken() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 100)?;
+    client.ready()?;
+    let pane = support::focused(&server)?;
+    server.type_line(&pane, "stty raw -echo; printf RAW-%s NOW; sleep 1000")?;
+    server.shows(&pane, "RAW-NOW")?;
+    let own = own_process(&server, &pane)?;
+    flooded_with_keys(&server, &mut client, own)
+}
+
+/// 32a. The same of a pane whose own process is stopped, and takes
+///      nothing of what it is sent: a frame of what was typed is the most
+///      the server keeps for it, the keys past it are not taken, and their
+///      typist is told so (D-193; its client's frames were left unread,
+///      and with them its answers and its detach).
+#[cfg(target_os = "linux")]
+#[test]
+fn keys_typed_past_a_frame_at_a_stopped_pane_are_not_taken() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 100)?;
+    client.ready()?;
+    let pane = support::focused(&server)?;
+    let own = own_process(&server, &pane)?;
+    signal(own, Signal::Stop);
+    let flooded = flooded_with_keys(&server, &mut client, own);
+    signal(own, Signal::Cont);
+    flooded
+}
+
+/// 8 MiB of keys typed by `client` at the pane it focuses, whose process
+/// is `own`, none of them read: no fux process grows with them, the client
+/// is told they are not taken, and its detach binding then runs.
+#[cfg(target_os = "linux")]
+fn flooded_with_keys(server: &Server, client: &mut Client, own: i32) -> Outcome {
+    use fux_wire::act::Act;
+    use fux_wire::protocol::{AttachedFrame, Frame};
+    const KEYS: usize = 8 << 20;
+    let pid = server_pid(server)?;
+    let conns = connections(pid);
+    let before = (peak_kib(own)?, peak_kib(pid)?);
+    let key = AttachedFrame::Act(Box::new(Act::Key(fux_vt::keys::KeyPress::char('k').into())));
+    let frame = key.encode();
+    let mut frames = Vec::new();
+    for _ in 0..4096 {
+        frames.extend_from_slice(&frame);
+    }
+    // Its connection's process, as it is read while the keys come.
+    let mut held = 0u64;
+    for _ in 0..KEYS / 4096 {
+        client.write(&frames)?;
+        // Its server counts each, taken or not: the binding below waits
+        // for all of them.
+        client.wrote(4096);
+        for conn in &conns {
+            held = held.max(peak_kib(*conn).unwrap_or(0));
+        }
+    }
+    eventually("it is told its keys are not taken", || {
+        client.pump()?;
+        let text = client.text();
+        Ok(text.contains("isn't reading what is typed") || text.contains("typed faster"))
+    })?;
+    let grew = |pid: i32, before: u64| peak_kib(pid).map(|peak| peak.saturating_sub(before));
+    let (in_pane, served) = (grew(own, before.0)?, grew(pid, before.1)?);
+    assert!(in_pane < 4 << 10, "its pane's process grew {in_pane} KiB");
+    // A frame of what was typed may wait in the server for a pane's
+    // process that takes none, with what its buffer grew by: far from the
+    // hundred megabytes these keys are as frames.
+    assert!(served < 8 << 10, "the server grew {served} KiB");
+    assert!(held < 24 << 10, "a connection's process held {held} KiB");
+    // `C-b d`: its bindings run whatever its pane takes.
+    client.send(b"\x02d")?;
+    eventually("it detached", || {
+        client.pump()?;
+        Ok(client.exit.as_deref() == Some("detached"))
+    })
+}
+
+/// 32b. Keys typed while a paste waits for a program that isn't reading
+///      land after the paste, in the order they were typed: its pane
+///      queues nothing else inside a paste that is open or still to come
+///      (D-187).
+#[cfg(target_os = "linux")]
+#[test]
+fn keys_typed_while_a_paste_waits_land_after_it() -> Outcome {
+    const PASTED: usize = 200_000;
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 100)?;
+    client.ready()?;
+    let pane = support::focused(&server)?;
+    let (go, got) = (server.dir.join("go"), server.dir.join("got"));
+    let script = format!(
+        "stty raw -echo; printf RAW-%s NOW; until [ -e {go} ]; do sleep 0.05; done; \
+         head -c {all} > {got}.part; mv {got}.part {got}; stty sane\n",
+        go = go.display(),
+        got = got.display(),
+        all = PASTED + 4
+    );
+    let run = server.dir.join("run.sh");
+    std::fs::write(&run, script).map_err(e)?;
+    server.type_line(&pane, &format!("sh {}", run.display()))?;
+    server.shows(&pane, "RAW-NOW")?;
+    // More than its terminal takes while it reads nothing: the paste
+    // waits; then four keys.
+    let mut paste = b"\x1b[200~".to_vec();
+    paste.resize(paste.len() + PASTED, b'p');
+    paste.extend_from_slice(b"\x1b[201~");
+    client.send(&paste)?;
+    client.send(b"KEYS")?;
+    std::fs::write(&go, b"").map_err(e)?;
+    let mut read = Vec::new();
+    eventually("all of it read", || {
+        client.pump()?;
+        read = std::fs::read(&got).unwrap_or_default();
+        Ok(!read.is_empty())
+    })?;
+    assert_eq!(read.len(), PASTED + 4);
+    assert!(
+        read.ends_with(b"pppKEYS"),
+        "its keys are not after its paste"
+    );
+    assert!(!read.get(..PASTED).unwrap_or_default().contains(&b'K'));
+    Ok(())
+}
+
+/// 33. A paste to a program that isn't reading locks its client out of
+///     nothing: with 2 MiB pasted into a raw-mode program that reads
+///     none of it, more than its terminal takes, the client's bindings
+///     run at once. It changes its focus, and what it types then goes to
+///     the pane it focuses now; and it detaches (D-189; bindings waited
+///     behind the paste, and the client could only be killed).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paste_that_waits_keeps_its_client_from_no_binding() -> Outcome {
+    const PASTED: usize = 2 << 20;
+    let server = Server::start("")?;
+    let mut terminal = Terminal::attach(&server, 24, 80, &[])?;
+    terminal.wait_for("$")?;
+    let stuck = support::focused(&server)?;
+    let other = id(&server.ok(&[format!(
+        "(split {})",
+        program(
+            &format!(
+                "(axis (pane {}) \"horizontal\")",
+                fux::script::quoted(&stuck)
+            ),
+            &["sh"]
+        )
+    )])?);
+    server.shows(&other, "$")?;
+    // Its focus is where it types: the program there reads nothing.
+    let typed_into = support::focused(&server)?;
+    let (reading, idle) = match typed_into == stuck {
+        true => (&other, &stuck),
+        false => (&stuck, &other),
+    };
+    let _ = idle;
+    terminal.type_bytes(b"stty raw -echo; printf RAW-%s NOW; sleep 1000\r")?;
+    server.shows(&typed_into, "RAW-NOW")?;
+    let mut paste = b"\x1b[200~".to_vec();
+    paste.resize(paste.len() + PASTED, b'y');
+    paste.extend_from_slice(b"\x1b[201~");
+    terminal.type_bytes(&paste)?;
+    // A second paste, which waits its turn behind the first: nothing of it
+    // is sent, and no binding waits for it.
+    terminal.type_bytes(b"\x1b[200~second\x1b[201~")?;
+    // `C-b o`: the next pane. What is typed now is for that one.
+    let marked = server.dir.join("marked");
+    terminal.type_bytes(b"\x02o")?;
+    eventually("its focus on the other pane", || {
+        terminal.pump();
+        Ok(&support::focused(&server)? == reading)
+    })?;
+    terminal.type_bytes(format!("echo there > {}\r", marked.display()).as_bytes())?;
+    eventually("what it typed, in the pane it focuses now", || {
+        terminal.pump();
+        Ok(marked.exists())
+    })?;
+    // `C-b d`: it detaches, its paste still waiting.
+    terminal.type_bytes(b"\x02d")?;
+    let status = terminal.wait_exit()?;
+    assert!(status.success(), "{status:?}");
+    Ok(())
+}
+
+/// 34. A program that floods its terminal with queries and reads no answer
+///     stalls only itself: a client that shows its pane and focuses it is
+///     kept from nothing, and its bindings run (D-183).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_flood_of_queries_keeps_a_client_that_watches_from_no_binding() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(24, 100)?;
+    client.ready()?;
+    let pane = support::focused(&server)?;
+    let own = own_process(&server, &pane)?;
+    let before = peak_kib(own)?;
+    let asks = r#"stty raw -echo; q=$(printf '\033[c%.0s' $(seq 200)); yes "$q" | head -c 4000000; sleep 1000"#;
+    server.type_line(&pane, asks)?;
+    // A frame of answers and more waits in its pane, unread.
+    eventually("a frame of answers unread in its pane", || {
+        client.pump()?;
+        Ok(peak_kib(own)?.saturating_sub(before) >= 1 << 10)
+    })?;
+    client.send(b"\x02d")?;
+    eventually("it detached", || {
+        client.pump()?;
+        Ok(client.exit.as_deref() == Some("detached"))
+    })
+}
+
+/// 36. Megabytes of text sent to a client (`send-keys` to a client, typed
+///     there as keys) all reach the program it types into: the client
+///     sends a long run of keys as it sends a paste's text, a piece once
+///     the last is taken, so none comes faster than it is taken (D-189;
+///     each was a frame of its own, and past a frame waiting its
+///     connection dropped them while the request said they were sent).
+#[cfg(target_os = "linux")]
+#[test]
+fn text_sent_to_a_client_all_reaches_the_program_it_types_into() -> Outcome {
+    use std::io::Write;
+    const SENT: usize = 2 << 20;
+    let server = Server::start("")?;
+    let (mut client, id, got) = keeping(&server)?;
+    let mut sending = started(
+        &server,
+        &[&format!(
+            "(send-keys (text (client {}) (input)))",
+            fux::script::quoted(&id)
+        )],
+    )?;
+    let mut stdin = sending.stdin.take().ok_or("its stdin")?;
+    stdin.write_all(&vec![b't'; SENT]).map_err(e)?;
+    drop(stdin);
+    // Megabytes typed a key at a time take their time: waited for as
+    // long as more of them keeps arriving.
+    let whole = u64::try_from(SENT).map_err(e)?;
+    let (mut kept, mut status) = (0u64, None);
+    loop {
+        let before = kept;
+        let done = eventually("more of it kept, or the keys sent", || {
+            client.pump()?;
+            kept = std::fs::metadata(&got).map_err(e)?.len();
+            status = status.or(sending.try_wait().map_err(e)?);
+            Ok(status.is_some() && kept >= whole)
+        });
+        match done {
+            Ok(()) => break,
+            Err(_) if kept > before => {}
+            Err(waited) => return Err(format!("{waited}: {kept} of {whole} kept")),
+        }
+    }
+    assert!(status.is_some_and(|status| status.success()));
+    assert_eq!(kept, u64::try_from(SENT).map_err(e)?);
+    Ok(())
+}
+
+/// 37. A paste whose connection can't reach its pane's socket (here the
+///     socket's name is gone) holds nothing back in that pane: the
+///     connection tells its server, which told the pane to wait for the
+///     paste, and the pane waits no more. What is typed after it reaches
+///     the program (D-187; the pane waited for that paste for good, and
+///     held every other input and answer behind it).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_paste_that_cant_reach_its_pane_holds_nothing_back_there() -> Outcome {
+    let server = Server::start("")?;
+    let (mut client, _, got) = keeping(&server)?;
+    let pane = support::focused(&server)?;
+    let socket = pane_socket(&server, &pane);
+    std::fs::rename(&socket, socket.with_extension("away")).map_err(e)?;
+    client.send(b"\x1b[200~lost\x1b[201~")?;
+    client.send(b"KEYS")?;
+    let mut read = Vec::new();
+    eventually("what was typed after it read", || {
+        client.pump()?;
+        read = std::fs::read(&got).unwrap_or_default();
+        Ok(read.ends_with(b"KEYS"))
+    })?;
+    assert!(!read.contains(&b'l'), "its paste was typed");
+    Ok(())
+}
 /// 41. A start held up behind a stopping server chooses the fux it runs
 ///     only in its turn: the run that server ends, with the fux it ran,
 ///     is removed by it as it goes, and is not this start's to run. The

@@ -107,6 +107,12 @@ pub(crate) mod sealed {
         /// What [`crate::io::write`] does with it: `BADF` if it writes
         /// nothing.
         fn write(&self, bytes: &[u8]) -> crate::errno::Result<usize>;
+        /// What [`crate::io::written`] says of it: whether all it was
+        /// given to write is written. A source that keeps nothing to
+        /// write has.
+        fn written(&self) -> bool {
+            true
+        }
     }
 }
 
@@ -132,6 +138,10 @@ impl<S: Source + ?Sized> sealed::Sealed for &S {
 
     fn write(&self, bytes: &[u8]) -> Result<usize> {
         (**self).write(bytes)
+    }
+
+    fn written(&self) -> bool {
+        (**self).written()
     }
 }
 

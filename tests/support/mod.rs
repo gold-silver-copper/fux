@@ -107,6 +107,71 @@ fn output(out: std::process::Output) -> Result<Output, String> {
     })
 }
 
+/// The longest a command of a test's is waited for: one a test means to
+/// take long (twenty thousand workspaces killed) takes a minute or two.
+const ANSWER: Duration = Duration::from_secs(300);
+
+/// Runs `command` to its end, as `Command::output` does, but not for
+/// ever: one that has not ended after `ANSWER` is killed and is the test's
+/// failure, where a command that waited on a program that reads nothing
+/// kept its test, and the run, till someone cancelled it.
+fn answered(mut command: Command) -> Result<Output, String> {
+    let said = format!("{command:?}");
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    // Read as it writes: a pipe left full would hold the command up. Its
+    // pipes close as it ends, so their ends are what is waited for.
+    let (done, ends) = std::sync::mpsc::channel();
+    let pipes: [Option<Box<dyn Read + Send>>; 2] = [
+        child.stdout.take().map(|pipe| Box::new(pipe) as _),
+        child.stderr.take().map(|pipe| Box::new(pipe) as _),
+    ];
+    for (which, pipe) in pipes.into_iter().enumerate() {
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let mut all = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut all);
+            }
+            let _ = done.send((which, all));
+        });
+    }
+    let deadline = after(ANSWER);
+    let mut said_by = [Vec::new(), Vec::new()];
+    let mut status = None;
+    for _ in 0..2 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let Ok((which, all)) = ends.recv_timeout(left) else {
+            break;
+        };
+        if let Some(slot) = said_by.get_mut(which) {
+            *slot = all;
+        }
+    }
+    while Instant::now() < deadline {
+        status = child.try_wait().map_err(e)?;
+        if status.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let Some(status) = status else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("no answer in {ANSWER:?} from {said}"));
+    };
+    let [stdout, stderr] = said_by;
+    Ok(Output {
+        status: status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
 impl Server {
     /// A server whose shell is `sh` with a plain prompt. Run
     /// `config` to prepare the scripted clients' whole local state;
@@ -279,7 +344,7 @@ impl Server {
         for (k, v) in env {
             command.env(k, v);
         }
-        output(command.output().map_err(e)?)
+        answered(command)
     }
 
     /// `program`, to run against this server.
@@ -500,10 +565,15 @@ pub struct Client {
     greeted: bool,
     /// Its keys, once the server has said its id.
     keyboard: Option<Keyboard>,
+    /// Its pastes on their way, as the real client keeps them.
+    pastes: fux::client::Pastes,
     frames: u64,
     /// Bytes typed before then, typed once it has.
     typed: Vec<u8>,
     pub id: Option<String>,
+    /// Every reason it was told it ends, in order: the real client stops
+    /// at the first.
+    pub exits: Vec<String>,
     pub terminal: fux_vt::Parser,
     pub rows: u16,
     pub cols: u16,
@@ -560,9 +630,11 @@ impl Client {
             read_only,
             greeted: false,
             keyboard: None,
+            pastes: fux::client::Pastes::default(),
             frames: 0,
             typed: Vec::new(),
             id: None,
+            exits: Vec::new(),
             terminal: terminal(rows, cols)?,
             rows,
             cols,
@@ -603,9 +675,38 @@ impl Client {
         Ok(())
     }
 
+    /// What keys another sent it do, sent as the real client sends them:
+    /// a long run of them as one body, a piece as each is asked for.
+    fn sent(&mut self, acts: Vec<Dispatch>) -> Outcome {
+        use fux::client::Out;
+        for out in fux::client::bodies(acts) {
+            match out {
+                Out::Keys(keys) => {
+                    let pieces = fux_wire::protocol::encode_keys(keys).into_iter();
+                    if let Some(first) = self.pastes.keys(pieces) {
+                        self.write(&first)?;
+                        self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                    }
+                }
+                Out::Now(out) => self.acts(vec![*out])?,
+            }
+        }
+        Ok(())
+    }
+
     fn acts(&mut self, acts: Vec<Dispatch>) -> Outcome {
         for out in acts {
             match out {
+                // A paste goes as the real client sends it: its first
+                // piece now, the rest as each is asked for.
+                Dispatch::Send(act @ Act::Paste(_)) => {
+                    let frame = AttachedFrame::Act(Box::new(act));
+                    let pieces = fux_wire::protocol::encode_attached(&frame).into_iter();
+                    if let Some(first) = self.pastes.paste(pieces) {
+                        self.write(&first)?;
+                        self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                    }
+                }
                 Dispatch::Send(act) => self.act(act)?,
                 Dispatch::Fence => self
                     .keyboard
@@ -619,9 +720,13 @@ impl Client {
                         .dispatch(job, self.frames)
                         .map_err(e)?;
                 }
+                // Behind keys another sent it, as the real client's.
                 Dispatch::Answer(asked, value) => {
-                    self.frame(&AttachedFrame::Answer(asked, value))?;
-                    self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                    let answer = AttachedFrame::Answer(asked, value).encode();
+                    if let Some(answer) = self.pastes.answer(answer) {
+                        self.write(&answer)?;
+                        self.frames = self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                    }
                 }
             }
         }
@@ -648,6 +753,12 @@ impl Client {
         let result = self.stream.write_all(bytes).map_err(e);
         self.stream.set_nonblocking(true).map_err(e)?;
         result
+    }
+
+    /// `frames` more frames were written as they are (`write`), which its
+    /// server counts: a binding's program waits for all of them.
+    pub fn wrote(&mut self, frames: u64) {
+        self.frames = self.frames.saturating_add(frames);
     }
 
     pub fn detach(&mut self) -> Outcome {
@@ -690,7 +801,10 @@ impl Client {
                     self.painted.extend_from_slice(&bytes);
                     self.terminal.process(&bytes).map_err(e)?;
                 }
-                ToAttached::Exit(reason) => self.exit = Some(reason.to_owned()),
+                ToAttached::Exit(reason) => {
+                    self.exits.push(reason.to_owned());
+                    self.exit = Some(reason.to_owned());
+                }
                 ToAttached::Welcome(me, run) if self.keyboard.is_none() => {
                     let state = self.state.clone();
                     self.keyboard = Some(
@@ -698,10 +812,22 @@ impl Client {
                     );
                     self.id = Some(me.to_string());
                 }
+                ToAttached::More => {
+                    for (piece, first) in self.pastes.taken() {
+                        self.write(&piece)?;
+                        if first {
+                            self.frames =
+                                self.frames.checked_add(1).ok_or("frame count exhausted")?;
+                        }
+                    }
+                }
+                frame @ ToAttached::Keys(_) => {
+                    let sent = (self.keyboard.as_mut()).map(|keyboard| keyboard.frame(frame));
+                    self.sent(sent.unwrap_or_default())?;
+                }
                 frame @ (ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Open(_)
-                | ToAttached::Keys(_)
                 | ToAttached::Read(..)) => {
                     if let Some(keyboard) = &mut self.keyboard {
                         acts.extend(keyboard.frame(frame));

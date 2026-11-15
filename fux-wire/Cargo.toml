@@ -11,6 +11,9 @@ repository = "https://github.com/gold-silver-copper/fux"
 # What only tests use, for fux-server's and fux's tests too: ids by number,
 # ids used up, a batch of events as JSON, an encoding's size.
 testing = []
+# fux-vt's refusal of memory on request (`fux_vt::refuse_next`), for the
+# tests of what a refusal leaves.
+checks = ["fux-vt/checks"]
 
 [dependencies]
 fux-vt = { path = "../fux-vt", version = "0.16.0" }

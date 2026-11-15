@@ -249,7 +249,9 @@ impl Queue for fux_server::pane::PaneMut<'_> {
     fn push(&mut self, bytes: &[u8], with: bool) -> Result<(), String> {
         match with {
             true => self.push_with(|_, out| out.extend_from_slice(bytes)),
-            false => self.send(bytes, fux_server::journal::Sent::Keys, None),
+            false => {
+                self.send(bytes, fux_server::journal::Sent::Keys, None);
+            }
         }
         Ok(())
     }

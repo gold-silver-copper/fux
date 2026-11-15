@@ -14,17 +14,29 @@ fn copy_within<T: Copy>(slice: &mut [T], src: Range<usize>, dest: usize) -> Opti
     fits.then(|| slice.copy_within(src, dest))
 }
 
-/// Appends `more` to `bytes`, or says the OS gave no room for it: `bytes`
-/// is then as it was. For bytes another party sends, which fux joins only
-/// as far as memory is given (`fux_wire::protocol::Joining`).
-pub fn try_extend(bytes: &mut Vec<u8>, more: &[u8]) -> Result<(), crate::Error> {
+/// Makes room in `bytes` for `additional` more, or says the OS gave none:
+/// `bytes` is then as it was. What is then appended within that room
+/// allocates nothing, so a process that must not die of a refusal (a pane's
+/// own) reserves so before it writes.
+pub fn try_reserve(bytes: &mut Vec<u8>, additional: usize) -> Result<(), crate::Error> {
+    // Room it has already is asked of no one, so none can refuse it.
+    if bytes.capacity().saturating_sub(bytes.len()) >= additional {
+        return Ok(());
+    }
     #[cfg(feature = "checks")]
     if crate::check::refusing() {
         return Err(crate::Error::Capacity);
     }
     bytes
-        .try_reserve(more.len())
-        .map_err(|_| crate::Error::Capacity)?;
+        .try_reserve(additional)
+        .map_err(|_| crate::Error::Capacity)
+}
+
+/// Appends `more` to `bytes`, or says the OS gave no room for it: `bytes`
+/// is then as it was. For bytes another party sends, which fux joins only
+/// as far as memory is given (`fux_wire::protocol::Joining`).
+pub fn try_extend(bytes: &mut Vec<u8>, more: &[u8]) -> Result<(), crate::Error> {
+    try_reserve(bytes, more.len())?;
     bytes.extend_from_slice(more);
     Ok(())
 }
@@ -70,6 +82,27 @@ impl ByteQueue {
         let wrote = write(&mut self.bytes);
         self.clamp_taken();
         wrote
+    }
+    /// `push`, if the OS gives the room: refused, the queue is as it was.
+    pub fn try_push(&mut self, more: &[u8]) -> Result<(), crate::Error> {
+        self.try_push_with(more.len(), |out| out.extend_from_slice(more))
+    }
+    /// `push_with`, once the OS gave room for `additional` bytes, which is
+    /// all `write` should add: within it, `write` allocates nothing.
+    /// Refused, `write` is not called and the queue is as it was.
+    pub fn try_push_with<T>(
+        &mut self,
+        additional: usize,
+        write: impl FnOnce(&mut Vec<u8>) -> T,
+    ) -> Result<T, crate::Error> {
+        self.try_reserve(additional)?;
+        Ok(self.push_with(write))
+    }
+    /// Makes room for `additional` more bytes, or says the OS gave none:
+    /// what is then pushed within it allocates nothing.
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), crate::Error> {
+        self.compact();
+        try_reserve(&mut self.bytes, additional)
     }
     /// Keeps `taken` within a buffer `push_with`'s closure cut short.
     fn clamp_taken(&mut self) {
@@ -138,6 +171,39 @@ mod tests {
         assert_eq!(queue.as_slice(), &[7u8; 10]);
         assert!(queue.bytes.capacity() < 1 << 20);
         assert_eq!(queue.taken, 0);
+    }
+
+    /// A push refused memory leaves the queue as it was, and the next one
+    /// goes on. Only a push that needs room can be refused it: one that
+    /// fits in the room there is asks for none.
+    #[cfg(feature = "checks")]
+    #[test]
+    fn a_push_refused_memory_leaves_the_queue_as_it_was() {
+        let mut queue = ByteQueue::default();
+        queue.push(b"held");
+        queue.take(1);
+        // More than the room it has.
+        let more = vec![b'm'; queue.bytes.capacity() + 1];
+        crate::check::refuse_next(1);
+        assert!(queue.try_push(&more).is_err());
+        assert_eq!(queue.as_slice(), b"eld");
+        crate::check::refuse_next(1);
+        let wrote = queue.try_push_with(more.len(), |out| out.extend_from_slice(&more));
+        assert!(wrote.is_err());
+        assert_eq!(queue.as_slice(), b"eld");
+        assert!(queue.try_push(&more).is_ok());
+        assert_eq!(queue.len(), 3 + more.len());
+        // Room made is not refused after.
+        assert!(queue.try_reserve(8).is_ok());
+        crate::check::refuse_next(1);
+        assert!(queue.try_push(b"fits").is_ok());
+        crate::check::refuse_next(0);
+        let mut bytes = b"ab".to_vec();
+        bytes.shrink_to_fit();
+        crate::check::refuse_next(1);
+        assert!(try_extend(&mut bytes, b"cd").is_err());
+        assert!(try_extend(&mut bytes, b"cd").is_ok());
+        assert_eq!(bytes, b"abcd");
     }
 
     #[test]

@@ -39,6 +39,10 @@ pub enum Outgoing {
     /// (`send-keys` to a client), its screen ended by the server, or its
     /// detach, saying why.
     To(ClientId, ToAttached<'static>),
+    /// Bytes for a client's terminal that are state, not a backlog: a
+    /// clipboard copy, the bell. One that is not reading is owed the
+    /// latest, or one, not each (`link::Owed`).
+    Owed(ClientId, crate::link::Owed, Vec<u8>),
     /// Keys for a client, as typed at its terminal: the body another
     /// client's connection keeps by this number and sends its connection.
     Keys(ClientId, u64),
@@ -319,6 +323,10 @@ pub struct Session {
     /// the panes; and the last token given.
     body: Option<u64>,
     pub deliveries: Vec<(u64, u64, Vec<PaneId>)>,
+    /// The clients a prompt or chooser was sent that their connections
+    /// have not written them yet: one that is not reading is opened no
+    /// other on (`ClientAction::Open`). The server's, which hears of it.
+    pub prompted: std::collections::BTreeSet<ClientId>,
     /// What panes used up of what connections held them for (`Retired`):
     /// the server lets each go of its connection.
     pub retired: Vec<(PaneId, u64)>,
@@ -512,6 +520,7 @@ impl Session {
             unrecorded: None,
             closing: Vec::new(),
             closed: Vec::new(),
+            prompted: std::collections::BTreeSet::new(),
             body: None,
             deliveries: Vec::new(),
             retired: Vec::new(),
@@ -705,15 +714,6 @@ impl Session {
         }
     }
 
-    /// Whether what client `client` types waits: its focused pane's process
-    /// takes nothing of what it was sent (stopped, say: `Remote::stalled`).
-    /// It stays with the client's connection, never queued here.
-    pub fn typing_waits(&self, client: ClientId) -> bool {
-        let pane = self.focused(client);
-        pane.and_then(|pane| self.links.get(&pane))
-            .is_some_and(|link| matches!(link, Link::Remote(remote) if remote.stalled))
-    }
-
     /// Where its run's panes listen, and keep what outlives its server
     /// (`socket::panes`): none in a session that starts no programs.
     pub fn panes(&self) -> Option<std::path::PathBuf> {
@@ -877,7 +877,11 @@ impl Session {
     /// The body of the frame taken next, kept by its connection: what a
     /// request or act it makes takes for its inputs (`send_keys`, `paste`).
     pub fn give_body(&mut self, body: Option<u64>) {
-        self.body = body;
+        // One nothing took is let go by its connection, which is told so
+        // as it is told where any other goes: to no pane.
+        if let Some(unused) = std::mem::replace(&mut self.body, body) {
+            self.deliveries.push((unused, 0, Vec::new()));
+        }
     }
 
     /// A body's token: its panes are asked for it, and its connection sends
@@ -893,14 +897,20 @@ impl Session {
     /// for, an answer that comes is let go, and what the panes hold or wait
     /// for of them is let go too (`ToPane::Drop`). What a pane did is done.
     pub fn abandon(&mut self, asks: &[(PaneId, u64)], tokens: &[(PaneId, u64)], now: Instant) {
+        // A question still waiting for its pane's link is never sent, and
+        // its pane, which never heard of its body, is told nothing of it.
+        let mut unsent = Vec::new();
         for (pane, ask) in asks {
             self.asks.remove(ask);
+            if let Some(body) = self.links.get_mut(pane).and_then(|link| link.unask(*ask)) {
+                unsent.extend(body.map(|token| (*pane, token)));
+            }
             if let Some(Answered::Held { token, .. }) = self.answers.remove(ask) {
                 self.tell_pane(*pane, ToPane::Drop { token }, now);
             }
         }
-        for (pane, token) in tokens {
-            self.tell_pane(*pane, ToPane::Drop { token: *token }, now);
+        for held in tokens.iter().filter(|held| !unsent.contains(held)) {
+            self.tell_pane(held.0, ToPane::Drop { token: held.1 }, now);
         }
     }
 
@@ -1452,7 +1462,13 @@ impl Session {
                 }
                 // A pane none can reach refuses as it would.
                 Err(error) if many => asks.push((id, self.refused(error))),
-                Err(error) => return Err(error),
+                Err(error) => {
+                    // Its connection lets the body go.
+                    if let Some((body, token)) = body {
+                        self.deliveries.push((body, token, Vec::new()));
+                    }
+                    return Err(error);
+                }
             }
         }
         if let Some((body, token)) = body {
@@ -1959,6 +1975,7 @@ impl Session {
             self.view_event(id, ViewChange::Detached(why));
         }
         self.views.remove(&id);
+        self.prompted.remove(&id);
         self.parts.forget(id);
         self.settle(now);
     }
@@ -3170,8 +3187,9 @@ impl Session {
             let encoded = fux_wire::json::base64(text.as_bytes());
             let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
             self.outbox.extend(
-                recipients
-                    .map(|client| Outgoing::To(client, ToAttached::Paint(osc.clone().into()))),
+                recipients.map(|client| {
+                    Outgoing::Owed(client, crate::link::Owed::Clipboard, osc.clone())
+                }),
             );
         }
     }
@@ -3850,6 +3868,17 @@ impl Session {
         let view = || self.views.get(&client).ok_or(Error::NoClient(client));
         let to = match *action {
             ClientAction::Open(ref screen) => {
+                // One prompt waits for a client that takes nothing; the
+                // next is its opener's to try again, not queued behind it.
+                if self.prompted.contains(&client) {
+                    return Err(fail(
+                        Code::NotRun,
+                        format!(
+                            "{client} isn't reading: a prompt or chooser opened on it before \
+                             waits for it still, and one waits at a time"
+                        ),
+                    ));
+                }
                 self.outbox
                     .push(Outgoing::To(client, ToAttached::Open(screen.clone())));
                 return Ok(Reply::default());
@@ -4669,8 +4698,11 @@ pub(crate) mod testing {
                             .chars()
                             .map(|c| Input::Key(fux_vt::keys::KeyPress::char(c).into()))
                             .collect(),
-                        fux_wire::command::Input::Paste(text) => vec![Input::Paste(text)],
-                        fux_wire::command::Input::Bytes(_) => Vec::new(),
+                        fux_wire::command::Input::Paste(text)
+                        | fux_wire::command::Input::Pasting(text) => vec![Input::Paste(text)],
+                        fux_wire::command::Input::Bytes(_) | fux_wire::command::Input::More => {
+                            Vec::new()
+                        }
                     });
                     session.inputs(client, typed.collect());
                 }
@@ -4679,8 +4711,10 @@ pub(crate) mod testing {
                     ToAttached::Paint(_)
                     | ToAttached::Exit(_)
                     | ToAttached::Welcome(..)
-                    | ToAttached::Read(..),
+                    | ToAttached::Read(..)
+                    | ToAttached::More,
                 )
+                | super::Outgoing::Owed(..)
                 | super::Outgoing::Keys(..)
                 | super::Outgoing::Shutdown { .. }) => {
                     kept.push(other);
@@ -6504,7 +6538,7 @@ mod tests {
         let (mut s, c) = attached(24, 80)?;
         let id = PaneId::of(1);
         let copied = |s: &Session| {
-            (s.outbox.iter()).any(|o| matches!(o, Outgoing::To(to, ToAttached::Paint(b)) if *to == c && **b == *b"\x1b]52;c;aGk=\x07"))
+            (s.outbox.iter()).any(|o| matches!(o, Outgoing::Owed(to, crate::link::Owed::Clipboard, b) if *to == c && **b == *b"\x1b]52;c;aGk=\x07"))
         };
         s.out(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07");
         assert!(!copied(&s), "held");
@@ -8208,12 +8242,13 @@ mod tests {
         let copies = |s: &Session| {
             (s.outbox.iter())
                 .filter_map(|o| match o {
-                    Outgoing::To(c, ToAttached::Paint(b))
-                        if *c == client && b.starts_with(b"\x1b]52;c;") =>
-                    {
-                        Some(b.to_vec())
+                    Outgoing::Owed(c, crate::link::Owed::Clipboard, b) if *c == client => {
+                        Some(b.clone())
                     }
-                    Outgoing::To(..) | Outgoing::Keys(..) | Outgoing::Shutdown(..) => None,
+                    Outgoing::To(..)
+                    | Outgoing::Owed(..)
+                    | Outgoing::Keys(..)
+                    | Outgoing::Shutdown(..) => None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -8336,9 +8371,9 @@ mod tests {
         assert!(
             s.outbox
                 .iter()
-                .any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && b.starts_with(b"\x1b]52;c;")))
+                .any(|out| matches!(out, Outgoing::Owed(c, crate::link::Owed::Clipboard, b) if *c == client && b.starts_with(b"\x1b]52;c;")))
         );
-        assert!(s.outbox.iter().any(|out| matches!(out, Outgoing::To(c, ToAttached::Paint(bytes)) if *c == client && bytes.as_ref() == crate::outer::BELL)));
+        assert!(s.outbox.iter().any(|out| matches!(out, Outgoing::Owed(c, crate::link::Owed::Bell, bytes) if *c == client && bytes == crate::outer::BELL)));
         assert_eq!(s.before_paint(client), b"\x1b]2;initial\x1b\\");
         Ok(())
     }
@@ -8445,10 +8480,11 @@ mod tests {
             s.outbox
                 .iter()
                 .filter_map(|o| match o {
-                    Outgoing::To(c, ToAttached::Paint(b)) if b.starts_with(b"\x1b]52;c;") => {
-                        Some(*c)
-                    }
-                    Outgoing::To(..) | Outgoing::Keys(..) | Outgoing::Shutdown(..) => None,
+                    Outgoing::Owed(c, crate::link::Owed::Clipboard, _) => Some(*c),
+                    Outgoing::To(..)
+                    | Outgoing::Owed(..)
+                    | Outgoing::Keys(..)
+                    | Outgoing::Shutdown(..) => None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -9101,6 +9137,25 @@ mod tests {
         Ok(())
     }
 
+    /// A client a prompt waits for, which its connection has not written
+    /// it (it is not reading), is opened no other on: its opener is told
+    /// so, where the second was queued behind the first.
+    #[test]
+    fn a_second_prompt_for_a_client_that_isnt_reading_is_refused() -> TestResult {
+        let (mut s, c) = attached(10, 40)?;
+        let choose = "(sequence! (choose (client \"c1\") \"title\" (list (list 1 \"inert\")) () (list 0) (code! (lambda! (argument-3665 argument-3666) #inert))) #inert)";
+        s.prompted.insert(c);
+        let refused = run(&mut s, choose).err().ok_or("it was opened")?;
+        assert!(refused.contains("c1 isn't reading"), "{refused}");
+        assert!(matches!(
+            s.views.get(&c).map(|v| &v.mode),
+            Some(Mode::Normal)
+        ));
+        s.prompted.remove(&c);
+        run(&mut s, choose)?;
+        Ok(())
+    }
+
     #[test]
     fn a_screen_asked_from_elsewhere_is_the_clients() -> TestResult {
         let (mut s, c) = attached(10, 40)?;
@@ -9740,7 +9795,7 @@ mod tests {
             let pending = s.send_keys(to, &[], Instant::now())?;
             let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
             let inputs = vec![Input::Text("x".into())];
-            host(&mut s, id, |h| h.body(token, inputs))?;
+            host(&mut s, id, |h| h.piece(token, &inputs))?;
             assert_eq!(s.retired.pop(), Some((id, token)));
             let [(_, ask)] = pending.asks.as_slice() else {
                 return Err("one ask".into());
@@ -9748,6 +9803,356 @@ mod tests {
             assert!(s.answered_yet(*ask), "its keys typed");
         }
         assert_eq!(queued(&mut s, id)?, [b'x'; 32]);
+        Ok(())
+    }
+
+    /// A paste that comes in pieces is one paste to its program, one
+    /// bracket each end, whichever piece its line ends and end marker fall
+    /// across; its question is answered with its last piece. A piece under
+    /// a token no question asked for is not taken, and a body whose sender
+    /// goes part way has its paste closed and its asker told (D-181).
+    #[test]
+    fn a_body_is_typed_a_piece_at_a_time_as_one_paste() -> TestResult {
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let to = command::To::Now(AnyRef::Pane(id));
+        host(&mut s, id, |h| h.output(b"\x1b[?2004h", Instant::now()))?;
+        let body = |s: &mut Session| -> Result<(u64, u64), String> {
+            s.give_body(Some(7));
+            let pending = s
+                .send_keys(to, &[], Instant::now())
+                .map_err(|e| e.to_string())?;
+            let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
+            let [(_, ask)] = pending.asks.as_slice() else {
+                return Err("one ask".into());
+            };
+            Ok((token, *ask))
+        };
+        let (token, ask) = body(&mut s)?;
+        assert!(
+            !host(&mut s, id, |h| h.takes(token + 1000))?,
+            "no question asked for it"
+        );
+        assert!(host(&mut s, id, |h| h.takes(token))?);
+        let pieces = [
+            vec![Input::Pasting("a\r".into()), Input::More],
+            vec![Input::Pasting("\nb\x1b[20".into()), Input::More],
+            vec![Input::Paste("1~c".into())],
+        ];
+        for (n, piece) in pieces.iter().enumerate() {
+            assert!(!s.answered_yet(ask), "answered before its last piece");
+            host(&mut s, id, |h| h.piece(token, piece))?;
+            // Another body waits its turn while this one is under way.
+            assert_eq!(host(&mut s, id, |h| h.takes(token))?, n < 2);
+        }
+        assert!(s.answered_yet(ask));
+        assert_eq!(s.retired.pop(), Some((id, token)));
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~a\rbc\x1b[201~");
+        // Its sender gone after the first piece: the paste is closed.
+        let (token, ask) = body(&mut s)?;
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Pasting("half".into()), Input::More]);
+            h.cut(token);
+        })?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~half\x1b[201~");
+        assert!(s.answered_yet(ask), "its asker is told it was cut short");
+        assert!(!host(&mut s, id, |h| h.takes(token))?);
+        Ok(())
+    }
+
+    /// A frame of what was typed is the most that waits unread for a pane's
+    /// program: what is typed past it is not taken, and its typist is told
+    /// so, once a turn. The answers to the program's own
+    /// queries are not what was typed, and count for none of it (D-193;
+    /// what was typed queued in the pane without end).
+    #[test]
+    fn what_is_typed_past_a_frame_unread_is_not_taken_and_said_once() -> TestResult {
+        use crate::link::{FromPane, ToPane, Typed};
+        let (mut s, client) = super::testing::attached(10, 40)?;
+        let id = s.focused(client).ok_or("its pane")?;
+        let now = Instant::now();
+        let key = || Typed::Key(fux_vt::keys::KeyPress::char('k').into());
+        let refused = |reports: &[FromPane]| -> Vec<String> {
+            (reports.iter())
+                .filter_map(|report| match report {
+                    FromPane::Refused { why, .. } => Some(why.clone()),
+                    FromPane::Begun(_)
+                    | FromPane::Taking(_)
+                    | FromPane::Told { .. }
+                    | FromPane::Update(_)
+                    | FromPane::Alert { .. }
+                    | FromPane::Copied(_)
+                    | FromPane::Notice { .. }
+                    | FromPane::Answer { .. }
+                    | FromPane::Retired(_)
+                    | FromPane::Offer(_) => None,
+                })
+                .collect()
+        };
+        let typed = |s: &mut Session, keys: usize| {
+            host(s, id, |h| {
+                for _ in 0..keys {
+                    h.handle(
+                        ToPane::Typed {
+                            client,
+                            typed: key(),
+                        },
+                        now,
+                    );
+                }
+                h.take()
+            })
+        };
+        // A frame of keys is taken; the three after it are not, said once
+        // for the turn they came in.
+        assert_eq!(
+            refused(&typed(&mut s, crate::pane::BEHIND)?),
+            [] as [String; 0]
+        );
+        let said = refused(&typed(&mut s, 3)?);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said.iter()
+                .all(|why| why.contains("isn't reading what is typed"))
+        );
+        assert_eq!(queued(&mut s, id)?.len(), crate::pane::BEHIND);
+        // Its program read: what is typed is taken again, and no more is
+        // said till a frame waits again.
+        assert_eq!(refused(&typed(&mut s, 1)?), [] as [String; 0]);
+        assert_eq!(queued(&mut s, id)?, b"k");
+        // A frame of answers to its own queries unread: a key is taken.
+        host(&mut s, id, |h| {
+            let queries: Vec<u8> = std::iter::repeat_n(*b"\x1b[c", 1024).flatten().collect();
+            for _ in 0..10_000 {
+                if h.pane().input().replies() >= crate::pane::BEHIND {
+                    break;
+                }
+                h.output(&queries, now);
+            }
+            assert!(h.pane().input().replies() >= crate::pane::BEHIND);
+        })?;
+        assert_eq!(refused(&typed(&mut s, 1)?), [] as [String; 0]);
+        assert!(queued(&mut s, id)?.ends_with(b"k"));
+        Ok(())
+    }
+
+    /// What a client types after a paste, while the paste's text is still
+    /// to come from its connection, waits behind it: its server said the
+    /// paste first. A paste that will not come holds nothing back (D-187).
+    #[test]
+    fn what_is_typed_after_a_paste_still_to_come_waits_behind_it() -> TestResult {
+        use crate::link::ToPane;
+        use fux_wire::act::Act;
+        let (mut s, client) = super::testing::attached(10, 40)?;
+        let id = s.focused(client).ok_or("its pane")?;
+        let now = Instant::now();
+        let key = |c| Act::Key(fux_vt::keys::KeyPress::char(c).into());
+        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
+        let pasted = |s: &mut Session| -> Result<u64, String> {
+            s.give_body(Some(7));
+            s.acts(client, vec![Act::Paste(String::new())], now);
+            s.give_body(None);
+            Ok(s.deliveries.pop().ok_or("its delivery")?.1)
+        };
+        let token = pasted(&mut s)?;
+        s.acts(client, vec![key('x'), key('y')], now);
+        assert!(queued(&mut s, id)?.is_empty(), "typed ahead of the paste");
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Paste("text".into())])
+        })?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~text\x1b[201~xy");
+        // One whose sender went before any of it came.
+        let token = pasted(&mut s)?;
+        s.acts(client, vec![key('z')], now);
+        assert!(queued(&mut s, id)?.is_empty());
+        host(&mut s, id, |h| h.handle(ToPane::Drop { token }, now))?;
+        assert_eq!(queued(&mut s, id)?, b"z");
+        Ok(())
+    }
+
+    /// A paste whose client shows a screen of its own goes to no pane; its
+    /// text, which its connection kept, is let go by it, told so at once
+    /// as any other is told where it goes. So the client hears its paste
+    /// is done with, and the one after it, sent once the screen is gone,
+    /// goes to its pane (D-189; a client's pastes go one at a time).
+    #[test]
+    fn a_paste_while_its_client_shows_a_screen_is_let_go_and_the_next_goes_on() -> TestResult {
+        use fux_wire::act::{Act, Panel, ScreenAct};
+        let (mut s, client) = super::testing::attached(10, 40)?;
+        let id = s.focused(client).ok_or("its pane")?;
+        let now = Instant::now();
+        let screen = |act| Act::Screen { opening: 1, act };
+        s.acts(
+            client,
+            vec![screen(ScreenAct::Show(Panel::Repeat("RESIZE".into())))],
+            now,
+        );
+        s.give_body(Some(7));
+        s.acts(client, vec![Act::Paste(String::new())], now);
+        // Told before anything else of its client's is taken.
+        let (body, _, panes) = s.deliveries.pop().ok_or("its text let go")?;
+        assert_eq!((body, panes), (7, Vec::new()));
+        s.give_body(None);
+        assert!(s.deliveries.is_empty(), "let go once");
+        s.acts(client, vec![screen(ScreenAct::Hide)], now);
+        s.give_body(Some(8));
+        s.acts(client, vec![Act::Paste(String::new())], now);
+        s.give_body(None);
+        let (body, _, panes) = s.deliveries.pop().ok_or("its delivery")?;
+        assert_eq!((body, panes), (8, vec![id]));
+        Ok(())
+    }
+
+    /// What is typed between two pastes whose text is still to come keeps
+    /// its place: it is queued after the first, as that one has come, and
+    /// does not wait for the second, which holds back only what came after
+    /// it (D-187; one count of pastes to come queued it after both, and
+    /// held it for as long as the second took).
+    #[test]
+    fn what_is_typed_between_two_pastes_to_come_keeps_its_place() -> TestResult {
+        use fux_wire::act::Act;
+        let (mut s, first) = super::testing::attached(10, 40)?;
+        let second = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+        let id = s.focused(first).ok_or("its pane")?;
+        assert_eq!(s.focused(second), Some(id));
+        let now = Instant::now();
+        let key = |c| Act::Key(fux_vt::keys::KeyPress::char(c).into());
+        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
+        let pasted = |s: &mut Session, client| -> Result<u64, String> {
+            s.give_body(Some(7));
+            s.acts(client, vec![Act::Paste(String::new())], now);
+            s.give_body(None);
+            Ok(s.deliveries.pop().ok_or("its delivery")?.1)
+        };
+        // One client's paste, a key of the other's, the other's paste, a
+        // key of the first's: in that order.
+        let a = pasted(&mut s, first)?;
+        s.acts(second, vec![key('x')], now);
+        let b = pasted(&mut s, second)?;
+        s.acts(first, vec![key('y')], now);
+        assert!(queued(&mut s, id)?.is_empty());
+        host(&mut s, id, |h| h.piece(a, &[Input::Paste("A".into())]))?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~A\x1b[201~x");
+        host(&mut s, id, |h| h.piece(b, &[Input::Paste("B".into())]))?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~B\x1b[201~y");
+        Ok(())
+    }
+
+    /// A pane takes the bodies its server asked it for in the order it
+    /// asked: the second waits with its sender till the first is typed, or
+    /// its asker gone, whichever body's piece comes first. Each pane taking
+    /// whichever came first, two pastes sent to the same two panes could
+    /// each be begun by one of them, and both wait for ever (D-192).
+    #[test]
+    fn bodies_are_taken_in_the_order_their_server_asked() -> TestResult {
+        use crate::link::ToPane;
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let to = command::To::Now(AnyRef::Pane(id));
+        let now = Instant::now();
+        let mut asked = Vec::new();
+        for body in 0..3 {
+            s.give_body(Some(body));
+            s.send_keys(to, &[], now).map_err(|e| e.to_string())?;
+            asked.push(s.deliveries.pop().ok_or("its delivery")?.1);
+        }
+        let [first, second, third] = asked[..] else {
+            return Err("three bodies".into());
+        };
+        let takes = |s: &mut Session, token| host(s, id, |h| h.takes(token));
+        assert!(takes(&mut s, first)? && !takes(&mut s, second)? && !takes(&mut s, third)?);
+        host(&mut s, id, |h| h.piece(first, &[Input::Text("a".into())]))?;
+        assert!(takes(&mut s, second)? && !takes(&mut s, third)?);
+        // Its asker gone, the second is waited for no more.
+        host(&mut s, id, |h| {
+            h.handle(ToPane::Drop { token: second }, now)
+        })?;
+        assert!(takes(&mut s, third)?);
+        Ok(())
+    }
+
+    /// While a paste that comes in pieces is open, nothing else its program
+    /// is to read is queued inside it: another client's key, a one-frame
+    /// `send-keys` and the answer to the program's own query wait behind
+    /// its closing bracket, in the order they came (D-181; a Ctrl-C typed
+    /// by another became pasted text).
+    #[test]
+    fn what_comes_while_a_paste_is_open_follows_its_closing_bracket() -> TestResult {
+        use crate::link::{ToPane, Typed};
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let to = command::To::Now(AnyRef::Pane(id));
+        let now = Instant::now();
+        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
+        s.give_body(Some(7));
+        let pending = s.send_keys(to, &[], now).map_err(|e| e.to_string())?;
+        let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
+        let [(_, ask)] = pending.asks.as_slice() else {
+            return Err("one ask".into());
+        };
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Pasting("one ".into()), Input::More]);
+        })?;
+        let other = ClientId::of(2);
+        let key = Typed::Key(fux_vt::keys::KeyPress::char('x').into());
+        host(&mut s, id, |h| {
+            h.handle(
+                ToPane::Typed {
+                    client: other,
+                    typed: key,
+                },
+                now,
+            );
+        })?;
+        s.send_keys(to, &[Input::Text("y".into())], now)
+            .map_err(|e| e.to_string())?;
+        // Its program asks what terminal it is: answered, behind the paste.
+        host(&mut s, id, |h| h.output(b"\x1b[c", now))?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~one ");
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Paste("two".into())])
+        })?;
+        assert!(s.answered_yet(*ask));
+        let rest = queued(&mut s, id)?;
+        let said = String::from_utf8_lossy(&rest).into_owned();
+        assert!(said.starts_with("two\x1b[201~xy\x1b[?"), "{said:?}");
+        assert!(said.ends_with('c'), "{said:?}");
+        Ok(())
+    }
+
+    /// A paste whose next piece the OS gives no memory for is closed where
+    /// it is, in room made before its first byte was queued, and its asker
+    /// told: its bracket is never left open (D-181).
+    #[cfg(feature = "checks")]
+    #[test]
+    fn a_paste_refused_memory_part_way_is_closed() -> TestResult {
+        let mut s = started()?;
+        let id = PaneId::of(1);
+        let to = command::To::Now(AnyRef::Pane(id));
+        let now = Instant::now();
+        host(&mut s, id, |h| h.output(b"\x1b[?2004h", now))?;
+        s.give_body(Some(7));
+        let pending = s.send_keys(to, &[], now).map_err(|e| e.to_string())?;
+        let (_, token, _) = s.deliveries.pop().ok_or("its delivery")?;
+        let [(_, ask)] = pending.asks.as_slice() else {
+            return Err("one ask".into());
+        };
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Pasting("one".into()), Input::More]);
+        })?;
+        fux_vt::refuse_next(u32::MAX);
+        let refused = host(&mut s, id, |h| {
+            h.piece(token, &[Input::Pasting("two".into()), Input::More])
+        });
+        fux_vt::refuse_next(0);
+        refused?;
+        assert_eq!(queued(&mut s, id)?, b"\x1b[200~one\x1b[201~");
+        assert!(s.answered_yet(*ask), "its asker is told it was refused");
+        // What is left of it is let go.
+        host(&mut s, id, |h| {
+            h.piece(token, &[Input::Paste("three".into())])
+        })?;
+        assert!(queued(&mut s, id)?.is_empty());
         Ok(())
     }
 

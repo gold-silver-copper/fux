@@ -4,7 +4,7 @@
 #![cfg(unix)]
 mod support;
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use support::*;
 
 /// How many log lines mention running out of descriptors.
@@ -94,7 +94,17 @@ fn recorder(server: &Server, first: &str) -> Result<(i32, std::path::PathBuf), S
 
 /// Waits until the file holds exactly `expected`.
 fn received(out: &std::path::Path, expected: &[u8]) -> Outcome {
+    received_by(None, out, expected)
+}
+
+/// `received`, `client` doing meanwhile what the server asks of it, as a
+/// client's own loop does: a paste it sends after another waits to be told
+/// that one is taken (`ToAttached::More`).
+fn received_by(mut client: Option<&mut Client>, out: &std::path::Path, expected: &[u8]) -> Outcome {
     eventually("everything received", || {
+        if let Some(client) = &mut client {
+            client.pump()?;
+        }
         Ok(std::fs::read(out).unwrap_or_default().len() >= expected.len())
     })
     .map_err(|error| {
@@ -185,13 +195,44 @@ fn input_waits_while_its_program_does_not_read() -> Outcome {
         client.send(&[key])?;
         expected.push(key);
     }
+    // Sent keys are answered once the terminal took them, which it does
+    // while it has room: on Linux for all of these, on macOS, whose
+    // terminal holds a kilobyte, for none. The first that is not answered
+    // at once waits for its program, which then reads again; none is
+    // waited for without an end.
+    let mut reading = false;
     for i in 0..200u32 {
         let key = char::from(b'A'.saturating_add(u8::try_from(i % 26).map_err(e)?));
-        send_now(&server, "%1", &key.to_string(), false)?;
+        let keys = format!(
+            "(send-keys (text {} {}))",
+            support::reference("%1"),
+            fux::script::quoted(&key.to_string())
+        );
+        let mut sending = server.spawn(&[&keys])?;
+        let (waits, deadline) = (after(Duration::from_secs(1)), after(PATIENCE));
+        let status = loop {
+            client.pump()?;
+            if let Some(status) = sending.try_wait().map_err(e)? {
+                break status;
+            }
+            if !reading && Instant::now() > waits {
+                signal(cat, fuxix::process::Signal::Cont);
+                reading = true;
+            }
+            if Instant::now() > deadline {
+                let _ = sending.kill();
+                let _ = sending.wait();
+                return Err(format!("key {i} sent was not answered"));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(status.success(), "key {i} sent failed: {status}");
         expected.extend(key.to_string().bytes());
     }
-    signal(cat, fuxix::process::Signal::Cont);
-    received(&out, &expected)?;
+    if !reading {
+        signal(cat, fuxix::process::Signal::Cont);
+    }
+    received_by(Some(&mut client), &out, &expected)?;
 
     // Eighty pastes of 2000 bytes.
     stop(cat)?;
@@ -201,7 +242,7 @@ fn input_waits_while_its_program_does_not_read() -> Outcome {
         expected.extend(text);
     }
     signal(cat, fuxix::process::Signal::Cont);
-    received(&out, &expected)
+    received_by(Some(&mut client), &out, &expected)
 }
 
 /// Frames a client sends faster than a tick handles them wait for its

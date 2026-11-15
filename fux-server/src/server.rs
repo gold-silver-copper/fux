@@ -169,6 +169,25 @@ enum Wake {
     Reach,
 }
 
+/// What a client is owed as state (`link::Owed`), each as frames for it.
+#[derive(Default)]
+struct Owing {
+    clipboard: Option<Vec<u8>>,
+    title: Option<Vec<u8>>,
+    bell: Option<Vec<u8>>,
+    prompt: Option<Vec<u8>>,
+}
+
+impl Owing {
+    /// Whether it is owed anything.
+    fn any(&self) -> bool {
+        self.clipboard.is_some()
+            || self.title.is_some()
+            || self.bell.is_some()
+            || self.prompt.is_some()
+    }
+}
+
 /// A client's connection: its link to its own process (`conn`), which
 /// decodes what its client sends and holds what is sent it (D-123); and
 /// where it is in its life.
@@ -178,8 +197,22 @@ struct Conn {
     decoder: Decoder,
     /// Frames for its client, till they go to its process.
     out: ByteQueue,
-    /// Its process has bytes its client has not taken yet.
+    /// Keys its client typed that its connection did not take
+    /// (`FromConn::Dropped`), till its client is told.
+    dropped: u64,
+    /// Bodies its connection could not get to a pane
+    /// (`FromConn::Unreached`), till that pane is told to wait for one no
+    /// more.
+    unreached: Vec<(PaneId, u64)>,
+    /// Its process has bytes its client has not taken yet, or is owed
+    /// some (`owed`).
     pending: bool,
+    /// What its client is owed as state, not yet passed to its process:
+    /// the latest clipboard copy and title, the bell, a prompt, each as
+    /// frames for its client. One replaces the one of its kind before it,
+    /// and they go to its process once a turn (`settle`), so that a pane
+    /// that copies faster than its link takes them queues nothing here.
+    owed: Owing,
     /// Its client sent what is no frame, and why: it is read no more, and
     /// told so once what it sent before is taken (`Server::read_conn`).
     bad: Option<String>,
@@ -325,7 +358,10 @@ impl Conn {
             link: crate::link::End::new(link)?,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
+            dropped: 0,
+            unreached: Vec::new(),
             pending: false,
+            owed: Owing::default(),
             bad: None,
             gone: false,
             bodies: std::collections::VecDeque::new(),
@@ -378,9 +414,15 @@ impl Conn {
         self.reads() && self.decoder.ready().unwrap_or(true)
     }
 
-    /// Tells its process `message`, after the frames queued before it.
+    /// Tells its process `message`, after the frames queued before it;
+    /// its last words (`Close`, `Detached`) after what its client is owed
+    /// too, which nothing would pass on after them.
     fn tell_process(&mut self, message: &crate::link::ToConn) {
+        use crate::link::ToConn;
         self.queue_out();
+        if matches!(message, ToConn::Close | ToConn::Detached) {
+            self.settle();
+        }
         self.link.send(message);
     }
 
@@ -402,11 +444,73 @@ impl Conn {
         }
     }
 
+    /// Its client is owed `frames` as state of `kind`, in place of what it
+    /// was owed of that kind and its process was not yet passed, after the
+    /// frames queued before them. They go to its process at its next
+    /// `settle`.
+    fn owe(&mut self, kind: crate::link::Owed, frames: &[u8]) {
+        use crate::link::Owed;
+        self.queue_out();
+        let slot = match kind {
+            Owed::Clipboard => &mut self.owed.clipboard,
+            Owed::Title => &mut self.owed.title,
+            Owed::Bell => &mut self.owed.bell,
+            Owed::Prompt => &mut self.owed.prompt,
+        };
+        *slot = Some(frames.to_vec());
+        self.pending = true;
+    }
+
+    /// Passes its process what its client is owed (`ToConn::Owed`), the
+    /// clipboard copy, the title, the bell, then the prompt: each message
+    /// one frame, the most its process takes of one.
+    fn settle(&mut self) {
+        use crate::link::Owed;
+        let owed = mem::take(&mut self.owed);
+        let kinds = [
+            (Owed::Clipboard, owed.clipboard),
+            (Owed::Title, owed.title),
+            (Owed::Bell, owed.bell),
+            (Owed::Prompt, owed.prompt),
+        ];
+        for (kind, frames) in kinds {
+            let Some(frames) = frames else {
+                continue;
+            };
+            let mut rest = frames.as_slice();
+            while !rest.is_empty() {
+                let (bytes, after) = rest
+                    .split_at_checked(crate::link::BYTES)
+                    .unwrap_or((rest, &[]));
+                self.link.send(&crate::link::ToConn::Owed {
+                    kind,
+                    bytes: bytes.to_vec(),
+                    last: after.is_empty(),
+                });
+                rest = after;
+            }
+        }
+    }
+
+    /// `bytes` for its client's terminal, owed it as state of `kind`.
+    fn owe_paint(&mut self, kind: crate::link::Owed, bytes: &[u8]) {
+        let mut frames = ByteQueue::default();
+        Attached::paint(&mut frames, bytes);
+        self.owe(kind, frames.as_slice());
+    }
+
     /// What its process said: its client's frames, into `decoder`, and how
     /// its client is; whether its client is gone, or shut its side.
     fn hear(&mut self, buffer: &mut [u8]) -> bool {
         use crate::link::FromConn;
-        self.gone |= self.link.read_up_to(buffer, CONN_READ) == crate::link::Read::Closed;
+        // Read no further while as much as one read brings of its client's
+        // frames waits to be handled: they are handled a few a turn, and
+        // small ones (keys) come many to a read, so that what a client
+        // types faster than it is handled stays with its connection and
+        // with it, not here.
+        if self.decoder.buffered() < CONN_READ {
+            self.gone |= self.link.read_up_to(buffer, CONN_READ) == crate::link::Read::Closed;
+        }
         let mut closed = self.gone;
         loop {
             match self.link.next_message::<FromConn>() {
@@ -414,11 +518,18 @@ impl Conn {
                     self.decoder.push(&frame);
                     self.bodies.push_back(body);
                 }
-                Ok(Some(FromConn::Flushed)) => self.pending = false,
+                // What it is owed and was not passed yet is still to come.
+                Ok(Some(FromConn::Flushed)) => self.pending = self.owed.any(),
                 // A spare's first word, which made it a connection
                 // (`spare_heard`).
                 Ok(Some(FromConn::Accepted)) => {}
                 Ok(Some(FromConn::Shut)) => closed = true,
+                Ok(Some(FromConn::Dropped(keys))) => {
+                    self.dropped = self.dropped.saturating_add(keys);
+                }
+                Ok(Some(FromConn::Unreached { token, pane })) => {
+                    self.unreached.push((pane, token));
+                }
                 Ok(Some(FromConn::Bad(why))) => {
                     log!("a client sent a bad frame: {why}");
                     self.bad = Some(why);
@@ -636,18 +747,27 @@ impl Conn {
         match frame {
             ToAttached::Paint(bytes) => Attached::paint(&mut self.out, bytes),
             ToAttached::Exit(text) => self.exit(session, Detach::Detached, text, now),
+            // One prompt waits for a client that takes nothing, not each.
+            ToAttached::Open(_) => self.owe(crate::link::Owed::Prompt, &frame.encode()),
             ToAttached::Welcome(..)
             | ToAttached::Ended(_)
-            | ToAttached::Open(_)
             | ToAttached::Keys(_)
-            | ToAttached::Read(..) => self.send(frame),
+            | ToAttached::Read(..)
+            | ToAttached::More => self.send(frame),
         }
     }
 
     /// Passes its process what waits for its client, as far as its link
     /// takes it; one whose process is gone is dead.
     fn flush(&mut self, session: &mut Session, now: Instant) {
+        // What its client is owed goes once its link took all it was
+        // passed before: till then the latest of each waits here, so a
+        // link that takes nothing is passed nothing more of it.
+        let taken = self.link.out.is_empty();
         self.queue_out();
+        if taken {
+            self.settle();
+        }
         if self.link.flush().is_err() {
             self.enter(session, Stage::Dead, now);
         }
@@ -1239,10 +1359,9 @@ impl Server {
     /// what, go into `ready`.
     fn poll(&mut self, timeout: Option<Duration>, ready: &mut Vec<(Slot, PollFlags)>) {
         ready.clear();
-        let held: Vec<bool> = (self.conns.iter()).map(|conn| self.held(conn)).collect();
-        let runnable: Vec<bool> = (self.conns.iter().zip(&held))
-            .map(|(conn, held)| {
-                !held && conn.frame_waits()
+        let runnable: Vec<bool> = (self.conns.iter())
+            .map(|conn| {
+                conn.frame_waits()
                     || matches!(&conn.stage, Stage::Blocked(asked)
                 if !matches!(self.unprocessed(asked), Some(1..)))
             })
@@ -1274,18 +1393,20 @@ impl Server {
         add(PollFd::new(self.stops.reader(), PollFlags::IN), Slot::Stops);
         for (i, conn) in self.conns.iter().enumerate() {
             // Its process's link is read, what its client sent and whether
-            // the client took what it was sent, but while what its client
-            // types waits for a pane (`Server::held`).
-            // Held, it is not read, and only its end is to be learned.
-            // Windows tells that of a read kept in flight, which `HUP` and
-            // `ERR` ask for; Unix is asked nothing: Linux tells a hang-up
-            // unasked, and macOS nothing till the link is read again.
-            let mut flags = match held.get(i).copied().unwrap_or(false) {
+            // the client took what it was sent, but while as much as a
+            // read brings waits to be handled (`Conn::hear`): then only
+            // its end is to be learned. Windows tells that of a read kept
+            // in flight, which `HUP` and `ERR` ask for; Unix is asked
+            // nothing: Linux tells a hang-up unasked, and macOS nothing
+            // till the link is read again.
+            let unread = conn.decoder.buffered() >= CONN_READ;
+            let mut flags = match unread {
                 true if cfg!(windows) => PollFlags::HUP | PollFlags::ERR,
                 true => PollFlags::NONE,
                 false => PollFlags::IN,
             };
-            if !conn.out.is_empty() || !conn.link.out.is_empty() {
+            // What its client is owed goes as its link takes it too.
+            if !conn.out.is_empty() || !conn.link.out.is_empty() || conn.owed.any() {
                 flags |= PollFlags::OUT;
             }
             add(PollFd::new(&conn.link.stream, flags), Slot::Conn(i));
@@ -1333,13 +1454,6 @@ impl Server {
                 .filter(|(flags, _)| !flags.is_empty())
                 .map(|(flags, slot)| (slot, flags)),
         );
-    }
-
-    /// Whether connection `conn`'s client's frames wait, unread: what it
-    /// types waits for a pane that reads nothing more of what it is sent
-    /// (`Session::typing_waits`), and stays with its connection's process.
-    fn held(&self, conn: &Conn) -> bool {
-        matches!(&conn.stage, Stage::Attached(attached) if self.session.typing_waits(attached.client))
     }
 
     /// Leaves the run to the server with pid `by`, which pane `pane` says
@@ -1433,6 +1547,12 @@ impl Server {
                     continue;
                 }
                 Outgoing::To(client, frame) => (client, frame),
+                Outgoing::Owed(client, kind, bytes) => {
+                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                        conn.owe_paint(kind, &bytes);
+                    }
+                    continue;
+                }
                 Outgoing::Keys(client, token) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
                         conn.keys.insert(token);
@@ -1442,6 +1562,10 @@ impl Server {
                 }
             };
             if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                // Till its connection wrote it all, a prompt waits for it.
+                if matches!(frame, ToAttached::Open(_)) {
+                    self.session.prompted.insert(client);
+                }
                 conn.tell(&mut self.session, &frame, now);
             }
         }
@@ -1461,7 +1585,7 @@ impl Server {
             // The title and bell marks first: the bar shows the marks.
             let before = session.before_paint(client);
             if !before.is_empty() {
-                Attached::paint(&mut conn.out, &before);
+                conn.owe_paint(crate::link::Owed::Title, &before);
             }
             if let Some(scene) = render::scene(session, client) {
                 conn.tell_process(&crate::link::ToConn::Scene(Box::new(scene)));
@@ -1684,15 +1808,35 @@ impl Server {
             return;
         };
         let mut closed = conn.hear(self.read_buffer.as_mut_slice());
+        // Its client took all it was sent: no prompt waits for it.
+        if let (false, Some(attached)) = (conn.pending, conn.attached()) {
+            self.session.prompted.remove(&attached.client);
+        }
+        // A body its connection could not get to a pane: the pane, told to
+        // wait for it, is told it will not come, and holds nothing back
+        // for it, nor a question open.
+        for (pane, token) in mem::take(&mut conn.unreached) {
+            conn.tokens.remove(&(Holder::Pane(pane), token));
+            let drop = crate::link::ToPane::Drop { token };
+            self.session.tell_pane(pane, drop, now);
+        }
+        // Keys it typed faster than they were taken: it is told how many
+        // were not.
+        // They count as frames of its taken all the same: a binding's
+        // program waits for every frame its client sent before it.
+        let dropped = mem::take(&mut conn.dropped);
+        if let Some(attached) = conn.attached() {
+            attached.processed = attached.processed.saturating_add(dropped);
+        }
+        if let (1.., Some(client)) = (dropped, conn.attached().map(|a| a.client)) {
+            let why =
+                format!("{dropped} keys were typed faster than fux took them, and were not taken");
+            self.session.notify_to(client, why, true);
+        }
         // Held apart while the frames it lends are handled.
         let mut decoder = mem::take(&mut conn.decoder);
         let mut frames = 0usize;
-        while frames < CONN_FRAMES
-            && self
-                .conns
-                .get(index)
-                .is_some_and(|conn| conn.reads() && !self.held(conn))
-        {
+        while frames < CONN_FRAMES && self.conns.get(index).is_some_and(|conn| conn.reads()) {
             // Each frame is a new event: a previous request may have taken
             // long enough to pass another request's deadline.
             match self.take_frame(index, &mut decoder, Instant::now()) {
@@ -1817,6 +1961,10 @@ impl Server {
                     Some(AttachedFrame::Answer(asked, value)) => {
                         answered = Some((attached.client, asked, value));
                     }
+                    // A paste's pieces stay with its client's connection,
+                    // which sends the server the paste for the first
+                    // (`conn::next_frame`): one that comes here has none.
+                    Some(AttachedFrame::Piece(_)) => {}
                     None => return Ok(false),
                 }
                 if let Some(attached) = conn.attached() {
@@ -1947,7 +2095,7 @@ impl Server {
             .session
             .outbox
             .iter()
-            .any(|o| matches!(o, Outgoing::To(..)))
+            .any(|o| matches!(o, Outgoing::To(..) | Outgoing::Owed(..)))
         {
             self.send_frames(now);
         }
@@ -2414,6 +2562,159 @@ mod tests {
             },
             peer,
         ))
+    }
+
+    /// A client that stops reading gets, once it reads again, the last
+    /// clipboard copy and title it was sent while it did not, one bell and
+    /// its prompt: not every one, queued (each of a thousand, before).
+    /// Till it has read, a prompt waits for it, and once it has, none does.
+    #[test]
+    fn a_client_that_stopped_reading_gets_the_latest_of_what_it_is_owed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::link::Owed;
+        use std::io::Read as _;
+        let (mut server, mut peer) = server()?;
+        let client = (server.conns.first_mut().and_then(|c| c.attached()))
+            .map(|a| a.client)
+            .ok_or("its client")?;
+        // What its attach asked its terminal is not this test's.
+        server.session.outbox.clear();
+        // More than its socket holds: its connection has bytes it did not
+        // take, from here on.
+        let filler = vec![b'x'; 8 << 20];
+        {
+            let conn = server.conns.first_mut().ok_or("its connection")?;
+            Attached::paint(&mut conn.out, &filler);
+            conn.queue_out();
+            conn.link.flush_all().map_err(|e| e.to_string())?;
+        }
+        let prompt = |title: &str| {
+            ToAttached::Open(fux_wire::callback::Open::Prompt(
+                fux_wire::callback::Prompt {
+                    title: title.to_owned(),
+                    line: fux_wire::act::Line::new(String::new()),
+                    action: None,
+                },
+            ))
+        };
+        for n in 0..1000 {
+            let copy = format!("\x1b]52;c;copy{n}\x07").into_bytes();
+            (server.session.outbox).push(Outgoing::Owed(client, Owed::Clipboard, copy));
+            let bell = crate::outer::BELL.to_vec();
+            (server.session.outbox).push(Outgoing::Owed(client, Owed::Bell, bell));
+            server.send_frames(Instant::now());
+            let conn = server.conns.first_mut().ok_or("its connection")?;
+            conn.owe_paint(Owed::Title, format!("\x1b]2;title{n}\x1b\\").as_bytes());
+        }
+        (server.session.outbox).push(Outgoing::To(client, prompt("the prompt")));
+        server.send_frames(Instant::now());
+        assert!(server.session.prompted.contains(&client), "a prompt waits");
+        {
+            let now = Instant::now();
+            let Server { session, conns, .. } = &mut server;
+            let conn = conns.first_mut().ok_or("its connection")?;
+            assert!(conn.pending, "it is owed them");
+            conn.flush(session, now);
+            conn.link.flush_all().map_err(|e| e.to_string())?;
+        }
+        // It reads again: all it was sent, up to its prompt.
+        peer.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut decoder = Decoder::default();
+        let mut buffer = vec![0u8; 1 << 16];
+        let (mut filled, mut owed, mut opened) = (0usize, Vec::new(), 0);
+        while opened == 0 {
+            let n = peer.read(&mut buffer)?;
+            assert!(n > 0, "its connection closed");
+            decoder.push(buffer.get(..n).unwrap_or_default());
+            loop {
+                match decoder.frame::<ToAttached>()? {
+                    Some(ToAttached::Paint(bytes)) if bytes.first() == Some(&b'x') => {
+                        filled += bytes.len();
+                    }
+                    Some(ToAttached::Paint(bytes)) => {
+                        owed.push(String::from_utf8_lossy(&bytes).into_owned());
+                    }
+                    Some(ToAttached::Open(_)) => opened += 1,
+                    Some(other) => return Err(format!("{other:?}").into()),
+                    None => break,
+                }
+            }
+        }
+        assert_eq!(filled, filler.len());
+        assert_eq!(
+            owed,
+            ["\x1b]52;c;copy999\x07", "\x1b]2;title999\x1b\\", "\x07"]
+        );
+        // Its connection says it took it all: no prompt waits for it.
+        while server.session.prompted.contains(&client) {
+            heard(&mut server, 0)?;
+            assert!(server.conns.first().is_some_and(|c| !c.gone), "it went");
+        }
+        Ok(())
+    }
+
+    /// What a client is owed is the latest of each in the server too: ten
+    /// thousand copies, bells and titles for a client whose connection's
+    /// link takes nothing more leave the server's queue to it as it was,
+    /// turn after turn (each was queued to it: 21 MB in 150 turns of a
+    /// pane copying, measured); and once its link took all, it is passed
+    /// one of each, the last.
+    #[test]
+    fn what_a_client_is_owed_queues_nothing_to_a_link_that_takes_no_more()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::link::{Owed, ToConn};
+        let (mut server, _peer) = server()?;
+        let client = (server.conns.first_mut().and_then(|c| c.attached()))
+            .map(|a| a.client)
+            .ok_or("its client")?;
+        server.session.outbox.clear();
+        let now = Instant::now();
+        let owe = |server: &mut Server, n: usize| -> Result<usize, String> {
+            let copy = format!("\x1b]52;c;copy{n}\x07").into_bytes();
+            (server.session.outbox).push(Outgoing::Owed(client, Owed::Clipboard, copy));
+            let bell = crate::outer::BELL.to_vec();
+            (server.session.outbox).push(Outgoing::Owed(client, Owed::Bell, bell));
+            server.send_frames(now);
+            let Server { session, conns, .. } = server;
+            let conn = conns.first_mut().ok_or("its connection")?;
+            conn.owe_paint(Owed::Title, format!("\x1b]2;title{n}\x1b\\").as_bytes());
+            // A turn's end.
+            conn.flush(session, now);
+            Ok(conn.link.out.len())
+        };
+        // Its link to a process that reads nothing, and more than its
+        // socket holds: from here on its link takes nothing more.
+        let (link, _unread) = UnixStream::pair()?;
+        {
+            let conn = server.conns.first_mut().ok_or("its connection")?;
+            conn.link = crate::link::End::new(link)?;
+            Attached::paint(&mut conn.out, &vec![b'x'; 8 << 20]);
+            conn.queue_out();
+            let _ = conn.link.flush();
+        }
+        let queued = owe(&mut server, 0)?;
+        assert!(queued > 0, "its link took everything");
+        for n in 1..10_000 {
+            assert_eq!(owe(&mut server, n)?, queued, "its queue grew at {n}");
+        }
+        // Its link takes it all: what it is owed is passed, one of each.
+        let Server { session, conns, .. } = &mut server;
+        let conn = conns.first_mut().ok_or("its connection")?;
+        conn.link.out.take(conn.link.out.len());
+        conn.flush(session, now);
+        let queued = conn.link.queued::<ToConn>();
+        let passed: Vec<String> = (queued.iter())
+            .filter_map(|message| {
+                let ToConn::Owed { kind, bytes, .. } = message else {
+                    return None;
+                };
+                let last = String::from_utf8_lossy(bytes).contains("9999");
+                Some(format!("{kind:?} {last}"))
+            })
+            .collect();
+        assert_eq!(queued.len(), 3, "{queued:?}");
+        assert_eq!(passed, ["Clipboard true", "Title true", "Bell false"]);
+        Ok(())
     }
 
     /// A command's connection gone while its question waits: the question

@@ -107,7 +107,11 @@ fux '(quiet (pane "shell") 2)'
 
 The file's text goes to the program whole, as one paste (bracketed if the
 program asked for it), however long it is. A paste into an attached
-terminal arrives whole too.
+terminal arrives whole too. It goes as fast as the program reads it: fux
+keeps none of it, so a paste of megabytes to a program that isn't reading
+waits, and its `fux` with it, until the program reads. End that `fux`
+(Ctrl-C, a `timeout`) and the paste ends there, closed, with what the
+program had taken so far.
 
 ```sh
 printf 'echo pasted\n' > lines.txt

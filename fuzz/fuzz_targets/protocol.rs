@@ -116,7 +116,8 @@ fn to_attached(decoder: &mut Decoder) -> Result<Option<Vec<u8>>, Error> {
         | ToAttached::Ended(_)
         | ToAttached::Open(_)
         | ToAttached::Keys(_)
-        | ToAttached::Read(..) => {}
+        | ToAttached::Read(..)
+        | ToAttached::More => {}
     }
     Ok(Some(bytes))
 }

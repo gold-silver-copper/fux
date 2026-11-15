@@ -2,7 +2,7 @@
 //! its overlay or its focused pane. The client reads its
 //! own keyboard and runs its own bindings; a key reaches the server only
 //! as literal input for the pane it focuses.
-use crate::link::Typed;
+use crate::link::{Link, Typed};
 use crate::session::Session;
 use crate::view::Mode;
 use fux_vt::keys::Keystroke;
@@ -173,6 +173,18 @@ impl Session {
             self.notify_to(client, why, true);
             return true;
         }
+        // A pane's process that takes what it is sent slower than it is
+        // typed (stopped, say) has a frame of it waiting here at most:
+        // past it, what is typed is not taken, and its typist is told so
+        // (each time: a key clears what its client was told before it).
+        // A paste's text does not come this way.
+        let waits = matches!(self.links.get(&pane), Some(Link::Remote(remote))
+            if remote.end.out.len() >= fux_wire::protocol::MAX_FRAME);
+        if waits && !matches!(typed, Typed::Body(_)) {
+            let why = format!("{pane} isn't reading what is typed: no more is taken till it reads");
+            self.notify_to(client, why, true);
+            return true;
+        }
         self.tell_pane(pane, crate::link::ToPane::Typed { client, typed }, now);
         false
     }
@@ -181,8 +193,14 @@ impl Session {
         let Some(view) = self.views.get_mut(&client) else {
             return;
         };
-        // Pastes go to the pane only.
+        // Pastes go to the pane only. Text its connection kept is let go
+        // by it then, told so as it is told where any other goes: to no
+        // pane. So its client hears that paste is done with, and sends
+        // the one after it.
         if !view.mode.is_normal() {
+            if let Some((body, token)) = self.body_token() {
+                self.deliveries.push((body, token, Vec::new()));
+            }
             return;
         }
         view.notice = None;
@@ -190,10 +208,13 @@ impl Session {
         match self.body_token() {
             Some((body, token)) => {
                 let runs_in = self.views.get(&client).and_then(|v| v.runs_in);
-                if let Some(pane) = self.focused(client).filter(|p| runs_in != Some(*p)) {
-                    self.deliveries.push((body, token, vec![pane]));
-                }
-                let _ = self.type_in(client, Typed::Body(token), now);
+                let pane = self.focused(client).filter(|p| runs_in != Some(*p));
+                // With no pane to take it, or one that was not told to
+                // wait for it, its connection lets it go: a piece sent a
+                // pane that waits for none would never be taken.
+                let refused = self.type_in(client, Typed::Body(token), now);
+                let panes = pane.into_iter().filter(|_| !refused).collect();
+                self.deliveries.push((body, token, panes));
             }
             None => {
                 let _ = self.type_in(client, Typed::Paste(text), now);
