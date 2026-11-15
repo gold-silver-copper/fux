@@ -618,7 +618,7 @@ pub fn answers(socket: &SocketPath) -> bool {
 }
 
 /// Starts a server in the background, its journal keeping `journal`
-/// events, with its log in `fux.log` beside the socket (`socket::start_server`
+/// bytes of events, with its log in `fux.log` beside the socket (`socket::start_server`
 /// says how each OS does), and waits for the line it writes once it listens
 /// (`server::READY`), showing each notice it says first as it comes, for a
 /// download's wait, and giving them back, as the alternate screen would hide
@@ -628,7 +628,7 @@ pub fn answers(socket: &SocketPath) -> bool {
 /// before it listens holds the client too.
 pub fn start_server(
     socket: &SocketPath,
-    journal: fux_wire::command::JournalEntries,
+    journal: fux_wire::command::JournalBytes,
 ) -> Result<Vec<String>, Error> {
     let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
     socket::private_directory(socket, true)?;

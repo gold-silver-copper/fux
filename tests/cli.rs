@@ -850,12 +850,67 @@ fn a_batch_left_prints_its_events() -> Outcome {
     Ok(())
 }
 
+/// F020: a rename to a name as long as a request holds is an event longer
+/// than one frame has room for, with what is said around it. Each of two
+/// is read whole, a batch alone, sent in pieces its reader joins, and the
+/// cursor after it reads on, to what came after.
+#[test]
+fn renames_to_names_of_a_megabyte_are_read_whole_a_batch_each() -> Outcome {
+    let server = Server::start("")?;
+    let mut cursor = server.ok(&["(get (next-events (all) \"\" 0) \"next\")"])?;
+    let long = |letter: char, times: usize| {
+        let piece: String = std::iter::repeat_n(letter, 64).collect();
+        format!("(apply join (map (lambda! (#ignore) \"{piece}\") (range 0 {times})))")
+    };
+    let renames = [
+        format!("(rename (workspace 1) {})", long('w', LONG_NAME / 64)),
+        format!("(rename (tab 1) {})", long('t', LONG_NAME / 64)),
+        "(rename (pane 1) \"after\")".to_owned(),
+    ];
+    // The first is read before the second is made: the journal's room is
+    // two frames, and two such names with their entries are more.
+    let mut batches = Vec::new();
+    for renames in [renames.get(..1), renames.get(1..)] {
+        for rename in renames.unwrap_or_default() {
+            server.ok(&[&format!("(sequence! {rename} #inert)")])?;
+        }
+        loop {
+            let read = format!(
+                "(next-events (all) {} 0)",
+                fux::script::quoted(cursor.trim())
+            );
+            let next = server.ok(&[&format!("(get {read} \"next\")")])?;
+            if next == cursor {
+                break;
+            }
+            batches.push(server.ok(&[&read])?);
+            cursor = next;
+        }
+    }
+    let [workspace, tab, pane] = batches.as_slice() else {
+        return Err(format!("{} batches", batches.len()));
+    };
+    for (batch, letter) in [(workspace, 'w'), (tab, 't')] {
+        assert_eq!(batch.lines().count(), 1);
+        let name: String = std::iter::repeat_n(letter, LONG_NAME).collect();
+        assert!(batch.contains(&name), "{letter}");
+    }
+    assert_eq!(pane.lines().count(), 1);
+    assert!(pane.contains("\"after\""), "{pane}");
+    Ok(())
+}
+/// A name's bytes that a rename's request still holds in its one frame,
+/// and whose event no frame holds.
+const LONG_NAME: usize = (1 << 20) - 256;
+
 /// A failure's report tells the step that took effect, then every value
 /// left, a batch that missed entries whole among them, and stdout nothing:
 /// the action after the batch is told.
 #[test]
 fn a_failure_tells_what_follows_a_lost_batch() -> Outcome {
-    let server = Server::start_journal(2)?;
+    // Room for two of the renames below, 80 bytes and a letter each, and
+    // not for three.
+    let server = Server::start_journal(200)?;
     let cursor = server.ok(&["(sequence! (define! value-817 (next-events (all) \"\" 0)) \"next\" (get value-817 \"next\"))"])?;
     for name in ["a", "b", "c", "d"] {
         server.ok(&[&format!(

@@ -242,7 +242,7 @@ port found in fuxix's shared API, left as they are: `Slave::spawn` returns `(Chi
   `listened` and `owned` existed only on Unix. On Windows `fuxix::socket::connect` already refuses a pipe of another user or owner; a
   client must not read `Errno::AGAIN` (every instance busy) as "a server runs": a squatter with
   busy instances gives it too. The server's `.lock` and `.server` record are what says one runs.
-- **Starting a server:** a client starts `fux __serve SOCKET ENTRIES` and reads `READY` on its
+- **Starting a server:** a client starts `fux __serve SOCKET BYTES` and reads `READY` on its
   stdout. A server whose run is recorded starts the run's pinned copy (`run_pinned`: started with
   the same three handles, then this process exits 0, before taking any lock) and the copy writes
   `READY`. Notices before `READY` go to the server's log (`notice: ...`): the built-in ConPTY's

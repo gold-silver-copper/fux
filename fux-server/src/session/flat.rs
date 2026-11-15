@@ -6,11 +6,11 @@ use crate::session::testing::TestResult;
 use fux_wire::command::Beside;
 use fux_wire::command::{Command, Program, Screen};
 
-/// What a test's panes run, and its journal's length: read where the stack
+/// What a test's panes run, and its journal's room: read where the stack
 /// is a test's own, as reading the defaults runs fux's whole script.
-fn defaults() -> Result<(command::PaneOptions, command::JournalEntries), String> {
+fn defaults() -> Result<(command::PaneOptions, command::JournalBytes), String> {
     let preferences = (fux::script::default_state().map_err(|e| e.to_string())?).preferences;
-    Ok((preferences.pane_options(), preferences.journal_entries))
+    Ok((preferences.pane_options(), preferences.journal_bytes))
 }
 
 /// A directory of the test `name`'s own, new.
@@ -26,7 +26,7 @@ fn scratch(name: &str) -> Result<PathBuf, String> {
 /// A session on a socket in `dir` that records its run there, as a
 /// server's does, its panes in this process; and where it keeps the run.
 #[cfg(unix)]
-fn recording(dir: &Path, journal: command::JournalEntries) -> Result<(Session, PathBuf), String> {
+fn recording(dir: &Path, journal: command::JournalBytes) -> Result<(Session, PathBuf), String> {
     let socket = dir.join("fux.sock");
     let kept = crate::socket::panes(&socket);
     std::fs::create_dir_all(&kept).map_err(|e| e.to_string())?;
@@ -115,16 +115,205 @@ fn two_thousand_nested_workspaces_fit_a_small_stack() -> TestResult {
     nested_on_a_small_stack(2_000)
 }
 
-/// At 20,000 deep, the depth F015 was found past. The tree's own work
-/// there is under half a second; the minute or two this takes is the journal's,
-/// which still keeps with each entry every workspace that held its place
-/// (F013, F016), so making or closing a chain of workspaces costs it the
-/// square of the depth. Run by name till the journal keeps no such chain.
+/// At 20,000 deep, the depth F015 was found past. It took a minute or two
+/// while the journal kept with each entry every workspace that held its
+/// place (F013, F016), and was run by name (D-176).
 #[cfg(unix)]
 #[test]
-#[ignore = "a minute or two, all of it the journal's parent chains (F013): `cargo test -p fux-server --lib -- --ignored twenty_thousand`"]
 fn twenty_thousand_nested_workspaces_fit_a_small_stack() -> TestResult {
     nested_on_a_small_stack(20_000)
+}
+
+/// The pane of the tab `nest` made last, and the outermost workspace that
+/// holds it.
+fn innermost(s: &Session) -> Result<(PaneId, WsId), String> {
+    let (ws, tab) = (s.parts.tabs_in(None).into_iter())
+        .max_by_key(|(_, tab)| tab.id())
+        .ok_or("no tab")?;
+    let pane = *tab.root().panes().first().ok_or("no pane")?;
+    Ok((pane, *s.parts.path(ws).first().ok_or("no workspace")?))
+}
+
+/// The bytes this thread holds, as its allocator counts them.
+fn live() -> usize {
+    fux_vt_peak::ThreadPeak.live()
+}
+
+/// F013: an event in a workspace in a thousand others holds what one at
+/// the top does. A pane's program sets 4,000 titles: the journal counts
+/// as many bytes for them at either depth, and the thread's allocator,
+/// which counts what is really held, differs by less than the journal's
+/// ring grows by at once. With each entry's chain of workspaces it was
+/// 16 MiB more at the depth.
+#[test]
+fn a_journal_entry_holds_the_same_at_any_depth() -> TestResult {
+    let (options, _) = defaults()?;
+    let titles = |depth: usize| -> Result<(usize, usize), String> {
+        let (mut s, _) = testing::attached(24, 80)?;
+        nest(&mut s, None, depth, options)?;
+        let (pane, _) = innermost(&s)?;
+        let before = (s.parts.journal().bytes(), live());
+        for n in 0..4_000 {
+            let title = format!("\x1b]2;title {n:04}\x07");
+            s.output(pane, title.as_bytes(), Instant::now());
+        }
+        let after = (s.parts.journal().bytes(), live());
+        Ok((
+            after.0.saturating_sub(before.0),
+            after.1.saturating_sub(before.1),
+        ))
+    };
+    let (shallow, deep) = (titles(1)?, titles(1_000)?);
+    // What the journal counts: 4,000 entries and their titles, and the
+    // rows its table has room for, which come half as many again at once.
+    assert!(shallow.0 >= 4_000 * 80, "{shallow:?}");
+    assert!(
+        deep.0 < shallow.0.saturating_mul(3) / 2,
+        "counted: {} at depth 1, {} at depth 1,000",
+        shallow.0,
+        deep.0
+    );
+    assert!(
+        deep.1.abs_diff(shallow.1) < 1 << 20,
+        "held: {} at depth 1, {} at depth 1,000",
+        shallow.1,
+        deep.1
+    );
+    Ok(())
+}
+
+/// Killing the outermost of N nested workspaces, a pane elsewhere left
+/// running, journals each one's leaving what held it while the kill goes
+/// on, N rows at once whatever the journal's room. The room those rows
+/// took is given back once the events that follow let them go: with the
+/// ring full of bells before and after, the thread holds no more after a
+/// kill of 16,000 than of 1,000, and the ring as many bells as before. A
+/// table that kept room for every row it once held kept half a megabyte
+/// of it at 16,000, uncounted.
+#[test]
+fn what_a_deep_kill_took_of_the_journal_is_given_back_at_any_depth() -> TestResult {
+    let (options, room) = defaults()?;
+    let left = |depth: usize| -> Result<usize, String> {
+        let (mut s, _) = testing::attached(24, 80)?;
+        let bells = |s: &mut Session| {
+            for _ in 0..s.parts.journal().rows().saturating_add(1) {
+                s.output(PaneId::of(1), b"\x07", Instant::now());
+            }
+        };
+        bells(&mut s);
+        let (start, kept) = (live(), s.parts.journal().kept());
+        nest(&mut s, None, depth, options)?;
+        let (_, outermost) = innermost(&s)?;
+        let kill = Command::Kill {
+            target: Some(AnyRef::Workspace(outermost)),
+        };
+        ask(&mut s, &kill)?;
+        assert_eq!(s.parts.every_workspace().len(), 1);
+        bells(&mut s);
+        let held = s.parts.journal().bytes();
+        assert!(held <= room.get(), "{held} counted at depth {depth}");
+        // No room is kept for rows gone, so as many bells fit as before.
+        assert_eq!(
+            s.parts.journal().kept(),
+            kept,
+            "bells kept at depth {depth}"
+        );
+        Ok(live().saturating_sub(start))
+    };
+    for depth in [1_000, 4_000, 16_000] {
+        let left = left(depth)?;
+        assert!(left < 64 << 10, "{left} bytes left held at depth {depth}");
+    }
+    Ok(())
+}
+
+/// A workspace in another, made and killed over a ring full of bells with
+/// a client shown it, lets go about as many bells as it journals events
+/// (its leaving the outer one, and the client's leaving it, are rows of
+/// the journal's too): not half the ring, as when letting a bell go made
+/// no room.
+#[test]
+fn a_workspace_closed_over_a_full_ring_lets_go_only_a_few_events() -> TestResult {
+    let (options, _) = defaults()?;
+    let (mut s, client) = testing::attached(24, 80)?;
+    for _ in 0..s.parts.journal().rows().saturating_add(1) {
+        s.output(PaneId::of(1), b"\x07", Instant::now());
+    }
+    let (kept, end) = (s.parts.journal().kept(), s.parts.journal().end(s.run));
+    nest(&mut s, None, 2, options)?;
+    let (pane, outermost) = innermost(&s)?;
+    s.parts.show(client, AnyRef::Pane(pane));
+    s.settle(Instant::now());
+    let kill = Command::Kill {
+        target: Some(AnyRef::Workspace(outermost)),
+    };
+    ask(&mut s, &kill)?;
+    let journaled = (s.parts.journal().end(s.run).seq.0).saturating_sub(end.seq.0);
+    assert!(journaled > 0 && journaled < 64, "{journaled} events");
+    let now = s.parts.journal().kept();
+    assert!(
+        now.saturating_add(8) >= kept,
+        "{kept} entries kept before, {now} after {journaled} events"
+    );
+    Ok(())
+}
+
+/// F016: making ten thousand workspaces, each in the one before, setting
+/// a title in the innermost and killing the outermost, over and over,
+/// leaves the thread holding no more than the journal's room allows, and
+/// no more after the last time than after the third, when the ring was
+/// full already. Each entry's chain of workspaces made one such round
+/// 213 MiB; a chain shared between entries would be held by the one title
+/// left of each round, uncounted.
+fn nesting_deep_and_killing_holds_no_more_than_the_journals_room(rounds: usize) -> TestResult {
+    let (options, room) = defaults()?;
+    let (mut s, _) = testing::attached(24, 80)?;
+    let start = live();
+    let mut third = 0;
+    for round in 1..=rounds {
+        nest(&mut s, None, 10_000, options)?;
+        let (pane, outermost) = innermost(&s)?;
+        s.output(pane, b"\x1b]2;deep\x07", Instant::now());
+        let kill = Command::Kill {
+            target: Some(AnyRef::Workspace(outermost)),
+        };
+        ask(&mut s, &kill)?;
+        assert_eq!(s.parts.every_workspace().len(), 1);
+        assert!(s.parts.journal().bytes() <= room.get());
+        if round == 3 {
+            third = live();
+        }
+    }
+    let end = live();
+    // Beyond what the journal counts: the nodes of its map of moves, and
+    // what the session keeps of ten thousand ids.
+    assert!(
+        end.saturating_sub(start) < room.get().saturating_mul(2),
+        "{} bytes held more after {rounds} rounds, the journal's room {}",
+        end.saturating_sub(start),
+        room.get()
+    );
+    assert!(
+        end.saturating_sub(third) < 64 << 10,
+        "{third} bytes held after 3 rounds, {end} after {rounds}"
+    );
+    Ok(())
+}
+
+/// Fifty rounds, the ring full from the second: some seconds.
+#[test]
+fn fifty_rounds_of_nesting_deep_and_killing_hold_no_more_than_the_journals_room() -> TestResult {
+    nesting_deep_and_killing_holds_no_more_than_the_journals_room(50)
+}
+
+/// A thousand rounds, as F016's plan asks: a minute and a half in a test
+/// build, all of it the tree's making and closing of ten million
+/// workspaces, so it is run by name.
+#[test]
+#[ignore = "a minute and a half: `cargo test -p fux-server --lib -- --ignored a_thousand_rounds`"]
+fn a_thousand_rounds_of_nesting_deep_and_killing_hold_no_more_than_the_journals_room() -> TestResult
+{
+    nesting_deep_and_killing_holds_no_more_than_the_journals_room(1_000)
 }
 
 /// F011: what the tree reads to make workspaces nested twice as deep, show

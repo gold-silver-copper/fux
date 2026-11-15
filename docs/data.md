@@ -33,7 +33,7 @@ Native error kinds:
 
 `cancelled`, `no-server`, `mismatch`, `client`, `no-pane`, `no-tab`, `no-workspace`, `no-client`, `no-target`, `stray-pane`, `no-field`, `journal-loss`, `nothing-there`, `name-taken`, `bad-value`, `usage`, `not-running`, `still-running`, `not-run`, `only-shell`, `stale`, `no-marks`, `start`, `size`, `mouse`, `signal`, `indeterminate`, `not-headless`, `own-server`, `people-attached`, `timeout`, `closed`, `not-here`, `not-config`, `config`, `bad-binding`, `read`, `unset-variable`, `output`, `nested`, `not-a-key`, `type-error`, `range-error`, `arity-error`, `too-long`, `unused`, `unbound-symbol`, `bad-name`, `out-of-memory`, `ids-exhausted`, `fail`, `read-error`, `contract-error`, `parse-error`.
 
-The journal keeps its last `journal-entries` entries (16,384 by default).
+The journal keeps as many of its last entries as `journal-bytes` bytes hold (2 MiB by default), and a batch of them is one frame (1 MiB) at most and one event at least: an event longer than a frame is a batch alone, and arrives whole.
 
 [`records.md`](records.md) says what every record and field means, each event among them, and what
 each failure kind is for; `records.txt` and `codes.txt` list them from the code.

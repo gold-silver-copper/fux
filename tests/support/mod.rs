@@ -120,9 +120,9 @@ impl Server {
         Server::start_with(config, Some(limits), false, true, &journal()?).map(|(server, _)| server)
     }
 
-    /// The same, its journal keeping `entries` events.
-    pub fn start_journal(entries: u32) -> Result<Server, String> {
-        Server::start_with("", None, false, true, &entries.to_string()).map(|(server, _)| server)
+    /// The same, its journal keeping `bytes` bytes of events.
+    pub fn start_journal(bytes: u32) -> Result<Server, String> {
+        Server::start_with("", None, false, true, &bytes.to_string()).map(|(server, _)| server)
     }
 
     /// A server that inherits a descriptor without close-on-exec, as one
@@ -939,11 +939,11 @@ pub fn signal(pid: i32, signal: fuxix::process::Signal) {
     }
 }
 
-/// The events a server's journal keeps, as a client that starts one
-/// passes it (`fux __serve SOCKET ENTRIES`): the bundled `journal-entries`.
+/// The bytes of events a server's journal keeps, as a client that starts one
+/// passes it (`fux __serve SOCKET BYTES`): the bundled `journal-bytes`.
 pub fn journal() -> Result<String, String> {
     let state = fux::script::default_state().map_err(e)?;
-    Ok(state.preferences.journal_entries.get().to_string())
+    Ok(state.preferences.journal_bytes.get().to_string())
 }
 
 /// Stops the server on `socket` as a person does, and waits, bounded, till

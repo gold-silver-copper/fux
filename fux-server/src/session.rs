@@ -197,7 +197,7 @@ struct Undo {
     structure: crate::workspace::Structure,
     ids: Ids,
     views: BTreeMap<ClientId, View>,
-    journal: fux_wire::events::Seq,
+    journal: crate::journal::Mark,
     outbox: usize,
     /// The last question asked of a pane before it.
     asked: u64,
@@ -282,8 +282,8 @@ pub struct Session {
     answers: BTreeMap<u64, Answered>,
     /// The last question's number.
     asked_pane: u64,
-    /// The events its journal keeps.
-    entries: command::JournalEntries,
+    /// The bytes of events its journal keeps.
+    entries: command::JournalBytes,
     /// Its run's record as last written (`commit`), and whether it is
     /// still written: not once the run ends (`end_run`), which the record
     /// then says.
@@ -493,7 +493,7 @@ impl Session {
         socket: PathBuf,
         launch: bool,
         run: command::Run,
-        journal: command::JournalEntries,
+        journal: command::JournalBytes,
     ) -> Self {
         Self {
             parts: Tracked::new(Parts::new(journal)),
@@ -4586,7 +4586,7 @@ pub(crate) mod testing {
         let journal = fux::script::default_state()
             .map_err(|e| e.to_string())?
             .preferences
-            .journal_entries;
+            .journal_bytes;
         // Windows' built-in ConPTY: a folder with no pinned one.
         #[cfg(windows)]
         let _ = fuxix::pty::load(std::path::Path::new("no-pinned-conpty"));
@@ -5534,8 +5534,15 @@ mod tests {
                 .collect()
         };
         let (project, all) = (
-            shown(project.lines(s.parts.journal(), |t| s.holder(t)).0),
-            shown(all.lines(s.parts.journal(), |t| s.holder(t)).0),
+            shown(
+                project
+                    .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
+                    .0,
+            ),
+            shown(
+                all.lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
+                    .0,
+            ),
         );
         assert_eq!(s.place(c).map(|p| p.ws), Some(WsId::of(2)));
         // Reached agent1; left it moved and reached proj; left proj for
@@ -6244,7 +6251,7 @@ mod tests {
             "/nonexistent/fux.sock".into(),
             false,
             command::Run::now().ok_or("clock")?,
-            fux::script::default_state()?.preferences.journal_entries,
+            fux::script::default_state()?.preferences.journal_bytes,
         );
         let size = sized(24, 80)?;
         let presentation = fux::script::default_state()?.preferences.presentation();
@@ -7279,7 +7286,9 @@ mod tests {
             "(define! saved (second (second data))) (define! p (second (field saved (quote! panes)))) (list (field p (quote! history-bytes)) (field p (quote! reflow)) (field p (quote! alternate-scroll-lines)) (field p (quote! picture-bytes)) (field p (quote! program-clipboard)))",
         )?;
         assert_eq!(options, "(128 #false 3 1024 #false)");
-        let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
+        let lines = stream
+            .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
+            .0;
         let at = |what: &str| {
             lines
                 .find(&format!("(event \"{what}\") (pane %2)"))
@@ -7443,7 +7452,9 @@ mod tests {
             // Nor has it a program of its own till the new one takes its place.
             assert_eq!(output(&mut s, "(sequence! (define! value-2666 (pane 2)) \"program\" (get value-2666 \"program\"))")?.trim(), "none");
             turns(&mut s, id, &mut waiting)?;
-            let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
+            let lines = stream
+                .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
+                .0;
             assert!(lines.contains("(event \"respawned\") (pane %2)"), "{lines}");
             assert!(!lines.contains("input-unread"), "{lines}");
             reap(&mut s);
@@ -7541,7 +7552,9 @@ mod tests {
         })?;
         assert!(held);
         turns(&mut s, id, &mut waiting)?;
-        let lines = stream.lines(s.parts.journal(), |t| s.holder(t)).0;
+        let lines = stream
+            .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
+            .0;
         let at = |what: &str| {
             lines
                 .find(&format!("(event \"{what}\") (pane %2)"))
@@ -8120,7 +8133,7 @@ mod tests {
             s.run,
             Some(from),
         )?
-        .batch(s.parts.journal(), true)?
+        .batch(s.parts.journal(), &s.parts.nested(), true)?
         .events;
         let pane = s.pane(id)?;
         let after = (pane.respawns, pane.exit_status(), pane.read_error.clone());
@@ -8584,7 +8597,7 @@ mod tests {
     #[test]
     fn a_pane_is_made_only_at_a_size_known() -> TestResult {
         let run_id = fux_wire::command::Run::now().ok_or("no clock")?;
-        let journal = fux::script::default_state()?.preferences.journal_entries;
+        let journal = fux::script::default_state()?.preferences.journal_bytes;
         let mut s = Session::new("/nonexistent/fux.sock".into(), false, run_id, journal);
         s.test_keymap = fux::script::default_state()?.draft();
         let refused = run(&mut s, "(new-tab (in (options) \"new-workspace\"))")
@@ -9717,7 +9730,7 @@ mod tests {
             "/nonexistent/fux.sock".into(),
             false,
             command::Run::now().ok_or("clock")?,
-            fux::script::default_state()?.preferences.journal_entries,
+            fux::script::default_state()?.preferences.journal_bytes,
         );
         let initial = command::InitialWorkspace {
             options: fux::script::default_state()?.preferences.pane_options(),
@@ -10401,7 +10414,9 @@ mod tests {
             Err(why) => return why,
         };
         change(s);
-        stream.lines(s.parts.journal(), |t| s.holder(t)).0
+        stream
+            .lines(s.parts.journal(), &s.parts.nested(), |t| s.holder(t))
+            .0
     }
 
     #[test]
@@ -11374,8 +11389,11 @@ mod journal_tests {
     use testing::{output, run, run_as, started};
 
     fn batch(s: &Session, from: fux_wire::events::Cursor) -> Result<Batch, String> {
-        Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
-            .batch(s.parts.journal(), true)
+        Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?.batch(
+            s.parts.journal(),
+            &s.parts.nested(),
+            true,
+        )
     }
     fn named<'a>(b: &'a Batch, name: &str) -> Vec<&'a fux_wire::events::Item> {
         b.events
@@ -11413,11 +11431,12 @@ mod journal_tests {
             "(sequence! (split (axis (pane 1) \"horizontal\")) (new-tab (size (in (options) (workspace 1)) 80 24)) #inert)",
         )?;
         run(&mut s, "(sequence! (zoom (pane 1)) #inert)")?;
-        let shown = |s: &Session, from| -> Result<Vec<Option<TabId>>, String> {
-            let b = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
-                .batch(s.parts.journal(), true)?;
-            Ok(named(&b, "shown").iter().map(|e| e.tab).collect())
-        };
+        let shown =
+            |s: &Session, from| -> Result<Vec<Option<TabId>>, String> {
+                let b = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
+                    .batch(s.parts.journal(), &s.parts.nested(), true)?;
+                Ok(named(&b, "shown").iter().map(|e| e.tab).collect())
+            };
         // Its own focus moves to the zoomed pane it already shows.
         let from = s.parts.journal().end(s.run);
         run(
@@ -11611,8 +11630,8 @@ mod journal_tests {
         assert_eq!(kind, "pane\n");
         let mut s = started()?;
         let from = s.parts.journal().end(s.run);
-        let kept = fux::script::default_state()?.preferences.journal_entries;
-        for _ in 0..kept.get().saturating_add(1) {
+        // One bell more than the journal's room holds.
+        for _ in 0..s.parts.journal().rows().saturating_add(1) {
             s.output(PaneId::of(1), b"\x07", Instant::now());
         }
         let job =
@@ -11643,8 +11662,11 @@ mod journal_tests {
                 Scope::Target(AnyRef::Tab(TabId::of(1))),
                 Scope::Target(AnyRef::Workspace(WsId::of(1))),
             ] {
-                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?
-                    .batch(s.parts.journal(), true)?;
+                let b = Reader::new(scope, s.parts.journal(), s.run, Some(from))?.batch(
+                    s.parts.journal(),
+                    &s.parts.nested(),
+                    true,
+                )?;
                 assert!(
                     !named(&b, "shown").is_empty(),
                     "departure from {scope:?}: {b:?}"
@@ -11670,7 +11692,7 @@ mod journal_tests {
             s.run,
             Some(from),
         )?
-        .batch(s.parts.journal(), true)?;
+        .batch(s.parts.journal(), &s.parts.nested(), true)?;
         assert!(!b.events.is_empty(), "host changed without invalidation");
         assert!(b.events.iter().all(|e| e.origin == Actor::Client(second)));
         let after = s.parts.journal().end(s.run);

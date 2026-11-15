@@ -367,8 +367,11 @@ current end; otherwise use `SEQUENCE:RUN`, from a snapshot's `cursor` field or a
 is reported to both its old and new scopes. A client scope reports changes to that client's view and
 seats.
 
-Each batch holds every matching event from its cursor to the journal's end (or to the event that
-ends its scope). `next` is exactly the consumed journal prefix, including filtered entries. It can
+Each batch holds the matching events from its cursor on, as many as one frame holds (1 MiB) and one
+at least: to the journal's end, to the event that ends its scope, or to the first event the frame has
+no room for, which the next batch begins with (its status is `continuing`, so read again from
+`next`). One event longer than a frame, a rename to a name that long, is a batch alone and arrives
+whole. `next` is exactly the consumed journal prefix, including filtered entries. It can
 advance with no matching events. Each event also has its own number, `sequence`, and its continuation
 `next`, one past it. `first` is the oldest entry the journal still holds (`next` when it holds none):
 a cursor before it has missed entries. A count of matches is never a cursor. Subject and origin
@@ -387,11 +390,14 @@ read. Status is:
 | `gone` | the scoped object closed; the final close is included when retained |
 | `stopped` | the server stopped; `reason` says why, and the batch ends with its `stopped` entry |
 
-The journal keeps the last `journal-entries` entries (16,384 unless the client that started the
-server set it otherwise), its ring, evicting the oldest before appending to a full ring. Retention
-promises a number of entries, not seconds; scope filtering reserves no private window. `missed`
-counts exactly the entries evicted before this cursor, including nonmatches. On loss, resnapshot and
-reconcile, or fail the task explicitly. A full ring is evicted before append and does not grow. A
+The journal keeps as many of its last entries as `journal-bytes` bytes hold (2 MiB, which is 16,384
+entries of 128 bytes, unless the client that started the server set it otherwise), its ring, and its
+newest entry whatever its length. An entry counts 80 bytes and its text (a name, a title, a
+notification) at the size the server stores it, the same however deep in workspaces it happened.
+Retention promises bytes, not a number of entries or seconds; scope filtering reserves no private
+window. `missed` counts exactly the entries evicted before this cursor, including nonmatches. On
+loss, resnapshot and reconcile, or fail the task explicitly. A full ring lets its oldest go and does
+not grow. A
 journal is its server process's, ordered as each pane's process reported: a server that takes a run
 back after a crash (`(start)`) keeps one of its own, and refuses a cursor from the one before
 (`bad-value`), saying that what came between is lost: resnapshot. A change to the tree (a name, a

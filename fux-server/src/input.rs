@@ -441,7 +441,7 @@ mod tests {
             let from = s.parts.journal().end(s.run);
             s.apply(c, vec![Act::Screen { opening, act }]);
             let batch = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
-                .batch(s.parts.journal(), true)?;
+                .batch(s.parts.journal(), &s.parts.nested(), true)?;
             assert_eq!(batch.events.len(), 1);
             let event = batch.events.first().ok_or("screen event")?;
             assert_eq!(event.data.get("event"), Some(&Json::str("screen")));
@@ -468,7 +468,7 @@ mod tests {
                 .map_err(|e: fux_vt::keys::Error| e.to_string())?;
             s.apply(c, vec![Act::Key(key.into())]);
             let batch = Reader::new(Scope::Client(c), s.parts.journal(), s.run, Some(from))?
-                .batch(s.parts.journal(), true)?;
+                .batch(s.parts.journal(), &s.parts.nested(), true)?;
             assert_eq!(batch.events.len(), 1);
             let ending = &batch.events.first().ok_or("ending")?.data;
             assert_eq!(ending.get("event"), Some(&Json::str("screen")));
@@ -550,8 +550,11 @@ mod tests {
                 .rows(),
             rows - 1
         );
-        let batch = Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?
-            .batch(s.parts.journal(), true)?;
+        let batch = Reader::new(Scope::All, s.parts.journal(), s.run, Some(from))?.batch(
+            s.parts.journal(),
+            &s.parts.nested(),
+            true,
+        )?;
         assert!(
             batch
                 .events
